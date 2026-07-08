@@ -9,6 +9,7 @@ import {
 import type { OverlayWindowContext } from "./example-overlay-windows";
 import {
   ElectronGameOverlay,
+  type ElectronOverlayWindow,
   type OverlayHotkey,
   type OverlaySession,
 } from "@libs/electron-game-overlay-sdk";
@@ -31,13 +32,17 @@ const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
 
 class Application {
   private windows: Map<string, Electron.BrowserWindow>;
+  private overlayWindows: Map<string, ElectronOverlayWindow>;
   private tray: Electron.Tray | null;
   private markQuit = false;
+  private overlayStarted = false;
+  private inputIntercepting = false;
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
 
   constructor() {
     this.windows = new Map();
+    this.overlayWindows = new Map();
     this.tray = null;
 
     this.overlay = new ElectronGameOverlay();
@@ -235,34 +240,150 @@ class Application {
   }
 
   private setupIpc() {
-    ipcMain.once("start", () => {
-      console.log("starting overlay...");
-      this.overlaySession.start();
-      this.overlaySession.setHotkeys(EXAMPLE_OVERLAY_HOTKEYS);
+    ipcMain.handle("overlay:get-state", () => this.getDemoState());
 
-      createExampleMainOverlayWindow(this.getOverlayWindowContext());
-      createExampleStatusOverlayWindow(this.getOverlayWindowContext());
+    ipcMain.handle("overlay:start", () => this.startOverlaySession());
+
+    ipcMain.handle("overlay:inject", (event, title: string) => {
+      this.ensureOverlaySessionStarted();
+      this.overlaySession.attachToProcess({ title });
+      return this.getDemoState();
+    });
+
+    ipcMain.handle(
+      "overlay:set-input-intercept",
+      (event, intercept: boolean) => {
+        this.ensureOverlaySessionStarted();
+        this.setInputIntercept(intercept);
+        return this.getDemoState();
+      }
+    );
+
+    ipcMain.handle(
+      "overlay:set-window-visible",
+      (event, name: string, visible: boolean) => {
+        this.ensureOverlaySessionStarted();
+        this.setExampleOverlayWindowVisible(name, visible);
+        return this.getDemoState();
+      }
+    );
+
+    ipcMain.on("start", () => {
+      this.startOverlaySession();
     });
 
     ipcMain.on("inject", (event, arg) => {
+      this.ensureOverlaySessionStarted();
       this.overlaySession.attachToProcess({ title: arg });
     });
 
     ipcMain.on("showExamplePopupOverlay", () => {
+      this.ensureOverlaySessionStarted();
       createExamplePopupOverlayWindow(this.getOverlayWindowContext());
     });
 
     ipcMain.on("showExampleVideoOverlay", () => {
-      this.showExampleVideoOverlay();
+      this.setExampleOverlayWindowVisible(AppWindows.exampleVideoOverlay, true);
     });
 
     ipcMain.on("startIntercept", () => {
-      this.overlaySession.input.intercept();
+      this.ensureOverlaySessionStarted();
+      this.setInputIntercept(true);
     });
 
     ipcMain.on("stopIntercept", () => {
-      this.overlaySession.input.release();
+      this.ensureOverlaySessionStarted();
+      this.setInputIntercept(false);
     });
+  }
+
+  private startOverlaySession() {
+    this.ensureOverlaySessionStarted();
+    this.ensureExampleOverlayWindow(AppWindows.exampleMainOverlay).show();
+    this.ensureExampleOverlayWindow(AppWindows.exampleStatusOverlay).show();
+
+    return this.getDemoState();
+  }
+
+  private ensureOverlaySessionStarted() {
+    if (!this.overlayStarted) {
+      console.log("starting overlay...");
+      this.overlaySession.start();
+      this.overlaySession.setHotkeys(EXAMPLE_OVERLAY_HOTKEYS);
+      this.overlayStarted = true;
+    }
+  }
+
+  private setInputIntercept(intercept: boolean) {
+    if (intercept) {
+      this.overlaySession.input.intercept();
+    } else {
+      this.overlaySession.input.release();
+    }
+    this.inputIntercepting = intercept;
+  }
+
+  private setExampleOverlayWindowVisible(name: string, visible: boolean) {
+    if (visible) {
+      this.ensureExampleOverlayWindow(name).show();
+      return;
+    }
+
+    this.overlayWindows.get(name)?.hide();
+  }
+
+  private ensureExampleOverlayWindow(name: string) {
+    const existing = this.overlayWindows.get(name);
+    if (existing && !existing.browserWindow.isDestroyed()) {
+      return existing;
+    }
+
+    let overlayWindow: ElectronOverlayWindow;
+    if (name === AppWindows.exampleMainOverlay) {
+      overlayWindow = createExampleMainOverlayWindow(
+        this.getOverlayWindowContext()
+      );
+    } else if (name === AppWindows.exampleStatusOverlay) {
+      overlayWindow = createExampleStatusOverlayWindow(
+        this.getOverlayWindowContext()
+      );
+    } else if (name === AppWindows.exampleVideoOverlay) {
+      overlayWindow = createExampleVideoOverlayWindow(
+        this.getOverlayWindowContext()
+      );
+    } else {
+      throw new Error(`Unknown example overlay window: ${name}`);
+    }
+
+    this.trackOverlayWindow(name, overlayWindow);
+    return overlayWindow;
+  }
+
+  private trackOverlayWindow(name: string, overlayWindow: ElectronOverlayWindow) {
+    this.overlayWindows.set(name, overlayWindow);
+    overlayWindow.onClose(() => {
+      if (this.overlayWindows.get(name) === overlayWindow) {
+        this.overlayWindows.delete(name);
+      }
+    });
+  }
+
+  private getDemoState() {
+    return {
+      overlayStarted: this.overlayStarted,
+      inputIntercepting: this.inputIntercepting,
+      windows: {
+        [AppWindows.exampleMainOverlay]:
+          this.overlayWindows.get(AppWindows.exampleMainOverlay)?.visible ||
+          false,
+        [AppWindows.exampleStatusOverlay]:
+          this.overlayWindows.get(AppWindows.exampleStatusOverlay)?.visible ||
+          false,
+        [AppWindows.exampleVideoOverlay]:
+          this.overlayWindows.get(AppWindows.exampleVideoOverlay)?.visible ||
+          false,
+      },
+    };
   }
 
   private handleOverlayFps(fps: number) {
@@ -299,7 +420,7 @@ class Application {
   }
 
   private showExampleVideoOverlay() {
-    createExampleVideoOverlayWindow(this.getOverlayWindowContext());
+    this.setExampleOverlayWindowVisible(AppWindows.exampleVideoOverlay, true);
   }
 }
 

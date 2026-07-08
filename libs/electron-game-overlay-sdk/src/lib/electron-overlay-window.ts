@@ -13,6 +13,7 @@ export class ElectronOverlayWindow {
 
   private registered = false;
   private destroyed = false;
+  private readonly closeHandlers = new Set<() => void>();
 
   constructor(
     private readonly bridge: OverlayWindowBridge,
@@ -45,6 +46,19 @@ export class ElectronOverlayWindow {
     return this.registered && !this.destroyed;
   }
 
+  public onClose(handler: () => void) {
+    if (this.destroyed) {
+      handler();
+      return () => {};
+    }
+
+    this.closeHandlers.add(handler);
+
+    return () => {
+      this.closeHandlers.delete(handler);
+    };
+  }
+
   public show() {
     if (this.destroyed || this.registered) {
       return;
@@ -71,6 +85,7 @@ export class ElectronOverlayWindow {
     this.hide();
     this.destroyed = true;
     this.bridge.removeWindow(this);
+    this.emitClose();
 
     if (!this.browserWindow.isDestroyed()) {
       this.browserWindow.close();
@@ -128,11 +143,19 @@ export class ElectronOverlayWindow {
       this.hide();
       this.destroyed = true;
       this.bridge.removeWindow(this);
+      this.emitClose();
     });
 
     this.browserWindow.webContents.on("cursor-changed", (event, type) => {
       this.bridge.sendCursor(type);
     });
+  }
+
+  private emitClose() {
+    for (const handler of this.closeHandlers) {
+      handler();
+    }
+    this.closeHandlers.clear();
   }
 }
 
