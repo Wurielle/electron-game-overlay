@@ -1,6 +1,5 @@
 import { BrowserWindow, ipcMain, Menu, shell, Tray } from "electron";
 import * as path from "path";
-import { loadNativeLib } from "../utils/loadoverlay";
 import {
   createExampleMainOverlayWindow,
   createExamplePopupOverlayWindow,
@@ -8,7 +7,11 @@ import {
   createExampleVideoOverlayWindow,
 } from "./example-overlay-windows";
 import type { OverlayWindowContext } from "./example-overlay-windows";
-import { OverlayHost, type OverlayHotkey } from "./overlay-host";
+import {
+  ElectronGameOverlay,
+  type OverlayHotkey,
+  type OverlaySession,
+} from "./electron-game-overlay";
 import { AppWindows } from "./window-names";
 
 const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";
@@ -30,16 +33,19 @@ class Application {
   private windows: Map<string, Electron.BrowserWindow>;
   private tray: Electron.Tray | null;
   private markQuit = false;
-  private overlayHost: OverlayHost;
+  private overlay: ElectronGameOverlay;
+  private overlaySession: OverlaySession;
 
   constructor() {
     this.windows = new Map();
     this.tray = null;
 
-    this.overlayHost = new OverlayHost(loadNativeLib(), {
-      isQuitting: () => this.markQuit,
+    this.overlay = new ElectronGameOverlay();
+    this.overlaySession = this.overlay.createSession();
+    this.overlaySession.onQuit(() => {
+      this.markQuit = true;
     });
-    this.overlayHost.onEvent((event, payload) => {
+    this.overlaySession.onEvent((event, payload) => {
       this.handleOverlayEvent(event, payload);
     });
   }
@@ -185,14 +191,12 @@ class Application {
   }
 
   public quit() {
-    this.markQuit = true;
+    this.overlay.dispose();
     this.closeMainWindow();
     this.closeAllWindows();
     if (this.tray) {
       this.tray.destroy();
     }
-
-    this.overlayHost.stop();
   }
 
   public openLink(url: string) {
@@ -229,18 +233,16 @@ class Application {
 
   private setupIpc() {
     ipcMain.once("start", () => {
-      this.overlayHost.initializeScaleFactor();
-
       console.log("starting overlay...");
-      this.overlayHost.start();
-      this.overlayHost.setHotkeys(EXAMPLE_OVERLAY_HOTKEYS);
+      this.overlaySession.start();
+      this.overlaySession.setHotkeys(EXAMPLE_OVERLAY_HOTKEYS);
 
       createExampleMainOverlayWindow(this.getOverlayWindowContext());
       createExampleStatusOverlayWindow(this.getOverlayWindowContext());
     });
 
     ipcMain.on("inject", (event, arg) => {
-      this.overlayHost.injectProcessByTitle(arg);
+      this.overlaySession.injectProcessByTitle(arg);
     });
 
     ipcMain.on("showExamplePopupOverlay", () => {
@@ -252,11 +254,11 @@ class Application {
     });
 
     ipcMain.on("startIntercept", () => {
-      this.overlayHost.setInputIntercept(true);
+      this.overlaySession.input.intercept();
     });
 
     ipcMain.on("stopIntercept", () => {
-      this.overlayHost.setInputIntercept(false);
+      this.overlaySession.input.release();
     });
   }
 
@@ -275,24 +277,22 @@ class Application {
 
   private getOverlayWindowContext(): OverlayWindowContext {
     return {
-      createWindow: (
-        name,
-        options
-      ) => this.createWindow(name, options),
-      addOverlayWindow: (
+      createWindow: (name, options) => this.createWindow(name, options),
+      createElectronOverlayWindow: (
         name,
         window,
-        dragborder?,
+        dragBorder?,
         captionHeight?,
         transparent?
       ) =>
-        this.overlayHost.addWindow(
+        this.overlaySession.createElectronWindow({
+          id: name,
           name,
-          window,
-          dragborder,
+          existingWindow: window,
+          dragBorder,
           captionHeight,
-          transparent
-        ),
+          transparent,
+        }),
       closeWindow: (name) => this.closeWindow(name),
       getMainWindow: () => this.mainWindow,
       isQuitting: () => this.markQuit,

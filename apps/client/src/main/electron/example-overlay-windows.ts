@@ -1,5 +1,6 @@
 import * as path from "path";
 import { fileUrl, getRandomInt } from "../utils/utils";
+import type { ElectronOverlayWindow } from "./electron-game-overlay";
 import { AppWindows } from "./window-names";
 
 export type OverlayWindowContext = {
@@ -7,13 +8,13 @@ export type OverlayWindowContext = {
     name: string,
     options: Electron.BrowserWindowConstructorOptions
   ) => Electron.BrowserWindow;
-  addOverlayWindow: (
+  createElectronOverlayWindow: (
     name: string,
     window: Electron.BrowserWindow,
-    dragborder?: number,
+    dragBorder?: number,
     captionHeight?: number,
     transparent?: boolean
-  ) => void;
+  ) => ElectronOverlayWindow;
   closeWindow: (name: string) => void;
   getMainWindow: () => Electron.BrowserWindow | null;
   isQuitting: () => boolean;
@@ -56,8 +57,12 @@ export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
     }
   );
 
-  context.addOverlayWindow("ExampleMainOverlay", window, 10, 40);
-  return window;
+  return context.createElectronOverlayWindow(
+    "ExampleMainOverlay",
+    window,
+    10,
+    40
+  );
 }
 
 export function createExampleStatusOverlayWindow(context: OverlayWindowContext) {
@@ -86,8 +91,7 @@ export function createExampleStatusOverlayWindow(context: OverlayWindowContext) 
     )
   );
 
-  context.addOverlayWindow(name, window, 0, 0);
-  return window;
+  return context.createElectronOverlayWindow(name, window, 0, 0);
 }
 
 export function createExamplePopupOverlayWindow(context: OverlayWindowContext) {
@@ -115,8 +119,7 @@ export function createExamplePopupOverlayWindow(context: OverlayWindowContext) {
     )
   );
 
-  context.addOverlayWindow(name, window, 30, 40, true);
-  return window;
+  return context.createElectronOverlayWindow(name, window, 30, 40, true);
 }
 
 export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
@@ -138,10 +141,9 @@ export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
     },
   });
 
-  context.addOverlayWindow(name, window, 0, 0);
   window.loadURL(
     fileUrl(path.join(global.CONFIG.distDir, "example-video-overlay/index.html"))
   );
 
-  return window;
+  return context.createElectronOverlayWindow(name, window, 0, 0);
 }
