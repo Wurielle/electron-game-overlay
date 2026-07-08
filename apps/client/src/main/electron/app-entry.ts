@@ -8,8 +8,23 @@ import {
   createExampleVideoOverlayWindow,
 } from "./example-overlay-windows";
 import type { OverlayWindowContext } from "./example-overlay-windows";
-import { OverlayHost } from "./overlay-host";
+import { OverlayHost, type OverlayHotkey } from "./overlay-host";
 import { AppWindows } from "./window-names";
+
+const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";
+
+const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
+  {
+    name: "overlay.hotkey.toggleInputIntercept",
+    keyCode: 113,
+    modifiers: { ctrl: true },
+  },
+  {
+    name: SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY,
+    keyCode: 114,
+    modifiers: { ctrl: true },
+  },
+];
 
 class Application {
   private windows: Map<string, Electron.BrowserWindow>;
@@ -22,9 +37,10 @@ class Application {
     this.tray = null;
 
     this.overlayHost = new OverlayHost(loadNativeLib(), {
-      getWindow: (name) => this.getWindow(name),
       isQuitting: () => this.markQuit,
-      onShowExampleVideoOverlay: () => this.showExampleVideoOverlay(),
+    });
+    this.overlayHost.onEvent((event, payload) => {
+      this.handleOverlayEvent(event, payload);
     });
   }
 
@@ -217,6 +233,7 @@ class Application {
 
       console.log("starting overlay...");
       this.overlayHost.start();
+      this.overlayHost.setHotkeys(EXAMPLE_OVERLAY_HOTKEYS);
 
       createExampleMainOverlayWindow(this.getOverlayWindowContext());
       createExampleStatusOverlayWindow(this.getOverlayWindowContext());
@@ -241,6 +258,19 @@ class Application {
     ipcMain.on("stopIntercept", () => {
       this.overlayHost.setInputIntercept(false);
     });
+  }
+
+  private handleOverlayEvent(event: string, payload: any) {
+    if (event === "graphics.fps") {
+      const statusWindow = this.getWindow(AppWindows.exampleStatusOverlay);
+      if (statusWindow) {
+        statusWindow.webContents.send("fps", payload.fps);
+      }
+    } else if (event === "game.hotkey.down") {
+      if (payload.name === SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY) {
+        this.showExampleVideoOverlay();
+      }
+    }
   }
 
   private getOverlayWindowContext(): OverlayWindowContext {

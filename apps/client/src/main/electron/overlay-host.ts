@@ -1,16 +1,28 @@
 import { BrowserWindow, screen } from "electron";
-import { AppWindows } from "./window-names";
 
 type NativeOverlay = any;
 
 type OverlayHostOptions = {
-  getWindow: (name: string) => Electron.BrowserWindow | null;
   isQuitting: () => boolean;
-  onShowExampleVideoOverlay: () => void;
+};
+
+export type OverlayEventHandler = (event: string, payload: any) => void;
+
+export type OverlayHotkey = {
+  name: string;
+  keyCode: number;
+  modifiers?: {
+    alt?: boolean;
+    ctrl?: boolean;
+    shift?: boolean;
+    meta?: boolean;
+  };
+  passthrough?: boolean;
 };
 
 export class OverlayHost {
   private scaleFactor = 1.0;
+  private eventHandlers = new Set<OverlayEventHandler>();
 
   constructor(
     private readonly overlay: NativeOverlay,
@@ -26,26 +38,27 @@ export class OverlayHost {
 
   public start() {
     this.overlay.start();
-    this.overlay.setHotkeys([
-      {
-        name: "overlay.hotkey.toggleInputIntercept",
-        keyCode: 113,
-        modifiers: { ctrl: true },
-      },
-      {
-        name: "app.showExampleVideoOverlay",
-        keyCode: 114,
-        modifiers: { ctrl: true },
-      },
-    ]);
 
     this.overlay.setEventCallback((event: string, payload: any) => {
       this.handleEvent(event, payload);
+      this.emitEvent(event, payload);
     });
   }
 
   public stop() {
     this.overlay.stop();
+  }
+
+  public setHotkeys(hotkeys: OverlayHotkey[]) {
+    this.overlay.setHotkeys(hotkeys);
+  }
+
+  public onEvent(handler: OverlayEventHandler) {
+    this.eventHandlers.add(handler);
+
+    return () => {
+      this.eventHandlers.delete(handler);
+    };
   }
 
   public addWindow(
@@ -185,15 +198,6 @@ export class OverlayHost {
   private handleEvent(event: string, payload: any) {
     if (event === "game.input") {
       this.forwardGameInput(payload);
-    } else if (event === "graphics.fps") {
-      const window = this.options.getWindow(AppWindows.exampleStatusOverlay);
-      if (window) {
-        window.webContents.send("fps", payload.fps);
-      }
-    } else if (event === "game.hotkey.down") {
-      if (payload.name === "app.showExampleVideoOverlay") {
-        this.options.onShowExampleVideoOverlay();
-      }
     } else if (event === "game.window.focused") {
       console.log("focusWindowId", payload.focusWindowId);
 
@@ -205,6 +209,12 @@ export class OverlayHost {
       if (focusWin) {
         focusWin.focusOnWebView();
       }
+    }
+  }
+
+  private emitEvent(event: string, payload: any) {
+    for (const handler of this.eventHandlers) {
+      handler(event, payload);
     }
   }
 
