@@ -1,5 +1,5 @@
 import { BrowserWindow } from "electron";
-import type { OverlaySession } from "./overlay-session.js";
+import type { OverlayWindowBridge } from "./overlay-window-bridge.js";
 import type { ElectronOverlayWindowOptions, Rect } from "./types.js";
 
 export class ElectronOverlayWindow {
@@ -15,7 +15,7 @@ export class ElectronOverlayWindow {
   private destroyed = false;
 
   constructor(
-    private readonly session: OverlaySession,
+    private readonly bridge: OverlayWindowBridge,
     options: ElectronOverlayWindowOptions
   ) {
     this.browserWindow =
@@ -50,7 +50,7 @@ export class ElectronOverlayWindow {
       return;
     }
 
-    this.session.registerWindow(this);
+    this.bridge.registerWindow(this);
     this.registered = true;
   }
 
@@ -59,7 +59,7 @@ export class ElectronOverlayWindow {
       return;
     }
 
-    this.session.unregisterWindow(this);
+    this.bridge.unregisterWindow(this);
     this.registered = false;
   }
 
@@ -70,7 +70,7 @@ export class ElectronOverlayWindow {
 
     this.hide();
     this.destroyed = true;
-    this.session.removeWindow(this);
+    this.bridge.removeWindow(this);
 
     if (!this.browserWindow.isDestroyed()) {
       this.browserWindow.close();
@@ -97,7 +97,7 @@ export class ElectronOverlayWindow {
     });
 
     if (this.registered) {
-      this.session.syncWindowBounds(this);
+      this.bridge.syncWindowBounds(this);
     }
   }
 
@@ -109,7 +109,7 @@ export class ElectronOverlayWindow {
     this.browserWindow.webContents.on(
       "paint",
       (event, dirty, image: Electron.NativeImage) => {
-        this.session.sendFrame(this, image);
+        this.bridge.sendFrame(this, image);
       }
     );
 
@@ -120,18 +120,18 @@ export class ElectronOverlayWindow {
     this.browserWindow.on("resize", () => {
       console.log(`${this.name} resizing`);
       if (this.registered) {
-        this.session.syncWindowBounds(this);
+        this.bridge.syncWindowBounds(this);
       }
     });
 
     this.browserWindow.on("closed", () => {
       this.hide();
       this.destroyed = true;
-      this.session.removeWindow(this);
+      this.bridge.removeWindow(this);
     });
 
     this.browserWindow.webContents.on("cursor-changed", (event, type) => {
-      this.session.sendCursor(type);
+      this.bridge.sendCursor(type);
     });
   }
 }

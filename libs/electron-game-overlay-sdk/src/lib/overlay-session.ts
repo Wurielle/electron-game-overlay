@@ -2,16 +2,26 @@ import { BrowserWindow, screen } from "electron";
 import { toNativeCursor } from "./cursor.js";
 import { ElectronOverlayWindow } from "./electron-overlay-window.js";
 import type { NativeOverlay } from "./native.js";
+import type { OverlayWindowBridge } from "./overlay-window-bridge.js";
 import type {
+  AttachElectronOverlayWindowOptions,
+  CreateElectronOverlayWindowOptions,
   ElectronOverlayWindowOptions,
-  OverlayEventHandler,
   OverlayHotkey,
+  OverlayProcessAttachResult,
+  OverlayProcessTarget,
+  OverlaySessionEventHandler,
+  OverlaySessionEventMap,
+  OverlaySessionEventName,
   Rect,
 } from "./types.js";
 
 export class OverlaySession {
-  private readonly windows = new Map<string, ElectronOverlayWindow>();
-  private readonly eventHandlers = new Set<OverlayEventHandler>();
+  private readonly windowsById = new Map<string, ElectronOverlayWindow>();
+  private readonly eventHandlers = new Map<
+    OverlaySessionEventName,
+    Set<OverlaySessionEventHandler<OverlaySessionEventName>>
+  >();
   private readonly quitHandlers = new Set<() => void>();
   private readonly closeHandlers = new Set<() => void>();
   private scaleFactor = 1.0;
@@ -22,6 +32,29 @@ export class OverlaySession {
   public readonly input = {
     intercept: () => this.setInputIntercept(true),
     release: () => this.setInputIntercept(false),
+  };
+
+  public readonly windows = {
+    create: (options: CreateElectronOverlayWindowOptions) =>
+      this.createWindow(options),
+    attach: (
+      window: Electron.BrowserWindow,
+      options: AttachElectronOverlayWindowOptions = {}
+    ) =>
+      this.createWindow({
+        ...options,
+        existingWindow: window,
+      }),
+    get: (id: string) => this.getWindow(id),
+  };
+
+  private readonly windowBridge: OverlayWindowBridge = {
+    registerWindow: (window) => this.registerWindow(window),
+    unregisterWindow: (window) => this.unregisterWindow(window),
+    removeWindow: (window) => this.removeWindow(window),
+    syncWindowBounds: (window) => this.syncWindowBounds(window),
+    sendFrame: (window, image) => this.sendFrame(window, image),
+    sendCursor: (type) => this.sendCursor(type),
   };
 
   constructor(private readonly overlay: NativeOverlay) {}
@@ -39,7 +72,6 @@ export class OverlaySession {
     this.overlay.start();
     this.overlay.setEventCallback((event: string, payload: any) => {
       this.handleEvent(event, payload);
-      this.emitEvent(event, payload);
     });
 
     this.started = true;
@@ -52,10 +84,10 @@ export class OverlaySession {
 
     this.emitQuit();
 
-    for (const window of Array.from(this.windows.values())) {
+    for (const window of Array.from(this.windowsById.values())) {
       window.destroy();
     }
-    this.windows.clear();
+    this.windowsById.clear();
 
     if (this.started) {
       this.overlay.stop();
@@ -97,38 +129,79 @@ export class OverlaySession {
     this.overlay.setHotkeys(hotkeys);
   }
 
-  public onEvent(handler: OverlayEventHandler) {
-    this.eventHandlers.add(handler);
+  public on<Event extends OverlaySessionEventName>(
+    event: Event,
+    handler: OverlaySessionEventHandler<Event>
+  ) {
+    let handlers = this.eventHandlers.get(event);
+    if (!handlers) {
+      handlers = new Set();
+      this.eventHandlers.set(event, handlers);
+    }
+
+    handlers.add(
+      handler as OverlaySessionEventHandler<OverlaySessionEventName>
+    );
 
     return () => {
-      this.eventHandlers.delete(handler);
+      handlers.delete(
+        handler as OverlaySessionEventHandler<OverlaySessionEventName>
+      );
     };
   }
 
-  public createElectronWindow(options: ElectronOverlayWindowOptions) {
+  public attachToProcess(target: OverlayProcessTarget) {
     this.ensureStarted();
-    const overlayWindow = new ElectronOverlayWindow(this, options);
-    this.windows.set(overlayWindow.id, overlayWindow);
-    overlayWindow.show();
+    if ("pid" in target) {
+      return this.injectProcessByPid(target.pid, target.includeMinimized);
+    }
+
+    return this.injectProcessByTitle(target.title, target.includeMinimized);
+  }
+
+  private createWindow(options: ElectronOverlayWindowOptions) {
+    this.ensureStarted();
+    const overlayWindow = new ElectronOverlayWindow(this.windowBridge, options);
+    this.windowsById.set(overlayWindow.id, overlayWindow);
     return overlayWindow;
   }
 
-  public getWindow(id: string) {
-    return this.windows.get(id) || null;
+  private getWindow(id: string) {
+    return this.windowsById.get(id) || null;
   }
 
-  public injectProcessByTitle(title: string) {
-    this.ensureStarted();
+  private injectProcessByTitle(
+    title: string,
+    includeMinimized = false
+  ): OverlayProcessAttachResult[] {
     console.log(`--------------------\n try inject ${title}`);
-    for (const window of this.overlay.getTopWindows()) {
+    const results: OverlayProcessAttachResult[] = [];
+    for (const window of this.overlay.getTopWindows(includeMinimized)) {
       if (window.title && window.title.indexOf(title) !== -1) {
         console.log(`--------------------\n injecting ${JSON.stringify(window)}`);
-        this.overlay.injectProcess(window);
+        results.push(this.overlay.injectProcess(window));
       }
     }
+    return results;
   }
 
-  public setInputIntercept(intercept: boolean) {
+  private injectProcessByPid(
+    pid: number,
+    includeMinimized = false
+  ): OverlayProcessAttachResult | null {
+    const window = this.overlay
+      .getTopWindows(includeMinimized)
+      .find((candidate) => candidate.processId === pid);
+
+    if (!window) {
+      return null;
+    }
+
+    console.log(`--------------------\n injecting ${JSON.stringify(window)}`);
+    return this.overlay.injectProcess(window);
+  }
+
+  private setInputIntercept(intercept: boolean) {
     this.ensureStarted();
     this.overlay.sendCommand({
       command: "input.intercept",
@@ -136,7 +209,7 @@ export class OverlaySession {
     });
   }
 
-  public registerWindow(window: ElectronOverlayWindow) {
+  private registerWindow(window: ElectronOverlayWindow) {
     this.ensureStarted();
     const browserWindow = window.browserWindow;
     const bounds = this.getScaledBounds(browserWindow);
@@ -170,22 +243,22 @@ export class OverlaySession {
     });
   }
 
-  public unregisterWindow(window: ElectronOverlayWindow) {
+  private unregisterWindow(window: ElectronOverlayWindow) {
     this.overlay.closeWindow(window.nativeId);
   }
 
-  public removeWindow(window: ElectronOverlayWindow) {
-    this.windows.delete(window.id);
+  private removeWindow(window: ElectronOverlayWindow) {
+    this.windowsById.delete(window.id);
   }
 
-  public syncWindowBounds(window: ElectronOverlayWindow) {
+  private syncWindowBounds(window: ElectronOverlayWindow) {
     this.ensureStarted();
     this.overlay.sendWindowBounds(window.nativeId, {
       rect: this.getScaledBounds(window.browserWindow),
     });
   }
 
-  public sendFrame(
+  private sendFrame(
     window: ElectronOverlayWindow,
     image: Electron.NativeImage
   ) {
@@ -201,7 +274,7 @@ export class OverlaySession {
     );
   }
 
-  public sendCursor(type: string) {
+  private sendCursor(type: string) {
     this.ensureStarted();
     this.overlay.sendCommand({
       command: "cursor",
@@ -209,7 +282,7 @@ export class OverlaySession {
     });
   }
 
-  public forwardGameInput(payload: any) {
+  private forwardGameInput(payload: any) {
     const window = BrowserWindow.fromId(payload.windowId);
     if (!window) {
       return;
@@ -231,6 +304,11 @@ export class OverlaySession {
   }
 
   private handleEvent(event: string, payload: any) {
+    this.emitEvent("nativeEvent", {
+      event,
+      payload,
+    });
+
     if (event === "game.input") {
       this.forwardGameInput(payload);
     } else if (event === "game.window.focused") {
@@ -244,12 +322,31 @@ export class OverlaySession {
       if (focusWin) {
         focusWin.focusOnWebView();
       }
+      this.emitEvent("windowFocused", {
+        windowId: payload.focusWindowId,
+      });
+    } else if (event === "graphics.fps") {
+      this.emitEvent("fps", {
+        fps: payload.fps,
+      });
+    } else if (event === "game.hotkey.down") {
+      this.emitEvent("hotkeyDown", {
+        name: payload.name,
+      });
     }
   }
 
-  private emitEvent(event: string, payload: any) {
-    for (const handler of this.eventHandlers) {
-      handler(event, payload);
+  private emitEvent<Event extends OverlaySessionEventName>(
+    event: Event,
+    payload: OverlaySessionEventMap[Event]
+  ) {
+    const handlers = this.eventHandlers.get(event);
+    if (!handlers) {
+      return;
+    }
+
+    for (const handler of handlers) {
+      handler(payload);
     }
   }
 

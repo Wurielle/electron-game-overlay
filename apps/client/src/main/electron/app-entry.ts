@@ -45,8 +45,11 @@ class Application {
     this.overlaySession.onQuit(() => {
       this.markQuit = true;
     });
-    this.overlaySession.onEvent((event, payload) => {
-      this.handleOverlayEvent(event, payload);
+    this.overlaySession.on("fps", (payload) => {
+      this.handleOverlayFps(payload.fps);
+    });
+    this.overlaySession.on("hotkeyDown", (payload) => {
+      this.handleOverlayHotkeyDown(payload.name);
     });
   }
 
@@ -242,7 +245,7 @@ class Application {
     });
 
     ipcMain.on("inject", (event, arg) => {
-      this.overlaySession.injectProcessByTitle(arg);
+      this.overlaySession.attachToProcess({ title: arg });
     });
 
     ipcMain.on("showExamplePopupOverlay", () => {
@@ -262,33 +265,29 @@ class Application {
     });
   }
 
-  private handleOverlayEvent(event: string, payload: any) {
-    if (event === "graphics.fps") {
-      const statusWindow = this.getWindow(AppWindows.exampleStatusOverlay);
-      if (statusWindow) {
-        statusWindow.webContents.send("fps", payload.fps);
-      }
-    } else if (event === "game.hotkey.down") {
-      if (payload.name === SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY) {
-        this.showExampleVideoOverlay();
-      }
+  private handleOverlayFps(fps: number) {
+    const statusWindow = this.getWindow(AppWindows.exampleStatusOverlay);
+    if (statusWindow) {
+      statusWindow.webContents.send("fps", fps);
+    }
+  }
+
+  private handleOverlayHotkeyDown(name: string) {
+    if (name === SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY) {
+      this.showExampleVideoOverlay();
     }
   }
 
   private getOverlayWindowContext(): OverlayWindowContext {
     return {
       createWindow: (name, options) => this.createWindow(name, options),
-      createElectronOverlayWindow: (
-        name,
+      attachElectronOverlayWindow: (
         window,
-        dragBorder?,
-        captionHeight?,
-        transparent?
+        { name, dragBorder, captionHeight, transparent }
       ) =>
-        this.overlaySession.createElectronWindow({
+        this.overlaySession.windows.attach(window, {
           id: name,
           name,
-          existingWindow: window,
           dragBorder,
           captionHeight,
           transparent,

@@ -1,6 +1,9 @@
 import * as path from "path";
 import { fileUrl, getRandomInt } from "../utils/utils";
-import type { ElectronOverlayWindow } from "@libs/electron-game-overlay-sdk";
+import type {
+  AttachElectronOverlayWindowOptions,
+  ElectronOverlayWindow,
+} from "@libs/electron-game-overlay-sdk";
 import { AppWindows } from "./window-names";
 
 export type OverlayWindowContext = {
@@ -8,12 +11,9 @@ export type OverlayWindowContext = {
     name: string,
     options: Electron.BrowserWindowConstructorOptions
   ) => Electron.BrowserWindow;
-  createElectronOverlayWindow: (
-    name: string,
+  attachElectronOverlayWindow: (
     window: Electron.BrowserWindow,
-    dragBorder?: number,
-    captionHeight?: number,
-    transparent?: boolean
+    options: AttachElectronOverlayWindowOptions & { name: string }
   ) => ElectronOverlayWindow;
   closeWindow: (name: string) => void;
   getMainWindow: () => Electron.BrowserWindow | null;
@@ -57,12 +57,13 @@ export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
     }
   );
 
-  return context.createElectronOverlayWindow(
-    "ExampleMainOverlay",
-    window,
-    10,
-    40
-  );
+  const overlayWindow = context.attachElectronOverlayWindow(window, {
+    name: "ExampleMainOverlay",
+    dragBorder: 10,
+    captionHeight: 40,
+  });
+  overlayWindow.show();
+  return overlayWindow;
 }
 
 export function createExampleStatusOverlayWindow(context: OverlayWindowContext) {
@@ -91,7 +92,11 @@ export function createExampleStatusOverlayWindow(context: OverlayWindowContext) 
     )
   );
 
-  return context.createElectronOverlayWindow(name, window, 0, 0);
+  const overlayWindow = context.attachElectronOverlayWindow(window, {
+    name,
+  });
+  overlayWindow.show();
+  return overlayWindow;
 }
 
 export function createExamplePopupOverlayWindow(context: OverlayWindowContext) {
@@ -119,7 +124,14 @@ export function createExamplePopupOverlayWindow(context: OverlayWindowContext) {
     )
   );
 
-  return context.createElectronOverlayWindow(name, window, 30, 40, true);
+  const overlayWindow = context.attachElectronOverlayWindow(window, {
+    name,
+    dragBorder: 30,
+    captionHeight: 40,
+    transparent: true,
+  });
+  overlayWindow.show();
+  return overlayWindow;
 }
 
 export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
@@ -145,5 +157,9 @@ export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
     fileUrl(path.join(global.CONFIG.distDir, "example-video-overlay/index.html"))
   );
 
-  return context.createElectronOverlayWindow(name, window, 0, 0);
+  const overlayWindow = context.attachElectronOverlayWindow(window, {
+    name,
+  });
+  overlayWindow.show();
+  return overlayWindow;
 }
