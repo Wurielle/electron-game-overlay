@@ -1,87 +1,30 @@
 import { BrowserWindow, screen } from "electron";
-import { loadNativeLib } from "../utils/loadoverlay";
-
-type NativeOverlay = ReturnType<typeof loadNativeLib>;
-
-export type OverlayEventHandler = (event: string, payload: any) => void;
-
-export type OverlayHotkey = {
-  name: string;
-  keyCode: number;
-  modifiers?: {
-    alt?: boolean;
-    ctrl?: boolean;
-    shift?: boolean;
-    meta?: boolean;
-  };
-  passthrough?: boolean;
-};
-
-export type Rect = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-export type ElectronOverlayWindowOptions = {
-  id?: string;
-  name?: string;
-  existingWindow?: Electron.BrowserWindow;
-  browserWindow?: Electron.BrowserWindowConstructorOptions;
-  url?: string;
-  file?: string;
-  bounds?: Partial<Rect>;
-  dragBorder?: number;
-  captionHeight?: number;
-  transparent?: boolean;
-};
-
-export class ElectronGameOverlay {
-  private readonly nativeOverlay: NativeOverlay;
-  private readonly sessions = new Set<OverlaySession>();
-
-  constructor(nativeOverlay: NativeOverlay = loadNativeLib()) {
-    this.nativeOverlay = nativeOverlay;
-  }
-
-  public createSession() {
-    const session = new OverlaySession(this.nativeOverlay, () => {
-      this.sessions.delete(session);
-    });
-    this.sessions.add(session);
-    return session;
-  }
-
-  public findWindows(includeMinimized = false) {
-    return this.nativeOverlay.getTopWindows(includeMinimized);
-  }
-
-  public dispose() {
-    for (const session of Array.from(this.sessions)) {
-      session.close();
-    }
-    this.sessions.clear();
-  }
-}
+import { toNativeCursor } from "./cursor.js";
+import { ElectronOverlayWindow } from "./electron-overlay-window.js";
+import type { NativeOverlay } from "./native.js";
+import type {
+  ElectronOverlayWindowOptions,
+  OverlayEventHandler,
+  OverlayHotkey,
+  Rect,
+} from "./types.js";
 
 export class OverlaySession {
   private readonly windows = new Map<string, ElectronOverlayWindow>();
   private readonly eventHandlers = new Set<OverlayEventHandler>();
   private readonly quitHandlers = new Set<() => void>();
+  private readonly closeHandlers = new Set<() => void>();
   private scaleFactor = 1.0;
   private started = false;
   private quitting = false;
+  private closed = false;
 
   public readonly input = {
     intercept: () => this.setInputIntercept(true),
     release: () => this.setInputIntercept(false),
   };
 
-  constructor(
-    private readonly overlay: NativeOverlay,
-    private readonly onClose?: () => void
-  ) {}
+  constructor(private readonly overlay: NativeOverlay) {}
 
   public start() {
     if (this.started) {
@@ -103,6 +46,10 @@ export class OverlaySession {
   }
 
   public close() {
+    if (this.closed) {
+      return;
+    }
+
     this.emitQuit();
 
     for (const window of Array.from(this.windows.values())) {
@@ -115,7 +62,8 @@ export class OverlaySession {
       this.started = false;
     }
 
-    this.onClose?.();
+    this.closed = true;
+    this.emitClose();
   }
 
   public onQuit(handler: () => void) {
@@ -128,6 +76,19 @@ export class OverlaySession {
 
     return () => {
       this.quitHandlers.delete(handler);
+    };
+  }
+
+  public onClose(handler: () => void) {
+    if (this.closed) {
+      handler();
+      return () => {};
+    }
+
+    this.closeHandlers.add(handler);
+
+    return () => {
+      this.closeHandlers.delete(handler);
     };
   }
 
@@ -303,6 +264,13 @@ export class OverlaySession {
     }
   }
 
+  private emitClose() {
+    for (const handler of this.closeHandlers) {
+      handler();
+    }
+    this.closeHandlers.clear();
+  }
+
   private getScaledBounds(window: Electron.BrowserWindow): Rect {
     const bounds = window.getBounds();
     return {
@@ -318,186 +286,4 @@ export class OverlaySession {
       this.start();
     }
   }
-}
-
-export class ElectronOverlayWindow {
-  public readonly id: string;
-  public readonly name: string;
-  public readonly nativeId: number;
-  public readonly browserWindow: Electron.BrowserWindow;
-  public readonly dragBorder: number;
-  public readonly captionHeight: number;
-  public readonly transparent: boolean;
-
-  private registered = false;
-  private destroyed = false;
-
-  constructor(
-    private readonly session: OverlaySession,
-    options: ElectronOverlayWindowOptions
-  ) {
-    this.browserWindow =
-      options.existingWindow ||
-      new BrowserWindow(getBrowserWindowOptions(options));
-    this.id = options.id || options.name || String(this.browserWindow.id);
-    this.name = options.name || this.id;
-    this.nativeId = this.browserWindow.id;
-    this.dragBorder = options.dragBorder || 0;
-    this.captionHeight = options.captionHeight || 0;
-    this.transparent = options.transparent || false;
-
-    if (options.bounds) {
-      this.setBounds(options.bounds);
-    }
-
-    if (options.url) {
-      this.browserWindow.loadURL(options.url);
-    } else if (options.file) {
-      this.browserWindow.loadFile(options.file);
-    }
-
-    this.bindBrowserWindow();
-  }
-
-  public get visible() {
-    return this.registered && !this.destroyed;
-  }
-
-  public show() {
-    if (this.destroyed || this.registered) {
-      return;
-    }
-
-    this.session.registerWindow(this);
-    this.registered = true;
-  }
-
-  public hide() {
-    if (!this.registered) {
-      return;
-    }
-
-    this.session.unregisterWindow(this);
-    this.registered = false;
-  }
-
-  public destroy() {
-    if (this.destroyed) {
-      return;
-    }
-
-    this.hide();
-    this.destroyed = true;
-    this.session.removeWindow(this);
-
-    if (!this.browserWindow.isDestroyed()) {
-      this.browserWindow.close();
-    }
-  }
-
-  public close() {
-    this.destroy();
-  }
-
-  public focus() {
-    this.browserWindow.focusOnWebView();
-  }
-
-  public blur() {
-    this.browserWindow.blurWebView();
-  }
-
-  public setBounds(bounds: Partial<Rect>) {
-    const current = this.browserWindow.getBounds();
-    this.browserWindow.setBounds({
-      ...current,
-      ...bounds,
-    });
-
-    if (this.registered) {
-      this.session.syncWindowBounds(this);
-    }
-  }
-
-  public getBounds() {
-    return this.browserWindow.getBounds();
-  }
-
-  private bindBrowserWindow() {
-    this.browserWindow.webContents.on(
-      "paint",
-      (event, dirty, image: Electron.NativeImage) => {
-        this.session.sendFrame(this, image);
-      }
-    );
-
-    this.browserWindow.on("ready-to-show", () => {
-      this.focus();
-    });
-
-    this.browserWindow.on("resize", () => {
-      console.log(`${this.name} resizing`);
-      if (this.registered) {
-        this.session.syncWindowBounds(this);
-      }
-    });
-
-    this.browserWindow.on("closed", () => {
-      this.hide();
-      this.destroyed = true;
-      this.session.removeWindow(this);
-    });
-
-    this.browserWindow.webContents.on("cursor-changed", (event, type) => {
-      this.session.sendCursor(type);
-    });
-  }
-}
-
-function toNativeCursor(type: string) {
-  switch (type) {
-    case "default":
-      return "IDC_ARROW";
-    case "pointer":
-      return "IDC_HAND";
-    case "crosshair":
-      return "IDC_CROSS";
-    case "text":
-      return "IDC_IBEAM";
-    case "wait":
-      return "IDC_WAIT";
-    case "help":
-      return "IDC_HELP";
-    case "move":
-      return "IDC_SIZEALL";
-    case "nwse-resize":
-      return "IDC_SIZENWSE";
-    case "nesw-resize":
-      return "IDC_SIZENESW";
-    case "ns-resize":
-      return "IDC_SIZENS";
-    case "ew-resize":
-      return "IDC_SIZEWE";
-    case "none":
-      return "";
-    default:
-      return "IDC_ARROW";
-  }
-}
-
-function getBrowserWindowOptions(
-  options: ElectronOverlayWindowOptions
-): Electron.BrowserWindowConstructorOptions {
-  const bounds = options.bounds || {};
-  const browserWindowOptions = options.browserWindow || {};
-
-  return {
-    ...browserWindowOptions,
-    ...bounds,
-    show: browserWindowOptions.show || false,
-    webPreferences: {
-      ...browserWindowOptions.webPreferences,
-      offscreen: true,
-    },
-  };
 }

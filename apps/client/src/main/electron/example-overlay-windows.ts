@@ -1,6 +1,6 @@
 import * as path from "path";
 import { fileUrl, getRandomInt } from "../utils/utils";
-import type { ElectronOverlayWindow } from "./electron-game-overlay";
+import type { ElectronOverlayWindow } from "@libs/electron-game-overlay-sdk";
 import { AppWindows } from "./window-names";
 
 export type OverlayWindowContext = {

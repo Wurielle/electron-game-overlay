@@ -10,10 +10,16 @@
     "sourceMap": true,
     "noEmit": true,
     "moduleResolution": "node16",
+    "customConditions": ["gelectron"],
     "skipLibCheck": true,
     "esModuleInterop": true,
     "experimentalDecorators": true
   },
   "include": ["./src/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules"],
+  "references": [
+    {
+      "path": "../../libs/electron-game-overlay-sdk"
+    }
+  ]
 }

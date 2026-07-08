@@ -1,38 +1,44 @@
 {
-    "name": "gelectron",
-    "version": "1.0.1",
-    "main": "./apps/client/dist/main/main.js",
-    "license": "MIT",
-    "workspaces": [
-        "apps/**",
-        "libs/**"
-    ],
-    "scripts": {
-        "build": "nx run @apps/client:build",
-        "dev": "nx run @apps/client:dev",
-        "typecheck": "nx run @apps/client:typecheck",
-        "build:all": "nx run-many -t build",
-        "build:addon:x86": "nx run @libs/electron-game-overlay:build-x86",
-        "build:addon:x64": "nx run @libs/electron-game-overlay:build-x64",
-        "copy_binary": "nx run @libs/native-game-overlay:copy-binary"
-    },
-    "devDependencies": {
-        "@nx/vite": "^23.0.1",
-        "cmake-js": "^7.0.0",
-        "electron": "16.0.10",
-        "electron-rebuild": "^3.2.7",
-        "nx": "23.0.1",
-        "typescript": "^6.0.3",
-        "vite": "^8.1.3",
-        "vite-plugin-electron": "^1.1.0",
-        "vite-plugin-electron-renderer": "^1.0.0"
-    },
-    "dependencies": {
-        "@libs/electron-game-overlay": "file:libs/electron-game-overlay",
-        "node-addon-api": "^4.1.0"
-    },
-    "cmake-js": {
-        "runtime": "electron",
-        "runtimeVersion": "16.0.10"
-    }
+  "name": "gelectron",
+  "version": "1.0.1",
+  "main": "./apps/client/dist/main/main.js",
+  "license": "MIT",
+  "workspaces": [
+    "apps/**",
+    "libs/**"
+  ],
+  "scripts": {
+    "build": "nx run @apps/client:build",
+    "dev": "nx run @apps/client:dev",
+    "typecheck": "nx run @apps/client:typecheck",
+    "build:all": "nx run-many -t build",
+    "build:addon:x86": "nx run @libs/electron-game-overlay:build-x86",
+    "build:addon:x64": "nx run @libs/electron-game-overlay:build-x64",
+    "copy_binary": "nx run @libs/native-game-overlay:copy-binary"
+  },
+  "devDependencies": {
+    "@nx/js": "23.0.1",
+    "@nx/vite": "^23.0.1",
+    "@swc/helpers": "~0.5.18",
+    "@types/node": "^22.0.0",
+    "cmake-js": "^7.0.0",
+    "electron": "16.0.10",
+    "electron-rebuild": "^3.2.7",
+    "nx": "23.0.1",
+    "prettier": "~3.6.2",
+    "tslib": "^2.3.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.3",
+    "vite-plugin-electron": "^1.1.0",
+    "vite-plugin-electron-renderer": "^1.0.0"
+  },
+  "dependencies": {
+    "@libs/electron-game-overlay": "file:libs/electron-game-overlay",
+    "@libs/electron-game-overlay-sdk": "file:libs/electron-game-overlay-sdk",
+    "node-addon-api": "^4.1.0"
+  },
+  "cmake-js": {
+    "runtime": "electron",
+    "runtimeVersion": "16.0.10"
+  }
 }

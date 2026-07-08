@@ -3,5 +3,14 @@
   "name": "@apps/client",
   "projectType": "application",
   "sourceRoot": "apps/client/src",
-  "implicitDependencies": ["@libs/electron-game-overlay"]
+  "implicitDependencies": ["@libs/electron-game-overlay-sdk"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/client",
+        "command": "tsc --noEmit -p tsconfig.json"
+      }
+    }
+  }
 }
