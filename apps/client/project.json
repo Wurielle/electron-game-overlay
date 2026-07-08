@@ -2,5 +2,6 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "name": "@apps/client",
   "projectType": "application",
-  "sourceRoot": "apps/client/src"
+  "sourceRoot": "apps/client/src",
+  "implicitDependencies": ["@libs/electron-game-overlay"]
 }
