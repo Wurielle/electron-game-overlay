@@ -1,0 +1,37 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "@apps/client",
+  "projectType": "application",
+  "sourceRoot": "apps/client/src",
+  "targets": {
+    "build-main": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/dist/main"],
+      "options": {
+        "command": "tsc --project apps/client/tsconfig.json"
+      }
+    },
+    "build-renderer": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/dist/renderer"],
+      "options": {
+        "command": "webpack --config apps/client/webpack.config.renderer.js"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build-main", "build-renderer"],
+      "outputs": ["{projectRoot}/dist"],
+      "options": {
+        "command": "node -e \"console.log('client build complete')\""
+      }
+    },
+    "start": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "command": "electron . --enable-logging"
+      }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-project(electron-overlay)
+project(electron-game-overlay)
 
 add_definitions(-DNAPI_VERSION=6)
 add_definitions(-DNAPI_EXPERIMENTAL)
@@ -37,5 +37,5 @@ target_link_options(${PROJECT_NAME} PRIVATE /DEBUG;/OPT:REF;/OPT:ICF; )
 
 add_custom_command(TARGET ${PROJECT_NAME}
     POST_BUILD
-    COMMAND xcopy \"${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Release\\${PROJECT_NAME}${LIB_SUFFIX}\" \"${CMAKE_SOURCE_DIR}/electron-overlay\\\" /S /Y /E
+    COMMAND xcopy \"${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Release\\${PROJECT_NAME}${LIB_SUFFIX}\" \"${CMAKE_SOURCE_DIR}/libs/electron-game-overlay\\\" /S /Y /E
     )

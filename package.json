@@ -1,16 +1,17 @@
 {
     "name": "gelectron",
     "version": "1.0.1",
-    "main": "./client/dist/main/main.js",
+    "main": "./apps/client/dist/main/main.js",
     "license": "MIT",
     "scripts": {
-        "build:renderer": "webpack --config ./client/webpack.config.renderer.js",
-        "build:main": "tsc --project ./client/tsconfig.json",
-        "build": "npm run build:main && npm run build:renderer",
-        "build:addon:x86": "(cmake-js -G \"Visual Studio 17 2022\" -A Win32 -O build_Win32)",
-        "build:addon:x64": "(cmake-js -G \"Visual Studio 17 2022\" -A x64 -O build_x64)",
-        "start": "electron . --enable-logging",
-        "copy_binary": "copy_binary.bat"
+        "build:renderer": "nx run @apps/client:build-renderer",
+        "build:main": "nx run @apps/client:build-main",
+        "build": "nx run @apps/client:build",
+        "build:all": "nx run-many -t build",
+        "build:addon:x86": "nx run @libs/electron-game-overlay:build-x86",
+        "build:addon:x64": "nx run @libs/electron-game-overlay:build-x64",
+        "start": "nx run @apps/client:start",
+        "copy_binary": "nx run @libs/native-game-overlay:copy-binary"
     },
     "devDependencies": {
         "cmake-js": "^7.0.0",
@@ -19,7 +20,8 @@
         "typescript": "^3.1.0",
         "webpack": "^5.74.0",
         "webpack-cli": "^4.10.0",
-        "electron": "16.0.10"
+        "electron": "16.0.10",
+        "nx": "23.0.1"
     },
     "dependencies": {
         "node-addon-api": "^4.1.0"

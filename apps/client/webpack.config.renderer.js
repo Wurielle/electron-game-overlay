@@ -2,16 +2,19 @@
  * Build config for electron 'Renderer Process' file
  */
 
+const path = require('path');
+
 module.exports = {
+    mode: 'production',
     devtool: 'cheap-module-source-map',
 
     entry: [
-        './client/src/renderer/main.ts'
+        path.join(__dirname, 'src/renderer/main.ts')
     ],
 
     output: {
         filename: "renderer.js",
-        path: __dirname + "/dist/renderer"
+        path: path.join(__dirname, "dist/renderer")
     },
 
     resolve: {
@@ -26,7 +29,7 @@ module.exports = {
                 test: /\.tsx?$/,
                 loader: "ts-loader",
                 options: {
-                    configFile: "tsconfig.renderer.json"
+                    configFile: path.join(__dirname, "tsconfig.renderer.json")
                   }
             },
 

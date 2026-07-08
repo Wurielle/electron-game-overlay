@@ -1,0 +1,26 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "@libs/native-game-overlay",
+  "projectType": "library",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/prebuilt"],
+      "options": {
+        "command": "node -e \"console.log('native-game-overlay prebuilt assets available')\""
+      }
+    },
+    "copy-binary": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/electron-game-overlay/n_overlay.dll",
+        "{workspaceRoot}/libs/electron-game-overlay/n_overlay.x64.dll",
+        "{workspaceRoot}/libs/electron-game-overlay/injector_helper.exe",
+        "{workspaceRoot}/libs/electron-game-overlay/injector_helper.x64.exe"
+      ],
+      "options": {
+        "command": "copy_binary.bat"
+      }
+    }
+  }
+}
