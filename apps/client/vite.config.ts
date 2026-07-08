@@ -2,6 +2,8 @@ import { defineConfig } from "vite";
 import electron from "vite-plugin-electron/simple";
 import path from "node:path";
 
+const workspaceRoot = path.resolve(__dirname, "../..");
+
 export default defineConfig({
   root: __dirname,
   publicDir: "public",
@@ -9,6 +11,9 @@ export default defineConfig({
     electron({
       main: {
         entry: "src/main/main.ts",
+        onstart({ startup }) {
+          startup([workspaceRoot, "--no-sandbox"], { cwd: workspaceRoot });
+        },
         vite: {
           build: {
             outDir: "dist/main",

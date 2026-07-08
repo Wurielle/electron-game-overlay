@@ -4,17 +4,16 @@
     "main": "./apps/client/dist/main/main.js",
     "license": "MIT",
     "scripts": {
-        "build:renderer": "nx run @apps/client:build-renderer",
-        "build:main": "nx run @apps/client:build-main",
         "build": "nx run @apps/client:build",
         "dev": "nx run @apps/client:dev",
+        "typecheck": "nx run @apps/client:typecheck",
         "build:all": "nx run-many -t build",
         "build:addon:x86": "nx run @libs/electron-game-overlay:build-x86",
         "build:addon:x64": "nx run @libs/electron-game-overlay:build-x64",
-        "start": "nx run @apps/client:start",
         "copy_binary": "nx run @libs/native-game-overlay:copy-binary"
     },
     "devDependencies": {
+        "@nx/vite": "^23.0.1",
         "cmake-js": "^7.0.0",
         "electron": "16.0.10",
         "electron-rebuild": "^3.2.7",
