@@ -1,11 +1,12 @@
 import { BrowserWindow, screen } from "electron";
+import { AppWindows } from "./window-names";
 
 type NativeOverlay = any;
 
 type OverlayHostOptions = {
   getWindow: (name: string) => Electron.BrowserWindow | null;
   isQuitting: () => boolean;
-  onDoIt: () => void;
+  onShowExampleVideoOverlay: () => void;
 };
 
 export class OverlayHost {
@@ -31,7 +32,11 @@ export class OverlayHost {
         keyCode: 113,
         modifiers: { ctrl: true },
       },
-      { name: "app.doit", keyCode: 114, modifiers: { ctrl: true } },
+      {
+        name: "app.showExampleVideoOverlay",
+        keyCode: 114,
+        modifiers: { ctrl: true },
+      },
     ]);
 
     this.overlay.setEventCallback((event: string, payload: any) => {
@@ -181,13 +186,13 @@ export class OverlayHost {
     if (event === "game.input") {
       this.forwardGameInput(payload);
     } else if (event === "graphics.fps") {
-      const window = this.options.getWindow("StatusBar");
+      const window = this.options.getWindow(AppWindows.exampleStatusOverlay);
       if (window) {
         window.webContents.send("fps", payload.fps);
       }
     } else if (event === "game.hotkey.down") {
-      if (payload.name === "app.doit") {
-        this.options.onDoIt();
+      if (payload.name === "app.showExampleVideoOverlay") {
+        this.options.onShowExampleVideoOverlay();
       }
     } else if (event === "game.window.focused") {
       console.log("focusWindowId", payload.focusWindowId);

@@ -2,11 +2,12 @@ import { BrowserWindow, ipcMain, Menu, shell, Tray } from "electron";
 import * as path from "path";
 import { loadNativeLib } from "../utils/loadoverlay";
 import {
-  createOverlayTipWindow,
-  createOsrStatusbarWindow,
-  createOsrTipWindow,
-  createOsrWindow,
-} from "./osr-windows";
+  createExampleMainOverlayWindow,
+  createExamplePopupOverlayWindow,
+  createExampleStatusOverlayWindow,
+  createExampleVideoOverlayWindow,
+} from "./example-overlay-windows";
+import type { OverlayWindowContext } from "./example-overlay-windows";
 import { OverlayHost } from "./overlay-host";
 import { AppWindows } from "./window-names";
 
@@ -23,7 +24,7 @@ class Application {
     this.overlayHost = new OverlayHost(loadNativeLib(), {
       getWindow: (name) => this.getWindow(name),
       isQuitting: () => this.markQuit,
-      onDoIt: () => this.doit(),
+      onShowExampleVideoOverlay: () => this.showExampleVideoOverlay(),
     });
   }
 
@@ -217,20 +218,20 @@ class Application {
       console.log("starting overlay...");
       this.overlayHost.start();
 
-      createOsrWindow(this.getOverlayWindowContext());
-      createOsrStatusbarWindow(this.getOverlayWindowContext());
+      createExampleMainOverlayWindow(this.getOverlayWindowContext());
+      createExampleStatusOverlayWindow(this.getOverlayWindowContext());
     });
 
     ipcMain.on("inject", (event, arg) => {
       this.overlayHost.injectProcessByTitle(arg);
     });
 
-    ipcMain.on("osrClick", () => {
-      createOsrTipWindow(this.getOverlayWindowContext());
+    ipcMain.on("showExamplePopupOverlay", () => {
+      createExamplePopupOverlayWindow(this.getOverlayWindowContext());
     });
 
-    ipcMain.on("doit", () => {
-      this.doit();
+    ipcMain.on("showExampleVideoOverlay", () => {
+      this.showExampleVideoOverlay();
     });
 
     ipcMain.on("startIntercept", () => {
@@ -242,18 +243,18 @@ class Application {
     });
   }
 
-  private getOverlayWindowContext() {
+  private getOverlayWindowContext(): OverlayWindowContext {
     return {
       createWindow: (
-        name: string,
-        options: Electron.BrowserWindowConstructorOptions
+        name,
+        options
       ) => this.createWindow(name, options),
       addOverlayWindow: (
-        name: string,
-        window: Electron.BrowserWindow,
-        dragborder?: number,
-        captionHeight?: number,
-        transparent?: boolean
+        name,
+        window,
+        dragborder?,
+        captionHeight?,
+        transparent?
       ) =>
         this.overlayHost.addWindow(
           name,
@@ -262,14 +263,14 @@ class Application {
           captionHeight,
           transparent
         ),
-      closeWindow: (name: string) => this.closeWindow(name),
+      closeWindow: (name) => this.closeWindow(name),
       getMainWindow: () => this.mainWindow,
       isQuitting: () => this.markQuit,
     };
   }
 
-  private doit() {
-    createOverlayTipWindow(this.getOverlayWindowContext());
+  private showExampleVideoOverlay() {
+    createExampleVideoOverlayWindow(this.getOverlayWindowContext());
   }
 }
 

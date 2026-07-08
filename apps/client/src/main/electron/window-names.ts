@@ -1,5 +1,6 @@
 export enum AppWindows {
   main = "main",
-  osr = "osr",
-  osrpopup = "osrpopup",
+  exampleMainOverlay = "example-main-overlay",
+  exampleStatusOverlay = "example-status-overlay",
+  exampleVideoOverlay = "example-video-overlay",
 }

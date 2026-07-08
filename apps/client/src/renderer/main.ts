@@ -17,24 +17,27 @@ injectButton.addEventListener("click", () => {
 
 const imageElem = document.getElementById("image") as HTMLImageElement
 
-ipcRenderer.on("osrImage", (event: IpcRendererEvent, arg: { image: string }) => {
-  const { image } = arg
-  // imageElem.onload = function() {
-  //   context.clearRect(0, 0, canvas.width, canvas.height)
-  //   context.drawImage(
-  //     imageElem,
-  //     0,
-  //     0,
-  //     imageElem.width,
-  //     imageElem.height,
-  //     0,
-  //     0,
-  //     canvas.width,
-  //     canvas.height
-  //   )
-  // }
-  imageElem.src = image
-})
+ipcRenderer.on(
+  "exampleMainOverlayImage",
+  (event: IpcRendererEvent, arg: { image: string }) => {
+    const { image } = arg
+    // imageElem.onload = function() {
+    //   context.clearRect(0, 0, canvas.width, canvas.height)
+    //   context.drawImage(
+    //     imageElem,
+    //     0,
+    //     0,
+    //     imageElem.width,
+    //     imageElem.height,
+    //     0,
+    //     0,
+    //     canvas.width,
+    //     canvas.height
+    //   )
+    // }
+    imageElem.src = image
+  }
+)
 
 window.onfocus = function() {
   console.log("focus")

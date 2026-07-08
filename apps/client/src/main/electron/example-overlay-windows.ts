@@ -1,8 +1,8 @@
 import * as path from "path";
-import { fileUrl } from "../utils/utils";
+import { fileUrl, getRandomInt } from "../utils/utils";
 import { AppWindows } from "./window-names";
 
-type OverlayWindowContext = {
+export type OverlayWindowContext = {
   createWindow: (
     name: string,
     options: Electron.BrowserWindowConstructorOptions
@@ -19,7 +19,7 @@ type OverlayWindowContext = {
   isQuitting: () => boolean;
 };
 
-export function createOsrWindow(context: OverlayWindowContext) {
+export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
   const options: Electron.BrowserWindowConstructorOptions = {
     x: 1,
     y: 1,
@@ -35,8 +35,10 @@ export function createOsrWindow(context: OverlayWindowContext) {
     },
   };
 
-  const window = context.createWindow(AppWindows.osr, options);
-  window.loadURL(fileUrl(path.join(global.CONFIG.distDir, "index/osr.html")));
+  const window = context.createWindow(AppWindows.exampleMainOverlay, options);
+  window.loadURL(
+    fileUrl(path.join(global.CONFIG.distDir, "index/example-main-overlay.html"))
+  );
 
   window.webContents.on(
     "paint",
@@ -47,18 +49,18 @@ export function createOsrWindow(context: OverlayWindowContext) {
 
       const mainWindow = context.getMainWindow();
       if (mainWindow) {
-        mainWindow.webContents.send("osrImage", {
+        mainWindow.webContents.send("exampleMainOverlayImage", {
           image: image.toDataURL(),
         });
       }
     }
   );
 
-  context.addOverlayWindow("MainOverlay", window, 10, 40);
+  context.addOverlayWindow("ExampleMainOverlay", window, 10, 40);
   return window;
 }
 
-export function createOsrStatusbarWindow(context: OverlayWindowContext) {
+export function createExampleStatusOverlayWindow(context: OverlayWindowContext) {
   const options: Electron.BrowserWindowConstructorOptions = {
     x: 100,
     y: 200,
@@ -76,17 +78,19 @@ export function createOsrStatusbarWindow(context: OverlayWindowContext) {
     },
   };
 
-  const name = "StatusBar";
+  const name = AppWindows.exampleStatusOverlay;
   const window = context.createWindow(name, options);
   window.loadURL(
-    fileUrl(path.join(global.CONFIG.distDir, "index/statusbar.html"))
+    fileUrl(
+      path.join(global.CONFIG.distDir, "index/example-status-overlay.html")
+    )
   );
 
   context.addOverlayWindow(name, window, 0, 0);
   return window;
 }
 
-export function createOsrTipWindow(context: OverlayWindowContext) {
+export function createExamplePopupOverlayWindow(context: OverlayWindowContext) {
   const options: Electron.BrowserWindowConstructorOptions = {
     x: 0,
     y: 200,
@@ -103,16 +107,20 @@ export function createOsrTipWindow(context: OverlayWindowContext) {
     },
   };
 
-  const name = `osrtip ${getRandomInt(1, 10000)}`;
+  const name = `example-popup-overlay ${getRandomInt(1, 10000)}`;
   const window = context.createWindow(name, options);
-  window.loadURL(fileUrl(path.join(global.CONFIG.distDir, "index/osrtip.html")));
+  window.loadURL(
+    fileUrl(
+      path.join(global.CONFIG.distDir, "index/example-popup-overlay.html")
+    )
+  );
 
   context.addOverlayWindow(name, window, 30, 40, true);
   return window;
 }
 
-export function createOverlayTipWindow(context: OverlayWindowContext) {
-  const name = "OverlayTip";
+export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
+  const name = AppWindows.exampleVideoOverlay;
   context.closeWindow(name);
 
   const window = context.createWindow(name, {
@@ -131,11 +139,9 @@ export function createOverlayTipWindow(context: OverlayWindowContext) {
   });
 
   context.addOverlayWindow(name, window, 0, 0);
-  window.loadURL(fileUrl(path.join(global.CONFIG.distDir, "doit/index.html")));
+  window.loadURL(
+    fileUrl(path.join(global.CONFIG.distDir, "example-video-overlay/index.html"))
+  );
 
   return window;
-}
-
-function getRandomInt(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
