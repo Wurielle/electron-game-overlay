@@ -5,9 +5,9 @@ import { fileUrl } from "./utils"
 
 const CONFIG: any = {}
 
-CONFIG.distDir = path.join(__dirname, "../../")
+CONFIG.distDir = path.join(__dirname, "../")
 
-CONFIG.entryUrl = fileUrl(path.join(CONFIG.distDir, "index/index.html"))
+CONFIG.entryUrl = process.env.VITE_DEV_SERVER_URL || fileUrl(path.join(CONFIG.distDir, "index/index.html"))
 
 global.CONFIG = CONFIG
 

@@ -1,9 +1,9 @@
-declare namespace NodeJS {
-    export interface Global {
-        DEBUG: any;
-        CONFIG: {
-            distDir: string;
-            entryUrl: string;
-        };
-    }
+declare global {
+    var DEBUG: any;
+    var CONFIG: {
+        distDir: string;
+        entryUrl: string;
+    };
 }
+
+export {};

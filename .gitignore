@@ -26,8 +26,7 @@ pnpm-debug.log*
 /build_x64/
 
 # Electron client generated build output
-/apps/client/dist/main/
-/apps/client/dist/renderer/
+/apps/client/dist/
 
 # Copied/generated native addon runtime files
 /libs/electron-game-overlay/*.exe

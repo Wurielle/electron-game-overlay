@@ -8,22 +8,27 @@
       "executor": "nx:run-commands",
       "outputs": ["{projectRoot}/dist/main"],
       "options": {
-        "command": "tsc --project apps/client/tsconfig.json"
+        "command": "vite build --config apps/client/vite.config.ts"
       }
     },
     "build-renderer": {
       "executor": "nx:run-commands",
       "outputs": ["{projectRoot}/dist/renderer"],
       "options": {
-        "command": "webpack --config apps/client/webpack.config.renderer.js"
+        "command": "vite build --config apps/client/vite.config.ts"
       }
     },
     "build": {
       "executor": "nx:run-commands",
-      "dependsOn": ["build-main", "build-renderer"],
       "outputs": ["{projectRoot}/dist"],
       "options": {
-        "command": "node -e \"console.log('client build complete')\""
+        "command": "vite build --config apps/client/vite.config.ts"
+      }
+    },
+    "dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vite --config apps/client/vite.config.ts"
       }
     },
     "start": {

@@ -168,14 +168,14 @@ class Application {
       name,
       transparent,
       resizable: window.isResizable(),
-      maxWidth: window.isResizable
+      maxWidth: window.isResizable()
         ? display.bounds.width
         : window.getBounds().width,
-      maxHeight: window.isResizable
+      maxHeight: window.isResizable()
         ? display.bounds.height
         : window.getBounds().height,
-      minWidth: window.isResizable ? 100 : window.getBounds().width,
-      minHeight: window.isResizable ? 100 : window.getBounds().height,
+      minWidth: window.isResizable() ? 100 : window.getBounds().width,
+      minHeight: window.isResizable() ? 100 : window.getBounds().height,
       nativeHandle: window.getNativeWindowHandle().readUInt32LE(0),
       rect: {
         x: window.getBounds().x,
