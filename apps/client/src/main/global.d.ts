@@ -3,6 +3,7 @@ declare global {
     var CONFIG: {
         distDir: string;
         entryUrl: string;
+        resolveRendererUrl: (route: string) => string;
     };
 }
 

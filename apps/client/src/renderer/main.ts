@@ -12,6 +12,8 @@ const overlayWindows = {
   video: "example-video-overlay",
 };
 
+const windowTitleStorageKey = "demo.windowTitle";
+
 let state: DemoState = {
   overlayStarted: false,
   inputIntercepting: false,
@@ -38,6 +40,9 @@ const videoOverlayButton = document.getElementById(
 const titleInput = document.getElementById("title") as HTMLInputElement;
 const statusElement = document.getElementById("status") as HTMLDivElement;
 const imageElem = document.getElementById("image") as HTMLImageElement;
+
+titleInput.value =
+  localStorage.getItem(windowTitleStorageKey) ?? titleInput.value;
 
 startButton.addEventListener("click", async () => {
   await updateState(ipcRenderer.invoke("overlay:start"));
@@ -75,6 +80,10 @@ videoOverlayButton.addEventListener("click", () => {
 
 popupButton.addEventListener("click", () => {
   ipcRenderer.send("showExamplePopupOverlay");
+});
+
+titleInput.addEventListener("input", () => {
+  localStorage.setItem(windowTitleStorageKey, titleInput.value);
 });
 
 ipcRenderer.on(

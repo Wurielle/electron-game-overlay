@@ -1,5 +1,4 @@
-import * as path from "path";
-import { fileUrl, getRandomInt } from "../utils/utils";
+import { getRandomInt } from "../utils/utils";
 import type {
   AttachElectronOverlayWindowOptions,
   ElectronOverlayWindow,
@@ -38,7 +37,7 @@ export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
 
   const window = context.createWindow(AppWindows.exampleMainOverlay, options);
   window.loadURL(
-    fileUrl(path.join(global.CONFIG.distDir, "index/example-main-overlay.html"))
+    global.CONFIG.resolveRendererUrl("index/example-main-overlay.html")
   );
 
   window.webContents.on(
@@ -87,9 +86,7 @@ export function createExampleStatusOverlayWindow(context: OverlayWindowContext) 
   const name = AppWindows.exampleStatusOverlay;
   const window = context.createWindow(name, options);
   window.loadURL(
-    fileUrl(
-      path.join(global.CONFIG.distDir, "index/example-status-overlay.html")
-    )
+    global.CONFIG.resolveRendererUrl("index/example-status-overlay.html")
   );
 
   const overlayWindow = context.attachElectronOverlayWindow(window, {
@@ -119,9 +116,7 @@ export function createExamplePopupOverlayWindow(context: OverlayWindowContext) {
   const name = `example-popup-overlay ${getRandomInt(1, 10000)}`;
   const window = context.createWindow(name, options);
   window.loadURL(
-    fileUrl(
-      path.join(global.CONFIG.distDir, "index/example-popup-overlay.html")
-    )
+    global.CONFIG.resolveRendererUrl("index/example-popup-overlay.html")
   );
 
   const overlayWindow = context.attachElectronOverlayWindow(window, {
@@ -154,7 +149,7 @@ export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
   });
 
   window.loadURL(
-    fileUrl(path.join(global.CONFIG.distDir, "example-video-overlay/index.html"))
+    global.CONFIG.resolveRendererUrl("example-video-overlay/index.html")
   );
 
   const overlayWindow = context.attachElectronOverlayWindow(window, {
