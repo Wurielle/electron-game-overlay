@@ -1,7 +1,26 @@
 {
   "name": "@libs/electron-game-overlay",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "private": true,
-  "main": "./index.js",
-  "types": "./index.d.ts"
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "gelectron": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@libs/node-game-overlay": "file:../node-game-overlay",
+    "tslib": "^2.3.0"
+  },
+  "peerDependencies": {
+    "electron": "16.0.10"
+  }
 }

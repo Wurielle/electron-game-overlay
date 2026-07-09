@@ -12,8 +12,8 @@
     "dev": "nx run @apps/client:dev",
     "typecheck": "nx run @apps/client:typecheck",
     "build:all": "nx run-many -t build",
-    "build:addon:x86": "nx run @libs/electron-game-overlay:build-x86",
-    "build:addon:x64": "nx run @libs/electron-game-overlay:build-x64",
+    "build:addon:x86": "nx run @libs/node-game-overlay:build-x86",
+    "build:addon:x64": "nx run @libs/node-game-overlay:build-x64",
     "copy_binary": "nx run @libs/native-game-overlay:copy-binary"
   },
   "devDependencies": {
@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@libs/electron-game-overlay": "file:libs/electron-game-overlay",
-    "@libs/electron-game-overlay-sdk": "file:libs/electron-game-overlay-sdk",
+    "@libs/node-game-overlay": "file:libs/node-game-overlay",
     "node-addon-api": "^4.1.0"
   },
   "cmake-js": {

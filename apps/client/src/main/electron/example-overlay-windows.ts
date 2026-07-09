@@ -3,7 +3,7 @@ import { fileUrl, getRandomInt } from "../utils/utils";
 import type {
   AttachElectronOverlayWindowOptions,
   ElectronOverlayWindow,
-} from "@libs/electron-game-overlay-sdk";
+} from "@libs/electron-game-overlay";
 import { AppWindows } from "./window-names";
 
 export type OverlayWindowContext = {

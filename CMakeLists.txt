@@ -15,4 +15,4 @@ endif()
 set(LIBRARY_OUTPUT_PATH ${OUTPUT_DIR})
 set(EXECUTABLE_OUTPUT_PATH ${OUTPUT_DIR})
 
-add_subdirectory(libs/electron-game-overlay)
+add_subdirectory(libs/node-game-overlay)

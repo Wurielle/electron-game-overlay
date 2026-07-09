@@ -4,7 +4,7 @@
   "files": [],
   "references": [
     {
-      "path": "./libs/electron-game-overlay-sdk"
+      "path": "./libs/electron-game-overlay"
     }
   ]
 }

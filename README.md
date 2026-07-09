@@ -24,7 +24,7 @@
 
 1. git clone https://github.com/hiitiger/goverlay.git
 2. run demo client
-   - this includes the steps to build node native-addons `electron-game-overlay`
+   - this includes the steps to build node native-addons `node-game-overlay`
    ```CMD
        npm i
        npm run build
@@ -44,7 +44,7 @@
 
 After you have the demo runs right
 
-1.  copy files [`n_overlay.dll`, `n_overlay.x64.dll`, `injector_helper.exe`, `injector_helper.x64.exe`] from directory `libs\native-game-overlay\prebuilt` to directory `libs\electron-game-overlay`, or run `npm run copy_binary`
+1.  copy files [`n_overlay.dll`, `n_overlay.x64.dll`, `injector_helper.exe`, `injector_helper.x64.exe`] from directory `libs\native-game-overlay\prebuilt` to directory `libs\node-game-overlay`, or run `npm run copy_binary`
 2.  run demo client
 3.  click start button to start overlay
 4.  start the game you want to inject to and wait for it game window to show

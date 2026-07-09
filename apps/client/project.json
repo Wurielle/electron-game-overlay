@@ -3,7 +3,7 @@
   "name": "@apps/client",
   "projectType": "application",
   "sourceRoot": "apps/client/src",
-  "implicitDependencies": ["@libs/electron-game-overlay-sdk"],
+  "implicitDependencies": ["@libs/electron-game-overlay"],
   "targets": {
     "typecheck": {
       "executor": "nx:run-commands",

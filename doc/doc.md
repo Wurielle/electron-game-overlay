@@ -14,7 +14,7 @@ This is the most important module (a dll), it will be injected into game process
 
 This is a helper process which do the real dll injecting work for use.
 
-#### `electron-game-overlay`
+#### `node-game-overlay`
 
 This is the node addon used in our electron app, use it to communicate with game process (`n_overlay.dll`), like sending electron webview framebuffer and recieve game input data.
 It also doing do injecting using `n_ovhelper.exe`, get the system's foreground window(we can check if it's the game window to decide when we will do injecting).
@@ -25,12 +25,12 @@ so with the modules, basicly what we need to do is
 
 0. make sure your compile x86 and x64 version native modules for the game you want to inejct
     1. build `native-game-overlay` with Release config for x86 or x64 version, you'll get `n_ovhelper.exe` and `n_overlay.dll` for x86 version (or `n_ovhelper.x64.exe` and `n_overlay.x64.dll` for the x64 version)
-    2. add `electron-game-overlay` addons to your electron ap's dependency, nodejs should automatically build them, if not cd to their directory and build them manually.
-    3. copy `n_ovhelper.exe` and `n_overlay.dll` to `node_modules/electron-game-overlay`.
+    2. add `node-game-overlay` addons to your electron ap's dependency, nodejs should automatically build them, if not cd to their directory and build them manually.
+    3. copy `n_ovhelper.exe` and `n_overlay.dll` to `node_modules/node-game-overlay`.
 1. prepare a game
 2. the electron app
     1. Create an electorn app
-    2. import `electron-game-overlay` addon (as `IOverlay` for example),
+    2. import `node-game-overlay` addon (as `IOverlay` for example),
         1. use `IOverlay.start()` to start the overlay server
         2. set up hotkeys and event callbacks (`game.input` is the most important one)
     3. create a transparent browser window (so we can capture it surface and pass it to the game)

@@ -13,10 +13,10 @@
     "copy-binary": {
       "executor": "nx:run-commands",
       "outputs": [
-        "{workspaceRoot}/libs/electron-game-overlay/n_overlay.dll",
-        "{workspaceRoot}/libs/electron-game-overlay/n_overlay.x64.dll",
-        "{workspaceRoot}/libs/electron-game-overlay/injector_helper.exe",
-        "{workspaceRoot}/libs/electron-game-overlay/injector_helper.x64.exe"
+        "{workspaceRoot}/libs/node-game-overlay/n_overlay.dll",
+        "{workspaceRoot}/libs/node-game-overlay/n_overlay.x64.dll",
+        "{workspaceRoot}/libs/node-game-overlay/injector_helper.exe",
+        "{workspaceRoot}/libs/node-game-overlay/injector_helper.x64.exe"
       ],
       "options": {
         "command": "copy_binary.bat"
