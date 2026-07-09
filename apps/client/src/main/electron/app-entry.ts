@@ -245,7 +245,7 @@ class Application {
     ipcMain.handle("overlay:start", () => this.startOverlaySession());
 
     ipcMain.handle("overlay:inject", (event, title: string) => {
-      this.ensureOverlaySessionStarted();
+      this.startOverlaySession();
       this.overlaySession.attachToProcess({ title });
       return this.getDemoState();
     });
@@ -273,7 +273,7 @@ class Application {
     });
 
     ipcMain.on("inject", (event, arg) => {
-      this.ensureOverlaySessionStarted();
+      this.startOverlaySession();
       this.overlaySession.attachToProcess({ title: arg });
     });
 
