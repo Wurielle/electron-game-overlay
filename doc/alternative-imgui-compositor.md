@@ -164,6 +164,115 @@ ImGui gives us renderer backends, but it does not remove the need to integrate c
 -   It gives us a practical way to inspect the native runtime from inside the game.
 -   It may make the native layer easier to reason about than a fully custom compositor.
 
+## Native injection guidance
+
+Dear ImGui is not the injection system. It only renders UI once our code is already running inside the target process and has access to the game's render path.
+
+The native overlay runtime still needs a process-entry strategy, graphics hook strategy, input strategy, IPC strategy, and diagnostics strategy.
+
+### Process entry options
+
+-   Proxy / wrapper DLL:
+    -   Place a DLL next to the game executable with a name the game naturally loads, such as `dinput8.dll`, `dxgi.dll`, `d3d11.dll`, or another known dependency.
+    -   The proxy DLL loads the real system DLL and forwards exports while also initializing the overlay runtime.
+    -   This gets the overlay loaded early, often before graphics device and swap-chain creation.
+    -   This is the style used by many modding and overlay projects, including REFramework's common non-VR install flow with `dinput8.dll`.
+-   Late runtime injection:
+    -   Inject a DLL into an already-running process by PID or selected window.
+    -   This is more flexible for third-party apps, but can miss early graphics initialization and may need to recover by discovering already-created devices/swap chains.
+    -   This is closer to the current attach-to-process model.
+-   Global hook / launcher integration:
+    -   Use a launcher or global Windows hook to inject into matching processes.
+    -   This can feel more automatic, but it is more invasive and has higher security/compatibility risk.
+-   Backend-specific loader:
+    -   Use graphics/runtime-specific extension points where available, such as Vulkan layers or OpenXR layers.
+    -   This can be cleaner for specific ecosystems, but does not cover every graphics API with one implementation.
+
+For the first prototype, prefer a proxy DLL path over late injection. Early process entry removes a large class of timing problems while validating the render/compositor approach.
+
+### Graphics hook targets
+
+Start with one graphics backend instead of trying to support every game immediately.
+
+-   D3D11:
+    -   Hook `IDXGISwapChain::Present`.
+    -   Hook `IDXGISwapChain::ResizeBuffers`.
+    -   Initialize ImGui with the D3D11 and Win32 backends.
+    -   This is the recommended first backend because texture upload and ImGui integration are comparatively simple.
+-   D3D12:
+    -   Hook swap-chain present.
+    -   Track command queue / command list / descriptor heap state.
+    -   Initialize ImGui with the D3D12 backend.
+    -   Harder than D3D11 because resource barriers, descriptor heaps, frame resources, and synchronization matter more.
+-   Vulkan:
+    -   Prefer a Vulkan layer if possible.
+    -   Otherwise hook instance/device/swap-chain creation and `vkQueuePresentKHR`.
+    -   Requires explicit image layout, command buffer, descriptor, and synchronization management.
+-   OpenGL:
+    -   Hook `wglSwapBuffers` on Windows.
+    -   Upload Electron frames as GL textures and pass texture IDs to ImGui.
+
+### Input interception
+
+The overlay needs two different input modes:
+
+-   Game mode:
+    -   Input goes to the game.
+    -   Overlay may render passive windows.
+-   Intercept mode:
+    -   Overlay captures mouse/keyboard/gamepad input.
+    -   Input is hit-tested against overlay windows.
+    -   Electron-backed windows receive translated input events.
+    -   The game should not receive consumed input.
+
+Implementation options to research and test:
+
+-   Win32 window procedure hooks,
+-   raw input,
+-   low-level keyboard/mouse hooks,
+-   DirectInput/XInput/GameInput hooks,
+-   ImGui Win32 backend input handling for native debug panels.
+
+Electron windows should not rely on ImGui widgets for input. For Electron-backed windows, ImGui should mostly provide hit testing and visual placement, then the runtime should forward translated input to Electron.
+
+### Example projects to study
+
+-   OptiScaler:
+    -   Native runtime with ImGui overlay code for DirectX and Vulkan paths.
+    -   Useful reference for integrating an ImGui menu into an existing native render/runtime pipeline.
+-   ReShade:
+    -   Generic native post-processing injector/runtime.
+    -   Useful reference for broad graphics API hooking, runtime GUI, input handling, and effect/runtime lifecycle.
+-   Special K:
+    -   Native injection and graphics/runtime modification framework.
+    -   Useful reference for proxy DLL loading, global injection, late injection, compatibility handling, and diagnostics.
+-   REFramework:
+    -   Native modding framework for RE Engine games, commonly loaded through a local proxy DLL.
+    -   Useful reference for why scoped, early-loaded native overlays can feel reliable.
+-   hudhook:
+    -   Dear ImGui overlay framework.
+    -   Useful reference for backend-specific ImGui overlay implementation, especially D3D11/D3D12/OpenGL.
+-   HydraHook:
+    -   DirectX API hooking/rendering framework with ImGui examples.
+    -   Useful reference for DirectX hook structure and sample overlays.
+
+### Recommended prototype path
+
+1. Build a D3D11 proxy DLL proof of concept.
+2. Load it into a known D3D11 sample/test app.
+3. Hook `IDXGISwapChain::Present` and `ResizeBuffers`.
+4. Initialize Dear ImGui and draw a hardcoded native diagnostics panel.
+5. Add local logging before any IPC is connected.
+6. Upload a static BGRA bitmap as a D3D11 texture.
+7. Render that bitmap using `ImGui::Image`.
+8. Replace the static bitmap with an Electron offscreen frame.
+9. Add mouse hit testing and forwarding to Electron.
+10. Add keyboard forwarding.
+11. Add show/hide/intercept commands.
+12. Only after this works, evaluate attach-by-PID and late injection.
+
+The goal is to first prove the "it just appears" experience in one backend with early loading. General-purpose runtime injection should come after the compositor and input path are known to work.
+
 ## Risks and limitations
 
 -   ImGui does not solve injection compatibility by itself.
