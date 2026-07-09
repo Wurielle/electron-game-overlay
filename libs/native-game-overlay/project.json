@@ -1,6 +1,6 @@
 {
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "name": "@libs/native-game-overlay",
+  "name": "native-game-overlay",
   "projectType": "library",
   "targets": {
     "build": {

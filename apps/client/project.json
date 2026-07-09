@@ -1,9 +1,9 @@
 {
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "name": "@apps/client",
+  "name": "client",
   "projectType": "application",
   "sourceRoot": "apps/client/src",
-  "implicitDependencies": ["@libs/electron-game-overlay"],
+  "implicitDependencies": ["electron-game-overlay"],
   "targets": {
     "typecheck": {
       "executor": "nx:run-commands",

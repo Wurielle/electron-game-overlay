@@ -12,7 +12,7 @@ import {
   type ElectronOverlayWindow,
   type OverlayHotkey,
   type OverlaySession,
-} from "@libs/electron-game-overlay";
+} from "electron-game-overlay";
 import { AppWindows } from "./window-names";
 
 const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";

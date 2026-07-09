@@ -1,5 +1,5 @@
 /// <reference types="node" />
-declare module "@libs/node-game-overlay" {
+declare module "node-game-overlay" {
 
     interface IHotkey{
         name: string;

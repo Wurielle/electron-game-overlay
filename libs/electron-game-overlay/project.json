@@ -1,10 +1,10 @@
 {
-  "name": "@libs/electron-game-overlay",
+  "name": "electron-game-overlay",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "libs/electron-game-overlay/src",
   "projectType": "library",
   "tags": [],
-  "implicitDependencies": ["@libs/node-game-overlay"],
-  "// targets": "to see all targets run: nx show project @libs/electron-game-overlay --web",
+  "implicitDependencies": ["node-game-overlay"],
+  "// targets": "to see all targets run: nx show project electron-game-overlay --web",
   "targets": {}
 }

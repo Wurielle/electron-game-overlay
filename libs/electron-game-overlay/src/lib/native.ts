@@ -1,4 +1,4 @@
-import * as nativeOverlay from "@libs/node-game-overlay";
+import * as nativeOverlay from "node-game-overlay";
 
 export type NativeOverlay = typeof nativeOverlay;
 

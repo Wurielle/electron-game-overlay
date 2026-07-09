@@ -1,5 +1,5 @@
 {
-  "name": "@libs/electron-game-overlay",
+  "name": "electron-game-overlay",
   "version": "0.0.1",
   "private": true,
   "type": "commonjs",
@@ -17,7 +17,7 @@
     }
   },
   "dependencies": {
-    "@libs/node-game-overlay": "file:../node-game-overlay",
+    "node-game-overlay": "file:../node-game-overlay",
     "tslib": "^2.3.0"
   },
   "peerDependencies": {
