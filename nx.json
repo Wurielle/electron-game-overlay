@@ -29,13 +29,16 @@
     }
   ],
   "namedInputs": {
-    "default": [
-      "{projectRoot}/**/*",
-      "sharedGlobals"
-    ],
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
     "sharedGlobals": [
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/package-lock.json"
     ]
-  }
+  },
+  "targetDefaults": {
+    "dev": {
+      "dependsOn": ["^build"]
+    }
+  },
+  "analytics": false
 }

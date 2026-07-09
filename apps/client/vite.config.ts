@@ -15,6 +15,9 @@ export default defineConfig({
           startup([workspaceRoot, "--no-sandbox"], { cwd: workspaceRoot });
         },
         vite: {
+          resolve: {
+            conditions: ["gelectron"],
+          },
           build: {
             outDir: "dist/main",
             emptyOutDir: true,

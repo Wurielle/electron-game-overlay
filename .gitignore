@@ -32,3 +32,5 @@ pnpm-debug.log*
 /libs/electron-game-overlay/*.exe
 /libs/electron-game-overlay/*.dll
 /libs/electron-game-overlay/*.node
+.idea
+dist

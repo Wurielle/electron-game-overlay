@@ -189,9 +189,9 @@ class Application {
   }
 
   public start() {
+    this.setupIpc();
     this.createMainWindow();
     this.setupSystemTray();
-    this.setupIpc();
   }
 
   public activate() {
