@@ -8,6 +8,26 @@ The Electron side would still render offscreen windows into bitmap frames. The n
 
 This would make ImGui responsible for the native in-game overlay composition layer, not for the application UI itself.
 
+## Prototype status
+
+The first proof of concept is implemented in [`poc/reshade-imgui-overlay`](../poc/reshade-imgui-overlay/README.md).
+
+The next approved experiment is specified in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md). It repeats the native proof of life with the released hudhook crate, no ReShade runtime, D3D11 first, and D3D12 second. The experiment will use hudhook unchanged unless testing exposes a concrete reason to contribute an upstream fix or maintain a narrow fork.
+
+The completed baseline uses the ReShade 6.7.3 full add-on runtime as the alternative native hook/runtime layer. ReShade, rather than ImGui, owns process entry, graphics API hooks, swap-chain lifecycle, input infrastructure, logging, and renderer integration. The add-on uses ReShade's managed Dear ImGui context to draw an always-visible diagnostics panel and a generated RGBA texture uploaded through ReShade's graphics-agnostic resource API.
+
+This choice keeps the first experiment focused on the compositor seam instead of implementing another custom `Present` hook. A controlled D3D11 test host is included so the proof can be exercised without injecting into third-party software. ReShade's full add-on build is not anti-cheat allowlisted, so this experiment is limited to the test host and offline/single-player applications the operator is explicitly allowed to modify.
+
+What this milestone proves:
+
+-   an independent, maintained hook/runtime can enter the target render path;
+-   Dear ImGui can render while the ReShade configuration overlay is closed;
+-   a CPU-generated RGBA frame can become a GPU resource and be drawn with `ImGui::Image`;
+-   the runtime survives D3D11 swap-chain resize handling owned by ReShade;
+-   native initialization and texture failures are visible in `ReShade.log`.
+
+It does not yet connect Electron frames or forward input. Before adding that integration, the hudhook POC will verify that the project can inject and draw the same class of ImGui content without owning custom graphics hooks or shipping ReShade.
+
 ## Current model
 
 The current overlay pipeline is roughly:
@@ -146,7 +166,7 @@ Important distinction:
 
 ## Graphics backend implications
 
-Each supported graphics backend needs a texture upload path:
+An independently owned runtime needs a texture upload path for each supported graphics backend:
 
 -   D3D11: upload bitmap into `ID3D11Texture2D`, bind as shader resource view, pass SRV as ImGui texture ID.
 -   D3D12: upload through an upload heap into a texture resource, manage SRV descriptors, pass GPU descriptor handle as ImGui texture ID.
@@ -154,6 +174,8 @@ Each supported graphics backend needs a texture upload path:
 -   OpenGL: upload into `GLuint` texture, pass texture handle as ImGui texture ID.
 
 ImGui gives us renderer backends, but it does not remove the need to integrate correctly with each hooked graphics API.
+
+The ReShade POC delegates those backend-specific resource and descriptor details to ReShade's add-on API. That is useful for validating the compositor model quickly, but it also means the first POC depends on the ReShade runtime rather than owning the complete native stack.
 
 ## Why this may be worth trying
 
@@ -188,7 +210,7 @@ The native overlay runtime still needs a process-entry strategy, graphics hook s
     -   Use graphics/runtime-specific extension points where available, such as Vulkan layers or OpenXR layers.
     -   This can be cleaner for specific ecosystems, but does not cover every graphics API with one implementation.
 
-For the first prototype, prefer a proxy DLL path over late injection. Early process entry removes a large class of timing problems while validating the render/compositor approach.
+The completed ReShade POC uses a scoped proxy runtime for early process entry. The next hudhook POC deliberately uses late injection so it does not claim a local proxy filename that may already belong to a user's ReShade installation. Keep the launcher/injector path as the preferred product direction unless testing demonstrates a target that requires earlier process entry.
 
 ### Graphics hook targets
 
@@ -258,20 +280,20 @@ Electron windows should not rely on ImGui widgets for input. For Electron-backed
 
 ### Recommended prototype path
 
-1. Build a D3D11 proxy DLL proof of concept.
-2. Load it into a known D3D11 sample/test app.
-3. Hook `IDXGISwapChain::Present` and `ResizeBuffers`.
-4. Initialize Dear ImGui and draw a hardcoded native diagnostics panel.
-5. Add local logging before any IPC is connected.
-6. Upload a static BGRA bitmap as a D3D11 texture.
-7. Render that bitmap using `ImGui::Image`.
-8. Replace the static bitmap with an Electron offscreen frame.
-9. Add mouse hit testing and forwarding to Electron.
-10. Add keyboard forwarding.
-11. Add show/hide/intercept commands.
-12. Only after this works, evaluate attach-by-PID and late injection.
+1. Build a ReShade x64 add-on and a controlled D3D11 test host.
+2. Install the official ReShade full add-on runtime beside that host.
+3. Let ReShade own process entry, `Present`/resize hooks, and the ImGui frame lifecycle.
+4. Draw a hardcoded, always-visible native diagnostics panel.
+5. Upload a generated RGBA bitmap through ReShade's resource API.
+6. Render that bitmap using `ImGui::Image` and verify resize behavior and logging.
+7. Repeat the proof with an upstream hudhook D3D11 payload and late injector, without ReShade.
+8. Repeat it with hudhook's D3D12 backend and a controlled D3D12 host.
+9. Observe hudhook/ReShade coexistence in the controlled host.
+10. Decide whether upstream hudhook is sufficient or a narrow fork is justified.
+11. Replace the generated bitmap with a versioned shared-memory frame.
+12. Connect that frame source to an Electron offscreen window, then add input forwarding.
 
-The goal is to first prove the "it just appears" experience in one backend with early loading. General-purpose runtime injection should come after the compositor and input path are known to work.
+Steps 1 through 6 are covered by the current POC. The hudhook steps now test the same "it just appears" experience through independent late injection before changing the existing Electron SDK or frame protocol.
 
 ## Risks and limitations
 
@@ -283,32 +305,31 @@ The goal is to first prove the "it just appears" experience in one backend with 
 -   Some games may still fail due to anti-cheat, privilege, swap-chain, fullscreen, or hook timing issues.
 -   ImGui is immediate-mode; Electron windows should be represented as stable native overlay state, then drawn each frame.
 
-## First experiment
+## Current result and next experiment
 
-The first experiment should be intentionally small:
+The native proof-of-life milestone is complete:
 
-1. Pick one backend first, preferably D3D11.
-2. Inject into the existing test window or a known D3D11 sample.
-3. Initialize Dear ImGui in the hooked render path.
-4. Draw a native ImGui debug panel to prove the render path works.
-5. Upload one static bitmap into a D3D11 texture.
-6. Draw that bitmap with `ImGui::Image`.
-7. Replace the static bitmap with an Electron offscreen frame.
-8. Add simple mouse coordinate forwarding to Electron.
-9. Add keyboard forwarding.
-10. Add show/hide and intercept toggles.
+-   the official ReShade full add-on runtime enters the controlled D3D11 host;
+-   ReShade invokes the add-on through API version 18 and owns resize/unload handling;
+-   the add-on draws an always-visible ImGui diagnostics panel;
+-   a generated RGBA bitmap is uploaded as a GPU resource and drawn with `ImGui::Image`;
+-   `ReShade.log` distinguishes add-on loading, texture creation, first-frame rendering, resize, and clean unload.
 
-Success criteria:
+The next experiment is defined in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md) and should stay intentionally small:
 
--   A native ImGui debug panel appears in the game.
--   An Electron-rendered bitmap appears as an ImGui image.
--   Button clicks in the Electron page work through forwarded input.
--   Show/hide and intercept behavior are observable.
--   Logs identify whether failure happened at injection, hook, ImGui init, texture upload, frame transport, or input forwarding.
+1. Pin and consume the released hudhook crate unchanged.
+2. Inject a backend-specific D3D11 payload into a clean copy of the controlled host.
+3. Draw an always-visible ImGui diagnostics panel and generated texture.
+4. Verify resize and clean exit behavior, then add eject/reinjection as a hardening check.
+5. Smoke-test the unchanged payload in one allowed offline D3D11 game or application.
+6. Repeat the proof with D3D12 and a controlled D3D12 host.
+7. Only after the isolated baseline passes, observe coexistence with ReShade in the controlled host.
+
+The next success criterion is an upstream-hudhook-owned ImGui panel and generated texture rendering reliably in the D3D11 host without any ReShade runtime. Electron frame transport remains the following milestone.
 
 ## Research checklist for search agent
 
-Before implementing this approach, pass this checklist to a search/research agent and collect links, examples, caveats, and known failure modes.
+The initial ReShade baseline is complete, while the production-runtime decision remains open pending the hudhook POC. Keep this checklist for that decision, shared-memory transport, input forwarding, and backend compatibility work.
 
 ### Dear ImGui as injected game overlay
 
@@ -405,39 +426,48 @@ The search agent should produce:
 -   licensing/redistribution notes,
 -   a recommendation for the first backend to prototype.
 
-## Possible implementation phases
+## Implementation phases
 
-### Phase 1: native proof of life
+### Phase 1: native proof of life (complete)
 
--   Add ImGui to the native runtime build.
--   Initialize ImGui in one backend.
--   Render a hardcoded diagnostics panel.
--   Log backend name, swap-chain/window handle, and render status.
+-   Use ReShade 6.7.3 full add-on support as the alternative hook/runtime.
+-   Render a hardcoded diagnostics panel in the controlled D3D11 host.
+-   Log add-on load, GPU resource creation, first ImGui frame, resize, and unload.
 
-### Phase 2: texture-backed overlay window
+### Phase 2: independent hudhook proof (next)
 
--   Add a native `OverlayTextureWindow` concept.
--   Upload a static CPU bitmap into a GPU texture.
--   Draw the texture with ImGui.
--   Support position, size, visibility, and z-order.
+-   [ ] Inject an upstream hudhook D3D11 payload into the clean controlled host.
+-   [ ] Render the diagnostics panel and generated texture without ReShade.
+-   [ ] Verify resize and clean exit behavior; follow with eject/reinjection hardening.
+-   [ ] Repeat with hudhook's D3D12 backend and a controlled D3D12 host.
+-   [ ] Decide whether upstream usage is sufficient before considering a fork.
 
-### Phase 3: Electron frame transport
+### Phase 3: texture-backed overlay window
 
--   Reuse the existing frame buffer protocol.
--   Upload Electron frames into the native texture window.
--   Track dirty frames so texture upload only happens when the Electron frame changes.
--   Add frame upload diagnostics.
+-   [x] Upload a generated CPU bitmap into a GPU texture in the ReShade baseline.
+-   [x] Draw the texture with ImGui in the ReShade baseline.
+-   [ ] Repeat both operations through hudhook before building the Electron transport.
+-   [ ] Add a native `OverlayTextureWindow` state model.
+-   [ ] Support position, size, visibility, and z-order.
 
-### Phase 4: input forwarding
+### Phase 4: Electron frame transport
+
+-   Define a versioned, stride-aware shared-memory frame protocol.
+-   Publish into a double buffer and never wait on the render thread.
+-   Upload Electron frames into the native texture window only when the sequence changes.
+-   Add dropped-frame and upload diagnostics.
+
+### Phase 5: input forwarding
 
 -   Add hit testing against ImGui-composited Electron windows.
 -   Forward mouse, wheel, keyboard, focus, and blur events to Electron.
 -   Keep native ImGui debug panels separate from Electron windows.
 
-### Phase 5: backend expansion
+### Phase 6: backend expansion
 
--   Repeat the texture upload and ImGui init path for D3D12.
--   Then evaluate Vulkan/OpenGL.
+-   Keep D3D11 and D3D12 as the primary supported paths.
+-   Add hudhook's D3D9 backend if a legacy compatibility fallback is needed.
+-   Evaluate OpenGL or Vulkan only if product scope later requires them.
 -   Keep a compatibility matrix per backend and game.
 
 ## API impact
@@ -470,7 +500,7 @@ The native implementation behind that API could use ImGui internally.
 -   Should ImGui be only a compositor, or should it also provide first-class native debug/settings panels?
 -   Should Electron window textures be updated every frame or only when Electron emits a dirty frame?
 -   Should frame buffers be compressed, shared memory backed, or sent as raw buffers at first?
--   Should D3D11 be the first backend, or should the existing native runtime's strongest backend be used first?
+-   Should the production payload select D3D11/D3D12 automatically or should the launcher select a backend-specific payload?
 -   How should native diagnostics be surfaced before IPC is connected?
 -   How much of the current native compositor can be replaced incrementally?
 
@@ -478,4 +508,4 @@ The native implementation behind that API could use ImGui internally.
 
 Try this as a native runtime experiment, not as a rewrite of the Electron SDK.
 
-The best first milestone is: render one Electron offscreen window as an ImGui image in one known graphics backend with working mouse input. If that works cleanly, the approach is worth expanding.
+The immediate milestone is to render an ImGui panel and generated texture through upstream hudhook in the controlled D3D11 host without ReShade. If D3D11 and D3D12 behave cleanly, keep hudhook upstream and proceed to one Electron offscreen window with working pointer input.
