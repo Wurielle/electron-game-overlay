@@ -12,7 +12,7 @@ This would make ImGui responsible for the native in-game overlay composition lay
 
 The first proof of concept is implemented in [`poc/reshade-imgui-overlay`](../poc/reshade-imgui-overlay/README.md).
 
-The follow-up experiment in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md) now proves the same native path with released hudhook 0.9.1 and no ReShade runtime. It also renders one real Electron offscreen window through the repository's existing Electron SDK, Node add-on IPC, mutex, and shared-memory mapping. No hudhook fork was needed.
+The follow-up experiment in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md) now proves the same native path with released hudhook 0.9.1 and no ReShade runtime. It composes one generic Electron window from both a controlled producer and the real built client through the repository's existing Electron SDK, Node add-on IPC, mutex, and shared-memory mapping. The D3D11 payload renders transparent content at native bounds and survives move, close, and re-register lifecycle changes. No hudhook fork was needed.
 
 The completed baseline uses the ReShade 6.7.3 full add-on runtime as the alternative native hook/runtime layer. ReShade, rather than ImGui, owns process entry, graphics API hooks, swap-chain lifecycle, input infrastructure, logging, and renderer integration. The add-on uses ReShade's managed Dear ImGui context to draw an always-visible diagnostics panel and a generated RGBA texture uploaded through ReShade's graphics-agnostic resource API.
 
@@ -26,7 +26,7 @@ What this milestone proves:
 -   the runtime survives D3D11 swap-chain resize handling owned by ReShade;
 -   native initialization and texture failures are visible in `ReShade.log`.
 
-The ReShade baseline itself does not connect Electron frames or forward input. The hudhook POC now covers the first of those gaps with one fixed opaque 640 x 360 window; input remains open.
+The ReShade baseline itself does not connect Electron frames or forward input. The hudhook POC closes the first gap for one selected 640 x 360 window, including premultiplied-alpha correction and visibility lifecycle; input and multiple-window ordering remain open.
 
 ## Current model
 
@@ -287,18 +287,22 @@ Electron windows should not rely on ImGui widgets for input. For Electron-backed
 5. Upload a generated RGBA bitmap through ReShade's resource API.
 6. Render that bitmap using `ImGui::Image` and verify resize behavior and logging.
 7. Repeat the proof with an upstream hudhook D3D11 payload and late injector, without ReShade.
-8. Reuse the existing Node add-on IPC/shared mapping to render one Electron offscreen window.
+8. Reuse the existing Node add-on IPC/shared mapping to render one transparent Electron window from a controlled producer and the real built client.
 9. Decide whether upstream hudhook is sufficient or a narrow fork is justified.
-10. Add transparent/multiple-window lifecycle and input forwarding.
-11. Repeat the graphics proof with hudhook's D3D12 backend and a controlled D3D12 host.
+10. Make the selected Electron window interactive through the existing input/intercept protocol.
+11. Generalize to multiple-window/z-order state, arbitrary-DPI handling, and resize-safe texture retirement.
+12. After those compositor seams are stable, repeat the graphics proof with hudhook's D3D12 backend and a controlled D3D12 host.
 
-Steps 1 through 9 are complete for controlled D3D11. The Electron proof intentionally keeps the existing SDK and frame protocol unchanged; a versioned double buffer remains an optimization option rather than a prerequisite for the first rendered window.
+Steps 1 through 9 are complete for controlled D3D11, including transparent native-bounds composition and one-window lifecycle. The Electron proof intentionally keeps the existing SDK and frame protocol unchanged; a versioned double buffer remains an optimization option rather than a prerequisite for the first rendered window.
 
 ## Risks and limitations
 
 -   ImGui does not solve injection compatibility by itself.
 -   ImGui does not make Electron input automatic.
+-   the POC selects one Electron window; it does not yet compose multiple windows or define z-order;
+-   controlled runs force a 100% device scale, so arbitrary-DPI and mixed-monitor coordinates remain unproven;
 -   Every graphics API still needs explicit texture upload and resource lifetime handling.
+-   same-size updates replace the active texture, but resize-safe retirement of old texture IDs remains open;
 -   D3D12/Vulkan descriptor/resource management can become complex.
 -   Large Electron windows updated every frame may be expensive if uploads are naive.
 -   Some games may still fail due to anti-cheat, privilege, swap-chain, fullscreen, or hook timing issues.
@@ -306,7 +310,7 @@ Steps 1 through 9 are complete for controlled D3D11. The Electron proof intentio
 
 ## Current result and next experiment
 
-The native proof-of-life and first Electron-frame milestones are complete:
+The native proof-of-life and generic one-window Electron milestones are complete:
 
 -   the official ReShade full add-on runtime enters the controlled D3D11 host;
 -   ReShade invokes the add-on through API version 18 and owns resize/unload handling;
@@ -314,10 +318,13 @@ The native proof-of-life and first Electron-frame milestones are complete:
 -   a generated RGBA bitmap is uploaded as a GPU resource and drawn with `ImGui::Image`;
 -   `ReShade.log` distinguishes add-on loading, texture creation, first-frame rendering, resize, and clean unload.
 -   upstream hudhook 0.9.1 independently hooks the controlled D3D11 host and owns the ImGui lifecycle;
--   the public Electron SDK publishes an animated 640 x 360 offscreen window through the existing Node add-on;
--   a worker in the hudhook payload consumes that existing mapping, converts BGRA to RGBA, and publishes the latest owned frame;
--   hudhook uploads the frame and ImGui draws the Electron page inside the controlled host;
--   the integrated runner verifies producer readiness, exact-PID receipt/upload markers, normal host exit, and Electron cleanup.
+-   the public Electron SDK publishes a 640 x 360 offscreen window from both a focused lifecycle producer and the real built client through the existing Node add-on;
+-   a worker in the hudhook payload consumes that existing mapping, retains the selected window's ID and native bounds, converts premultiplied BGRA to straight RGBA, and publishes the latest owned surface;
+-   hudhook uploads the frame and ImGui draws the transparent Electron page borderlessly at its advertised position and size;
+-   `window.bounds` moves composition without a new UI model, `window.close` clears it, and re-registering the same `BrowserWindow` selects its replacement mapping and resumes drawing;
+-   the diagnostic, `-Client`, and `-ClientWindow` runners verify producer readiness and exact-PID receipt, upload, composition, and lifecycle markers;
+-   the attached runner path verifies normal host exit and cleans only its controlled Electron process tree;
+-   the fixed native IPC-host guard prevents a test from accidentally connecting to another running overlay client.
 
 The implemented hudhook path is defined in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md):
 
@@ -325,15 +332,16 @@ The implemented hudhook path is defined in [`hudhook-imgui-overlay-poc.md`](hudh
 2. Inject a backend-specific D3D11 payload into a clean copy of the controlled host.
 3. Draw an always-visible ImGui diagnostics panel and generated texture.
 4. Verify resize and clean exit behavior, then add eject/reinjection as a hardening check.
-5. Connect one fixed opaque Electron window through the current SDK/add-on frame path.
-6. Smoke-test the unchanged payload in one allowed offline D3D11 game or application.
-7. Repeat the graphics proof with D3D12 and a controlled D3D12 host.
+5. Connect one generic transparent Electron window through the current SDK/add-on frame path and verify native bounds plus move/close/re-register lifecycle.
+6. Add mouse/keyboard interception and Electron interactivity for the selected window.
+7. Add multiple-window/z-order state, DPI handling, and texture retirement; separately smoke-test the unchanged payload in one allowed offline D3D11 game or application.
+8. Repeat the graphics proof with D3D12 and a controlled D3D12 host after the shared compositor state is ready.
 
-The controlled D3D11 and single-window Electron criteria are complete. The implementation, one-command runner, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md). ReShade coexistence is not an adoption gate. The next compositor work is transparent/multiple-window lifecycle and input forwarding; the next backend proof is D3D12.
+The controlled D3D11 and generic one-window Electron criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md). ReShade coexistence is not an adoption gate. The next priority is input/interactivity for the selected window, detailed in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md). Multiple windows/z-order, arbitrary-DPI coordinates, resize-safe texture retirement, and D3D12 follow.
 
 ## Research checklist for search agent
 
-The initial ReShade baseline is complete, while the production-runtime decision remains open pending the hudhook POC. Keep this checklist for that decision, shared-memory transport, input forwarding, and backend compatibility work.
+The initial ReShade baseline and upstream-hudhook runtime decision are complete for controlled D3D11. Keep this checklist for allowed-application compatibility, shared-memory evolution, input forwarding, DPI behavior, and backend expansion.
 
 ### Dear ImGui as injected game overlay
 
@@ -445,30 +453,36 @@ The search agent should produce:
 -   [x] Verify resize and clean exit behavior; eject/reinjection remains a hardening check.
 -   [ ] Smoke-test the unchanged payload in one allowed D3D11 game/application.
 -   [ ] Repeat with hudhook's D3D12 backend and a controlled D3D12 host.
--   [ ] Decide whether upstream usage is sufficient before considering a fork.
+-   [x] Decide that upstream usage is sufficient unless a concrete graphics-hook blocker appears.
 
 ### Phase 3: texture-backed overlay window
 
 -   [x] Upload a generated CPU bitmap into a GPU texture in the ReShade baseline.
 -   [x] Draw the texture with ImGui in the ReShade baseline.
 -   [x] Repeat both operations through hudhook before building the Electron transport.
--   [ ] Add a native `OverlayTextureWindow` state model.
--   [ ] Support position, size, visibility, and z-order.
+-   [x] Add a selected-window state carrying native ID, bounds, visibility lifecycle, mapping, and latest frame.
+-   [ ] After the one-window input milestone, generalize that state to multiple windows with explicit z-order.
 
 ### Phase 4: Electron frame transport
 
--   [x] Reuse the current SDK/add-on mapping for one fixed opaque Electron window.
--   [x] Copy under the existing named mutex and convert BGRA to RGBA on an IPC worker.
--   [x] Publish a latest-frame snapshot and upload only when its sequence changes.
--   [x] Add first-receipt and first-upload diagnostics to the exact target PID's log.
--   [ ] Add transparent-frame premultiplied-alpha handling and resize-safe texture retirement.
+-   [x] Reuse the current SDK/add-on mapping for one generic transparent Electron window, including the real built client.
+-   [x] Copy under the existing named mutex and convert premultiplied BGRA to straight RGBA on an IPC worker.
+-   [x] Publish a latest-surface snapshot and upload only when its sequence changes.
+-   [x] Compose at native bounds and handle move, close, and re-register with a replacement mapping.
+-   [x] Add receipt, upload, composition, clear, and resume diagnostics to the exact target PID's log.
+-   [ ] After the one-window input milestone, add multiple-window/z-order state and arbitrary-DPI coordinate mapping.
+-   [ ] Add resize-safe texture retirement.
 -   [ ] Decide from profiling whether to evolve the current transport into a versioned, stride-aware double buffer.
 
 ### Phase 5: input forwarding
 
--   Add hit testing against ImGui-composited Electron windows.
--   Forward mouse, wheel, keyboard, focus, and blur events to Electron.
--   Keep native ImGui debug panels separate from Electron windows.
+This is the current priority. Follow [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) for the implementation and deterministic acceptance test.
+
+-   [ ] Add hit testing for the selected ImGui-composited Electron window.
+-   [ ] Forward mouse, wheel, keyboard, character, focus, and blur events to Electron.
+-   [ ] Toggle global interception through the existing `OverlaySession.input` API.
+-   [ ] Keep native ImGui debug panels separate from Electron windows.
+-   [ ] Add a controlled `-ClientInput` regression mode.
 
 ### Phase 6: backend expansion
 
@@ -515,4 +529,4 @@ The native implementation behind that API could use ImGui internally.
 
 Try this as a native runtime experiment, not as a rewrite of the Electron SDK.
 
-The immediate milestone is to render an ImGui panel and generated texture through upstream hudhook in the controlled D3D11 host without ReShade. If D3D11 and D3D12 behave cleanly, keep hudhook upstream and proceed to one Electron offscreen window with working pointer input.
+Keep the Electron SDK and upstream hudhook boundary proven by this experiment. Make the selected window interactive next, then generalize to multiple windows and z-order, remove the controlled 100% DPI assumption, and retire resized textures safely. Once that shared compositor state is stable, add the D3D12 payload and controlled host without redesigning the Electron transport first.

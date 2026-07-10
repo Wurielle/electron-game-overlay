@@ -6,16 +6,17 @@ It deliberately does not install or load ReShade. The completed ReShade POC rema
 
 The payload renders:
 
-- an always-visible diagnostics panel;
-- a continuously increasing frame counter;
-- the current ImGui display dimensions;
-- one real Electron offscreen window received through the repository's existing
+- an always-visible diagnostics panel with frame and display information;
+- one selected Electron offscreen window received through the repository's existing
   `electron-game-overlay` / `node-game-overlay` flow;
-- a generated RGBA checkerboard while the Electron producer is unavailable.
+- a generated RGBA checkerboard while no selected Electron window is available.
 
-The integrated proof deliberately keeps the Electron window opaque and fixed at
-640 x 360. It reuses the add-on's current Win32 IPC, named mutex, and shared
-mapping; the injected payload does not load the legacy native renderer.
+The compositor selects one window by preferring `HUDHOOK_ELECTRON_WINDOW`, then
+`ExampleMainOverlay`, then the first announced window. It draws that window at
+its signed native bounds, honors transparency, and follows bounds, close, and
+re-registration events. Premultiplied BGRA frames are converted to straight RGBA
+on the IPC worker; hudhook's render thread only uploads the latest owned snapshot.
+The injected payload does not load the legacy native renderer.
 
 ## Safety boundary
 
@@ -51,40 +52,76 @@ The script locates the build tools, enters the Visual Studio developer environme
 
 The clean run directory intentionally contains no ReShade proxy, configuration, or add-on files.
 
-## Run the Electron frame demo
+## Run the real client integration (recommended)
 
 From a regular PowerShell at the repository root:
+
+```powershell
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Client -Wait
+```
+
+`-Client` builds the repository's real Electron application, launches it with the
+opt-in `--start-overlay-session` flag, waits for its existing overlay session to
+register `ExampleMainOverlay`, starts the controlled D3D11 host, injects the
+hudhook payload, and requires fresh receipt, upload, selection, and composition
+evidence in the host's PID-specific log.
+
+Expected result: the real transparent `ExampleMainOverlay` is drawn inside the
+controlled host at its native Electron bounds, with the diagnostics kept separate
+in the top-right corner. Press Escape in the host when finished. With `-Wait`, the
+runner stops only the Electron process tree it launched and returns the host exit
+code.
+
+Useful proof markers are:
+
+- `HUDHOOK_CLIENT_OVERLAY_SESSION_READY` in `electron-client.stdout.log`;
+- `Electron overlay metadata selected`;
+- `window_name=ExampleMainOverlay`;
+- `Electron frame received from node-game-overlay`;
+- `Electron frame uploaded to GPU`;
+- `Electron overlay composed at native bounds`.
+
+Set `HUDHOOK_ELECTRON_WINDOW` before launching the runner to select an exact
+announced window name. Without it, the payload prefers `ExampleMainOverlay` and
+then falls back to the first announced window.
+
+## Run the lifecycle regression demo
+
+```powershell
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
+```
+
+This focused producer loads the client's actual `ExampleMainOverlay` HTML through
+the public overlay SDK. It creates a transparent 640 x 360 window at `(64, 72)`
+and waits for the injected payload's `game.process` connection event before
+starting its timers. It then moves to `(176, 128)`, closes, and re-registers.
+The runner requires bounds, close, clear, reselection, and resume proof before
+the verification deadline.
+
+The corresponding payload markers are:
+
+- `Electron overlay bounds updated`;
+- `Electron overlay window closed`;
+- `Electron overlay composition cleared`;
+- `Electron overlay metadata reselected`;
+- `Electron overlay composition resumed`.
+
+## Run the minimal diagnostic producer
 
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Wait
 ```
 
-The runner builds and stages the POC, starts the hidden Electron frame producer,
-waits until its first complete 640 x 360 frame has passed through the public SDK,
-starts the controlled D3D11 host, injects the hudhook payload, and verifies both
-shared-memory receipt and GPU upload in the host's PID-specific log.
+This original synthetic frame producer remains useful for a quick SDK/IPC/upload
+smoke test. Its readiness marker is `HUDHOOK_ELECTRON_DEMO_READY` in
+`electron-demo.stdout.log`.
 
-Expected result: the controlled host displays an ImGui diagnostics panel
-containing the animated `Electron frame inside the game` page. Press Escape in
-the host when finished. With `-Wait`, the runner then stops only the Electron
-processes it launched and returns the host's exit code.
+## Runner lifetime
 
-Running the command without `-Wait` returns after verification and deliberately
-leaves both demo processes alive for visual inspection. Close them before the
-next run. Only one Electron overlay host should run at a time because the current
-native add-on uses a fixed IPC host name.
-
-Useful integrated proof markers are:
-
-- `HUDHOOK_ELECTRON_DEMO_READY` in `electron-demo.stdout.log`;
-- `Electron frame bridge connected to Node host`;
-- `Electron frame received from node-game-overlay`;
-- `Electron frame uploaded to GPU`.
-
-The Electron producer lives in `electron-demo/` and uses
-`ElectronGameOverlay -> OverlaySession -> session.windows.create()`. The frame
-copy and BGRA-to-RGBA conversion happen on the payload's IPC worker; hudhook's
-render thread only uploads the latest owned RGBA snapshot.
+Running an Electron mode without `-Wait` returns after verification and leaves the
+controlled host and only that mode's Electron process tree alive for inspection.
+Close them before the next run. Only one Electron overlay host should run at a time
+because the current native add-on uses a fixed IPC host name.
 
 ## Run the hook-only fallback
 
@@ -150,20 +187,30 @@ This does not require forking or modifying hudhook's graphics hooks, renderer li
 
 ## Current scope
 
-This milestone covers D3D11 injection, ImGui rendering, the existing
-Electron/Node shared-memory frame path, texture upload, resizing, diagnostics,
-and normal target exit. It does not yet cover:
+This milestone now covers:
 
-- D3D12;
-- more than one Electron window;
-- transparent Electron frames and premultiplied-alpha correction;
-- Electron window resize and texture retirement;
-- input forwarding to Electron;
-- one-payload backend auto-detection;
-- x86 targets;
-- anti-cheat compatibility.
+- D3D11 injection and Dear ImGui rendering through upstream hudhook 0.9.1;
+- the real built Electron client's existing overlay-session startup path;
+- one selected Electron window over the existing Node/shared-memory IPC;
+- signed native bounds, transparency, and premultiplied-BGRA correction;
+- immediate bounds metadata updates without redundant texture uploads;
+- close, clear, re-register, and resume lifecycle handling;
+- texture replacement when the Electron frame dimensions change;
+- diagnostics, resize handling, proof logging, and normal target exit.
 
-The next compositor milestone is input and multi-window lifecycle work; D3D12
-remains the next graphics-backend milestone. A hudhook fork is only justified if
-testing reproduces a required graphics-hook change that cannot live in this
-project or be contributed upstream.
+Remaining work is:
+
+- input forwarding and focus/capture policy;
+- simultaneous composition of multiple Electron windows and explicit z-order;
+- DPI and device-scale-factor reconciliation beyond the controlled 1:1 setup;
+- safe deferred retirement of superseded GPU textures;
+- D3D12 and eventual one-payload backend auto-detection;
+- a production-quality project-owned injector;
+- x86 targets and any anti-cheat compatibility work.
+
+The next milestone is input/interactivity for the selected window; follow
+[`doc/hudhook-input-interactivity-handoff.md`](../../doc/hudhook-input-interactivity-handoff.md).
+Multiple-window/z-order behavior follows, while D3D12 remains the next graphics
+backend milestone. A hudhook fork is only justified if testing reproduces a
+required graphics-hook change that cannot live in this project or be contributed
+upstream.

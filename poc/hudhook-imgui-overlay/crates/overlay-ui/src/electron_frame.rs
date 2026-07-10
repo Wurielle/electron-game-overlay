@@ -35,8 +35,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_POPUP,
 };
 
-/// The Electron overlay window selected by this proof of concept.
-pub const ELECTRON_DEMO_WINDOW_NAME: &str = "HudhookElectronDemo";
+/// The real client overlay preferred when no explicit override is configured.
+pub const DEFAULT_ELECTRON_WINDOW_NAME: &str = "ExampleMainOverlay";
+
+/// Optional exact window-name override used by the one-window compositor.
+pub const ELECTRON_WINDOW_NAME_ENV: &str = "HUDHOOK_ELECTRON_WINDOW";
 
 const IPC_HOST_WINDOW_TITLE: &str = "n_overlay_1a1y2o8l0b";
 const IPC_MESSAGE_ID: i32 = 100;
@@ -58,10 +61,25 @@ type LatestFrame = Arc<RwLock<Option<Arc<ElectronFrame>>>>;
 /// One immutable frame copied out of the Electron-owned shared mapping.
 #[derive(Debug)]
 pub struct ElectronFrame {
+    pub window_id: u32,
+    pub name: String,
+    pub rect: ElectronWindowRect,
+    pub transparent: bool,
+    /// Changes whenever selection or placement state changes.
+    pub state_revision: u64,
     pub sequence: u64,
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    pub rgba: Arc<[u8]>,
+}
+
+/// Placement supplied by the Electron overlay host, in game-client pixels.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct ElectronWindowRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 /// Owns the background Win32 IPC thread and exposes its most recent frame.
@@ -194,6 +212,7 @@ fn run_bridge_thread(latest: LatestFrame, ready_tx: mpsc::SyncSender<Result<usiz
     };
 
     let state = Box::new(BridgeThreadState::new(hwnd, latest));
+    let preferred_window_name = state.preferred_window_name.clone();
     let state_ptr = Box::into_raw(state);
 
     unsafe {
@@ -220,7 +239,7 @@ fn run_bridge_thread(latest: LatestFrame, ready_tx: mpsc::SyncSender<Result<usiz
     }
 
     info!(
-        target_window = ELECTRON_DEMO_WINDOW_NAME,
+        target_window = %preferred_window_name,
         "Electron frame bridge IPC thread started"
     );
 
@@ -336,11 +355,15 @@ struct BridgeThreadState {
     host: Option<HWND>,
     connected: bool,
     latest: LatestFrame,
+    preferred_window_name: String,
+    announced_windows: Vec<WindowMetadata>,
+    state_revision: u64,
     sequence: u64,
     first_frame_logged: bool,
     mutex_name: Option<String>,
     frame_mutex: Option<NamedMutex>,
     selected: Option<SelectedWindow>,
+    last_closed_window_name: Option<String>,
 }
 
 impl BridgeThreadState {
@@ -350,11 +373,15 @@ impl BridgeThreadState {
             host: None,
             connected: false,
             latest,
+            preferred_window_name: preferred_window_name(),
+            announced_windows: Vec::new(),
+            state_revision: 0,
             sequence: 0,
             first_frame_logged: false,
             mutex_name: None,
             frame_mutex: None,
             selected: None,
+            last_closed_window_name: None,
         }
     }
 
@@ -384,7 +411,10 @@ impl BridgeThreadState {
         self.connected = false;
         self.mutex_name = None;
         self.frame_mutex = None;
+        self.announced_windows.clear();
         self.selected = None;
+        self.last_closed_window_name = None;
+        self.bump_state_revision();
         self.clear_latest();
     }
 
@@ -444,7 +474,10 @@ impl BridgeThreadState {
                 }),
             "window.close" => serde_json::from_str::<WindowIdMessage>(json)
                 .map_err(DispatchError::Json)
-                .map(|message| self.on_window_close(message.window_id)),
+                .and_then(|message| {
+                    self.on_window_close(message.window_id)
+                        .map_err(DispatchError::Transport)
+                }),
             _ => return,
         };
 
@@ -463,14 +496,15 @@ impl BridgeThreadState {
             }
         };
 
+        self.announced_windows = message.windows;
+        self.last_closed_window_name = None;
         self.selected = None;
+        self.bump_state_revision();
         self.clear_latest();
 
-        if let Some(window) = message
-            .windows
-            .into_iter()
-            .find(|window| window.name == ELECTRON_DEMO_WINDOW_NAME)
-        {
+        let window =
+            select_candidate(&self.announced_windows, &self.preferred_window_name).cloned();
+        if let Some(window) = window {
             self.select_window(window)?;
         }
 
@@ -478,9 +512,40 @@ impl BridgeThreadState {
     }
 
     fn on_window(&mut self, window: WindowMetadata) -> Result<(), TransportError> {
-        if window.name == ELECTRON_DEMO_WINDOW_NAME {
-            self.select_window(window)?;
+        let window_id = window.window_id;
+        let readded_closed = self.last_closed_window_name.as_deref() == Some(window.name.as_str());
+        if readded_closed {
+            self.last_closed_window_name = None;
         }
+        let reannounced_selected = self
+            .selected
+            .as_ref()
+            .is_some_and(|selected| selected.window_id == window_id);
+        let preferred_upgrade = window.name == self.preferred_window_name
+            && self
+                .selected
+                .as_ref()
+                .map(|selected| selected.name.as_str())
+                != Some(self.preferred_window_name.as_str());
+        let should_select =
+            self.selected.is_none() || reannounced_selected || readded_closed || preferred_upgrade;
+
+        upsert_announced_window(&mut self.announced_windows, window);
+        if should_select {
+            let candidate = if reannounced_selected {
+                self.announced_windows
+                    .iter()
+                    .find(|window| window.window_id == window_id)
+            } else {
+                select_candidate(&self.announced_windows, &self.preferred_window_name)
+            }
+            .cloned();
+
+            if let Some(window) = candidate {
+                self.select_window_with_marker(window, reannounced_selected || readded_closed)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -492,40 +557,103 @@ impl BridgeThreadState {
     }
 
     fn on_window_bounds(&mut self, message: WindowBoundsMessage) -> Result<(), TransportError> {
-        let Some(selected) = self.selected.as_mut() else {
-            return Ok(());
-        };
-        if selected.window_id != message.window_id {
-            return Ok(());
-        }
+        update_announced_window_bounds(&mut self.announced_windows, &message);
 
-        if let Some(buffer_name) = message.buffer_name {
-            if buffer_name != selected.buffer_name {
-                selected.buffer_name = buffer_name;
-                selected.mapping = None;
+        let window_id = message.window_id;
+        let rect = message.rect;
+        {
+            let Some(selected) = self.selected.as_mut() else {
+                return Ok(());
+            };
+            if selected.window_id != window_id {
+                return Ok(());
+            }
+
+            selected.rect = rect;
+            if let Some(buffer_name) = message.buffer_name {
+                if buffer_name != selected.buffer_name {
+                    selected.buffer_name = buffer_name;
+                    selected.mapping = None;
+                }
             }
         }
 
-        self.read_selected_mapping()
+        self.bump_state_revision();
+        info!(
+            window_id,
+            x = rect.x,
+            y = rect.y,
+            width = rect.width,
+            height = rect.height,
+            "Electron overlay bounds updated"
+        );
+        self.republish_latest_metadata();
+
+        Ok(())
     }
 
-    fn on_window_close(&mut self, window_id: u32) {
-        if self.selected.as_ref().map(|window| window.window_id) == Some(window_id) {
-            self.selected = None;
-            self.clear_latest();
+    fn on_window_close(&mut self, window_id: u32) -> Result<(), TransportError> {
+        self.announced_windows
+            .retain(|window| window.window_id != window_id);
+
+        if self.selected.as_ref().map(|window| window.window_id) != Some(window_id) {
+            return Ok(());
         }
+
+        let closed = self
+            .selected
+            .take()
+            .ok_or(TransportError::NoSelectedWindow)?;
+        self.last_closed_window_name = Some(closed.name.clone());
+        self.bump_state_revision();
+        self.clear_latest();
+        info!(
+            window_id,
+            window_name = %closed.name,
+            "Electron overlay window closed"
+        );
+
+        let replacement =
+            select_candidate(&self.announced_windows, &self.preferred_window_name).cloned();
+        if let Some(window) = replacement {
+            self.select_window(window)?;
+        }
+
+        Ok(())
     }
 
     fn select_window(&mut self, window: WindowMetadata) -> Result<(), TransportError> {
-        info!(
-            window_id = window.window_id,
-            window_name = %window.name,
-            buffer_name = %window.buffer_name,
-            "Electron overlay metadata selected"
-        );
+        self.select_window_with_marker(window, false)
+    }
 
+    fn select_window_with_marker(
+        &mut self,
+        window: WindowMetadata,
+        reselected: bool,
+    ) -> Result<(), TransportError> {
+        if reselected {
+            info!(
+                window_id = window.window_id,
+                window_name = %window.name,
+                buffer_name = %window.buffer_name,
+                "Electron overlay metadata reselected"
+            );
+        } else {
+            info!(
+                window_id = window.window_id,
+                window_name = %window.name,
+                buffer_name = %window.buffer_name,
+                "Electron overlay metadata selected"
+            );
+        }
+
+        self.bump_state_revision();
+        self.clear_latest();
         self.selected = Some(SelectedWindow {
             window_id: window.window_id,
+            name: window.name,
+            rect: window.rect,
+            transparent: window.transparent,
             buffer_name: window.buffer_name,
             mapping: None,
         });
@@ -554,18 +682,23 @@ impl BridgeThreadState {
         let Some((width, height, bgra)) = mapping.copy_frame(mutex)? else {
             return Ok(());
         };
-
-        let mut rgba = Vec::with_capacity(bgra.len());
-        for pixel in bgra.chunks_exact(BYTES_PER_PIXEL) {
-            rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
-        }
+        let window_id = selected.window_id;
+        let name = selected.name.clone();
+        let rect = selected.rect;
+        let transparent = selected.transparent;
+        let rgba = premultiplied_bgra_to_straight_rgba(&bgra);
 
         self.sequence = self.sequence.wrapping_add(1).max(1);
         let frame = Arc::new(ElectronFrame {
+            window_id,
+            name,
+            rect,
+            transparent,
+            state_revision: self.state_revision,
             sequence: self.sequence,
             width,
             height,
-            rgba,
+            rgba: rgba.into(),
         });
 
         *self
@@ -599,6 +732,44 @@ impl BridgeThreadState {
         Ok(())
     }
 
+    fn bump_state_revision(&mut self) {
+        self.state_revision = self.state_revision.wrapping_add(1).max(1);
+    }
+
+    fn republish_latest_metadata(&self) {
+        let Some(selected) = self.selected.as_ref() else {
+            return;
+        };
+
+        let current = self
+            .latest
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(current) = current else {
+            return;
+        };
+        if current.window_id != selected.window_id {
+            return;
+        }
+
+        let frame = Arc::new(ElectronFrame {
+            window_id: selected.window_id,
+            name: selected.name.clone(),
+            rect: selected.rect,
+            transparent: selected.transparent,
+            state_revision: self.state_revision,
+            sequence: current.sequence,
+            width: current.width,
+            height: current.height,
+            rgba: Arc::clone(&current.rgba),
+        });
+        *self
+            .latest
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(frame);
+    }
+
     fn clear_latest(&self) {
         *self
             .latest
@@ -614,12 +785,15 @@ struct OverlayInit {
     windows: Vec<WindowMetadata>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowMetadata {
     window_id: u32,
     name: String,
+    #[serde(default)]
+    transparent: bool,
     buffer_name: String,
+    rect: ElectronWindowRect,
 }
 
 #[derive(Deserialize)]
@@ -632,6 +806,7 @@ struct WindowIdMessage {
 #[serde(rename_all = "camelCase")]
 struct WindowBoundsMessage {
     window_id: u32,
+    rect: ElectronWindowRect,
     #[serde(default)]
     buffer_name: Option<String>,
 }
@@ -640,6 +815,79 @@ struct SelectedWindow {
     window_id: u32,
     buffer_name: String,
     mapping: Option<FrameMapping>,
+    name: String,
+    rect: ElectronWindowRect,
+    transparent: bool,
+}
+
+fn preferred_window_name() -> String {
+    std::env::var(ELECTRON_WINDOW_NAME_ENV)
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_ELECTRON_WINDOW_NAME.to_owned())
+}
+
+fn select_candidate<'a>(
+    windows: &'a [WindowMetadata],
+    preferred_window_name: &str,
+) -> Option<&'a WindowMetadata> {
+    windows
+        .iter()
+        .find(|window| window.name == preferred_window_name)
+        .or_else(|| windows.first())
+}
+
+fn upsert_announced_window(windows: &mut Vec<WindowMetadata>, window: WindowMetadata) {
+    if let Some(existing) = windows
+        .iter_mut()
+        .find(|existing| existing.window_id == window.window_id)
+    {
+        *existing = window;
+    } else {
+        windows.push(window);
+    }
+}
+
+fn update_announced_window_bounds(windows: &mut [WindowMetadata], message: &WindowBoundsMessage) {
+    if let Some(window) = windows
+        .iter_mut()
+        .find(|window| window.window_id == message.window_id)
+    {
+        window.rect = message.rect;
+        if let Some(buffer_name) = message.buffer_name.as_ref() {
+            window.buffer_name = buffer_name.clone();
+        }
+    }
+}
+
+fn premultiplied_bgra_to_straight_rgba(bgra: &[u8]) -> Vec<u8> {
+    debug_assert_eq!(bgra.len() % BYTES_PER_PIXEL, 0);
+    let mut rgba = Vec::with_capacity(bgra.len());
+    for pixel in bgra.chunks_exact(BYTES_PER_PIXEL) {
+        let blue = pixel[0];
+        let green = pixel[1];
+        let red = pixel[2];
+        let alpha = pixel[3];
+
+        let straight = match alpha {
+            0 => [0, 0, 0, 0],
+            255 => [red, green, blue, alpha],
+            _ => [
+                unpremultiply_channel(red, alpha),
+                unpremultiply_channel(green, alpha),
+                unpremultiply_channel(blue, alpha),
+                alpha,
+            ],
+        };
+        rgba.extend_from_slice(&straight);
+    }
+    rgba
+}
+
+fn unpremultiply_channel(channel: u8, alpha: u8) -> u8 {
+    debug_assert_ne!(alpha, 0);
+    let numerator = u32::from(channel) * 255 + u32::from(alpha) / 2;
+    ((numerator / u32::from(alpha)).min(255)) as u8
 }
 
 struct NamedMutex {
@@ -1005,6 +1253,21 @@ fn wide_string(value: &str) -> Vec<u16> {
 mod tests {
     use super::*;
 
+    fn window_metadata(window_id: u32, name: &str, x: i32) -> WindowMetadata {
+        WindowMetadata {
+            window_id,
+            name: name.to_owned(),
+            transparent: true,
+            buffer_name: format!("buffer-{window_id}"),
+            rect: ElectronWindowRect {
+                x,
+                y: 20,
+                width: 640,
+                height: 360,
+            },
+        }
+    }
+
     #[test]
     fn overlay_packet_round_trip_layout_matches_legacy_packer() {
         let mut bytes = Vec::new();
@@ -1037,5 +1300,65 @@ mod tests {
             decode_overlay_packet(&bytes),
             Err(PacketError::NegativeLength(-1))
         ));
+    }
+
+    #[test]
+    fn premultiplied_bgra_is_unpremultiplied_and_swizzled() {
+        let bgra = [
+            1, 2, 3, 255, 200, 150, 100, 0, 25, 50, 100, 128, 250, 0, 0, 10,
+        ];
+
+        assert_eq!(
+            premultiplied_bgra_to_straight_rgba(&bgra),
+            vec![3, 2, 1, 255, 0, 0, 0, 0, 199, 100, 50, 128, 0, 0, 255, 10,]
+        );
+    }
+
+    #[test]
+    fn selection_prefers_configured_name_and_falls_back_in_announcement_order() {
+        let mut windows = vec![window_metadata(10, "Fallback", 10)];
+        upsert_announced_window(&mut windows, window_metadata(20, "ExampleMainOverlay", 20));
+        upsert_announced_window(&mut windows, window_metadata(10, "Fallback", 99));
+
+        let preferred = select_candidate(&windows, "ExampleMainOverlay").unwrap();
+        assert_eq!(preferred.window_id, 20);
+
+        let fallback = select_candidate(&windows, "Missing").unwrap();
+        assert_eq!(fallback.window_id, 10);
+        assert_eq!(fallback.rect.x, 99);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            vec![10, 20]
+        );
+    }
+
+    #[test]
+    fn bounds_packet_preserves_signed_rect_and_replacement_mapping() {
+        let json = r#"{"type":"window.bounds","windowId":42,"rect":{"x":-12,"y":34,"width":800,"height":450},"bufferName":"replacement"}"#;
+        let mut bytes = Vec::new();
+        push_i32(&mut bytes, IPC_DIRECTION_HOST);
+        push_i32(&mut bytes, 7);
+        push_i32(&mut bytes, 9);
+        push_i32(&mut bytes, IPC_MESSAGE_ID);
+        push_string(&mut bytes, "window.bounds").unwrap();
+        push_string(&mut bytes, json).unwrap();
+
+        let packet = decode_overlay_packet(&bytes).unwrap();
+        assert_eq!(packet.message_type, "window.bounds");
+        let message: WindowBoundsMessage = serde_json::from_str(&packet.json).unwrap();
+        assert_eq!(message.window_id, 42);
+        assert_eq!(
+            message.rect,
+            ElectronWindowRect {
+                x: -12,
+                y: 34,
+                width: 800,
+                height: 450,
+            }
+        );
+        assert_eq!(message.buffer_name.as_deref(), Some("replacement"));
     }
 }

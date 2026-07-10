@@ -3,9 +3,9 @@ mod electron_frame;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use electron_frame::ElectronFrameBridge;
+use electron_frame::{ElectronFrame, ElectronFrameBridge};
 use hudhook::imgui::{Condition, Context, Image, TextureId, Ui, WindowFlags};
 use hudhook::{ImguiRenderLoop, RenderContext};
 use tracing_subscriber::EnvFilter;
@@ -20,11 +20,14 @@ pub struct PocRenderLoop {
     texture_error: Option<String>,
     electron_bridge: Option<ElectronFrameBridge>,
     electron_bridge_error: Option<String>,
+    electron_snapshot: Option<Arc<ElectronFrame>>,
     electron_texture_id: Option<TextureId>,
     electron_texture_size: Option<[u32; 2]>,
     electron_last_attempted_sequence: u64,
     electron_uploaded_sequence: u64,
     electron_texture_error: Option<String>,
+    electron_first_composed_logged: bool,
+    electron_resume_pending: bool,
     rendered_frames: u64,
     first_frame_logged: bool,
     last_display_size: Option<[f32; 2]>,
@@ -56,15 +59,142 @@ impl PocRenderLoop {
             texture_error: None,
             electron_bridge,
             electron_bridge_error,
+            electron_snapshot: None,
             electron_texture_id: None,
             electron_texture_size: None,
             electron_last_attempted_sequence: 0,
             electron_uploaded_sequence: 0,
             electron_texture_error: None,
+            electron_first_composed_logged: false,
+            electron_resume_pending: false,
             rendered_frames: 0,
             first_frame_logged: false,
             last_display_size: None,
         }
+    }
+
+    fn compose_electron_overlay(&mut self, ui: &Ui) {
+        let Some(frame) = self.electron_snapshot.as_ref().map(Arc::clone) else {
+            return;
+        };
+        let Some(texture_id) = self.electron_texture_id else {
+            return;
+        };
+        if frame.sequence != self.electron_uploaded_sequence
+            || frame.rect.width <= 0
+            || frame.rect.height <= 0
+        {
+            return;
+        }
+
+        let min = [frame.rect.x as f32, frame.rect.y as f32];
+        let max = [
+            frame.rect.x.saturating_add(frame.rect.width) as f32,
+            frame.rect.y.saturating_add(frame.rect.height) as f32,
+        ];
+        ui.get_background_draw_list()
+            .add_image(texture_id, min, max)
+            .build();
+
+        if !self.electron_first_composed_logged {
+            self.electron_first_composed_logged = true;
+            hudhook::tracing::info!(
+                window_id = frame.window_id,
+                window_name = %frame.name,
+                x = frame.rect.x,
+                y = frame.rect.y,
+                width = frame.rect.width,
+                height = frame.rect.height,
+                transparent = frame.transparent,
+                sequence = frame.sequence,
+                "Electron overlay composed at native bounds"
+            );
+        }
+
+        if self.electron_resume_pending {
+            self.electron_resume_pending = false;
+            hudhook::tracing::info!(
+                window_id = frame.window_id,
+                window_name = %frame.name,
+                sequence = frame.sequence,
+                "Electron overlay composition resumed"
+            );
+        }
+    }
+
+    fn render_diagnostics(&self, ui: &Ui, display_size: [f32; 2]) {
+        let flags = WindowFlags::NO_DECORATION
+            | WindowFlags::ALWAYS_AUTO_RESIZE
+            | WindowFlags::NO_SAVED_SETTINGS
+            | WindowFlags::NO_FOCUS_ON_APPEARING
+            | WindowFlags::NO_NAV
+            | WindowFlags::NO_INPUTS;
+
+        ui.window("hudhook compositor diagnostics##always-visible")
+            .position(
+                [(display_size[0] - 16.0).max(16.0), 16.0],
+                Condition::Always,
+            )
+            .position_pivot([1.0, 0.0])
+            .bg_alpha(0.9)
+            .flags(flags)
+            .build(|| {
+                ui.text_colored([0.25, 0.95, 0.72, 1.0], "hudhook compositor POC");
+                ui.separator();
+                ui.text(format!(
+                    "API: {} | frames: {}",
+                    self.backend_name, self.rendered_frames
+                ));
+                ui.text(format!(
+                    "Display: {:.0} x {:.0}",
+                    display_size[0], display_size[1]
+                ));
+                ui.text("Input: pass-through");
+                ui.separator();
+
+                if let Some(frame) = &self.electron_snapshot {
+                    ui.text(format!("Selected: {} (id {})", frame.name, frame.window_id));
+                    ui.text(format!(
+                        "Bounds: {}, {} | {} x {}",
+                        frame.rect.x, frame.rect.y, frame.rect.width, frame.rect.height
+                    ));
+                    ui.text(format!("Transparent: {}", frame.transparent));
+                    ui.text(format!(
+                        "Frame: {} | state: {}{}",
+                        frame.sequence,
+                        frame.state_revision,
+                        if frame.sequence == self.electron_uploaded_sequence {
+                            " (uploaded)"
+                        } else {
+                            " (pending)"
+                        }
+                    ));
+                } else {
+                    ui.text("Selected: none");
+                    ui.text("Electron frame: waiting");
+                }
+
+                if let Some(error) = &self.electron_texture_error {
+                    ui.text_colored([1.0, 0.35, 0.3, 1.0], "Electron texture upload failed");
+                    ui.text_wrapped(error);
+                } else if let Some(error) = &self.electron_bridge_error {
+                    ui.text_colored([1.0, 0.35, 0.3, 1.0], "Electron frame bridge failed");
+                    ui.text_wrapped(error);
+                }
+
+                if self.electron_snapshot.is_none() {
+                    ui.spacing();
+                    if let Some(texture_id) = self.texture_id {
+                        Image::new(texture_id, [64.0, 64.0]).build(ui);
+                        ui.text("Waiting for Electron window");
+                    } else if let Some(error) = &self.texture_error {
+                        ui.text_colored([1.0, 0.35, 0.3, 1.0], "Texture upload failed");
+                        ui.text_wrapped(error);
+                    } else {
+                        ui.text("Fallback texture upload is pending");
+                    }
+                }
+            });
     }
 }
 
@@ -95,15 +225,27 @@ impl ImguiRenderLoop for PocRenderLoop {
         _context: &mut Context,
         render_context: &'a mut dyn RenderContext,
     ) {
-        let Some(frame) = self
+        let latest = self
             .electron_bridge
             .as_ref()
-            .and_then(ElectronFrameBridge::latest)
-        else {
+            .and_then(ElectronFrameBridge::latest);
+
+        // The bridge snapshot is authoritative for both pixels and lifecycle.
+        // None after window.close must immediately suppress the old texture.
+        let composition_cleared = self.electron_snapshot.is_some() && latest.is_none();
+        self.electron_snapshot = latest.clone();
+        if composition_cleared {
+            self.electron_resume_pending = true;
+            hudhook::tracing::info!("Electron overlay composition cleared");
+        }
+
+        let Some(frame) = latest else {
             return;
         };
 
-        if frame.sequence <= self.electron_last_attempted_sequence {
+        // Metadata can change without a new bitmap sequence. Replacing the Arc
+        // snapshot above makes those changes visible without a GPU upload.
+        if frame.sequence == self.electron_last_attempted_sequence {
             return;
         }
         self.electron_last_attempted_sequence = frame.sequence;
@@ -126,9 +268,9 @@ impl ImguiRenderLoop for PocRenderLoop {
         let frame_size = [frame.width, frame.height];
         let upload = match (self.electron_texture_id, self.electron_texture_size) {
             (Some(texture_id), Some(texture_size)) if texture_size == frame_size => render_context
-                .replace_texture(texture_id, &frame.rgba, frame.width, frame.height)
+                .replace_texture(texture_id, frame.rgba.as_ref(), frame.width, frame.height)
                 .map(|_| texture_id),
-            _ => render_context.load_texture(&frame.rgba, frame.width, frame.height),
+            _ => render_context.load_texture(frame.rgba.as_ref(), frame.width, frame.height),
         };
 
         match upload {
@@ -178,62 +320,8 @@ impl ImguiRenderLoop for PocRenderLoop {
         }
         self.last_display_size = Some(display_size);
 
-        let flags = WindowFlags::NO_DECORATION
-            | WindowFlags::ALWAYS_AUTO_RESIZE
-            | WindowFlags::NO_SAVED_SETTINGS
-            | WindowFlags::NO_FOCUS_ON_APPEARING
-            | WindowFlags::NO_NAV
-            | WindowFlags::NO_INPUTS;
-
-        ui.window("hudhook + ImGui compositor POC##always-visible")
-            .position([24.0, 24.0], Condition::Always)
-            .bg_alpha(0.9)
-            .flags(flags)
-            .build(|| {
-                ui.text_colored(
-                    [0.25, 0.95, 0.72, 1.0],
-                    "Electron + Node + hudhook + ImGui path is alive",
-                );
-                ui.separator();
-                ui.text("Hook/runtime: hudhook 0.9.1");
-                ui.text(format!("Graphics API: {}", self.backend_name));
-                ui.text(format!("Rendered frames: {}", self.rendered_frames));
-                ui.text(format!(
-                    "Display: {:.0} x {:.0}",
-                    display_size[0], display_size[1]
-                ));
-                ui.text("Input: pass-through for this proof");
-                if self.electron_uploaded_sequence > 0 {
-                    ui.text(format!(
-                        "Electron frame: {} (uploaded)",
-                        self.electron_uploaded_sequence
-                    ));
-                } else {
-                    ui.text("Electron frame: waiting for HudhookElectronDemo");
-                }
-                ui.spacing();
-
-                if let (Some(texture_id), Some([width, height])) =
-                    (self.electron_texture_id, self.electron_texture_size)
-                {
-                    Image::new(texture_id, [width as f32, height as f32]).build(ui);
-                    ui.text("Electron BrowserWindow transported through node-game-overlay");
-                } else if let Some(error) = &self.electron_texture_error {
-                    ui.text_colored([1.0, 0.35, 0.3, 1.0], "Electron texture upload failed");
-                    ui.text_wrapped(error);
-                } else if let Some(error) = &self.electron_bridge_error {
-                    ui.text_colored([1.0, 0.35, 0.3, 1.0], "Electron frame bridge failed");
-                    ui.text_wrapped(error);
-                } else if let Some(texture_id) = self.texture_id {
-                    Image::new(texture_id, [TEXTURE_WIDTH as f32, TEXTURE_HEIGHT as f32]).build(ui);
-                    ui.text("Waiting for Electron; generated RGBA fallback is visible");
-                } else if let Some(error) = &self.texture_error {
-                    ui.text_colored([1.0, 0.35, 0.3, 1.0], "Texture upload failed");
-                    ui.text_wrapped(error);
-                } else {
-                    ui.text("Texture upload is pending");
-                }
-            });
+        self.compose_electron_overlay(ui);
+        self.render_diagnostics(ui, display_size);
 
         if !self.first_frame_logged {
             self.first_frame_logged = true;

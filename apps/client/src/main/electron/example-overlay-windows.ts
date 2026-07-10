@@ -60,6 +60,7 @@ export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
     name: "ExampleMainOverlay",
     dragBorder: 10,
     captionHeight: 40,
+    transparent: true,
   });
   overlayWindow.show();
   return overlayWindow;
@@ -91,6 +92,7 @@ export function createExampleStatusOverlayWindow(context: OverlayWindowContext) 
 
   const overlayWindow = context.attachElectronOverlayWindow(window, {
     name,
+    transparent: true,
   });
   overlayWindow.show();
   return overlayWindow;
@@ -154,6 +156,7 @@ export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
 
   const overlayWindow = context.attachElectronOverlayWindow(window, {
     name,
+    transparent: true,
   });
   overlayWindow.show();
   return overlayWindow;

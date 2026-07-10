@@ -13,9 +13,11 @@ Verified results:
 -   the first ImGui frame renders at 1280 x 720;
 -   a programmatic resize updates the ImGui display size to 884 x 561 without hanging the host;
 -   the controlled host remains responsive and accepts a normal window close;
--   a real opaque 640 x 360 Electron offscreen window is published through the public `electron-game-overlay` session and existing `node-game-overlay` shared mapping;
--   the hudhook payload connects to the existing Node IPC host, copies and converts the frame on a worker thread, uploads it through hudhook, and draws it with ImGui;
--   the integrated `-Wait` runner verifies the exact host PID's receipt/upload log markers and cleans up its Electron process tree.
+-   the diagnostic producer and the repository's real built Electron client both publish a 640 x 360 offscreen window through the public `electron-game-overlay` session and existing `node-game-overlay` shared mapping;
+-   the real-client runner selects `ExampleMainOverlay` rather than accepting a fallback or status window;
+-   the hudhook payload connects to the existing Node IPC host, copies the frame on a worker thread, converts Electron's premultiplied BGRA pixels to straight RGBA, uploads it through hudhook, and composes it at the native window bounds;
+-   a transparent window moves from `(64, 72)` to `(176, 128)`, disappears after the SDK's `window.close`, and resumes after the same `BrowserWindow` re-registers with a new mapping;
+-   the integrated diagnostic, `-Client`, and `-ClientWindow` runners require the exact host PID's receipt, upload, composition, and applicable lifecycle markers and safely clean up their Electron process trees in attached runs.
 
 No hudhook fork was required. The allowed D3D11 application smoke test and D3D12 milestone remain open. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
 
@@ -23,7 +25,7 @@ The controlled POC still uses hudhook's upstream injector. Its implementation do
 
 The first implementation should consume the released `hudhook` crate unchanged. Pin the exact release and commit `Cargo.lock` so the experiment remains reproducible. A maintained project fork is a fallback only if the proof exposes a concrete upstream limitation that cannot reasonably be handled in project code or contributed upstream.
 
-The initial target is Windows x64 with D3D11. D3D12 is the second milestone. D3D9 remains available in hudhook as a possible compatibility fallback, but it is not required to answer the first proof-of-concept question.
+The initial target is Windows x64 with D3D11. D3D12 remains the second graphics-backend milestone and now follows the shared compositor work listed below. D3D9 remains available in hudhook as a possible compatibility fallback, but it is not required to answer the first proof-of-concept question.
 
 ## Question this POC answers
 
@@ -35,12 +37,12 @@ The minimum useful answer is deliberately narrow:
 -   let unmodified hudhook own the graphics hooks and ImGui backend lifecycle;
 -   draw an always-visible ImGui diagnostics panel;
 -   upload and draw one generated RGBA texture;
--   replace it with one real Electron offscreen frame carried by the current Node/shared-memory flow;
+-   replace it with one selected Electron offscreen surface and its native window state carried by the current Node/shared-memory flow;
 -   survive window and swap-chain resize;
 -   report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
 -   let the target close cleanly.
 
-The D3D11 seam and first Electron frame are now proven. Production-wide game compatibility, multi-window lifecycle, transparency, and input forwarding remain later work.
+The D3D11 seam and a generic one-window Electron compositor are now proven. Production-wide game compatibility, multi-window/z-order composition, input forwarding, arbitrary-DPI coordinate mapping, resize-safe texture retirement, and D3D12 remain later work.
 
 ## Decision
 
@@ -81,19 +83,21 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   Windows 10 or newer;
 -   x64 injector, payload, and target;
 -   D3D11 first;
--   D3D12 immediately after D3D11 succeeds;
+-   D3D12 after the shared one-window compositor is ready to generalize;
 -   late injection by exact process name or window title;
 -   one native ImGui diagnostics window;
 -   one generated checkerboard or test-card texture;
--   one fixed opaque 640 x 360 Electron offscreen window;
+-   one selected 640 x 360 Electron offscreen window from either a controlled producer or the real built client;
+-   transparent premultiplied-BGRA conversion and native-bounds composition;
+-   one-window move, close, and re-register lifecycle handling;
 -   compatibility with the existing Node add-on IPC, named mutex, and shared mapping;
 -   resize and clean target-exit tests;
 -   latest-frame CPU copy/conversion away from the render thread.
 
 ### Not included yet
 
--   multiple Electron windows, z-order, or visibility state;
--   transparent Electron frames and premultiplied-alpha correction;
+-   multiple Electron windows, z-order, or coordinated visibility state;
+-   arbitrary-DPI and mixed-monitor coordinate mapping beyond the controlled 100% scale;
 -   Electron window resize and old-texture retirement;
 -   forwarding input to Electron;
 -   automatic D3D11/D3D12 selection in one DLL;
@@ -225,14 +229,16 @@ After the controlled host passes, inject the same unchanged artifact into at lea
 
 D3D11 success is still useful if a particular D3D12 target exposes an upstream bug. A reproducible D3D12 blocker becomes evidence for an upstream contribution or fork; it does not justify speculative changes before testing.
 
-### Milestone 3: one Electron window
+### Milestone 3: generic one Electron window
 
-1. Start a small opaque 640 x 360 offscreen `BrowserWindow` through the public `ElectronGameOverlay` session API.
+1. Start a 640 x 360 offscreen `BrowserWindow` through the public `ElectronGameOverlay` session API, then repeat with `ExampleMainOverlay` from the real built client.
 2. Register it with the existing Node add-on and forward complete `paint` frames through `sendFrameBuffer`.
 3. Connect the hudhook payload to the add-on's existing Win32 IPC host without loading the legacy native renderer.
-4. Select `HudhookElectronDemo`, copy its named mapping while holding the existing mutex, release the mutex, and convert BGRA to RGBA on the IPC worker.
-5. Publish only the latest owned frame to the render loop and upload it when its sequence changes.
-6. Draw the resulting texture with ImGui and require PID-specific log evidence for receipt and GPU upload.
+4. Select one window by metadata and retain its native ID, bounds, transparency, and current mapping through `overlay.init`, `window`, `window.bounds`, and `window.close`.
+5. Copy its named mapping under the existing mutex, release the mutex, and convert premultiplied BGRA to straight RGBA on the IPC worker.
+6. Publish only the latest owned surface to the render loop, upload it when its sequence changes, and draw it borderlessly at its native bounds.
+7. Verify move, clear-on-close, re-register with a new mapping, and resumed composition through stable PID-specific log markers.
+8. Provide diagnostic, real-client, and deterministic lifecycle runner modes; gate lifecycle timing on the injected target's `game.process` connection event, require exact producer markers, and clean up safely.
 
 This milestone is complete. It intentionally does not redesign the current frame protocol; a versioned/double-buffered transport can follow if profiling or multi-window work shows that the existing mutex/mapping is insufficient.
 
@@ -251,7 +257,7 @@ The D3D11 milestone passes when all of the following are true:
 
 The D3D12 milestone uses the same criteria against the controlled D3D12 host.
 
-The Electron milestone passes when the producer validates a 640 x 360 x 4 paint buffer, the payload logs the selected mapping and first received frame, the render thread logs the first successful GPU upload, the animated Electron page is visible in the controlled host, and the attached runner exits without leaving its demo processes behind.
+The Electron milestone passes when the producer validates a 640 x 360 x 4 paint buffer, the real-client run selects `ExampleMainOverlay`, premultiplied transparent pixels render correctly at the advertised bounds, move/close/re-register changes are reflected in composition, and the exact-PID logs prove receipt, upload, clear, reselect, and resume before attached cleanup.
 
 The controlled host proves the architecture deterministically. At least one allowed offline D3D11 game/application smoke test is required before adopting hudhook for the D3D11 product path. Apply the same rule to D3D12 when a suitable test target is available.
 
@@ -311,9 +317,9 @@ These commands describe the desired operator experience; the implementation READ
 
 ## Decision after the POC
 
--   Keep upstream hudhook as a pinned dependency while controlled and allowed application tests pass; the first Electron frame transport already composes around its public API.
+-   Keep upstream hudhook as a pinned dependency while controlled and allowed application tests pass; the generic one-window Electron transport already composes around its public API.
 -   If a small defect is found, prefer an upstream issue or contribution while keeping the POC on the nearest usable release.
 -   If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
 -   If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
 
-The controlled D3D11 and one-window Electron compositor criteria are complete. The next product work is multi-window/transparent-frame lifecycle and input forwarding; the next compatibility evidence remains one allowed offline D3D11 application and the equivalent controlled D3D12 payload/host.
+The controlled D3D11 and generic one-window Electron compositor criteria are complete. Next, make the selected window interactive through the existing input/intercept protocol; the continuation plan is in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md). Then add multi-window state/z-order, arbitrary-DPI coordinate handling, and resize-safe texture retirement. After those compositor seams are stable, repeat the controlled graphics proof with D3D12; an allowed offline D3D11 application smoke test remains separate compatibility evidence.

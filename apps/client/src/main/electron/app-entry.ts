@@ -16,6 +16,8 @@ import {
 import { AppWindows } from "./window-names";
 
 const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";
+const AUTO_START_OVERLAY_FLAG = "--start-overlay-session";
+const AUTO_START_OVERLAY_MARKER = "HUDHOOK_CLIENT_OVERLAY_SESSION_READY";
 
 const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
   {
@@ -192,6 +194,13 @@ class Application {
     this.setupIpc();
     this.createMainWindow();
     this.setupSystemTray();
+
+    if (process.argv.includes(AUTO_START_OVERLAY_FLAG)) {
+      const state = this.startOverlaySession();
+      console.log(
+        `${AUTO_START_OVERLAY_MARKER} windows=${JSON.stringify(state.windows)}`
+      );
+    }
   }
 
   public activate() {
