@@ -2,7 +2,24 @@
 
 ## Status
 
-Approved as the next native overlay experiment.
+The controlled D3D11 milestone is implemented in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md) and was verified on July 10, 2026.
+
+Verified results:
+
+-   the Windows x64 MSVC release payload and injector build from the locked Cargo workspace;
+-   the clean controlled host contains no ReShade runtime, proxy, configuration, or add-on;
+-   injection by exact window title reaches hudhook's D3D11 hooks;
+-   the generated 128 x 128 RGBA texture uploads successfully;
+-   the first ImGui frame renders at 1280 x 720;
+-   a programmatic resize updates the ImGui display size to 884 x 561 without hanging the host;
+-   the controlled host remains responsive and accepts a normal window close;
+-   a real opaque 640 x 360 Electron offscreen window is published through the public `electron-game-overlay` session and existing `node-game-overlay` shared mapping;
+-   the hudhook payload connects to the existing Node IPC host, copies and converts the frame on a worker thread, uploads it through hudhook, and draws it with ImGui;
+-   the integrated `-Wait` runner verifies the exact host PID's receipt/upload log markers and cleans up its Electron process tree.
+
+No hudhook fork was required. The allowed D3D11 application smoke test and D3D12 milestone remain open. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
+
+The controlled POC still uses hudhook's upstream injector. Its implementation does not validate a zero return from remote `LoadLibraryW` and copies a fixed `MAX_PATH` byte count from a shorter source buffer. The controlled runner therefore requires fresh texture-upload and first-frame log evidence. A production launcher should correct that small injection seam in project code or upstream; it does not require a fork of hudhook's graphics-hook/rendering stack.
 
 The first implementation should consume the released `hudhook` crate unchanged. Pin the exact release and commit `Cargo.lock` so the experiment remains reproducible. A maintained project fork is a fallback only if the proof exposes a concrete upstream limitation that cannot reasonably be handled in project code or contributed upstream.
 
@@ -18,11 +35,12 @@ The minimum useful answer is deliberately narrow:
 -   let unmodified hudhook own the graphics hooks and ImGui backend lifecycle;
 -   draw an always-visible ImGui diagnostics panel;
 -   upload and draw one generated RGBA texture;
+-   replace it with one real Electron offscreen frame carried by the current Node/shared-memory flow;
 -   survive window and swap-chain resize;
 -   report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
 -   let the target close cleanly.
 
-Electron frame transport and production-wide game compatibility come after this seam is proven.
+The D3D11 seam and first Electron frame are now proven. Production-wide game compatibility, multi-window lifecycle, transparency, and input forwarding remain later work.
 
 ## Decision
 
@@ -52,7 +70,7 @@ The public hudhook API already provides the pieces required by this experiment:
 -   Win32 input integration for native ImGui widgets;
 -   hook shutdown and DLL ejection support.
 
-Our overlay panel, injector command line, logging, generated test texture, and later IPC integration all belong in project code. None of those require modifying hudhook.
+Our overlay panel, injector command line, logging, generated test texture, and IPC integration all belong in project code. None of those required modifying hudhook.
 
 Using two backend-specific DLLs is acceptable for the POC. Automatic graphics API discovery and one universal payload are production concerns and should not force a fork before the basic hook/render path is tested.
 
@@ -67,13 +85,16 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   late injection by exact process name or window title;
 -   one native ImGui diagnostics window;
 -   one generated checkerboard or test-card texture;
+-   one fixed opaque 640 x 360 Electron offscreen window;
+-   compatibility with the existing Node add-on IPC, named mutex, and shared mapping;
 -   resize and clean target-exit tests;
--   a controlled coexistence test with user-installed ReShade after the isolated baseline passes.
+-   latest-frame CPU copy/conversion away from the render thread.
 
 ### Not included yet
 
--   Electron offscreen frame transport;
--   shared-memory IPC;
+-   multiple Electron windows, z-order, or visibility state;
+-   transparent Electron frames and premultiplied-alpha correction;
+-   Electron window resize and old-texture retirement;
 -   forwarding input to Electron;
 -   automatic D3D11/D3D12 selection in one DLL;
 -   x86 payloads;
@@ -204,27 +225,16 @@ After the controlled host passes, inject the same unchanged artifact into at lea
 
 D3D11 success is still useful if a particular D3D12 target exposes an upstream bug. A reproducible D3D12 blocker becomes evidence for an upstream contribution or fork; it does not justify speculative changes before testing.
 
-### Milestone 3: coexistence observation
+### Milestone 3: one Electron window
 
-Only after the clean baseline succeeds, use the controlled host to observe behavior when ReShade is already loaded and hudhook is injected afterward.
+1. Start a small opaque 640 x 360 offscreen `BrowserWindow` through the public `ElectronGameOverlay` session API.
+2. Register it with the existing Node add-on and forward complete `paint` frames through `sendFrameBuffer`.
+3. Connect the hudhook payload to the add-on's existing Win32 IPC host without loading the legacy native renderer.
+4. Select `HudhookElectronDemo`, copy its named mapping while holding the existing mutex, release the mutex, and convert BGRA to RGBA on the IPC worker.
+5. Publish only the latest owned frame to the render loop and upload it when its sequence changes.
+6. Draw the resulting texture with ImGui and require PID-specific log evidence for receipt and GPU upload.
 
-This is a compatibility experiment, not an anti-cheat test. Record:
-
--   whether payload initialization and hook tracing show that the DLL loaded and hooks installed;
--   whether both overlays render;
--   resize behavior;
--   shutdown and unload order;
--   logs from both runtimes;
--   whether the result is repeatable.
-
-Do not change either upstream project merely to force this test to pass. A reproducible collision should first be documented and used to decide whether an upstream fix, a small fork, or an alternate coexistence path is appropriate.
-
-The minimum safe result is either:
-
--   both overlays render, resize, and shut down repeatably; or
--   hudhook detects or encounters the conflict and fails/disables without crashing or hanging the target and without modifying the user's ReShade installation.
-
-A crash, hang, corrupted render state, or unsafe unload blocks adoption until it is understood and resolved.
+This milestone is complete. It intentionally does not redesign the current frame protocol; a versioned/double-buffered transport can follow if profiling or multi-window work shows that the existing mutex/mapping is insufficient.
 
 ## Acceptance criteria
 
@@ -241,6 +251,8 @@ The D3D11 milestone passes when all of the following are true:
 
 The D3D12 milestone uses the same criteria against the controlled D3D12 host.
 
+The Electron milestone passes when the producer validates a 640 x 360 x 4 paint buffer, the payload logs the selected mapping and first received frame, the render thread logs the first successful GPU upload, the animated Electron page is visible in the controlled host, and the attached runner exits without leaving its demo processes behind.
+
 The controlled host proves the architecture deterministically. At least one allowed offline D3D11 game/application smoke test is required before adopting hudhook for the D3D11 product path. Apply the same rule to D3D12 when a suitable test target is available.
 
 ## Fork policy
@@ -252,7 +264,6 @@ Consider a fork only after reproducing one of these blockers:
 -   a required swap-chain, device, texture, input, or unload lifecycle is not exposed;
 -   a supported target crashes or cannot initialize because of hudhook internals;
 -   D3D12 command-queue or resize handling blocks the applications in scope;
--   coexistence requires a hook-chain change that cannot be implemented outside hudhook;
 -   required diagnostics or recovery cannot be added through public APIs;
 -   the eventual single-payload backend dispatcher cannot be contributed upstream or composed around the library.
 
@@ -295,14 +306,14 @@ These commands describe the desired operator experience; the implementation READ
 -   Do not inject into competitive or anti-cheat-protected software.
 -   Match target bitness and privilege level; detailed preflight validation can follow the first POC.
 -   Keep the initial experiment x64-only.
--   Pin dependencies and retain notices required by hudhook, Dear ImGui, and MinHook's MIT licenses.
+-   Pin dependencies and retain notices required by hudhook and Dear ImGui's MIT licenses, imgui-rs's MIT OR Apache-2.0 license, and MinHook/HDE's 2-Clause BSD licenses.
 -   Do not bundle or install ReShade as part of this POC.
 
 ## Decision after the POC
 
--   If the controlled hosts and allowed application smoke tests pass using released hudhook, and ReShade coexistence is safe, keep upstream hudhook as a pinned dependency and proceed to Electron frame transport.
+-   Keep upstream hudhook as a pinned dependency while controlled and allowed application tests pass; the first Electron frame transport already composes around its public API.
 -   If a small defect is found, prefer an upstream issue or contribution while keeping the POC on the nearest usable release.
 -   If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
 -   If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
 
-The immediate next success criterion is simple: inject the D3D11 payload into the clean controlled host and see a hudhook-owned ImGui panel and generated texture render reliably without ReShade.
+The controlled D3D11 and one-window Electron compositor criteria are complete. The next product work is multi-window/transparent-frame lifecycle and input forwarding; the next compatibility evidence remains one allowed offline D3D11 application and the equivalent controlled D3D12 payload/host.

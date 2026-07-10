@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>HudhookElectronDemo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        background: #10171f;
+        color: #eef8f4;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #10171f;
+      }
+
+      body {
+        position: relative;
+        padding: 24px;
+        background: linear-gradient(
+          135deg,
+          #172431 0%,
+          #10171f 58%,
+          #152830 100%
+        );
+      }
+
+      body::before {
+        position: absolute;
+        inset: 0;
+        content: '';
+        background-image:
+          linear-gradient(#294152 1px, transparent 1px),
+          linear-gradient(90deg, #294152 1px, transparent 1px);
+        background-size: 32px 32px;
+        opacity: 0.28;
+      }
+
+      .card {
+        position: relative;
+        height: 100%;
+        padding: 22px 24px;
+        border: 1px solid #3f6572;
+        border-radius: 16px;
+        background: #172630;
+        box-shadow: 0 16px 40px #070b0f;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        font-weight: 650;
+        letter-spacing: -0.6px;
+      }
+
+      .live {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 7px 11px;
+        border: 1px solid #2e7b68;
+        border-radius: 999px;
+        color: #86f4cf;
+        background: #123d35;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #52e6b5;
+        box-shadow: 0 0 0 0 #52e6b5;
+        animation: pulse 1.4s ease-out infinite;
+      }
+
+      .subtitle {
+        margin: 8px 0 22px;
+        color: #a9c1c8;
+        font-size: 14px;
+      }
+
+      .path {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+
+      .stage {
+        position: relative;
+        padding: 14px 12px;
+        border: 1px solid #304d5b;
+        border-radius: 10px;
+        color: #d9e8e7;
+        background: #11202a;
+        text-align: center;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .stage:not(:last-child)::after {
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        right: -8px;
+        width: 8px;
+        height: 2px;
+        content: '';
+        background: #58d7b3;
+      }
+
+      .meter {
+        height: 7px;
+        margin-top: 22px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #0b151c;
+      }
+
+      .meter-fill {
+        width: 36%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #28b98d, #6cebc7, #2f9cc6);
+        animation: sweep 2.2s ease-in-out infinite alternate;
+      }
+
+      .footer {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 20px;
+        color: #92adb5;
+        font-family: Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .accent {
+        color: #71e5c1;
+      }
+
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 #52e6b5;
+        }
+        70%,
+        100% {
+          box-shadow: 0 0 0 9px #123d35;
+        }
+      }
+
+      @keyframes sweep {
+        from {
+          transform: translateX(-8%);
+        }
+        to {
+          transform: translateX(178%);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="header">
+        <h1>Electron frame inside the game</h1>
+        <div class="live"><span class="dot"></span>FRAME PATH LIVE</div>
+      </div>
+      <p class="subtitle">
+        A real 640 × 360 offscreen BrowserWindow transported through the
+        existing SDK.
+      </p>
+      <section class="path" aria-label="frame pipeline">
+        <div class="stage">Electron OSR</div>
+        <div class="stage">Node addon</div>
+        <div class="stage">hudhook</div>
+        <div class="stage">Dear ImGui</div>
+      </section>
+      <div class="meter"><div class="meter-fill"></div></div>
+      <footer class="footer">
+        <span>Window: <span class="accent">HudhookElectronDemo</span></span>
+        <span id="clock">waiting for paint…</span>
+        <span>Frame <span id="frame" class="accent">0</span></span>
+      </footer>
+    </main>
+    <script>
+      const clock = document.getElementById('clock');
+      const frame = document.getElementById('frame');
+      let frameNumber = 0;
+
+      function animate() {
+        frameNumber += 1;
+        frame.textContent = String(frameNumber);
+        clock.textContent = new Date().toLocaleTimeString();
+        requestAnimationFrame(animate);
+      }
+
+      requestAnimationFrame(animate);
+    </script>
+  </body>
+</html>
