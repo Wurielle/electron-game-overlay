@@ -96,3 +96,24 @@ add_custom_command(TARGET d3d11_overlay_test_host POST_BUILD
     COMMENT "Copying the ReShade add-on next to the controlled D3D11 host"
 )
 add_dependencies(d3d11_overlay_test_host alternative_imgui_overlay_poc)
+
+add_executable(d3d12_overlay_test_host WIN32
+    src/d3d12_test_host.cpp
+)
+
+target_compile_features(d3d12_overlay_test_host PRIVATE cxx_std_20)
+target_compile_definitions(d3d12_overlay_test_host PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+)
+target_compile_options(d3d12_overlay_test_host PRIVATE
+    /W4
+    /permissive-
+    /EHsc
+)
+target_link_libraries(d3d12_overlay_test_host PRIVATE
+    d3d12
+    dxgi
+)

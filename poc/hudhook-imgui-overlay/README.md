@@ -1,6 +1,6 @@
-# hudhook + ImGui D3D11 proof of concept
+# hudhook + ImGui D3D11/D3D12 proof of concept
 
-This standalone Windows x64 proof uses upstream [hudhook 0.9.1](https://github.com/veeenu/hudhook/tree/0.9.1) unchanged to inject a project-owned DLL, hook a D3D11 swap chain, and render Dear ImGui.
+This standalone Windows x64 proof uses upstream [hudhook 0.9.1](https://github.com/veeenu/hudhook/tree/0.9.1) unchanged to inject project-owned backend payloads, hook D3D11 and D3D12 swap chains, and render Dear ImGui.
 
 It deliberately does not install or load ReShade. The completed ReShade POC remains beside it as a separate reference implementation.
 
@@ -86,6 +86,7 @@ From a regular PowerShell opened at the repository root:
 
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\build-dx11.ps1
+.\poc\hudhook-imgui-overlay\scripts\build-dx12.ps1
 ```
 
 The script locates the build tools, enters the Visual Studio developer environment, builds the existing controlled D3D11 host, builds the Rust injector and payload, recreates the ignored run directory, and stages only these files in `build/hudhook-imgui-overlay/run/dx11`:
@@ -116,6 +117,14 @@ matches the scenario you want to inspect:
 | Automated multi-window regression at 150% | `dx11-multiwindow-automated-150.ps1` |
 | Automated multi-window regression at 200% | `dx11-multiwindow-automated-200.ps1` |
 | Hands-on multi-window demo | `dx11-multiwindow-manual.ps1` |
+| D3D12 hook and generated-texture smoke test | `d3d12-hook-only.ps1` |
+| D3D12 Electron diagnostic | `d3d12-electron-diagnostic.ps1` |
+| D3D12 real client integration | `d3d12-real-client.ps1` |
+| D3D12 lifecycle regression | `d3d12-window-lifecycle.ps1` |
+| D3D12 automated input regression | `d3d12-input-automated.ps1` |
+| D3D12 hands-on input demo | `d3d12-input-manual.ps1` |
+| D3D12 automated multi-window regression | `d3d12-multiwindow-automated-100.ps1` |
+| D3D12 hands-on multi-window demo | `d3d12-multiwindow-manual.ps1` |
 
 The parameterized `scripts/run-electron-dx11.ps1` runner remains the underlying
 advanced/CI interface for custom combinations. Multi-window launchers
@@ -379,6 +388,7 @@ modes concurrently because the current native add-on uses a fixed IPC host name.
 
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-hook-only.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-hook-only.ps1
 ```
 
 This starts only the controlled host and payload. With no Electron producer, the
@@ -391,6 +401,7 @@ The payload creates a PID-suffixed log beside the injected DLL:
 
 ```text
 build/hudhook-imgui-overlay/run/dx11/hudhook_imgui_overlay_dx11-<pid>.log
+build/hudhook-imgui-overlay/run/dx12/hudhook_imgui_overlay_dx12-<pid>.log
 ```
 
 Useful markers include:
@@ -400,7 +411,13 @@ Useful markers include:
 - `first ImGui frame rendered`;
 - `ImGui display size changed`.
 
-Set `HUDHOOK_POC_LOG` in the host's environment to override the default `info,hudhook=debug` tracing filter. Avoid `hudhook=trace` for long sessions because the D3D11 hook traces every presentation.
+Set `HUDHOOK_POC_LOG` in the host's environment to override the default `info,hudhook=debug` tracing filter. Avoid `hudhook=trace` for long sessions because the graphics hooks trace every presentation.
+
+Hudhook 0.9.1's D3D12 state machine logs one initial `Initialization context
+incomplete` / render-error pair before the first `Present` is associated with
+the observed command queue. In the controlled host it initializes on the next
+frame. The launchers require later texture-upload/composition/first-frame proof
+and do not treat the injector return or that transient message as success.
 
 If the payload directory is not writable during a manual test, logging falls back to `%TEMP%\electron-game-overlay`.
 
@@ -441,7 +458,7 @@ This does not require forking or modifying hudhook's graphics hooks, renderer li
 
 This milestone now covers:
 
-- D3D11 injection and Dear ImGui rendering through upstream hudhook 0.9.1;
+- D3D11 and D3D12 injection and Dear ImGui rendering through upstream hudhook 0.9.1;
 - the real built Electron client's existing overlay-session startup path;
 - simultaneous Electron windows over the existing Node/shared-memory IPC, with
   registration-order back-to-front composition, deduplication, append-on-register,
@@ -468,7 +485,16 @@ This milestone now covers:
 - deterministic and manual multi-window proof modes with exact-process cleanup;
 - diagnostics, resize handling, proof logging, and normal target exit.
 
-Remaining work is:
+Controlled D3D12 parity is now complete: the hook-only texture/first-frame proof,
+live single-window input proof, repeated Electron texture updates, and the full
+two-window routing/lifecycle/caption-drag proof pass against the D3D12 host. The
+focused POC finish line is now:
+
+- integration of the proven hudhook path into the real client workflow;
+- replacement of the old injection/transport dependencies that the completed
+  path makes unnecessary.
+
+Post-POC hardening remains tracked, but does not block that finish line:
 
 - raw-input-only games, DirectInput, XInput, GameInput, gamepads, and faithful
   X1/X2 mouse-button delivery (Electron 16 cannot represent those buttons through
@@ -479,8 +505,11 @@ Remaining work is:
   1/1.25/1.5/2 regressions available on the current single 100% virtual display;
 - safe deferred retirement of superseded GPU textures: hudhook 0.9.1 exposes
   texture load/replace but no texture-removal API;
-- D3D12 and eventual one-payload backend auto-detection;
-- a production-quality project-owned injector;
+- broader D3D12 driver/debug-layer coverage for repeated texture replacement;
+  the controlled adapter passes, while upstream 0.9.1 does not explicitly
+  transition an existing shader-resource texture back to copy-destination;
+- eventual one-payload backend auto-detection and a production-quality
+  project-owned injector beyond the controlled integration;
 - x86 targets and any anti-cheat compatibility work.
 
 The input/interactivity design remains in
@@ -498,8 +527,9 @@ consequently affects later initialization too. CPU scene/router publication is
 atomic, but a newly published alpha frame can precede its corresponding GPU upload
 by one `Present`, creating a narrow visual-versus-hit-test timing window.
 
-The next shared compositor work is target-display/client-origin ownership and a
-manual mixed-scale hardware/VM acceptance run. Safe texture retirement follows,
-then D3D12 and a production project-owned injector.
+The next shared compositor work is real-client integration and removal of
+superseded dependencies. Target-display/client-origin
+ownership, manual mixed-scale hardware/VM acceptance, safe texture retirement,
+and related geometry/DPI edge cases stay in the post-POC hardening backlog.
 A hudhook fork is justified only if testing reproduces a required graphics-hook
 change that cannot live in this project or be contributed upstream.

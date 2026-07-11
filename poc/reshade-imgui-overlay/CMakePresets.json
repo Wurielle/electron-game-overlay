@@ -23,6 +23,15 @@
       "targets": [
         "d3d11_overlay_test_host"
       ]
+    },
+    {
+      "name": "relwithdebinfo-dx12",
+      "displayName": "RelWithDebInfo D3D12 host",
+      "configurePreset": "vs2022-x64",
+      "configuration": "RelWithDebInfo",
+      "targets": [
+        "d3d12_overlay_test_host"
+      ]
     }
   ]
 }

@@ -292,7 +292,7 @@ Electron windows should not rely on ImGui widgets for input. For Electron-backed
 10. Make the selected Electron window interactive through the existing input/intercept protocol.
 11. Generalize to multiple-window/z-order state with per-window routing and texture state.
 12. Prove the DIP-to-physical contract at uniformly forced Electron scales, add matching-paint per-window runtime transitions, then define target-display/client-origin ownership and run real mixed-monitor acceptance.
-13. Add resize-safe texture retirement, then repeat the graphics proof with hudhook's D3D12 backend and a controlled D3D12 host.
+13. Repeat the graphics, Electron input, and multi-window proof with hudhook's D3D12 backend and a controlled D3D12 host; defer resize-safe texture retirement to post-POC hardening.
 
 Steps 1 through 11 and the bounded producer-window portion of step 12 are complete for controlled D3D11, including transparent physical-bounds composition, ordered multi-window lifecycle, click-to-front routing, focused keyboard input, caption dragging, per-window pointer capture, content-surface rather than outer-window bounds, desired/active display state, and matching-paint scale commits. Accepted bitmaps are authoritative within a one-pixel floor-scaling tolerance; ambiguous transitions wait for renderer DPR/viewport acknowledgement and use a cropped `capturePage()` as the causal commit frame. Per-packet scale tags protect queued input while retaining a legacy active-scale fallback. The public SDK remains unchanged; `window.bounds` gained compatible optional full-geometry and `rasterChanged` fields so the compositor can suppress stale pixels until the matching frame. Native mapping creation/growth is transactional and frame copies are dimension/overflow/length/capacity checked. A versioned double buffer remains an optimization option rather than a prerequisite for the current compositor.
 
@@ -343,10 +343,11 @@ The implemented hudhook path is defined in [`hudhook-imgui-overlay-poc.md`](hudh
 5. Connect generic transparent Electron windows through the current SDK/add-on frame path and verify native bounds plus move/close/re-register lifecycle.
 6. Make the hit/focused window interactive through mouse/keyboard interception (complete for regular Win32 messages).
 7. Compose and route an ordered multi-window scene (complete); separately smoke-test the unchanged payload in one allowed offline D3D11 game or application.
-8. Complete target-HWND display/client-origin ownership and backing-window/per-target geometry, then run manual mixed-scale hardware/VM acceptance.
-9. Add safe texture retirement, repeat the graphics proof with D3D12 and a controlled D3D12 host, then replace the controlled injector for production.
+8. Add a backend-specific D3D12 payload and controlled D3D12 host, then repeat the Electron composition, input, and multi-window proof without expanding the acceptance scope. **Complete.**
+9. Integrate the proven hudhook path into the real client workflow and replace the old injection/transport dependencies needed to finish the POC.
+10. After the POC is complete, harden target-HWND display/client-origin ownership, backing-window/per-target geometry, real mixed-scale hardware/VM behavior, and deferred GPU texture retirement.
 
-The controlled D3D11, Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence is not an adoption gate. Target-display ownership and manual mixed-monitor acceptance are next, then safe texture retirement; D3D12 and the production injector follow.
+The controlled D3D11 and D3D12 graphics paths, Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence is not an adoption gate. The focused finish line is now real-client integration and dependency replacement. Target-display ownership, mixed-monitor acceptance, texture retirement, and other geometry/DPI edge cases remain recorded post-POC hardening rather than blockers.
 
 ## Research checklist for search agent
 
@@ -461,7 +462,7 @@ The search agent should produce:
 -   [x] Render the diagnostics panel and generated texture without ReShade.
 -   [x] Verify resize and clean exit behavior; eject/reinjection remains a hardening check.
 -   [ ] Smoke-test the unchanged payload in one allowed D3D11 game/application.
--   [ ] Repeat with hudhook's D3D12 backend and a controlled D3D12 host.
+-   [x] Repeat with hudhook's D3D12 backend and a controlled D3D12 host, including Electron input and multi-window parity.
 -   [x] Decide that upstream usage is sufficient unless a concrete graphics-hook blocker appears.
 
 ### Phase 3: texture-backed overlay window
@@ -545,4 +546,4 @@ The native implementation behind that API could use ImGui internally.
 
 Try this as a native runtime experiment, not as a rewrite of the Electron SDK.
 
-Keep the Electron SDK and upstream hudhook boundary proven by this experiment. The ordered multi-window compositor, uniform scale matrix, and bounded producer-window/runtime transition contract are complete without changing the public SDK. Next give the target HWND ownership of display/client-origin mapping and perform manual mixed-scale hardware/VM acceptance. Then retire superseded textures safely, add the D3D12 payload and controlled host, and replace the production injector.
+Keep the Electron SDK and upstream hudhook boundary proven by this experiment. The ordered multi-window compositor, uniform scale matrix, bounded producer-window/runtime transition contract, and controlled D3D11/D3D12 parity are complete without changing the public SDK. Finish the POC by wiring the proven path into the real client while replacing the old dependencies it supersedes. Treat target-HWND display/client-origin ownership, mixed-monitor behavior, backing-window placement, deferred texture retirement, and broader D3D12 driver/debug-layer coverage as explicit post-POC hardening unless a controlled acceptance test proves one is a direct blocker.

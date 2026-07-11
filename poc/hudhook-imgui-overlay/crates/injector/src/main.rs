@@ -5,6 +5,39 @@ use std::process::ExitCode;
 use hudhook::inject::Process;
 
 const DX11_PAYLOAD_NAME: &str = "hudhook_imgui_overlay_dx11.dll";
+const DX12_PAYLOAD_NAME: &str = "hudhook_imgui_overlay_dx12.dll";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Backend {
+    D3d11,
+    D3d12,
+}
+
+impl Backend {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "d3d11" => Ok(Self::D3d11),
+            "d3d12" => Ok(Self::D3d12),
+            _ => Err(format!(
+                "unsupported backend {value:?}; expected d3d11 or d3d12"
+            )),
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::D3d11 => "Direct3D 11",
+            Self::D3d12 => "Direct3D 12",
+        }
+    }
+
+    const fn payload_name(self) -> &'static str {
+        match self {
+            Self::D3d11 => DX11_PAYLOAD_NAME,
+            Self::D3d12 => DX12_PAYLOAD_NAME,
+        }
+    }
+}
 
 enum Selector {
     ProcessName(String),
@@ -13,6 +46,7 @@ enum Selector {
 
 struct Arguments {
     selector: Selector,
+    backend: Backend,
     payload_path: PathBuf,
 }
 
@@ -62,7 +96,7 @@ fn run() -> Result<(), String> {
     };
 
     println!("Payload DLL: {}", payload_path.display());
-    println!("Backend: Direct3D 11");
+    println!("Backend: {}", arguments.backend.label());
 
     process
         .inject(payload_path.clone())
@@ -110,11 +144,10 @@ fn parse_arguments(raw_arguments: Vec<String>) -> Result<Arguments, String> {
         (None, None) => return Err("one of --process or --title is required".into()),
     };
 
-    match backend.as_deref() {
-        Some("d3d11") => {}
-        Some(value) => return Err(format!("unsupported backend {value:?}; expected d3d11")),
-        None => return Err("--backend d3d11 is required".into()),
-    }
+    let backend = backend
+        .as_deref()
+        .ok_or_else(|| "--backend d3d11 or d3d12 is required".to_string())
+        .and_then(Backend::parse)?;
 
     let payload_path = match payload_path {
         Some(path) => path,
@@ -122,11 +155,12 @@ fn parse_arguments(raw_arguments: Vec<String>) -> Result<Arguments, String> {
             .map_err(|error| format!("cannot resolve injector path: {error}"))?
             .parent()
             .ok_or_else(|| "injector path has no parent directory".to_string())?
-            .join(DX11_PAYLOAD_NAME),
+            .join(backend.payload_name()),
     };
 
     Ok(Arguments {
         selector,
+        backend,
         payload_path,
     })
 }
@@ -143,10 +177,69 @@ fn print_usage() {
     eprintln!(
         "Usage:\n  \
          hudhook_overlay_injector.exe (--process <exe> | --title <window>) \
-         --backend d3d11 [--dll <payload.dll>]\n\n\
+         --backend <d3d11|d3d12> [--dll <payload.dll>]\n\n\
          Examples:\n  \
          hudhook_overlay_injector.exe --title \"Controlled D3D11 overlay test host\" \
          --backend d3d11\n  \
-         hudhook_overlay_injector.exe --process game.exe --backend d3d11"
+         hudhook_overlay_injector.exe --title \"Controlled D3D12 overlay test host\" \
+         --backend d3d12\n  \
+         hudhook_overlay_injector.exe --process game.exe --backend d3d12"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_contract_selects_matching_labels_and_payloads() {
+        assert_eq!(Backend::parse("d3d11"), Ok(Backend::D3d11));
+        assert_eq!(Backend::D3d11.label(), "Direct3D 11");
+        assert_eq!(Backend::D3d11.payload_name(), DX11_PAYLOAD_NAME);
+
+        assert_eq!(Backend::parse("d3d12"), Ok(Backend::D3d12));
+        assert_eq!(Backend::D3d12.label(), "Direct3D 12");
+        assert_eq!(Backend::D3d12.payload_name(), DX12_PAYLOAD_NAME);
+    }
+
+    #[test]
+    fn d3d12_uses_the_matching_default_payload() {
+        let arguments = parse_arguments(vec![
+            "--title".into(),
+            "Controlled D3D12 overlay test host".into(),
+            "--backend".into(),
+            "d3d12".into(),
+        ])
+        .expect("D3D12 arguments should parse");
+
+        assert_eq!(arguments.backend, Backend::D3d12);
+        assert_eq!(
+            arguments
+                .payload_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(DX12_PAYLOAD_NAME)
+        );
+    }
+
+    #[test]
+    fn explicit_payload_is_preserved_for_either_backend() {
+        let arguments = parse_arguments(vec![
+            "--process".into(),
+            "game.exe".into(),
+            "--backend".into(),
+            "d3d12".into(),
+            "--dll".into(),
+            "custom.dll".into(),
+        ])
+        .expect("an explicit payload should parse");
+
+        assert_eq!(arguments.payload_path, PathBuf::from("custom.dll"));
+    }
+
+    #[test]
+    fn unsupported_backend_reports_both_supported_values() {
+        let error = Backend::parse("vulkan").expect_err("Vulkan is not supported by this POC");
+        assert!(error.contains("expected d3d11 or d3d12"));
+    }
 }

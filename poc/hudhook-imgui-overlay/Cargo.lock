@@ -77,6 +77,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hudhook-imgui-overlay-dx12"
+version = "0.1.0"
+dependencies = [
+ "hudhook",
+ "hudhook-imgui-overlay-ui",
+]
+
+[[package]]
 name = "hudhook-imgui-overlay-ui"
 version = "0.1.0"
 dependencies = [

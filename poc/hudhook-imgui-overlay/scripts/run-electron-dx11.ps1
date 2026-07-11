@@ -2,6 +2,10 @@
 param(
     [switch]$Wait,
 
+    [Parameter()]
+    [ValidateSet("d3d11", "d3d12")]
+    [string]$Backend = "d3d11",
+
     [Parameter(ParameterSetName = "Client")]
     [switch]$Client,
 
@@ -152,11 +156,36 @@ $ClientWindowPayloadProofMarkers = @(
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $HudhookRoot = Split-Path -Parent $PSScriptRoot
-$BuildScript = Join-Path $PSScriptRoot "build-dx11.ps1"
-$RunDirectory = Join-Path $RepoRoot "build\hudhook-imgui-overlay\run\dx11"
-$HostExecutable = Join-Path $RunDirectory "d3d11_overlay_test_host.exe"
+$BackendConfig = if ($Backend -eq "d3d12") {
+    @{
+        DisplayName = "D3D12"
+        RunDirectoryName = "dx12"
+        BuildScriptName = "build-dx12.ps1"
+        HostExecutableName = "d3d12_overlay_test_host.exe"
+        HostProcessName = "d3d12_overlay_test_host"
+        PayloadName = "hudhook_imgui_overlay_dx12.dll"
+        WindowTitle = "Controlled D3D12 overlay test host"
+    }
+}
+else {
+    @{
+        DisplayName = "D3D11"
+        RunDirectoryName = "dx11"
+        BuildScriptName = "build-dx11.ps1"
+        HostExecutableName = "d3d11_overlay_test_host.exe"
+        HostProcessName = "d3d11_overlay_test_host"
+        PayloadName = "hudhook_imgui_overlay_dx11.dll"
+        WindowTitle = "Controlled D3D11 overlay test host"
+    }
+}
+$BackendDisplayName = $BackendConfig.DisplayName
+$HostProcessName = $BackendConfig.HostProcessName
+$BuildScript = Join-Path $PSScriptRoot $BackendConfig.BuildScriptName
+$RunDirectory = Join-Path $RepoRoot "build\hudhook-imgui-overlay\run\$($BackendConfig.RunDirectoryName)"
+$HostExecutable = Join-Path $RunDirectory $BackendConfig.HostExecutableName
 $Injector = Join-Path $RunDirectory "hudhook_overlay_injector.exe"
-$Payload = Join-Path $RunDirectory "hudhook_imgui_overlay_dx11.dll"
+$Payload = Join-Path $RunDirectory $BackendConfig.PayloadName
+$PayloadLogStem = [System.IO.Path]::GetFileNameWithoutExtension($BackendConfig.PayloadName)
 $ElectronExecutable = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
 $DiagnosticEntry = Join-Path $HudhookRoot "electron-demo\main.cjs"
 $DiagnosticAppDirectory = Split-Path -Parent $DiagnosticEntry
@@ -172,7 +201,7 @@ $ClientInputControlFile = Join-Path $RunDirectory "electron-client-input-$Client
 $ClientMultiWindowRunToken = [Guid]::NewGuid().ToString("N")
 $ClientMultiWindowUserDataDirectory = Join-Path $RunDirectory "electron-client-multiwindow-user-data-$ClientMultiWindowRunToken"
 $ClientMultiWindowControlFile = Join-Path $RunDirectory "electron-client-multiwindow-$ClientMultiWindowRunToken.control"
-$WindowTitle = "Controlled D3D11 overlay test host"
+$WindowTitle = $BackendConfig.WindowTitle
 $OverlayIpcHostWindowTitle = "n_overlay_1a1y2o8l0b"
 
 if ($Client) {
@@ -195,7 +224,7 @@ if ($Client) {
     )
     $ElectronStdoutLog = Join-Path $RunDirectory "electron-client.stdout.log"
     $ElectronStderrLog = Join-Path $RunDirectory "electron-client.stderr.log"
-    $ExpectedResult = "the real ExampleMainOverlay is rendered at its native bounds inside the controlled D3D11 host."
+    $ExpectedResult = "the real ExampleMainOverlay is rendered at its native bounds inside the controlled $BackendDisplayName host."
 }
 elseif ($ClientMultiWindow) {
     $ProducerMode = "ClientMultiWindow"
@@ -295,7 +324,7 @@ else {
     $ElectronCommandLineMarkers = @($DiagnosticAppDirectory)
     $ElectronStdoutLog = Join-Path $RunDirectory "electron-demo.stdout.log"
     $ElectronStderrLog = Join-Path $RunDirectory "electron-demo.stderr.log"
-    $ExpectedResult = "the diagnostic Electron demo window is rendered inside the controlled D3D11 host."
+    $ExpectedResult = "the diagnostic Electron demo window is rendered inside the controlled $BackendDisplayName host."
 }
 
 $RequiredPayloadProofMarkers = @($CommonPayloadProofMarkers)
@@ -920,7 +949,7 @@ if (
     throw "Electron client-window entry point not found: $ClientWindowEntry"
 }
 
-$ExistingHosts = Get-Process -Name "d3d11_overlay_test_host" -ErrorAction SilentlyContinue
+$ExistingHosts = Get-Process -Name $HostProcessName -ErrorAction SilentlyContinue
 $ExactTitleHosts = @(Get-ExactTitleProcesses)
 if ($ExistingHosts -or $ExactTitleHosts.Count -gt 0) {
     throw "Close the existing controlled host before starting this test. The injector uses the exact window title, and the runner verifies the launched host by PID."
@@ -1152,7 +1181,7 @@ try {
 
     Assert-NoOverlayIpcHost
 
-    $UnexpectedHosts = Get-Process -Name "d3d11_overlay_test_host" -ErrorAction SilentlyContinue
+    $UnexpectedHosts = Get-Process -Name $HostProcessName -ErrorAction SilentlyContinue
     $UnexpectedTitleHosts = @(Get-ExactTitleProcesses)
     if ($UnexpectedHosts -or $UnexpectedTitleHosts.Count -gt 0) {
         throw "A controlled host appeared before the runner launched its producer. Close it and retry."
@@ -1207,7 +1236,7 @@ try {
         throw "Electron emitted its readiness marker, but no newly launched demo process remained alive. Stderr: $ElectronError"
     }
 
-    $ExistingHosts = Get-Process -Name "d3d11_overlay_test_host" -ErrorAction SilentlyContinue
+    $ExistingHosts = Get-Process -Name $HostProcessName -ErrorAction SilentlyContinue
     $ExactTitleHosts = @(Get-ExactTitleProcesses)
     if ($ExistingHosts -or $ExactTitleHosts.Count -gt 0) {
         throw "A controlled host appeared before the runner launched its own instance. Close it and retry."
@@ -1251,14 +1280,14 @@ try {
     }
     Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
 
-    $PayloadLog = Join-Path $RunDirectory "hudhook_imgui_overlay_dx11-$($HostProcess.Id).log"
+    $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
     if (Test-Path $PayloadLog) {
         Remove-Item -LiteralPath $PayloadLog -Force
     }
 
     & $Injector `
         --title $WindowTitle `
-        --backend d3d11 `
+        --backend $Backend `
         --dll $Payload
 
     if ($LASTEXITCODE -ne 0) {

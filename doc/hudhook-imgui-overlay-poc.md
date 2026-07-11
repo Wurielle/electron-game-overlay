@@ -2,7 +2,7 @@
 
 ## Status
 
-The controlled D3D11 milestone is implemented in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md). The initial hook, Electron, and input proofs were verified on July 10, 2026; the ordered multi-window proof was verified on July 11, 2026.
+The controlled D3D11 and D3D12 milestones are implemented in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md). The initial D3D11 hook, Electron, and input proofs were verified on July 10, 2026; the ordered multi-window and controlled D3D12 parity proofs were verified on July 11, 2026.
 
 Verified results:
 
@@ -28,13 +28,13 @@ Verified results:
 -   `-ClientMultiWindowManual -Wait` exposes the overlapping pages and their hide/show/raise controls for hands-on testing;
 -   the integrated diagnostic, `-Client`, `-ClientWindow`, `-ClientInput`, and multi-window runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
 
-No hudhook fork was required. The allowed D3D11 application smoke test and D3D12 milestone remain open. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
+No hudhook fork was required. The allowed-application smoke tests remain separate compatibility work. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
 
 The controlled POC still uses hudhook's upstream injector. Its implementation does not validate a zero return from remote `LoadLibraryW` and copies a fixed `MAX_PATH` byte count from a shorter source buffer. The controlled runner therefore requires fresh texture-upload and first-frame log evidence. A production launcher should correct that small injection seam in project code or upstream; it does not require a fork of hudhook's graphics-hook/rendering stack.
 
 The first implementation should consume the released `hudhook` crate unchanged. Pin the exact release and commit `Cargo.lock` so the experiment remains reproducible. A maintained project fork is a fallback only if the proof exposes a concrete upstream limitation that cannot reasonably be handled in project code or contributed upstream.
 
-The initial target is Windows x64 with D3D11. D3D12 remains the second graphics-backend milestone and now follows the shared compositor work listed below. D3D9 remains available in hudhook as a possible compatibility fallback, but it is not required to answer the first proof-of-concept question.
+The verified target is Windows x64 with separate D3D11 and D3D12 payloads. D3D9 remains available in hudhook as a possible compatibility fallback, but it is not required to answer this proof-of-concept question.
 
 ## Question this POC answers
 
@@ -51,7 +51,7 @@ The minimum useful answer is deliberately narrow:
 -   report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
 -   let the target close cleanly.
 
-The D3D11 seam and an interactive ordered multi-window Electron compositor are now proven, including uniformly forced scale regressions and the bounded producer-window/runtime transition foundation. Production-wide game compatibility, target-display/client-origin ownership, real mixed-monitor acceptance, resize-safe texture retirement, broader input APIs, D3D12, and a production injector remain later work.
+The D3D11 and controlled D3D12 seams and an interactive ordered multi-window Electron compositor are now proven, including uniformly forced scale regressions and the bounded producer-window/runtime transition foundation. Production-wide game compatibility, target-display/client-origin ownership, real mixed-monitor acceptance, resize-safe texture retirement, broader input APIs, and a production injector remain later work.
 
 ## Decision
 
@@ -91,8 +91,7 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 
 -   Windows 10 or newer;
 -   x64 injector, payload, and target;
--   D3D11 first;
--   D3D12 after target-display ownership, mixed-monitor acceptance, and texture-retirement work;
+-   backend-specific D3D11 and D3D12 payloads;
 -   late injection by exact process name or window title;
 -   one native ImGui diagnostics window;
 -   one generated checkerboard or test-card texture;
@@ -109,7 +108,7 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   latest-frame CPU copy/conversion away from the render thread.
 -   independent desired/active display scale per producer window with matching-paint transition commit;
 -   compatible full-geometry `window.bounds` updates without scene reordering and dimension-safe shared-mapping growth;
--   a PMv2-aware controlled D3D11 host with `WM_DPICHANGED` handling.
+-   PMv2-aware controlled D3D11 and D3D12 hosts with `WM_DPICHANGED` handling.
 
 ### Not included yet
 
@@ -161,7 +160,7 @@ For the hudhook isolation test, copy only `d3d11_overlay_test_host.exe` into a c
 
 The controlled host has the window title `Controlled D3D11 overlay test host`. Resize its window to exercise swap-chain lifecycle handling and press Escape to close it.
 
-A similarly small project-owned D3D12 host should be added for the second milestone. It should display a deterministic animated background, support resizing, and avoid unrelated engine behavior so hook failures remain easy to diagnose.
+The project-owned D3D12 host mirrors that boundary with a BGRA8 flip-discard swap chain, deterministic animated background, hardware/WARP selection, fenced per-buffer command allocators, and GPU-idle `ResizeBuffers`.
 
 ## Proposed implementation
 
@@ -251,6 +250,11 @@ After the controlled host passes, inject the same unchanged artifact into at lea
 6. When practical, repeat the smoke test against one allowed offline D3D12 application before declaring the D3D12 path viable.
 
 D3D11 success is still useful if a particular D3D12 target exposes an upstream bug. A reproducible D3D12 blocker becomes evidence for an upstream contribution or fork; it does not justify speculative changes before testing.
+
+This milestone is complete in the controlled host. The generated texture and
+first ImGui frame pass, an injected resize remains alive, and the existing
+single-window input plus full two-window deterministic proofs pass unchanged
+through the D3D12 payload, including repeated Electron texture replacement.
 
 ### Milestone 3: generic one Electron window
 
@@ -422,4 +426,4 @@ These commands describe the desired operator experience; the implementation READ
 -   If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
 -   If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
 
-The controlled D3D11, Electron transport, regular Win32 input, ordered multi-window, uniform scale, and producer-window/runtime transition foundation are complete. Acceptance records are in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). Next define target-display/client-origin ownership and perform manual mixed-scale hardware/VM acceptance; then add safe texture retirement, repeat the controlled graphics proof with D3D12, and replace the controlled injector for production. An allowed offline D3D11 application smoke test remains separate compatibility evidence.
+The controlled D3D11/D3D12, Electron transport, regular Win32 input, ordered multi-window, uniform-scale, and producer-window/runtime transition foundations are complete. Acceptance records are in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). Finish the POC by integrating the proven path into the real client and replacing the old dependencies it supersedes. Target-display/client-origin ownership, backing-window/per-target geometry, real mixed-scale hardware/VM acceptance, safe texture retirement, broader D3D12 compatibility coverage, and related DPI edge cases remain explicit post-POC hardening. Allowed offline application smoke tests remain separate compatibility evidence.

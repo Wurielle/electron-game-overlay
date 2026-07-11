@@ -3,6 +3,7 @@ members = [
     "crates/injector",
     "crates/overlay-ui",
     "crates/payload-dx11",
+    "crates/payload-dx12",
 ]
 resolver = "2"
 
