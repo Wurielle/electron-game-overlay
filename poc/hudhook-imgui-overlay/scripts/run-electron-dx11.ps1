@@ -73,6 +73,11 @@ function Get-IntegerTolerancePattern {
 # Electron entry points and the real client's opt-in startup flag.
 $DiagnosticReadyMarker = "HUDHOOK_ELECTRON_DEMO_READY"
 $ClientReadyMarker = "HUDHOOK_CLIENT_OVERLAY_SESSION_READY"
+$ClientHudhookConfiguredMarker = "HUDHOOK_CLIENT_HUDHOOK_CONFIGURED"
+$ClientHudhookInjectorStartedMarker = "HUDHOOK_CLIENT_HUDHOOK_INJECTOR_STARTED"
+$ClientHudhookInjectorReturnedMarker = "HUDHOOK_CLIENT_HUDHOOK_INJECTOR_RETURNED"
+$ClientHudhookInjectorFailedMarker = "HUDHOOK_CLIENT_HUDHOOK_INJECTOR_FAILED"
+$ClientHudhookTargetConnectedMarker = "HUDHOOK_CLIENT_HUDHOOK_TARGET_CONNECTED"
 $ClientWindowReadyMarker = "HUDHOOK_CLIENT_WINDOW_READY"
 $ClientWindowLifecycleCompleteMarker = "HUDHOOK_CLIENT_WINDOW_LIFECYCLE_COMPLETE"
 $ClientInputTargetMarker = "HUDHOOK_CLIENT_INPUT_TARGET"
@@ -211,6 +216,10 @@ if ($Client) {
     $ElectronArguments = @(
         $RepoRoot,
         $ClientAutoStartFlag,
+        "--hudhook-overlay",
+        "--hudhook-backend=$Backend",
+        "--hudhook-runtime-dir=$RunDirectory",
+        "--hudhook-auto-target-process=$($BackendConfig.HostExecutableName)",
         "--force-device-scale-factor=1",
         "--user-data-dir=$ClientUserDataDirectory",
         "--no-sandbox"
@@ -358,6 +367,12 @@ elseif ($ClientWindow) {
 }
 elseif ($Client) {
     $RequiredPayloadProofMarkers += $ClientPayloadProofMarkers
+    $RequiredElectronProofMarkers += @(
+        $ClientReadyMarker,
+        $ClientHudhookConfiguredMarker,
+        $ClientHudhookInjectorStartedMarker,
+        $ClientHudhookInjectorReturnedMarker
+    )
 }
 
 if (-not ("HudhookOverlayRunner.NativeInputMethods" -as [type])) {
@@ -705,7 +720,7 @@ function Get-FileContent {
     }
 
     try {
-        return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        return [string](Get-Content -LiteralPath $Path -Raw -ErrorAction Stop)
     }
     catch {
         # The producer or payload may be appending while the runner polls.
@@ -896,6 +911,57 @@ function Stop-LaunchedElectronProcesses {
         $Candidate = Get-Process -Id $CandidateId -ErrorAction SilentlyContinue
         if ($Candidate) {
             Stop-LaunchedProcess $Candidate "Electron producer child"
+        }
+    }
+}
+
+function Get-ControlledHudhookInjectorProcesses {
+    param(
+        [int[]]$ElectronProcessIds = @()
+    )
+
+    $CapturedParentIds = @($ElectronProcessIds | Sort-Object -Unique)
+    if ($CapturedParentIds.Count -eq 0) {
+        return
+    }
+
+    $ExpectedInjectorPath = [System.IO.Path]::GetFullPath($Injector)
+    foreach (
+        $Candidate in @(
+            Get-CimInstance `
+                -ClassName Win32_Process `
+                -Filter "Name = 'hudhook_overlay_injector.exe'" `
+                -ErrorAction Stop
+        )
+    ) {
+        if ([int]$Candidate.ParentProcessId -notin $CapturedParentIds) {
+            continue
+        }
+        if (-not $Candidate.ExecutablePath) {
+            throw "Cannot verify the executable path for controlled injector PID $($Candidate.ProcessId)."
+        }
+
+        $CandidatePath = [System.IO.Path]::GetFullPath($Candidate.ExecutablePath)
+        if (
+            $CandidatePath.Equals(
+                $ExpectedInjectorPath,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            $Candidate
+        }
+    }
+}
+
+function Stop-ControlledHudhookInjectors {
+    param(
+        [int[]]$ElectronProcessIds = @()
+    )
+
+    foreach ($Candidate in @(Get-ControlledHudhookInjectorProcesses $ElectronProcessIds)) {
+        $Process = Get-Process -Id $Candidate.ProcessId -ErrorAction SilentlyContinue
+        if ($Process) {
+            Stop-LaunchedProcess $Process "client-owned hudhook injector"
         }
     }
 }
@@ -1194,6 +1260,45 @@ try {
         throw "An Electron frame producer appeared before the runner launched its own instance. Matching PID(s): $($UnexpectedElectronProcessIds -join ', ')"
     }
 
+    if ($Client) {
+        $HostProcess = Start-Process `
+            -PassThru `
+            -WorkingDirectory $RunDirectory `
+            -FilePath $HostExecutable
+
+        $HostDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 100
+            $HostProcess.Refresh()
+
+            if ($HostProcess.HasExited) {
+                throw "The controlled host exited before the real client launched with code $($HostProcess.ExitCode)."
+            }
+        } while ($HostProcess.MainWindowTitle -ne $WindowTitle -and [DateTime]::UtcNow -lt $HostDeadline)
+
+        if ($HostProcess.MainWindowTitle -ne $WindowTitle) {
+            throw "Timed out waiting for the controlled host window before launching the real client."
+        }
+
+        $HostWindow = $HostProcess.MainWindowHandle
+        if (
+            $HostWindow -eq [IntPtr]::Zero -or
+            -not [HudhookOverlayRunner.DpiMethods]::IsPerMonitorV2Aware($HostWindow)
+        ) {
+            throw "The controlled host window is not running with Per-Monitor-V2 DPI awareness."
+        }
+        Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
+
+        $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
+        if (Test-Path $PayloadLog) {
+            Remove-Item -LiteralPath $PayloadLog -Force
+        }
+
+        $ExpectedTargetMarker = "$ClientHudhookTargetConnectedMarker pid=$($HostProcess.Id)"
+        $RequiredElectronProofMarkers += $ExpectedTargetMarker
+        $ElectronArguments += "--hudhook-expected-target-pid=$($HostProcess.Id)"
+    }
+
     $ElectronLauncherProcess = Start-Process `
         -PassThru `
         -WorkingDirectory $RepoRoot `
@@ -1208,6 +1313,13 @@ try {
     $ElectronReady = $false
     do {
         Start-Sleep -Milliseconds 100
+
+        if ($Client) {
+            $HostProcess.Refresh()
+            if ($HostProcess.HasExited) {
+                throw "The controlled host exited while the real client was starting."
+            }
+        }
 
         $ElectronProcessIds = @(
             Update-LaunchedElectronProcessIds `
@@ -1236,62 +1348,64 @@ try {
         throw "Electron emitted its readiness marker, but no newly launched demo process remained alive. Stderr: $ElectronError"
     }
 
-    $ExistingHosts = Get-Process -Name $HostProcessName -ErrorAction SilentlyContinue
-    $ExactTitleHosts = @(Get-ExactTitleProcesses)
-    if ($ExistingHosts -or $ExactTitleHosts.Count -gt 0) {
-        throw "A controlled host appeared before the runner launched its own instance. Close it and retry."
-    }
-
-    $HostProcess = Start-Process `
-        -PassThru `
-        -WorkingDirectory $RunDirectory `
-        -FilePath $HostExecutable
-
-    $HostDeadline = [DateTime]::UtcNow.AddSeconds(10)
-    do {
-        Start-Sleep -Milliseconds 100
-        $HostProcess.Refresh()
-
-        if ($HostProcess.HasExited) {
-            throw "The controlled host exited before injection with code $($HostProcess.ExitCode)."
+    if (-not $Client) {
+        $ExistingHosts = Get-Process -Name $HostProcessName -ErrorAction SilentlyContinue
+        $ExactTitleHosts = @(Get-ExactTitleProcesses)
+        if ($ExistingHosts -or $ExactTitleHosts.Count -gt 0) {
+            throw "A controlled host appeared before the runner launched its own instance. Close it and retry."
         }
-        $ElectronProcessIds = @(
-            Update-LaunchedElectronProcessIds `
-                $ElectronProcessIds `
-                $PreexistingElectronProcessIds `
-                $ElectronCommandLineMarkers
-        )
-        $LiveElectronProcessIds = @(Get-LiveProcessIds $ElectronProcessIds)
-        if ($LiveElectronProcessIds.Count -eq 0) {
-            throw "The Electron producer exited before injection."
+
+        $HostProcess = Start-Process `
+            -PassThru `
+            -WorkingDirectory $RunDirectory `
+            -FilePath $HostExecutable
+
+        $HostDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 100
+            $HostProcess.Refresh()
+
+            if ($HostProcess.HasExited) {
+                throw "The controlled host exited before injection with code $($HostProcess.ExitCode)."
+            }
+            $ElectronProcessIds = @(
+                Update-LaunchedElectronProcessIds `
+                    $ElectronProcessIds `
+                    $PreexistingElectronProcessIds `
+                    $ElectronCommandLineMarkers
+            )
+            $LiveElectronProcessIds = @(Get-LiveProcessIds $ElectronProcessIds)
+            if ($LiveElectronProcessIds.Count -eq 0) {
+                throw "The Electron producer exited before injection."
+            }
+        } while ($HostProcess.MainWindowTitle -ne $WindowTitle -and [DateTime]::UtcNow -lt $HostDeadline)
+
+        if ($HostProcess.MainWindowTitle -ne $WindowTitle) {
+            throw "Timed out waiting for the controlled host window."
         }
-    } while ($HostProcess.MainWindowTitle -ne $WindowTitle -and [DateTime]::UtcNow -lt $HostDeadline)
 
-    if ($HostProcess.MainWindowTitle -ne $WindowTitle) {
-        throw "Timed out waiting for the controlled host window."
-    }
+        $HostWindow = $HostProcess.MainWindowHandle
+        if (
+            $HostWindow -eq [IntPtr]::Zero -or
+            -not [HudhookOverlayRunner.DpiMethods]::IsPerMonitorV2Aware($HostWindow)
+        ) {
+            throw "The controlled host window is not running with Per-Monitor-V2 DPI awareness."
+        }
+        Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
 
-    $HostWindow = $HostProcess.MainWindowHandle
-    if (
-        $HostWindow -eq [IntPtr]::Zero -or
-        -not [HudhookOverlayRunner.DpiMethods]::IsPerMonitorV2Aware($HostWindow)
-    ) {
-        throw "The controlled host window is not running with Per-Monitor-V2 DPI awareness."
-    }
-    Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
+        $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
+        if (Test-Path $PayloadLog) {
+            Remove-Item -LiteralPath $PayloadLog -Force
+        }
 
-    $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
-    if (Test-Path $PayloadLog) {
-        Remove-Item -LiteralPath $PayloadLog -Force
-    }
+        & $Injector `
+            --title $WindowTitle `
+            --backend $Backend `
+            --dll $Payload
 
-    & $Injector `
-        --title $WindowTitle `
-        --backend $Backend `
-        --dll $Payload
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "The injector failed with exit code $LASTEXITCODE."
+        if ($LASTEXITCODE -ne 0) {
+            throw "The injector failed with exit code $LASTEXITCODE."
+        }
     }
 
     $ProofDeadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -1366,7 +1480,7 @@ try {
                 }
             }
         )
-        throw "Injection returned, but the PID-specific payload log is missing proof marker(s): $($MissingPayloadMarkers -join '; '). Log: $PayloadLog"
+        throw "The PID-specific payload log is missing proof marker(s): $($MissingPayloadMarkers -join '; '). Log: $PayloadLog"
     }
 
     if (-not $HasAllElectronMarkers) {
@@ -1377,7 +1491,94 @@ try {
                 }
             }
         )
-        throw "The Electron producer is missing lifecycle proof marker(s): $($MissingElectronMarkers -join '; '). Log: $ElectronStdoutLog"
+        throw "The Electron producer is missing lifecycle/orchestration proof marker(s): $($MissingElectronMarkers -join '; '). Log: $ElectronStdoutLog"
+    }
+
+    if ($Client) {
+        $ElectronOutput = Get-FileContent $ElectronStdoutLog
+        $ElectronErrorOutput = Get-FileContent $ElectronStderrLog
+        $TargetLabelJson = ConvertTo-Json `
+            -Compress `
+            -InputObject "process:$($BackendConfig.HostExecutableName)"
+        $RuntimeDirectoryJson = ConvertTo-Json -Compress -InputObject $RunDirectory
+        $ExpectedConfiguredLine = (
+            "$ClientHudhookConfiguredMarker " +
+            "backend=$Backend runtime=$RuntimeDirectoryJson"
+        )
+        $ExpectedStartedLine = (
+            "$ClientHudhookInjectorStartedMarker " +
+            "backend=$Backend target=$TargetLabelJson"
+        )
+        $ExpectedReturnedLine = (
+            "$ClientHudhookInjectorReturnedMarker " +
+            "backend=$Backend target=$TargetLabelJson"
+        )
+        $ExactConfiguredPattern = (
+            '(?m)^' + [regex]::Escape($ExpectedConfiguredLine) + '\r?$'
+        )
+        $ExactStartedPattern = (
+            '(?m)^' + [regex]::Escape($ExpectedStartedLine) + '\r?$'
+        )
+        $ExactReturnedPattern = (
+            '(?m)^' + [regex]::Escape($ExpectedReturnedLine) + '\r?$'
+        )
+        $ExactTargetPattern = (
+            '(?m)^' + [regex]::Escape($ExpectedTargetMarker) + '\r?$'
+        )
+        $ReadyPattern = (
+            '(?m)^' + [regex]::Escape($ClientReadyMarker) + '(?: .*)?\r?$'
+        )
+        $FailedPattern = (
+            '(?m)^' + [regex]::Escape($ClientHudhookInjectorFailedMarker) +
+            '(?: .*)?\r?$'
+        )
+
+        $ConfiguredMatches = [regex]::Matches($ElectronOutput, $ExactConfiguredPattern)
+        $StartedMatches = [regex]::Matches($ElectronOutput, $ExactStartedPattern)
+        $ReturnedMatches = [regex]::Matches($ElectronOutput, $ExactReturnedPattern)
+        $TargetMatches = [regex]::Matches($ElectronOutput, $ExactTargetPattern)
+        $ReadyMatch = [regex]::Match($ElectronOutput, $ReadyPattern)
+        $FailedCount = (
+            [regex]::Matches($ElectronOutput, $FailedPattern).Count +
+            [regex]::Matches($ElectronErrorOutput, $FailedPattern).Count
+        )
+
+        if (
+            $ConfiguredMatches.Count -ne 1 -or
+            $StartedMatches.Count -ne 1 -or
+            $ReturnedMatches.Count -ne 1 -or
+            $TargetMatches.Count -ne 1 -or
+            -not $ReadyMatch.Success -or
+            $FailedCount -ne 0
+        ) {
+            throw (
+                "The real client did not produce exactly one configured/start/return/exact-target sequence " +
+                "with zero injector failures. configured=$($ConfiguredMatches.Count), " +
+                "started=$($StartedMatches.Count), returned=$($ReturnedMatches.Count), " +
+                "target=$($TargetMatches.Count), failed=$FailedCount."
+            )
+        }
+
+        $SessionReadyIndex = $ReadyMatch.Index
+        $ConfiguredIndex = $ConfiguredMatches[0].Index
+        $InjectorStartedIndex = $StartedMatches[0].Index
+        $InjectorReturnedIndex = $ReturnedMatches[0].Index
+        $TargetConnectedIndex = $TargetMatches[0].Index
+
+        if (
+            $SessionReadyIndex -ge $InjectorStartedIndex -or
+            $ConfiguredIndex -ge $InjectorStartedIndex
+        ) {
+            throw "The real client started its hudhook injector before its overlay session and runtime configuration were ready."
+        }
+        if (
+            $InjectorStartedIndex -ge $InjectorReturnedIndex -or
+            $InjectorStartedIndex -ge $TargetConnectedIndex
+        ) {
+            throw "The real client's injector-start marker did not precede both request return and exact-target connection."
+        }
+
+        Write-Host "Verified client-owned hudhook request ordering and exact target PID $($HostProcess.Id)."
     }
 
     if ($ClientMultiWindowMode) {
@@ -3156,7 +3357,8 @@ finally {
         $env:HUDHOOK_ELECTRON_WINDOW = $ElectronWindowFilterOriginalValue
     }
 
-    if (-not $RunVerified -or $Wait -or $InteractiveProofMode) {
+    $CleanupRequested = -not $RunVerified -or $Wait -or $InteractiveProofMode
+    if ($CleanupRequested) {
         $ElectronProcessIds = @(
             Update-LaunchedElectronProcessIds `
                 $ElectronProcessIds `
@@ -3167,6 +3369,7 @@ finally {
         Stop-LaunchedElectronProcesses `
             $ElectronProcessIds `
             $ElectronCommandLineMarkers
+        Stop-ControlledHudhookInjectors $ElectronProcessIds
         Stop-LaunchedProcess $ElectronLauncherProcess "Electron launcher"
     }
 
@@ -3177,14 +3380,23 @@ finally {
         Remove-Item -LiteralPath $ClientMultiWindowControlFile -Force
     }
 
-    if ($InteractiveProofMode) {
+    if ($CleanupRequested) {
         $RemainingElectronProcessIds = @(Get-DemoElectronProcessIds $ElectronCommandLineMarkers)
         $HostStillRunning = $HostProcess -and (Get-Process -Id $HostProcess.Id -ErrorAction SilentlyContinue)
-        if ($RemainingElectronProcessIds.Count -gt 0 -or $HostStillRunning) {
+        $RemainingInjectors = @(Get-ControlledHudhookInjectorProcesses $ElectronProcessIds)
+        $OverlayIpcHostStillRunning = Test-OverlayIpcHost
+        if (
+            $RemainingElectronProcessIds.Count -gt 0 -or
+            $HostStillRunning -or
+            $RemainingInjectors.Count -gt 0 -or
+            $OverlayIpcHostStillRunning
+        ) {
             throw (
-                "Controlled input-proof cleanup left process(es) alive. " +
+                "Controlled proof cleanup left process(es) alive. " +
                 "Electron PID(s): $($RemainingElectronProcessIds -join ', '); " +
-                "host PID: $(if ($HostStillRunning) { $HostProcess.Id } else { 'none' })."
+                "host PID: $(if ($HostStillRunning) { $HostProcess.Id } else { 'none' }); " +
+                "injector PID(s): $(@($RemainingInjectors.ProcessId) -join ', '); " +
+                "IPC host active: $OverlayIpcHostStillRunning."
             )
         }
     }

@@ -137,13 +137,25 @@ From a regular PowerShell at the repository root:
 
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-client.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-real-client.ps1
 ```
 
-`-Client` builds the repository's real Electron application, launches it with the
-opt-in `--start-overlay-session` flag, waits for its existing overlay session to
-register `ExampleMainOverlay`, starts the controlled D3D11 host, injects the
-hudhook payload, and requires fresh receipt, upload, selection, and composition
-evidence in the host's PID-specific log.
+`-Client` builds the repository's real Electron application and the selected
+runtime, starts and validates the controlled host, then launches the client with
+the opt-in `--start-overlay-session` and `--hudhook-overlay` flags. The client
+resolves the staged backend runtime, invokes the hudhook injector for the
+controlled process, and waits for the exact target PID to connect to its existing
+overlay session. PowerShell does not invoke the injector in this mode. The runner
+still requires fresh receipt, upload, selection, and composition evidence in the
+host's PID-specific log.
+
+Hudhook remains disabled unless the client's main process receives the explicit
+startup configuration. Once enabled, the controlled auto-target or the existing
+renderer Attach action may issue the launcher's single validated request. The
+current upstream API selects the automated target by its controlled executable
+basename. The runner first rejects pre-existing matching hosts, then uses the
+announced PID as post-load correlation; the PID is proof, not yet the injector's
+selection primitive.
 
 Expected result: the real transparent `ExampleMainOverlay` is drawn inside the
 controlled host at its native Electron bounds, with the diagnostics kept separate
@@ -154,11 +166,22 @@ the host exit code.
 Useful proof markers are:
 
 - `HUDHOOK_CLIENT_OVERLAY_SESSION_READY` in `electron-client.stdout.log`;
+- `HUDHOOK_CLIENT_HUDHOOK_CONFIGURED`;
+- `HUDHOOK_CLIENT_HUDHOOK_INJECTOR_STARTED`;
+- `HUDHOOK_CLIENT_HUDHOOK_INJECTOR_RETURNED`;
+- `HUDHOOK_CLIENT_HUDHOOK_TARGET_CONNECTED pid=<controlled-host-pid>`;
 - `Electron overlay metadata selected`;
 - `window_name=ExampleMainOverlay`;
 - `Electron frame received from node-game-overlay`;
 - `Electron frame uploaded to GPU`;
 - `Electron overlay composed at native bounds`.
+
+The runner verifies that the session-ready and runtime-configured markers precede
+the injector start, and that injector start precedes both request return and exact
+target connection. Request return and target connection may race with each other.
+`HUDHOOK_CLIENT_HUDHOOK_INJECTOR_RETURNED` proves only that the client's injection
+request completed; the exact-PID connection and payload log remain the evidence
+that the DLL actually loaded and rendered.
 
 Set `HUDHOOK_ELECTRON_WINDOW` before launching the runner to filter composition
 and routing to one exact announced window name. Without it, the payload composes
@@ -459,7 +482,8 @@ This does not require forking or modifying hudhook's graphics hooks, renderer li
 This milestone now covers:
 
 - D3D11 and D3D12 injection and Dear ImGui rendering through upstream hudhook 0.9.1;
-- the real built Electron client's existing overlay-session startup path;
+- the real built Electron client's existing overlay-session startup path and
+  opt-in ownership of backend-specific hudhook injection requests;
 - simultaneous Electron windows over the existing Node/shared-memory IPC, with
   registration-order back-to-front composition, deduplication, append-on-register,
   and click-to-front intent generations;
@@ -488,9 +512,9 @@ This milestone now covers:
 Controlled D3D12 parity is now complete: the hook-only texture/first-frame proof,
 live single-window input proof, repeated Electron texture updates, and the full
 two-window routing/lifecycle/caption-drag proof pass against the D3D12 host. The
-focused POC finish line is now:
+real-client launchers also prove client-owned injection request orchestration for
+both backends. The focused POC finish line is now:
 
-- integration of the proven hudhook path into the real client workflow;
 - replacement of the old injection/transport dependencies that the completed
   path makes unnecessary.
 
@@ -509,7 +533,8 @@ Post-POC hardening remains tracked, but does not block that finish line:
   the controlled adapter passes, while upstream 0.9.1 does not explicitly
   transition an existing shader-resource texture back to copy-destination;
 - eventual one-payload backend auto-detection and a production-quality
-  project-owned injector beyond the controlled integration;
+  project-owned injector beyond the controlled integration, including exact-PID
+  target selection instead of the current controlled process-name selector;
 - x86 targets and any anti-cheat compatibility work.
 
 The input/interactivity design remains in

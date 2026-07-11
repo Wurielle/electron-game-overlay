@@ -11,9 +11,11 @@ multi-window composition and routing were completed in the July 11 successor
 milestone; see
 [the multi-window compositor handoff](hudhook-multiwindow-compositor-handoff.md).
 A bounded uniform 1.25 device-scale proof and per-producer-window desired/active
-scale transition foundation were subsequently added. Target-game display/client
-origin ownership and real mixed-monitor acceptance remain follow-up work, then
-texture retirement and D3D12.
+scale transition foundation were subsequently added. Controlled D3D12 parity and
+real-client-owned backend/injection-request orchestration are now complete too.
+The remaining focused POC step is removal of the superseded native
+injection/transport dependencies. Target-game display/client-origin ownership,
+real mixed-monitor acceptance, and texture retirement remain post-POC hardening.
 
 ## Reproduce the completed proof
 
@@ -47,6 +49,8 @@ The branch currently proves all of the following on Windows x64/D3D11:
 - upstream hudhook 0.9.1 injects the project-owned payload without ReShade;
 - the real built Electron client can opt into its existing overlay session with
   `--start-overlay-session`;
+- the real client's main process can additionally opt into one backend-specific
+  hudhook request while the existing Node/shared-memory transport remains in use;
 - the injected bridge connects to the existing `node-game-overlay` IPC host and
   shared mappings without loading the legacy native renderer;
 - `HUDHOOK_ELECTRON_WINDOW` is now an optional exact-name filter; when it is

@@ -12,6 +12,13 @@
         "cwd": "apps/client",
         "command": "tsc --noEmit -p tsconfig.json"
       }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "apps/client",
+        "command": "node --no-warnings --experimental-transform-types --test tests/*.test.mjs"
+      }
     }
   }
 }

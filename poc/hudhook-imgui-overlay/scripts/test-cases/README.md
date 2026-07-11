@@ -25,7 +25,7 @@ host before starting.
 | ------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------- | ------------------------------- |
 | `dx11-hook-only.ps1`                 | Manual                | hudhook injection, ImGui rendering, generated texture, and resize handling without Electron | Press Escape in the host        |
 | `dx11-electron-diagnostic.ps1`       | Manual                | Synthetic Electron OSR frame transport, upload, and composition                             | Press Escape in the host        |
-| `dx11-real-client.ps1`               | Manual                | The real `ExampleMainOverlay` integration through the public SDK                            | Press Escape in the host        |
+| `dx11-real-client.ps1`               | Manual                | Real-client-owned hudhook request and `ExampleMainOverlay` SDK composition                  | Press Escape in the host        |
 | `dx11-window-lifecycle.ps1`          | Automated then manual | Bounds, close, clear, re-registration, and resumed composition                              | Press Escape after verification |
 | `dx11-input-automated.ps1`           | Automated             | Single-window focus, click, typing, wheel, interception, release, and cleanup               | Closes itself                   |
 | `dx11-input-manual.ps1`              | Manual                | Hands-on single-window mouse, keyboard, wheel, and focus behavior                           | Use the host title-bar X        |
@@ -36,12 +36,26 @@ host before starting.
 | `dx11-multiwindow-manual.ps1`        | Manual                | Hands-on two-window input, focus, z-order, controls, capture, and caption dragging          | Use the host title-bar X        |
 | `d3d12-hook-only.ps1`                | Manual                | D3D12 hudhook injection, ImGui rendering, generated texture, and resize survival            | Press Escape in the host        |
 | `d3d12-electron-diagnostic.ps1`      | Manual                | D3D12 Electron OSR frame transport, repeated upload, and composition                        | Press Escape in the host        |
-| `d3d12-real-client.ps1`              | Manual                | The real `ExampleMainOverlay` integration through the D3D12 payload                         | Press Escape in the host        |
+| `d3d12-real-client.ps1`              | Manual                | Real-client-owned D3D12 hudhook request and `ExampleMainOverlay` composition                | Press Escape in the host        |
 | `d3d12-window-lifecycle.ps1`         | Automated then manual | D3D12 bounds, close, clear, re-registration, and resumed composition                        | Press Escape after verification |
 | `d3d12-input-automated.ps1`          | Automated             | D3D12 focus, click, typing, wheel, interception, release, and cleanup                       | Closes itself                   |
 | `d3d12-input-manual.ps1`             | Manual                | Hands-on D3D12 single-window input                                                          | Use the host title-bar X        |
 | `d3d12-multiwindow-automated-100.ps1` | Automated            | D3D12 composition, routing, capture, z-order, caption dragging, and cleanup                 | Closes itself                   |
 | `d3d12-multiwindow-manual.ps1`       | Manual                | Hands-on D3D12 two-window compositor                                                        | Use the host title-bar X        |
+
+The two real-client launchers start the controlled target first and pass the
+selected runtime directory, backend, target process name, and exact expected PID
+to the real Electron client. The client invokes the staged hudhook injector; the
+runner verifies its configured/start/return markers, the exact-PID connection,
+and the payload's receipt/upload/composition log. Injector return alone is not
+treated as proof that the payload loaded. Every other Electron launcher retains
+the external PowerShell-owned injector flow.
+
+Hudhook remains gated by the client's explicit main-process startup configuration.
+Once enabled, the controlled auto-target or the existing renderer Attach action
+may issue the single validated request. The expected PID correlates the payload
+connection after controlled process-name selection; exact-PID selection remains
+production-launcher hardening.
 
 The multi-window launchers temporarily clear `HUDHOOK_ELECTRON_WINDOW` so a
 stale single-window filter cannot invalidate the case, then restore its original

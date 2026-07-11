@@ -13,6 +13,13 @@ import {
   type OverlayHotkey,
   type OverlaySession,
 } from "electron-game-overlay";
+import {
+  HUDHOOK_CONFIGURED_MARKER,
+  HUDHOOK_TARGET_CONNECTED_MARKER,
+  HudhookOverlayLauncher,
+  type HudhookLaunchConfig,
+  type HudhookTarget,
+} from "./hudhook-launch";
 import { AppWindows } from "./window-names";
 
 const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";
@@ -41,14 +48,20 @@ class Application {
   private inputIntercepting = false;
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
+  private readonly hudhookLauncher: HudhookOverlayLauncher | null;
+  private readonly connectedHudhookTargetPids = new Set<number>();
+  private disposed = false;
 
-  constructor() {
+  constructor(hudhookConfig: HudhookLaunchConfig | null = null) {
     this.windows = new Map();
     this.overlayWindows = new Map();
     this.tray = null;
 
     this.overlay = new ElectronGameOverlay();
     this.overlaySession = this.overlay.createSession();
+    this.hudhookLauncher = hudhookConfig
+      ? new HudhookOverlayLauncher(hudhookConfig)
+      : null;
     this.overlaySession.onQuit(() => {
       this.markQuit = true;
     });
@@ -57,6 +70,9 @@ class Application {
     });
     this.overlaySession.on("hotkeyDown", (payload) => {
       this.handleOverlayHotkeyDown(payload.name);
+    });
+    this.overlaySession.on("nativeEvent", (payload) => {
+      this.handleNativeOverlayEvent(payload);
     });
   }
 
@@ -195,11 +211,28 @@ class Application {
     this.createMainWindow();
     this.setupSystemTray();
 
+    if (this.hudhookLauncher) {
+      console.log(
+        `${HUDHOOK_CONFIGURED_MARKER} backend=${this.hudhookLauncher.config.backend} runtime=${JSON.stringify(this.hudhookLauncher.config.runtimeDirectory)}`
+      );
+    }
+
     if (process.argv.includes(AUTO_START_OVERLAY_FLAG)) {
       const state = this.startOverlaySession();
       console.log(
         `${AUTO_START_OVERLAY_MARKER} windows=${JSON.stringify(state.windows)}`
       );
+    }
+
+    const autoTargetProcess = this.hudhookLauncher?.config.autoTargetProcess;
+    if (autoTargetProcess) {
+      this.ensureOverlaySessionStarted();
+      void this.requestHudhookInjection({
+        processName: autoTargetProcess,
+      }).catch(() => {
+        // HudhookOverlayLauncher emits the bounded failure diagnostics. Keep the
+        // Electron producer alive so the attached runner can collect its logs.
+      });
     }
   }
 
@@ -208,11 +241,21 @@ class Application {
   }
 
   public quit() {
-    this.overlay.dispose();
+    this.dispose();
     this.closeMainWindow();
     this.closeAllWindows();
+  }
+
+  public dispose() {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.hudhookLauncher?.dispose();
+    this.overlay.dispose();
     if (this.tray) {
       this.tray.destroy();
+      this.tray = null;
     }
   }
 
@@ -253,11 +296,9 @@ class Application {
 
     ipcMain.handle("overlay:start", () => this.startOverlaySession());
 
-    ipcMain.handle("overlay:inject", (event, title: string) => {
-      this.startOverlaySession();
-      this.overlaySession.attachToProcess({ title });
-      return this.getDemoState();
-    });
+    ipcMain.handle("overlay:inject", async (event, title: string) =>
+      this.attachOverlayToTitle(title)
+    );
 
     ipcMain.handle(
       "overlay:set-input-intercept",
@@ -282,8 +323,12 @@ class Application {
     });
 
     ipcMain.on("inject", (event, arg) => {
-      this.startOverlaySession();
-      this.overlaySession.attachToProcess({ title: arg });
+      void this.attachOverlayToTitle(arg).catch((error) => {
+        console.error(
+          "Cannot attach the overlay to the requested target",
+          error
+        );
+      });
     });
 
     ipcMain.on("showExamplePopupOverlay", () => {
@@ -312,6 +357,23 @@ class Application {
     this.ensureExampleOverlayWindow(AppWindows.exampleStatusOverlay).show();
 
     return this.getDemoState();
+  }
+
+  private async attachOverlayToTitle(title: string) {
+    this.startOverlaySession();
+    if (this.hudhookLauncher) {
+      await this.requestHudhookInjection({ windowTitle: title });
+    } else {
+      this.overlaySession.attachToProcess({ title });
+    }
+    return this.getDemoState();
+  }
+
+  private requestHudhookInjection(target: HudhookTarget) {
+    if (!this.hudhookLauncher) {
+      return Promise.reject(new Error("hudhook injection is not configured"));
+    }
+    return this.hudhookLauncher.launch(target);
   }
 
   private ensureOverlaySessionStarted() {
@@ -406,6 +468,43 @@ class Application {
     if (name === SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY) {
       this.showExampleVideoOverlay();
     }
+  }
+
+  private handleNativeOverlayEvent({
+    event,
+    payload,
+  }: {
+    event: string;
+    payload: any;
+  }) {
+    if (
+      event !== "game.process" ||
+      !this.hudhookLauncher ||
+      !this.hudhookLauncher.hasRequestedInjection
+    ) {
+      return;
+    }
+
+    const pid = payload?.pid;
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      return;
+    }
+    const expectedTargetPid = this.hudhookLauncher.config.expectedTargetPid;
+    if (expectedTargetPid !== undefined && pid !== expectedTargetPid) {
+      console.warn(
+        `Ignored hudhook target connection from unexpected pid=${pid}; expected pid=${expectedTargetPid}`
+      );
+      return;
+    }
+    if (!this.hudhookLauncher.acceptTargetConnection(pid)) {
+      return;
+    }
+    if (this.connectedHudhookTargetPids.has(pid)) {
+      return;
+    }
+
+    this.connectedHudhookTargetPids.add(pid);
+    console.log(`${HUDHOOK_TARGET_CONNECTED_MARKER} pid=${pid}`);
   }
 
   private getOverlayWindowContext(): OverlayWindowContext {
