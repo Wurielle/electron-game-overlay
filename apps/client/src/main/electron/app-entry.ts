@@ -360,12 +360,13 @@ class Application {
   }
 
   private async attachOverlayToTitle(title: string) {
-    this.startOverlaySession();
-    if (this.hudhookLauncher) {
-      await this.requestHudhookInjection({ windowTitle: title });
-    } else {
-      this.overlaySession.attachToProcess({ title });
+    if (!this.hudhookLauncher) {
+      throw new Error(
+        "hudhook injection is not configured; restart the client with the explicit hudhook runtime options"
+      );
     }
+    this.startOverlaySession();
+    await this.requestHudhookInjection({ windowTitle: title });
     return this.getDemoState();
   }
 

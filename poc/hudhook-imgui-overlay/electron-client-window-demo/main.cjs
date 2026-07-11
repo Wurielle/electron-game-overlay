@@ -1205,7 +1205,7 @@ async function createDemo() {
   }
 
   // The SDK's own paint listener runs first and synchronously publishes this
-  // same NativeImage through node-game-overlay before this observer validates
+  // same NativeImage through the hudhook transport before this observer validates
   // the complete physical bitmap.
   browserWindow.webContents.on('paint', (event, dirtyRect, image) => {
     const size = image.getSize();

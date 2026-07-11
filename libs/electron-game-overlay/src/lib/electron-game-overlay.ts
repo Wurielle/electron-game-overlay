@@ -1,5 +1,10 @@
-import { loadNativeOverlay, type NativeOverlay } from "./native.js";
-import { OverlaySession } from "./overlay-session.js";
+import {
+  createProcessInjectionUnavailableError,
+  loadNativeOverlay,
+  type NativeOverlay,
+  type NativeWindow,
+} from './native.js';
+import { OverlaySession } from './overlay-session.js';
 
 export class ElectronGameOverlay {
   private readonly nativeOverlay: NativeOverlay;
@@ -18,8 +23,10 @@ export class ElectronGameOverlay {
     return session;
   }
 
-  public findWindows(includeMinimized = false) {
-    return this.nativeOverlay.getTopWindows(includeMinimized);
+  /** @deprecated Hudhook payload discovery and launch are application-owned. */
+  public findWindows(includeMinimized = false): NativeWindow[] {
+    void includeMinimized;
+    throw createProcessInjectionUnavailableError();
   }
 
   public dispose() {

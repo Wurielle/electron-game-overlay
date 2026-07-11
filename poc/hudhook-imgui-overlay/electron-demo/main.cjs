@@ -90,8 +90,8 @@ function fail(reason, error) {
 }
 
 async function createDemo() {
-  // Load the public SDK after Electron is ready. Its native adapter resolves
-  // the existing node-game-overlay workspace package and native addon.
+  // Load the public SDK after Electron is ready. Its transport adapter resolves
+  // the built electron-game-overlay workspace package and loopback transport.
   const { ElectronGameOverlay } = require('electron-game-overlay');
 
   overlay = new ElectronGameOverlay();
@@ -201,7 +201,7 @@ async function createDemo() {
   });
 
   // ElectronOverlayWindow.show() registers the BrowserWindow with the native
-  // overlay after session.start() has initialized node-game-overlay.
+  // overlay after session.start() has initialized the hudhook transport.
   overlayWindow.show();
 
   log(

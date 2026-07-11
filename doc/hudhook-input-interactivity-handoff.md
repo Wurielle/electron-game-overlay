@@ -13,9 +13,13 @@ milestone; see
 A bounded uniform 1.25 device-scale proof and per-producer-window desired/active
 scale transition foundation were subsequently added. Controlled D3D12 parity and
 real-client-owned backend/injection-request orchestration are now complete too.
-The remaining focused POC step is removal of the superseded native
-injection/transport dependencies. Target-game display/client-origin ownership,
-real mixed-monitor acceptance, and texture retirement remain post-POC hardening.
+A follow-on source migration replaced the native add-on/shared-memory path with
+the project-owned authenticated Node/Rust loopback transport and removed the old
+packages from the active client/SDK npm dependency and root build paths. Archived
+Nx project definitions remain explicitly selectable as legacy reference. The
+replacement was revalidated on July 11 with the D3D11/D3D12 input, lifecycle,
+multi-window, and real-client launchers listed below. Target-game display/client-origin ownership, real
+mixed-monitor acceptance, and texture retirement remain post-POC hardening.
 
 ## Reproduce the completed proof
 
@@ -28,14 +32,14 @@ git pull --ff-only
 Run the deterministic input regression first:
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInput -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-automated.ps1
 ```
 
 Then rerun the lifecycle and real-client compositor regressions:
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Client -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-window-lifecycle.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-client.ps1
 ```
 
 All commands must be run from a regular PowerShell at the repository root. See
@@ -44,15 +48,16 @@ safety boundaries.
 
 ## Proven baseline
 
-The branch currently proves all of the following on Windows x64/D3D11:
+The current tree proves all of the following on controlled Windows x64 targets:
 
 - upstream hudhook 0.9.1 injects the project-owned payload without ReShade;
 - the real built Electron client can opt into its existing overlay session with
   `--start-overlay-session`;
 - the real client's main process can additionally opt into one backend-specific
-  hudhook request while the existing Node/shared-memory transport remains in use;
-- the injected bridge connects to the existing `node-game-overlay` IPC host and
-  shared mappings without loading the legacy native renderer;
+  hudhook request while the project-owned loopback transport is active;
+- the injected bridge connects to an ephemeral IPv4 loopback port, authenticates
+  with a fresh session token, and receives raw BGRA frames without loading the
+  legacy native renderer or Node native add-on;
 - `HUDHOOK_ELECTRON_WINDOW` is now an optional exact-name filter; when it is
   unset, every announced window participates in the ordered compositor;
 - premultiplied BGRA is converted to straight RGBA off the render thread;
@@ -66,7 +71,9 @@ The branch currently proves all of the following on Windows x64/D3D11:
 
 Primary implementation files:
 
-- [frame/IPC bridge](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_frame.rs);
+- [frame/transport bridge](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_frame.rs);
+- [Node loopback transport](../libs/electron-game-overlay/src/lib/hudhook-transport.ts);
+- [project-owned input translation](../libs/electron-game-overlay/src/lib/input-translation.ts);
 - [hudhook render loop](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/lib.rs);
 - [real-client/lifecycle runner](../poc/hudhook-imgui-overlay/scripts/run-electron-dx11.ps1);
 - [controlled lifecycle producer](../poc/hudhook-imgui-overlay/electron-client-window-demo/main.cjs);
@@ -77,10 +84,10 @@ Primary implementation files:
 The implementation reuses the existing Electron side:
 
 1. `OverlaySession.input.intercept()` and `.release()` send
-   `command.input.intercept` through the Node add-on.
+   `command.input.intercept` through the project-owned Node transport.
 2. The game-side client is expected to return `game.input.intercept`, `game.input`,
    and `game.window.focused` packets.
-3. `OverlaySession` receives `game.input`, calls the add-on's
+3. `OverlaySession` receives `game.input`, calls the pure TypeScript
    `translateInputEvent()`, divides the returned local physical `x`/`y` by the
    packet's optional `scaleFactorMicros`, and calls
    `BrowserWindow.webContents.sendInputEvent()` with signed DIP coordinates.
@@ -92,12 +99,13 @@ The implementation reuses the existing Electron side:
 Relevant existing code:
 
 - [OverlaySession input API and forwarding](../libs/electron-game-overlay/src/lib/overlay-session.ts);
-- [native packet schemas](../libs/node-game-overlay/src/message/gmessage.hpp);
-- [Node command serialization and input translation](../libs/node-game-overlay/src/overlay.h).
+- [Node packet framing, authentication, and session state](../libs/electron-game-overlay/src/lib/hudhook-transport.ts);
+- [TypeScript Win32-to-Electron translation](../libs/electron-game-overlay/src/lib/input-translation.ts);
+- [Rust packet framing and validation](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_wire.rs).
 
 The hudhook payload now completes the game-side producer: it handles
 `command.input.intercept`, publishes interception/focus acknowledgements, and sends
-translated input packets back to the Node host from its IPC worker.
+Win32 input packets back to the Node host from its loopback worker.
 
 ## Implemented milestone
 
@@ -130,42 +138,50 @@ outside-bounds pointer capture/release, outside-overlay swallowing, right/middle
 buttons, horizontal-wheel conversion, system keys, `WM_SYSCHAR`/`WM_UNICHAR`,
 move coalescing, synthetic releases on cancellation/lifecycle cleanup, guarded
 filter transitions, and transport retry classification. Those cases are unit or
-native-translator coverage, not claims about the Electron DOM end-to-end run.
+TypeScript-translator coverage, not claims about the Electron DOM end-to-end run.
 
 ## Implemented design
 
 ### 1. Bidirectional bridge
 
-`electron_frame.rs` was extended without sending synchronous cross-process messages
-from the render/present thread:
+`HudhookLoopbackTransport` starts a Node TCP server on `127.0.0.1` with an
+ephemeral port. It atomically publishes a versioned discovery document under the
+user's temporary directory containing the producer PID, port, and a fresh
+256-bit token. The Rust payload reads that document, connects only to IPv4
+loopback, and sends the token, protocol version, target PID, and executable path
+in its first `game.process` packet. Node rejects malformed, wrong-version, or
+wrong-token first packets before publishing a snapshot.
 
-- deserialize `command.input.intercept { intercept }`;
-- store requested/desired/effective interception in shared atomic state;
-- add an outbound queue owned by `ElectronFrameBridge`;
-- wake the existing IPC worker with a private `WM_APP` message;
-- drain and serialize outbound packets on that worker;
-- generalize the current `send_game_process()` packer instead of adding a second
-  packet format;
-- coalesce only adjacent mouse moves and preserve FIFO barriers for every other
-  queued packet;
-- use bounded transport sends, retry only idempotent focus/intercept controls, and
-  never retry non-idempotent `game.input` after an ambiguous failure.
+The discovery PID identifies the producer that owns the rendezvous document; it
+is not the target selector. The controlled real-client launcher correlates the
+authenticated hello's target PID against its expected PID at the application
+event layer. One well-known discovery document and one active producer are an
+intentional POC constraint; per-target rendezvous belongs to production-launcher
+hardening.
 
-The existing envelope is:
+Both directions use one incremental framing contract:
 
 ```text
-i32 direction = 0
-i32 client_id = 0
-i32 host_port = 0
-i32 message_id = 100
-length-prefixed UTF-8 message type
-length-prefixed UTF-8 JSON
+u32 little-endian body bytes
+u8 packet kind: 1 = JSON, 2 = raw frame
+
+JSON body: UTF-8 object
+frame body: u32 windowId, u32 width, u32 height, width * height * 4 BGRA bytes
 ```
 
-Send it to the current host with a two-second `SendMessageTimeoutW` for
-`WM_COPYDATA`, using the injected process ID as `dwData`. A failed idempotent
-control retries after 250 ms; input is at-most-once, and explicit rejection is not
-retried.
+JSON bodies are capped at 1 MiB and frame bodies at 256 MiB. Both implementations
+validate packet sizes and frame dimensions before dispatch. Node sends a canonical
+window/control snapshot and each latest frame after authentication, allowing a
+fresh connection to recover current state.
+
+`electron_frame.rs` still sends no synchronous cross-process traffic from the
+render/present callbacks. A private `WM_APP` wake serializes state mutations, while
+a nonblocking network worker uses bounded Rust channels (256 outbound commands and
+8 inbound packets). The Node sender preserves controls as FIFO barriers and
+replaces only adjacent, still-unsent frames for the same window. On disconnect the
+payload clears its scene and outbound input, publishes fail-open interception, and
+retries discovery after 500 ms. Idempotent focus/intercept controls may retry after
+250 ms; non-idempotent `game.input` is never replayed after an ambiguous failure.
 
 Outbound JSON shapes:
 
@@ -244,12 +260,13 @@ raster change sets `rasterChanged: true`, causing the Rust bridge to clear the
 latest compositable raster until the next framebuffer instead of pairing old
 pixels with new geometry. The old GPU texture is not retired by this mechanism.
 
-Shared mappings grow when either required dimension exceeds capacity, fixing the
-former area-only comparison. Registration and growth are transactional: native
-code validates checked dimensions/byte sizes and allocates before committing or
-broadcasting state, preserving the last working mapping if allocation fails.
-Each frame write additionally checks the exact source-buffer length, overflow,
-declared dimensions, and actual mapping capacity before copying.
+Frames now travel directly as raw BGRA packet bodies rather than through named
+shared mappings. The Node encoder requires positive unsigned dimensions, checks
+`width * height * 4` as a safe integer, requires the exact source-buffer length,
+and enforces the frame-body cap. The Rust decoder independently checks the header,
+overflow, body length, dimensions, and exact pixel byte count before publishing a
+frame. A `rasterChanged` control remains a barrier that drops stale unsent frames
+for that window before the new geometry is delivered.
 
 Hudhook derives ImGui `display_size` from the native swap-chain buffer. The
 payload therefore normalizes `display_framebuffer_scale` to `(1, 1)` so the D3D
@@ -280,11 +297,10 @@ real monitor transition. Target-HWND/client-origin ownership, backing-window
 placement, multi-target routing, physical/VM mixed-scale behavior, and Electron
 42 OSR semantics remain separate validation work.
 
-This slice also fixes and hardens native translation:
+Input translation is now project-owned TypeScript rather than native add-on code:
 
-- decode mouse coordinates as signed 16-bit values in
-  `libs/node-game-overlay/src/overlay.h`; captured drags may be negative;
-- rename the emitted Electron field `canScroll ` to `canScroll`.
+- decode mouse coordinates as signed 16-bit values; captured drags may be negative;
+- rename the emitted Electron field `canScroll ` to `canScroll`;
 - emit horizontal wheel as a correctly signed Electron `deltaX`;
 - translate `WM_SYSCHAR` and valid UTF-32 `WM_UNICHAR` while rejecting dead,
   reserved, invalid, and otherwise unsupported messages;
@@ -331,12 +347,12 @@ Do not stress-click it until texture retirement is implemented.
 
 ## Unit coverage
 
-The router tests and native translation self-test cover:
+The Rust router tests and TypeScript translation tests cover:
 
 - inclusive/exclusive hit-test edges and signed coordinates;
 - game-client to overlay-local mapping;
 - wheel screen-to-client conversion seams;
-- horizontal-wheel routing and native `deltaX` translation;
+- horizontal-wheel routing and TypeScript `deltaX` translation;
 - focus packet before first mouse-down packet;
 - pointer capture through an out-of-bounds move/release;
 - matching synthetic button-up packets for `WM_CANCELMODE`, `WM_CAPTURECHANGED`,
@@ -346,18 +362,24 @@ The router tests and native translation self-test cover:
   native messages including X1/X2;
 - close, target focus loss, intercept release, and re-registration cleanup;
 - outbound packet encoding and move coalescing;
+- authenticated loopback snapshot ordering, authentication rejection, raw frame
+  framing, fragmented decoding, size caps, and control/frame backpressure barriers;
 - guarded arming/disarming transitions, acknowledgement ordering, and
   idempotent-control versus at-most-once-input retry policy;
 - fail-open behavior when no selected window exists.
 
-The completed verification sequence is:
+The replacement verification sequence is:
 
 ```powershell
 npx nx run client:typecheck
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInput -Wait
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Client -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-automated.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-multiwindow-automated-125.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-window-lifecycle.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-client.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-input-automated.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-multiwindow-automated-100.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-window-lifecycle.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-real-client.ps1
 ```
 
 Also run workspace Rust tests, `cargo fmt --check`, and Clippy with warnings denied
@@ -378,7 +400,10 @@ through the Windows MSVC developer shell.
 - the first software-capture implementation preserves drags outside the Electron rectangle
   while messages still reach the target HWND; cross-HWND capture needs a separate
   Win32 capture strategy.
-- High-frequency mouse movement must not build an unbounded IPC queue.
+- Rust network handoff is bounded, and adjacent same-window Node frames coalesce,
+  but the Node sender does not yet impose a global queued-byte cap or application
+  frame acknowledgement. Pathological alternating multi-window/control traffic is
+  therefore still transport-hardening work.
 - DOM text focus depends on sending focus before mouse down and preserving FIFO order.
 - `command.cursor` is still ignored; cursor-shape feedback is a follow-up.
 - Repeated bitmap dimension changes allocate new hudhook texture IDs and currently
@@ -386,8 +411,10 @@ through the Windows MSVC developer shell.
 - A failed texture upload is retried only when Electron publishes a newer frame.
 - The runner's `Start-Process -ArgumentList` path is not robust to repository paths
   containing spaces.
-- The native add-on still exposes one fixed IPC host name, so only one producer may
-  run at a time.
+- The POC exposes one well-known discovery document, so only one producer session
+  may run at a time. The random token prevents accidental/stale clients from joining
+  that session, but same-user discovery-file access and per-target rendezvous remain
+  production threat-model and launcher work.
 - The forced scale proofs are uniform. Per-window desired/active transitions and
   a PMv2-aware controlled HWND are implemented, but this machine exposes only a
   single 100% virtual display. Real target-display ownership, game-client origin
@@ -397,8 +424,9 @@ through the Windows MSVC developer shell.
 
 ## Scope discipline
 
-The first input slice deliberately did not redesign the Electron SDK, shared-memory
-format, multi-window compositor, or graphics backend. It reuses the existing packet
-protocol and keeps upstream hudhook pinned. A hudhook fork remains justified only if
-a controlled test demonstrates a missing hook capability that cannot live in project
+The original input slice deliberately did not redesign the Electron SDK,
+multi-window compositor, or graphics backend. The follow-on migration replaced its
+transport and input translator while preserving the public SDK event shapes and
+keeping upstream hudhook pinned. A hudhook fork remains justified only if a
+controlled test demonstrates a missing hook capability that cannot live in project
 code or be contributed upstream.

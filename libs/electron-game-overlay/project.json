@@ -4,7 +4,6 @@
   "sourceRoot": "libs/electron-game-overlay/src",
   "projectType": "library",
   "tags": [],
-  "implicitDependencies": ["node-game-overlay"],
   "// targets": "to see all targets run: nx show project electron-game-overlay --web",
   "targets": {
     "test": {

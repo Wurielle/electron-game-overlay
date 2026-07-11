@@ -3,9 +3,9 @@
 > Status: complete for the controlled Windows x64/D3D11 compositor and the
 > bounded uniform Electron device-scale proof at 1.25, with a per-window
 > desired/active runtime-scale transition foundation. The deterministic and
-> manual proofs pass through the existing Electron SDK, Node add-on IPC, shared
-> mappings, upstream hudhook 0.9.1, and Dear ImGui renderer without loading the
-> legacy injected renderer.
+> manual proofs now pass through the existing Electron SDK, the authenticated
+> Node/Rust loopback transport, upstream hudhook 0.9.1, and Dear ImGui renderer
+> without loading the legacy native add-on or injected renderer.
 
 ## Run the proofs
 
@@ -20,7 +20,7 @@ Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
 Neither mode needs a separate `client:dev` process. Both are attached runs and
 clean only their per-run Electron process tree and controlled host.
 Run only one controlled runner at a time; concurrent modes contend for the
-native add-on's fixed IPC host name.
+POC's single well-known loopback discovery document.
 
 ## Completed contract
 
@@ -89,26 +89,23 @@ following framebuffer arrives. That prevents stale pixels from being drawn or
 alpha-tested with new metadata; it does not remove the old GPU texture from
 hudhook's cache.
 
-Native shared mappings are strict and transactional. Initial registration and
-growth validate dimensions and checked byte sizes, allocate before committing or
-broadcasting state, and retain the last working registration/mapping if
-allocation fails. Frame writes require an exact source length and verify
-dimensions, overflow, declared limits, and actual mapping capacity before the
-copy. If either frame dimension exceeds the existing capacity, the Node host
-commits a correctly sized replacement together with the new geometry and mapping
-name.
+Raw BGRA frame packets are strict and bounded. Node validates positive dimensions,
+checked byte sizes, the exact source length, and the 256 MiB body cap before
+sending. Rust independently validates framing, overflow, dimensions, and the exact
+pixel length before publication. A raster-changing bounds control clears stale
+queued/cached pixels before the matching replacement frame.
 
 ## State and rendering design
 
-The IPC worker owns an ordered registry. Each entry retains native ID, name,
-physical bounds, transparency, mapping, and latest immutable frame. It publishes one
+The bridge state worker owns an ordered registry. Each entry retains native ID,
+name, physical bounds, transparency, and its latest immutable frame. It publishes one
 reference-counted `ElectronScene` containing the currently framed windows in
 back-to-front order.
 
 Scene and input-router mutations share the bridge's ordering lock. Lifecycle,
 bounds, frame-alpha, and stack changes update the router and publish the matching
 immutable scene as one CPU-side transition. The render loop never reads mutable
-mapping state.
+transport state.
 
 Metadata-only or invalid-bounds registrations stay in the ordered bridge registry
 but are absent from both the rendered scene and input router. A window becomes
@@ -154,7 +151,7 @@ hit-test bounds; close, reconnect, producer bounds for that window, focus loss,
 or capture cancellation invalidates stale work.
 
 This movement is intentionally interactive and payload-local, matching the useful
-part of the legacy renderer without extending `node-game-overlay`. Motion is
+part of the legacy renderer without extending the public wire schema. Motion is
 posted to and coalesced by the bridge; each applied position atomically republishes
 the matching render and hit-test bounds. The hidden Electron `BrowserWindow`
 retains its producer-owned bounds. Reconnect, close/re-register, or a later
@@ -275,11 +272,12 @@ exact process tree.
 - CPU scene/router publication is atomic, but a newly published alpha frame can
   precede its corresponding GPU upload by one `Present`, briefly making hit-test
   alpha newer than the visible texture.
-- Click-to-front and caption-drag placement are payload-local. The existing IPC
+- Click-to-front and caption-drag placement are payload-local. The current wire
   schema has no persistent z-order or payload-to-producer bounds field, so
   reconnect restores `overlay.init` registration order and producer placement.
-- The proof is Windows x64/D3D11 only, uses the controlled upstream injector, and
-  permits only one Electron producer because the Node add-on host name is fixed.
+- The proof is controlled Windows x64/D3D11 and D3D12, uses the upstream injector,
+  and permits only one Electron producer because the POC publishes one discovery
+  document.
 
 ## Next work
 
@@ -288,13 +286,13 @@ exact process tree.
 2. Run the PMv2 host and producer transition manually across real or VM
    differently scaled displays.
 3. Add safe deferred texture retirement despite the current hudhook texture API.
-4. Repeat the controlled proof with hudhook's D3D12 backend.
-5. Replace the controlled injector with a production-quality project-owned
+4. Replace the controlled injector with a production-quality project-owned
    launcher that validates remote `LoadLibraryW` and exact buffer sizing.
 
 Primary implementation files are:
 
-- [frame/scene IPC bridge](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_frame.rs);
+- [frame/scene transport bridge](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_frame.rs);
+- [wire framing](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_wire.rs);
 - [ordered input router](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_input.rs);
 - [per-window renderer](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/lib.rs);
 - [controlled Electron producer](../poc/hudhook-imgui-overlay/electron-client-window-demo/main.cjs);

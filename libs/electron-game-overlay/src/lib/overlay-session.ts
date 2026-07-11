@@ -2,7 +2,10 @@ import { BrowserWindow, screen } from 'electron';
 import { physicalInputToDip } from './coordinate-space.js';
 import { toNativeCursor } from './cursor.js';
 import { ElectronOverlayWindow } from './electron-overlay-window.js';
-import type { NativeOverlay } from './native.js';
+import {
+  createProcessInjectionUnavailableError,
+  type NativeOverlay,
+} from './native.js';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
 import { getWindowContentBounds } from './window-content-bounds.js';
 import {
@@ -195,13 +198,12 @@ export class OverlaySession {
     };
   }
 
-  public attachToProcess(target: OverlayProcessTarget) {
-    this.ensureStarted();
-    if ('pid' in target) {
-      return this.injectProcessByPid(target.pid, target.includeMinimized);
-    }
-
-    return this.injectProcessByTitle(target.title, target.includeMinimized);
+  /** @deprecated Hudhook payload discovery and launch are application-owned. */
+  public attachToProcess(
+    target: OverlayProcessTarget,
+  ): OverlayProcessAttachResult | OverlayProcessAttachResult[] | null {
+    void target;
+    throw createProcessInjectionUnavailableError();
   }
 
   private createWindow(options: ElectronOverlayWindowOptions) {
@@ -214,39 +216,6 @@ export class OverlaySession {
 
   private getWindow(id: string) {
     return this.windowsById.get(id) || null;
-  }
-
-  private injectProcessByTitle(
-    title: string,
-    includeMinimized = false,
-  ): OverlayProcessAttachResult[] {
-    console.log(`--------------------\n try inject ${title}`);
-    const results: OverlayProcessAttachResult[] = [];
-    for (const window of this.overlay.getTopWindows(includeMinimized)) {
-      if (window.title && window.title.indexOf(title) !== -1) {
-        console.log(
-          `--------------------\n injecting ${JSON.stringify(window)}`,
-        );
-        results.push(this.overlay.injectProcess(window));
-      }
-    }
-    return results;
-  }
-
-  private injectProcessByPid(
-    pid: number,
-    includeMinimized = false,
-  ): OverlayProcessAttachResult | null {
-    const window = this.overlay
-      .getTopWindows(includeMinimized)
-      .find((candidate) => candidate.processId === pid);
-
-    if (!window) {
-      return null;
-    }
-
-    console.log(`--------------------\n injecting ${JSON.stringify(window)}`);
-    return this.overlay.injectProcess(window);
   }
 
   private setInputIntercept(intercept: boolean) {

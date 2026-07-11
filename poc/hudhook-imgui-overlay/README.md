@@ -8,7 +8,7 @@ The payload renders:
 
 - an always-visible diagnostics panel with frame and display information;
 - every matching Electron offscreen window received through the repository's
-  existing `electron-game-overlay` / `node-game-overlay` flow;
+  project-owned `electron-game-overlay` loopback transport;
 - a generated RGBA checkerboard while no Electron scene is available.
 
 The compositor treats registration order as back-to-front. `overlay.init`
@@ -16,7 +16,7 @@ preserves that order, a new or duplicate `window` registration is deduplicated
 and appended on top, and a pointer-down intent raises the hit window without a
 new wire message. It draws each window at signed native bounds, alpha-hit-tests
 transparent pixels so input can fall through to a lower Electron window, and
-follows per-window bounds, close, and re-registration events. The IPC worker
+follows per-window bounds, close, and re-registration events. The bridge worker
 publishes an immutable ordered scene and matching router state atomically;
 hudhook's render thread maintains a texture cache keyed by native window ID.
 Premultiplied BGRA frames are converted to straight RGBA before publication.
@@ -51,12 +51,13 @@ to the desired content rectangle. A raster-changing bounds packet sets
 until the following framebuffer, preventing old pixels from being paired with
 new metadata. This does not retire the cached GPU texture.
 
-The Node transport validates dimensions, checked byte counts, exact source
-buffer length, and mapping capacity before any frame copy. Initial and grown
-mappings are allocated before their registration/geometry is committed or
-broadcast, so an allocation failure preserves the last working state. A mapping
-grows when either incoming dimension exceeds its existing capacity rather than
-using an unsafe area comparison.
+The project-owned Node transport listens only on an ephemeral IPv4 loopback port,
+publishes a versioned discovery document with a fresh 256-bit session token, and
+requires a token-authenticated `game.process` hello before exchanging state. JSON
+control packets and raw premultiplied-BGRA frame packets use an incremental,
+length-prefixed wire format with checked dimensions, exact source byte counts,
+and explicit size limits. Controls remain FIFO barriers while adjacent unsent
+frames for the same window are replaced by the newest frame.
 
 `HUDHOOK_ELECTRON_WINDOW`, when set, is an optional exact-name filter. Without
 it, every announced window participates. The injected payload does not load the
@@ -107,7 +108,7 @@ matches the scenario you want to inspect:
 | Test case | Launcher |
 | --- | --- |
 | Hook and generated-texture smoke test | `dx11-hook-only.ps1` |
-| Electron SDK/IPC diagnostic producer | `dx11-electron-diagnostic.ps1` |
+| Electron SDK/transport diagnostic producer | `dx11-electron-diagnostic.ps1` |
 | Real client integration | `dx11-real-client.ps1` |
 | Window lifecycle regression | `dx11-window-lifecycle.ps1` |
 | Automated input regression | `dx11-input-automated.ps1` |
@@ -172,7 +173,7 @@ Useful proof markers are:
 - `HUDHOOK_CLIENT_HUDHOOK_TARGET_CONNECTED pid=<controlled-host-pid>`;
 - `Electron overlay metadata selected`;
 - `window_name=ExampleMainOverlay`;
-- `Electron frame received from node-game-overlay`;
+- `Electron frame received from hudhook transport`;
 - `Electron frame uploaded to GPU`;
 - `Electron overlay composed at native bounds`.
 
@@ -326,8 +327,8 @@ it launched. The test-case launcher selects the attached behavior for you.
 
 `-ClientInput` uses the same real `ExampleMainOverlay` page and waits for the
 injected target's `game.process` event before requesting input interception. The
-runner first rebuilds the Electron overlay SDK and x64 native add-on so its input
-translation fixes cannot be stale. A proof-only page hook then validates signed
+runner first rebuilds the Electron overlay SDK so its project-owned TypeScript
+input translation fixes cannot be stale. A proof-only page hook then validates signed
 coordinates and the exact wheel field contract before enabling its DOM markers.
 Normal uses of the example page do not install those listeners or log field text. The
 page reports the text field's live DOM rectangle; the runner maps its center
@@ -365,8 +366,8 @@ router/bridge tests separately cover horizontal-wheel conversion, pointer captur
 outside the overlay bounds, outside-overlay swallowing, right/middle buttons,
 system keys and extended character messages, synthetic releases on capture
 cancellation/lifecycle cleanup, guarded filter transitions, adjacent mouse-move
-coalescing, and at-most-once input retry classification. The native translation
-self-test covers horizontal-wheel `deltaX`; neither horizontal wheel nor X buttons
+coalescing, and at-most-once input retry classification. The TypeScript translation
+test covers horizontal-wheel `deltaX`; neither horizontal wheel nor X buttons
 are claimed by the DOM end-to-end proof.
 
 Hudhook 0.9.1 publishes filter changes only during `Present`. The runner waits for
@@ -380,11 +381,11 @@ first slice is project-owned routing state: it preserves drags outside the overl
 rectangle while messages still reach the target HWND, but cross-HWND capture
 remains compatibility work.
 
-Outbound `WM_COPYDATA` runs only on the IPC worker with a two-second
-`SendMessageTimeoutW`. Failed idempotent focus/intercept controls retry after 250 ms;
-non-idempotent `game.input` packets are never retried after an ambiguous failure,
-so a transport fault can drop input but cannot duplicate a click or key. Explicit
-host rejection is not retried.
+Outbound game packets leave the render callbacks through the bridge's bounded
+queues and nonblocking loopback worker. Failed idempotent focus/intercept controls
+retry after 250 ms; non-idempotent `game.input` packets are never replayed after
+an ambiguous failure, so a transport fault can drop input but cannot duplicate a
+click or key.
 
 ## Run the minimal diagnostic producer
 
@@ -392,7 +393,7 @@ host rejection is not retried.
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-electron-diagnostic.ps1
 ```
 
-This original synthetic frame producer remains useful for a quick SDK/IPC/upload
+This original synthetic frame producer remains useful for a quick SDK/transport/upload
 smoke test. Its readiness marker is `HUDHOOK_ELECTRON_DEMO_READY` in
 `electron-demo.stdout.log`.
 
@@ -404,8 +405,9 @@ verification and leaves the controlled host and only that mode's Electron proces
 tree alive for inspection. Close them before the next run. All four input modes
 remain attached and clean their owned process trees: manual modes wait for the
 title-bar X, while deterministic modes drive the host to normal exit. Only one
-controlled runner or Electron overlay host may run at a time. Do not run these
-modes concurrently because the current native add-on uses a fixed IPC host name.
+controlled runner or Electron overlay producer may run at a time. Do not run these
+modes concurrently because this POC publishes one well-known discovery document
+for the active loopback session.
 
 ## Run the hook-only fallback
 
@@ -473,6 +475,13 @@ The message `Injection request completed` means hudhook's remote-thread injectio
 
 ### Injector limitation
 
+The controlled runner gives the target a bounded 750 ms warm-up after HWND/DPI
+readiness. The test host publishes its window just before its first stable
+`Present`; racing that boundary can fault upstream D3D11 hook installation before
+the payload produces a log. The warm-up reduces this controlled startup race but
+does not turn the upstream injector into a production guarantee; a run with no
+fresh payload evidence still fails.
+
 The upstream hudhook 0.9.1 injector is sufficient for this controlled POC, but it is not the intended production launcher. It does not reject a zero return from remote `LoadLibraryW`, and its fixed `MAX_PATH` copy reads beyond the source path buffer. The controlled runner compensates for the first issue by requiring fresh payload evidence, but the production launcher should use a small project-owned injector—or an upstream hudhook fix—that sizes the remote buffer from the actual path and validates every Windows API result.
 
 This does not require forking or modifying hudhook's graphics hooks, renderer lifecycle, or ImGui integration.
@@ -484,8 +493,9 @@ This milestone now covers:
 - D3D11 and D3D12 injection and Dear ImGui rendering through upstream hudhook 0.9.1;
 - the real built Electron client's existing overlay-session startup path and
   opt-in ownership of backend-specific hudhook injection requests;
-- simultaneous Electron windows over the existing Node/shared-memory IPC, with
-  registration-order back-to-front composition, deduplication, append-on-register,
+- simultaneous Electron windows over the authenticated Node/Rust loopback transport,
+  with raw BGRA frame packets, JSON controls, registration-order back-to-front
+  composition, deduplication, append-on-register,
   and click-to-front intent generations;
 - signed physical-pixel bounds, transparency, and premultiplied-BGRA correction;
 - DIP-to-physical conversion for complete rectangles, constraints, captions, and
@@ -495,7 +505,7 @@ This milestone now covers:
   and renderer-acknowledged cropped-capture recovery for ambiguous transitions;
 - routing-time scale tags on input packets with legacy active-scale fallback;
 - `rasterChanged` scene suppression between committed geometry and its matching
-  frame, plus transactional checked native mapping allocation and writes;
+  frame, plus checked packet dimensions and exact frame byte counts;
 - alpha-aware hit testing that can fall through to a lower Electron window;
 - one atomic immutable scene/router publication per lifecycle, metadata, frame, or
   stack mutation;
@@ -513,10 +523,13 @@ Controlled D3D12 parity is now complete: the hook-only texture/first-frame proof
 live single-window input proof, repeated Electron texture updates, and the full
 two-window routing/lifecycle/caption-drag proof pass against the D3D12 host. The
 real-client launchers also prove client-owned injection request orchestration for
-both backends. The focused POC finish line is now:
-
-- replacement of the old injection/transport dependencies that the completed
-  path makes unnecessary.
+both backends. The focused POC finish line is complete and revalidated: the active
+client/SDK uses only the project-owned Node/Rust loopback transport and hudhook
+runtime, root `npm run build`/`build:all` and the active client/SDK dependency
+path no longer build or require `node-game-overlay` or `native-game-overlay`,
+archived Nx project definitions remain explicitly selectable as legacy reference,
+and the D3D11/D3D12 input,
+multi-window, lifecycle, and real-client launchers pass on the replacement.
 
 Post-POC hardening remains tracked, but does not block that finish line:
 
@@ -529,6 +542,8 @@ Post-POC hardening remains tracked, but does not block that finish line:
   1/1.25/1.5/2 regressions available on the current single 100% virtual display;
 - safe deferred retirement of superseded GPU textures: hudhook 0.9.1 exposes
   texture load/replace but no texture-removal API;
+- per-target rendezvous and a production same-user discovery-file threat model
+  beyond the controlled one-producer, token-authenticated loopback session;
 - broader D3D12 driver/debug-layer coverage for repeated texture replacement;
   the controlled adapter passes, while upstream 0.9.1 does not explicitly
   transition an existing shader-resource texture back to copy-destination;
@@ -543,7 +558,7 @@ The completed multi-window design and acceptance record is in
 [`doc/hudhook-multiwindow-compositor-handoff.md`](../../doc/hudhook-multiwindow-compositor-handoff.md).
 
 Click-to-front order and caption-drag placement are payload-local because the
-existing IPC schema has no persistent z-order or payload-to-producer bounds
+current wire schema has no persistent z-order or payload-to-producer bounds
 field. The rendered and hit-test rect moves immediately, but the hidden Electron
 `BrowserWindow` retains its producer-owned bounds. A reconnect or later producer
 registration/bounds event can therefore restore that placement. Hide/show changes
@@ -552,9 +567,8 @@ consequently affects later initialization too. CPU scene/router publication is
 atomic, but a newly published alpha frame can precede its corresponding GPU upload
 by one `Present`, creating a narrow visual-versus-hit-test timing window.
 
-The next shared compositor work is real-client integration and removal of
-superseded dependencies. Target-display/client-origin
-ownership, manual mixed-scale hardware/VM acceptance, safe texture retirement,
-and related geometry/DPI edge cases stay in the post-POC hardening backlog.
+The focused POC is finished. Target-display/client-origin ownership, manual
+mixed-scale hardware/VM acceptance, safe texture retirement, and related
+geometry/DPI edge cases stay in the post-POC backlog.
 A hudhook fork is justified only if testing reproduces a required graphics-hook
 change that cannot live in this project or be contributed upstream.

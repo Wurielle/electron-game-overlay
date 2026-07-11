@@ -1,5 +1,6 @@
 mod electron_frame;
 mod electron_input;
+mod electron_wire;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};

@@ -1,72 +1,60 @@
-//! Minimal client for the Electron overlay host's existing frame transport.
+//! Client for the Electron overlay host's loopback hudhook transport.
 //!
-//! The Node add-on owns the named mappings and sends low-volume control
-//! messages through a message-only Win32 window. This module implements the
-//! compatible client half without depending on the legacy injected renderer.
+//! A message-only window still serializes scene, input, and drag mutations on
+//! one thread. Cross-process traffic uses framed TCP on the loopback interface.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::ffi::c_void;
 use std::fmt;
-use std::mem::size_of;
-use std::slice;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use hudhook::tracing::{debug, info, warn};
 use serde::Deserialize;
-use windows::core::{w, Error as WindowsError, PCWSTR};
-use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
-};
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
-use windows::Win32::System::DataExchange::COPYDATASTRUCT;
-use windows::Win32::System::Memory::{
-    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ,
-    MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
-};
-use windows::Win32::System::Threading::{
-    GetCurrentProcessId, OpenMutexW, ReleaseMutex, WaitForSingleObject, MUTEX_MODIFY_STATE,
-    SYNCHRONIZATION_SYNCHRONIZE,
-};
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    FindWindowW, GetAncestor, GetForegroundWindow, GetMessageW, GetWindowLongPtrW, KillTimer,
-    PostMessageW, PostQuitMessage, SendMessageTimeoutW, SetTimer, SetWindowLongPtrW,
-    TranslateMessage, GA_ROOT, GWLP_USERDATA, GWLP_WNDPROC, HWND_MESSAGE, MSG, MSGFLT_ALLOW,
-    SMTO_ABORTIFHUNG, SMTO_BLOCK, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COPYDATA, WM_TIMER,
-    WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor,
+    GetForegroundWindow, GetMessageW, GetWindowLongPtrW, KillTimer, PostMessageW, PostQuitMessage,
+    SetTimer, SetWindowLongPtrW, TranslateMessage, GA_ROOT, GWLP_USERDATA, GWLP_WNDPROC,
+    HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_TIMER, WS_POPUP,
 };
 
 use crate::electron_input::{
     AtomicInterceptionState, DragMoveIntent, InputCaption, InputPoint, InputRect, InputRouter,
     InputRouterState, InputWindow, OutboundMessage, OutboundQueue,
 };
+use crate::electron_wire::{encode_json, WireDecoder, WireFrame, WirePacket};
 
 /// Optional exact window-name filter. When absent, every announced Electron
 /// window participates in the scene.
 pub const ELECTRON_WINDOW_NAME_ENV: &str = "HUDHOOK_ELECTRON_WINDOW";
 
-const IPC_HOST_WINDOW_TITLE: &str = "n_overlay_1a1y2o8l0b";
-const IPC_MESSAGE_ID: i32 = 100;
-const IPC_DIRECTION_CLIENT: i32 = 0;
-const IPC_DIRECTION_HOST: i32 = 1;
-
-const WM_IPC_MESSAGE: u32 = WM_APP + 0x200;
-const WM_IPC_CONNECT_LINK: u32 = WM_IPC_MESSAGE + 1;
-const WM_IPC_CONNECT_LINK_ACK: u32 = WM_IPC_CONNECT_LINK + 1;
-const WM_IPC_CLOSE_LINK: u32 = WM_IPC_CONNECT_LINK_ACK + 1;
 const WM_BRIDGE_SHUTDOWN: u32 = WM_APP + 0x310;
 const WM_BRIDGE_FLUSH_OUTBOUND: u32 = WM_BRIDGE_SHUTDOWN + 1;
 const WM_BRIDGE_RAISE_WINDOW: u32 = WM_BRIDGE_FLUSH_OUTBOUND + 1;
 const WM_BRIDGE_MOVE_WINDOW: u32 = WM_BRIDGE_RAISE_WINDOW + 1;
+const WM_BRIDGE_INBOUND: u32 = WM_BRIDGE_MOVE_WINDOW + 1;
 const CONNECT_TIMER_ID: usize = 1;
 const OUTBOUND_RETRY_TIMER_ID: usize = 2;
 const CONNECT_RETRY_MILLIS: u32 = 500;
 const OUTBOUND_RETRY_MILLIS: u32 = 250;
-const OUTBOUND_SEND_TIMEOUT_MILLIS: u32 = 2_000;
-const FRAME_HEADER_SIZE: usize = size_of::<i32>() * 2;
+const CONNECT_TIMEOUT_MILLIS: u64 = 250;
+const NETWORK_IDLE_MILLIS: u64 = 2;
+const NETWORK_COMMAND_CAPACITY: usize = 256;
+const NETWORK_INBOUND_CAPACITY: usize = 8;
+const TRANSPORT_VERSION: u32 = 1;
+const DISCOVERY_DIRECTORY: &str = "electron-game-overlay";
+const DISCOVERY_FILE: &str = "hudhook-transport-v1.json";
 const BYTES_PER_PIXEL: usize = 4;
 
 type PublishedScene = Arc<RwLock<Arc<ElectronScene>>>;
@@ -131,7 +119,7 @@ impl SharedDragState {
     }
 }
 
-/// One immutable frame copied out of the Electron-owned shared mapping.
+/// One immutable frame received from the Electron loopback host.
 #[derive(Debug)]
 pub struct ElectronFrame {
     pub window_id: u32,
@@ -151,7 +139,7 @@ pub struct ElectronFrame {
 /// One immutable, atomically published compositor snapshot.
 ///
 /// Windows are ordered back-to-front. Entries appear after their first valid
-/// framebuffer has been copied; registration metadata remains in the bridge so
+/// framebuffer has been received; registration metadata remains in the bridge so
 /// bounds and z-order received before that frame are preserved.
 #[derive(Clone, Debug, Default)]
 pub struct ElectronScene {
@@ -174,7 +162,7 @@ impl From<ElectronWindowRect> for InputRect {
     }
 }
 
-/// Owns the background Win32 IPC thread and exposes its most recent frame.
+/// Owns the background Win32 state thread and exposes its most recent frame.
 pub struct ElectronFrameBridge {
     scene: PublishedScene,
     input_router: SharedInputRouter,
@@ -188,7 +176,7 @@ pub struct ElectronFrameBridge {
 }
 
 impl ElectronFrameBridge {
-    /// Starts the IPC and shared-memory worker.
+    /// Starts the state and loopback transport worker.
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
         let scene = Arc::new(RwLock::new(Arc::new(ElectronScene::default())));
         let worker_scene = Arc::clone(&scene);
@@ -320,12 +308,12 @@ impl ElectronFrameBridge {
         }
     }
 
-    /// Routes one message observed by hudhook and wakes the IPC worker for any
+    /// Routes one message observed by hudhook and wakes the transport worker for any
     /// resulting Electron packets. No synchronous cross-process send happens
     /// on the render/present thread.
     pub fn route_window_message(&self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
         let (has_messages, raised_window, drag_wake_error) = {
-            // State mutation and queue publication share this lock with IPC
+            // State mutation and queue publication share this lock with transport
             // commands/lifecycle updates, giving their outbound packets one
             // total order across the render and bridge threads.
             let _order = self
@@ -421,7 +409,10 @@ impl ElectronFrameBridge {
         if let Err(error) =
             unsafe { PostMessageW(Some(hwnd), WM_BRIDGE_FLUSH_OUTBOUND, WPARAM(0), LPARAM(0)) }
         {
-            warn!(?error, "Cannot wake Electron IPC worker for outbound input");
+            warn!(
+                ?error,
+                "Cannot wake Electron transport worker for outbound input"
+            );
         }
     }
 }
@@ -449,7 +440,7 @@ impl Drop for ElectronFrameBridge {
 
         if let Some(thread) = self.thread.take() {
             if thread.join().is_err() {
-                warn!("Electron frame bridge IPC thread panicked during shutdown");
+                warn!("Electron frame bridge state thread panicked during shutdown");
             }
         }
     }
@@ -514,7 +505,7 @@ fn run_bridge_thread(
         Ok(hwnd) => hwnd,
         Err(error) => {
             let _ = ready_tx.send(Err(format!(
-                "cannot create Electron frame IPC window: {error}"
+                "cannot create Electron frame state window: {error}"
             )));
             return;
         }
@@ -540,28 +531,18 @@ fn run_bridge_thread(
             bridge_window_proc as *const () as usize as isize,
         );
 
-        for message in [
-            WM_COPYDATA,
-            WM_IPC_CONNECT_LINK,
-            WM_IPC_CONNECT_LINK_ACK,
-            WM_IPC_CLOSE_LINK,
-        ] {
-            if let Err(error) = ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None) {
-                debug!(message, ?error, "Cannot relax IPC window message filter");
-            }
-        }
-
         SetTimer(Some(hwnd), CONNECT_TIMER_ID, CONNECT_RETRY_MILLIS, None);
         (*state_ptr).try_connect();
     }
 
     info!(
         target_window = window_name_filter.as_deref().unwrap_or("<all>"),
-        "Electron frame bridge IPC thread started"
+        "Electron frame bridge state thread started"
     );
 
     if ready_tx.send(Ok(hwnd.0 as usize)).is_err() {
         unsafe {
+            (*state_ptr).disconnect();
             let _ = DestroyWindow(hwnd);
             drop(Box::from_raw(state_ptr));
         }
@@ -587,13 +568,14 @@ fn run_bridge_thread(
 
     unsafe {
         if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+            (*state_ptr).disconnect();
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             let _ = DestroyWindow(hwnd);
         }
         drop(Box::from_raw(state_ptr));
     }
 
-    debug!("Electron frame bridge IPC thread stopped");
+    debug!("Electron frame bridge state thread stopped");
 }
 
 unsafe extern "system" fn bridge_window_proc(
@@ -616,60 +598,15 @@ unsafe extern "system" fn bridge_window_proc(
             let _ = PostMessageW(Some(hwnd), WM_BRIDGE_FLUSH_OUTBOUND, WPARAM(0), LPARAM(0));
             return LRESULT(0);
         }
-        WM_IPC_CONNECT_LINK_ACK => {
-            let host = state_ptr.as_mut().and_then(|state| {
-                state.connected = true;
-                let _ = KillTimer(Some(hwnd), CONNECT_TIMER_ID);
-                info!(
-                    host_pid = wparam.0,
-                    "Electron frame bridge connected to Node host"
-                );
-                state.host
-            });
-
-            // Do not hold a mutable reference to the window state while using
-            // SendMessage: cross-thread sent messages may re-enter this proc.
-            if let Some(host) = host {
-                if let Err(error) = send_game_process(host) {
-                    warn!(
-                        ?error,
-                        "Cannot announce game process to Electron overlay host"
-                    );
-                }
-                let _ = PostMessageW(Some(hwnd), WM_BRIDGE_FLUSH_OUTBOUND, WPARAM(0), LPARAM(0));
-            }
-            return LRESULT(0);
-        }
-        WM_COPYDATA => {
+        WM_BRIDGE_INBOUND => {
             if let Some(state) = state_ptr.as_mut() {
-                let copy_data = lparam.0 as *const COPYDATASTRUCT;
-                if !copy_data.is_null() {
-                    state.on_copy_data(&*copy_data);
-                    return LRESULT(1);
-                }
-            }
-            return LRESULT(0);
-        }
-        WM_IPC_CLOSE_LINK => {
-            if let Some(state) = state_ptr.as_mut() {
-                state.disconnect();
-                let _ = KillTimer(Some(hwnd), OUTBOUND_RETRY_TIMER_ID);
-                SetTimer(Some(hwnd), CONNECT_TIMER_ID, CONNECT_RETRY_MILLIS, None);
+                state.drain_inbound();
             }
             return LRESULT(0);
         }
         WM_BRIDGE_FLUSH_OUTBOUND => {
-            let transport = state_ptr.as_ref().and_then(|state| {
-                state.connected.then(|| {
-                    (
-                        state.host,
-                        Arc::clone(&state.outbound),
-                        Arc::clone(&state.outbound_diagnostics),
-                    )
-                })
-            });
-            if let Some((Some(host), outbound, diagnostics)) = transport {
-                if flush_outbound(host, &outbound, &diagnostics) {
+            if let Some(state) = state_ptr.as_mut() {
+                if state.flush_outbound() {
                     let _ = KillTimer(Some(hwnd), OUTBOUND_RETRY_TIMER_ID);
                 } else {
                     SetTimer(
@@ -696,7 +633,7 @@ unsafe extern "system" fn bridge_window_proc(
         }
         WM_BRIDGE_SHUTDOWN | WM_CLOSE => {
             if let Some(state) = state_ptr.as_mut() {
-                state.notify_host_of_close();
+                state.disconnect();
             }
             let _ = KillTimer(Some(hwnd), CONNECT_TIMER_ID);
             let _ = KillTimer(Some(hwnd), OUTBOUND_RETRY_TIMER_ID);
@@ -711,10 +648,32 @@ unsafe extern "system" fn bridge_window_proc(
     DefWindowProcW(hwnd, message, wparam, lparam)
 }
 
+struct TcpTransport {
+    generation: u64,
+    commands: mpsc::SyncSender<Vec<u8>>,
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+enum NetworkInbound {
+    Packet { generation: u64, packet: WirePacket },
+    Closed { generation: u64, reason: String },
+}
+
+#[derive(Deserialize)]
+struct DiscoveryDocument {
+    version: u32,
+    pid: u32,
+    port: u16,
+    token: String,
+}
+
 struct BridgeThreadState {
     hwnd: HWND,
-    host: Option<HWND>,
-    connected: bool,
+    transport: Option<TcpTransport>,
+    inbound_tx: mpsc::SyncSender<NetworkInbound>,
+    inbound_rx: mpsc::Receiver<NetworkInbound>,
+    connection_generation: u64,
     scene: PublishedScene,
     input_router: SharedInputRouter,
     outbound: SharedOutboundQueue,
@@ -727,8 +686,6 @@ struct BridgeThreadState {
     state_revision: u64,
     sequence: u64,
     first_frame_logged: bool,
-    mutex_name: Option<String>,
-    frame_mutex: Option<NamedMutex>,
     closed_windows: HashMap<u32, String>,
     placement_epoch: u64,
 }
@@ -743,10 +700,13 @@ impl BridgeThreadState {
         stack_generation: SharedStackGeneration,
         drag: SharedDragState,
     ) -> Self {
+        let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
         Self {
             hwnd,
-            host: None,
-            connected: false,
+            transport: None,
+            inbound_tx,
+            inbound_rx,
+            connection_generation: 0,
             scene,
             input_router,
             outbound,
@@ -759,39 +719,111 @@ impl BridgeThreadState {
             state_revision: 0,
             sequence: 0,
             first_frame_logged: false,
-            mutex_name: None,
-            frame_mutex: None,
             closed_windows: HashMap::new(),
             placement_epoch: 0,
         }
     }
 
     unsafe fn try_connect(&mut self) {
-        if self.connected {
+        if self.transport.is_some() {
             return;
         }
 
-        let title = wide_string(IPC_HOST_WINDOW_TITLE);
-        let Ok(host) = FindWindowW(w!("STATIC"), PCWSTR(title.as_ptr())) else {
+        let discovery = match read_discovery_document() {
+            Ok(discovery) => discovery,
+            Err(error) => {
+                debug!(%error, "hudhook transport discovery is not ready");
+                return;
+            }
+        };
+        let current_pid = GetCurrentProcessId();
+        if discovery.version != TRANSPORT_VERSION {
+            debug!(
+                version = discovery.version,
+                expected_version = TRANSPORT_VERSION,
+                producer_pid = discovery.pid,
+                target_pid = current_pid,
+                "Ignoring hudhook transport discovery for another protocol version"
+            );
             return;
+        }
+        if discovery.token.is_empty() || discovery.port == 0 {
+            debug!("Ignoring incomplete hudhook transport discovery document");
+            return;
+        }
+
+        let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, discovery.port);
+        let stream = match TcpStream::connect_timeout(
+            &address.into(),
+            Duration::from_millis(CONNECT_TIMEOUT_MILLIS),
+        ) {
+            Ok(stream) => stream,
+            Err(error) => {
+                debug!(?address, %error, "Cannot connect to hudhook loopback transport yet");
+                return;
+            }
+        };
+        if let Err(error) = stream.set_nodelay(true) {
+            debug!(%error, "Cannot disable hudhook transport Nagle buffering");
+        }
+        if let Err(error) = stream.set_nonblocking(true) {
+            warn!(%error, "Cannot configure hudhook transport as nonblocking");
+            return;
+        }
+
+        let hello = match game_process_packet(&discovery.token) {
+            Ok(packet) => packet,
+            Err(error) => {
+                warn!(%error, "Cannot build hudhook transport process hello");
+                return;
+            }
+        };
+        self.connection_generation = self.connection_generation.wrapping_add(1).max(1);
+        let generation = self.connection_generation;
+        let transport = match start_network_worker(
+            self.hwnd,
+            generation,
+            stream,
+            hello,
+            self.inbound_tx.clone(),
+        ) {
+            Ok(transport) => transport,
+            Err(error) => {
+                warn!(%error, "Cannot start hudhook loopback transport worker");
+                return;
+            }
         };
 
-        self.host = Some(host);
-        if let Err(error) = PostMessageW(
-            Some(host),
-            WM_IPC_CONNECT_LINK,
-            WPARAM(self.hwnd.0 as usize),
+        self.transport = Some(transport);
+        let _ = KillTimer(Some(self.hwnd), CONNECT_TIMER_ID);
+        info!(
+            host_port = discovery.port,
+            producer_pid = discovery.pid,
+            target_pid = current_pid,
+            "Electron frame bridge connected to hudhook transport"
+        );
+        let _ = PostMessageW(
+            Some(self.hwnd),
+            WM_BRIDGE_FLUSH_OUTBOUND,
+            WPARAM(0),
             LPARAM(0),
-        ) {
-            debug!(?error, "Cannot request Electron overlay IPC connection");
-        }
+        );
     }
 
     fn disconnect(&mut self) {
-        self.host = None;
-        self.connected = false;
-        self.mutex_name = None;
-        self.frame_mutex = None;
+        if let Some(transport) = self.transport.take() {
+            let TcpTransport {
+                commands,
+                stop,
+                thread,
+                ..
+            } = transport;
+            stop.store(true, Ordering::Release);
+            drop(commands);
+            if thread.join().is_err() {
+                warn!("hudhook loopback transport worker panicked during shutdown");
+            }
+        }
         self.windows.clear();
         self.closed_windows.clear();
         self.bump_state_revision();
@@ -806,34 +838,108 @@ impl BridgeThreadState {
             .clear();
     }
 
-    unsafe fn notify_host_of_close(&self) {
-        if let Some(host) = self.host {
-            let _ = PostMessageW(
-                Some(host),
-                WM_IPC_CLOSE_LINK,
-                WPARAM(GetCurrentProcessId() as usize),
-                LPARAM(0),
-            );
+    unsafe fn drain_inbound(&mut self) {
+        while let Ok(message) = self.inbound_rx.try_recv() {
+            match message {
+                NetworkInbound::Packet { generation, packet }
+                    if self
+                        .transport
+                        .as_ref()
+                        .is_some_and(|transport| transport.generation == generation) =>
+                {
+                    match packet {
+                        WirePacket::Json(json) => self.dispatch_json(&json),
+                        WirePacket::Frame(frame) => {
+                            if let Err(error) = self.on_frame(frame) {
+                                warn!(%error, "Cannot process Electron overlay frame");
+                            }
+                        }
+                    }
+                }
+                NetworkInbound::Closed { generation, reason }
+                    if self
+                        .transport
+                        .as_ref()
+                        .is_some_and(|transport| transport.generation == generation) =>
+                {
+                    warn!(%reason, "hudhook loopback transport disconnected");
+                    self.disconnect();
+                    let _ = KillTimer(Some(self.hwnd), OUTBOUND_RETRY_TIMER_ID);
+                    SetTimer(
+                        Some(self.hwnd),
+                        CONNECT_TIMER_ID,
+                        CONNECT_RETRY_MILLIS,
+                        None,
+                    );
+                }
+                _ => {}
+            }
         }
     }
 
-    unsafe fn on_copy_data(&mut self, copy_data: &COPYDATASTRUCT) {
-        if copy_data.lpData.is_null() || copy_data.cbData == 0 {
-            return;
-        }
+    fn dispatch_json(&mut self, json: &str) {
+        let message_type = match serde_json::from_str::<MessageEnvelope>(json) {
+            Ok(message) => message.message_type,
+            Err(error) => {
+                warn!(%error, "Ignoring malformed hudhook transport JSON packet");
+                return;
+            }
+        };
+        self.dispatch(&message_type, json);
+    }
 
-        let bytes = slice::from_raw_parts(copy_data.lpData.cast::<u8>(), copy_data.cbData as usize);
-        match decode_overlay_packet(bytes) {
-            Ok(packet) if packet.direction == IPC_DIRECTION_HOST => {
-                self.dispatch(&packet.message_type, &packet.json);
+    unsafe fn flush_outbound(&mut self) -> bool {
+        let Some(commands) = self
+            .transport
+            .as_ref()
+            .map(|transport| transport.commands.clone())
+        else {
+            return true;
+        };
+
+        loop {
+            let Some(message) = self
+                .outbound
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+            else {
+                return true;
+            };
+            let (_, json) = outbound_message_payload(&message);
+            let packet = match encode_json(&json) {
+                Ok(packet) => packet,
+                Err(error) => {
+                    warn!(%error, "Dropping invalid outbound hudhook transport packet");
+                    continue;
+                }
+            };
+
+            match commands.try_send(packet) {
+                Ok(()) => self.outbound_diagnostics.record(&message),
+                Err(mpsc::TrySendError::Full(_)) => {
+                    self.outbound
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push_front(message);
+                    return false;
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    // The worker may have written any prefix of this packet.
+                    // Drop it and all worker-owned packets on reconnect so
+                    // mouse/key events remain at-most-once.
+                    warn!("Dropping outbound packet after hudhook transport failure");
+                    self.disconnect();
+                    let _ = KillTimer(Some(self.hwnd), OUTBOUND_RETRY_TIMER_ID);
+                    SetTimer(
+                        Some(self.hwnd),
+                        CONNECT_TIMER_ID,
+                        CONNECT_RETRY_MILLIS,
+                        None,
+                    );
+                    return true;
+                }
             }
-            Ok(packet) => {
-                debug!(
-                    direction = packet.direction,
-                    "Ignoring Electron overlay packet with unexpected direction"
-                );
-            }
-            Err(error) => warn!(%error, "Ignoring malformed Electron overlay IPC packet"),
         }
     }
 
@@ -848,12 +954,6 @@ impl BridgeThreadState {
             "window" => serde_json::from_str::<WindowMetadata>(json)
                 .map_err(DispatchError::Json)
                 .and_then(|message| self.on_window(message).map_err(DispatchError::Transport)),
-            "window.framebuffer" => serde_json::from_str::<WindowIdMessage>(json)
-                .map_err(DispatchError::Json)
-                .and_then(|message| {
-                    self.on_framebuffer(message.window_id)
-                        .map_err(DispatchError::Transport)
-                }),
             "window.bounds" => serde_json::from_str::<WindowBoundsMessage>(json)
                 .map_err(DispatchError::Json)
                 .and_then(|message| {
@@ -878,15 +978,6 @@ impl BridgeThreadState {
     }
 
     fn on_overlay_init(&mut self, message: OverlayInit) -> Result<(), TransportError> {
-        self.mutex_name = Some(message.share_mem_mutex.clone());
-        self.frame_mutex = match NamedMutex::open(&message.share_mem_mutex) {
-            Ok(mutex) => Some(mutex),
-            Err(error) => {
-                warn!(?error, "Cannot open Electron frame mutex yet");
-                None
-            }
-        };
-
         self.windows = normalize_registered_windows(
             message.windows,
             self.window_name_filter.as_deref(),
@@ -901,24 +992,8 @@ impl BridgeThreadState {
             info!(
                 window_id = window.window_id,
                 window_name = %window.name,
-                buffer_name = %window.buffer_name,
                 "Electron overlay metadata selected"
             );
-        }
-
-        let window_ids = self
-            .windows
-            .iter()
-            .map(|window| window.window_id)
-            .collect::<Vec<_>>();
-        for window_id in window_ids {
-            if let Err(error) = self.read_window_mapping(window_id) {
-                debug!(
-                    window_id,
-                    %error,
-                    "Electron overlay mapping is not readable yet"
-                );
-            }
         }
 
         Ok(())
@@ -963,29 +1038,14 @@ impl BridgeThreadState {
             info!(
                 window_id,
                 window_name = %registered.name,
-                buffer_name = %registered.buffer_name,
                 "Electron overlay metadata reselected"
             );
         } else {
             info!(
                 window_id,
                 window_name = %registered.name,
-                buffer_name = %registered.buffer_name,
                 "Electron overlay metadata selected"
             );
-        }
-
-        self.read_window_mapping(window_id)?;
-        Ok(())
-    }
-
-    fn on_framebuffer(&mut self, window_id: u32) -> Result<(), TransportError> {
-        if self
-            .windows
-            .iter()
-            .any(|window| window.window_id == window_id)
-        {
-            self.read_window_mapping(window_id)?;
         }
         Ok(())
     }
@@ -994,7 +1054,7 @@ impl BridgeThreadState {
         let window_id = message.window_id;
         let rect = message.rect;
         let placement_epoch = advance_epoch(&mut self.placement_epoch);
-        let Some((_mapping_replaced, _was_routable)) =
+        let Some((_raster_reset, _was_routable)) =
             update_registered_window_bounds(&mut self.windows, message, placement_epoch)
         else {
             return Ok(());
@@ -1171,7 +1231,10 @@ impl BridgeThreadState {
                 LPARAM(0),
             )
         } {
-            warn!(?error, "Cannot wake Electron IPC worker for outbound input");
+            warn!(
+                ?error,
+                "Cannot wake Electron transport worker for outbound input"
+            );
         }
     }
 
@@ -1229,37 +1292,42 @@ impl BridgeThreadState {
                     LPARAM(0),
                 )
             } {
-                warn!(?error, "Cannot wake Electron IPC worker for outbound input");
+                warn!(
+                    ?error,
+                    "Cannot wake Electron transport worker for outbound input"
+                );
             }
         }
     }
 
-    fn read_window_mapping(&mut self, window_id: u32) -> Result<(), TransportError> {
-        self.ensure_frame_mutex()?;
-
+    fn on_frame(&mut self, frame: WireFrame) -> Result<(), TransportError> {
+        let WireFrame {
+            window_id,
+            width,
+            height,
+            bgra,
+        } = frame;
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL))
+            .ok_or(TransportError::FrameDimensionsOverflow { width, height })?;
+        if bgra.len() != expected {
+            return Err(TransportError::FrameLengthMismatch {
+                width,
+                height,
+                expected,
+                actual: bgra.len(),
+            });
+        }
         let Some(index) = self
             .windows
             .iter()
             .position(|window| window.window_id == window_id)
         else {
-            return Ok(());
-        };
-        let copied = {
-            let mutex = self
-                .frame_mutex
-                .as_ref()
-                .ok_or(TransportError::MutexUnavailable)?;
-            let window = &mut self.windows[index];
-            if window.mapping.is_none() {
-                window.mapping = Some(FrameMapping::open(&window.buffer_name)?);
-            }
-            window
-                .mapping
-                .as_ref()
-                .ok_or(TransportError::NoSelectedWindow)?
-                .copy_frame(mutex)?
-        };
-        let Some((width, height, bgra)) = copied else {
+            debug!(
+                window_id,
+                "Ignoring frame for an unregistered Electron window"
+            );
             return Ok(());
         };
         let first_frame_for_window = self.windows[index].latest.is_none();
@@ -1310,23 +1378,10 @@ impl BridgeThreadState {
                 sequence = frame.sequence,
                 width = frame.width,
                 height = frame.height,
-                "Electron frame received from node-game-overlay"
+                "Electron frame received from hudhook transport"
             );
         }
 
-        Ok(())
-    }
-
-    fn ensure_frame_mutex(&mut self) -> Result<(), TransportError> {
-        if self.frame_mutex.is_some() {
-            return Ok(());
-        }
-
-        let name = self
-            .mutex_name
-            .as_deref()
-            .ok_or(TransportError::MutexUnavailable)?;
-        self.frame_mutex = Some(NamedMutex::open(name)?);
         Ok(())
     }
 
@@ -1350,8 +1405,13 @@ impl BridgeThreadState {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OverlayInit {
-    share_mem_mutex: String,
     windows: Vec<WindowMetadata>,
+}
+
+#[derive(Deserialize)]
+struct MessageEnvelope {
+    #[serde(rename = "type")]
+    message_type: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -1361,7 +1421,6 @@ struct WindowMetadata {
     name: String,
     #[serde(default)]
     transparent: bool,
-    buffer_name: String,
     rect: ElectronWindowRect,
     #[serde(default)]
     caption: Option<WindowCaptionMetadata>,
@@ -1404,8 +1463,6 @@ struct WindowBoundsMessage {
     window_id: u32,
     rect: ElectronWindowRect,
     #[serde(default)]
-    buffer_name: Option<String>,
-    #[serde(default)]
     max_width: Option<u32>,
     #[serde(default)]
     max_height: Option<u32>,
@@ -1430,8 +1487,6 @@ struct InputInterceptCommand {
 
 struct RegisteredWindow {
     window_id: u32,
-    buffer_name: String,
-    mapping: Option<FrameMapping>,
     latest: Option<Arc<ElectronFrame>>,
     name: String,
     rect: ElectronWindowRect,
@@ -1445,8 +1500,6 @@ impl RegisteredWindow {
     fn from_metadata(window: WindowMetadata, placement_epoch: u64) -> Self {
         Self {
             window_id: window.window_id,
-            buffer_name: window.buffer_name,
-            mapping: None,
             latest: None,
             name: window.name,
             rect: window.rect,
@@ -1540,7 +1593,6 @@ fn update_registered_window_bounds(
     let WindowBoundsMessage {
         window_id,
         rect,
-        buffer_name,
         max_width: _max_width,
         max_height: _max_height,
         min_width: _min_width,
@@ -1565,16 +1617,7 @@ fn update_registered_window_bounds(
         window.latest = None;
     }
     window.placement_epoch = placement_epoch;
-    let mapping_replaced = buffer_name.is_some_and(|buffer_name| {
-        if buffer_name == window.buffer_name {
-            false
-        } else {
-            window.buffer_name = buffer_name;
-            window.mapping = None;
-            true
-        }
-    });
-    Some((mapping_replaced, was_routable))
+    Some((raster_changed.unwrap_or(false), was_routable))
 }
 
 fn advance_epoch(epoch: &mut u64) -> u64 {
@@ -1650,179 +1693,35 @@ fn unpremultiply_channel(channel: u8, alpha: u8) -> u8 {
     ((numerator / u32::from(alpha)).min(255)) as u8
 }
 
-struct NamedMutex {
-    handle: HANDLE,
-}
-
-impl NamedMutex {
-    fn open(name: &str) -> Result<Self, TransportError> {
-        let name = wide_string(name);
-        let access = SYNCHRONIZATION_SYNCHRONIZE | MUTEX_MODIFY_STATE;
-        let handle = unsafe { OpenMutexW(access, false, PCWSTR(name.as_ptr())) }
-            .map_err(TransportError::Windows)?;
-        Ok(Self { handle })
-    }
-
-    fn acquire(&self) -> Result<NamedMutexGuard<'_>, TransportError> {
-        let result = unsafe { WaitForSingleObject(self.handle, u32::MAX) };
-        if result == WAIT_OBJECT_0 || result == WAIT_ABANDONED {
-            Ok(NamedMutexGuard { mutex: self })
-        } else {
-            Err(TransportError::WaitFailed(result.0))
-        }
-    }
-}
-
-impl Drop for NamedMutex {
-    fn drop(&mut self) {
-        if let Err(error) = unsafe { CloseHandle(self.handle) } {
-            debug!(?error, "Cannot close Electron frame mutex handle");
-        }
-    }
-}
-
-struct NamedMutexGuard<'a> {
-    mutex: &'a NamedMutex,
-}
-
-impl Drop for NamedMutexGuard<'_> {
-    fn drop(&mut self) {
-        if let Err(error) = unsafe { ReleaseMutex(self.mutex.handle) } {
-            warn!(?error, "Cannot release Electron frame mutex");
-        }
-    }
-}
-
-struct FrameMapping {
-    handle: HANDLE,
-    view: MEMORY_MAPPED_VIEW_ADDRESS,
-    size: usize,
-}
-
-impl FrameMapping {
-    fn open(name: &str) -> Result<Self, TransportError> {
-        let name = wide_string(name);
-        let handle = unsafe { OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(name.as_ptr())) }
-            .map_err(TransportError::Windows)?;
-        let view = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0) };
-        if view.Value.is_null() {
-            let error = WindowsError::from_thread();
-            let _ = unsafe { CloseHandle(handle) };
-            return Err(TransportError::Windows(error));
-        }
-
-        let mut information = MEMORY_BASIC_INFORMATION::default();
-        let queried = unsafe {
-            VirtualQuery(
-                Some(view.Value.cast_const()),
-                &mut information,
-                size_of::<MEMORY_BASIC_INFORMATION>(),
-            )
-        };
-        if queried == 0 || information.RegionSize < FRAME_HEADER_SIZE {
-            let _ = unsafe { UnmapViewOfFile(view) };
-            let _ = unsafe { CloseHandle(handle) };
-            return Err(TransportError::InvalidMappingSize(information.RegionSize));
-        }
-
-        Ok(Self {
-            handle,
-            view,
-            size: information.RegionSize,
-        })
-    }
-
-    fn copy_frame(
-        &self,
-        mutex: &NamedMutex,
-    ) -> Result<Option<(u32, u32, Vec<u8>)>, TransportError> {
-        let guard = mutex.acquire()?;
-        let bytes = unsafe { slice::from_raw_parts(self.view.Value.cast::<u8>(), self.size) };
-
-        let width = i32::from_le_bytes(bytes[0..4].try_into().expect("fixed header width"));
-        let height = i32::from_le_bytes(bytes[4..8].try_into().expect("fixed header height"));
-        if width <= 0 || height <= 0 {
-            return Ok(None);
-        }
-
-        let width = width as u32;
-        let height = height as u32;
-        let pixel_bytes = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL))
-            .ok_or(TransportError::FrameDimensionsOverflow { width, height })?;
-        let frame_end = FRAME_HEADER_SIZE
-            .checked_add(pixel_bytes)
-            .ok_or(TransportError::FrameDimensionsOverflow { width, height })?;
-        if frame_end > self.size {
-            return Err(TransportError::FrameOutsideMapping {
-                width,
-                height,
-                required: frame_end,
-                available: self.size,
-            });
-        }
-
-        let bgra = bytes[FRAME_HEADER_SIZE..frame_end].to_vec();
-        drop(guard);
-        Ok(Some((width, height, bgra)))
-    }
-}
-
-impl Drop for FrameMapping {
-    fn drop(&mut self) {
-        if let Err(error) = unsafe { UnmapViewOfFile(self.view) } {
-            debug!(?error, "Cannot unmap Electron frame buffer");
-        }
-        if let Err(error) = unsafe { CloseHandle(self.handle) } {
-            debug!(?error, "Cannot close Electron frame mapping handle");
-        }
-    }
-}
-
 #[derive(Debug)]
 enum TransportError {
-    Windows(WindowsError),
-    WaitFailed(u32),
-    InvalidMappingSize(usize),
     FrameDimensionsOverflow {
         width: u32,
         height: u32,
     },
-    FrameOutsideMapping {
+    FrameLengthMismatch {
         width: u32,
         height: u32,
-        required: usize,
-        available: usize,
+        expected: usize,
+        actual: usize,
     },
-    MutexUnavailable,
-    NoSelectedWindow,
 }
 
 impl fmt::Display for TransportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Windows(error) => write!(formatter, "Windows transport error: {error}"),
-            Self::WaitFailed(result) => {
-                write!(formatter, "frame mutex wait failed: 0x{result:08x}")
-            }
-            Self::InvalidMappingSize(size) => {
-                write!(formatter, "invalid frame mapping size: {size}")
-            }
             Self::FrameDimensionsOverflow { width, height } => {
                 write!(formatter, "frame dimensions overflow: {width}x{height}")
             }
-            Self::FrameOutsideMapping {
+            Self::FrameLengthMismatch {
                 width,
                 height,
-                required,
-                available,
+                expected,
+                actual,
             } => write!(
                 formatter,
-                "frame {width}x{height} needs {required} mapping bytes, only {available} available"
+                "frame {width}x{height} needs {expected} BGRA bytes, received {actual}"
             ),
-            Self::MutexUnavailable => formatter.write_str("Electron frame mutex is unavailable"),
-            Self::NoSelectedWindow => formatter.write_str("Electron demo window is unavailable"),
         }
     }
 }
@@ -1840,35 +1739,6 @@ impl fmt::Display for DispatchError {
             Self::Transport(error) => error.fmt(formatter),
         }
     }
-}
-
-struct OverlayPacket {
-    direction: i32,
-    message_type: String,
-    json: String,
-}
-
-fn decode_overlay_packet(bytes: &[u8]) -> Result<OverlayPacket, PacketError> {
-    let mut reader = PacketReader::new(bytes);
-    let direction = reader.read_i32()?;
-    let _client_id = reader.read_i32()?;
-    let _host_port = reader.read_i32()?;
-    let message_id = reader.read_i32()?;
-    if message_id != IPC_MESSAGE_ID {
-        return Err(PacketError::UnexpectedMessageId(message_id));
-    }
-
-    let message_type = reader.read_string()?;
-    let json = reader.read_string()?;
-    if !reader.is_finished() {
-        return Err(PacketError::TrailingBytes(reader.remaining()));
-    }
-
-    Ok(OverlayPacket {
-        direction,
-        message_type,
-        json,
-    })
 }
 
 #[derive(Debug, Default)]
@@ -1937,53 +1807,6 @@ impl OutboundDiagnostics {
     }
 }
 
-fn flush_outbound(
-    host: HWND,
-    outbound: &SharedOutboundQueue,
-    diagnostics: &OutboundDiagnostics,
-) -> bool {
-    loop {
-        let Some(message) = outbound
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pop_front()
-        else {
-            return true;
-        };
-
-        if let Err(error) = send_outbound_message(host, &message) {
-            if should_retry_outbound(&message, &error) {
-                outbound
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push_front(message);
-                warn!(
-                    ?error,
-                    "Cannot send idempotent packet to Electron overlay host; retrying"
-                );
-            } else {
-                // A SendMessageTimeout timeout is ambiguous: the receiver may
-                // have processed WM_COPYDATA without replying. Non-idempotent
-                // mouse/key packets are therefore at-most-once and are never
-                // requeued, preventing duplicate clicks or keystrokes.
-                warn!(?error, "Dropping outbound packet after send failure");
-            }
-            return false;
-        }
-
-        diagnostics.record(&message);
-    }
-}
-
-fn should_retry_outbound(message: &OutboundMessage, error: &PacketError) -> bool {
-    matches!(error, PacketError::HostSendFailed(_)) && message.input_fields().is_none()
-}
-
-fn send_outbound_message(host: HWND, message: &OutboundMessage) -> Result<(), PacketError> {
-    let (message_type, json) = outbound_message_payload(message);
-    send_overlay_message(host, message_type, &json)
-}
-
 fn outbound_message_payload(message: &OutboundMessage) -> (&'static str, String) {
     match message {
         OutboundMessage::InputIntercept { intercepting } => (
@@ -2039,162 +1862,232 @@ fn outbound_message_payload(message: &OutboundMessage) -> (&'static str, String)
     }
 }
 
-fn send_game_process(host: HWND) -> Result<(), PacketError> {
+fn discovery_path() -> PathBuf {
+    std::env::temp_dir()
+        .join(DISCOVERY_DIRECTORY)
+        .join(DISCOVERY_FILE)
+}
+
+fn read_discovery_document() -> Result<DiscoveryDocument, DiscoveryError> {
+    let path = discovery_path();
+    let bytes = fs::read(&path).map_err(|source| DiscoveryError::Read { path, source })?;
+    serde_json::from_slice(&bytes).map_err(DiscoveryError::Json)
+}
+
+fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
     let path = std::env::current_exe()
-        .map_err(PacketError::CurrentExecutable)?
+        .map_err(NetworkError::CurrentExecutable)?
         .to_string_lossy()
         .into_owned();
     let json = serde_json::json!({
         "type": "game.process",
+        "protocolVersion": TRANSPORT_VERSION,
+        "token": token,
+        "pid": unsafe { GetCurrentProcessId() },
         "path": path,
     })
     .to_string();
-    send_overlay_message(host, "game.process", &json)
+    encode_json(&json).map_err(NetworkError::Wire)
 }
 
-fn send_overlay_message(host: HWND, message_type: &str, json: &str) -> Result<(), PacketError> {
-    let mut packet = encode_overlay_packet(IPC_DIRECTION_CLIENT, message_type, json)?;
+fn start_network_worker(
+    hwnd: HWND,
+    generation: u64,
+    stream: TcpStream,
+    hello: Vec<u8>,
+    inbound: mpsc::SyncSender<NetworkInbound>,
+) -> Result<TcpTransport, io::Error> {
+    let window = hwnd.0 as usize;
+    let (commands, command_rx) = mpsc::sync_channel(NETWORK_COMMAND_CAPACITY);
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let thread = thread::Builder::new()
+        .name("hudhook-electron-tcp".to_owned())
+        .spawn(move || {
+            run_network_worker(
+                window,
+                generation,
+                stream,
+                hello,
+                command_rx,
+                inbound,
+                worker_stop,
+            )
+        })?;
+    Ok(TcpTransport {
+        generation,
+        commands,
+        stop,
+        thread,
+    })
+}
 
-    let copy_data = COPYDATASTRUCT {
-        dwData: unsafe { GetCurrentProcessId() } as usize,
-        cbData: packet
-            .len()
-            .try_into()
-            .map_err(|_| PacketError::StringTooLong(packet.len()))?,
-        lpData: packet.as_mut_ptr().cast(),
+fn run_network_worker(
+    window: usize,
+    generation: u64,
+    mut stream: TcpStream,
+    hello: Vec<u8>,
+    commands: mpsc::Receiver<Vec<u8>>,
+    inbound: mpsc::SyncSender<NetworkInbound>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut writes = VecDeque::from([hello]);
+    let mut write_offset = 0;
+    let mut decoder = WireDecoder::default();
+    let mut read_buffer = [0_u8; 64 * 1024];
+    let close_reason = 'connected: loop {
+        if stop.load(Ordering::Acquire) {
+            break 'connected "shutdown requested".to_owned();
+        }
+
+        while writes.len() < NETWORK_COMMAND_CAPACITY {
+            match commands.try_recv() {
+                Ok(packet) => writes.push_back(packet),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if stop.load(Ordering::Acquire) {
+                        break 'connected "shutdown requested".to_owned();
+                    }
+                    break;
+                }
+            }
+        }
+
+        let mut made_progress = false;
+        match flush_pending_writes(&mut stream, &mut writes, &mut write_offset) {
+            Ok(progress) => made_progress |= progress,
+            Err(error) => break 'connected format!("socket write failed: {error}"),
+        }
+
+        loop {
+            match stream.read(&mut read_buffer) {
+                Ok(0) => break 'connected "socket closed by host".to_owned(),
+                Ok(read) => {
+                    made_progress = true;
+                    match decoder.push(&read_buffer[..read]) {
+                        Ok(packets) => {
+                            for packet in packets {
+                                if !publish_inbound(
+                                    window,
+                                    &inbound,
+                                    &stop,
+                                    NetworkInbound::Packet { generation, packet },
+                                ) {
+                                    break 'connected "state thread unavailable".to_owned();
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            break 'connected format!("invalid host packet: {error}");
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => break 'connected format!("socket read failed: {error}"),
+            }
+        }
+
+        if !made_progress {
+            thread::sleep(Duration::from_millis(NETWORK_IDLE_MILLIS));
+        }
     };
-    let mut host_result = 0usize;
-    let delivered = unsafe {
-        SendMessageTimeoutW(
-            host,
-            WM_COPYDATA,
-            WPARAM(0),
-            LPARAM((&raw const copy_data) as isize),
-            SMTO_ABORTIFHUNG | SMTO_BLOCK,
-            OUTBOUND_SEND_TIMEOUT_MILLIS,
-            Some(&raw mut host_result),
-        )
-    };
-    if delivered.0 == 0 {
-        Err(PacketError::HostSendFailed(WindowsError::from_thread()))
-    } else if host_result == 0 {
-        Err(PacketError::HostRejectedMessage)
-    } else {
-        Ok(())
+
+    let _ = stream.shutdown(Shutdown::Both);
+    if !stop.load(Ordering::Acquire) {
+        let _ = publish_inbound(
+            window,
+            &inbound,
+            &stop,
+            NetworkInbound::Closed {
+                generation,
+                reason: close_reason,
+            },
+        );
     }
 }
 
-fn encode_overlay_packet(
-    direction: i32,
-    message_type: &str,
-    json: &str,
-) -> Result<Vec<u8>, PacketError> {
-    let mut packet = Vec::with_capacity(json.len() + 64);
-    push_i32(&mut packet, direction);
-    push_i32(&mut packet, 0);
-    push_i32(&mut packet, 0);
-    push_i32(&mut packet, IPC_MESSAGE_ID);
-    push_string(&mut packet, message_type)?;
-    push_string(&mut packet, json)?;
-    Ok(packet)
+fn flush_pending_writes(
+    writer: &mut impl Write,
+    writes: &mut VecDeque<Vec<u8>>,
+    write_offset: &mut usize,
+) -> io::Result<bool> {
+    let mut made_progress = false;
+    while let Some(packet) = writes.front() {
+        match writer.write(&packet[*write_offset..]) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+            Ok(written) => {
+                made_progress = true;
+                *write_offset += written;
+                if *write_offset == packet.len() {
+                    writes.pop_front();
+                    *write_offset = 0;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(made_progress),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(made_progress)
 }
 
-fn push_i32(output: &mut Vec<u8>, value: i32) {
-    output.extend_from_slice(&value.to_le_bytes());
-}
-
-fn push_string(output: &mut Vec<u8>, value: &str) -> Result<(), PacketError> {
-    let length: i32 = value
-        .len()
-        .try_into()
-        .map_err(|_| PacketError::StringTooLong(value.len()))?;
-    push_i32(output, length);
-    output.extend_from_slice(value.as_bytes());
-    Ok(())
-}
-
-struct PacketReader<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> PacketReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn read_i32(&mut self) -> Result<i32, PacketError> {
-        let bytes = self.take(size_of::<i32>())?;
-        Ok(i32::from_le_bytes(
-            bytes.try_into().expect("fixed i32 packet field"),
-        ))
-    }
-
-    fn read_string(&mut self) -> Result<String, PacketError> {
-        let signed_length = self.read_i32()?;
-        let length: usize = signed_length
-            .try_into()
-            .map_err(|_| PacketError::NegativeLength(signed_length))?;
-        let bytes = self.take(length)?;
-        String::from_utf8(bytes.to_vec()).map_err(PacketError::InvalidUtf8)
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], PacketError> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(PacketError::Truncated)?;
-        let result = self
-            .bytes
-            .get(self.position..end)
-            .ok_or(PacketError::Truncated)?;
-        self.position = end;
-        Ok(result)
-    }
-
-    fn is_finished(&self) -> bool {
-        self.position == self.bytes.len()
-    }
-
-    fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.position)
+fn publish_inbound(
+    window: usize,
+    inbound: &mpsc::SyncSender<NetworkInbound>,
+    stop: &AtomicBool,
+    mut message: NetworkInbound,
+) -> bool {
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return false;
+        }
+        match inbound.try_send(message) {
+            Ok(()) => {
+                let hwnd = HWND(window as *mut c_void);
+                return unsafe {
+                    PostMessageW(Some(hwnd), WM_BRIDGE_INBOUND, WPARAM(0), LPARAM(0)).is_ok()
+                };
+            }
+            Err(mpsc::TrySendError::Full(returned)) => {
+                message = returned;
+                thread::sleep(Duration::from_millis(NETWORK_IDLE_MILLIS));
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => return false,
+        }
     }
 }
 
 #[derive(Debug)]
-enum PacketError {
-    Truncated,
-    NegativeLength(i32),
-    StringTooLong(usize),
-    InvalidUtf8(std::string::FromUtf8Error),
-    UnexpectedMessageId(i32),
-    TrailingBytes(usize),
-    CurrentExecutable(std::io::Error),
-    HostSendFailed(WindowsError),
-    HostRejectedMessage,
+enum DiscoveryError {
+    Read { path: PathBuf, source: io::Error },
+    Json(serde_json::Error),
 }
 
-impl fmt::Display for PacketError {
+impl fmt::Display for DiscoveryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Truncated => formatter.write_str("truncated packet"),
-            Self::NegativeLength(length) => write!(formatter, "negative string length: {length}"),
-            Self::StringTooLong(length) => write!(formatter, "string is too long: {length} bytes"),
-            Self::InvalidUtf8(error) => write!(formatter, "invalid UTF-8 string: {error}"),
-            Self::UnexpectedMessageId(id) => write!(formatter, "unexpected message id: {id}"),
-            Self::TrailingBytes(count) => write!(formatter, "packet has {count} trailing bytes"),
+            Self::Read { path, source } => {
+                write!(formatter, "cannot read {}: {source}", path.display())
+            }
+            Self::Json(error) => write!(formatter, "invalid discovery JSON: {error}"),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum NetworkError {
+    CurrentExecutable(io::Error),
+    Wire(crate::electron_wire::WireError),
+}
+
+impl fmt::Display for NetworkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Self::CurrentExecutable(error) => {
                 write!(formatter, "cannot resolve target executable path: {error}")
             }
-            Self::HostSendFailed(error) => {
-                write!(
-                    formatter,
-                    "cannot send packet to Electron overlay host: {error}"
-                )
-            }
-            Self::HostRejectedMessage => {
-                formatter.write_str("Electron overlay host rejected message")
-            }
+            Self::Wire(error) => error.fmt(formatter),
         }
     }
 }
@@ -2292,7 +2185,6 @@ mod tests {
             window_id,
             name: name.to_owned(),
             transparent: true,
-            buffer_name: format!("buffer-{window_id}"),
             rect: ElectronWindowRect {
                 x,
                 y: 20,
@@ -2312,27 +2204,141 @@ mod tests {
         normalize_registered_windows(windows, filter, &mut placement_epoch)
     }
 
-    #[test]
-    fn overlay_packet_round_trip_layout_matches_legacy_packer() {
-        let mut bytes = Vec::new();
-        push_i32(&mut bytes, IPC_DIRECTION_HOST);
-        push_i32(&mut bytes, 7);
-        push_i32(&mut bytes, 9);
-        push_i32(&mut bytes, IPC_MESSAGE_ID);
-        push_string(&mut bytes, "window.framebuffer").unwrap();
-        push_string(&mut bytes, r#"{"type":"window.framebuffer","windowId":42}"#).unwrap();
+    fn test_bridge_state() -> BridgeThreadState {
+        BridgeThreadState::new(
+            HWND(std::ptr::null_mut()),
+            Arc::new(RwLock::new(Arc::new(ElectronScene::default()))),
+            Arc::new(Mutex::new(InputRouter::new())),
+            Arc::new(Mutex::new(OutboundQueue::new())),
+            Arc::new(Mutex::new(())),
+            Arc::new(AtomicU64::new(0)),
+            SharedDragState::default(),
+        )
+    }
 
-        let packet = decode_overlay_packet(&bytes).unwrap();
-        assert_eq!(packet.direction, IPC_DIRECTION_HOST);
-        assert_eq!(packet.message_type, "window.framebuffer");
-        assert_eq!(
-            packet.json,
-            r#"{"type":"window.framebuffer","windowId":42}"#
-        );
+    struct PartialWriter {
+        bytes: Vec<u8>,
+        block_next: bool,
+    }
+
+    impl Write for PartialWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.block_next {
+                self.block_next = false;
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            self.block_next = true;
+            let written = bytes.len().min(3);
+            self.bytes.extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
-    fn outbound_input_uses_the_existing_client_envelope_and_json_contract() {
+    fn partial_nonblocking_writes_resume_without_duplicating_packet_bytes() {
+        let expected = [b"hello".as_slice(), b"input-event".as_slice()].concat();
+        let mut writes = VecDeque::from([b"hello".to_vec(), b"input-event".to_vec()]);
+        let mut offset = 0;
+        let mut writer = PartialWriter {
+            bytes: Vec::new(),
+            block_next: false,
+        };
+
+        while !writes.is_empty() {
+            flush_pending_writes(&mut writer, &mut writes, &mut offset).unwrap();
+        }
+
+        assert_eq!(offset, 0);
+        assert_eq!(writer.bytes, expected);
+    }
+
+    #[test]
+    fn process_hello_is_the_first_framed_authenticated_target_identity() {
+        let token = "01".repeat(32);
+        let packet = game_process_packet(&token).unwrap();
+        let mut decoder = WireDecoder::default();
+        let packets = decoder.push(&packet).unwrap();
+        let WirePacket::Json(json) = &packets[0] else {
+            panic!("expected JSON hello");
+        };
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(value["type"], "game.process");
+        assert_eq!(value["protocolVersion"], TRANSPORT_VERSION);
+        assert_eq!(value["token"], token);
+        assert_eq!(value["pid"], unsafe { GetCurrentProcessId() });
+        assert!(value["path"].as_str().is_some_and(|path| !path.is_empty()));
+    }
+
+    #[test]
+    fn direct_frame_makes_registered_window_compositable() {
+        let mut state = test_bridge_state();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![window_metadata(42, "Direct frame", 10)],
+            })
+            .unwrap();
+        assert!(state.scene.read().unwrap().windows.is_empty());
+
+        state
+            .on_frame(WireFrame {
+                window_id: 42,
+                width: 1,
+                height: 1,
+                bgra: vec![25, 50, 100, 128],
+            })
+            .unwrap();
+
+        let scene = state.scene.read().unwrap().clone();
+        assert_eq!(scene.windows.len(), 1);
+        assert_eq!(scene.windows[0].window_id, 42);
+        assert_eq!(scene.windows[0].rgba.as_ref(), &[199, 100, 50, 128]);
+    }
+
+    #[test]
+    fn disconnect_clears_pixels_and_fresh_snapshot_restores_them() {
+        let mut state = test_bridge_state();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![window_metadata(42, "Reconnect", 10)],
+            })
+            .unwrap();
+        state
+            .on_frame(WireFrame {
+                window_id: 42,
+                width: 1,
+                height: 1,
+                bgra: vec![1, 2, 3, 255],
+            })
+            .unwrap();
+        assert_eq!(state.scene.read().unwrap().windows.len(), 1);
+
+        state.disconnect();
+        assert!(state.scene.read().unwrap().windows.is_empty());
+        assert!(state.windows.is_empty());
+
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![window_metadata(42, "Reconnect", 10)],
+            })
+            .unwrap();
+        assert!(state.scene.read().unwrap().windows.is_empty());
+        state
+            .on_frame(WireFrame {
+                window_id: 42,
+                width: 1,
+                height: 1,
+                bgra: vec![4, 5, 6, 255],
+            })
+            .unwrap();
+        assert_eq!(state.scene.read().unwrap().windows.len(), 1);
+    }
+
+    #[test]
+    fn outbound_input_uses_framed_json_and_preserves_the_event_contract() {
         let outbound = OutboundMessage::Input {
             window_id: 42,
             msg: 0x0200,
@@ -2340,13 +2346,16 @@ mod tests {
             lparam: 0xfff6_000a,
         };
         let (message_type, json) = outbound_message_payload(&outbound);
-        let bytes = encode_overlay_packet(IPC_DIRECTION_CLIENT, message_type, &json).unwrap();
-        let packet = decode_overlay_packet(&bytes).unwrap();
+        let bytes = encode_json(&json).unwrap();
+        let mut decoder = WireDecoder::default();
+        let packets = decoder.push(&bytes).unwrap();
+        let WirePacket::Json(packet_json) = &packets[0] else {
+            panic!("expected JSON packet");
+        };
 
-        assert_eq!(packet.direction, IPC_DIRECTION_CLIENT);
-        assert_eq!(packet.message_type, "game.input");
+        assert_eq!(message_type, "game.input");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&packet.json).unwrap(),
+            serde_json::from_str::<serde_json::Value>(packet_json).unwrap(),
             serde_json::json!({
                 "type": "game.input",
                 "windowId": 42,
@@ -2393,45 +2402,6 @@ mod tests {
     }
 
     #[test]
-    fn send_failures_retry_only_idempotent_control_packets() {
-        let send_failure =
-            PacketError::HostSendFailed(WindowsError::from_hresult(windows::core::HRESULT(-1)));
-        let input = OutboundMessage::Input {
-            window_id: 42,
-            msg: 0x0201,
-            wparam: 0,
-            lparam: 0,
-        };
-        let focus = OutboundMessage::WindowFocused {
-            focus_window_id: 42,
-        };
-        let intercept = OutboundMessage::InputIntercept { intercepting: true };
-
-        assert!(!should_retry_outbound(&input, &send_failure));
-        assert!(should_retry_outbound(&focus, &send_failure));
-        assert!(should_retry_outbound(&intercept, &send_failure));
-        assert!(!should_retry_outbound(
-            &intercept,
-            &PacketError::HostRejectedMessage
-        ));
-    }
-
-    #[test]
-    fn malformed_packet_lengths_are_rejected() {
-        let mut bytes = Vec::new();
-        push_i32(&mut bytes, IPC_DIRECTION_HOST);
-        push_i32(&mut bytes, 0);
-        push_i32(&mut bytes, 0);
-        push_i32(&mut bytes, IPC_MESSAGE_ID);
-        push_i32(&mut bytes, -1);
-
-        assert!(matches!(
-            decode_overlay_packet(&bytes),
-            Err(PacketError::NegativeLength(-1))
-        ));
-    }
-
-    #[test]
     fn premultiplied_bgra_is_unpremultiplied_and_swizzled() {
         let bgra = [
             1, 2, 3, 255, 200, 150, 100, 0, 25, 50, 100, 128, 250, 0, 0, 10,
@@ -2449,7 +2419,6 @@ mod tests {
             "windowId":42,
             "name":"Draggable",
             "transparent":true,
-            "bufferName":"caption-buffer",
             "rect":{"x":64,"y":72,"width":640,"height":360},
             "caption":{"left":10,"right":12,"top":8,"height":40},
             "scaleFactorMicros":1250000
@@ -2563,7 +2532,6 @@ mod tests {
                 WindowBoundsMessage {
                     window_id: 10,
                     rect: replacement_rect,
-                    buffer_name: Some("replacement".to_owned()),
                     max_width: None,
                     max_height: None,
                     min_width: None,
@@ -2575,7 +2543,7 @@ mod tests {
                 },
                 99,
             ),
-            Some((true, true))
+            Some((false, true))
         );
         assert_eq!(
             windows
@@ -2585,7 +2553,6 @@ mod tests {
             vec![10, 20]
         );
         assert_eq!(windows[0].rect, replacement_rect);
-        assert_eq!(windows[0].buffer_name, "replacement");
         assert_eq!(windows[0].placement_epoch, 99);
         assert_eq!(windows[1].rect.x, 20);
     }
@@ -2647,7 +2614,7 @@ mod tests {
         );
         assert_eq!(
             update_registered_window_bounds(&mut windows, message, 99),
-            Some((false, true))
+            Some((true, true))
         );
 
         assert_eq!(
@@ -2744,7 +2711,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(message.buffer_name, None);
         assert_eq!(message.max_width, None);
         assert_eq!(message.max_height, None);
         assert_eq!(message.min_width, None);
@@ -2898,19 +2864,15 @@ mod tests {
     }
 
     #[test]
-    fn bounds_packet_preserves_signed_rect_and_replacement_mapping() {
-        let json = r#"{"type":"window.bounds","windowId":42,"rect":{"x":-12,"y":34,"width":800,"height":450},"bufferName":"replacement"}"#;
-        let mut bytes = Vec::new();
-        push_i32(&mut bytes, IPC_DIRECTION_HOST);
-        push_i32(&mut bytes, 7);
-        push_i32(&mut bytes, 9);
-        push_i32(&mut bytes, IPC_MESSAGE_ID);
-        push_string(&mut bytes, "window.bounds").unwrap();
-        push_string(&mut bytes, json).unwrap();
-
-        let packet = decode_overlay_packet(&bytes).unwrap();
-        assert_eq!(packet.message_type, "window.bounds");
-        let message: WindowBoundsMessage = serde_json::from_str(&packet.json).unwrap();
+    fn bounds_packet_preserves_signed_rect_over_framed_json() {
+        let json = r#"{"type":"window.bounds","windowId":42,"rect":{"x":-12,"y":34,"width":800,"height":450}}"#;
+        let bytes = encode_json(json).unwrap();
+        let mut decoder = WireDecoder::default();
+        let packets = decoder.push(&bytes).unwrap();
+        let WirePacket::Json(packet_json) = &packets[0] else {
+            panic!("expected JSON packet");
+        };
+        let message: WindowBoundsMessage = serde_json::from_str(packet_json).unwrap();
         assert_eq!(message.window_id, 42);
         assert_eq!(
             message.rect,
@@ -2921,6 +2883,5 @@ mod tests {
                 height: 450,
             }
         );
-        assert_eq!(message.buffer_name.as_deref(), Some("replacement"));
     }
 }

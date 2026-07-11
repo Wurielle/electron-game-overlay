@@ -18,8 +18,9 @@ Launch one, for example:
 ```
 
 No separate `client:dev` process is needed. Run only one case at a time, and
-close Izabela Next or any other process using the fixed node-game-overlay IPC
-host before starting.
+close Izabela Next or any other active overlay producer before starting. This
+POC publishes one well-known discovery document for the authenticated loopback
+session, so concurrent producers would replace each other's rendezvous metadata.
 
 | Launcher                             | Kind                  | What it proves                                                                              | How it finishes                 |
 | ------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------- | ------------------------------- |

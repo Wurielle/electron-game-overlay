@@ -23,9 +23,6 @@ export default defineConfig({
             emptyOutDir: true,
             sourcemap: true,
             target: "node16",
-            rolldownOptions: {
-              external: ["node-game-overlay"],
-            },
           },
         },
       },

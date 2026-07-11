@@ -4,21 +4,25 @@
 
 [![Build status](https://ci.appveyor.com/api/projects/status/sgi7go37f72f52a5?svg=true)](https://ci.appveyor.com/project/hiitiger/goverlay)
 
-## hudhook + ImGui migration (in progress)
+## hudhook + ImGui migration POC
 
 The maintained-runtime migration is documented in the
 [hudhook + ImGui POC](poc/hudhook-imgui-overlay/README.md). Its current verified
 scope is deliberately narrower than the legacy feature list below: controlled
-Windows x64/D3D11, simultaneous overlapping Electron windows with deterministic
-back-to-front ordering and click-to-front behavior, and regular Win32 mouse,
-wheel, keyboard, system-key, and character input with focus and pointer capture.
+Windows x64/D3D11 and D3D12, real-client-owned hudhook injection, simultaneous
+overlapping Electron windows with deterministic back-to-front ordering and
+click-to-front behavior, and regular Win32 mouse, wheel, keyboard, system-key,
+and character input with focus and pointer capture.
 The completed multi-window design and acceptance record is in the
 [hudhook multi-window compositor handoff](doc/hudhook-multiwindow-compositor-handoff.md).
 With `HUDHOOK_ELECTRON_WINDOW` unset, the payload composes every announced
 window; setting it opts into an exact-name filter.
-X1/X2 and raw input are blocked but not forwarded during interception. Arbitrary
-DPI, safe texture retirement, broader input APIs, D3D12, a production injector,
-and removal of the remaining native compatibility seams are follow-up work.
+Electron frames and input now use an authenticated loopback transport built on
+Node core networking; the active client/SDK path does not load the legacy native
+Node add-on or shared-memory renderer. X1/X2 and raw input are blocked but not
+forwarded during interception. Target-display/client-origin ownership, physical
+mixed-monitor acceptance, safe texture retirement, broader input APIs, and a
+production injector remain post-POC work.
 
 ## game overlay solution 
 * DirectX hook, draw in game
@@ -30,41 +34,24 @@ and removal of the remaining native compatibility seams are follow-up work.
 
 ![demo](https://raw.githubusercontent.com/hiitiger/goverlay/master/screenshot/gelectron3.gif)
 
-## Prerequisites
+## Run the maintained POC
 
-1. Visual Sudio 2022 with latest sdk to build native C++ project.
-2. CMake
-3. node 32bit/64bit
+Install the JavaScript dependencies with `npm install`, then use one of the
+named launchers in the [test-case catalog](poc/hudhook-imgui-overlay/scripts/test-cases/README.md).
+For example:
 
-## run demo
+```powershell
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-client.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-real-client.ps1
+```
 
-1. git clone https://github.com/hiitiger/goverlay.git
-2. run demo client
-   - this includes the steps to build node native-addons `node-game-overlay`
-   ```CMD
-       npm i
-       npm run build
-       @REM  for 32bit electron
-       npm run build:addon:x86
-       @REM  for 64bit electron
-       npm run build:addon:x64
-       npm run copy_binary
+The [POC README](poc/hudhook-imgui-overlay/README.md) contains the Visual Studio,
+Rust, CMake, and controlled-target prerequisites plus the complete acceptance
+matrix.
 
-       npm run start
-   ```
-3. click the start button to start overlay
-4. start a d3d game, type its window name and inject
-4. `CTRL+F2` to toggle full input intercept, `CTRL+F3` to show demo popup(doit ^^)
-
-## inject a specific game
-
-After you have the demo runs right
-
-1.  copy files [`n_overlay.dll`, `n_overlay.x64.dll`, `injector_helper.exe`, `injector_helper.x64.exe`] from directory `libs\native-game-overlay\prebuilt` to directory `libs\node-game-overlay`, or run `npm run copy_binary`
-2.  run demo client
-3.  click start button to start overlay
-4.  start the game you want to inject to and wait for it game window to show
-5.  input the window title(or part of the title) of the game, and click the inject button
+The original `libs/node-game-overlay` and `libs/native-game-overlay` trees remain
+as legacy source reference, but they are no longer dependencies of the active
+client build or runtime.
 
 ## use in your own project
 

@@ -32,7 +32,7 @@ waits for the renderer to acknowledge the desired DPR and viewport, then commits
 the actual bitmap returned by `capturePage()` cropped to the desired DIP content
 rectangle.
 
-The native router tags every new `game.input` packet with the scale active when
+The Rust payload router tags every new `game.input` packet with the scale active when
 it routed that event. The SDK uses the tag for physical-to-DIP conversion, while
 untagged legacy packets fall back to the current active scale. A committed raster
 change also clears the payload's latest compositable pixels until the following
@@ -132,7 +132,7 @@ replacement on top. Click-to-front is maintained inside the injected payload.
 Caption movement is also payload-local: it immediately republishes the render and
 hit-test rect but deliberately leaves the hidden producer `BrowserWindow` bounds
 unchanged. A producer lifecycle event, external `setBounds()`, or reconnect can
-therefore restore producer-owned placement. The public SDK and existing IPC
+therefore restore producer-owned placement. The public SDK and current wire
 schema still have no persistent z-order or payload-to-producer placement field.
 The producer flags `--hudhook-client-multiwindow-runner` and
 `--hudhook-client-multiwindow-manual` are runner internals; use the repository
@@ -234,6 +234,6 @@ the overlay windows, closes the session, and disposes the SDK. For an unattended
 attached one-window smoke test, add `--exit-after-lifecycle`; the process exits
 successfully 750 ms after the final lifecycle step.
 
-Only one controlled runner or Electron overlay producer may run at a time. Do
-not run the modes concurrently because the current native add-on uses a fixed
-IPC host name.
+Only one controlled runner or Electron overlay producer may run at a time. The
+v1 authenticated loopback rendezvous intentionally represents one active
+producer/target pair; multiple simultaneous targets remain post-POC work.

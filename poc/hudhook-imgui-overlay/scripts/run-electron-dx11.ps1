@@ -147,7 +147,7 @@ $ClientPayloadProofMarkers = @(
     $ClientWindowNameProofMarker
 )
 $CommonPayloadProofMarkers = @(
-    "Electron frame received from node-game-overlay",
+    "Electron frame received from hudhook transport",
     "Electron frame uploaded to GPU",
     $CompositorProofMarker
 )
@@ -198,7 +198,6 @@ $ClientWindowEntry = Join-Path $HudhookRoot "electron-client-window-demo\main.cj
 $ClientWindowAppDirectory = Split-Path -Parent $ClientWindowEntry
 $ClientBuiltEntry = Join-Path $RepoRoot "apps\client\dist\main\main.js"
 $OverlaySdkBuiltEntry = Join-Path $RepoRoot "libs\electron-game-overlay\dist\index.js"
-$NodeAddonBuiltEntry = Join-Path $RepoRoot "libs\node-game-overlay\node-game-overlay.node"
 $ClientUserDataDirectory = Join-Path $RunDirectory "electron-client-user-data"
 $ClientInputRunToken = [Guid]::NewGuid().ToString("N")
 $ClientInputUserDataDirectory = Join-Path $RunDirectory "electron-client-input-user-data-$ClientInputRunToken"
@@ -207,7 +206,8 @@ $ClientMultiWindowRunToken = [Guid]::NewGuid().ToString("N")
 $ClientMultiWindowUserDataDirectory = Join-Path $RunDirectory "electron-client-multiwindow-user-data-$ClientMultiWindowRunToken"
 $ClientMultiWindowControlFile = Join-Path $RunDirectory "electron-client-multiwindow-$ClientMultiWindowRunToken.control"
 $WindowTitle = $BackendConfig.WindowTitle
-$OverlayIpcHostWindowTitle = "n_overlay_1a1y2o8l0b"
+$HudhookTransportDiscovery = Join-Path $env:TEMP "electron-game-overlay\hudhook-transport-v1.json"
+$ControlledHostInjectionWarmupMilliseconds = 750
 
 if ($Client) {
     $ProducerMode = "Client"
@@ -966,21 +966,25 @@ function Stop-ControlledHudhookInjectors {
     }
 }
 
-function Test-OverlayIpcHost {
-    $HostWindow = [HudhookOverlayRunner.NativeInputMethods]::FindWindow(
-        "STATIC",
-        $OverlayIpcHostWindowTitle
-    )
-    return $HostWindow -ne [IntPtr]::Zero
-}
-
-function Assert-NoOverlayIpcHost {
-    if (Test-OverlayIpcHost) {
-        throw (
-            "Close any running overlay client/producer before starting this test. " +
-            "The fixed node-game-overlay IPC host '$OverlayIpcHostWindowTitle' is already active."
-        )
+function Remove-StaleHudhookTransportDiscovery {
+    if (-not (Test-Path -LiteralPath $HudhookTransportDiscovery -PathType Leaf)) {
+        return
     }
+
+    try {
+        $Discovery = Get-Content -LiteralPath $HudhookTransportDiscovery -Raw | ConvertFrom-Json
+        $ProducerPid = [int]$Discovery.pid
+    }
+    catch {
+        Write-Warning "Ignoring malformed hudhook transport discovery file: $HudhookTransportDiscovery"
+        return
+    }
+
+    if ($ProducerPid -le 0 -or (Get-Process -Id $ProducerPid -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    Remove-Item -LiteralPath $HudhookTransportDiscovery -Force
 }
 
 function Get-ExactTitleProcesses {
@@ -1021,7 +1025,7 @@ if ($ExistingHosts -or $ExactTitleHosts.Count -gt 0) {
     throw "Close the existing controlled host before starting this test. The injector uses the exact window title, and the runner verifies the launched host by PID."
 }
 
-Assert-NoOverlayIpcHost
+Remove-StaleHudhookTransportDiscovery
 
 $PreexistingElectronProcessIds = @(
     Get-DemoElectronProcessIds $ElectronCommandLineMarkers
@@ -1036,7 +1040,7 @@ if ($Client -or $InteractiveProofMode) {
         Write-Host "Building the real Electron client..."
     }
     else {
-        Write-Host "Building the Electron overlay SDK and native add-on for the input proof..."
+        Write-Host "Building the Electron overlay SDK for the input proof..."
     }
 
     Push-Location $RepoRoot
@@ -1060,10 +1064,8 @@ if ($Client -or $InteractiveProofMode) {
         throw "The client build completed without producing its main entry point: $ClientBuiltEntry"
     }
     if ($InteractiveProofMode) {
-        foreach ($Artifact in @($OverlaySdkBuiltEntry, $NodeAddonBuiltEntry)) {
-            if (-not (Test-Path $Artifact -PathType Leaf)) {
-                throw "The input-proof build completed without producing: $Artifact"
-            }
+        if (-not (Test-Path $OverlaySdkBuiltEntry -PathType Leaf)) {
+            throw "The input-proof build completed without producing: $OverlaySdkBuiltEntry"
         }
     }
 }
@@ -1245,8 +1247,6 @@ try {
         Write-Host "Temporarily cleared HUDHOOK_ELECTRON_WINDOW for the multi-window test."
     }
 
-    Assert-NoOverlayIpcHost
-
     $UnexpectedHosts = Get-Process -Name $HostProcessName -ErrorAction SilentlyContinue
     $UnexpectedTitleHosts = @(Get-ExactTitleProcesses)
     if ($UnexpectedHosts -or $UnexpectedTitleHosts.Count -gt 0) {
@@ -1288,6 +1288,11 @@ try {
             throw "The controlled host window is not running with Per-Monitor-V2 DPI awareness."
         }
         Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
+
+        # The controlled D3D11 host publishes its HWND just before its first
+        # stable Present. Giving that initialization boundary a bounded warm-up
+        # avoids racing upstream hudhook's first hook installation.
+        Start-Sleep -Milliseconds $ControlledHostInjectionWarmupMilliseconds
 
         $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
         if (Test-Path $PayloadLog) {
@@ -1392,6 +1397,10 @@ try {
             throw "The controlled host window is not running with Per-Monitor-V2 DPI awareness."
         }
         Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
+
+        # Keep title-selected injection on the same stable-Present boundary as
+        # the real-client-owned process-selected path above.
+        Start-Sleep -Milliseconds $ControlledHostInjectionWarmupMilliseconds
 
         $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
         if (Test-Path $PayloadLog) {
@@ -3371,6 +3380,7 @@ finally {
             $ElectronCommandLineMarkers
         Stop-ControlledHudhookInjectors $ElectronProcessIds
         Stop-LaunchedProcess $ElectronLauncherProcess "Electron launcher"
+        Remove-StaleHudhookTransportDiscovery
     }
 
     if ($ClientInput -and (Test-Path $ClientInputControlFile -PathType Leaf)) {
@@ -3384,19 +3394,16 @@ finally {
         $RemainingElectronProcessIds = @(Get-DemoElectronProcessIds $ElectronCommandLineMarkers)
         $HostStillRunning = $HostProcess -and (Get-Process -Id $HostProcess.Id -ErrorAction SilentlyContinue)
         $RemainingInjectors = @(Get-ControlledHudhookInjectorProcesses $ElectronProcessIds)
-        $OverlayIpcHostStillRunning = Test-OverlayIpcHost
         if (
             $RemainingElectronProcessIds.Count -gt 0 -or
             $HostStillRunning -or
-            $RemainingInjectors.Count -gt 0 -or
-            $OverlayIpcHostStillRunning
+            $RemainingInjectors.Count -gt 0
         ) {
             throw (
                 "Controlled proof cleanup left process(es) alive. " +
                 "Electron PID(s): $($RemainingElectronProcessIds -join ', '); " +
                 "host PID: $(if ($HostStillRunning) { $HostProcess.Id } else { 'none' }); " +
-                "injector PID(s): $(@($RemainingInjectors.ProcessId) -join ', '); " +
-                "IPC host active: $OverlayIpcHostStillRunning."
+                "injector PID(s): $(@($RemainingInjectors.ProcessId) -join ', ')."
             )
         }
     }
