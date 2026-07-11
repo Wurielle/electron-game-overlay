@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cwchar>
 
 namespace
 {
@@ -24,6 +25,39 @@ struct graphics_state
 };
 
 graphics_state g_graphics;
+
+bool enable_per_monitor_v2_awareness()
+{
+    SetLastError(ERROR_SUCCESS);
+    const bool request_succeeded =
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE;
+    const DWORD request_error = request_succeeded ? ERROR_SUCCESS : GetLastError();
+    const DPI_AWARENESS_CONTEXT context = GetThreadDpiAwarenessContext();
+    if (AreDpiAwarenessContextsEqual(
+            context,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+        return true;
+
+    if (!request_succeeded)
+    {
+        wchar_t message[256] = {};
+        swprintf_s(
+            message,
+            L"Unable to establish Per-Monitor-V2 DPI awareness before creating the controlled "
+            L"host window. SetProcessDpiAwarenessContext failed with Win32 error %lu.",
+            request_error);
+        OutputDebugStringW(message);
+        MessageBoxW(nullptr, message, kWindowTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    constexpr wchar_t message[] =
+        L"Windows accepted the DPI-awareness request, but the controlled host thread is not "
+        L"running as Per-Monitor-V2.";
+    OutputDebugStringW(message);
+    MessageBoxW(nullptr, message, kWindowTitle, MB_OK | MB_ICONERROR);
+    return false;
+}
 
 void report_graphics_failure(const wchar_t *message)
 {
@@ -110,6 +144,24 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 {
     switch (message)
     {
+    case WM_DPICHANGED:
+    {
+        const auto *const suggested_rect = reinterpret_cast<const RECT *>(l_param);
+        if (suggested_rect == nullptr ||
+            !SetWindowPos(
+                window,
+                nullptr,
+                suggested_rect->left,
+                suggested_rect->top,
+                suggested_rect->right - suggested_rect->left,
+                suggested_rect->bottom - suggested_rect->top,
+                SWP_NOACTIVATE | SWP_NOZORDER))
+        {
+            report_graphics_failure(L"Unable to apply the WM_DPICHANGED suggested window bounds.");
+        }
+        return 0;
+    }
+
     case WM_SIZE:
         if (w_param != SIZE_MINIMIZED)
             resize_swap_chain(LOWORD(l_param), HIWORD(l_param));
@@ -134,6 +186,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 {
+    if (!enable_per_monitor_v2_awareness())
+        return 1;
+
     WNDCLASSEXW window_class = {};
     window_class.cbSize = sizeof(window_class);
     window_class.style = CS_HREDRAW | CS_VREDRAW;
@@ -146,7 +201,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         return 1;
 
     RECT window_rect = { 0, 0, 1280, 720 };
-    AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, FALSE);
+    const UINT initial_dpi = GetDpiForSystem();
+    if (!AdjustWindowRectExForDpi(
+            &window_rect,
+            WS_OVERLAPPEDWINDOW,
+            FALSE,
+            0,
+            initial_dpi))
+    {
+        report_graphics_failure(
+            L"Unable to calculate the initial Per-Monitor-V2 host window bounds.");
+        UnregisterClassW(kWindowClassName, instance);
+        return 1;
+    }
 
     g_graphics.window = CreateWindowExW(
         0,

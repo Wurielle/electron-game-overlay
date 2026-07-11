@@ -3,11 +3,13 @@
 #include "utils/n-utils.h"
 #include "utils/node_async_call.h"
 #include <assert.h>
+#include <cmath>
 #include <cstdint>
 #include <set>
 #include <memory>
 #include <mutex>
 #include <iostream>
+#include <limits>
 #include "ipc/tinyipc.h"
 #include "message/gmessage.hpp"
 #include "utils/win-utils.h"
@@ -46,8 +48,8 @@ struct share_memory
 {
     std::string bufferName;
     std::unique_ptr<windows_shared_memory> windowBitmapMem;
-    int maxWidth;
-    int maxHeight;
+    int maxWidth = 0;
+    int maxHeight = 0;
 };
 
 inline bool isKeyDown(WPARAM wparam)
@@ -320,6 +322,7 @@ class OverlayMain : public IIpcHost
 
     std::vector<overlay::Window> windows_;
     std::map<std::uint32_t, std::shared_ptr<share_memory>> shareMemMap_;
+    std::mutex stateMutex_;
 
     Windows::Mutex mutex_;
     std::string shareMemMutex_;
@@ -360,32 +363,66 @@ class OverlayMain : public IIpcHost
         }
     }
 
-    void createImageMem(std::uint32_t windowId, std::string bufferName, int maxWidth, int maxHeight)
+    std::shared_ptr<share_memory> createImageMem(
+        const std::string& bufferName,
+        int maxWidth,
+        int maxHeight,
+        std::string& error)
     {
+        if (maxWidth <= 0 || maxHeight <= 0)
         {
-            std::cout << "create share mem:" << maxWidth << "," << maxHeight << std::endl;
-
-            auto shareMemSize = maxWidth * maxHeight * sizeof(std::uint32_t) + sizeof(overlay::ShareMemFrameBuffer);
-            std::shared_ptr<share_memory> imageMem = std::make_shared<share_memory>();
-            imageMem->bufferName = bufferName;
-            try
-            {
-                windows_shared_memory share_mem(windows_shared_memory::create_only, bufferName.c_str(), shareMemSize, windows_shared_memory::read_write);
-
-                imageMem->windowBitmapMem = std::make_unique<windows_shared_memory>(std::move(share_mem));
-
-                std::memset(imageMem->windowBitmapMem->get_address(), 0, imageMem->windowBitmapMem->get_size());
-
-                imageMem->maxWidth = maxWidth;
-                imageMem->maxHeight = maxHeight;
-            }
-            catch (...)
-            {
-                ;
-            }
-
-            shareMemMap_[windowId] = imageMem;
+            error = "shared-memory dimensions must be positive";
+            return nullptr;
         }
+
+        const auto width = static_cast<std::size_t>(maxWidth);
+        const auto height = static_cast<std::size_t>(maxHeight);
+        const auto maximumSize = static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max());
+        if (width > maximumSize / height)
+        {
+            error = "shared-memory pixel count overflows";
+            return nullptr;
+        }
+        const auto pixelCount = width * height;
+        if (pixelCount > (maximumSize - sizeof(overlay::ShareMemFrameBuffer)) / sizeof(std::uint32_t))
+        {
+            error = "shared-memory byte size exceeds the native mapping limit";
+            return nullptr;
+        }
+        const auto shareMemSize = static_cast<std::uint32_t>(
+            pixelCount * sizeof(std::uint32_t) + sizeof(overlay::ShareMemFrameBuffer));
+
+        std::cout << "create share mem:" << maxWidth << "," << maxHeight << std::endl;
+        auto imageMem = std::make_shared<share_memory>();
+        imageMem->bufferName = bufferName;
+        try
+        {
+            windows_shared_memory share_mem(
+                windows_shared_memory::create_only,
+                bufferName.c_str(),
+                shareMemSize,
+                windows_shared_memory::read_write);
+            imageMem->windowBitmapMem =
+                std::make_unique<windows_shared_memory>(std::move(share_mem));
+            std::memset(
+                imageMem->windowBitmapMem->get_address(),
+                0,
+                imageMem->windowBitmapMem->get_size());
+            imageMem->maxWidth = maxWidth;
+            imageMem->maxHeight = maxHeight;
+        }
+        catch (const std::exception& exception)
+        {
+            error = exception.what();
+            return nullptr;
+        }
+        catch (...)
+        {
+            error = "unknown shared-memory allocation failure";
+            return nullptr;
+        }
+
+        return imageMem;
     }
 
     Napi::Value setHotkeys(const Napi::CallbackInfo &info)
@@ -422,7 +459,10 @@ class OverlayMain : public IIpcHost
             }
             hotkeys.push_back(hotkey);
         }
-        this->hotkeys_ = hotkeys;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            this->hotkeys_ = hotkeys;
+        }
 
         this->_sendHotkeys();
         return env.Undefined();
@@ -525,7 +565,11 @@ class OverlayMain : public IIpcHost
             message.caption = captionMargin;
         }
 
-        windows_.push_back(message);
+        if (windowDetails.Has("scaleFactorMicros"))
+        {
+            message.scaleFactorMicros =
+                windowDetails.Get("scaleFactorMicros").ToNumber().Uint32Value();
+        }
 
         HMONITOR moniter = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
         MONITORINFO moniterInfo = { 0 };
@@ -533,7 +577,27 @@ class OverlayMain : public IIpcHost
         GetMonitorInfoW(moniter, &moniterInfo);
         int width = moniterInfo.rcMonitor.right - moniterInfo.rcMonitor.left;
         int height = moniterInfo.rcMonitor.bottom - moniterInfo.rcMonitor.top;
-        createImageMem(message.windowId, message.bufferName, std::max(width, message.rect.width), std::max(height, message.rect.height));
+        std::string allocationError;
+        auto imageMem = createImageMem(
+            message.bufferName,
+            std::max(width, message.rect.width),
+            std::max(height, message.rect.height),
+            allocationError);
+        if (!imageMem)
+        {
+            Napi::Error::New(
+                env,
+                std::string("Could not create Electron overlay shared memory: ") +
+                    allocationError)
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            windows_.push_back(message);
+            shareMemMap_[message.windowId] = std::move(imageMem);
+        }
 
         this->_sendMessage(&message);
 
@@ -546,16 +610,21 @@ class OverlayMain : public IIpcHost
 
         overlay::WindowClose message;
         message.windowId = info[0].ToNumber();
-        this->_sendMessage(&message);
-
-        auto it = std::find_if(windows_.begin(), windows_.end(), [windowId = message.windowId](const auto &window) {
-            return windowId == window.windowId;
-        });
-
-        if (it != windows_.end())
         {
-            windows_.erase(it);
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            auto it = std::find_if(
+                windows_.begin(),
+                windows_.end(),
+                [windowId = message.windowId](const auto& window) {
+                    return windowId == window.windowId;
+                });
+            if (it != windows_.end())
+            {
+                windows_.erase(it);
+            }
+            shareMemMap_.erase(message.windowId);
         }
+        this->_sendMessage(&message);
 
         return env.Undefined();
     }
@@ -566,23 +635,118 @@ class OverlayMain : public IIpcHost
 
         overlay::WindowBounds message;
         message.windowId = info[0].ToNumber();
-        Napi::Object rect = info[1].ToObject().Get("rect").ToObject();
+        Napi::Object windowDetails = info[1].ToObject();
+        Napi::Object rect = windowDetails.Get("rect").ToObject();
         message.rect.x = rect.Get("x").ToNumber();
         message.rect.y = rect.Get("y").ToNumber();
         message.rect.width = rect.Get("width").ToNumber();
         message.rect.height = rect.Get("height").ToNumber();
 
-        auto& imageMem = shareMemMap_[message.windowId];
-
-        if (message.rect.width * message.rect.height > imageMem->maxWidth * imageMem->maxHeight)
+        if (windowDetails.Has("maxWidth"))
         {
-            auto it = std::find_if(windows_.begin(), windows_.end(), [windowId = message.windowId](const auto &window) {
-                return windowId == window.windowId;
-            });
-            auto& window = *it;
+            message.maxWidth = windowDetails.Get("maxWidth").ToNumber().Uint32Value();
+        }
+        if (windowDetails.Has("maxHeight"))
+        {
+            message.maxHeight = windowDetails.Get("maxHeight").ToNumber().Uint32Value();
+        }
+        if (windowDetails.Has("minWidth"))
+        {
+            message.minWidth = windowDetails.Get("minWidth").ToNumber().Uint32Value();
+        }
+        if (windowDetails.Has("minHeight"))
+        {
+            message.minHeight = windowDetails.Get("minHeight").ToNumber().Uint32Value();
+        }
+        if (windowDetails.Has("dragBorderWidth"))
+        {
+            message.dragBorderWidth = windowDetails.Get("dragBorderWidth").ToNumber().Uint32Value();
+        }
+        if (windowDetails.Has("caption"))
+        {
+            Napi::Object caption = windowDetails.Get("caption").ToObject();
+            overlay::WindowCaptionMargin captionMargin;
+            captionMargin.left = caption.Get("left").ToNumber();
+            captionMargin.right = caption.Get("right").ToNumber();
+            captionMargin.top = caption.Get("top").ToNumber();
+            captionMargin.height = caption.Get("height").ToNumber();
+            message.caption = captionMargin;
+        }
+        if (windowDetails.Has("scaleFactorMicros"))
+        {
+            message.scaleFactorMicros =
+                windowDetails.Get("scaleFactorMicros").ToNumber().Uint32Value();
+        }
+        if (windowDetails.Has("rasterChanged"))
+        {
+            message.rasterChanged = windowDetails.Get("rasterChanged").ToBoolean().Value();
+        }
 
-            window.bufferName = _shareMemoryName(message.windowId);
-            message.bufferName = window.bufferName;
+        overlay::Window updatedWindow;
+        std::shared_ptr<share_memory> currentImageMem;
+        bool registered = false;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            auto windowIt = std::find_if(
+                windows_.begin(),
+                windows_.end(),
+                [windowId = message.windowId](const auto& window) {
+                    return windowId == window.windowId;
+                });
+            if (windowIt != windows_.end())
+            {
+                updatedWindow = *windowIt;
+                registered = true;
+                auto imageMemIt = shareMemMap_.find(message.windowId);
+                if (imageMemIt != shareMemMap_.end())
+                {
+                    currentImageMem = imageMemIt->second;
+                }
+            }
+        }
+
+        if (!registered)
+        {
+            this->_sendMessage(&message);
+            return env.Undefined();
+        }
+
+        updatedWindow.rect = message.rect;
+        if (message.maxWidth)
+        {
+            updatedWindow.maxWidth = message.maxWidth.value();
+        }
+        if (message.maxHeight)
+        {
+            updatedWindow.maxHeight = message.maxHeight.value();
+        }
+        if (message.minWidth)
+        {
+            updatedWindow.minWidth = message.minWidth.value();
+        }
+        if (message.minHeight)
+        {
+            updatedWindow.minHeight = message.minHeight.value();
+        }
+        if (message.dragBorderWidth)
+        {
+            updatedWindow.dragBorderWidth = message.dragBorderWidth.value();
+        }
+        if (message.caption)
+        {
+            updatedWindow.caption = message.caption.value();
+        }
+        if (message.scaleFactorMicros)
+        {
+            updatedWindow.scaleFactorMicros = message.scaleFactorMicros.value();
+        }
+
+        std::shared_ptr<share_memory> replacementImageMem;
+        if (!currentImageMem ||
+            message.rect.width > currentImageMem->maxWidth ||
+            message.rect.height > currentImageMem->maxHeight)
+        {
+            const auto replacementBufferName = _shareMemoryName(message.windowId);
 
             HMONITOR moniter = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
             MONITORINFO moniterInfo = { 0 };
@@ -590,21 +754,45 @@ class OverlayMain : public IIpcHost
             GetMonitorInfoW(moniter, &moniterInfo);
             int width = moniterInfo.rcMonitor.right - moniterInfo.rcMonitor.left;
             int height = moniterInfo.rcMonitor.bottom - moniterInfo.rcMonitor.top;
+            std::string allocationError;
+            replacementImageMem = createImageMem(
+                replacementBufferName,
+                std::max(width, message.rect.width),
+                std::max(height, message.rect.height),
+                allocationError);
+            if (!replacementImageMem)
+            {
+                Napi::Error::New(
+                    env,
+                    std::string("Could not grow Electron overlay shared memory: ") +
+                        allocationError)
+                    .ThrowAsJavaScriptException();
+                return env.Undefined();
+            }
 
-            createImageMem(window.windowId, window.bufferName, std::max(width, window.rect.width), std::max(height, window.rect.height));
+            updatedWindow.bufferName = replacementBufferName;
+            message.bufferName = replacementBufferName;
+        }
 
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            auto windowIt = std::find_if(
+                windows_.begin(),
+                windows_.end(),
+                [windowId = message.windowId](const auto& window) {
+                    return windowId == window.windowId;
+                });
+            if (windowIt == windows_.end())
+            {
+                return env.Undefined();
+            }
+            *windowIt = updatedWindow;
+            if (replacementImageMem)
+            {
+                shareMemMap_[message.windowId] = std::move(replacementImageMem);
+            }
         }
         this->_sendMessage(&message);
-
-        auto it = std::find_if(windows_.begin(), windows_.end(), [windowId = message.windowId](const auto &window) {
-            return windowId == window.windowId;
-        });
-
-        if (it != windows_.end())
-        {
-            auto& window = *it;
-            window.rect = message.rect;
-        }
 
         return env.Undefined();
     }
@@ -613,42 +801,123 @@ class OverlayMain : public IIpcHost
     {
         Napi::Env env = info.Env();
 
+        if (info.Length() < 4)
+        {
+            Napi::TypeError::New(
+                env,
+                "sendFrameBuffer requires windowId, buffer, width, and height")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        if (!info[1].IsBuffer())
+        {
+            Napi::TypeError::New(env, "Electron overlay frame must be a Buffer")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        if (!info[2].IsNumber() || !info[3].IsNumber())
+        {
+            Napi::TypeError::New(env, "Electron overlay frame dimensions must be numbers")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+
         overlay::WindowFrameBuffer message;
         message.windowId = info[0].ToNumber();
-        Napi::Buffer<std::uint32_t> buffer = info[1].As<Napi::Buffer<std::uint32_t>>();
-        std::int32_t width = info[2].ToNumber();
-        std::int32_t height = info[3].ToNumber();
-        std::uint32_t *data = buffer.Data();
-        std::size_t length = buffer.Length();
-
-        assert((length == width * height));
-
+        Napi::Buffer<std::uint8_t> buffer = info[1].As<Napi::Buffer<std::uint8_t>>();
+        const auto rawWidth = info[2].As<Napi::Number>().DoubleValue();
+        const auto rawHeight = info[3].As<Napi::Number>().DoubleValue();
+        const auto maximumDimension =
+            static_cast<double>(std::numeric_limits<std::int32_t>::max());
+        if (!std::isfinite(rawWidth) ||
+            !std::isfinite(rawHeight) ||
+            rawWidth <= 0 ||
+            rawHeight <= 0 ||
+            rawWidth > maximumDimension ||
+            rawHeight > maximumDimension ||
+            std::trunc(rawWidth) != rawWidth ||
+            std::trunc(rawHeight) != rawHeight)
         {
+            Napi::RangeError::New(
+                env,
+                "Electron overlay frame dimensions must be positive 32-bit integers")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        const auto width = static_cast<std::int32_t>(rawWidth);
+        const auto height = static_cast<std::int32_t>(rawHeight);
+        const auto* data = buffer.Data();
+        const auto byteLength = buffer.Length();
+
+        const auto frameWidth = static_cast<std::size_t>(width);
+        const auto frameHeight = static_cast<std::size_t>(height);
+        if (frameWidth > std::numeric_limits<std::size_t>::max() / frameHeight)
+        {
+            Napi::RangeError::New(env, "Electron overlay frame pixel count overflows")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        const auto pixelCount = frameWidth * frameHeight;
+        if (pixelCount >
+            (std::numeric_limits<std::size_t>::max() -
+             sizeof(overlay::ShareMemFrameBuffer)) /
+                sizeof(std::uint32_t))
+        {
+            Napi::RangeError::New(env, "Electron overlay frame byte size overflows")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        const auto pixelBytes = pixelCount * sizeof(std::uint32_t);
+        const auto requiredBytes = sizeof(overlay::ShareMemFrameBuffer) + pixelBytes;
+        if (byteLength != pixelBytes)
+        {
+            Napi::RangeError::New(
+                env,
+                "Electron overlay frame buffer length does not match its dimensions")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+
+        std::shared_ptr<share_memory> imageMem;
+        {
+            std::lock_guard<std::mutex> stateLock(stateMutex_);
             auto it = shareMemMap_.find(message.windowId);
             if (it != shareMemMap_.end())
             {
-                auto &windowBitmapMem = it->second->windowBitmapMem;
-
-                if (windowBitmapMem)
-                {
-                    std::lock_guard<Windows::Mutex> lock(mutex_);
-
-                    char *orgin = static_cast<char *>(windowBitmapMem->get_address());
-                    std::memset(windowBitmapMem->get_address(), 0, windowBitmapMem->get_size());
-
-                    overlay::ShareMemFrameBuffer *head = (overlay::ShareMemFrameBuffer *)orgin;
-                    head->width = width;
-                    head->height = height;
-                    std::uint32_t *mem = (std::uint32_t *)(orgin + sizeof(overlay::ShareMemFrameBuffer));
-
-                    for (int i = 0; i != height; ++i)
-                    {
-                        const std::uint32_t *line = data + i * width;
-                        int xx = i * width;
-                        memcpy((mem + xx), line, sizeof(std::uint32_t) * width);
-                    }
-                }
+                imageMem = it->second;
             }
+        }
+
+        if (!imageMem || !imageMem->windowBitmapMem)
+        {
+            Napi::Error::New(env, "Electron overlay frame mapping is unavailable")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        if (width > imageMem->maxWidth || height > imageMem->maxHeight)
+        {
+            Napi::RangeError::New(env, "Electron overlay frame exceeds mapping dimensions")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        if (requiredBytes > imageMem->windowBitmapMem->get_size())
+        {
+            Napi::RangeError::New(env, "Electron overlay frame exceeds mapping capacity")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+
+        {
+            std::lock_guard<Windows::Mutex> lock(mutex_);
+            auto& windowBitmapMem = imageMem->windowBitmapMem;
+            char *origin = static_cast<char *>(windowBitmapMem->get_address());
+            std::memset(origin, 0, windowBitmapMem->get_size());
+
+            auto *head = reinterpret_cast<overlay::ShareMemFrameBuffer *>(origin);
+            head->width = width;
+            head->height = height;
+            void *destination = origin + sizeof(overlay::ShareMemFrameBuffer);
+            std::memcpy(destination, data, pixelBytes);
         }
 
         this->_sendMessage(&message);
@@ -862,7 +1131,13 @@ class OverlayMain : public IIpcHost
         }
     }
 
-    void notifyInputEvent(std::uint32_t pid, std::uint32_t windowId, std::uint32_t msg, std::uint32_t wparam, std::uint32_t lparam)
+    void notifyInputEvent(
+        std::uint32_t pid,
+        std::uint32_t windowId,
+        std::uint32_t msg,
+        std::uint32_t wparam,
+        std::uint32_t lparam,
+        const std::optional<std::uint32_t>& scaleFactorMicros)
     {
         if (eventCallback_)
         {
@@ -873,6 +1148,12 @@ class OverlayMain : public IIpcHost
             object.Set("msg", Napi::Value::From(eventCallback_->env, msg));
             object.Set("wparam", Napi::Value::From(eventCallback_->env, wparam));
             object.Set("lparam", Napi::Value::From(eventCallback_->env, lparam));
+            if (scaleFactorMicros)
+            {
+                object.Set(
+                    "scaleFactorMicros",
+                    Napi::Value::From(eventCallback_->env, scaleFactorMicros.value()));
+            }
             eventCallback_->callback.MakeCallback(eventCallback_->receiver.Value(), { Napi::Value::From(eventCallback_->env, "game.input"), object });
         }
     }
@@ -984,7 +1265,10 @@ class OverlayMain : public IIpcHost
     void _sendHotkeys()
     {
         overlay::HotkeyInfo hotkeyInfoMessage;
-        hotkeyInfoMessage.hotkeys = this->hotkeys_;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            hotkeyInfoMessage.hotkeys = this->hotkeys_;
+        }
 
         this->_sendMessage(&hotkeyInfoMessage);
     }
@@ -1057,8 +1341,11 @@ break;
         overlay::OverlayInit message;
         message.processEnabled = true;
         message.shareMemMutex = shareMemMutex_;
-        message.windows = windows_;
-        message.hotkeys = hotkeys_;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            message.windows = windows_;
+            message.hotkeys = hotkeys_;
+        }
 
         overlay::OverlayIpc ipcMsg;
         ipcMsg.type = message.msgType();
@@ -1093,7 +1380,13 @@ break;
     void _onGameInput(std::uint32_t pid, const std::shared_ptr<overlay::GameInput>& overlayMsg)
     {
         node_async_call::async_call([this, pid, overlayMsg]() {
-            notifyInputEvent(pid, overlayMsg->windowId, overlayMsg->msg, overlayMsg->wparam, overlayMsg->lparam);
+            notifyInputEvent(
+                pid,
+                overlayMsg->windowId,
+                overlayMsg->msg,
+                overlayMsg->wparam,
+                overlayMsg->lparam,
+                overlayMsg->scaleFactorMicros);
         });
     }
 

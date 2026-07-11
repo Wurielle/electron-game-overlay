@@ -26,7 +26,7 @@ What this milestone proves:
 -   the runtime survives D3D11 swap-chain resize handling owned by ReShade;
 -   native initialization and texture failures are visible in `ReShade.log`.
 
-The ReShade baseline itself does not connect Electron frames or forward input. The hudhook POC closes both gaps for multiple Electron windows, including premultiplied-alpha correction, ordered visibility lifecycle, focus, a per-window project-owned pointer-capture owner, Win32 input interception, and a uniformly forced 1.25 device-scale proof. Broader input APIs, real per-monitor/mixed-DPI handling, and safe GPU texture retirement remain open.
+The ReShade baseline itself does not connect Electron frames or forward input. The hudhook POC closes both gaps for multiple Electron windows, including premultiplied-alpha correction, ordered visibility lifecycle, focus, a per-window project-owned pointer-capture owner, Win32 input interception, uniformly forced scale regressions, and a bounded producer-window/runtime scale-transition foundation. Broader input APIs, target-display/client-origin ownership, real mixed-monitor acceptance, and safe GPU texture retirement remain open.
 
 ## Current model
 
@@ -291,16 +291,16 @@ Electron windows should not rely on ImGui widgets for input. For Electron-backed
 9. Decide whether upstream hudhook is sufficient or a narrow fork is justified.
 10. Make the selected Electron window interactive through the existing input/intercept protocol.
 11. Generalize to multiple-window/z-order state with per-window routing and texture state.
-12. Prove the DIP-to-physical contract at a uniformly forced 1.25 Electron scale, then add real per-monitor/mixed-DPI handling and resize-safe texture retirement.
-13. After those compositor seams are stable, repeat the graphics proof with hudhook's D3D12 backend and a controlled D3D12 host.
+12. Prove the DIP-to-physical contract at uniformly forced Electron scales, add matching-paint per-window runtime transitions, then define target-display/client-origin ownership and run real mixed-monitor acceptance.
+13. Add resize-safe texture retirement, then repeat the graphics proof with hudhook's D3D12 backend and a controlled D3D12 host.
 
-Steps 1 through 11 and the bounded forced-scale portion of step 12 are complete for controlled D3D11, including transparent physical-bounds composition, ordered multi-window lifecycle, click-to-front routing, focused keyboard input, caption dragging, and per-window pointer capture. The Electron proof intentionally keeps the existing SDK and frame protocol unchanged; a versioned double buffer remains an optimization option rather than a prerequisite for the current compositor.
+Steps 1 through 11 and the bounded producer-window portion of step 12 are complete for controlled D3D11, including transparent physical-bounds composition, ordered multi-window lifecycle, click-to-front routing, focused keyboard input, caption dragging, per-window pointer capture, content-surface rather than outer-window bounds, desired/active display state, and matching-paint scale commits. Accepted bitmaps are authoritative within a one-pixel floor-scaling tolerance; ambiguous transitions wait for renderer DPR/viewport acknowledgement and use a cropped `capturePage()` as the causal commit frame. Per-packet scale tags protect queued input while retaining a legacy active-scale fallback. The public SDK remains unchanged; `window.bounds` gained compatible optional full-geometry and `rasterChanged` fields so the compositor can suppress stale pixels until the matching frame. Native mapping creation/growth is transactional and frame copies are dimension/overflow/length/capacity checked. A versioned double buffer remains an optimization option rather than a prerequisite for the current compositor.
 
 ## Risks and limitations
 
 -   ImGui does not solve injection compatibility by itself.
 -   ImGui does not make Electron input automatic.
--   the scaled run forces one uniform 1.25 Electron factor; the session caches Electron 16's factor nearest `(0, 0)`, so runtime DPI changes, real PMv2/mixed-monitor coordinates, physical/VM DPI behavior, and Electron 42 OSR remain unproven;
+-   the SDK can stage per-producer-window runtime scale changes and the controlled target is PMv2-aware, but the current machine exposes one 100% virtual display; forced 1/1.25/1.5/2 runs therefore do not prove target-HWND/client-origin ownership, backing-window placement, multi-target geometry, real physical/VM mixed-monitor behavior, or Electron 42 OSR;
 -   Every graphics API still needs explicit texture upload and resource lifetime handling.
 -   hudhook 0.9.1 exposes texture load/replace but no removal operation, so resize-safe retirement of superseded texture IDs remains open;
 -   scene/router publication is atomic on the CPU, but new alpha data can precede its GPU texture upload by one `Present`;
@@ -343,10 +343,10 @@ The implemented hudhook path is defined in [`hudhook-imgui-overlay-poc.md`](hudh
 5. Connect generic transparent Electron windows through the current SDK/add-on frame path and verify native bounds plus move/close/re-register lifecycle.
 6. Make the hit/focused window interactive through mouse/keyboard interception (complete for regular Win32 messages).
 7. Compose and route an ordered multi-window scene (complete); separately smoke-test the unchanged payload in one allowed offline D3D11 game or application.
-8. Replace the bounded forced-scale contract with real per-monitor/mixed-DPI handling, and add safe texture retirement.
-9. Repeat the graphics proof with D3D12 and a controlled D3D12 host, then replace the controlled injector for production.
+8. Complete target-HWND display/client-origin ownership and backing-window/per-target geometry, then run manual mixed-scale hardware/VM acceptance.
+9. Add safe texture retirement, repeat the graphics proof with D3D12 and a controlled D3D12 host, then replace the controlled injector for production.
 
-The controlled D3D11, Electron transport, regular Win32 input, multi-window/z-order, and uniform 1.25 device-scale criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence is not an adoption gate. Real per-monitor/mixed-DPI coordinates and safe texture retirement are next; D3D12 and the production injector follow.
+The controlled D3D11, Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence is not an adoption gate. Target-display ownership and manual mixed-monitor acceptance are next, then safe texture retirement; D3D12 and the production injector follow.
 
 ## Research checklist for search agent
 
@@ -481,7 +481,8 @@ The search agent should produce:
 -   [x] Add receipt, upload, composition, clear, and resume diagnostics to the exact target PID's log.
 -   [x] Add atomic multiple-window scene/router state, click-to-front ordering, and per-window texture caching.
 -   [x] Prove uniform forced 1.25 DIP-to-physical metadata/frame mapping and signed physical-to-DIP input.
--   [ ] Add real per-monitor/mixed-DPI coordinate mapping and runtime scale updates.
+-   [x] Add content-bounds producer tracking, desired/active display state, renderer-acknowledged cropped-capture barriers, bitmap-authoritative rounding tolerance, per-packet input scale tags with legacy fallback, stale-raster suppression, transactional checked buffer growth, and a PMv2 controlled host.
+-   [ ] Define target-HWND display/client-origin ownership and backing-window/per-target routing, then pass manual mixed-scale hardware/VM acceptance.
 -   [ ] Add resize-safe texture retirement.
 -   [ ] Decide from profiling whether to evolve the current transport into a versioned, stride-aware double buffer.
 
@@ -544,4 +545,4 @@ The native implementation behind that API could use ImGui internally.
 
 Try this as a native runtime experiment, not as a rewrite of the Electron SDK.
 
-Keep the Electron SDK and upstream hudhook boundary proven by this experiment. The ordered multi-window compositor and bounded uniform 1.25 scale contract are complete without a public SDK or frame-protocol redesign. Next add real per-monitor/mixed-DPI updates and retire superseded textures safely. Then add the D3D12 payload and controlled host, followed by a production project-owned injector.
+Keep the Electron SDK and upstream hudhook boundary proven by this experiment. The ordered multi-window compositor, uniform scale matrix, and bounded producer-window/runtime transition contract are complete without changing the public SDK. Next give the target HWND ownership of display/client-origin mapping and perform manual mixed-scale hardware/VM acceptance. Then retire superseded textures safely, add the D3D12 payload and controlled host, and replace the production injector.

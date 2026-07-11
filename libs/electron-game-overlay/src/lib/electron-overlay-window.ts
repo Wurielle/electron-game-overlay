@@ -1,6 +1,6 @@
-import { BrowserWindow } from "electron";
-import type { OverlayWindowBridge } from "./overlay-window-bridge.js";
-import type { ElectronOverlayWindowOptions, Rect } from "./types.js";
+import { BrowserWindow } from 'electron';
+import type { OverlayWindowBridge } from './overlay-window-bridge.js';
+import type { ElectronOverlayWindowOptions, Rect } from './types.js';
 
 export class ElectronOverlayWindow {
   public readonly id: string;
@@ -17,7 +17,7 @@ export class ElectronOverlayWindow {
 
   constructor(
     private readonly bridge: OverlayWindowBridge,
-    options: ElectronOverlayWindowOptions
+    options: ElectronOverlayWindowOptions,
   ) {
     this.browserWindow =
       options.existingWindow ||
@@ -112,7 +112,7 @@ export class ElectronOverlayWindow {
     });
 
     if (this.registered) {
-      this.bridge.syncWindowBounds(this);
+      this.bridge.syncWindowGeometry(this);
     }
   }
 
@@ -122,31 +122,33 @@ export class ElectronOverlayWindow {
 
   private bindBrowserWindow() {
     this.browserWindow.webContents.on(
-      "paint",
+      'paint',
       (event, dirty, image: Electron.NativeImage) => {
         this.bridge.sendFrame(this, image);
-      }
+      },
     );
 
-    this.browserWindow.on("ready-to-show", () => {
+    this.browserWindow.on('ready-to-show', () => {
       this.focus();
     });
 
-    this.browserWindow.on("resize", () => {
-      console.log(`${this.name} resizing`);
+    const syncWindowGeometry = () => {
       if (this.registered) {
-        this.bridge.syncWindowBounds(this);
+        this.bridge.syncWindowGeometry(this);
       }
-    });
+    };
 
-    this.browserWindow.on("closed", () => {
+    this.browserWindow.on('move', syncWindowGeometry);
+    this.browserWindow.on('resize', syncWindowGeometry);
+
+    this.browserWindow.on('closed', () => {
       this.hide();
       this.destroyed = true;
       this.bridge.removeWindow(this);
       this.emitClose();
     });
 
-    this.browserWindow.webContents.on("cursor-changed", (event, type) => {
+    this.browserWindow.webContents.on('cursor-changed', (event, type) => {
       this.bridge.sendCursor(type);
     });
   }
@@ -160,7 +162,7 @@ export class ElectronOverlayWindow {
 }
 
 function getBrowserWindowOptions(
-  options: ElectronOverlayWindowOptions
+  options: ElectronOverlayWindowOptions,
 ): Electron.BrowserWindowConstructorOptions {
   const bounds = options.bounds || {};
   const browserWindowOptions = options.browserWindow || {};

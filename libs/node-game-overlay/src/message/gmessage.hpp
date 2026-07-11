@@ -149,9 +149,10 @@ struct Window : public GMessage
     std::string bufferName;
     WindowRect rect;
     std::optional<WindowCaptionMargin> caption;
+    std::optional<std::uint32_t> scaleFactorMicros;
 };
 
-JSON_AUTO(Window, type, windowId, nativeHandle, name, transparent, resizable, maxWidth, maxHeight, minWidth, minHeight, dragBorderWidth, bufferName, rect, caption)
+JSON_AUTO(Window, type, windowId, nativeHandle, name, transparent, resizable, maxWidth, maxHeight, minWidth, minHeight, dragBorderWidth, bufferName, rect, caption, scaleFactorMicros)
 
 struct WindowClose : public GMessage
 {
@@ -168,8 +169,16 @@ struct WindowBounds : public GMessage
     std::uint32_t windowId = 0;
     WindowRect rect;
     std::optional<std::string> bufferName;
+    std::optional<std::uint32_t> maxWidth;
+    std::optional<std::uint32_t> maxHeight;
+    std::optional<std::uint32_t> minWidth;
+    std::optional<std::uint32_t> minHeight;
+    std::optional<std::uint32_t> dragBorderWidth;
+    std::optional<WindowCaptionMargin> caption;
+    std::optional<std::uint32_t> scaleFactorMicros;
+    std::optional<bool> rasterChanged;
 };
-JSON_AUTO(WindowBounds, type, windowId, rect, bufferName)
+JSON_AUTO(WindowBounds, type, windowId, rect, bufferName, maxWidth, maxHeight, minWidth, minHeight, dragBorderWidth, caption, scaleFactorMicros, rasterChanged)
 
 struct WindowFrameBuffer : public GMessage
 {
@@ -405,9 +414,10 @@ struct GameInput : public GMessage
     std::uint32_t msg;
     std::uint32_t wparam;
     std::uint32_t lparam;
+    std::optional<std::uint32_t> scaleFactorMicros;
 };
 
-JSON_AUTO(GameInput, type, windowId, msg, wparam, lparam)
+JSON_AUTO(GameInput, type, windowId, msg, wparam, lparam, scaleFactorMicros)
 
 struct InGameHotkeyDown : public GMessage
 {

@@ -605,6 +605,33 @@ namespace HudhookOverlayRunner
 "@
 }
 
+if (-not ("HudhookOverlayRunner.DpiMethods" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace HudhookOverlayRunner
+{
+    public static class DpiMethods
+    {
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetWindowDpiAwarenessContext(IntPtr window);
+
+        [DllImport("user32.dll")]
+        private static extern bool AreDpiAwarenessContextsEqual(IntPtr first, IntPtr second);
+
+        public static bool IsPerMonitorV2Aware(IntPtr window)
+        {
+            // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is the pseudo-handle -4.
+            return AreDpiAwarenessContextsEqual(
+                GetWindowDpiAwarenessContext(window),
+                new IntPtr(-4));
+        }
+    }
+}
+"@
+}
+
 function Invoke-WithLeftButtonDown {
     param(
         [Parameter(Mandatory = $true)]
@@ -1214,6 +1241,15 @@ try {
     if ($HostProcess.MainWindowTitle -ne $WindowTitle) {
         throw "Timed out waiting for the controlled host window."
     }
+
+    $HostWindow = $HostProcess.MainWindowHandle
+    if (
+        $HostWindow -eq [IntPtr]::Zero -or
+        -not [HudhookOverlayRunner.DpiMethods]::IsPerMonitorV2Aware($HostWindow)
+    ) {
+        throw "The controlled host window is not running with Per-Monitor-V2 DPI awareness."
+    }
+    Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
 
     $PayloadLog = Join-Path $RunDirectory "hudhook_imgui_overlay_dx11-$($HostProcess.Id).log"
     if (Test-Path $PayloadLog) {

@@ -12,7 +12,7 @@
       "dependsOn": ["build"],
       "options": {
         "cwd": "libs/electron-game-overlay",
-        "command": "node --test tests/coordinate-space.test.cjs"
+        "command": "node --test tests/*.test.cjs"
       }
     }
   }

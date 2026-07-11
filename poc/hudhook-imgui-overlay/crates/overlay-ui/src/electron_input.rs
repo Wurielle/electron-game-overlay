@@ -161,6 +161,7 @@ pub struct InputWindow {
     pub window_id: u32,
     pub rect: InputRect,
     caption: Option<InputCaption>,
+    scale_factor_micros: Option<u32>,
     placement_epoch: u64,
     alpha_frame: Option<AlphaFrame>,
 }
@@ -171,6 +172,7 @@ impl InputWindow {
             window_id,
             rect,
             caption: None,
+            scale_factor_micros: None,
             placement_epoch: 0,
             alpha_frame: None,
         }
@@ -178,6 +180,11 @@ impl InputWindow {
 
     pub fn with_caption(mut self, caption: Option<InputCaption>) -> Self {
         self.caption = caption;
+        self
+    }
+
+    pub fn with_scale_factor_micros(mut self, scale_factor_micros: Option<u32>) -> Self {
+        self.scale_factor_micros = scale_factor_micros;
         self
     }
 
@@ -274,6 +281,52 @@ pub enum OutboundMessage {
         wparam: u32,
         lparam: u32,
     },
+    TaggedInput {
+        window_id: u32,
+        msg: u32,
+        wparam: u32,
+        lparam: u32,
+        scale_factor_micros: u32,
+    },
+}
+
+impl OutboundMessage {
+    fn input_for(window: &InputWindow, msg: u32, wparam: u32, lparam: u32) -> Self {
+        window.scale_factor_micros.map_or(
+            Self::Input {
+                window_id: window.window_id,
+                msg,
+                wparam,
+                lparam,
+            },
+            |scale_factor_micros| Self::TaggedInput {
+                window_id: window.window_id,
+                msg,
+                wparam,
+                lparam,
+                scale_factor_micros,
+            },
+        )
+    }
+
+    pub(crate) fn input_fields(&self) -> Option<(u32, u32, u32, u32, Option<u32>)> {
+        match *self {
+            Self::Input {
+                window_id,
+                msg,
+                wparam,
+                lparam,
+            } => Some((window_id, msg, wparam, lparam, None)),
+            Self::TaggedInput {
+                window_id,
+                msg,
+                wparam,
+                lparam,
+                scale_factor_micros,
+            } => Some((window_id, msg, wparam, lparam, Some(scale_factor_micros))),
+            _ => None,
+        }
+    }
 }
 
 /// FIFO outbound storage with lossless control/input ordering. Only a mouse
@@ -290,20 +343,14 @@ impl OutboundQueue {
     }
 
     pub fn push(&mut self, message: OutboundMessage) {
-        if let OutboundMessage::Input {
-            window_id,
-            msg: WM_MOUSEMOVE,
-            ..
-        } = &message
-        {
-            if matches!(
-                self.messages.back(),
-                Some(OutboundMessage::Input {
-                    window_id: pending_window_id,
-                    msg: WM_MOUSEMOVE,
-                    ..
-                }) if pending_window_id == window_id
-            ) {
+        if let Some((window_id, WM_MOUSEMOVE, _, _, _)) = message.input_fields() {
+            if self.messages.back().is_some_and(|pending| {
+                matches!(
+                    pending.input_fields(),
+                    Some((pending_window_id, WM_MOUSEMOVE, _, _, _))
+                        if pending_window_id == window_id
+                )
+            }) {
                 *self
                     .messages
                     .back_mut()
@@ -959,12 +1006,12 @@ impl InputRouter {
         }
 
         let local_point = target.rect.to_local(client_point);
-        outbound.push(OutboundMessage::Input {
-            window_id: target.window_id,
+        outbound.push(OutboundMessage::input_for(
+            &target,
             msg,
             wparam,
-            lparam: encode_signed_lparam_point(local_point),
-        });
+            encode_signed_lparam_point(local_point),
+        ));
 
         // Release capture after queuing the matching mouse-up packet, so that
         // an out-of-bounds release is delivered before capture ends.
@@ -1141,12 +1188,12 @@ impl InputRouter {
 
             remaining_buttons &= !button;
             let msg = pointer_release_message(button);
-            outbound.push(OutboundMessage::Input {
-                window_id,
+            outbound.push(OutboundMessage::input_for(
+                window,
                 msg,
-                wparam: encode_button_state_wparam(remaining_buttons),
+                encode_button_state_wparam(remaining_buttons),
                 lparam,
-            });
+            ));
         }
         outbound
     }
@@ -1155,20 +1202,15 @@ impl InputRouter {
         let Some(window_id) = self.focused_window_id else {
             return Vec::new();
         };
-        if !self
+        let Some(window) = self
             .windows
             .iter()
-            .any(|window| window.window_id == window_id)
-        {
+            .find(|window| window.window_id == window_id)
+        else {
             return Vec::new();
-        }
+        };
 
-        vec![OutboundMessage::Input {
-            window_id,
-            msg,
-            wparam,
-            lparam,
-        }]
+        vec![OutboundMessage::input_for(window, msg, wparam, lparam)]
     }
 
     fn clear_electron_focus(&mut self, outbound: &mut Vec<OutboundMessage>) {
@@ -1353,6 +1395,51 @@ mod tests {
                 height: 15,
             }))
             .with_placement_epoch(placement_epoch)
+    }
+
+    #[test]
+    fn routed_pointer_and_keyboard_input_carry_the_window_scale_tag() {
+        let tagged = InputWindow::new(WINDOW_ID, RECT).with_scale_factor_micros(Some(1_250_000));
+        let mut router = router_with_windows(vec![tagged]);
+        let point = InputPoint::new(-10, 35);
+
+        assert_eq!(
+            route(&mut router, WM_MOUSEMOVE, point),
+            vec![OutboundMessage::TaggedInput {
+                window_id: WINDOW_ID,
+                msg: WM_MOUSEMOVE,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(10, 5)),
+                scale_factor_micros: 1_250_000,
+            }]
+        );
+        assert_eq!(
+            route(&mut router, WM_LBUTTONDOWN, point),
+            vec![
+                OutboundMessage::WindowFocused {
+                    focus_window_id: WINDOW_ID,
+                },
+                OutboundMessage::TaggedInput {
+                    window_id: WINDOW_ID,
+                    msg: WM_LBUTTONDOWN,
+                    wparam: 0,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 5)),
+                    scale_factor_micros: 1_250_000,
+                },
+            ]
+        );
+        assert_eq!(
+            router.route_win32_message(WM_KEYDOWN, u32::from(b'A'), 0, |_| {
+                unreachable!("keyboard routing does not convert screen coordinates")
+            }),
+            vec![OutboundMessage::TaggedInput {
+                window_id: WINDOW_ID,
+                msg: WM_KEYDOWN,
+                wparam: u32::from(b'A'),
+                lparam: 0,
+                scale_factor_micros: 1_250_000,
+            }]
+        );
     }
 
     #[test]

@@ -19,6 +19,12 @@ declare module "node-game-overlay" {
         width: number;
         height: number;
     }
+    interface IWindowCaption {
+        left: number;
+        right: number;
+        top: number;
+        height: number;
+    }
     interface IOverlayWindowDetails{
         name: string;
         transparent: boolean;
@@ -30,12 +36,19 @@ declare module "node-game-overlay" {
         rect: IRectangle;
         nativeHandle: number;
         dragBorderWidth?: number;
-        caption?: {
-            left: number;
-            right: number;
-            top: number;
-            height: number;
-        }
+        caption?: IWindowCaption;
+        scaleFactorMicros?: number;
+    }
+    interface IOverlayWindowGeometry {
+        rect: IRectangle;
+        maxWidth?: number;
+        maxHeight?: number;
+        minWidth?: number;
+        minHeight?: number;
+        dragBorderWidth?: number;
+        caption?: IWindowCaption;
+        scaleFactorMicros?: number;
+        rasterChanged?: boolean;
     }
 
     enum FpsPosition {
@@ -73,7 +86,7 @@ declare module "node-game-overlay" {
     export function sendCommand(arg: {command: "input.intercept", intercept: boolean}): void;
     export function addWindow(windowId: number, details: IOverlayWindowDetails): void;
     export function closeWindow(windowId: number): void;
-    export function sendWindowBounds(windowId: number, details: {rect: IRectangle}): void;
+    export function sendWindowBounds(windowId: number, details: IOverlayWindowGeometry): void;
     export function sendFrameBuffer(windowId: number, buffer: Buffer, width: number, height: number): void;
     export function translateInputEvent(event: {windowId: number, msg: number, wparam: number, lparam: number}): any;
 }

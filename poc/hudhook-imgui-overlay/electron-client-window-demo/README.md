@@ -18,6 +18,26 @@ producer prints:
 HUDHOOK_CLIENT_WINDOW_READY
 ```
 
+The SDK derives the OSR surface from `BrowserWindow.getContentBounds()`, not the
+outer window bounds, and keeps desired and active display scale per producer
+window. A move, resize, or display-metrics change requests a repaint, while
+published geometry remains on the active scale. Only a paint whose dimensions
+match the desired scale commits the transition and its complete physical
+`window.bounds` metadata; an old-scale frame stays coherent while pending and an
+unmatched frame is suppressed. Ordinary paints may differ by one pixel per axis
+from the nominal floor-scaled size; the accepted bitmap dimensions become the
+authoritative physical rect and fixed-window constraints. If one bitmap fits
+both the old and desired tolerances, the SDK rejects the ambiguous callback,
+waits for the renderer to acknowledge the desired DPR and viewport, then commits
+the actual bitmap returned by `capturePage()` cropped to the desired DIP content
+rectangle.
+
+The native router tags every new `game.input` packet with the scale active when
+it routed that event. The SDK uses the tag for physical-to-DIP conversion, while
+untagged legacy packets fall back to the current active scale. A committed raster
+change also clears the payload's latest compositable pixels until the following
+frame, so the new geometry is never drawn with the old raster.
+
 After readiness, the producer waits up to 30 seconds for the public session's
 `game.process` native event from the injected payload. It logs the connected
 target PID, waits 2.5 seconds for initial composition, and then runs this
@@ -202,9 +222,13 @@ connect within 30 seconds. Repository proof modes force a uniform device scale
 The 1.25 launcher remains the primary acceptance proof documented above. All
 modes disable Electron hardware acceleration so frame and input coordinates
 remain deterministic. The 1.25 multi-window run is
-bounded forced-scale evidence only: the session caches the Electron 16 display
-factor nearest `(0, 0)`, and real PMv2/mixed-monitor changes, physical/VM DPI
-behavior, and Electron 42 OSR remain unverified. Stop a
+bounded forced-scale evidence only. The controlled target is now PMv2-aware and
+handles `WM_DPICHANGED`, but the current validation machine exposes one 100%
+virtual display. Consequently the forced 1, 1.25, 1.5, and 2 cases do not prove a
+target or backing-window transition between differently scaled monitors.
+`BrowserWindow` bounds are still game-client-local; target-HWND/client-origin
+ownership, backing placement, multi-target geometry routing, physical/VM
+mixed-monitor acceptance, and Electron 42 OSR remain unverified. Stop a
 producer-only launch with Ctrl+C. Normal shutdown destroys
 the overlay windows, closes the session, and disposes the SDK. For an unattended
 attached one-window smoke test, add `--exit-after-lifecycle`; the process exits

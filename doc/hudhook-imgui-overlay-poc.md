@@ -12,6 +12,7 @@ Verified results:
 -   the generated 128 x 128 RGBA texture uploads successfully;
 -   the first ImGui frame renders at 1280 x 720;
 -   a programmatic resize updates the ImGui display size to 884 x 561 without hanging the host;
+-   the controlled host establishes Per-Monitor-V2 awareness before HWND creation, verifies the effective context, derives its initial outer size from the requested client size with `AdjustWindowRectExForDpi`, and applies the `WM_DPICHANGED` suggested rectangle;
 -   the controlled host remains responsive and accepts a normal window close;
 -   the diagnostic producer and repository's real built Electron client publish offscreen windows through the public `electron-game-overlay` session and existing `node-game-overlay` shared mappings;
 -   the real-client runner requires `ExampleMainOverlay` evidence while the default unfiltered bridge composes every announced client window in registration order;
@@ -21,6 +22,9 @@ Verified results:
 -   the deterministic `-ClientInput` runner proves click/focus, typed text, vertical wheel, intercepted Escape, release acknowledgement, released Escape, and clean process exit;
 -   router, bridge, and native-translator tests cover outside-bounds capture/release, outside-overlay swallowing, right/middle buttons, horizontal wheel, extended characters, synthetic cancellation/cleanup releases, guarded filter transitions, at-most-once input retry classification, and adjacent mouse-move coalescing;
 -   `-ClientMultiWindow -DeviceScaleFactor 1.25 -Wait` proves two overlapping windows, registration order, a complete DIP-to-physical frame/metadata contract, physical-to-DIP input, caption dragging, an exposed BACK click-to-front transition without producer lifecycle traffic, topmost-only input, focused keyboard routing, out-of-bounds capture, re-registration, isolated hide/show, release, normal exit, and exact cleanup;
+-   producer windows use content rather than outer bounds, independently track desired and active display scale, keep old-scale input coherent while a transition is pending, and commit full rect/caption/border/constraint metadata only with a matching OSR paint;
+-   ambiguous scale transitions use renderer DPR/viewport acknowledgement plus a cropped `capturePage()` barrier, while per-packet scale tags keep already queued input on its routing-time scale and preserve an active-scale fallback for legacy packets;
+-   raster-changing `window.bounds` updates suppress the stale compositable raster without changing stack order, and strictly validated transactional shared mappings grow safely when either new frame dimension exceeds capacity;
 -   `-ClientMultiWindowManual -Wait` exposes the overlapping pages and their hide/show/raise controls for hands-on testing;
 -   the integrated diagnostic, `-Client`, `-ClientWindow`, `-ClientInput`, and multi-window runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
 
@@ -47,7 +51,7 @@ The minimum useful answer is deliberately narrow:
 -   report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
 -   let the target close cleanly.
 
-The D3D11 seam and an interactive ordered multi-window Electron compositor are now proven, including one uniformly forced 1.25 Electron scale factor. Production-wide game compatibility, real per-monitor/mixed-DPI mapping, resize-safe texture retirement, broader input APIs, D3D12, and a production injector remain later work.
+The D3D11 seam and an interactive ordered multi-window Electron compositor are now proven, including uniformly forced scale regressions and the bounded producer-window/runtime transition foundation. Production-wide game compatibility, target-display/client-origin ownership, real mixed-monitor acceptance, resize-safe texture retirement, broader input APIs, D3D12, and a production injector remain later work.
 
 ## Decision
 
@@ -88,7 +92,7 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   Windows 10 or newer;
 -   x64 injector, payload, and target;
 -   D3D11 first;
--   D3D12 after real per-monitor/mixed-DPI handling and texture-retirement work;
+-   D3D12 after target-display ownership, mixed-monitor acceptance, and texture-retirement work;
 -   late injection by exact process name or window title;
 -   one native ImGui diagnostics window;
 -   one generated checkerboard or test-card texture;
@@ -103,10 +107,14 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   compatibility with the existing Node add-on IPC, named mutex, and shared mapping;
 -   resize and clean target-exit tests;
 -   latest-frame CPU copy/conversion away from the render thread.
+-   independent desired/active display scale per producer window with matching-paint transition commit;
+-   compatible full-geometry `window.bounds` updates without scene reordering and dimension-safe shared-mapping growth;
+-   a PMv2-aware controlled D3D11 host with `WM_DPICHANGED` handling.
 
 ### Not included yet
 
--   real per-monitor-DPI-v2, mixed-monitor, and runtime-DPI coordinate mapping beyond the controlled uniform 1.25 scale;
+-   target-game HWND display ownership, physical client-origin mapping, backing `BrowserWindow` placement, and per-target geometry routing;
+-   real mixed-scale physical/VM acceptance; the current validation machine exposes only one 100% virtual display, so forced 1/1.25/1.5/2 runs remain uniform regressions;
 -   safe old-texture retirement; hudhook 0.9.1 has no texture-removal operation;
 -   raw-input translation, DirectInput, XInput, GameInput, gamepads, and faithful
     X1/X2 delivery through Electron 16;
@@ -297,6 +305,28 @@ the native swap-chain size. Registration/hide/show remains the only persistent
 ordering input available from the existing host; click raises are payload-local
 and reconnect resets to registration order.
 
+The successor runtime-scale foundation stores desired and active display state
+per producer window, using `BrowserWindow.getContentBounds()` rather than outer
+bounds to describe the OSR surface. Moves, resizes, and display events stage a
+transition; the old frame remains active until a matching OSR paint commits the
+full physical geometry. Paint sizes accept the nominal floor-scaled dimensions
+within one pixel per axis, and the accepted bitmap size becomes authoritative for
+the physical rect and fixed constraints. If one bitmap fits both active and
+desired tolerances, the SDK rejects that callback, waits for renderer DPR and
+viewport acknowledgement, then commits only a causally later `capturePage()`
+cropped to the desired DIP content rect. Routed input carries the active scale on
+each packet, with an active-state fallback for legacy untagged packets. The
+commit's `rasterChanged` marker removes stale pixels from the compositable scene
+until the matching framebuffer arrives; it is not GPU texture retirement. Native
+mapping creation/growth allocates before committing state and validates
+dimensions, overflow, source length, and capacity before a frame copy.
+
+The controlled host is PMv2-aware, but the available single 100% virtual display
+cannot exercise a true monitor crossing. Because public bounds remain
+game-client-local, target-HWND/client-origin ownership, backing placement, and
+multi-target geometry still precede a real mixed-monitor claim. Forced
+1/1.25/1.5/2 runs are uniform-scale regressions, not mixed-monitor proof.
+
 ## Acceptance criteria
 
 The D3D11 milestone passes when all of the following are true:
@@ -392,4 +422,4 @@ These commands describe the desired operator experience; the implementation READ
 -   If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
 -   If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
 
-The controlled D3D11, Electron transport, regular Win32 input, ordered multi-window, and forced uniform 1.25 device-scale criteria are complete. Acceptance records are in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). Next add real per-monitor/mixed-DPI handling and safe texture retirement; then repeat the controlled graphics proof with D3D12 and replace the controlled injector for production. An allowed offline D3D11 application smoke test remains separate compatibility evidence.
+The controlled D3D11, Electron transport, regular Win32 input, ordered multi-window, uniform scale, and producer-window/runtime transition foundation are complete. Acceptance records are in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). Next define target-display/client-origin ownership and perform manual mixed-scale hardware/VM acceptance; then add safe texture retirement, repeat the controlled graphics proof with D3D12, and replace the controlled injector for production. An allowed offline D3D11 application smoke test remains separate compatibility evidence.

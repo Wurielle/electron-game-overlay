@@ -10,9 +10,10 @@ preserving passive rendering by default and the existing public SDK. Ordered
 multi-window composition and routing were completed in the July 11 successor
 milestone; see
 [the multi-window compositor handoff](hudhook-multiwindow-compositor-handoff.md).
-A bounded uniform 1.25 device-scale proof was subsequently added. Real
-per-monitor/mixed-DPI handling, texture retirement, and D3D12 remain follow-up
-work.
+A bounded uniform 1.25 device-scale proof and per-producer-window desired/active
+scale transition foundation were subsequently added. Target-game display/client
+origin ownership and real mixed-monitor acceptance remain follow-up work, then
+texture retirement and D3D12.
 
 ## Reproduce the completed proof
 
@@ -76,9 +77,12 @@ The implementation reuses the existing Electron side:
 2. The game-side client is expected to return `game.input.intercept`, `game.input`,
    and `game.window.focused` packets.
 3. `OverlaySession` receives `game.input`, calls the add-on's
-   `translateInputEvent()`, divides the returned local physical `x`/`y` by its
-   cached display scale factor, and calls
+   `translateInputEvent()`, divides the returned local physical `x`/`y` by the
+   packet's optional `scaleFactorMicros`, and calls
    `BrowserWindow.webContents.sendInputEvent()` with signed DIP coordinates.
+   New payload packets carry the scale active when they were routed, preventing
+   queued input from being reinterpreted after a later scale commit; an untagged
+   legacy packet falls back to that window's current active factor.
 4. `game.window.focused` already drives Electron webview focus.
 
 Relevant existing code:
@@ -203,8 +207,10 @@ payload boundary marker precedes its acknowledgement log.
 Electron's public geometry is expressed in device-independent pixels (DIP),
 while the existing native boundary is physical pixels:
 
-- `BrowserWindow` bounds, SDK caption height, drag border, and resize constraints
-  are DIP;
+- public `BrowserWindow` bounds, SDK caption height, drag border, and resize
+  constraints are DIP; registration and reconciliation use
+  `BrowserWindow.getContentBounds()` rather than outer bounds so metadata matches
+  the surface that emits OSR paints;
 - `OverlaySession` scales every rectangle component (`x`, `y`, `width`, and
   `height`) plus constraints, caption margins/height, and drag-border width before
   publishing metadata;
@@ -213,8 +219,33 @@ while the existing native boundary is physical pixels:
   physical pixels;
 - placement coordinates round with their sign preserved, while nonnegative
   extents use a deterministic floor;
-- returned overlay-local physical input divides by the cached factor and rounds
-  back to signed DIP before Electron receives it.
+- every window keeps a desired display scale and an active scale associated with
+  its accepted OSR frame;
+- a scale transition commits only when a paint is within one pixel per dimension
+  of its nominal floor-scaled size; accepted bitmap dimensions become the
+  authoritative rect and fixed-window constraints, while old-size paints remain
+  on the active raster and unmatched/invalid paints are suppressed;
+- if one bitmap fits both active and desired tolerances, the SDK rejects the
+  ambiguous callback, waits for renderer DPR/viewport acknowledgement, and
+  commits only a causally subsequent `capturePage()` cropped to the desired DIP
+  content rectangle, using the capture's returned bitmap dimensions;
+- returned overlay-local physical input carries the routing-time scale tag and
+  rounds back to signed DIP with it before Electron receives it; legacy input
+  without a tag uses the window's current active factor.
+
+`window.bounds` now carries the complete physical geometry during a transition:
+rect, resize constraints, caption margins/height, and drag-border width. The
+host updates the existing registration without reordering it. A committed
+raster change sets `rasterChanged: true`, causing the Rust bridge to clear the
+latest compositable raster until the next framebuffer instead of pairing old
+pixels with new geometry. The old GPU texture is not retired by this mechanism.
+
+Shared mappings grow when either required dimension exceeds capacity, fixing the
+former area-only comparison. Registration and growth are transactional: native
+code validates checked dimensions/byte sizes and allocates before committing or
+broadcasting state, preserving the last working mapping if allocation fails.
+Each frame write additionally checks the exact source-buffer length, overflow,
+declared dimensions, and actual mapping capacity before copying.
 
 Hudhook derives ImGui `display_size` from the native swap-chain buffer. The
 payload therefore normalizes `display_framebuffer_scale` to `(1, 1)` so the D3D
@@ -236,9 +267,14 @@ multi-window proof for the uniform non-1.0 contract:
 
 The 1.25 run proves a uniformly forced Electron scale, including two-window
 composition, routing, and caption dragging. It is not real per-monitor-DPI-v2 or
-mixed-monitor evidence. The current Electron 16 session caches the display factor
-nearest `(0, 0)` at startup; runtime scale changes, physical/VM DPI behavior, and
-Electron 42 OSR semantics remain separate validation work.
+mixed-monitor evidence. The controlled host now establishes PMv2 before HWND
+creation, computes its initial outer rect with `AdjustWindowRectExForDpi`, and
+applies the `WM_DPICHANGED` suggested rectangle; the SDK can stage a
+producer-window runtime scale change. The current validation machine has only one
+100% virtual display, so the forced 1/1.25/1.5/2 regressions do not exercise a
+real monitor transition. Target-HWND/client-origin ownership, backing-window
+placement, multi-target routing, physical/VM mixed-scale behavior, and Electron
+42 OSR semantics remain separate validation work.
 
 This slice also fixes and hardens native translation:
 
@@ -348,10 +384,11 @@ through the Windows MSVC developer shell.
   containing spaces.
 - The native add-on still exposes one fixed IPC host name, so only one producer may
   run at a time.
-- The bounded 1.25 proof uses one forced uniform Electron scale. The session
-  caches Electron 16's display factor nearest the primary origin and does not yet
-  update scale per window or after a runtime DPI transition; real mixed-monitor,
-  PMv2, physical/VM DPI, and Electron 42 OSR behavior remain unproven.
+- The forced scale proofs are uniform. Per-window desired/active transitions and
+  a PMv2-aware controlled HWND are implemented, but this machine exposes only a
+  single 100% virtual display. Real target-display ownership, game-client origin
+  mapping, backing-window monitor placement, multi-target geometry, physical/VM
+  mixed-scale behavior, and Electron 42 OSR remain unproven.
 - Anti-cheat-protected targets remain outside this controlled POC.
 
 ## Scope discipline

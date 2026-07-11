@@ -1,7 +1,8 @@
 # hudhook multi-window compositor handoff
 
 > Status: complete for the controlled Windows x64/D3D11 compositor and the
-> bounded uniform Electron device-scale proof at 1.25. The deterministic and
+> bounded uniform Electron device-scale proof at 1.25, with a per-window
+> desired/active runtime-scale transition foundation. The deterministic and
 > manual proofs pass through the existing Electron SDK, Node add-on IPC, shared
 > mappings, upstream hudhook 0.9.1, and Dear ImGui renderer without loading the
 > legacy injected renderer.
@@ -23,8 +24,9 @@ native add-on's fixed IPC host name.
 
 ## Completed contract
 
-The milestone keeps the public Electron SDK and existing IPC packet shapes
-unchanged. The existing registration stream is the stacking contract:
+The milestone keeps the public Electron SDK unchanged. `window.bounds` has a
+backward-compatible optional geometry extension for runtime scale changes; the
+existing registration stream remains the stacking contract:
 
 | Event | Ordered scene behavior |
 | --- | --- |
@@ -40,7 +42,8 @@ unchanged. The existing registration stream is the stacking contract:
 unset or empty, every announced window participates; an unmatched explicit
 filter has no fallback.
 
-The coordinate boundary is explicit and keeps the packet shapes unchanged:
+The coordinate boundary remains explicit across the compatible geometry
+extension:
 
 | Boundary | Coordinate space |
 | --- | --- |
@@ -50,10 +53,50 @@ The coordinate boundary is explicit and keeps the packet shapes unchanged:
 | Hudhook composition, alpha hit testing, caption dragging | Physical game-client pixels |
 | Returned `game.input` | Overlay-local physical pixels, divided back to signed DIP by the SDK |
 
-The SDK scales all four rectangle components and all dependent metadata. Hudhook
-already receives ImGui `display_size` in native swap-chain pixels, so the payload
-normalizes `display_framebuffer_scale` to `(1, 1)` and avoids applying the device
-factor twice.
+The SDK reads `BrowserWindow.getContentBounds()`, not outer bounds, so its
+rectangle tracks the content surface that produces OSR bitmaps even when a
+producer has non-client chrome. It scales all four content-rectangle components
+and all dependent metadata. Each routed `game.input` packet carries the window's
+active `scaleFactorMicros`; the SDK uses that per-packet tag so queued input
+cannot be reinterpreted after a scale transition. Legacy untagged packets remain
+supported by falling back to the receiving window's current active scale.
+Hudhook already receives ImGui `display_size` in native swap-chain pixels, so the
+payload normalizes `display_framebuffer_scale` to `(1, 1)` and avoids applying
+the device factor twice.
+
+Scale state is independent per producer window. Electron move/resize and global
+display events refresh its desired display, request an OSR repaint when the scale
+changes, and leave published geometry and returned input on the active scale. A
+paint within one pixel per dimension of the desired nominal floor-scaled size
+commits the new scale and full `window.bounds` geometry; an old-size paint remains
+accepted at the old scale and an unrelated/invalid size is suppressed. The
+accepted bitmap dimensions become the authoritative rect width/height and, for a
+fixed window, min/max constraints. Rect, caption, drag border, and constraints
+update in place without reordering the window.
+
+If one bitmap falls within both active and desired tolerances, the SDK cannot
+classify a queued callback by size. It rejects that callback, waits for renderer
+`devicePixelRatio` and viewport acknowledgement, then requests
+`capturePage({ x: 0, y: 0, width: desiredDipWidth, height: desiredDipHeight })`.
+Only the causally subsequent capture is armed to commit, using its returned
+bitmap size as authoritative geometry; acknowledgement/capture failures retry
+without publishing the ambiguous callback.
+
+On a committed raster transition, `window.bounds` carries
+`rasterChanged: true` before the new frame. The Rust bridge clears the window's
+latest compositable raster and alpha pixels, omitting it from the scene until the
+following framebuffer arrives. That prevents stale pixels from being drawn or
+alpha-tested with new metadata; it does not remove the old GPU texture from
+hudhook's cache.
+
+Native shared mappings are strict and transactional. Initial registration and
+growth validate dimensions and checked byte sizes, allocate before committing or
+broadcasting state, and retain the last working registration/mapping if
+allocation fails. Frame writes require an exact source length and verify
+dimensions, overflow, declared limits, and actual mapping capacity before the
+copy. If either frame dimension exceeds the existing capacity, the Node host
+commits a correctly sized replacement together with the new geometry and mapping
+name.
 
 ## State and rendering design
 
@@ -177,9 +220,14 @@ Verified deterministic two-window composition, caption movement, routing, captur
 
 This acceptance is deliberately bounded: a command-line switch forces one
 uniform Electron scale factor. It does not exercise real per-monitor-DPI-v2,
-mixed-scale monitors, or a runtime DPI transition. The current session caches
-Electron 16's display factor nearest `(0, 0)` at startup; physical/VM DPI behavior
-and Electron 42 OSR semantics still need independent evidence.
+mixed-scale monitors, or a runtime DPI transition. The SDK now contains the
+desired/active transition state and the controlled host is explicitly PMv2-aware
+with DPI-aware initial client sizing and `WM_DPICHANGED` suggested-rect handling.
+The validation machine nevertheless exposes only one 100% virtual display;
+forced 1/1.25/1.5/2 runs are uniform regressions, not physical/VM mixed-monitor
+evidence. Target-HWND/client-origin ownership, backing BrowserWindow placement,
+multi-target geometry routing, and Electron 42 OSR semantics still need
+independent evidence.
 
 Pure Rust tests cover arbitrary ordered registries, last-duplicate position,
 exact filtering, bounds without reorder, immutable scene metadata, alpha
@@ -210,10 +258,12 @@ exact process tree.
 
 ## Known limitations
 
-- The 1.25 proof forces one uniform Electron device scale. The SDK caches the
-  Electron 16 display factor nearest the primary origin; runtime updates,
-  per-window PMv2/mixed-monitor mapping, fullscreen scaling, letterboxing,
-  physical/VM DPI behavior, and Electron 42 OSR remain unproven.
+- The 1.25 proof forces one uniform Electron device scale. Per-window
+  desired/active runtime reconciliation and the PMv2 controlled target are now
+  implemented, but the available machine has only one 100% virtual display.
+  Target-owned display/client-origin mapping, backing-window placement,
+  multi-target geometry, fullscreen scaling, letterboxing, physical/VM
+  mixed-monitor behavior, and Electron 42 OSR remain unproven.
 - Hudhook's public filter is blanket `InputAll`; outside-overlay input remains
   swallowed while interception is active, and project-owned capture currently
   assumes messages continue reaching the same target HWND.
@@ -233,11 +283,13 @@ exact process tree.
 
 ## Next work
 
-1. Replace the cached uniform factor with real per-window/per-monitor DPI updates
-   and verify mixed-scale physical and VM displays.
-2. Add safe deferred texture retirement despite the current hudhook texture API.
-3. Repeat the controlled proof with hudhook's D3D12 backend.
-4. Replace the controlled injector with a production-quality project-owned
+1. Define target-HWND display ownership and physical game-client origin, place
+   backing BrowserWindows accordingly, and route geometry per target.
+2. Run the PMv2 host and producer transition manually across real or VM
+   differently scaled displays.
+3. Add safe deferred texture retirement despite the current hudhook texture API.
+4. Repeat the controlled proof with hudhook's D3D12 backend.
+5. Replace the controlled injector with a production-quality project-owned
    launcher that validates remote `LoadLibraryW` and exact buffer sizing.
 
 Primary implementation files are:

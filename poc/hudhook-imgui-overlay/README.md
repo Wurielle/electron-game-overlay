@@ -22,13 +22,41 @@ hudhook's render thread maintains a texture cache keyed by native window ID.
 Premultiplied BGRA frames are converted to straight RGBA before publication.
 
 Electron's public window geometry remains in device-independent pixels (DIP).
-The SDK scales the entire window rectangle, resize constraints, caption, and drag
-border to physical pixels for the existing wire protocol; Electron 16's OSR
-bitmap is already physical. Hudhook therefore composes and hit-tests in native
-game/swap-chain pixels, then the SDK converts returned local physical input back
-to signed DIP before `sendInputEvent()`. Because hudhook's ImGui `display_size`
-already comes from the native swap-chain buffer, the payload normalizes
+The SDK samples `BrowserWindow.getContentBounds()` rather than outer bounds, so
+the wire rectangle describes the OSR content surface even for a framed or
+attached producer. It scales that rectangle, resize constraints, caption, and
+drag border to physical pixels; Electron 16's OSR bitmap is already physical.
+Hudhook therefore composes and hit-tests in native game/swap-chain pixels. Each
+outbound `game.input` packet is tagged with the scale active when it was routed,
+and the SDK converts returned local physical coordinates with that packet tag so
+queued input survives a later scale commit. Untagged legacy packets fall back to
+the window's current active scale. Because hudhook's ImGui `display_size` already
+comes from the native swap-chain buffer, the payload normalizes
 `display_framebuffer_scale` to `(1, 1)` to prevent a second DPI multiplication.
+
+Scale is tracked independently for each producer window. A move, resize, or
+display-topology event changes its desired display scale and requests a repaint,
+but its active geometry and input conversion stay on the old scale until an OSR
+paint matches the desired physical dimensions. The matching paint commits the
+new full `window.bounds` geometry (rect, caption, drag border, and constraints)
+in place without changing scene order. Unmatched paint sizes are not published.
+Paint dimensions are accepted within one pixel of the nominal floor-scaled size,
+and the actual accepted bitmap width/height become authoritative geometry (and
+fixed-window constraints), covering Electron 16 rounding such as `400 x 251` for
+`320 x 200` at 1.25. If a bitmap fits both the active and desired tolerances, the
+SDK rejects the ambiguous callback, waits for renderer DPR/viewport
+acknowledgement, and commits only a causally subsequent `capturePage()` cropped
+to the desired content rectangle. A raster-changing bounds packet sets
+`rasterChanged`; the payload drops that window's latest raster from the scene
+until the following framebuffer, preventing old pixels from being paired with
+new metadata. This does not retire the cached GPU texture.
+
+The Node transport validates dimensions, checked byte counts, exact source
+buffer length, and mapping capacity before any frame copy. Initial and grown
+mappings are allocated before their registration/geometry is committed or
+broadcast, so an allocation failure preserves the last working state. A mapping
+grows when either incoming dimension exceeds its existing capacity rather than
+using an unsafe area comparison.
 
 `HUDHOOK_ELECTRON_WINDOW`, when set, is an optional exact-name filter. Without
 it, every announced window participates. The injected payload does not load the
@@ -191,11 +219,17 @@ markers and per-window payload diagnostics:
   released Escape closes the controlled host normally;
 - the exact controlled Electron and host processes are gone after cleanup.
 
-This is evidence for one uniformly forced Electron scale factor, not a real
-per-monitor-DPI-v2 or mixed-monitor proof. The SDK still caches Electron 16's
-display factor nearest the primary origin when the session starts; runtime DPI
-changes, physical/VM multi-monitor behavior, and Electron 42 OSR semantics remain
-unverified.
+This remains evidence for one uniformly forced Electron scale factor, not a real
+mixed-monitor proof. The SDK's per-window desired/active transition machinery is
+covered independently, and the controlled host now establishes Per-Monitor-V2
+awareness before creating its HWND, calculates the initial outer rect with
+`AdjustWindowRectExForDpi`, and applies the `WM_DPICHANGED` suggested rectangle.
+However, the current validation machine exposes only one 100% virtual display.
+The forced 1, 1.25, 1.5, and 2 runs are uniform regressions; they do not move the
+target or backing BrowserWindows between differently scaled hardware.
+Target-HWND/client-origin ownership, backing-window placement, multi-target
+geometry routing, physical/VM mixed-monitor behavior, and Electron 42 OSR
+semantics remain unverified.
 
 Rust tests additionally prove registration deduplication, exact-name filtering,
 atomic scene metadata, alpha-zero fallthrough to a lower window, focused-keyboard
@@ -415,6 +449,12 @@ This milestone now covers:
 - signed physical-pixel bounds, transparency, and premultiplied-BGRA correction;
 - DIP-to-physical conversion for complete rectangles, constraints, captions, and
   drag borders, with signed physical-to-DIP conversion for returned input;
+- content-surface tracking through `getContentBounds()`, per-window
+  desired/active scale state, bitmap-authoritative one-pixel rounding tolerance,
+  and renderer-acknowledged cropped-capture recovery for ambiguous transitions;
+- routing-time scale tags on input packets with legacy active-scale fallback;
+- `rasterChanged` scene suppression between committed geometry and its matching
+  frame, plus transactional checked native mapping allocation and writes;
 - alpha-aware hit testing that can fall through to a lower Electron window;
 - one atomic immutable scene/router publication per lifecycle, metadata, frame, or
   stack mutation;
@@ -433,8 +473,10 @@ Remaining work is:
 - raw-input-only games, DirectInput, XInput, GameInput, gamepads, and faithful
   X1/X2 mouse-button delivery (Electron 16 cannot represent those buttons through
   `sendInputEvent`, so interception intentionally swallows them);
-- real per-monitor/mixed-DPI handling, runtime DPI changes, and validation on
-  physical/VM displays beyond the forced uniform 1.25 proof;
+- target-game display ownership, physical client-origin mapping, backing
+  `BrowserWindow` placement, and per-target geometry routing;
+- manual mixed-scale hardware/VM acceptance beyond the forced uniform
+  1/1.25/1.5/2 regressions available on the current single 100% virtual display;
 - safe deferred retirement of superseded GPU textures: hudhook 0.9.1 exposes
   texture load/replace but no texture-removal API;
 - D3D12 and eventual one-payload backend auto-detection;
@@ -456,7 +498,8 @@ consequently affects later initialization too. CPU scene/router publication is
 atomic, but a newly published alpha frame can precede its corresponding GPU upload
 by one `Present`, creating a narrow visual-versus-hit-test timing window.
 
-The next shared compositor work is real per-monitor/mixed-DPI handling and safe
-texture retirement. D3D12 and a production project-owned injector follow.
+The next shared compositor work is target-display/client-origin ownership and a
+manual mixed-scale hardware/VM acceptance run. Safe texture retirement follows,
+then D3D12 and a production project-owned injector.
 A hudhook fork is justified only if testing reproduces a required graphics-hook
 change that cannot live in this project or be contributed upstream.

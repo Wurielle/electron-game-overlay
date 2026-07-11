@@ -1365,9 +1365,11 @@ struct WindowMetadata {
     rect: ElectronWindowRect,
     #[serde(default)]
     caption: Option<WindowCaptionMetadata>,
+    #[serde(default)]
+    scale_factor_micros: Option<u32>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 struct WindowCaptionMetadata {
     #[serde(default)]
     left: i32,
@@ -1403,6 +1405,22 @@ struct WindowBoundsMessage {
     rect: ElectronWindowRect,
     #[serde(default)]
     buffer_name: Option<String>,
+    #[serde(default)]
+    max_width: Option<u32>,
+    #[serde(default)]
+    max_height: Option<u32>,
+    #[serde(default)]
+    min_width: Option<u32>,
+    #[serde(default)]
+    min_height: Option<u32>,
+    #[serde(default)]
+    drag_border_width: Option<u32>,
+    #[serde(default)]
+    caption: Option<WindowCaptionMetadata>,
+    #[serde(default)]
+    scale_factor_micros: Option<u32>,
+    #[serde(default)]
+    raster_changed: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1419,6 +1437,7 @@ struct RegisteredWindow {
     rect: ElectronWindowRect,
     transparent: bool,
     caption: Option<InputCaption>,
+    scale_factor_micros: Option<u32>,
     placement_epoch: u64,
 }
 
@@ -1433,6 +1452,7 @@ impl RegisteredWindow {
             rect: window.rect,
             transparent: window.transparent,
             caption: window.caption.map(InputCaption::from),
+            scale_factor_micros: window.scale_factor_micros,
             placement_epoch,
         }
     }
@@ -1445,6 +1465,7 @@ impl RegisteredWindow {
         debug_assert!(self.is_compositable());
         let window = InputWindow::new(self.window_id, self.rect.into())
             .with_caption(self.caption)
+            .with_scale_factor_micros(self.scale_factor_micros)
             .with_placement_epoch(self.placement_epoch);
         if !self.transparent {
             return window;
@@ -1516,13 +1537,35 @@ fn update_registered_window_bounds(
     message: WindowBoundsMessage,
     placement_epoch: u64,
 ) -> Option<(bool, bool)> {
+    let WindowBoundsMessage {
+        window_id,
+        rect,
+        buffer_name,
+        max_width: _max_width,
+        max_height: _max_height,
+        min_width: _min_width,
+        min_height: _min_height,
+        drag_border_width: _drag_border_width,
+        caption,
+        scale_factor_micros,
+        raster_changed,
+    } = message;
     let window = windows
         .iter_mut()
-        .find(|window| window.window_id == message.window_id)?;
+        .find(|window| window.window_id == window_id)?;
     let was_routable = InputRect::from(window.rect).is_valid();
-    window.rect = message.rect;
+    window.rect = rect;
+    if let Some(caption) = caption {
+        window.caption = Some(caption.into());
+    }
+    if let Some(scale_factor_micros) = scale_factor_micros {
+        window.scale_factor_micros = Some(scale_factor_micros);
+    }
+    if raster_changed.unwrap_or(false) {
+        window.latest = None;
+    }
     window.placement_epoch = placement_epoch;
-    let mapping_replaced = message.buffer_name.is_some_and(|buffer_name| {
+    let mapping_replaced = buffer_name.is_some_and(|buffer_name| {
         if buffer_name == window.buffer_name {
             false
         } else {
@@ -1854,16 +1897,11 @@ impl OutboundDiagnostics {
             _ => {}
         }
 
-        let OutboundMessage::Input {
-            window_id,
-            msg,
-            wparam,
-            lparam,
-        } = message
+        let Some((window_id, msg, wparam, lparam, _scale_factor_micros)) = message.input_fields()
         else {
             return;
         };
-        if (0x0200..=0x020e).contains(msg) && !self.first_mouse_logged.swap(true, Ordering::AcqRel)
+        if (0x0200..=0x020e).contains(&msg) && !self.first_mouse_logged.swap(true, Ordering::AcqRel)
         {
             info!(
                 window_id,
@@ -1871,9 +1909,9 @@ impl OutboundDiagnostics {
                 "Electron mouse input forwarded"
             );
         }
-        if matches!(*msg, 0x0201..=0x0209) || (*msg == 0x0200 && *wparam & 0x0013 != 0) {
-            let x = i32::from((*lparam as u16) as i16);
-            let y = i32::from(((*lparam >> 16) as u16) as i16);
+        if matches!(msg, 0x0201..=0x0209) || (msg == 0x0200 && wparam & 0x0013 != 0) {
+            let x = i32::from((lparam as u16) as i16);
+            let y = i32::from(((lparam >> 16) as u16) as i16);
             info!(
                 window_id,
                 win32_message = msg,
@@ -1882,12 +1920,12 @@ impl OutboundDiagnostics {
                 "Electron pointer input forwarded"
             );
         }
-        match *msg {
+        match msg {
             0x0201 => info!(window_id, "Electron left mouse down forwarded"),
             0x0202 => info!(window_id, "Electron left mouse up forwarded"),
             _ => {}
         }
-        if (0x0100..=0x0109).contains(msg)
+        if (0x0100..=0x0109).contains(&msg)
             && !self.first_keyboard_logged.swap(true, Ordering::AcqRel)
         {
             info!(
@@ -1938,8 +1976,7 @@ fn flush_outbound(
 }
 
 fn should_retry_outbound(message: &OutboundMessage, error: &PacketError) -> bool {
-    matches!(error, PacketError::HostSendFailed(_))
-        && !matches!(message, OutboundMessage::Input { .. })
+    matches!(error, PacketError::HostSendFailed(_)) && message.input_fields().is_none()
 }
 
 fn send_outbound_message(host: HWND, message: &OutboundMessage) -> Result<(), PacketError> {
@@ -1978,6 +2015,24 @@ fn outbound_message_payload(message: &OutboundMessage) -> (&'static str, String)
                 "msg": msg,
                 "wparam": wparam,
                 "lparam": lparam,
+            })
+            .to_string(),
+        ),
+        OutboundMessage::TaggedInput {
+            window_id,
+            msg,
+            wparam,
+            lparam,
+            scale_factor_micros,
+        } => (
+            "game.input",
+            serde_json::json!({
+                "type": "game.input",
+                "windowId": window_id,
+                "msg": msg,
+                "wparam": wparam,
+                "lparam": lparam,
+                "scaleFactorMicros": scale_factor_micros,
             })
             .to_string(),
         ),
@@ -2245,6 +2300,7 @@ mod tests {
                 height: 360,
             },
             caption: None,
+            scale_factor_micros: None,
         }
     }
 
@@ -2299,6 +2355,41 @@ mod tests {
                 "lparam": 0xfff6_000a_u32,
             })
         );
+    }
+
+    #[test]
+    fn tagged_outbound_input_serializes_scale_while_legacy_input_omits_it() {
+        let tagged = OutboundMessage::TaggedInput {
+            window_id: 42,
+            msg: 0x0200,
+            wparam: 5,
+            lparam: 0xfff6_000a,
+            scale_factor_micros: 1_250_000,
+        };
+        let (_, tagged_json) = outbound_message_payload(&tagged);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&tagged_json).unwrap(),
+            serde_json::json!({
+                "type": "game.input",
+                "windowId": 42,
+                "msg": 0x0200,
+                "wparam": 5,
+                "lparam": 0xfff6_000a_u32,
+                "scaleFactorMicros": 1_250_000,
+            })
+        );
+
+        let legacy = OutboundMessage::Input {
+            window_id: 42,
+            msg: 0x0200,
+            wparam: 5,
+            lparam: 0xfff6_000a,
+        };
+        let (_, legacy_json) = outbound_message_payload(&legacy);
+        assert!(serde_json::from_str::<serde_json::Value>(&legacy_json)
+            .unwrap()
+            .get("scaleFactorMicros")
+            .is_none());
     }
 
     #[test]
@@ -2360,12 +2451,14 @@ mod tests {
             "transparent":true,
             "bufferName":"caption-buffer",
             "rect":{"x":64,"y":72,"width":640,"height":360},
-            "caption":{"left":10,"right":12,"top":8,"height":40}
+            "caption":{"left":10,"right":12,"top":8,"height":40},
+            "scaleFactorMicros":1250000
         }"#;
         let metadata: WindowMetadata = serde_json::from_str(json).unwrap();
         let registered = RegisteredWindow::from_metadata(metadata, 17);
 
         assert_eq!(registered.placement_epoch, 17);
+        assert_eq!(registered.scale_factor_micros, Some(1_250_000));
         assert_eq!(
             registered.caption,
             Some(InputCaption {
@@ -2471,6 +2564,14 @@ mod tests {
                     window_id: 10,
                     rect: replacement_rect,
                     buffer_name: Some("replacement".to_owned()),
+                    max_width: None,
+                    max_height: None,
+                    min_width: None,
+                    min_height: None,
+                    drag_border_width: None,
+                    caption: None,
+                    scale_factor_micros: None,
+                    raster_changed: None,
                 },
                 99,
             ),
@@ -2487,6 +2588,235 @@ mod tests {
         assert_eq!(windows[0].buffer_name, "replacement");
         assert_eq!(windows[0].placement_epoch, 99);
         assert_eq!(windows[1].rect.x, 20);
+    }
+
+    #[test]
+    fn bounds_update_applies_scaled_caption_with_rect_without_reordering() {
+        let mut back = window_metadata(10, "Back", 10);
+        back.caption = Some(WindowCaptionMetadata {
+            left: 10,
+            right: 10,
+            top: 10,
+            height: 40,
+        });
+        let mut windows =
+            normalize_test_windows(vec![back, window_metadata(20, "Front", 20)], None);
+        windows[0].latest = Some(Arc::new(ElectronFrame {
+            window_id: 10,
+            name: "Back".to_owned(),
+            rect: windows[0].rect,
+            transparent: true,
+            state_revision: 1,
+            sequence: 1,
+            width: 640,
+            height: 360,
+            rgba: vec![1, 2, 3, 255].into(),
+        }));
+        let message: WindowBoundsMessage = serde_json::from_str(
+            r#"{
+                "type":"window.bounds",
+                "windowId":10,
+                "rect":{"x":15,"y":30,"width":960,"height":540},
+                "maxWidth":2880,
+                "maxHeight":1620,
+                "minWidth":150,
+                "minHeight":150,
+                "dragBorderWidth":15,
+                "caption":{"left":15,"right":15,"top":15,"height":60},
+                "scaleFactorMicros":1500000,
+                "rasterChanged":true
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(message.max_width, Some(2880));
+        assert_eq!(message.max_height, Some(1620));
+        assert_eq!(message.min_width, Some(150));
+        assert_eq!(message.min_height, Some(150));
+        assert_eq!(message.drag_border_width, Some(15));
+        assert_eq!(message.scale_factor_micros, Some(1_500_000));
+        assert_eq!(message.raster_changed, Some(true));
+        assert_eq!(
+            message.caption,
+            Some(WindowCaptionMetadata {
+                left: 15,
+                right: 15,
+                top: 15,
+                height: 60,
+            })
+        );
+        assert_eq!(
+            update_registered_window_bounds(&mut windows, message, 99),
+            Some((false, true))
+        );
+
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            vec![10, 20]
+        );
+        assert_eq!(
+            windows[0].rect,
+            ElectronWindowRect {
+                x: 15,
+                y: 30,
+                width: 960,
+                height: 540,
+            }
+        );
+        assert_eq!(
+            windows[0].caption,
+            Some(InputCaption {
+                left: 15,
+                right: 15,
+                top: 15,
+                height: 60,
+            })
+        );
+        assert_eq!(windows[0].placement_epoch, 99);
+        assert_eq!(windows[0].scale_factor_micros, Some(1_500_000));
+        assert!(windows[0].latest.is_none());
+        assert_eq!(windows[1].rect.x, 20);
+        assert_eq!(windows[1].caption, None);
+        assert!(build_scene_snapshot(&mut windows, 2).windows.is_empty());
+        assert!(build_input_windows(&windows).is_empty());
+
+        windows[0].latest = Some(Arc::new(ElectronFrame {
+            window_id: 10,
+            name: "Back".to_owned(),
+            rect: windows[0].rect,
+            transparent: true,
+            state_revision: 3,
+            sequence: 2,
+            width: 960,
+            height: 540,
+            rgba: vec![255; 960 * 540 * 4].into(),
+        }));
+        assert_eq!(
+            build_scene_snapshot(&mut windows, 3)
+                .windows
+                .iter()
+                .map(|frame| frame.window_id)
+                .collect::<Vec<_>>(),
+            vec![10]
+        );
+        assert_eq!(
+            build_input_windows(&windows)
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            vec![10]
+        );
+    }
+
+    #[test]
+    fn rect_only_bounds_update_retains_existing_caption_geometry() {
+        let mut back = window_metadata(10, "Back", 10);
+        back.scale_factor_micros = Some(1_000_000);
+        back.caption = Some(WindowCaptionMetadata {
+            left: 12,
+            right: 14,
+            top: 8,
+            height: 44,
+        });
+        let mut windows =
+            normalize_test_windows(vec![back, window_metadata(20, "Front", 20)], None);
+        windows[0].latest = Some(Arc::new(ElectronFrame {
+            window_id: 10,
+            name: "Back".to_owned(),
+            rect: windows[0].rect,
+            transparent: true,
+            state_revision: 1,
+            sequence: 1,
+            width: 640,
+            height: 360,
+            rgba: vec![1, 2, 3, 255].into(),
+        }));
+        let retained = Arc::clone(windows[0].latest.as_ref().unwrap());
+        let message: WindowBoundsMessage = serde_json::from_str(
+            r#"{
+                "type":"window.bounds",
+                "windowId":10,
+                "rect":{"x":-12,"y":34,"width":800,"height":450}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(message.buffer_name, None);
+        assert_eq!(message.max_width, None);
+        assert_eq!(message.max_height, None);
+        assert_eq!(message.min_width, None);
+        assert_eq!(message.min_height, None);
+        assert_eq!(message.drag_border_width, None);
+        assert_eq!(message.caption, None);
+        assert_eq!(message.scale_factor_micros, None);
+        assert_eq!(message.raster_changed, None);
+        assert_eq!(
+            update_registered_window_bounds(&mut windows, message, 100),
+            Some((false, true))
+        );
+
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            vec![10, 20]
+        );
+        assert_eq!(windows[0].rect.x, -12);
+        assert_eq!(windows[0].rect.y, 34);
+        assert_eq!(windows[0].rect.width, 800);
+        assert_eq!(windows[0].rect.height, 450);
+        assert_eq!(
+            windows[0].caption,
+            Some(InputCaption {
+                left: 12,
+                right: 14,
+                top: 8,
+                height: 44,
+            })
+        );
+        assert_eq!(windows[0].placement_epoch, 100);
+        assert_eq!(windows[0].scale_factor_micros, Some(1_000_000));
+        assert!(Arc::ptr_eq(windows[0].latest.as_ref().unwrap(), &retained));
+        assert_eq!(windows[1].rect.x, 20);
+    }
+
+    #[test]
+    fn explicit_raster_unchanged_bounds_update_retains_latest_pixels() {
+        let mut windows = normalize_test_windows(vec![window_metadata(10, "Back", 10)], None);
+        windows[0].latest = Some(Arc::new(ElectronFrame {
+            window_id: 10,
+            name: "Back".to_owned(),
+            rect: windows[0].rect,
+            transparent: true,
+            state_revision: 1,
+            sequence: 1,
+            width: 640,
+            height: 360,
+            rgba: vec![255; 640 * 360 * 4].into(),
+        }));
+        let retained = Arc::clone(windows[0].latest.as_ref().unwrap());
+        let message: WindowBoundsMessage = serde_json::from_str(
+            r#"{
+                "type":"window.bounds",
+                "windowId":10,
+                "rect":{"x":25,"y":35,"width":640,"height":360},
+                "rasterChanged":false
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(message.raster_changed, Some(false));
+        assert_eq!(
+            update_registered_window_bounds(&mut windows, message, 101),
+            Some((false, true))
+        );
+        assert!(Arc::ptr_eq(windows[0].latest.as_ref().unwrap(), &retained));
+        assert_eq!(windows[0].rect.x, 25);
+        assert_eq!(windows[0].rect.y, 35);
     }
 
     #[test]

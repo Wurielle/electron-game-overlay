@@ -39,6 +39,15 @@ The multi-window launchers temporarily clear `HUDHOOK_ELECTRON_WINDOW` so a
 stale single-window filter cannot invalidate the case, then restore its original
 value before returning.
 
+The controlled D3D11 host establishes Per-Monitor-V2 awareness before HWND
+creation, computes its initial outer bounds with `AdjustWindowRectExForDpi`, and
+handles `WM_DPICHANGED`. The four numbered multi-window launchers still force one
+uniform Electron scale each; they are regression cases, not real mixed-monitor
+tests. The current validation machine exposes only one 100% virtual display.
+Target-HWND/client-origin ownership, backing BrowserWindow placement, per-target
+geometry routing, and a manual differently scaled hardware/VM run remain the
+next DPI acceptance slice.
+
 ## Advanced and automated use
 
 The launchers intentionally accept no arguments. CI and scripted matrices can
