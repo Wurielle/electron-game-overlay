@@ -59,6 +59,7 @@ pub struct PocRenderLoop {
     rendered_frames: u64,
     first_frame_logged: bool,
     last_display_size: Option<[f32; 2]>,
+    framebuffer_scale_normalization_logged: bool,
     input_filter_phase: AtomicU8,
     sampled_input_filter_phase: AtomicU8,
     applied_input_filter: AtomicBool,
@@ -99,6 +100,7 @@ impl PocRenderLoop {
             rendered_frames: 0,
             first_frame_logged: false,
             last_display_size: None,
+            framebuffer_scale_normalization_logged: false,
             input_filter_phase: AtomicU8::new(INPUT_FILTER_DISABLED),
             sampled_input_filter_phase: AtomicU8::new(INPUT_FILTER_DISABLED),
             applied_input_filter: AtomicBool::new(false),
@@ -320,9 +322,25 @@ impl ImguiRenderLoop for PocRenderLoop {
 
     fn before_render<'a>(
         &'a mut self,
-        _context: &mut Context,
+        context: &mut Context,
         render_context: &'a mut dyn RenderContext,
     ) {
+        // hudhook updates DisplaySize from the swap-chain buffer dimensions,
+        // which are already native pixels. Its DPI-derived framebuffer scale
+        // would make the D3D viewport multiply those pixels a second time.
+        if let Some(original_scale) = normalize_native_pixel_framebuffer_scale(
+            &mut context.io_mut().display_framebuffer_scale,
+        ) {
+            if !self.framebuffer_scale_normalization_logged {
+                self.framebuffer_scale_normalization_logged = true;
+                hudhook::tracing::info!(
+                    original_scale_x = original_scale[0],
+                    original_scale_y = original_scale[1],
+                    "hudhook ImGui framebuffer scale normalized to native pixels"
+                );
+            }
+        }
+
         // hudhook stores the value returned by message_filter immediately
         // before this callback. Commit and log that exact sampled value here,
         // rather than re-reading effective state after the boundary.
@@ -513,6 +531,14 @@ impl ImguiRenderLoop for PocRenderLoop {
     }
 }
 
+fn normalize_native_pixel_framebuffer_scale(scale: &mut [f32; 2]) -> Option<[f32; 2]> {
+    const NATIVE_PIXEL_SCALE: [f32; 2] = [1.0, 1.0];
+
+    let original_scale = *scale;
+    *scale = NATIVE_PIXEL_SCALE;
+    (original_scale != NATIVE_PIXEL_SCALE).then_some(original_scale)
+}
+
 fn make_test_pattern() -> Vec<u8> {
     let mut pixels = Vec::with_capacity((TEXTURE_WIDTH * TEXTURE_HEIGHT * 4) as usize);
 
@@ -606,5 +632,22 @@ mod tests {
             next_input_filter_phase(INPUT_FILTER_DISARMING, true),
             INPUT_FILTER_ARMING
         );
+    }
+
+    #[test]
+    fn native_pixel_framebuffer_scale_keeps_unit_and_normalizes_non_unit_values() {
+        let mut unit_scale = [1.0, 1.0];
+        assert_eq!(
+            normalize_native_pixel_framebuffer_scale(&mut unit_scale),
+            None
+        );
+        assert_eq!(unit_scale, [1.0, 1.0]);
+
+        let mut dpi_scale = [1.25, 1.5];
+        assert_eq!(
+            normalize_native_pixel_framebuffer_scale(&mut dpi_scale),
+            Some([1.25, 1.5])
+        );
+        assert_eq!(dpi_scale, [1.0, 1.0]);
     }
 }

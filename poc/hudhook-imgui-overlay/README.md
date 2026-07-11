@@ -21,6 +21,15 @@ publishes an immutable ordered scene and matching router state atomically;
 hudhook's render thread maintains a texture cache keyed by native window ID.
 Premultiplied BGRA frames are converted to straight RGBA before publication.
 
+Electron's public window geometry remains in device-independent pixels (DIP).
+The SDK scales the entire window rectangle, resize constraints, caption, and drag
+border to physical pixels for the existing wire protocol; Electron 16's OSR
+bitmap is already physical. Hudhook therefore composes and hit-tests in native
+game/swap-chain pixels, then the SDK converts returned local physical input back
+to signed DIP before `sendInputEvent()`. Because hudhook's ImGui `display_size`
+already comes from the native swap-chain buffer, the payload normalizes
+`display_framebuffer_scale` to `(1, 1)` to prevent a second DPI multiplication.
+
 `HUDHOOK_ELECTRON_WINDOW`, when set, is an optional exact-name filter. Without
 it, every announced window participates. The injected payload does not load the
 legacy native renderer.
@@ -121,14 +130,16 @@ proof:
 
 ```powershell
 Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -Wait
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
 ```
 
 This attached mode launches two real offscreen Electron pages with aligned,
-overlapping text fields below both SDK captions: green BACK is the 640 x 360
-`ExampleMainOverlay` at
-`(64, 72)`, registered first; blue FRONT is the 320 x 220
-`ExamplePopupOverlay` at `(200, 136)`, registered second. The runner requires an
+overlapping text fields below both SDK captions. Their public bounds are DIP:
+green BACK is the 640 x 360 `ExampleMainOverlay` at `(64, 72)`, registered
+first; blue FRONT is the 320 x 220 `ExamplePopupOverlay` at `(200, 136)`,
+registered second. At the forced 1.25 factor, the compositor receives physical
+rectangles `(80, 90, 800 x 450)` and `(250, 170, 400 x 275)`. The runner requires
+the producer's exact requested/display/DPR/frame-size scale marker, then an
 `Electron overlay scene composed` marker with the initial
 `ExampleMainOverlay>ExamplePopupOverlay` back-to-front order before sending
 synthetic input.
@@ -148,14 +159,20 @@ markers and per-window payload diagnostics:
 - hiding FRONT removes only that surface while BACK remains composed, and showing
   FRONT appends it on top again;
 - after the original-bounds lifecycle checks, dragging FRONT's striped caption
-  handle by `(+96, +72)` moves its payload-local render/router rect to
-  `(296, 208)` without DOM input, producer lifecycle traffic, or a host
-  `window.bounds` message; FIFO-drained page barriers bracket the no-leak check,
-  then the moved text target routes to FRONT at its unchanged local `(150, 98)`
-  coordinates while the vacated caption point routes to BACK;
+  handle by a physical delta equivalent to `(+96, +72)` DIP moves its
+  payload-local render/router rect without DOM input, producer lifecycle traffic,
+  or a host `window.bounds` message; FIFO-drained page barriers bracket the
+  no-leak check, then the moved text target round-trips to FRONT at its unchanged
+  local DIP coordinates while the vacated caption point routes to BACK;
 - interception release is acknowledged after the disabled render boundary, then
   released Escape closes the controlled host normally;
 - the exact controlled Electron and host processes are gone after cleanup.
+
+This is evidence for one uniformly forced Electron scale factor, not a real
+per-monitor-DPI-v2 or mixed-monitor proof. The SDK still caches Electron 16's
+display factor nearest the primary origin when the session starts; runtime DPI
+changes, physical/VM multi-monitor behavior, and Electron 42 OSR semantics remain
+unverified.
 
 Rust tests additionally prove registration deduplication, exact-name filtering,
 atomic scene metadata, alpha-zero fallthrough to a lower window, focused-keyboard
@@ -252,8 +269,9 @@ Electron stdout proof includes:
 - `HUDHOOK_CLIENT_INPUT_LIFECYCLE_COMPLETE`.
 
 The PID-specific payload log must also prove interception enable/release, overlay
-focus, and mouse and keyboard forwarding. The controlled producer forces a 1:1
-device scale for this first coordinate-contract regression.
+focus, and mouse and keyboard forwarding. The original single-window input
+regression remains a forced 1:1 historical baseline; the multi-window command
+above is the bounded 1.25 coordinate-contract proof.
 
 This end-to-end mode proves left-click/focus ordering, typed text, vertical wheel,
 intercepted and released Escape, acknowledgements, and normal host exit. Rust
@@ -374,7 +392,9 @@ This milestone now covers:
 - simultaneous Electron windows over the existing Node/shared-memory IPC, with
   registration-order back-to-front composition, deduplication, append-on-register,
   and click-to-front intent generations;
-- signed native bounds, transparency, and premultiplied-BGRA correction;
+- signed physical-pixel bounds, transparency, and premultiplied-BGRA correction;
+- DIP-to-physical conversion for complete rectangles, constraints, captions, and
+  drag borders, with signed physical-to-DIP conversion for returned input;
 - alpha-aware hit testing that can fall through to a lower Electron window;
 - one atomic immutable scene/router publication per lifecycle, metadata, frame, or
   stack mutation;
@@ -393,7 +413,8 @@ Remaining work is:
 - raw-input-only games, DirectInput, XInput, GameInput, gamepads, and faithful
   X1/X2 mouse-button delivery (Electron 16 cannot represent those buttons through
   `sendInputEvent`, so interception intentionally swallows them);
-- DPI and device-scale-factor reconciliation beyond the controlled 1:1 setup;
+- real per-monitor/mixed-DPI handling, runtime DPI changes, and validation on
+  physical/VM displays beyond the forced uniform 1.25 proof;
 - safe deferred retirement of superseded GPU textures: hudhook 0.9.1 exposes
   texture load/replace but no texture-removal API;
 - D3D12 and eventual one-payload backend auto-detection;
@@ -415,7 +436,7 @@ consequently affects later initialization too. CPU scene/router publication is
 atomic, but a newly published alpha frame can precede its corresponding GPU upload
 by one `Present`, creating a narrow visual-versus-hit-test timing window.
 
-The next shared compositor work is arbitrary-DPI/device-scale reconciliation and
-safe texture retirement. D3D12 and a production project-owned injector follow.
+The next shared compositor work is real per-monitor/mixed-DPI handling and safe
+texture retirement. D3D12 and a production project-owned injector follow.
 A hudhook fork is justified only if testing reproduces a required graphics-hook
 change that cannot live in this project or be contributed upstream.

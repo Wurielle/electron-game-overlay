@@ -1,9 +1,10 @@
 # hudhook multi-window compositor handoff
 
-> Status: complete for the controlled Windows x64/D3D11, 1:1 device-scale
-> milestone. The deterministic and manual proofs pass through the existing
-> Electron SDK, Node add-on IPC, shared mappings, upstream hudhook 0.9.1, and
-> Dear ImGui renderer without loading the legacy injected renderer.
+> Status: complete for the controlled Windows x64/D3D11 compositor and the
+> bounded uniform Electron device-scale proof at 1.25. The deterministic and
+> manual proofs pass through the existing Electron SDK, Node add-on IPC, shared
+> mappings, upstream hudhook 0.9.1, and Dear ImGui renderer without loading the
+> legacy injected renderer.
 
 ## Run the proofs
 
@@ -11,7 +12,7 @@ From a regular PowerShell at the repository root:
 
 ```powershell
 Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -Wait
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
 ```
 
@@ -39,10 +40,25 @@ unchanged. The existing registration stream is the stacking contract:
 unset or empty, every announced window participates; an unmatched explicit
 filter has no fallback.
 
+The coordinate boundary is explicit and keeps the packet shapes unchanged:
+
+| Boundary | Coordinate space |
+| --- | --- |
+| Public `BrowserWindow` bounds, SDK caption/drag border, resize constraints | Electron DIP |
+| SDK wire rectangle and metadata | Physical game/swap-chain pixels |
+| Electron 16 OSR bitmap | Physical pixels |
+| Hudhook composition, alpha hit testing, caption dragging | Physical game-client pixels |
+| Returned `game.input` | Overlay-local physical pixels, divided back to signed DIP by the SDK |
+
+The SDK scales all four rectangle components and all dependent metadata. Hudhook
+already receives ImGui `display_size` in native swap-chain pixels, so the payload
+normalizes `display_framebuffer_scale` to `(1, 1)` and avoids applying the device
+factor twice.
+
 ## State and rendering design
 
 The IPC worker owns an ordered registry. Each entry retains native ID, name,
-bounds, transparency, mapping, and latest immutable frame. It publishes one
+physical bounds, transparency, mapping, and latest immutable frame. It publishes one
 reference-counted `ElectronScene` containing the currently framed windows in
 back-to-front order.
 
@@ -83,12 +99,12 @@ worker rejects stale generations, applies the raise to its ordered registry, and
 publishes matching scene/router state. Explicit producer controls use the existing
 hide/show lifecycle: close removes a window and re-registration appends it on top.
 
-Caption dragging uses the existing `window.caption` margins already published by
+Caption dragging uses the existing physical `window.caption` margins published by
 the SDK. After normal z-order and alpha hit testing selects a window, a first
 left-button down inside that caption starts a payload-owned drag. The down, moves,
 and matching up are not sent through `game.input`, so dragging a caption is
 different from a DOM pointer gesture that merely exercises capture. Every move
-derives the origin from the current game-client pointer minus the original local
+derives the physical origin from the current game-client pointer minus the original local
 anchor, avoiding cumulative drift. The bridge accepts only the latest
 registration/drag generation and atomically republishes matching render and
 hit-test bounds; close, reconnect, producer bounds for that window, focus loss,
@@ -104,11 +120,21 @@ payload-to-producer bounds synchronization would require a new wire event.
 
 ## Deterministic acceptance
 
-`-ClientMultiWindow -Wait` creates two real overlapping Electron pages:
+`-ClientMultiWindow -DeviceScaleFactor 1.25 -Wait` creates two real overlapping
+Electron pages. Public producer bounds are DIP:
 
 - green BACK: 640 x 360 `ExampleMainOverlay` at `(64, 72)`, registered first;
 - blue FRONT: 320 x 220 `ExamplePopupOverlay` at `(200, 136)`, registered
   second.
+
+The SDK sends corresponding physical rectangles `(80, 90, 800 x 450)` and
+`(250, 170, 400 x 275)`, matching the Electron 16 OSR surfaces.
+
+The producer must report the exact scale evidence:
+
+```text
+HUDHOOK_CLIENT_MULTIWINDOW_DEVICE_SCALE requestedScale=1.25 displayScale=1.25 backDpr=1.25 frontDpr=1.25 backFrame=800x450 frontFrame=400x275
+```
 
 Their text targets sit below both declared captions and share an overlap point.
 The runner requires both per-window frame uploads and an
@@ -129,13 +155,16 @@ proves:
    restore, and the final overlap click is FRONT-only afterward;
 6. hiding FRONT leaves a one-window BACK scene, while showing FRONT restores both
    with FRONT on top;
-7. dragging FRONT's striped caption handle from local `(160, 45)` by
-   `(+96, +72)` moves the payload-local rect from `(200, 136)` to `(296, 208)`;
-   the caption gesture emits no Electron pointer input, producer lifecycle, or
-   host `window.bounds` traffic, FIFO-drained page hover barriers cover delayed
-   outbound delivery, and a producer bounds query remains `(200, 136)`;
+7. dragging FRONT's striped caption handle from local `(200, 75)` physical
+   (`(160, 60)` DIP) by `(+120, +90)` physical pixels—the scaled equivalent of
+   `(+96, +72)` DIP—moves the payload-local physical origin from `(250, 170)` to
+   `(370, 260)`; the caption gesture emits no Electron
+   pointer input, producer lifecycle, or host `window.bounds` traffic,
+   FIFO-drained page hover barriers cover delayed outbound delivery, and a
+   producer bounds query remains `(200, 136)` DIP;
 8. clicking the visibly moved text field reaches FRONT with its original local
-   `(150, 98)` coordinates, while the vacated caption point reaches BACK;
+   DIP coordinates after the physical-input round trip, while the vacated caption
+   point reaches BACK;
 9. interception release is acknowledged after the disabled render boundary;
 10. released Escape closes the controlled host and is not forwarded to Electron;
 11. exact controlled Electron and host processes are absent after cleanup.
@@ -145,6 +174,12 @@ The terminal success line is:
 ```text
 Verified deterministic two-window composition, caption movement, routing, capture, z-order, lifecycle, and release.
 ```
+
+This acceptance is deliberately bounded: a command-line switch forces one
+uniform Electron scale factor. It does not exercise real per-monitor-DPI-v2,
+mixed-scale monitors, or a runtime DPI transition. The current session caches
+Electron 16's display factor nearest `(0, 0)` at startup; physical/VM DPI behavior
+and Electron 42 OSR semantics still need independent evidence.
 
 Pure Rust tests cover arbitrary ordered registries, last-duplicate position,
 exact filtering, bounds without reorder, immutable scene metadata, alpha
@@ -175,8 +210,10 @@ exact process tree.
 
 ## Known limitations
 
-- The controlled producer forces device scale 1. Arbitrary DPI, mixed monitors,
-  fullscreen scaling, and letterboxing remain unproven.
+- The 1.25 proof forces one uniform Electron device scale. The SDK caches the
+  Electron 16 display factor nearest the primary origin; runtime updates,
+  per-window PMv2/mixed-monitor mapping, fullscreen scaling, letterboxing,
+  physical/VM DPI behavior, and Electron 42 OSR remain unproven.
 - Hudhook's public filter is blanket `InputAll`; outside-overlay input remains
   swallowed while interception is active, and project-owned capture currently
   assumes messages continue reaching the same target HWND.
@@ -196,8 +233,8 @@ exact process tree.
 
 ## Next work
 
-1. Reconcile Electron device scale, native/game-client coordinates, and mixed-DPI
-   displays.
+1. Replace the cached uniform factor with real per-window/per-monitor DPI updates
+   and verify mixed-scale physical and VM displays.
 2. Add safe deferred texture retirement despite the current hudhook texture API.
 3. Repeat the controlled proof with hudhook's D3D12 backend.
 4. Replace the controlled injector with a production-quality project-owned

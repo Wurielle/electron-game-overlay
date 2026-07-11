@@ -1,4 +1,9 @@
 import { BrowserWindow, screen } from "electron";
+import {
+  dipExtentToPhysical,
+  dipRectToPhysical,
+  physicalInputToDip,
+} from "./coordinate-space.js";
 import { toNativeCursor } from "./cursor.js";
 import { ElectronOverlayWindow } from "./electron-overlay-window.js";
 import type { NativeOverlay } from "./native.js";
@@ -178,7 +183,9 @@ export class OverlaySession {
     const results: OverlayProcessAttachResult[] = [];
     for (const window of this.overlay.getTopWindows(includeMinimized)) {
       if (window.title && window.title.indexOf(title) !== -1) {
-        console.log(`--------------------\n injecting ${JSON.stringify(window)}`);
+        console.log(
+          `--------------------\n injecting ${JSON.stringify(window)}`
+        );
         results.push(this.overlay.injectProcess(window));
       }
     }
@@ -213,33 +220,36 @@ export class OverlaySession {
     this.ensureStarted();
     const browserWindow = window.browserWindow;
     const bounds = this.getScaledBounds(browserWindow);
-    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const browserBounds = browserWindow.getBounds();
+    const display = screen.getDisplayNearestPoint(
+      screen.getCursorScreenPoint()
+    );
 
     this.overlay.addWindow(browserWindow.id, {
       name: window.name,
       transparent: window.transparent,
       resizable: browserWindow.isResizable(),
       maxWidth: browserWindow.isResizable()
-        ? display.bounds.width
-        : browserWindow.getBounds().width,
+        ? dipExtentToPhysical(display.bounds.width, this.scaleFactor)
+        : dipExtentToPhysical(browserBounds.width, this.scaleFactor),
       maxHeight: browserWindow.isResizable()
-        ? display.bounds.height
-        : browserWindow.getBounds().height,
+        ? dipExtentToPhysical(display.bounds.height, this.scaleFactor)
+        : dipExtentToPhysical(browserBounds.height, this.scaleFactor),
       minWidth: browserWindow.isResizable()
-        ? 100
-        : browserWindow.getBounds().width,
+        ? dipExtentToPhysical(100, this.scaleFactor)
+        : dipExtentToPhysical(browserBounds.width, this.scaleFactor),
       minHeight: browserWindow.isResizable()
-        ? 100
-        : browserWindow.getBounds().height,
+        ? dipExtentToPhysical(100, this.scaleFactor)
+        : dipExtentToPhysical(browserBounds.height, this.scaleFactor),
       nativeHandle: browserWindow.getNativeWindowHandle().readUInt32LE(0),
       rect: bounds,
       caption: {
-        left: Math.floor(window.dragBorder * this.scaleFactor),
-        right: Math.floor(window.dragBorder * this.scaleFactor),
-        top: Math.floor(window.dragBorder * this.scaleFactor),
-        height: Math.floor(window.captionHeight * this.scaleFactor),
+        left: dipExtentToPhysical(window.dragBorder, this.scaleFactor),
+        right: dipExtentToPhysical(window.dragBorder, this.scaleFactor),
+        top: dipExtentToPhysical(window.dragBorder, this.scaleFactor),
+        height: dipExtentToPhysical(window.captionHeight, this.scaleFactor),
       },
-      dragBorderWidth: Math.floor(window.dragBorder),
+      dragBorderWidth: dipExtentToPhysical(window.dragBorder, this.scaleFactor),
     });
   }
 
@@ -294,10 +304,10 @@ export class OverlaySession {
     }
 
     if ("x" in inputEvent) {
-      inputEvent.x = Math.round(inputEvent.x / this.scaleFactor);
+      inputEvent.x = physicalInputToDip(inputEvent.x, this.scaleFactor);
     }
     if ("y" in inputEvent) {
-      inputEvent.y = Math.round(inputEvent.y / this.scaleFactor);
+      inputEvent.y = physicalInputToDip(inputEvent.y, this.scaleFactor);
     }
 
     window.webContents.sendInputEvent(inputEvent);
@@ -369,13 +379,7 @@ export class OverlaySession {
   }
 
   private getScaledBounds(window: Electron.BrowserWindow): Rect {
-    const bounds = window.getBounds();
-    return {
-      x: bounds.x,
-      y: bounds.y,
-      width: Math.floor(bounds.width * this.scaleFactor),
-      height: Math.floor(bounds.height * this.scaleFactor),
-    };
+    return dipRectToPhysical(window.getBounds(), this.scaleFactor);
   }
 
   private ensureStarted() {

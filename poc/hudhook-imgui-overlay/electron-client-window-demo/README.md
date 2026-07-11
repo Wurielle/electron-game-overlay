@@ -4,14 +4,15 @@ This controlled Electron producer loads the repository's real
 `apps/client/public/index/example-main-overlay.html` through the public
 `ElectronGameOverlay -> OverlaySession -> session.windows.create()` API. It
 creates one transparent, fixed 640 x 360 offscreen window named
-`ExampleMainOverlay` at native overlay position `(64, 72)`. The multi-window
+`ExampleMainOverlay` at Electron DIP position `(64, 72)`. The multi-window
 runner modes additionally create an overlapping transparent
 `ExamplePopupOverlay`, using the same public SDK without adding a z-order field.
 
 The BrowserWindow enables Node integration and disables context isolation,
 matching the real client settings required by the page's
-`window.require('electron')` call. Each non-empty paint is checked for a full
-640 x 360 BGRA bitmap before the producer prints:
+`window.require('electron')` call. Each non-empty paint is checked against the
+physical dimensions expected from the configured device scale before the
+producer prints:
 
 ```text
 HUDHOOK_CLIENT_WINDOW_READY
@@ -23,7 +24,7 @@ target PID, waits 2.5 seconds for initial composition, and then runs this
 deterministic lifecycle sequence with 750 ms between steps:
 
 1. Move to `(176, 128)` with `ElectronOverlayWindow.setBounds()`, producing a
-   native `window.bounds` message.
+   physical-pixel `window.bounds` message from those public DIP coordinates.
 2. Call `ElectronOverlayWindow.hide()`, producing a native `window.close`
    message without destroying the BrowserWindow.
 3. Call `ElectronOverlayWindow.show()` to re-register the same window, then
@@ -52,27 +53,36 @@ Run the deterministic two-window acceptance proof from the repository root:
 
 ```powershell
 Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -Wait
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
 ```
 
 The producer registers green 640 x 360 `ExampleMainOverlay` at `(64, 72)` as
 BACK, then overlapping blue 320 x 220 `ExamplePopupOverlay` at `(200, 136)` as
-FRONT. Both pages expose aligned text fields below their SDK captions and
-role-specific proof events. The runner proves initial BACK>FRONT composition,
+FRONT; those values are Electron DIP. At the forced 1.25 factor, the SDK sends
+physical rectangles `(80, 90, 800 x 450)` and `(250, 170, 400 x 275)`, matching
+the Electron 16 OSR bitmap dimensions. Both pages expose aligned text fields
+below their SDK captions and role-specific proof events. The runner proves
+initial BACK>FRONT composition,
 FRONT-only overlap input and keyboard focus, FRONT capture during an out-of-bounds
 pointer gesture, click-to-front from exposed BACK client content without lifecycle traffic,
 close/re-register ordering in both directions, BACK-only overlap routing after it
 is raised, and FRONT hide/show without disturbing BACK. After those original-bounds
-checks, it drags FRONT's striped caption handle from local `(160, 45)` by
-`(+96, +72)`, verifies the composited rect moves from `(200, 136)` to
-`(296, 208)` without a producer lifecycle or `window.bounds` event. FIFO-drained
+checks, it drags FRONT's striped caption handle by a physical delta equivalent to
+`(+96, +72)` DIP and verifies the composited physical rect moves without a
+producer lifecycle or `window.bounds` event. FIFO-drained
 page hover barriers bracket the no-DOM-input assertion, after which the runner
-proves the moved target retains local `(150, 98)` and the vacated caption point
-uses the new hit-test rect.
+proves returned physical input converts back to the target's unchanged local DIP
+coordinates and the vacated caption point uses the new hit-test rect.
 The final phases cover guarded interception release, normal released-Escape host
 exit, and exact-process cleanup. Rust tests cover
 alpha-zero fallthrough and atomic ordered scene/router publication below that
 end-to-end boundary.
+
+The producer's scale evidence is:
+
+```text
+HUDHOOK_CLIENT_MULTIWINDOW_DEVICE_SCALE requestedScale=1.25 displayScale=1.25 backDpr=1.25 frontDpr=1.25 backFrame=800x450 frontFrame=400x275
+```
 
 For hands-on testing, run:
 
@@ -182,9 +192,14 @@ For a producer-only launch, use:
 ```
 
 The interactive input and multi-window proof variants need an injected target to
-connect within 30 seconds. Those repository proof modes force device scale 1 and
-disable Electron hardware acceleration so frame and input coordinates remain
-deterministic. Stop a producer-only launch with Ctrl+C. Normal shutdown destroys
+connect within 30 seconds. Repository proof modes force a uniform device scale
+(1 by default); the automated `-ClientMultiWindow` proof accepts the explicit
+1.25 value documented above. All modes disable Electron hardware acceleration so
+frame and input coordinates remain deterministic. The 1.25 multi-window run is
+bounded forced-scale evidence only: the session caches the Electron 16 display
+factor nearest `(0, 0)`, and real PMv2/mixed-monitor changes, physical/VM DPI
+behavior, and Electron 42 OSR remain unverified. Stop a
+producer-only launch with Ctrl+C. Normal shutdown destroys
 the overlay windows, closes the session, and disposes the SDK. For an unattended
 attached one-window smoke test, add `--exit-after-lifecycle`; the process exits
 successfully 750 ms after the final lifecycle step.

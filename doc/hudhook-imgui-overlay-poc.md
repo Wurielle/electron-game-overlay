@@ -20,7 +20,7 @@ Verified results:
 -   `OverlaySession.input.intercept()` drives hudhook's guarded Win32 input filter; while it blocks the controlled host, the payload front-to-back hit-tests and forwards left/right/middle mouse, vertical/horizontal wheel, keyboard, system-key, character, and focus packets to the hit/focused Electron window, and project-owned router state maintains a per-window multi-button capture owner;
 -   the deterministic `-ClientInput` runner proves click/focus, typed text, vertical wheel, intercepted Escape, release acknowledgement, released Escape, and clean process exit;
 -   router, bridge, and native-translator tests cover outside-bounds capture/release, outside-overlay swallowing, right/middle buttons, horizontal wheel, extended characters, synthetic cancellation/cleanup releases, guarded filter transitions, at-most-once input retry classification, and adjacent mouse-move coalescing;
--   `-ClientMultiWindow -Wait` proves two overlapping windows, registration order, an exposed BACK click-to-front transition without producer lifecycle traffic, topmost-only input, focused keyboard routing, out-of-bounds capture, re-registration, isolated hide/show, release, normal exit, and exact cleanup;
+-   `-ClientMultiWindow -DeviceScaleFactor 1.25 -Wait` proves two overlapping windows, registration order, a complete DIP-to-physical frame/metadata contract, physical-to-DIP input, caption dragging, an exposed BACK click-to-front transition without producer lifecycle traffic, topmost-only input, focused keyboard routing, out-of-bounds capture, re-registration, isolated hide/show, release, normal exit, and exact cleanup;
 -   `-ClientMultiWindowManual -Wait` exposes the overlapping pages and their hide/show/raise controls for hands-on testing;
 -   the integrated diagnostic, `-Client`, `-ClientWindow`, `-ClientInput`, and multi-window runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
 
@@ -47,7 +47,7 @@ The minimum useful answer is deliberately narrow:
 -   report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
 -   let the target close cleanly.
 
-The D3D11 seam and an interactive ordered multi-window Electron compositor are now proven. Production-wide game compatibility, arbitrary-DPI coordinate mapping, resize-safe texture retirement, broader input APIs, D3D12, and a production injector remain later work.
+The D3D11 seam and an interactive ordered multi-window Electron compositor are now proven, including one uniformly forced 1.25 Electron scale factor. Production-wide game compatibility, real per-monitor/mixed-DPI mapping, resize-safe texture retirement, broader input APIs, D3D12, and a production injector remain later work.
 
 ## Decision
 
@@ -88,7 +88,7 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   Windows 10 or newer;
 -   x64 injector, payload, and target;
 -   D3D11 first;
--   D3D12 after the shared compositor's DPI and texture-retirement work;
+-   D3D12 after real per-monitor/mixed-DPI handling and texture-retirement work;
 -   late injection by exact process name or window title;
 -   one native ImGui diagnostics window;
 -   one generated checkerboard or test-card texture;
@@ -106,7 +106,7 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 
 ### Not included yet
 
--   arbitrary-DPI and mixed-monitor coordinate mapping beyond the controlled 100% scale;
+-   real per-monitor-DPI-v2, mixed-monitor, and runtime-DPI coordinate mapping beyond the controlled uniform 1.25 scale;
 -   safe old-texture retirement; hudhook 0.9.1 has no texture-removal operation;
 -   raw-input translation, DirectInput, XInput, GameInput, gamepads, and faithful
     X1/X2 delivery through Electron 16;
@@ -285,11 +285,15 @@ This milestone is complete for the selected Win32 window at the controlled 1:1 d
 
    ```powershell
    Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-   .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -Wait
+   .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
    .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
    ```
 
-This milestone is complete. Registration/hide/show remains the only persistent
+This milestone is complete. The deterministic proof also scales public DIP
+bounds, caption/border metadata, constraints, and Electron 16 OSR surfaces into
+physical game pixels, then converts signed local input back to DIP. Hudhook's
+ImGui framebuffer scale is normalized to 1 because its display size is already
+the native swap-chain size. Registration/hide/show remains the only persistent
 ordering input available from the existing host; click raises are payload-local
 and reconnect resets to registration order.
 
@@ -388,4 +392,4 @@ These commands describe the desired operator experience; the implementation READ
 -   If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
 -   If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
 
-The controlled D3D11, Electron transport, regular Win32 input, and ordered multi-window criteria are complete. Acceptance records are in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). Next add arbitrary-DPI/device-scale handling and safe texture retirement; then repeat the controlled graphics proof with D3D12 and replace the controlled injector for production. An allowed offline D3D11 application smoke test remains separate compatibility evidence.
+The controlled D3D11, Electron transport, regular Win32 input, ordered multi-window, and forced uniform 1.25 device-scale criteria are complete. Acceptance records are in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). Next add real per-monitor/mixed-DPI handling and safe texture retirement; then repeat the controlled graphics proof with D3D12 and replace the controlled injector for production. An allowed offline D3D11 application smoke test remains separate compatibility evidence.

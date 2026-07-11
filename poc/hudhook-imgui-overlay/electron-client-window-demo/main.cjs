@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { app, ipcMain } = require('electron');
+const { app, ipcMain, screen } = require('electron');
 
 const WINDOW_NAME = 'ExampleMainOverlay';
 const WINDOW_WIDTH = 640;
@@ -37,6 +37,8 @@ const MULTIWINDOW_READY_MARKER = 'HUDHOOK_CLIENT_MULTIWINDOW_READY';
 const MULTIWINDOW_TARGET_CONNECTED_MARKER =
   'HUDHOOK_CLIENT_MULTIWINDOW_TARGET_CONNECTED';
 const MULTIWINDOW_COMMAND_CHANNEL = 'hudhook-client-multiwindow-command';
+const DEVICE_SCALE_ARGUMENT = '--hudhook-device-scale-factor=';
+const SUPPORTED_DEVICE_SCALE_FACTORS = new Set([1, 1.25, 1.5, 2]);
 const EXIT_AFTER_LIFECYCLE = process.argv.includes('--exit-after-lifecycle');
 const AUTOMATED_INPUT_PROOF = process.argv.includes(
   '--hudhook-client-input-runner',
@@ -61,6 +63,38 @@ const inputControlArgument = process.argv.find((argument) =>
 const INPUT_CONTROL_FILE = inputControlArgument
   ? path.resolve(inputControlArgument.slice(INPUT_CONTROL_ARGUMENT.length))
   : null;
+const deviceScaleArguments = process.argv.filter((argument) =>
+  argument.startsWith(DEVICE_SCALE_ARGUMENT),
+);
+if (deviceScaleArguments.length > 1) {
+  throw new Error(`${DEVICE_SCALE_ARGUMENT}<scale> may only be supplied once`);
+}
+const deviceScaleValue = deviceScaleArguments[0]?.slice(
+  DEVICE_SCALE_ARGUMENT.length,
+);
+const REQUESTED_DEVICE_SCALE_FACTOR = deviceScaleValue
+  ? Number(deviceScaleValue)
+  : 1;
+if (
+  (deviceScaleValue && !/^\d+(?:\.\d+)?$/.test(deviceScaleValue)) ||
+  !SUPPORTED_DEVICE_SCALE_FACTORS.has(REQUESTED_DEVICE_SCALE_FACTOR)
+) {
+  throw new Error(
+    `${DEVICE_SCALE_ARGUMENT}<scale> must be one of 1, 1.25, 1.5, or 2`,
+  );
+}
+const EXPECTED_BACK_FRAME_WIDTH = Math.floor(
+  WINDOW_WIDTH * REQUESTED_DEVICE_SCALE_FACTOR,
+);
+const EXPECTED_BACK_FRAME_HEIGHT = Math.floor(
+  WINDOW_HEIGHT * REQUESTED_DEVICE_SCALE_FACTOR,
+);
+const EXPECTED_FRONT_FRAME_WIDTH = Math.floor(
+  FRONT_WINDOW_WIDTH * REQUESTED_DEVICE_SCALE_FACTOR,
+);
+const EXPECTED_FRONT_FRAME_HEIGHT = Math.floor(
+  FRONT_WINDOW_HEIGHT * REQUESTED_DEVICE_SCALE_FACTOR,
+);
 const OVERLAY_FILE = path.resolve(
   __dirname,
   '../../../apps/client/public/index/example-main-overlay.html',
@@ -70,13 +104,16 @@ const POPUP_OVERLAY_FILE = path.resolve(
   '../../../apps/client/public/index/example-popup-overlay.html',
 );
 
-// Keep Electron's physical bitmap at the same fixed size as the SDK window
-// metadata, including on displays configured above 100% scaling.
+// Make Electron's screen metrics, renderer DPR, OSR bitmap, and the SDK's
+// native-pixel metadata share the proof's explicitly requested scale.
 app.setPath(
   'userData',
   path.join(app.getPath('temp'), `hudhook-client-window-${process.pid}`),
 );
-app.commandLine.appendSwitch('force-device-scale-factor', '1');
+app.commandLine.appendSwitch(
+  'force-device-scale-factor',
+  String(REQUESTED_DEVICE_SCALE_FACTOR),
+);
 app.disableHardwareAcceleration();
 
 let overlay = null;
@@ -92,6 +129,11 @@ let targetConnected = false;
 let lifecycleStarted = false;
 let observedFrames = 0;
 let observedFrontFrames = 0;
+let observedBackFrameSize = null;
+let observedFrontFrameSize = null;
+let observedDisplayScaleFactor = null;
+let backDevicePixelRatio = null;
+let frontDevicePixelRatio = null;
 let backMultiwindowTarget = null;
 let frontMultiwindowTarget = null;
 let multiwindowIpcBound = false;
@@ -555,7 +597,8 @@ async function instrumentMultiwindowPage(
         position: 'fixed',
         left:
           config.caption.left + (captionWidth - dragHandleWidth) / 2 + 'px',
-        top: config.caption.top + 5 + 'px',
+        top:
+          config.caption.top + config.caption.height - dragHandleHeight + 'px',
         width: dragHandleWidth + 'px',
         height: dragHandleHeight + 'px',
         boxSizing: 'border-box',
@@ -672,7 +715,8 @@ async function instrumentMultiwindowPage(
       };
       const getProofRects = () => ({
         ...getTargetRect(),
-        dragHandle: getDragHandleRect()
+        dragHandle: getDragHandleRect(),
+        devicePixelRatio: window.devicePixelRatio
       });
       window.__hudhookMultiwindowProof = {
         getTargetRect,
@@ -699,7 +743,8 @@ async function instrumentMultiwindowPage(
     !Number.isFinite(result.dragHandle.width) ||
     !Number.isFinite(result.dragHandle.height) ||
     result.dragHandle.width <= 0 ||
-    result.dragHandle.height <= 0
+    result.dragHandle.height <= 0 ||
+    !Number.isFinite(result.devicePixelRatio)
   ) {
     throw new Error(
       `invalid ${role} multi-window target rect: ${JSON.stringify(result)}`,
@@ -710,6 +755,14 @@ async function instrumentMultiwindowPage(
     throw new Error(
       `${role} multi-window target overlaps its caption: ` +
         `${JSON.stringify({ target: result, caption })}`,
+    );
+  }
+  if (
+    Math.abs(result.devicePixelRatio - REQUESTED_DEVICE_SCALE_FACTOR) > 0.001
+  ) {
+    throw new Error(
+      `${role} renderer devicePixelRatio ${result.devicePixelRatio} does not ` +
+        `match requested scale ${REQUESTED_DEVICE_SCALE_FACTOR}`,
     );
   }
 
@@ -981,12 +1034,25 @@ function maybeLogMultiwindowReady() {
     !backMultiwindowTarget ||
     !frontMultiwindowTarget ||
     observedFrames === 0 ||
-    observedFrontFrames === 0
+    observedFrontFrames === 0 ||
+    !observedBackFrameSize ||
+    !observedFrontFrameSize ||
+    observedDisplayScaleFactor === null ||
+    backDevicePixelRatio === null ||
+    frontDevicePixelRatio === null
   ) {
     return;
   }
 
   readyLogged = true;
+  console.log(
+    'HUDHOOK_CLIENT_MULTIWINDOW_DEVICE_SCALE ' +
+      `requestedScale=${REQUESTED_DEVICE_SCALE_FACTOR} ` +
+      `displayScale=${observedDisplayScaleFactor} ` +
+      `backDpr=${backDevicePixelRatio} frontDpr=${frontDevicePixelRatio} ` +
+      `backFrame=${observedBackFrameSize.width}x${observedBackFrameSize.height} ` +
+      `frontFrame=${observedFrontFrameSize.width}x${observedFrontFrameSize.height}`,
+  );
   console.log(MULTIWINDOW_READY_MARKER);
   log(
     `frame-ready role=back name=${WINDOW_NAME} ` +
@@ -1032,6 +1098,19 @@ function bindRendererFailureHandlers(browserWindow, role) {
 
 async function createDemo() {
   const { ElectronGameOverlay } = require('electron-game-overlay');
+
+  observedDisplayScaleFactor = screen.getDisplayNearestPoint({
+    x: 0,
+    y: 0,
+  }).scaleFactor;
+  if (
+    Math.abs(observedDisplayScaleFactor - REQUESTED_DEVICE_SCALE_FACTOR) > 0.001
+  ) {
+    throw new Error(
+      `screen scale ${observedDisplayScaleFactor} does not match requested ` +
+        `scale ${REQUESTED_DEVICE_SCALE_FACTOR}`,
+    );
+  }
 
   overlay = new ElectronGameOverlay();
   if (INPUT_PROOF) {
@@ -1099,6 +1178,7 @@ async function createDemo() {
       ],
     })
       .then((target) => {
+        backDevicePixelRatio = target.devicePixelRatio;
         backMultiwindowTarget = target;
         browserWindow.webContents.invalidate();
         maybeLogMultiwindowReady();
@@ -1130,21 +1210,23 @@ async function createDemo() {
   browserWindow.webContents.on('paint', (event, dirtyRect, image) => {
     const size = image.getSize();
     const byteLength = image.getBitmap().length;
-    const expectedByteLength = WINDOW_WIDTH * WINDOW_HEIGHT * 4;
+    const expectedByteLength =
+      EXPECTED_BACK_FRAME_WIDTH * EXPECTED_BACK_FRAME_HEIGHT * 4;
 
     if (size.width === 0 && size.height === 0 && byteLength === 0) {
       return;
     }
 
     if (
-      size.width !== WINDOW_WIDTH ||
-      size.height !== WINDOW_HEIGHT ||
+      size.width !== EXPECTED_BACK_FRAME_WIDTH ||
+      size.height !== EXPECTED_BACK_FRAME_HEIGHT ||
       byteLength !== expectedByteLength
     ) {
       fail(
         'unexpected-frame',
         new Error(
-          `expected ${WINDOW_WIDTH}x${WINDOW_HEIGHT}/${expectedByteLength} bytes, ` +
+          `expected ${EXPECTED_BACK_FRAME_WIDTH}x${EXPECTED_BACK_FRAME_HEIGHT}/` +
+            `${expectedByteLength} bytes, ` +
             `received ${size.width}x${size.height}/${byteLength} bytes`,
         ),
       );
@@ -1152,6 +1234,7 @@ async function createDemo() {
     }
 
     observedFrames += 1;
+    observedBackFrameSize = size;
 
     if (MULTIWINDOW_PROOF) {
       maybeLogMultiwindowReady();
@@ -1229,6 +1312,7 @@ async function createDemo() {
         ],
       })
         .then((target) => {
+          frontDevicePixelRatio = target.devicePixelRatio;
           frontMultiwindowTarget = target;
           frontBrowserWindow.webContents.invalidate();
           maybeLogMultiwindowReady();
@@ -1239,20 +1323,22 @@ async function createDemo() {
     frontBrowserWindow.webContents.on('paint', (event, dirtyRect, image) => {
       const size = image.getSize();
       const byteLength = image.getBitmap().length;
-      const expectedByteLength = FRONT_WINDOW_WIDTH * FRONT_WINDOW_HEIGHT * 4;
+      const expectedByteLength =
+        EXPECTED_FRONT_FRAME_WIDTH * EXPECTED_FRONT_FRAME_HEIGHT * 4;
 
       if (size.width === 0 && size.height === 0 && byteLength === 0) {
         return;
       }
       if (
-        size.width !== FRONT_WINDOW_WIDTH ||
-        size.height !== FRONT_WINDOW_HEIGHT ||
+        size.width !== EXPECTED_FRONT_FRAME_WIDTH ||
+        size.height !== EXPECTED_FRONT_FRAME_HEIGHT ||
         byteLength !== expectedByteLength
       ) {
         fail(
           'unexpected-front-frame',
           new Error(
-            `expected ${FRONT_WINDOW_WIDTH}x${FRONT_WINDOW_HEIGHT}/${expectedByteLength} bytes, ` +
+            `expected ${EXPECTED_FRONT_FRAME_WIDTH}x${EXPECTED_FRONT_FRAME_HEIGHT}/` +
+              `${expectedByteLength} bytes, ` +
               `received ${size.width}x${size.height}/${byteLength} bytes`,
           ),
         );
@@ -1260,6 +1346,7 @@ async function createDemo() {
       }
 
       observedFrontFrames += 1;
+      observedFrontFrameSize = size;
       maybeLogMultiwindowReady();
     });
     frontBrowserWindow.on('closed', () => {

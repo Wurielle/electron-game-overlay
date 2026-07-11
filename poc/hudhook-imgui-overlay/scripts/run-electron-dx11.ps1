@@ -18,7 +18,11 @@ param(
     [switch]$ClientMultiWindow,
 
     [Parameter(ParameterSetName = "ClientMultiWindowManual")]
-    [switch]$ClientMultiWindowManual
+    [switch]$ClientMultiWindowManual,
+
+    [Parameter()]
+    [ValidateSet(1, 1.25, 1.5, 2)]
+    [double]$DeviceScaleFactor = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +30,40 @@ $env:PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL"
 $ClientInputMode = $ClientInput -or $ClientInputManual
 $ClientMultiWindowMode = $ClientMultiWindow -or $ClientMultiWindowManual
 $InteractiveProofMode = $ClientInputMode -or $ClientMultiWindowMode
+$InvariantCulture = [System.Globalization.CultureInfo]::InvariantCulture
+$DeviceScaleFactorInvariant = $DeviceScaleFactor.ToString("0.##", $InvariantCulture)
+if ($DeviceScaleFactor -ne 1 -and -not $ClientMultiWindow) {
+    throw "Non-1 device scale is currently supported only by the automated -ClientMultiWindow proof."
+}
+
+function Convert-DipPlacementToPhysical {
+    param([double]$Value)
+
+    return [int][Math]::Round(
+        $Value * $DeviceScaleFactor,
+        [MidpointRounding]::AwayFromZero
+    )
+}
+
+function Convert-DipExtentToPhysical {
+    param([double]$Value)
+
+    if ($Value -lt 0) {
+        throw "DIP extents and local coordinates must be nonnegative."
+    }
+    return [int][Math]::Floor($Value * $DeviceScaleFactor)
+}
+
+function Get-IntegerTolerancePattern {
+    param([int]$Value)
+
+    $Alternatives = @(
+        [regex]::Escape(($Value - 1).ToString($InvariantCulture))
+        [regex]::Escape($Value.ToString($InvariantCulture))
+        [regex]::Escape(($Value + 1).ToString($InvariantCulture))
+    )
+    return '(?:' + ($Alternatives -join '|') + ')'
+}
 
 # Producer stdout markers. Keep these synchronized with the corresponding
 # Electron entry points and the real client's opt-in startup flag.
@@ -55,6 +93,7 @@ $ClientInputMouseUpProofMarker = "Electron left mouse up forwarded"
 $ClientMultiWindowReadyMarker = "HUDHOOK_CLIENT_MULTIWINDOW_READY"
 $ClientMultiWindowTargetMarker = "HUDHOOK_CLIENT_MULTIWINDOW_TARGET"
 $ClientMultiWindowDragHandleMarker = "HUDHOOK_CLIENT_MULTIWINDOW_DRAG_HANDLE"
+$ClientMultiWindowDeviceScaleMarker = "HUDHOOK_CLIENT_MULTIWINDOW_DEVICE_SCALE"
 $ClientMultiWindowProducerBoundsMarker = "HUDHOOK_CLIENT_MULTIWINDOW_PRODUCER_BOUNDS"
 $ClientMultiWindowOverlapMarker = "HUDHOOK_CLIENT_MULTIWINDOW_OVERLAP"
 $ClientMultiWindowInterceptRequestedMarker = "HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_REQUESTED"
@@ -165,6 +204,7 @@ elseif ($ClientMultiWindow) {
     $ElectronArguments = @(
         $ClientWindowAppDirectory,
         $ClientMultiWindowRunnerFlag,
+        "--hudhook-device-scale-factor=$DeviceScaleFactorInvariant",
         "--input-control-file=$ClientMultiWindowControlFile",
         "--user-data-dir=$ClientMultiWindowUserDataDirectory",
         "--no-sandbox"
@@ -183,6 +223,7 @@ elseif ($ClientMultiWindowManual) {
     $ElectronArguments = @(
         $ClientWindowAppDirectory,
         $ClientMultiWindowManualFlag,
+        "--hudhook-device-scale-factor=$DeviceScaleFactorInvariant",
         "--user-data-dir=$ClientMultiWindowUserDataDirectory",
         "--no-sandbox"
     )
@@ -198,6 +239,7 @@ elseif ($ClientInput) {
     $ElectronArguments = @(
         $ClientWindowAppDirectory,
         $ClientInputRunnerFlag,
+        "--hudhook-device-scale-factor=$DeviceScaleFactorInvariant",
         "--input-control-file=$ClientInputControlFile",
         "--user-data-dir=$ClientInputUserDataDirectory",
         "--no-sandbox"
@@ -216,6 +258,7 @@ elseif ($ClientInputManual) {
     $ElectronArguments = @(
         $ClientWindowAppDirectory,
         $ClientInputManualFlag,
+        "--hudhook-device-scale-factor=$DeviceScaleFactorInvariant",
         "--user-data-dir=$ClientInputUserDataDirectory",
         "--no-sandbox"
     )
@@ -233,6 +276,7 @@ elseif ($ClientWindow) {
     $ElectronArguments = @(
         $ClientWindowAppDirectory,
         $ClientWindowRunnerFlag,
+        "--hudhook-device-scale-factor=$DeviceScaleFactorInvariant",
         "--no-sandbox"
     )
     $ElectronCommandLineMarkers = @(
@@ -265,6 +309,7 @@ if ($ClientMultiWindowMode) {
     )
     $RequiredElectronProofMarkers += @(
         $ClientMultiWindowTargetMarker,
+        $ClientMultiWindowDeviceScaleMarker,
         $ClientMultiWindowOverlapMarker,
         $ClientMultiWindowInterceptRequestedMarker,
         $ClientMultiWindowTranslationReadyMarker
@@ -1320,7 +1365,6 @@ try {
             throw "Could not parse both role-specific caption drag handles from $ElectronStdoutLog."
         }
 
-        $InvariantCulture = [System.Globalization.CultureInfo]::InvariantCulture
         $BackTargetMatch = $BackTargetMatches[$BackTargetMatches.Count - 1]
         $FrontTargetMatch = $FrontTargetMatches[$FrontTargetMatches.Count - 1]
         $FrontDragHandleMatch = $FrontDragHandleMatches[$FrontDragHandleMatches.Count - 1]
@@ -1352,6 +1396,38 @@ try {
             $FrontTargetMatch.Groups["windowY"].Value,
             $InvariantCulture
         )
+        $BackTargetX = [double]::Parse(
+            $BackTargetMatch.Groups["x"].Value,
+            $InvariantCulture
+        )
+        $BackTargetY = [double]::Parse(
+            $BackTargetMatch.Groups["y"].Value,
+            $InvariantCulture
+        )
+        $BackTargetWidth = [double]::Parse(
+            $BackTargetMatch.Groups["width"].Value,
+            $InvariantCulture
+        )
+        $BackTargetHeight = [double]::Parse(
+            $BackTargetMatch.Groups["height"].Value,
+            $InvariantCulture
+        )
+        $FrontTargetX = [double]::Parse(
+            $FrontTargetMatch.Groups["x"].Value,
+            $InvariantCulture
+        )
+        $FrontTargetY = [double]::Parse(
+            $FrontTargetMatch.Groups["y"].Value,
+            $InvariantCulture
+        )
+        $FrontTargetWidth = [double]::Parse(
+            $FrontTargetMatch.Groups["width"].Value,
+            $InvariantCulture
+        )
+        $FrontTargetHeight = [double]::Parse(
+            $FrontTargetMatch.Groups["height"].Value,
+            $InvariantCulture
+        )
         $BackCenterX = [double]::Parse(
             $BackTargetMatch.Groups["centerX"].Value,
             $InvariantCulture
@@ -1376,64 +1452,143 @@ try {
             $FrontDragHandleMatch.Groups["centerY"].Value,
             $InvariantCulture
         )
+        $FrontDragHandleX = [double]::Parse(
+            $FrontDragHandleMatch.Groups["x"].Value,
+            $InvariantCulture
+        )
+        $FrontDragHandleY = [double]::Parse(
+            $FrontDragHandleMatch.Groups["y"].Value,
+            $InvariantCulture
+        )
+        $FrontDragHandleWidth = [double]::Parse(
+            $FrontDragHandleMatch.Groups["width"].Value,
+            $InvariantCulture
+        )
+        $FrontDragHandleHeight = [double]::Parse(
+            $FrontDragHandleMatch.Groups["height"].Value,
+            $InvariantCulture
+        )
         if (
             [Math]::Abs($BackCenterX - $FrontCenterX) -gt 0.5 -or
             [Math]::Abs($BackCenterY - $FrontCenterY) -gt 0.5
         ) {
             throw "The BACK and FRONT DOM targets do not share the same host-client center."
         }
-        $TargetClientX = [int][Math]::Round(
-            $FrontCenterX,
-            [MidpointRounding]::AwayFromZero
+        $BackPhysicalWindowX = Convert-DipPlacementToPhysical $BackWindowX
+        $BackPhysicalWindowY = Convert-DipPlacementToPhysical $BackWindowY
+        $FrontPhysicalWindowX = Convert-DipPlacementToPhysical $FrontWindowX
+        $FrontPhysicalWindowY = Convert-DipPlacementToPhysical $FrontWindowY
+        $BackPhysicalWindowWidth = Convert-DipExtentToPhysical 640
+        $BackPhysicalWindowHeight = Convert-DipExtentToPhysical 360
+        $FrontPhysicalWindowWidth = Convert-DipExtentToPhysical 320
+        $FrontPhysicalWindowHeight = Convert-DipExtentToPhysical 220
+
+        # DOM markers remain logical DIPs. Convert their positive local center
+        # independently from the signed top-level window placement, matching
+        # the SDK's explicit native-pixel policy.
+        $BackTargetLocalX = Convert-DipExtentToPhysical (
+            $BackTargetX + ($BackTargetWidth / 2)
         )
-        $TargetClientY = [int][Math]::Round(
-            $FrontCenterY,
-            [MidpointRounding]::AwayFromZero
+        $BackTargetLocalY = Convert-DipExtentToPhysical (
+            $BackTargetY + ($BackTargetHeight / 2)
         )
-        $FrontDragStartClientX = [int][Math]::Round(
-            $FrontDragHandleCenterX,
-            [MidpointRounding]::AwayFromZero
+        $FrontTargetLocalX = Convert-DipExtentToPhysical (
+            $FrontTargetX + ($FrontTargetWidth / 2)
         )
-        $FrontDragStartClientY = [int][Math]::Round(
-            $FrontDragHandleCenterY,
-            [MidpointRounding]::AwayFromZero
+        $FrontTargetLocalY = Convert-DipExtentToPhysical (
+            $FrontTargetY + ($FrontTargetHeight / 2)
         )
-        $FrontDragDeltaX = 96
-        $FrontDragDeltaY = 72
+        $BackTargetClientX = $BackPhysicalWindowX + $BackTargetLocalX
+        $BackTargetClientY = $BackPhysicalWindowY + $BackTargetLocalY
+        $FrontTargetClientX = $FrontPhysicalWindowX + $FrontTargetLocalX
+        $FrontTargetClientY = $FrontPhysicalWindowY + $FrontTargetLocalY
+        if (
+            $BackTargetClientX -ne $FrontTargetClientX -or
+            $BackTargetClientY -ne $FrontTargetClientY
+        ) {
+            throw "The independently scaled BACK and FRONT target centers are not aligned."
+        }
+        $TargetClientX = $FrontTargetClientX
+        $TargetClientY = $FrontTargetClientY
+
+        $FrontDragHandleLocalCenterX =
+            $FrontDragHandleX + ($FrontDragHandleWidth / 2)
+        $FrontDragHandleLocalCenterY =
+            $FrontDragHandleY + ($FrontDragHandleHeight / 2)
+        if (
+            [Math]::Abs(
+                $FrontDragHandleCenterX -
+                    ($FrontWindowX + $FrontDragHandleLocalCenterX)
+            ) -gt 0.5 -or
+            [Math]::Abs(
+                $FrontDragHandleCenterY -
+                    ($FrontWindowY + $FrontDragHandleLocalCenterY)
+            ) -gt 0.5 -or
+            $FrontDragHandleLocalCenterX -ne 160 -or
+            $FrontDragHandleLocalCenterY -ne 60
+        ) {
+            throw "The FRONT caption proof handle is not centered at logical local point (160,60)."
+        }
+        $FrontDragStartLocalX = Convert-DipExtentToPhysical $FrontDragHandleLocalCenterX
+        $FrontDragStartLocalY = Convert-DipExtentToPhysical $FrontDragHandleLocalCenterY
+        $FrontDragStartClientX = $FrontPhysicalWindowX + $FrontDragStartLocalX
+        $FrontDragStartClientY = $FrontPhysicalWindowY + $FrontDragStartLocalY
+        $FrontDragDeltaX = Convert-DipExtentToPhysical 96
+        $FrontDragDeltaY = Convert-DipExtentToPhysical 72
         $FrontDragEndClientX = $FrontDragStartClientX + $FrontDragDeltaX
         $FrontDragEndClientY = $FrontDragStartClientY + $FrontDragDeltaY
-        $MovedFrontWindowX = $FrontWindowX + $FrontDragDeltaX
-        $MovedFrontWindowY = $FrontWindowY + $FrontDragDeltaY
+        $MovedFrontWindowX = $FrontPhysicalWindowX + $FrontDragDeltaX
+        $MovedFrontWindowY = $FrontPhysicalWindowY + $FrontDragDeltaY
         $MovedFrontTargetClientX = $TargetClientX + $FrontDragDeltaX
         $MovedFrontTargetClientY = $TargetClientY + $FrontDragDeltaY
         if (
-            $FrontDragStartClientX -ne ($FrontWindowX + 160) -or
-            $FrontDragStartClientY -ne ($FrontWindowY + 45)
-        ) {
-            throw "The FRONT caption proof handle is not centered at the declared local point (160,45)."
-        }
-        if (
             $FrontDragStartClientX -ge $MovedFrontWindowX -and
-            $FrontDragStartClientX -lt ($MovedFrontWindowX + 320) -and
+            $FrontDragStartClientX -lt (
+                $MovedFrontWindowX + $FrontPhysicalWindowWidth
+            ) -and
             $FrontDragStartClientY -ge $MovedFrontWindowY -and
-            $FrontDragStartClientY -lt ($MovedFrontWindowY + 220)
+            $FrontDragStartClientY -lt (
+                $MovedFrontWindowY + $FrontPhysicalWindowHeight
+            )
         ) {
             throw "The original FRONT caption point is not exclusive after the planned move."
         }
-        $CaptureClientX = $BackWindowX + 20
+        $CaptureClientX = $BackPhysicalWindowX + (Convert-DipExtentToPhysical 20)
         $CaptureClientY = $TargetClientY
-        $CaptureFrontLocalX = $CaptureClientX - $FrontWindowX
-        $CaptureFrontLocalY = $CaptureClientY - $FrontWindowY
+        $CaptureFrontLocalX = $CaptureClientX - $FrontPhysicalWindowX
+        $CaptureFrontLocalY = $CaptureClientY - $FrontPhysicalWindowY
         if ($CaptureFrontLocalX -ge 0) {
             throw "The capture proof point is not outside the FRONT window."
         }
-        $BackRaiseProbeClientX = $BackWindowX + 16
-        $BackRaiseProbeClientY = $BackWindowY + 64
-        if ($BackRaiseProbeClientX -ge $FrontWindowX) {
+        $BackRaiseProbeLocalX = Convert-DipExtentToPhysical 16
+        $BackRaiseProbeLocalY = Convert-DipExtentToPhysical 64
+        $BackRaiseProbeClientX = $BackPhysicalWindowX + $BackRaiseProbeLocalX
+        $BackRaiseProbeClientY = $BackPhysicalWindowY + $BackRaiseProbeLocalY
+        if ($BackRaiseProbeClientX -ge $FrontPhysicalWindowX) {
             throw "The BACK click-to-front probe is not exposed to the left of FRONT."
         }
-        if ($BackRaiseProbeClientY -lt ($BackWindowY + 50)) {
+        $BackCaptionBottom =
+            (Convert-DipExtentToPhysical 10) +
+            (Convert-DipExtentToPhysical 40)
+        if ($BackRaiseProbeLocalY -lt $BackCaptionBottom) {
             throw "The BACK click-to-front probe overlaps its SDK-declared caption."
+        }
+
+        $ExpectedDeviceScaleMarker = (
+            "$ClientMultiWindowDeviceScaleMarker " +
+            "requestedScale=$DeviceScaleFactorInvariant " +
+            "displayScale=$DeviceScaleFactorInvariant " +
+            "backDpr=$DeviceScaleFactorInvariant " +
+            "frontDpr=$DeviceScaleFactorInvariant " +
+            "backFrame=${BackPhysicalWindowWidth}x${BackPhysicalWindowHeight} " +
+            "frontFrame=${FrontPhysicalWindowWidth}x${FrontPhysicalWindowHeight}"
+        )
+        if (
+            (Get-RegexCount `
+                $ElectronOutput `
+                ([regex]::Escape($ExpectedDeviceScaleMarker))) -ne 1
+        ) {
+            throw "The producer did not report the exact requested screen, renderer, and OSR device scale contract."
         }
 
         $BackSelectedPattern = (
@@ -1448,17 +1603,39 @@ try {
         )
         $BackUploadedPattern = (
             [regex]::Escape("Electron frame uploaded to GPU") +
-            '[^\r\n]*' +
-            [regex]::Escape("window_id=$BackWindowId") +
-            '[^\r\n]*' +
-            [regex]::Escape("window_name=ExampleMainOverlay")
+            '(?=[^\r\n]*window_id=' + $BackWindowId + '(?!\d))' +
+            '(?=[^\r\n]*window_name=ExampleMainOverlay(?:\s|$))' +
+            '(?=[^\r\n]*width=' + $BackPhysicalWindowWidth + '(?!\d))' +
+            '(?=[^\r\n]*height=' + $BackPhysicalWindowHeight + '(?!\d))' +
+            '[^\r\n]*'
         )
         $FrontUploadedPattern = (
             [regex]::Escape("Electron frame uploaded to GPU") +
-            '[^\r\n]*' +
-            [regex]::Escape("window_id=$FrontWindowId") +
-            '[^\r\n]*' +
-            [regex]::Escape("window_name=ExamplePopupOverlay")
+            '(?=[^\r\n]*window_id=' + $FrontWindowId + '(?!\d))' +
+            '(?=[^\r\n]*window_name=ExamplePopupOverlay(?:\s|$))' +
+            '(?=[^\r\n]*width=' + $FrontPhysicalWindowWidth + '(?!\d))' +
+            '(?=[^\r\n]*height=' + $FrontPhysicalWindowHeight + '(?!\d))' +
+            '[^\r\n]*'
+        )
+        $BackComposedPattern = (
+            [regex]::Escape($CompositorProofMarker) +
+            '(?=[^\r\n]*window_id=' + $BackWindowId + '(?!\d))' +
+            '(?=[^\r\n]*window_name=ExampleMainOverlay(?:\s|$))' +
+            '(?=[^\r\n]*x=' + $BackPhysicalWindowX + '(?!\d))' +
+            '(?=[^\r\n]*y=' + $BackPhysicalWindowY + '(?!\d))' +
+            '(?=[^\r\n]*width=' + $BackPhysicalWindowWidth + '(?!\d))' +
+            '(?=[^\r\n]*height=' + $BackPhysicalWindowHeight + '(?!\d))' +
+            '[^\r\n]*'
+        )
+        $FrontComposedPattern = (
+            [regex]::Escape($CompositorProofMarker) +
+            '(?=[^\r\n]*window_id=' + $FrontWindowId + '(?!\d))' +
+            '(?=[^\r\n]*window_name=ExamplePopupOverlay(?:\s|$))' +
+            '(?=[^\r\n]*x=' + $FrontPhysicalWindowX + '(?!\d))' +
+            '(?=[^\r\n]*y=' + $FrontPhysicalWindowY + '(?!\d))' +
+            '(?=[^\r\n]*width=' + $FrontPhysicalWindowWidth + '(?!\d))' +
+            '(?=[^\r\n]*height=' + $FrontPhysicalWindowHeight + '(?!\d))' +
+            '[^\r\n]*'
         )
         $InitialScenePattern = (
             [regex]::Escape($ClientMultiWindowSceneMarker) +
@@ -1482,6 +1659,8 @@ try {
                 $FrontSelectedPattern = 1
                 $BackUploadedPattern = 1
                 $FrontUploadedPattern = 1
+                $BackComposedPattern = 1
+                $FrontComposedPattern = 1
                 $InitialScenePattern = 1
             }
         $InitialBackSelected = [regex]::Match(
@@ -1614,6 +1793,42 @@ try {
                 [regex]::Escape("window_id=$BackWindowId") +
                 '[^\r\n]*win32_message=514'
             )
+            $FrontTargetDownPattern = (
+                $FrontDownPattern +
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalY) +
+                    '(?!\d)'
+            )
+            $FrontTargetUpPattern = (
+                $FrontUpPattern +
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalY) +
+                    '(?!\d)'
+            )
+            $BackTargetDownPattern = (
+                $BackDownPattern +
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $BackTargetLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $BackTargetLocalY) +
+                    '(?!\d)'
+            )
+            $BackTargetUpPattern = (
+                $BackUpPattern +
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $BackTargetLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $BackTargetLocalY) +
+                    '(?!\d)'
+            )
             $FrontPageFocusPattern = [regex]::Escape(
                 "HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=front event=focus"
             )
@@ -1636,8 +1851,8 @@ try {
             $BeforeFrontClickPayload = Get-FileContent $PayloadLog
             $BeforeFrontClickElectron = Get-FileContent $ElectronStdoutLog
             $FrontFocusBaseline = Get-RegexCount $BeforeFrontClickPayload $FrontFocusPattern
-            $FrontDownBaseline = Get-RegexCount $BeforeFrontClickPayload $FrontDownPattern
-            $FrontUpBaseline = Get-RegexCount $BeforeFrontClickPayload $FrontUpPattern
+            $FrontDownBaseline = Get-RegexCount $BeforeFrontClickPayload $FrontTargetDownPattern
+            $FrontUpBaseline = Get-RegexCount $BeforeFrontClickPayload $FrontTargetUpPattern
             $BackClickBaseline = Get-RegexCount $BeforeFrontClickElectron $BackPageClickPattern
             $BackValueBaseline = Get-RegexCount `
                 $BeforeFrontClickElectron `
@@ -1660,8 +1875,8 @@ try {
                 -Phase "initial topmost FRONT click" `
                 -PayloadMinimumCounts @{
                     $FrontFocusPattern = $FrontFocusBaseline + 1
-                    $FrontDownPattern = $FrontDownBaseline + 1
-                    $FrontUpPattern = $FrontUpBaseline + 1
+                    $FrontTargetDownPattern = $FrontDownBaseline + 1
+                    $FrontTargetUpPattern = $FrontUpBaseline + 1
                 } `
                 -ElectronMinimumCounts @{
                     $FrontPageFocusPattern = $FrontPageFocusBaseline + 1
@@ -1675,11 +1890,11 @@ try {
             )[$FrontFocusBaseline].Index
             $FrontDownIndex = [regex]::Matches(
                 $FrontClickProof.Payload,
-                $FrontDownPattern
+                $FrontTargetDownPattern
             )[$FrontDownBaseline].Index
             $FrontUpIndex = [regex]::Matches(
                 $FrontClickProof.Payload,
-                $FrontUpPattern
+                $FrontTargetUpPattern
             )[$FrontUpBaseline].Index
             if ($FrontDownIndex -le $FrontFocusIndex -or $FrontUpIndex -le $FrontDownIndex) {
                 throw "Initial overlap click did not prove FRONT focus before down and up."
@@ -1790,11 +2005,21 @@ try {
             )
             $BackProbeDownPattern = (
                 $BackDownPattern +
-                '[^\r\n]*x=(?:15|16|17)[^\r\n]*y=(?:63|64|65)'
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $BackRaiseProbeLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $BackRaiseProbeLocalY) +
+                    '(?!\d)'
             )
             $BackProbeUpPattern = (
                 $BackUpPattern +
-                '[^\r\n]*x=(?:15|16|17)[^\r\n]*y=(?:63|64|65)'
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $BackRaiseProbeLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $BackRaiseProbeLocalY) +
+                    '(?!\d)'
             )
             $RaiseBackCommandPattern = [regex]::Escape(
                 "HUDHOOK_CLIENT_MULTIWINDOW_COMMAND command=raise-back"
@@ -1894,10 +2119,10 @@ try {
             $BeforeClickRaisedOverlapElectron = Get-FileContent $ElectronStdoutLog
             $ClickRaisedBackDownBaseline = Get-RegexCount `
                 $BeforeClickRaisedOverlapPayload `
-                $BackDownPattern
+                $BackTargetDownPattern
             $ClickRaisedBackUpBaseline = Get-RegexCount `
                 $BeforeClickRaisedOverlapPayload `
-                $BackUpPattern
+                $BackTargetUpPattern
             $ClickRaisedFrontDownBaseline = Get-RegexCount `
                 $BeforeClickRaisedOverlapPayload `
                 $FrontDownPattern
@@ -1920,8 +2145,8 @@ try {
             $ClickRaisedOverlapProof = Wait-ForProofRegexCounts `
                 -Phase "click-raised BACK overlap routing before producer lifecycle" `
                 -PayloadMinimumCounts @{
-                    $BackDownPattern = $ClickRaisedBackDownBaseline + 1
-                    $BackUpPattern = $ClickRaisedBackUpBaseline + 1
+                    $BackTargetDownPattern = $ClickRaisedBackDownBaseline + 1
+                    $BackTargetUpPattern = $ClickRaisedBackUpBaseline + 1
                 } `
                 -ElectronMinimumCounts @{
                     $BackPageClickPattern = $ClickRaisedBackPageClickBaseline + 1
@@ -1990,8 +2215,8 @@ try {
             $BeforeBackClickPayload = Get-FileContent $PayloadLog
             $BeforeBackClickElectron = Get-FileContent $ElectronStdoutLog
             $BackFocusBaseline = Get-RegexCount $BeforeBackClickPayload $BackFocusPattern
-            $BackDownBaseline = Get-RegexCount $BeforeBackClickPayload $BackDownPattern
-            $BackUpBaseline = Get-RegexCount $BeforeBackClickPayload $BackUpPattern
+            $BackDownBaseline = Get-RegexCount $BeforeBackClickPayload $BackTargetDownPattern
+            $BackUpBaseline = Get-RegexCount $BeforeBackClickPayload $BackTargetUpPattern
             $BackPageFocusBaseline = Get-RegexCount `
                 $BeforeBackClickElectron `
                 $BackPageFocusPattern
@@ -2006,8 +2231,8 @@ try {
                 -Phase "raised BACK click" `
                 -PayloadMinimumCounts @{
                     $BackFocusPattern = $BackFocusBaseline + 1
-                    $BackDownPattern = $BackDownBaseline + 1
-                    $BackUpPattern = $BackUpBaseline + 1
+                    $BackTargetDownPattern = $BackDownBaseline + 1
+                    $BackTargetUpPattern = $BackUpBaseline + 1
                 } `
                 -ElectronMinimumCounts @{
                     $BackPageFocusPattern = $BackPageFocusBaseline + 1
@@ -2206,7 +2431,7 @@ try {
                     "HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=front event=queue-barrier"
                 ) +
                 '[^\r\n]*x=(?:159|160|161)(?!\d)' +
-                '[^\r\n]*y=(?:44|45|46)(?!\d)'
+                '[^\r\n]*y=(?:59|60|61)(?!\d)'
             )
             $CaptionStartQueueBarrierBaseline = Get-RegexCount `
                 (Get-FileContent $ElectronStdoutLog) `
@@ -2359,13 +2584,21 @@ try {
 
             $MovedFrontTargetDownPattern = (
                 $FrontDownPattern +
-                '[^\r\n]*x=(?:149|150|151)(?!\d)' +
-                '[^\r\n]*y=(?:97|98|99)(?!\d)'
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalY) +
+                    '(?!\d)'
             )
             $MovedFrontTargetUpPattern = (
                 $FrontUpPattern +
-                '[^\r\n]*x=(?:149|150|151)(?!\d)' +
-                '[^\r\n]*y=(?:97|98|99)(?!\d)'
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $FrontTargetLocalY) +
+                    '(?!\d)'
             )
             $BeforeMovedTargetPayload = Get-FileContent $PayloadLog
             $BeforeMovedTargetElectron = Get-FileContent $ElectronStdoutLog
@@ -2409,15 +2642,27 @@ try {
                 throw "BACK received input at FRONT's moved text target."
             }
 
+            $OldCaptionBackLocalX =
+                $FrontDragStartClientX - $BackPhysicalWindowX
+            $OldCaptionBackLocalY =
+                $FrontDragStartClientY - $BackPhysicalWindowY
             $OldCaptionBackDownPattern = (
                 $BackDownPattern +
-                '[^\r\n]*x=(?:295|296|297)(?!\d)' +
-                '[^\r\n]*y=(?:108|109|110)(?!\d)'
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $OldCaptionBackLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $OldCaptionBackLocalY) +
+                    '(?!\d)'
             )
             $OldCaptionBackUpPattern = (
                 $BackUpPattern +
-                '[^\r\n]*x=(?:295|296|297)(?!\d)' +
-                '[^\r\n]*y=(?:108|109|110)(?!\d)'
+                '[^\r\n]*x=' +
+                    (Get-IntegerTolerancePattern $OldCaptionBackLocalX) +
+                    '(?!\d)' +
+                '[^\r\n]*y=' +
+                    (Get-IntegerTolerancePattern $OldCaptionBackLocalY) +
+                    '(?!\d)'
             )
             $BeforeOldCaptionProbe = Get-FileContent $PayloadLog
             $OldCaptionBackDownBaseline = Get-RegexCount `

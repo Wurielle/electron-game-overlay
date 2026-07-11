@@ -10,7 +10,9 @@ preserving passive rendering by default and the existing public SDK. Ordered
 multi-window composition and routing were completed in the July 11 successor
 milestone; see
 [the multi-window compositor handoff](hudhook-multiwindow-compositor-handoff.md).
-Arbitrary DPI, texture retirement, and D3D12 remain follow-up work.
+A bounded uniform 1.25 device-scale proof was subsequently added. Real
+per-monitor/mixed-DPI handling, texture retirement, and D3D12 remain follow-up
+work.
 
 ## Reproduce the completed proof
 
@@ -74,8 +76,9 @@ The implementation reuses the existing Electron side:
 2. The game-side client is expected to return `game.input.intercept`, `game.input`,
    and `game.window.focused` packets.
 3. `OverlaySession` receives `game.input`, calls the add-on's
-   `translateInputEvent()`, applies the display scale factor, and calls
-   `BrowserWindow.webContents.sendInputEvent()`.
+   `translateInputEvent()`, divides the returned local physical `x`/`y` by its
+   cached display scale factor, and calls
+   `BrowserWindow.webContents.sendInputEvent()` with signed DIP coordinates.
 4. `game.window.focused` already drives Electron webview focus.
 
 Relevant existing code:
@@ -197,15 +200,45 @@ payload boundary marker precedes its acknowledgement log.
 
 ### 3. Coordinate contract
 
-`ElectronFrame.rect` is expressed in game-client physical pixels.
+Electron's public geometry is expressed in device-independent pixels (DIP),
+while the existing native boundary is physical pixels:
 
-- regular mouse `lParam` coordinates are game-client coordinates;
-- hit-test against the selected rect and subtract `rect.x`/`rect.y`;
-- pack signed overlay-local 16-bit coordinates back into `lParam`;
+- `BrowserWindow` bounds, SDK caption height, drag border, and resize constraints
+  are DIP;
+- `OverlaySession` scales every rectangle component (`x`, `y`, `width`, and
+  `height`) plus constraints, caption margins/height, and drag-border width before
+  publishing metadata;
+- `ElectronFrame.rect`, SDK wire metadata, Electron 16 OSR bitmap dimensions,
+  game-client mouse coordinates, and the swap-chain/ImGui `display_size` are
+  physical pixels;
+- placement coordinates round with their sign preserved, while nonnegative
+  extents use a deterministic floor;
+- returned overlay-local physical input divides by the cached factor and rounds
+  back to signed DIP before Electron receives it.
+
+Hudhook derives ImGui `display_size` from the native swap-chain buffer. The
+payload therefore normalizes `display_framebuffer_scale` to `(1, 1)` so the D3D
+viewport does not apply DPI a second time.
+
+- regular mouse `lParam` coordinates are game-client physical coordinates;
+- hit-test against the selected physical rect and subtract `rect.x`/`rect.y`;
+- pack signed overlay-local physical 16-bit coordinates back into `lParam`;
 - wheel messages contain screen coordinates, so call `ScreenToClient()` first;
 - preserve `wParam` button/modifier and wheel-delta bits;
-- route keyboard/character messages only to the focused selected window;
-- keep the first proof at the runner's forced 100% device scale.
+- route keyboard/character messages only to the focused selected window.
+
+The original `-ClientInput` proof remains at forced 100% scale. Use the successor
+multi-window proof for the uniform non-1.0 contract:
+
+```powershell
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
+```
+
+The 1.25 run proves a uniformly forced Electron scale, including two-window
+composition, routing, and caption dragging. It is not real per-monitor-DPI-v2 or
+mixed-monitor evidence. The current Electron 16 session caches the display factor
+nearest `(0, 0)` at startup; runtime scale changes, physical/VM DPI behavior, and
+Electron 42 OSR semantics remain separate validation work.
 
 This slice also fixes and hardens native translation:
 
@@ -282,6 +315,7 @@ The completed verification sequence is:
 ```powershell
 npx nx run client:typecheck
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInput -Wait
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Client -Wait
 ```
@@ -314,6 +348,10 @@ through the Windows MSVC developer shell.
   containing spaces.
 - The native add-on still exposes one fixed IPC host name, so only one producer may
   run at a time.
+- The bounded 1.25 proof uses one forced uniform Electron scale. The session
+  caches Electron 16's display factor nearest the primary origin and does not yet
+  update scale per window or after a runtime DPI transition; real mixed-monitor,
+  PMv2, physical/VM DPI, and Electron 42 OSR behavior remain unproven.
 - Anti-cheat-protected targets remain outside this controlled POC.
 
 ## Scope discipline
