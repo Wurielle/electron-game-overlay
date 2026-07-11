@@ -1112,8 +1112,17 @@ $ElectronProcessIds = @()
 $HostProcess = $null
 $RunVerified = $false
 $HostExitCode = 0
+$ElectronWindowFilterWasPresent = Test-Path Env:HUDHOOK_ELECTRON_WINDOW
+$ElectronWindowFilterOriginalValue = $env:HUDHOOK_ELECTRON_WINDOW
+$ElectronWindowFilterTemporarilyCleared = $false
 
 try {
+    if ($ClientMultiWindowMode -and $ElectronWindowFilterWasPresent) {
+        Remove-Item Env:HUDHOOK_ELECTRON_WINDOW
+        $ElectronWindowFilterTemporarilyCleared = $true
+        Write-Host "Temporarily cleared HUDHOOK_ELECTRON_WINDOW for the multi-window test."
+    }
+
     Assert-NoOverlayIpcHost
 
     $UnexpectedHosts = Get-Process -Name "d3d11_overlay_test_host" -ErrorAction SilentlyContinue
@@ -3078,6 +3087,10 @@ try {
     }
 }
 finally {
+    if ($ElectronWindowFilterTemporarilyCleared) {
+        $env:HUDHOOK_ELECTRON_WINDOW = $ElectronWindowFilterOriginalValue
+    }
+
     if (-not $RunVerified -or $Wait -or $InteractiveProofMode) {
         $ElectronProcessIds = @(
             Update-LaunchedElectronProcessIds `

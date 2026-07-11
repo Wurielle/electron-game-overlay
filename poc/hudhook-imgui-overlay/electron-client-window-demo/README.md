@@ -44,16 +44,21 @@ The overlay remains registered and the producer keeps running after the
 sequence. The recommended repository-root command is:
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-window-lifecycle.ps1
 ```
+
+The complete set of zero-argument, human-facing launchers is catalogued in
+[`scripts/test-cases/README.md`](../scripts/test-cases/README.md). The
+parameterized `scripts/run-electron-dx11.ps1` runner remains available as the
+advanced/CI interface. Multi-window cases temporarily clear and then restore
+`HUDHOOK_ELECTRON_WINDOW` automatically.
 
 ## Multi-window modes
 
 Run the deterministic two-window acceptance proof from the repository root:
 
 ```powershell
-Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-multiwindow-automated-125.ps1
 ```
 
 The producer registers green 640 x 360 `ExampleMainOverlay` at `(64, 72)` as
@@ -87,8 +92,7 @@ HUDHOOK_CLIENT_MULTIWINDOW_DEVICE_SCALE requestedScale=1.25 displayScale=1.25 ba
 For hands-on testing, run:
 
 ```powershell
-Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-multiwindow-manual.ps1
 ```
 
 Wait for `Manual multi-window input is ready.` Each page has a high-contrast
@@ -120,7 +124,7 @@ coordinated.
 Run the hands-on input demo from the repository root:
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInputManual -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-manual.ps1
 ```
 
 You do not need to run `client:dev`; the repository runner builds and starts the
@@ -144,8 +148,8 @@ Alt+F4 are intercepted and forwarded to Electron, so neither closes the host in
 this mode. Moving focus away temporarily suspends interception; refocusing the
 host reapplies the guarded filter, with both transitions reported by the runner.
 Manual mode remains attached even if `-Wait` is omitted. After the host closes,
-it cleans only the host and per-run Electron process tree that it launched; the
-documented command keeps `-Wait` explicit for consistency.
+it cleans only the host and per-run Electron process tree that it launched. The
+test-case launcher selects the attached behavior for you.
 
 ## Deterministic automated input mode
 
@@ -178,7 +182,7 @@ Use the deterministic end-to-end mode rather than launching its internal flag
 manually:
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInput -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-automated.ps1
 ```
 
 ## Producer-only launch
@@ -193,9 +197,11 @@ For a producer-only launch, use:
 
 The interactive input and multi-window proof variants need an injected target to
 connect within 30 seconds. Repository proof modes force a uniform device scale
-(1 by default); the automated `-ClientMultiWindow` proof accepts the explicit
-1.25 value documented above. All modes disable Electron hardware acceleration so
-frame and input coordinates remain deterministic. The 1.25 multi-window run is
+(1 by default); the automated `-ClientMultiWindow` proof accepts `1`, `1.25`,
+`1.5`, and `2`, with a fixed launcher for each value in the test-case catalog.
+The 1.25 launcher remains the primary acceptance proof documented above. All
+modes disable Electron hardware acceleration so frame and input coordinates
+remain deterministic. The 1.25 multi-window run is
 bounded forced-scale evidence only: the session caches the Electron 16 display
 factor nearest `(0, 0)`, and real PMv2/mixed-monitor changes, physical/VM DPI
 behavior, and Electron 42 OSR remain unverified. Stop a

@@ -69,12 +69,37 @@ The script locates the build tools, enters the Visual Studio developer environme
 
 The clean run directory intentionally contains no ReShade proxy, configuration, or add-on files.
 
+## Test-case launchers
+
+Human-facing tests have zero-argument launchers under
+[`scripts/test-cases`](scripts/test-cases/README.md). Run the script whose name
+matches the scenario you want to inspect:
+
+| Test case | Launcher |
+| --- | --- |
+| Hook and generated-texture smoke test | `dx11-hook-only.ps1` |
+| Electron SDK/IPC diagnostic producer | `dx11-electron-diagnostic.ps1` |
+| Real client integration | `dx11-real-client.ps1` |
+| Window lifecycle regression | `dx11-window-lifecycle.ps1` |
+| Automated input regression | `dx11-input-automated.ps1` |
+| Hands-on input demo | `dx11-input-manual.ps1` |
+| Automated multi-window regression at 100% | `dx11-multiwindow-automated-100.ps1` |
+| Automated multi-window regression at 125% | `dx11-multiwindow-automated-125.ps1` |
+| Automated multi-window regression at 150% | `dx11-multiwindow-automated-150.ps1` |
+| Automated multi-window regression at 200% | `dx11-multiwindow-automated-200.ps1` |
+| Hands-on multi-window demo | `dx11-multiwindow-manual.ps1` |
+
+The parameterized `scripts/run-electron-dx11.ps1` runner remains the underlying
+advanced/CI interface for custom combinations. Multi-window launchers
+temporarily clear `HUDHOOK_ELECTRON_WINDOW` and restore its original value when
+they finish.
+
 ## Run the real client integration (recommended)
 
 From a regular PowerShell at the repository root:
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Client -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-client.ps1
 ```
 
 `-Client` builds the repository's real Electron application, launches it with the
@@ -85,9 +110,9 @@ evidence in the host's PID-specific log.
 
 Expected result: the real transparent `ExampleMainOverlay` is drawn inside the
 controlled host at its native Electron bounds, with the diagnostics kept separate
-in the top-right corner. Press Escape in the host when finished. With `-Wait`, the
-runner stops only the Electron process tree it launched and returns the host exit
-code.
+in the top-right corner. Press Escape in the host when finished. The launcher
+waits for the host, stops only the Electron process tree it launched, and returns
+the host exit code.
 
 Useful proof markers are:
 
@@ -105,7 +130,7 @@ all announced windows in registration order.
 ## Run the lifecycle regression demo
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-window-lifecycle.ps1
 ```
 
 This focused producer loads the client's actual `ExampleMainOverlay` HTML through
@@ -125,12 +150,10 @@ The corresponding payload markers are:
 
 ## Run the deterministic multi-window regression
 
-Make sure the optional single-window filter is absent, then launch the attached
-proof:
+Launch the attached 125% proof:
 
 ```powershell
-Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-multiwindow-automated-125.ps1
 ```
 
 This attached mode launches two real offscreen Electron pages with aligned,
@@ -183,8 +206,7 @@ in
 ## Run the manual multi-window demo
 
 ```powershell
-Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-multiwindow-manual.ps1
 ```
 
 No separate `client:dev` process is needed. Wait for the runner to print
@@ -198,13 +220,12 @@ changes yourself.
 Close the controlled host with its title-bar X when finished. Escape and Alt+F4
 are intercepted while the host is focused. Focus loss temporarily suspends
 interception and refocusing resumes it. This mode always remains attached and
-cleans only its per-run Electron process tree and controlled host; `-Wait` is kept
-explicit in the documented command for consistency.
+cleans only its per-run Electron process tree and controlled host.
 
 ## Run the manual input demo
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInputManual -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-manual.ps1
 ```
 
 No separate `client:dev` process is needed. The runner builds and launches the
@@ -229,13 +250,12 @@ they do not close the host. Moving focus away temporarily suspends interception;
 returning to the host reapplies the guarded filter, and the runner reports both
 state changes. Manual mode remains attached until the host closes, even if
 `-Wait` is omitted, and then cleans only the Electron process tree and host that
-it launched. The documented command keeps `-Wait` explicit for consistency with
-the other attached demos.
+it launched. The test-case launcher selects the attached behavior for you.
 
 ## Run the deterministic input regression
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInput -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-automated.ps1
 ```
 
 `-ClientInput` uses the same real `ExampleMainOverlay` page and waits for the
@@ -303,7 +323,7 @@ host rejection is not retried.
 ## Run the minimal diagnostic producer
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Wait
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-electron-diagnostic.ps1
 ```
 
 This original synthetic frame producer remains useful for a quick SDK/IPC/upload
@@ -324,7 +344,7 @@ modes concurrently because the current native add-on uses a fixed IPC host name.
 ## Run the hook-only fallback
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-dx11.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-hook-only.ps1
 ```
 
 This starts only the controlled host and payload. With no Electron producer, the
