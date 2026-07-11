@@ -9,11 +9,16 @@
 The maintained-runtime migration is documented in the
 [hudhook + ImGui POC](poc/hudhook-imgui-overlay/README.md). Its current verified
 scope is deliberately narrower than the legacy feature list below: controlled
-Windows x64/D3D11, one selected Electron window, and regular Win32
-left/right/middle mouse, vertical/horizontal-wheel, keyboard, system-key, and
-character input. X1/X2 and raw input are blocked but not forwarded during
-interception. Multiple windows, arbitrary DPI, broader input APIs, D3D12, and
-removal of the remaining native compatibility seams are follow-up work.
+Windows x64/D3D11, simultaneous overlapping Electron windows with deterministic
+back-to-front ordering and click-to-front behavior, and regular Win32 mouse,
+wheel, keyboard, system-key, and character input with focus and pointer capture.
+The completed multi-window design and acceptance record is in the
+[hudhook multi-window compositor handoff](doc/hudhook-multiwindow-compositor-handoff.md).
+With `HUDHOOK_ELECTRON_WINDOW` unset, the payload composes every announced
+window; setting it opts into an exact-name filter.
+X1/X2 and raw input are blocked but not forwarded during interception. Arbitrary
+DPI, safe texture retirement, broader input APIs, D3D12, a production injector,
+and removal of the remaining native compatibility seams are follow-up work.
 
 ## game overlay solution 
 * DirectX hook, draw in game

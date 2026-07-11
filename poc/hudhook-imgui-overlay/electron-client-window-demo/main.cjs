@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { app } = require('electron');
+const { app, ipcMain } = require('electron');
 
 const WINDOW_NAME = 'ExampleMainOverlay';
 const WINDOW_WIDTH = 640;
@@ -19,11 +19,24 @@ const MOVED_BOUNDS = {
   height: WINDOW_HEIGHT,
 };
 const FRAME_RATE = 30;
+const FRONT_WINDOW_NAME = 'ExamplePopupOverlay';
+const FRONT_WINDOW_WIDTH = 320;
+const FRONT_WINDOW_HEIGHT = 220;
+const FRONT_BOUNDS = {
+  x: 200,
+  y: 136,
+  width: FRONT_WINDOW_WIDTH,
+  height: FRONT_WINDOW_HEIGHT,
+};
 const INITIAL_LIFECYCLE_DELAY_MS = 2500;
 const LIFECYCLE_STEP_DELAY_MS = 750;
 const TARGET_CONNECTION_TIMEOUT_MS = 30000;
 const READY_MARKER = 'HUDHOOK_CLIENT_WINDOW_READY';
 const TARGET_CONNECTED_MARKER = 'HUDHOOK_CLIENT_WINDOW_TARGET_CONNECTED';
+const MULTIWINDOW_READY_MARKER = 'HUDHOOK_CLIENT_MULTIWINDOW_READY';
+const MULTIWINDOW_TARGET_CONNECTED_MARKER =
+  'HUDHOOK_CLIENT_MULTIWINDOW_TARGET_CONNECTED';
+const MULTIWINDOW_COMMAND_CHANNEL = 'hudhook-client-multiwindow-command';
 const EXIT_AFTER_LIFECYCLE = process.argv.includes('--exit-after-lifecycle');
 const AUTOMATED_INPUT_PROOF = process.argv.includes(
   '--hudhook-client-input-runner',
@@ -31,7 +44,16 @@ const AUTOMATED_INPUT_PROOF = process.argv.includes(
 const MANUAL_INPUT_PROOF = process.argv.includes(
   '--hudhook-client-input-manual',
 );
-const INPUT_PROOF = AUTOMATED_INPUT_PROOF || MANUAL_INPUT_PROOF;
+const AUTOMATED_MULTIWINDOW_PROOF = process.argv.includes(
+  '--hudhook-client-multiwindow-runner',
+);
+const MANUAL_MULTIWINDOW_PROOF = process.argv.includes(
+  '--hudhook-client-multiwindow-manual',
+);
+const MULTIWINDOW_PROOF =
+  AUTOMATED_MULTIWINDOW_PROOF || MANUAL_MULTIWINDOW_PROOF;
+const INPUT_PROOF =
+  AUTOMATED_INPUT_PROOF || MANUAL_INPUT_PROOF || MULTIWINDOW_PROOF;
 const INPUT_CONTROL_ARGUMENT = '--input-control-file=';
 const inputControlArgument = process.argv.find((argument) =>
   argument.startsWith(INPUT_CONTROL_ARGUMENT),
@@ -42,6 +64,10 @@ const INPUT_CONTROL_FILE = inputControlArgument
 const OVERLAY_FILE = path.resolve(
   __dirname,
   '../../../apps/client/public/index/example-main-overlay.html',
+);
+const POPUP_OVERLAY_FILE = path.resolve(
+  __dirname,
+  '../../../apps/client/public/index/example-popup-overlay.html',
 );
 
 // Keep Electron's physical bitmap at the same fixed size as the SDK window
@@ -56,19 +82,26 @@ app.disableHardwareAcceleration();
 let overlay = null;
 let session = null;
 let overlayWindow = null;
+let frontOverlayWindow = null;
 let disposeNativeEvent = null;
 let cleanupStarted = false;
 let pageLoaded = false;
+let frontPageLoaded = false;
 let readyLogged = false;
 let targetConnected = false;
 let lifecycleStarted = false;
 let observedFrames = 0;
+let observedFrontFrames = 0;
+let backMultiwindowTarget = null;
+let frontMultiwindowTarget = null;
+let multiwindowIpcBound = false;
 let targetConnectionTimeout = null;
 let inputInterceptRequested = false;
 let inputInterceptEnabled = false;
 let inputReleaseRequested = false;
 let inputReleaseAcknowledged = false;
 let manualInputReadyLogged = false;
+let lastInputControlCommand = '';
 const lifecycleTimers = new Set();
 
 function log(message) {
@@ -105,12 +138,35 @@ function cleanup(reason) {
   }
 
   cleanupStarted = true;
-  log(`stopping reason=${reason} frames=${observedFrames}`);
+  log(
+    MULTIWINDOW_PROOF
+      ? `stopping reason=${reason} backFrames=${observedFrames} frontFrames=${observedFrontFrames}`
+      : `stopping reason=${reason} frames=${observedFrames}`,
+  );
 
   for (const timer of lifecycleTimers) {
     clearTimeout(timer);
   }
   lifecycleTimers.clear();
+
+  if (multiwindowIpcBound) {
+    ipcMain.removeListener(
+      MULTIWINDOW_COMMAND_CHANNEL,
+      handleMultiwindowIpcCommand,
+    );
+    multiwindowIpcBound = false;
+  }
+
+  if (frontOverlayWindow) {
+    try {
+      frontOverlayWindow.destroy();
+    } catch (error) {
+      console.error(
+        `[hudhook-client-window-demo] failed to destroy front overlay window: ${formatError(error)}`,
+      );
+    }
+    frontOverlayWindow = null;
+  }
 
   if (overlayWindow) {
     try {
@@ -180,7 +236,11 @@ function maybeStartLifecycleSequence() {
 
   lifecycleStarted = true;
   clearTargetConnectionTimeout();
-  if (INPUT_PROOF) {
+  if (MULTIWINDOW_PROOF) {
+    startMultiwindowInputProofSequence().catch((error) => {
+      fail('multiwindow-input-proof-start', error);
+    });
+  } else if (INPUT_PROOF) {
     startInputProofSequence().catch((error) => {
       fail('input-proof-start', error);
     });
@@ -194,7 +254,13 @@ function handleNativeEvent({ event, payload }) {
     targetConnected = true;
     clearTargetConnectionTimeout();
     const targetPid = Number.isInteger(payload?.pid) ? payload.pid : 'unknown';
-    console.log(`${TARGET_CONNECTED_MARKER} pid=${targetPid}`);
+    console.log(
+      `${
+        MULTIWINDOW_PROOF
+          ? MULTIWINDOW_TARGET_CONNECTED_MARKER
+          : TARGET_CONNECTED_MARKER
+      } pid=${targetPid}`,
+    );
     maybeStartLifecycleSequence();
     return;
   }
@@ -209,24 +275,43 @@ function handleNativeEvent({ event, payload }) {
     !inputInterceptEnabled
   ) {
     inputInterceptEnabled = true;
-    console.log('HUDHOOK_CLIENT_INPUT_INTERCEPT_ENABLED');
-    if (MANUAL_INPUT_PROOF && !manualInputReadyLogged) {
+    console.log(
+      MULTIWINDOW_PROOF
+        ? 'HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_ENABLED'
+        : 'HUDHOOK_CLIENT_INPUT_INTERCEPT_ENABLED',
+    );
+    if (
+      (MANUAL_INPUT_PROOF || MANUAL_MULTIWINDOW_PROOF) &&
+      !manualInputReadyLogged
+    ) {
       manualInputReadyLogged = true;
-      console.log('HUDHOOK_CLIENT_INPUT_MANUAL_READY');
-    } else if (MANUAL_INPUT_PROOF) {
-      console.log('HUDHOOK_CLIENT_INPUT_MANUAL_RESUMED');
+      console.log(
+        MANUAL_MULTIWINDOW_PROOF
+          ? 'HUDHOOK_CLIENT_MULTIWINDOW_MANUAL_READY'
+          : 'HUDHOOK_CLIENT_INPUT_MANUAL_READY',
+      );
+    } else if (MANUAL_INPUT_PROOF || MANUAL_MULTIWINDOW_PROOF) {
+      console.log(
+        MANUAL_MULTIWINDOW_PROOF
+          ? 'HUDHOOK_CLIENT_MULTIWINDOW_MANUAL_RESUMED'
+          : 'HUDHOOK_CLIENT_INPUT_MANUAL_RESUMED',
+      );
     }
     return;
   }
 
   if (
     payload?.intercepting === false &&
-    MANUAL_INPUT_PROOF &&
+    (MANUAL_INPUT_PROOF || MANUAL_MULTIWINDOW_PROOF) &&
     inputInterceptRequested &&
     inputInterceptEnabled
   ) {
     inputInterceptEnabled = false;
-    console.log('HUDHOOK_CLIENT_INPUT_MANUAL_SUSPENDED');
+    console.log(
+      MANUAL_MULTIWINDOW_PROOF
+        ? 'HUDHOOK_CLIENT_MULTIWINDOW_MANUAL_SUSPENDED'
+        : 'HUDHOOK_CLIENT_INPUT_MANUAL_SUSPENDED',
+    );
     return;
   }
 
@@ -237,8 +322,13 @@ function handleNativeEvent({ event, payload }) {
   ) {
     inputInterceptEnabled = false;
     inputReleaseAcknowledged = true;
-    console.log('HUDHOOK_CLIENT_INPUT_INTERCEPT_DISABLED');
-    console.log('HUDHOOK_CLIENT_INPUT_LIFECYCLE_COMPLETE');
+    if (MULTIWINDOW_PROOF) {
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_DISABLED');
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_LIFECYCLE_COMPLETE');
+    } else {
+      console.log('HUDHOOK_CLIENT_INPUT_INTERCEPT_DISABLED');
+      console.log('HUDHOOK_CLIENT_INPUT_LIFECYCLE_COMPLETE');
+    }
   }
 }
 
@@ -358,6 +448,295 @@ function validateNativeInputTranslation(overlayInstance) {
   console.log('HUDHOOK_CLIENT_INPUT_TRANSLATION_READY');
 }
 
+async function instrumentMultiwindowPage(
+  window,
+  { role, selector, left, top, color, commands },
+) {
+  const config = JSON.stringify({
+    role,
+    selector,
+    left,
+    top,
+    color,
+    commands: MANUAL_MULTIWINDOW_PROOF ? commands : [],
+    commandChannel: MULTIWINDOW_COMMAND_CHANNEL,
+  });
+  const result = await window.browserWindow.webContents.executeJavaScript(
+    `(() => {
+      const config = ${config};
+      const existing = window.__hudhookMultiwindowProof;
+      if (existing && typeof existing.getTargetRect === 'function') {
+        return existing.getTargetRect();
+      }
+
+      const target = document.querySelector(config.selector);
+      if (!target) {
+        return { error: 'target-not-found', selector: config.selector };
+      }
+
+      const marker = (event, details = '') => {
+        console.log(
+          'HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=' + config.role +
+          ' event=' + event + (details ? ' ' + details : '')
+        );
+      };
+
+      document.documentElement.style.outline = '3px solid ' + config.color;
+      document.documentElement.style.outlineOffset = '-3px';
+      document.body.style.backgroundColor =
+        config.role === 'front'
+          ? 'rgba(37, 99, 235, 0.32)'
+          : 'rgba(5, 150, 105, 0.30)';
+
+      Object.assign(target.style, {
+        position: 'fixed',
+        left: config.left + 'px',
+        top: config.top + 'px',
+        width: '220px',
+        height: '28px',
+        boxSizing: 'border-box',
+        padding: '3px 7px',
+        border: '3px solid ' + config.color,
+        borderRadius: '4px',
+        background: '#ffffff',
+        color: '#111827',
+        zIndex: '2147483646'
+      });
+      target.value = '';
+      target.placeholder = config.role.toUpperCase() + ' input target';
+      target.autocomplete = 'off';
+
+      target.addEventListener('focus', () => marker('focus'));
+      target.addEventListener('mousedown', event => {
+        marker('down', 'x=' + event.clientX + ' y=' + event.clientY);
+      });
+      target.addEventListener('mouseup', event => {
+        marker('up', 'x=' + event.clientX + ' y=' + event.clientY);
+      });
+      target.addEventListener('click', () => marker('click'));
+      target.addEventListener('input', () => {
+        marker('value', 'value=' + target.value);
+      });
+      target.addEventListener('keydown', event => {
+        marker('key', 'key=' + JSON.stringify(event.key));
+      });
+      window.addEventListener('mousemove', event => {
+        if (event.buttons !== 0) {
+          marker(
+            'drag',
+            'x=' + event.clientX + ' y=' + event.clientY +
+              ' buttons=' + event.buttons
+          );
+        }
+      }, true);
+      window.addEventListener('mouseup', event => {
+        if (event.target !== target) {
+          marker('capture-up', 'x=' + event.clientX + ' y=' + event.clientY);
+        }
+      }, true);
+
+      const panel = document.createElement('div');
+      panel.id = 'hudhook-client-multiwindow-panel-' + config.role;
+      Object.assign(panel.style, {
+        position: 'fixed',
+        left: '8px',
+        top: '8px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '7px 9px',
+        border: '2px solid ' + config.color,
+        borderRadius: '6px',
+        background: 'rgba(17, 24, 39, 0.92)',
+        color: '#ffffff',
+        font: 'bold 12px sans-serif',
+        zIndex: '2147483647'
+      });
+
+      const label = document.createElement('span');
+      label.textContent = config.role.toUpperCase();
+      panel.appendChild(label);
+
+      if (config.commands.length > 0) {
+        const { ipcRenderer } = window.require('electron');
+        for (const command of config.commands) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = command.label;
+          button.addEventListener('click', () => {
+            ipcRenderer.send(config.commandChannel, command.command);
+          });
+          panel.appendChild(button);
+        }
+      }
+      document.body.appendChild(panel);
+
+      const getTargetRect = () => {
+        const rect = target.getBoundingClientRect();
+        return {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        };
+      };
+      window.__hudhookMultiwindowProof = { getTargetRect };
+      return getTargetRect();
+    })()`,
+    true,
+  );
+
+  if (
+    !result ||
+    result.error ||
+    !Number.isFinite(result.x) ||
+    !Number.isFinite(result.y) ||
+    !Number.isFinite(result.width) ||
+    !Number.isFinite(result.height) ||
+    result.width <= 0 ||
+    result.height <= 0
+  ) {
+    throw new Error(
+      `invalid ${role} multi-window target rect: ${JSON.stringify(result)}`,
+    );
+  }
+
+  return result;
+}
+
+function multiwindowTargetDetails(role, window, target) {
+  const bounds = window.browserWindow.getBounds();
+  const centerX = bounds.x + target.x + target.width / 2;
+  const centerY = bounds.y + target.y + target.height / 2;
+  return {
+    role,
+    windowId: window.browserWindow.id,
+    target,
+    bounds,
+    centerX,
+    centerY,
+  };
+}
+
+function logMultiwindowTarget(details) {
+  console.log(
+    'HUDHOOK_CLIENT_MULTIWINDOW_TARGET ' +
+      `role=${details.role} windowId=${details.windowId} ` +
+      `x=${formatRectValue(details.target.x)} ` +
+      `y=${formatRectValue(details.target.y)} ` +
+      `width=${formatRectValue(details.target.width)} ` +
+      `height=${formatRectValue(details.target.height)} ` +
+      `windowX=${details.bounds.x} windowY=${details.bounds.y} ` +
+      `centerX=${formatRectValue(details.centerX)} ` +
+      `centerY=${formatRectValue(details.centerY)}`,
+  );
+}
+
+function applyMultiwindowCommand(command, source) {
+  if (!MULTIWINDOW_PROOF || cleanupStarted) {
+    return;
+  }
+
+  console.log(
+    `HUDHOOK_CLIENT_MULTIWINDOW_COMMAND command=${command} source=${source}`,
+  );
+  switch (command) {
+    case 'hide-front':
+      frontOverlayWindow.hide();
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_FRONT_HIDDEN');
+      return;
+    case 'show-front':
+      frontOverlayWindow.show();
+      frontOverlayWindow.browserWindow.webContents.invalidate();
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_FRONT_SHOWN');
+      return;
+    case 'raise-front':
+      frontOverlayWindow.hide();
+      frontOverlayWindow.show();
+      frontOverlayWindow.browserWindow.webContents.invalidate();
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_FRONT_RAISED');
+      return;
+    case 'raise-back':
+      overlayWindow.hide();
+      overlayWindow.show();
+      overlayWindow.browserWindow.webContents.invalidate();
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_BACK_RAISED');
+      return;
+    case 'release':
+      inputReleaseRequested = true;
+      session.input.release();
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_RELEASE_REQUESTED');
+      return;
+    default:
+      throw new Error(`unsupported multi-window command: ${command}`);
+  }
+}
+
+function handleMultiwindowIpcCommand(event, command) {
+  if (!MANUAL_MULTIWINDOW_PROOF || typeof command !== 'string') {
+    return;
+  }
+  const senderId = event.sender.id;
+  const controlledSenderIds = [
+    overlayWindow?.browserWindow.webContents.id,
+    frontOverlayWindow?.browserWindow.webContents.id,
+  ];
+  if (!controlledSenderIds.includes(senderId)) {
+    return;
+  }
+
+  try {
+    applyMultiwindowCommand(command, 'manual');
+  } catch (error) {
+    fail('manual-multiwindow-command', error);
+  }
+}
+
+async function startMultiwindowInputProofSequence() {
+  if (AUTOMATED_MULTIWINDOW_PROOF && !INPUT_CONTROL_FILE) {
+    throw new Error(
+      `${INPUT_CONTROL_ARGUMENT}<path> is required for the multi-window proof`,
+    );
+  }
+  if (!backMultiwindowTarget || !frontMultiwindowTarget) {
+    throw new Error('multi-window input targets are unavailable');
+  }
+
+  const back = multiwindowTargetDetails(
+    'back',
+    overlayWindow,
+    backMultiwindowTarget,
+  );
+  const front = multiwindowTargetDetails(
+    'front',
+    frontOverlayWindow,
+    frontMultiwindowTarget,
+  );
+  if (
+    Math.abs(back.centerX - front.centerX) > 0.5 ||
+    Math.abs(back.centerY - front.centerY) > 0.5
+  ) {
+    throw new Error(
+      `multi-window targets are not aligned: ${JSON.stringify({ back, front })}`,
+    );
+  }
+
+  logMultiwindowTarget(back);
+  logMultiwindowTarget(front);
+  console.log(
+    'HUDHOOK_CLIENT_MULTIWINDOW_OVERLAP ' +
+      `x=${formatRectValue(front.centerX)} ` +
+      `y=${formatRectValue(front.centerY)}`,
+  );
+
+  inputInterceptRequested = true;
+  session.input.intercept();
+  console.log('HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_REQUESTED');
+  if (AUTOMATED_MULTIWINDOW_PROOF) {
+    pollInputControlFile();
+  }
+}
+
 function pollInputControlFile() {
   if (cleanupStarted || inputReleaseRequested) {
     return;
@@ -372,11 +751,19 @@ function pollInputControlFile() {
     log(`input control file temporarily unavailable: ${formatError(error)}`);
   }
 
-  if (command === 'release') {
-    inputReleaseRequested = true;
-    session.input.release();
-    console.log('HUDHOOK_CLIENT_INPUT_RELEASE_REQUESTED');
-    return;
+  if (command && command !== lastInputControlCommand) {
+    lastInputControlCommand = command;
+    if (AUTOMATED_MULTIWINDOW_PROOF) {
+      applyMultiwindowCommand(command, 'control-file');
+      if (command === 'release') {
+        return;
+      }
+    } else if (command === 'release') {
+      inputReleaseRequested = true;
+      session.input.release();
+      console.log('HUDHOOK_CLIENT_INPUT_RELEASE_REQUESTED');
+      return;
+    }
   }
 
   schedule(pollInputControlFile, 50);
@@ -435,12 +822,72 @@ async function startInputProofSequence() {
   }
 }
 
+function maybeLogMultiwindowReady() {
+  if (
+    readyLogged ||
+    !pageLoaded ||
+    !frontPageLoaded ||
+    !backMultiwindowTarget ||
+    !frontMultiwindowTarget ||
+    observedFrames === 0 ||
+    observedFrontFrames === 0
+  ) {
+    return;
+  }
+
+  readyLogged = true;
+  console.log(MULTIWINDOW_READY_MARKER);
+  log(
+    `frame-ready role=back name=${WINDOW_NAME} ` +
+      `windowId=${overlayWindow.browserWindow.id} ` +
+      `position=${INITIAL_BOUNDS.x},${INITIAL_BOUNDS.y} ` +
+      `size=${WINDOW_WIDTH}x${WINDOW_HEIGHT}`,
+  );
+  log(
+    `frame-ready role=front name=${FRONT_WINDOW_NAME} ` +
+      `windowId=${frontOverlayWindow.browserWindow.id} ` +
+      `position=${FRONT_BOUNDS.x},${FRONT_BOUNDS.y} ` +
+      `size=${FRONT_WINDOW_WIDTH}x${FRONT_WINDOW_HEIGHT}`,
+  );
+  armTargetConnectionTimeout();
+  maybeStartLifecycleSequence();
+}
+
+function forwardProofConsoleMessage(message) {
+  if (
+    typeof message === 'string' &&
+    ((INPUT_PROOF && message.startsWith('HUDHOOK_CLIENT_INPUT_')) ||
+      (MULTIWINDOW_PROOF && message.startsWith('HUDHOOK_CLIENT_MULTIWINDOW_')))
+  ) {
+    console.log(message);
+  }
+}
+
+function bindRendererFailureHandlers(browserWindow, role) {
+  browserWindow.webContents.on('did-fail-load', (event, code, description) => {
+    fail(
+      `${role}-page-load`,
+      new Error(`load failed (${code}): ${description}`),
+    );
+  });
+
+  browserWindow.webContents.on('render-process-gone', (event, details) => {
+    fail(
+      `${role}-renderer-gone`,
+      new Error(`renderer exited: ${JSON.stringify(details)}`),
+    );
+  });
+}
+
 async function createDemo() {
   const { ElectronGameOverlay } = require('electron-game-overlay');
 
   overlay = new ElectronGameOverlay();
   if (INPUT_PROOF) {
     validateNativeInputTranslation(overlay);
+    if (MULTIWINDOW_PROOF) {
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_TRANSLATION_READY');
+    }
   }
   session = overlay.createSession();
   disposeNativeEvent = session.on('nativeEvent', handleNativeEvent);
@@ -478,30 +925,52 @@ async function createDemo() {
   browserWindow.webContents.setFrameRate(FRAME_RATE);
 
   browserWindow.webContents.on('console-message', (event, level, message) => {
-    if (
-      INPUT_PROOF &&
-      typeof message === 'string' &&
-      message.startsWith('HUDHOOK_CLIENT_INPUT_')
-    ) {
-      console.log(message);
-    }
+    forwardProofConsoleMessage(message);
   });
 
   browserWindow.webContents.on('did-finish-load', () => {
     pageLoaded = true;
-    browserWindow.webContents.invalidate();
+    if (!MULTIWINDOW_PROOF) {
+      browserWindow.webContents.invalidate();
+      return;
+    }
+
+    instrumentMultiwindowPage(overlayWindow, {
+      role: 'back',
+      selector: '#hudhook-client-input-target',
+      left: 176,
+      top: 128,
+      color: '#10b981',
+      commands: [
+        { label: 'Raise FRONT', command: 'raise-front' },
+        { label: 'Show FRONT', command: 'show-front' },
+      ],
+    })
+      .then((target) => {
+        backMultiwindowTarget = target;
+        browserWindow.webContents.invalidate();
+        maybeLogMultiwindowReady();
+      })
+      .catch((error) => fail('back-multiwindow-instrumentation', error));
   });
 
-  browserWindow.webContents.on('did-fail-load', (event, code, description) => {
-    fail('page-load', new Error(`load failed (${code}): ${description}`));
-  });
-
-  browserWindow.webContents.on('render-process-gone', (event, details) => {
-    fail(
-      'renderer-gone',
-      new Error(`renderer exited: ${JSON.stringify(details)}`),
+  if (MULTIWINDOW_PROOF) {
+    bindRendererFailureHandlers(browserWindow, 'back');
+  } else {
+    browserWindow.webContents.on(
+      'did-fail-load',
+      (event, code, description) => {
+        fail('page-load', new Error(`load failed (${code}): ${description}`));
+      },
     );
-  });
+
+    browserWindow.webContents.on('render-process-gone', (event, details) => {
+      fail(
+        'renderer-gone',
+        new Error(`renderer exited: ${JSON.stringify(details)}`),
+      );
+    });
+  }
 
   // The SDK's own paint listener runs first and synchronously publishes this
   // same NativeImage through node-game-overlay before this observer validates
@@ -532,6 +1001,11 @@ async function createDemo() {
 
     observedFrames += 1;
 
+    if (MULTIWINDOW_PROOF) {
+      maybeLogMultiwindowReady();
+      return;
+    }
+
     if (!pageLoaded || readyLogged) {
       return;
     }
@@ -553,12 +1027,116 @@ async function createDemo() {
     }
   });
 
+  if (MULTIWINDOW_PROOF) {
+    frontOverlayWindow = session.windows.create({
+      id: FRONT_WINDOW_NAME,
+      name: FRONT_WINDOW_NAME,
+      bounds: FRONT_BOUNDS,
+      dragBorder: 30,
+      captionHeight: 40,
+      transparent: true,
+      browserWindow: {
+        title: FRONT_WINDOW_NAME,
+        frame: false,
+        show: false,
+        transparent: true,
+        resizable: false,
+        useContentSize: true,
+        backgroundColor: '#00000000',
+        webPreferences: {
+          offscreen: true,
+          paintWhenInitiallyHidden: true,
+          backgroundThrottling: false,
+          nodeIntegration: true,
+          contextIsolation: false,
+        },
+      },
+      file: POPUP_OVERLAY_FILE,
+    });
+
+    const frontBrowserWindow = frontOverlayWindow.browserWindow;
+    frontBrowserWindow.webContents.setFrameRate(FRAME_RATE);
+    frontBrowserWindow.webContents.on(
+      'console-message',
+      (event, level, message) => {
+        forwardProofConsoleMessage(message);
+      },
+    );
+    frontBrowserWindow.webContents.on('did-finish-load', () => {
+      frontPageLoaded = true;
+      instrumentMultiwindowPage(frontOverlayWindow, {
+        role: 'front',
+        selector: 'input[type="text"]',
+        left: 40,
+        top: 64,
+        color: '#3b82f6',
+        commands: [
+          { label: 'Raise BACK', command: 'raise-back' },
+          { label: 'Hide FRONT', command: 'hide-front' },
+        ],
+      })
+        .then((target) => {
+          frontMultiwindowTarget = target;
+          frontBrowserWindow.webContents.invalidate();
+          maybeLogMultiwindowReady();
+        })
+        .catch((error) => fail('front-multiwindow-instrumentation', error));
+    });
+    bindRendererFailureHandlers(frontBrowserWindow, 'front');
+    frontBrowserWindow.webContents.on('paint', (event, dirtyRect, image) => {
+      const size = image.getSize();
+      const byteLength = image.getBitmap().length;
+      const expectedByteLength = FRONT_WINDOW_WIDTH * FRONT_WINDOW_HEIGHT * 4;
+
+      if (size.width === 0 && size.height === 0 && byteLength === 0) {
+        return;
+      }
+      if (
+        size.width !== FRONT_WINDOW_WIDTH ||
+        size.height !== FRONT_WINDOW_HEIGHT ||
+        byteLength !== expectedByteLength
+      ) {
+        fail(
+          'unexpected-front-frame',
+          new Error(
+            `expected ${FRONT_WINDOW_WIDTH}x${FRONT_WINDOW_HEIGHT}/${expectedByteLength} bytes, ` +
+              `received ${size.width}x${size.height}/${byteLength} bytes`,
+          ),
+        );
+        return;
+      }
+
+      observedFrontFrames += 1;
+      maybeLogMultiwindowReady();
+    });
+    frontBrowserWindow.on('closed', () => {
+      if (!cleanupStarted) {
+        terminate('front-window-closed', 0);
+      }
+    });
+
+    if (MANUAL_MULTIWINDOW_PROOF) {
+      ipcMain.on(MULTIWINDOW_COMMAND_CHANNEL, handleMultiwindowIpcCommand);
+      multiwindowIpcBound = true;
+    }
+  }
+
   overlayWindow.show();
+  if (frontOverlayWindow) {
+    frontOverlayWindow.show();
+  }
   log(
     `started name=${WINDOW_NAME} file=${OVERLAY_FILE} ` +
       `position=${INITIAL_BOUNDS.x},${INITIAL_BOUNDS.y} ` +
       `size=${WINDOW_WIDTH}x${WINDOW_HEIGHT} fps=${FRAME_RATE}`,
   );
+  if (frontOverlayWindow) {
+    log(
+      `started role=front name=${FRONT_WINDOW_NAME} file=${POPUP_OVERLAY_FILE} ` +
+        `position=${FRONT_BOUNDS.x},${FRONT_BOUNDS.y} ` +
+        `size=${FRONT_WINDOW_WIDTH}x${FRONT_WINDOW_HEIGHT} fps=${FRAME_RATE}`,
+    );
+  }
 }
 
 app.on('before-quit', () => {

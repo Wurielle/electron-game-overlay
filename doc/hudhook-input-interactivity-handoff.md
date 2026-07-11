@@ -5,9 +5,12 @@
 > released Escape, followed by passing `-ClientWindow` and `-Client` regressions.
 > This document is retained as the design and acceptance record.
 
-The implemented milestone makes the one selected Electron window interactive while
-preserving passive rendering by default and the existing public SDK. Multi-window
-z-order, arbitrary DPI, texture retirement, and D3D12 remain follow-up work.
+The implemented milestone makes the selected Electron window interactive while
+preserving passive rendering by default and the existing public SDK. Ordered
+multi-window composition and routing were completed in the July 11 successor
+milestone; see
+[the multi-window compositor handoff](hudhook-multiwindow-compositor-handoff.md).
+Arbitrary DPI, texture retirement, and D3D12 remain follow-up work.
 
 ## Reproduce the completed proof
 
@@ -43,12 +46,12 @@ The branch currently proves all of the following on Windows x64/D3D11:
   `--start-overlay-session`;
 - the injected bridge connects to the existing `node-game-overlay` IPC host and
   shared mappings without loading the legacy native renderer;
-- one window is selected by `HUDHOOK_ELECTRON_WINDOW`, then
-  `ExampleMainOverlay`, then announcement order;
+- `HUDHOOK_ELECTRON_WINDOW` is now an optional exact-name filter; when it is
+  unset, every announced window participates in the ordered compositor;
 - premultiplied BGRA is converted to straight RGBA off the render thread;
-- ImGui composes the texture borderlessly at signed native bounds;
-- bounds changes reuse the existing texture instead of reuploading unchanged pixels;
-- close clears composition and re-registration resumes it;
+- ImGui composes per-window textures borderlessly at signed native bounds;
+- bounds changes reuse existing textures instead of reuploading unchanged pixels;
+- per-window close clears that surface and re-registration resumes it;
 - the lifecycle producer waits for the injected target's `game.process` event before
   starting move/close/re-register timers;
 - attached runners validate exact-PID markers and clean only their controlled process

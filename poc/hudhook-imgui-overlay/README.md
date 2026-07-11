@@ -7,16 +7,23 @@ It deliberately does not install or load ReShade. The completed ReShade POC rema
 The payload renders:
 
 - an always-visible diagnostics panel with frame and display information;
-- one selected Electron offscreen window received through the repository's existing
-  `electron-game-overlay` / `node-game-overlay` flow;
-- a generated RGBA checkerboard while no selected Electron window is available.
+- every matching Electron offscreen window received through the repository's
+  existing `electron-game-overlay` / `node-game-overlay` flow;
+- a generated RGBA checkerboard while no Electron scene is available.
 
-The compositor selects one window by preferring `HUDHOOK_ELECTRON_WINDOW`, then
-`ExampleMainOverlay`, then the first announced window. It draws that window at
-its signed native bounds, honors transparency, and follows bounds, close, and
-re-registration events. Premultiplied BGRA frames are converted to straight RGBA
-on the IPC worker; hudhook's render thread only uploads the latest owned snapshot.
-The injected payload does not load the legacy native renderer.
+The compositor treats registration order as back-to-front. `overlay.init`
+preserves that order, a new or duplicate `window` registration is deduplicated
+and appended on top, and a pointer-down intent raises the hit window without a
+new wire message. It draws each window at signed native bounds, alpha-hit-tests
+transparent pixels so input can fall through to a lower Electron window, and
+follows per-window bounds, close, and re-registration events. The IPC worker
+publishes an immutable ordered scene and matching router state atomically;
+hudhook's render thread maintains a texture cache keyed by native window ID.
+Premultiplied BGRA frames are converted to straight RGBA before publication.
+
+`HUDHOOK_ELECTRON_WINDOW`, when set, is an optional exact-name filter. Without
+it, every announced window participates. The injected payload does not load the
+legacy native renderer.
 
 ## Safety boundary
 
@@ -82,9 +89,9 @@ Useful proof markers are:
 - `Electron frame uploaded to GPU`;
 - `Electron overlay composed at native bounds`.
 
-Set `HUDHOOK_ELECTRON_WINDOW` before launching the runner to select an exact
-announced window name. Without it, the payload prefers `ExampleMainOverlay` and
-then falls back to the first announced window.
+Set `HUDHOOK_ELECTRON_WINDOW` before launching the runner to filter composition
+and routing to one exact announced window name. Without it, the payload composes
+all announced windows in registration order.
 
 ## Run the lifecycle regression demo
 
@@ -106,6 +113,66 @@ The corresponding payload markers are:
 - `Electron overlay composition cleared`;
 - `Electron overlay metadata reselected`;
 - `Electron overlay composition resumed`.
+
+## Run the deterministic multi-window regression
+
+Make sure the optional single-window filter is absent, then launch the attached
+proof:
+
+```powershell
+Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -Wait
+```
+
+This attached mode launches two real offscreen Electron pages with aligned,
+overlapping text fields: green BACK is the 640 x 360 `ExampleMainOverlay` at
+`(64, 72)`, registered first; blue FRONT is the 320 x 220
+`ExamplePopupOverlay` at `(200, 136)`, registered second. The runner requires an
+`Electron overlay scene composed` marker with the initial
+`ExampleMainOverlay>ExamplePopupOverlay` back-to-front order before sending
+synthetic input.
+
+The proof then verifies all of the following against role-specific Electron
+markers and per-window payload diagnostics:
+
+- the overlap click, focus packet, and typed value reach FRONT only;
+- FRONT retains left-button pointer capture while the pointer moves outside its
+  bounds, and BACK receives no pointer packet during that capture;
+- clicking BACK's exposed opaque panel raises it inside the payload, recomposes
+  FRONT>BACK without producer lifecycle traffic, and routes the next overlap
+  click to BACK only before any producer command;
+- BACK close/re-register preserves its append-top order and BACK-only keyboard
+  routing, then FRONT close/re-register restores FRONT to the top;
+- hiding FRONT removes only that surface while BACK remains composed, and showing
+  FRONT appends it on top again;
+- interception release is acknowledged after the disabled render boundary, then
+  released Escape closes the controlled host normally;
+- the exact controlled Electron and host processes are gone after cleanup.
+
+Rust tests additionally prove registration deduplication, exact-name filtering,
+atomic scene metadata, alpha-zero fallthrough to a lower window, focused-keyboard
+routing, and capture-owner cleanup. The completed design and acceptance record is
+in
+[`doc/hudhook-multiwindow-compositor-handoff.md`](../../doc/hudhook-multiwindow-compositor-handoff.md).
+
+## Run the manual multi-window demo
+
+```powershell
+Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
+```
+
+No separate `client:dev` process is needed. Wait for the runner to print
+`Manual multi-window input is ready.` FRONT is blue and initially overlaps green
+BACK. Click and type in either text field, drag outside a window to exercise its
+capture owner, and use the in-page `Hide`, `Show`, and `Raise` controls to inspect
+composition and routing changes yourself.
+
+Close the controlled host with its title-bar X when finished. Escape and Alt+F4
+are intercepted while the host is focused. Focus loss temporarily suspends
+interception and refocusing resumes it. This mode always remains attached and
+cleans only its per-run Electron process tree and controlled host; `-Wait` is kept
+explicit in the documented command for consistency.
 
 ## Run the manual input demo
 
@@ -217,13 +284,14 @@ smoke test. Its readiness marker is `HUDHOOK_ELECTRON_DEMO_READY` in
 
 ## Runner lifetime
 
-Running an Electron mode other than `-ClientInput` or `-ClientInputManual`
-without `-Wait` returns after verification and leaves the controlled host and
-only that mode's Electron process tree alive for inspection. Close them before
-the next run. Both input modes always remain attached and clean their owned
-process trees: the manual mode waits for the title-bar X, while the deterministic
-mode drives the host to normal exit. Only one Electron overlay host should run
-at a time because the current native add-on uses a fixed IPC host name.
+Running an Electron mode other than `-ClientInput`, `-ClientInputManual`,
+`-ClientMultiWindow`, or `-ClientMultiWindowManual` without `-Wait` returns after
+verification and leaves the controlled host and only that mode's Electron process
+tree alive for inspection. Close them before the next run. All four input modes
+remain attached and clean their owned process trees: manual modes wait for the
+title-bar X, while deterministic modes drive the host to normal exit. Only one
+controlled runner or Electron overlay host may run at a time. Do not run these
+modes concurrently because the current native add-on uses a fixed IPC host name.
 
 ## Run the hook-only fallback
 
@@ -293,14 +361,20 @@ This milestone now covers:
 
 - D3D11 injection and Dear ImGui rendering through upstream hudhook 0.9.1;
 - the real built Electron client's existing overlay-session startup path;
-- one selected Electron window over the existing Node/shared-memory IPC;
+- simultaneous Electron windows over the existing Node/shared-memory IPC, with
+  registration-order back-to-front composition, deduplication, append-on-register,
+  and click-to-front intent generations;
 - signed native bounds, transparency, and premultiplied-BGRA correction;
-- immediate bounds metadata updates without redundant texture uploads;
-- close, clear, re-register, and resume lifecycle handling;
+- alpha-aware hit testing that can fall through to a lower Electron window;
+- one atomic immutable scene/router publication per lifecycle, metadata, frame, or
+  stack mutation;
+- immediate per-window bounds metadata updates without redundant texture uploads;
+- isolated close, clear, re-register, reorder, and resume lifecycle handling;
 - regular Win32 left/right/middle mouse, vertical/horizontal-wheel, keyboard,
-  system-key, character, focus, and global input interception for the selected
-  Electron window, plus project-owned multi-button pointer-capture state;
-- texture replacement when the Electron frame dimensions change;
+  system-key, character, focus, and global input interception for the hit/focused
+  Electron window, plus a project-owned per-window multi-button capture owner;
+- a per-window GPU texture cache with replacement when frame dimensions change;
+- deterministic and manual multi-window proof modes with exact-process cleanup;
 - diagnostics, resize handling, proof logging, and normal target exit.
 
 Remaining work is:
@@ -308,17 +382,27 @@ Remaining work is:
 - raw-input-only games, DirectInput, XInput, GameInput, gamepads, and faithful
   X1/X2 mouse-button delivery (Electron 16 cannot represent those buttons through
   `sendInputEvent`, so interception intentionally swallows them);
-- simultaneous composition of multiple Electron windows and explicit z-order;
 - DPI and device-scale-factor reconciliation beyond the controlled 1:1 setup;
-- safe deferred retirement of superseded GPU textures;
+- safe deferred retirement of superseded GPU textures: hudhook 0.9.1 exposes
+  texture load/replace but no texture-removal API;
 - D3D12 and eventual one-payload backend auto-detection;
 - a production-quality project-owned injector;
 - x86 targets and any anti-cheat compatibility work.
 
-The one-window input/interactivity milestone is complete; its design and
-acceptance record remains in
+The input/interactivity design remains in
 [`doc/hudhook-input-interactivity-handoff.md`](../../doc/hudhook-input-interactivity-handoff.md).
-Multiple-window/z-order behavior is the next compositor milestone, while D3D12
-remains the next graphics-backend milestone. A hudhook fork is only justified if
-testing reproduces a required graphics-hook change that cannot live in this
-project or be contributed upstream.
+The completed multi-window design and acceptance record is in
+[`doc/hudhook-multiwindow-compositor-handoff.md`](../../doc/hudhook-multiwindow-compositor-handoff.md).
+
+Click-to-front order is payload-local because the existing IPC schema has no
+persistent z-order field. A reconnect therefore restores the host's current
+`overlay.init` registration order. Hide/show changes that host registration list
+through the existing close/re-register lifecycle and consequently affects later
+initialization too. CPU scene/router publication is atomic, but a newly published
+alpha frame can precede its corresponding GPU upload by one `Present`, creating a
+narrow visual-versus-hit-test timing window.
+
+The next shared compositor work is arbitrary-DPI/device-scale reconciliation and
+safe texture retirement. D3D12 and a production project-owned injector follow.
+A hudhook fork is justified only if testing reproduces a required graphics-hook
+change that cannot live in this project or be contributed upstream.

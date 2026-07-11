@@ -4,7 +4,9 @@ This controlled Electron producer loads the repository's real
 `apps/client/public/index/example-main-overlay.html` through the public
 `ElectronGameOverlay -> OverlaySession -> session.windows.create()` API. It
 creates one transparent, fixed 640 x 360 offscreen window named
-`ExampleMainOverlay` at native overlay position `(64, 72)`.
+`ExampleMainOverlay` at native overlay position `(64, 72)`. The multi-window
+runner modes additionally create an overlapping transparent
+`ExamplePopupOverlay`, using the same public SDK without adding a z-order field.
 
 The BrowserWindow enables Node integration and disables context isolation,
 matching the real client settings required by the page's
@@ -43,6 +45,50 @@ sequence. The recommended repository-root command is:
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
 ```
+
+## Multi-window modes
+
+Run the deterministic two-window acceptance proof from the repository root:
+
+```powershell
+Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -Wait
+```
+
+The producer registers green 640 x 360 `ExampleMainOverlay` at `(64, 72)` as
+BACK, then overlapping blue 320 x 220 `ExamplePopupOverlay` at `(200, 136)` as
+FRONT. Both pages expose aligned text fields and role-specific proof events. The
+runner proves initial BACK>FRONT composition,
+FRONT-only overlap input and keyboard focus, FRONT capture during an out-of-bounds
+drag, click-to-front from the exposed BACK panel without lifecycle traffic,
+close/re-register ordering in both directions, BACK-only overlap routing after it
+is raised, FRONT hide/show without disturbing BACK, guarded interception release,
+normal released-Escape host exit, and exact-process cleanup. Rust tests cover
+alpha-zero fallthrough and atomic ordered scene/router publication below that
+end-to-end boundary.
+
+For hands-on testing, run:
+
+```powershell
+Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
+```
+
+Wait for `Manual multi-window input is ready.` Click/type in either field, drag
+outside a window, and use the in-page controls to hide/show or raise BACK and
+FRONT. Close the controlled host with its title-bar X when finished; Escape and
+Alt+F4 remain intercepted while the host is focused. No `client:dev` process is
+needed. Manual mode remains attached, reports focus-loss suspension/resumption,
+and cleans only its per-run Electron tree and controlled host.
+
+These modes intentionally express explicit raises through the existing
+hide/show lifecycle: close removes one registration and show appends its
+replacement on top. Click-to-front is maintained inside the injected payload.
+The public SDK and existing IPC schema still have no persistent z-order field.
+The producer flags `--hudhook-client-multiwindow-runner` and
+`--hudhook-client-multiwindow-manual` are runner internals; use the repository
+commands above so injection, readiness checks, verification, and cleanup remain
+coordinated.
 
 ## Manual input mode
 
@@ -110,6 +156,8 @@ manually:
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInput -Wait
 ```
 
+## Producer-only launch
+
 For a producer-only launch, use:
 
 ```powershell
@@ -118,11 +166,14 @@ For a producer-only launch, use:
   --no-sandbox
 ```
 
-The manual producer needs an injected target to connect within 30 seconds.
-Stop it with Ctrl+C. Normal shutdown destroys the overlay window, closes the
-session, and disposes the SDK. For an unattended attached smoke test, add
-`--exit-after-lifecycle`; the process exits successfully 750 ms after the final
-lifecycle step.
+The interactive input and multi-window proof variants need an injected target to
+connect within 30 seconds. Those repository proof modes force device scale 1 and
+disable Electron hardware acceleration so frame and input coordinates remain
+deterministic. Stop a producer-only launch with Ctrl+C. Normal shutdown destroys
+the overlay windows, closes the session, and disposes the SDK. For an unattended
+attached one-window smoke test, add `--exit-after-lifecycle`; the process exits
+successfully 750 ms after the final lifecycle step.
 
-Only one Electron overlay producer should run at a time because the current
-native add-on uses a fixed IPC host name.
+Only one controlled runner or Electron overlay producer may run at a time. Do
+not run the modes concurrently because the current native add-on uses a fixed
+IPC host name.

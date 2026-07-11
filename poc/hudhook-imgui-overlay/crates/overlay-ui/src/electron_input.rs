@@ -1,4 +1,4 @@
-//! Pure input routing for the selected Electron overlay window.
+//! Pure input routing for ordered Electron overlay windows.
 //!
 //! The native hook is responsible for supplying Win32 messages and converting
 //! wheel coordinates from screen space to game-client space. This module owns
@@ -109,17 +109,83 @@ impl InputRect {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SelectedWindow {
-    pub window_id: u32,
-    pub rect: InputRect,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AlphaFrame {
+    width: u32,
+    height: u32,
+    rgba: Arc<[u8]>,
 }
 
-impl SelectedWindow {
+/// One routable Electron overlay window. Windows are stored back-to-front;
+/// the last matching window receives uncaptured pointer input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputWindow {
+    pub window_id: u32,
+    pub rect: InputRect,
+    alpha_frame: Option<AlphaFrame>,
+}
+
+impl InputWindow {
     pub const fn new(window_id: u32, rect: InputRect) -> Self {
-        Self { window_id, rect }
+        Self {
+            window_id,
+            rect,
+            alpha_frame: None,
+        }
+    }
+
+    /// Adds optional RGBA pixels for alpha-aware hit testing. Invalid or
+    /// incomplete pixel data deliberately falls back to rectangle hit testing.
+    pub fn with_alpha_frame(mut self, width: u32, height: u32, rgba: Arc<[u8]>) -> Self {
+        self.set_alpha_frame(width, height, rgba);
+        self
+    }
+
+    pub fn set_alpha_frame(&mut self, width: u32, height: u32, rgba: Arc<[u8]>) {
+        self.alpha_frame = Some(AlphaFrame {
+            width,
+            height,
+            rgba,
+        });
+    }
+
+    pub fn clear_alpha_frame(&mut self) {
+        self.alpha_frame = None;
+    }
+
+    fn hit_test(&self, point: InputPoint) -> bool {
+        if !self.rect.contains(point) {
+            return false;
+        }
+
+        let Some(frame) = &self.alpha_frame else {
+            return true;
+        };
+        if frame.width == 0 || frame.height == 0 {
+            return true;
+        }
+        let expected_length = (frame.width as usize)
+            .checked_mul(frame.height as usize)
+            .and_then(|pixels| pixels.checked_mul(4));
+        if expected_length != Some(frame.rgba.len()) {
+            return true;
+        }
+
+        let local = self.rect.to_local(point);
+        let pixel_x = (u64::try_from(local.x).unwrap_or_default() * u64::from(frame.width)
+            / u64::try_from(self.rect.width).unwrap_or(1))
+        .min(u64::from(frame.width - 1));
+        let pixel_y = (u64::try_from(local.y).unwrap_or_default() * u64::from(frame.height)
+            / u64::try_from(self.rect.height).unwrap_or(1))
+        .min(u64::from(frame.height - 1));
+        let alpha_index = ((pixel_y * u64::from(frame.width) + pixel_x) * 4 + 3) as usize;
+        frame.rgba[alpha_index] != 0
     }
 }
+
+/// Compatibility name retained for the completed one-window bridge/tests.
+#[cfg(test)]
+pub type SelectedWindow = InputWindow;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboundMessage {
@@ -211,8 +277,12 @@ pub struct InputRouterState {
     pub requested_interception: bool,
     pub effective_interception: bool,
     pub target_focused: bool,
+    pub window_count: usize,
+    pub topmost_window_id: Option<u32>,
+    /// Compatibility alias for `topmost_window_id`.
     pub selected_window_id: Option<u32>,
     pub focused_window_id: Option<u32>,
+    pub captured_window_id: Option<u32>,
     pub pointer_captured: bool,
 }
 
@@ -247,10 +317,13 @@ pub struct InputRouter {
     desired_interception: bool,
     effective_interception: bool,
     target_focused: bool,
-    selected: Option<SelectedWindow>,
+    /// Ordered back-to-front. The final hit window is visually topmost.
+    windows: Vec<InputWindow>,
     focused_window_id: Option<u32>,
+    captured_window_id: Option<u32>,
     captured_buttons: u8,
     last_captured_point: Option<InputPoint>,
+    pending_raise_window_id: Option<u32>,
     acknowledgement_pending: bool,
     atomic_interception: Arc<AtomicInterceptionState>,
 }
@@ -264,10 +337,12 @@ impl Default for InputRouter {
             // Fail open until hudhook observes the target as the foreground
             // window (or receives an explicit focus/activation message).
             target_focused: false,
-            selected: None,
+            windows: Vec::new(),
             focused_window_id: None,
+            captured_window_id: None,
             captured_buttons: 0,
             last_captured_point: None,
+            pending_raise_window_id: None,
             acknowledgement_pending: false,
             atomic_interception: Arc::new(AtomicInterceptionState::default()),
         }
@@ -280,12 +355,16 @@ impl InputRouter {
     }
 
     pub fn state(&self) -> InputRouterState {
+        let topmost_window_id = self.topmost_window_id();
         InputRouterState {
             requested_interception: self.requested_interception,
             effective_interception: self.effective_interception,
             target_focused: self.target_focused,
-            selected_window_id: self.selected.map(|window| window.window_id),
+            window_count: self.window_count(),
+            topmost_window_id,
+            selected_window_id: topmost_window_id,
             focused_window_id: self.focused_window_id,
+            captured_window_id: self.captured_window_id,
             pointer_captured: self.captured_buttons != 0,
         }
     }
@@ -304,8 +383,33 @@ impl InputRouter {
         self.effective_interception
     }
 
+    #[cfg(test)]
+    pub fn windows(&self) -> &[InputWindow] {
+        &self.windows
+    }
+
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+
+    pub fn topmost_window(&self) -> Option<&InputWindow> {
+        self.windows.last()
+    }
+
+    pub fn topmost_window_id(&self) -> Option<u32> {
+        self.topmost_window().map(|window| window.window_id)
+    }
+
+    /// Returns the click-to-front request produced by the most recent pointer
+    /// down. The bridge serializes this request with lifecycle traffic before
+    /// applying it to both the input and render stacks.
+    pub fn take_pending_raise(&mut self) -> Option<u32> {
+        self.pending_raise_window_id.take()
+    }
+
+    #[cfg(test)]
     pub fn selected_window(&self) -> Option<SelectedWindow> {
-        self.selected
+        self.topmost_window().cloned()
     }
 
     #[cfg(test)]
@@ -318,44 +422,156 @@ impl InputRouter {
         self.captured_buttons != 0
     }
 
-    /// Publishes (or re-publishes) the selected Electron window. Publication is
-    /// a lifecycle boundary and therefore always clears Electron focus and
-    /// capture left by the previous registration. Use `update_selection_rect`
-    /// for an ordinary bounds change during the same registration.
-    ///
-    /// Invalid rectangles are treated as no selection so interception remains
-    /// fail-open.
-    pub fn publish_selection(&mut self, selected: Option<SelectedWindow>) -> Vec<OutboundMessage> {
-        let selected = selected.filter(|window| window.rect.is_valid());
+    /// Replaces the ordered window stack while preserving focus and capture
+    /// for windows that remain live. Invalid windows are omitted, and the last
+    /// occurrence of a duplicate id wins at its final stack position.
+    pub fn replace_windows(&mut self, windows: Vec<InputWindow>) -> Vec<OutboundMessage> {
+        let windows = normalize_windows(windows);
         let mut outbound = Vec::new();
-        outbound.extend(self.cancel_pointer_capture());
-        self.clear_electron_focus(&mut outbound);
 
-        self.selected = selected;
+        if self
+            .captured_window_id
+            .is_some_and(|window_id| !contains_window(&windows, window_id))
+        {
+            outbound.extend(self.cancel_pointer_capture());
+        }
+        if self
+            .focused_window_id
+            .is_some_and(|window_id| !contains_window(&windows, window_id))
+        {
+            self.clear_electron_focus(&mut outbound);
+        }
+        if self
+            .pending_raise_window_id
+            .is_some_and(|window_id| !contains_window(&windows, window_id))
+        {
+            self.pending_raise_window_id = None;
+        }
+
+        self.windows = windows;
         self.recompute_desired_interception(false);
         outbound
+    }
+
+    /// Installs a fresh ordered stack at an initialization/reconnect boundary.
+    /// Unlike [`Self::replace_windows`], reused native IDs do not retain focus,
+    /// capture, or a pending click-to-front intent from the previous session.
+    pub fn reset_windows(&mut self, windows: Vec<InputWindow>) -> Vec<OutboundMessage> {
+        let mut outbound = self.cancel_pointer_capture();
+        self.clear_electron_focus(&mut outbound);
+        self.pending_raise_window_id = None;
+        self.windows = normalize_windows(windows);
+        self.recompute_desired_interception(false);
+        outbound
+    }
+
+    /// Removes one window. Removing the capture owner synthesizes releases
+    /// before clearing its focus; unrelated focus/capture state is preserved.
+    pub fn remove_window(&mut self, window_id: u32) -> Vec<OutboundMessage> {
+        if !self
+            .windows
+            .iter()
+            .any(|window| window.window_id == window_id)
+        {
+            return Vec::new();
+        }
+
+        let mut outbound = Vec::new();
+        if self.captured_window_id == Some(window_id) {
+            outbound.extend(self.cancel_pointer_capture());
+        }
+        if self.focused_window_id == Some(window_id) {
+            self.clear_electron_focus(&mut outbound);
+        }
+        if self.pending_raise_window_id == Some(window_id) {
+            self.pending_raise_window_id = None;
+        }
+        self.windows.retain(|window| window.window_id != window_id);
+        self.recompute_desired_interception(false);
+        outbound
+    }
+
+    /// Updates one live window's bounds without changing its stack position.
+    /// A non-positive rectangle removes that window.
+    pub fn update_window_rect(&mut self, window_id: u32, rect: InputRect) -> Vec<OutboundMessage> {
+        if !rect.is_valid() {
+            return self.remove_window(window_id);
+        }
+        let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|window| window.window_id == window_id)
+        else {
+            return Vec::new();
+        };
+        window.rect = rect;
+        Vec::new()
+    }
+
+    /// Updates alpha-aware hit-test pixels without changing lifecycle or stack.
+    pub fn update_window_alpha_frame(
+        &mut self,
+        window_id: u32,
+        width: u32,
+        height: u32,
+        rgba: Arc<[u8]>,
+    ) -> Vec<OutboundMessage> {
+        let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|window| window.window_id == window_id)
+        else {
+            return Vec::new();
+        };
+        window.set_alpha_frame(width, height, rgba);
+        Vec::new()
+    }
+
+    pub fn clear_window_alpha_frame(&mut self, window_id: u32) -> Vec<OutboundMessage> {
+        let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|window| window.window_id == window_id)
+        else {
+            return Vec::new();
+        };
+        window.clear_alpha_frame();
+        Vec::new()
+    }
+
+    /// Moves one live window to the top without disturbing focus or capture.
+    pub fn raise_window(&mut self, window_id: u32) -> Vec<OutboundMessage> {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|window| window.window_id == window_id)
+        else {
+            return Vec::new();
+        };
+        if index + 1 != self.windows.len() {
+            let window = self.windows.remove(index);
+            self.windows.push(window);
+        }
+        Vec::new()
+    }
+
+    /// Compatibility one-window lifecycle boundary. Unlike `replace_windows`,
+    /// re-publication deliberately clears the prior focus and capture.
+    #[cfg(test)]
+    pub fn publish_selection(&mut self, selected: Option<SelectedWindow>) -> Vec<OutboundMessage> {
+        self.reset_windows(selected.into_iter().collect())
     }
 
     /// Updates bounds for the current registration without disturbing focus or
     /// pointer capture. A non-positive rectangle removes the selection and
     /// restores fail-open input. A stale window id is ignored.
+    #[cfg(test)]
     pub fn update_selection_rect(
         &mut self,
         window_id: u32,
         rect: InputRect,
     ) -> Vec<OutboundMessage> {
-        let Some(selected) = self.selected.as_mut() else {
-            return Vec::new();
-        };
-        if selected.window_id != window_id {
-            return Vec::new();
-        }
-        if !rect.is_valid() {
-            return self.publish_selection(None);
-        }
-
-        selected.rect = rect;
-        Vec::new()
+        self.update_window_rect(window_id, rect)
     }
 
     /// Applies `command.input.intercept` and always emits an acknowledgement
@@ -368,6 +584,7 @@ impl InputRouter {
             .store(requested, Ordering::Release);
 
         if !requested {
+            self.pending_raise_window_id = None;
             outbound.extend(self.cancel_pointer_capture());
             self.clear_electron_focus(&mut outbound);
         }
@@ -387,6 +604,7 @@ impl InputRouter {
         let mut outbound = Vec::new();
         self.target_focused = focused;
         if !focused {
+            self.pending_raise_window_id = None;
             outbound.extend(self.cancel_pointer_capture());
             self.clear_electron_focus(&mut outbound);
         }
@@ -412,6 +630,7 @@ impl InputRouter {
         let mut outbound = Vec::new();
 
         if self.effective_interception && !effective {
+            self.pending_raise_window_id = None;
             outbound.extend(self.cancel_pointer_capture());
             self.clear_electron_focus(&mut outbound);
         }
@@ -505,36 +724,54 @@ impl InputRouter {
         client_point: InputPoint,
         transition: Option<PointerTransition>,
     ) -> Vec<OutboundMessage> {
-        let Some(selected) = self.selected else {
+        let captured_before = self.captured_buttons != 0;
+        let target = if captured_before {
+            self.captured_window_id.and_then(|window_id| {
+                self.windows
+                    .iter()
+                    .find(|window| window.window_id == window_id)
+                    .cloned()
+            })
+        } else {
+            self.windows
+                .iter()
+                .rev()
+                .find(|window| window.hit_test(client_point))
+                .cloned()
+        };
+        let Some(target) = target else {
             return Vec::new();
         };
 
-        let captured_before = self.captured_buttons != 0;
-        let inside = selected.rect.contains(client_point);
-        if !inside && !captured_before {
-            return Vec::new();
-        }
-
         let mut outbound = Vec::with_capacity(2);
         if matches!(transition, Some(PointerTransition::Down(_)))
-            && self.focused_window_id != Some(selected.window_id)
+            && self.focused_window_id != Some(target.window_id)
         {
-            self.focused_window_id = Some(selected.window_id);
+            self.focused_window_id = Some(target.window_id);
             outbound.push(OutboundMessage::WindowFocused {
-                focus_window_id: selected.window_id,
+                focus_window_id: target.window_id,
             });
         }
 
         if let Some(PointerTransition::Down(button)) = transition {
+            if !captured_before {
+                self.captured_window_id = Some(target.window_id);
+                // Every pointer down that begins capture publishes a stack
+                // intent, including a click on the current top window. The
+                // bridge uses it to cancel any older asynchronously queued
+                // click-to-front request. Additional buttons stay with the
+                // existing capture owner and do not start another raise.
+                self.pending_raise_window_id = Some(target.window_id);
+            }
             self.captured_buttons |= button;
         }
         if self.captured_buttons != 0 {
             self.last_captured_point = Some(client_point);
         }
 
-        let local_point = selected.rect.to_local(client_point);
+        let local_point = target.rect.to_local(client_point);
         outbound.push(OutboundMessage::Input {
-            window_id: selected.window_id,
+            window_id: target.window_id,
             msg,
             wparam,
             lparam: encode_signed_lparam_point(local_point),
@@ -545,6 +782,7 @@ impl InputRouter {
         if let Some(PointerTransition::Up(button)) = transition {
             self.captured_buttons &= !button;
             if self.captured_buttons == 0 {
+                self.captured_window_id = None;
                 self.last_captured_point = None;
             }
         }
@@ -555,8 +793,17 @@ impl InputRouter {
     fn cancel_pointer_capture(&mut self) -> Vec<OutboundMessage> {
         let captured_buttons = self.captured_buttons;
         self.captured_buttons = 0;
+        let captured_window_id = self.captured_window_id.take();
 
-        let Some(selected) = self.selected else {
+        let Some(window_id) = captured_window_id else {
+            self.last_captured_point = None;
+            return Vec::new();
+        };
+        let Some(window) = self
+            .windows
+            .iter()
+            .find(|window| window.window_id == window_id)
+        else {
             self.last_captured_point = None;
             return Vec::new();
         };
@@ -564,7 +811,7 @@ impl InputRouter {
             return Vec::new();
         };
 
-        let lparam = encode_signed_lparam_point(selected.rect.to_local(client_point));
+        let lparam = encode_signed_lparam_point(window.rect.to_local(client_point));
         let mut remaining_buttons = captured_buttons;
         let mut outbound = Vec::new();
         for button in [LEFT_BUTTON, RIGHT_BUTTON, MIDDLE_BUTTON] {
@@ -575,7 +822,7 @@ impl InputRouter {
             remaining_buttons &= !button;
             let msg = pointer_release_message(button);
             outbound.push(OutboundMessage::Input {
-                window_id: selected.window_id,
+                window_id,
                 msg,
                 wparam: encode_button_state_wparam(remaining_buttons),
                 lparam,
@@ -588,7 +835,11 @@ impl InputRouter {
         let Some(window_id) = self.focused_window_id else {
             return Vec::new();
         };
-        if self.selected.map(|window| window.window_id) != Some(window_id) {
+        if !self
+            .windows
+            .iter()
+            .any(|window| window.window_id == window_id)
+        {
             return Vec::new();
         }
 
@@ -607,7 +858,8 @@ impl InputRouter {
     }
 
     fn recompute_desired_interception(&mut self, force_acknowledgement: bool) {
-        let desired = self.requested_interception && self.target_focused && self.selected.is_some();
+        let desired =
+            self.requested_interception && self.target_focused && !self.windows.is_empty();
         let changed = desired != self.desired_interception;
         self.desired_interception = desired;
         self.atomic_interception
@@ -615,6 +867,27 @@ impl InputRouter {
             .store(desired, Ordering::Release);
         self.acknowledgement_pending |= changed || force_acknowledgement;
     }
+}
+
+fn contains_window(windows: &[InputWindow], window_id: u32) -> bool {
+    windows.iter().any(|window| window.window_id == window_id)
+}
+
+fn normalize_windows(windows: Vec<InputWindow>) -> Vec<InputWindow> {
+    let mut normalized = Vec::with_capacity(windows.len());
+    for window in windows {
+        if !window.rect.is_valid() {
+            continue;
+        }
+        if let Some(existing) = normalized
+            .iter()
+            .position(|existing: &InputWindow| existing.window_id == window.window_id)
+        {
+            normalized.remove(existing);
+        }
+        normalized.push(window);
+    }
+    normalized
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -726,6 +999,19 @@ mod tests {
         router
     }
 
+    fn router_with_windows(windows: Vec<InputWindow>) -> InputRouter {
+        let mut router = InputRouter::new();
+        assert!(router.set_target_focused(true).is_empty());
+        assert!(router.replace_windows(windows).is_empty());
+        assert!(router.request_interception(true).is_empty());
+        assert!(router.apply_input_filter(false, false).is_empty());
+        assert_eq!(
+            router.apply_input_filter(true, true),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
+        );
+        router
+    }
+
     fn route(router: &mut InputRouter, msg: u32, point: InputPoint) -> Vec<OutboundMessage> {
         router.route_win32_message(msg, 0, encode_signed_lparam_point(point), |_| {
             unreachable!("only wheel routing converts screen coordinates")
@@ -767,6 +1053,264 @@ mod tests {
             ))),
             InputPoint::new(i32::from(i16::MIN), i32::from(i16::MAX))
         );
+    }
+
+    #[test]
+    fn overlapping_windows_hit_test_topmost_and_publish_serialized_raise_request() {
+        let back = InputWindow::new(1, InputRect::new(0, 0, 100, 100));
+        let front = InputWindow::new(2, InputRect::new(50, 0, 100, 100));
+        let mut router = router_with_windows(vec![back, front]);
+
+        assert_eq!(router.window_count(), 2);
+        assert_eq!(router.topmost_window_id(), Some(2));
+        assert_eq!(
+            route(&mut router, WM_LBUTTONDOWN, InputPoint::new(10, 20)),
+            vec![
+                OutboundMessage::WindowFocused { focus_window_id: 1 },
+                OutboundMessage::Input {
+                    window_id: 1,
+                    msg: WM_LBUTTONDOWN,
+                    wparam: 0,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 20)),
+                },
+            ]
+        );
+        assert_eq!(router.topmost_window_id(), Some(2));
+        assert_eq!(router.take_pending_raise(), Some(1));
+        assert!(router.raise_window(1).is_empty());
+        assert_eq!(router.topmost_window_id(), Some(1));
+        assert_eq!(
+            route(&mut router, WM_LBUTTONUP, InputPoint::new(10, 20)),
+            vec![OutboundMessage::Input {
+                window_id: 1,
+                msg: WM_LBUTTONUP,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(10, 20)),
+            }]
+        );
+
+        // The raised back window now wins the overlap at x=60.
+        assert_eq!(
+            route(&mut router, WM_MOUSEMOVE, InputPoint::new(60, 20)),
+            vec![OutboundMessage::Input {
+                window_id: 1,
+                msg: WM_MOUSEMOVE,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(60, 20)),
+            }]
+        );
+
+        // A click on the already-top window still emits an intent so the
+        // bridge can invalidate any older queued click-to-front request.
+        assert!(matches!(
+            route(&mut router, WM_LBUTTONDOWN, InputPoint::new(60, 20)).as_slice(),
+            [OutboundMessage::Input {
+                window_id: 1,
+                msg: WM_LBUTTONDOWN,
+                ..
+            }]
+        ));
+        assert_eq!(router.take_pending_raise(), Some(1));
+    }
+
+    #[test]
+    fn capture_owner_survives_bounds_and_stack_changes_and_keyboard_keeps_focus() {
+        let back = InputWindow::new(1, InputRect::new(0, 0, 100, 100));
+        let front = InputWindow::new(2, InputRect::new(25, 0, 100, 100));
+        let mut router = router_with_windows(vec![back, front]);
+
+        route(&mut router, WM_LBUTTONDOWN, InputPoint::new(50, 20));
+        assert_eq!(router.state().captured_window_id, Some(2));
+        assert!(router.raise_window(1).is_empty());
+        assert!(router
+            .update_window_rect(2, InputRect::new(100, 100, 80, 80))
+            .is_empty());
+
+        assert_eq!(
+            route(&mut router, WM_MOUSEMOVE, InputPoint::new(-20, -30)),
+            vec![OutboundMessage::Input {
+                window_id: 2,
+                msg: WM_MOUSEMOVE,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(-120, -130)),
+            }]
+        );
+        assert_eq!(
+            router.route_win32_message(WM_KEYDOWN, 0x41, 0x001e0001, |_| None),
+            vec![OutboundMessage::Input {
+                window_id: 2,
+                msg: WM_KEYDOWN,
+                wparam: 0x41,
+                lparam: 0x001e0001,
+            }]
+        );
+        assert_eq!(
+            route(&mut router, WM_LBUTTONUP, InputPoint::new(-20, -30)),
+            vec![OutboundMessage::Input {
+                window_id: 2,
+                msg: WM_LBUTTONUP,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(-120, -130)),
+            }]
+        );
+        assert_eq!(router.state().captured_window_id, None);
+    }
+
+    #[test]
+    fn removing_unrelated_window_preserves_focus_and_capture() {
+        let mut router = router_with_windows(vec![
+            InputWindow::new(1, InputRect::new(0, 0, 100, 100)),
+            InputWindow::new(2, InputRect::new(20, 0, 100, 100)),
+        ]);
+        route(&mut router, WM_LBUTTONDOWN, InputPoint::new(30, 10));
+
+        assert!(router.remove_window(1).is_empty());
+        let state = router.state();
+        assert_eq!(state.window_count, 1);
+        assert_eq!(state.focused_window_id, Some(2));
+        assert_eq!(state.captured_window_id, Some(2));
+        assert_eq!(
+            route(&mut router, WM_MOUSEMOVE, InputPoint::new(500, 500)),
+            vec![OutboundMessage::Input {
+                window_id: 2,
+                msg: WM_MOUSEMOVE,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(480, 500)),
+            }]
+        );
+    }
+
+    #[test]
+    fn removing_capture_owner_releases_buttons_then_blurs_but_keeps_interception_desired() {
+        let mut router = router_with_windows(vec![
+            InputWindow::new(1, InputRect::new(0, 0, 20, 20)),
+            InputWindow::new(2, InputRect::new(40, 0, 40, 40)),
+        ]);
+        route(&mut router, WM_LBUTTONDOWN, InputPoint::new(50, 10));
+        route(&mut router, WM_RBUTTONDOWN, InputPoint::new(50, 10));
+
+        assert_eq!(
+            router.remove_window(2),
+            vec![
+                OutboundMessage::Input {
+                    window_id: 2,
+                    msg: WM_LBUTTONUP,
+                    wparam: MK_RBUTTON,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 10)),
+                },
+                OutboundMessage::Input {
+                    window_id: 2,
+                    msg: WM_RBUTTONUP,
+                    wparam: 0,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 10)),
+                },
+                OutboundMessage::WindowFocused { focus_window_id: 0 },
+            ]
+        );
+        let state = router.state();
+        assert_eq!(state.window_count, 1);
+        assert_eq!(state.focused_window_id, None);
+        assert_eq!(state.captured_window_id, None);
+        assert!(router.atomic_interception_state().desired());
+    }
+
+    #[test]
+    fn alpha_zero_falls_through_and_missing_or_invalid_pixels_use_rectangle() {
+        let bottom = InputWindow::new(1, InputRect::new(0, 0, 2, 1));
+        let top = InputWindow::new(2, InputRect::new(0, 0, 2, 1)).with_alpha_frame(
+            2,
+            1,
+            Arc::from([255, 255, 255, 0, 255, 255, 255, 255]),
+        );
+        let mut router = router_with_windows(vec![bottom.clone(), top.clone()]);
+
+        let transparent_hit = route(&mut router, WM_MOUSEMOVE, InputPoint::new(0, 0));
+        assert!(matches!(
+            transparent_hit.as_slice(),
+            [OutboundMessage::Input { window_id: 1, .. }]
+        ));
+
+        assert!(router.replace_windows(vec![bottom.clone(), top]).is_empty());
+        let opaque_hit = route(&mut router, WM_MOUSEMOVE, InputPoint::new(1, 0));
+        assert!(matches!(
+            opaque_hit.as_slice(),
+            [OutboundMessage::Input { window_id: 2, .. }]
+        ));
+
+        let invalid = InputWindow::new(3, InputRect::new(0, 0, 2, 1)).with_alpha_frame(
+            2,
+            1,
+            Arc::from([0_u8; 3]),
+        );
+        assert!(router
+            .replace_windows(vec![bottom.clone(), invalid])
+            .is_empty());
+        let invalid_fallback = route(&mut router, WM_MOUSEMOVE, InputPoint::new(0, 0));
+        assert!(matches!(
+            invalid_fallback.as_slice(),
+            [OutboundMessage::Input { window_id: 3, .. }]
+        ));
+
+        assert!(router.replace_windows(vec![bottom]).is_empty());
+        assert!(router
+            .update_window_alpha_frame(1, 1, 1, Arc::from([0_u8, 0, 0, 0]))
+            .is_empty());
+        assert!(route(&mut router, WM_MOUSEMOVE, InputPoint::new(0, 0)).is_empty());
+        assert!(router.clear_window_alpha_frame(1).is_empty());
+        assert!(!route(&mut router, WM_MOUSEMOVE, InputPoint::new(0, 0)).is_empty());
+    }
+
+    #[test]
+    fn replace_filters_invalid_windows_and_last_duplicate_wins_topmost() {
+        let mut router = InputRouter::new();
+        router.set_target_focused(true);
+        router.request_interception(true);
+        assert!(router
+            .replace_windows(vec![
+                InputWindow::new(1, InputRect::new(0, 0, 10, 10)),
+                InputWindow::new(2, InputRect::new(0, 0, 0, 10)),
+                InputWindow::new(1, InputRect::new(20, 20, 30, 30)),
+                InputWindow::new(3, InputRect::new(0, 0, 10, 10)),
+            ])
+            .is_empty());
+
+        assert_eq!(router.window_count(), 2);
+        assert_eq!(router.windows()[0].window_id, 1);
+        assert_eq!(router.windows()[0].rect, InputRect::new(20, 20, 30, 30));
+        assert_eq!(router.topmost_window_id(), Some(3));
+        assert!(router.atomic_interception_state().desired());
+        assert!(router.remove_window(3).is_empty());
+        assert!(router.remove_window(1).is_empty());
+        assert!(!router.atomic_interception_state().desired());
+    }
+
+    #[test]
+    fn reset_with_reused_ids_releases_capture_clears_focus_and_drops_raise_intent() {
+        let back = InputWindow::new(1, InputRect::new(0, 0, 100, 100));
+        let front = InputWindow::new(2, InputRect::new(50, 0, 100, 100));
+        let mut router = router_with_windows(vec![back.clone(), front.clone()]);
+
+        route(&mut router, WM_LBUTTONDOWN, InputPoint::new(60, 20));
+        assert_eq!(router.focused_window_id(), Some(2));
+        assert!(router.has_pointer_capture());
+
+        assert_eq!(
+            router.reset_windows(vec![back, front]),
+            vec![
+                OutboundMessage::Input {
+                    window_id: 2,
+                    msg: WM_LBUTTONUP,
+                    wparam: 0,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 20)),
+                },
+                OutboundMessage::WindowFocused { focus_window_id: 0 },
+            ]
+        );
+        assert_eq!(router.focused_window_id(), None);
+        assert!(!router.has_pointer_capture());
+        assert_eq!(router.take_pending_raise(), None);
+        assert_eq!(router.window_count(), 2);
+        assert_eq!(router.topmost_window_id(), Some(2));
     }
 
     #[test]
@@ -1114,8 +1658,11 @@ mod tests {
                 requested_interception: false,
                 effective_interception: false,
                 target_focused: true,
+                window_count: 1,
+                topmost_window_id: Some(WINDOW_ID),
                 selected_window_id: Some(WINDOW_ID),
                 focused_window_id: None,
+                captured_window_id: None,
                 pointer_captured: false,
             }
         );

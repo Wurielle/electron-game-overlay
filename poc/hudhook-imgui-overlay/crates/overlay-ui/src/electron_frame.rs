@@ -4,12 +4,13 @@
 //! messages through a message-only Win32 window. This module implements the
 //! compatible client half without depending on the legacy injected renderer.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::size_of;
 use std::slice;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 
@@ -39,14 +40,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::electron_input::{
-    AtomicInterceptionState, InputPoint, InputRect, InputRouter, InputRouterState, OutboundMessage,
-    OutboundQueue, SelectedWindow as SelectedInputWindow,
+    AtomicInterceptionState, InputPoint, InputRect, InputRouter, InputRouterState, InputWindow,
+    OutboundMessage, OutboundQueue,
 };
 
-/// The real client overlay preferred when no explicit override is configured.
-pub const DEFAULT_ELECTRON_WINDOW_NAME: &str = "ExampleMainOverlay";
-
-/// Optional exact window-name override used by the one-window compositor.
+/// Optional exact window-name filter. When absent, every announced Electron
+/// window participates in the scene.
 pub const ELECTRON_WINDOW_NAME_ENV: &str = "HUDHOOK_ELECTRON_WINDOW";
 
 const IPC_HOST_WINDOW_TITLE: &str = "n_overlay_1a1y2o8l0b";
@@ -60,6 +59,7 @@ const WM_IPC_CONNECT_LINK_ACK: u32 = WM_IPC_CONNECT_LINK + 1;
 const WM_IPC_CLOSE_LINK: u32 = WM_IPC_CONNECT_LINK_ACK + 1;
 const WM_BRIDGE_SHUTDOWN: u32 = WM_APP + 0x310;
 const WM_BRIDGE_FLUSH_OUTBOUND: u32 = WM_BRIDGE_SHUTDOWN + 1;
+const WM_BRIDGE_RAISE_WINDOW: u32 = WM_BRIDGE_FLUSH_OUTBOUND + 1;
 const CONNECT_TIMER_ID: usize = 1;
 const OUTBOUND_RETRY_TIMER_ID: usize = 2;
 const CONNECT_RETRY_MILLIS: u32 = 500;
@@ -68,10 +68,11 @@ const OUTBOUND_SEND_TIMEOUT_MILLIS: u32 = 2_000;
 const FRAME_HEADER_SIZE: usize = size_of::<i32>() * 2;
 const BYTES_PER_PIXEL: usize = 4;
 
-type LatestFrame = Arc<RwLock<Option<Arc<ElectronFrame>>>>;
+type PublishedScene = Arc<RwLock<Arc<ElectronScene>>>;
 type SharedInputRouter = Arc<Mutex<InputRouter>>;
 type SharedOutboundQueue = Arc<Mutex<OutboundQueue>>;
 type SharedInputOrder = Arc<Mutex<()>>;
+type SharedStackGeneration = Arc<AtomicU64>;
 
 /// One immutable frame copied out of the Electron-owned shared mapping.
 #[derive(Debug)]
@@ -86,6 +87,17 @@ pub struct ElectronFrame {
     pub width: u32,
     pub height: u32,
     pub rgba: Arc<[u8]>,
+}
+
+/// One immutable, atomically published compositor snapshot.
+///
+/// Windows are ordered back-to-front. Entries appear after their first valid
+/// framebuffer has been copied; registration metadata remains in the bridge so
+/// bounds and z-order received before that frame are preserved.
+#[derive(Clone, Debug, Default)]
+pub struct ElectronScene {
+    pub state_revision: u64,
+    pub windows: Vec<Arc<ElectronFrame>>,
 }
 
 /// Placement supplied by the Electron overlay host, in game-client pixels.
@@ -105,11 +117,12 @@ impl From<ElectronWindowRect> for InputRect {
 
 /// Owns the background Win32 IPC thread and exposes its most recent frame.
 pub struct ElectronFrameBridge {
-    latest: LatestFrame,
+    scene: PublishedScene,
     input_router: SharedInputRouter,
     interception: Arc<AtomicInterceptionState>,
     outbound: SharedOutboundQueue,
     input_order: SharedInputOrder,
+    stack_generation: SharedStackGeneration,
     window: usize,
     thread: Option<JoinHandle<()>>,
 }
@@ -117,8 +130,8 @@ pub struct ElectronFrameBridge {
 impl ElectronFrameBridge {
     /// Starts the IPC and shared-memory worker.
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
-        let latest = Arc::new(RwLock::new(None));
-        let worker_latest = Arc::clone(&latest);
+        let scene = Arc::new(RwLock::new(Arc::new(ElectronScene::default())));
+        let worker_scene = Arc::clone(&scene);
         let input_router = Arc::new(Mutex::new(InputRouter::new()));
         let interception = input_router
             .lock()
@@ -129,16 +142,19 @@ impl ElectronFrameBridge {
         let worker_outbound = Arc::clone(&outbound);
         let input_order = Arc::new(Mutex::new(()));
         let worker_input_order = Arc::clone(&input_order);
+        let stack_generation = Arc::new(AtomicU64::new(0));
+        let worker_stack_generation = Arc::clone(&stack_generation);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
         let thread = thread::Builder::new()
             .name("hudhook-electron-frame".to_owned())
             .spawn(move || {
                 run_bridge_thread(
-                    worker_latest,
+                    worker_scene,
                     worker_input_router,
                     worker_outbound,
                     worker_input_order,
+                    worker_stack_generation,
                     ready_tx,
                 )
             })
@@ -159,11 +175,12 @@ impl ElectronFrameBridge {
         };
 
         Ok(Self {
-            latest,
+            scene,
             input_router,
             interception,
             outbound,
             input_order,
+            stack_generation,
             window,
             thread: Some(thread),
         })
@@ -175,12 +192,25 @@ impl ElectronFrameBridge {
         Self::spawn()
     }
 
-    /// Returns a stable reference-counted snapshot of the latest frame.
-    pub fn latest(&self) -> Option<Arc<ElectronFrame>> {
-        self.latest
+    /// Returns one stable, atomically published back-to-front scene snapshot.
+    pub fn scene(&self) -> Arc<ElectronScene> {
+        let _order = self
+            .input_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.scene
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Returns the latest frame of the topmost currently composed window.
+    ///
+    /// This compatibility accessor preserves the former one-window API while
+    /// multi-window renderers consume [`Self::scene`] instead.
+    #[allow(dead_code)]
+    pub fn latest(&self) -> Option<Arc<ElectronFrame>> {
+        self.scene().windows.last().cloned()
     }
 
     /// Returns a diagnostic snapshot of the current input routing state.
@@ -230,7 +260,7 @@ impl ElectronFrameBridge {
     /// resulting Electron packets. No synchronous cross-process send happens
     /// on the render/present thread.
     pub fn route_window_message(&self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
-        let has_messages = {
+        let (has_messages, raised_window) = {
             // State mutation and queue publication share this lock with IPC
             // commands/lifecycle updates, giving their outbound packets one
             // total order across the render and bridge threads.
@@ -263,7 +293,14 @@ impl ElectronFrameBridge {
                     }
                 },
             ));
-            if messages.is_empty() {
+            let raised_window = input_router.take_pending_raise().map(|window_id| {
+                let generation = self
+                    .stack_generation
+                    .fetch_add(1, Ordering::AcqRel)
+                    .wrapping_add(1);
+                (window_id, generation)
+            });
+            let has_messages = if messages.is_empty() {
                 false
             } else {
                 self.outbound
@@ -271,8 +308,27 @@ impl ElectronFrameBridge {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .extend(messages);
                 true
-            }
+            };
+            (has_messages, raised_window)
         };
+
+        if let Some((window_id, generation)) = raised_window {
+            let bridge_window = HWND(self.window as *mut c_void);
+            if let Err(error) = unsafe {
+                PostMessageW(
+                    Some(bridge_window),
+                    WM_BRIDGE_RAISE_WINDOW,
+                    WPARAM(window_id as usize),
+                    LPARAM(generation as isize),
+                )
+            } {
+                warn!(
+                    window_id,
+                    ?error,
+                    "Cannot publish Electron click-to-front scene update"
+                );
+            }
+        }
         if !has_messages {
             return;
         }
@@ -302,7 +358,7 @@ impl Drop for ElectronFrameBridge {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let _ = input_router.request_interception(false);
-            let _ = input_router.publish_selection(None);
+            let _ = input_router.replace_windows(Vec::new());
         }
         let hwnd = HWND(self.window as *mut c_void);
         if let Err(error) =
@@ -347,10 +403,11 @@ impl Error for ElectronFrameBridgeError {
 }
 
 fn run_bridge_thread(
-    latest: LatestFrame,
+    scene: PublishedScene,
     input_router: SharedInputRouter,
     outbound: SharedOutboundQueue,
     input_order: SharedInputOrder,
+    stack_generation: SharedStackGeneration,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
 ) {
     let title = wide_string(&format!("hudhook-electron-frame-{}", unsafe {
@@ -384,12 +441,13 @@ fn run_bridge_thread(
 
     let state = Box::new(BridgeThreadState::new(
         hwnd,
-        latest,
+        scene,
         input_router,
         outbound,
         input_order,
+        stack_generation,
     ));
-    let preferred_window_name = state.preferred_window_name.clone();
+    let window_name_filter = state.window_name_filter.clone();
     let state_ptr = Box::into_raw(state);
 
     unsafe {
@@ -416,7 +474,7 @@ fn run_bridge_thread(
     }
 
     info!(
-        target_window = %preferred_window_name,
+        target_window = window_name_filter.as_deref().unwrap_or("<all>"),
         "Electron frame bridge IPC thread started"
     );
 
@@ -542,6 +600,12 @@ unsafe extern "system" fn bridge_window_proc(
             }
             return LRESULT(0);
         }
+        WM_BRIDGE_RAISE_WINDOW => {
+            if let Some(state) = state_ptr.as_mut() {
+                state.raise_scene_window(wparam.0 as u32, lparam.0 as u64);
+            }
+            return LRESULT(0);
+        }
         WM_BRIDGE_SHUTDOWN | WM_CLOSE => {
             if let Some(state) = state_ptr.as_mut() {
                 state.notify_host_of_close();
@@ -563,48 +627,49 @@ struct BridgeThreadState {
     hwnd: HWND,
     host: Option<HWND>,
     connected: bool,
-    latest: LatestFrame,
+    scene: PublishedScene,
     input_router: SharedInputRouter,
     outbound: SharedOutboundQueue,
     input_order: SharedInputOrder,
+    stack_generation: SharedStackGeneration,
     outbound_diagnostics: Arc<OutboundDiagnostics>,
-    preferred_window_name: String,
-    announced_windows: Vec<WindowMetadata>,
+    window_name_filter: Option<String>,
+    windows: Vec<RegisteredWindow>,
     state_revision: u64,
     sequence: u64,
     first_frame_logged: bool,
     mutex_name: Option<String>,
     frame_mutex: Option<NamedMutex>,
-    selected: Option<SelectedWindow>,
-    last_closed_window_name: Option<String>,
+    closed_windows: HashMap<u32, String>,
 }
 
 impl BridgeThreadState {
     fn new(
         hwnd: HWND,
-        latest: LatestFrame,
+        scene: PublishedScene,
         input_router: SharedInputRouter,
         outbound: SharedOutboundQueue,
         input_order: SharedInputOrder,
+        stack_generation: SharedStackGeneration,
     ) -> Self {
         Self {
             hwnd,
             host: None,
             connected: false,
-            latest,
+            scene,
             input_router,
             outbound,
             input_order,
+            stack_generation,
             outbound_diagnostics: Arc::new(OutboundDiagnostics::default()),
-            preferred_window_name: preferred_window_name(),
-            announced_windows: Vec::new(),
+            window_name_filter: window_name_filter(),
+            windows: Vec::new(),
             state_revision: 0,
             sequence: 0,
             first_frame_logged: false,
             mutex_name: None,
             frame_mutex: None,
-            selected: None,
-            last_closed_window_name: None,
+            closed_windows: HashMap::new(),
         }
     }
 
@@ -634,27 +699,18 @@ impl BridgeThreadState {
         self.connected = false;
         self.mutex_name = None;
         self.frame_mutex = None;
-        self.announced_windows.clear();
-        self.selected = None;
-        self.last_closed_window_name = None;
-        {
-            let _order = self
-                .input_order
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut input_router = self
-                .input_router
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = input_router.request_interception(false);
-            let _ = input_router.publish_selection(None);
-        }
+        self.windows.clear();
+        self.closed_windows.clear();
+        self.bump_state_revision();
+        self.update_input_router_and_publish_scene(|router| {
+            let mut outbound = router.request_interception(false);
+            outbound.extend(router.replace_windows(Vec::new()));
+            outbound
+        });
         self.outbound
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        self.bump_state_revision();
-        self.clear_latest();
     }
 
     unsafe fn notify_host_of_close(&self) {
@@ -738,17 +794,35 @@ impl BridgeThreadState {
             }
         };
 
-        self.announced_windows = message.windows;
-        self.last_closed_window_name = None;
-        self.selected = None;
-        self.update_input_router(|router| router.publish_selection(None));
+        self.windows =
+            normalize_registered_windows(message.windows, self.window_name_filter.as_deref());
+        self.closed_windows.clear();
         self.bump_state_revision();
-        self.clear_latest();
+        let input_windows = self.input_windows();
+        self.update_input_router_and_publish_scene(|router| router.reset_windows(input_windows));
 
-        let window =
-            select_candidate(&self.announced_windows, &self.preferred_window_name).cloned();
-        if let Some(window) = window {
-            self.select_window(window)?;
+        for window in &self.windows {
+            info!(
+                window_id = window.window_id,
+                window_name = %window.name,
+                buffer_name = %window.buffer_name,
+                "Electron overlay metadata selected"
+            );
+        }
+
+        let window_ids = self
+            .windows
+            .iter()
+            .map(|window| window.window_id)
+            .collect::<Vec<_>>();
+        for window_id in window_ids {
+            if let Err(error) = self.read_window_mapping(window_id) {
+                debug!(
+                    window_id,
+                    %error,
+                    "Electron overlay mapping is not readable yet"
+                );
+            }
         }
 
         Ok(())
@@ -756,78 +830,85 @@ impl BridgeThreadState {
 
     fn on_window(&mut self, window: WindowMetadata) -> Result<(), TransportError> {
         let window_id = window.window_id;
-        let readded_closed = self.last_closed_window_name.as_deref() == Some(window.name.as_str());
-        if readded_closed {
-            self.last_closed_window_name = None;
-        }
-        let reannounced_selected = self
-            .selected
-            .as_ref()
-            .is_some_and(|selected| selected.window_id == window_id);
-        let preferred_upgrade = window.name == self.preferred_window_name
-            && self
-                .selected
-                .as_ref()
-                .map(|selected| selected.name.as_str())
-                != Some(self.preferred_window_name.as_str());
-        let should_select =
-            self.selected.is_none() || reannounced_selected || readded_closed || preferred_upgrade;
-
-        upsert_announced_window(&mut self.announced_windows, window);
-        if should_select {
-            let candidate = if reannounced_selected {
-                self.announced_windows
-                    .iter()
-                    .find(|window| window.window_id == window_id)
-            } else {
-                select_candidate(&self.announced_windows, &self.preferred_window_name)
+        if !window_matches_filter(&window, self.window_name_filter.as_deref()) {
+            if self
+                .windows
+                .iter()
+                .any(|existing| existing.window_id == window_id)
+            {
+                self.windows
+                    .retain(|existing| existing.window_id != window_id);
+                self.bump_state_revision();
+                self.update_input_router_and_publish_scene(|router| {
+                    router.remove_window(window_id)
+                });
             }
-            .cloned();
-
-            if let Some(window) = candidate {
-                self.select_window_with_marker(window, reannounced_selected || readded_closed)?;
-            }
+            return Ok(());
         }
 
+        let readded_closed = self
+            .closed_windows
+            .get(&window_id)
+            .is_some_and(|name| *name == window.name);
+        self.closed_windows.remove(&window_id);
+
+        let reannounced = register_window_on_top(&mut self.windows, window);
+        let reselected = readded_closed || reannounced;
+        self.bump_state_revision();
+        let input_windows = self.input_windows();
+        self.update_input_router_and_publish_scene(|router| router.replace_windows(input_windows));
+
+        let registered = self
+            .windows
+            .last()
+            .expect("the registered Electron window was just appended");
+        if reselected {
+            info!(
+                window_id,
+                window_name = %registered.name,
+                buffer_name = %registered.buffer_name,
+                "Electron overlay metadata reselected"
+            );
+        } else {
+            info!(
+                window_id,
+                window_name = %registered.name,
+                buffer_name = %registered.buffer_name,
+                "Electron overlay metadata selected"
+            );
+        }
+
+        self.read_window_mapping(window_id)?;
         Ok(())
     }
 
     fn on_framebuffer(&mut self, window_id: u32) -> Result<(), TransportError> {
-        if self.selected.as_ref().map(|window| window.window_id) == Some(window_id) {
-            self.read_selected_mapping()?;
+        if self
+            .windows
+            .iter()
+            .any(|window| window.window_id == window_id)
+        {
+            self.read_window_mapping(window_id)?;
         }
         Ok(())
     }
 
     fn on_window_bounds(&mut self, message: WindowBoundsMessage) -> Result<(), TransportError> {
-        update_announced_window_bounds(&mut self.announced_windows, &message);
-
         let window_id = message.window_id;
         let rect = message.rect;
-        {
-            let Some(selected) = self.selected.as_mut() else {
-                return Ok(());
-            };
-            if selected.window_id != window_id {
-                return Ok(());
-            }
-
-            selected.rect = rect;
-            if let Some(buffer_name) = message.buffer_name {
-                if buffer_name != selected.buffer_name {
-                    selected.buffer_name = buffer_name;
-                    selected.mapping = None;
-                }
-            }
-        }
+        let Some((_mapping_replaced, was_routable)) =
+            update_registered_window_bounds(&mut self.windows, message)
+        else {
+            return Ok(());
+        };
 
         self.bump_state_revision();
-        self.update_input_router(|router| {
-            let rect = InputRect::from(rect);
-            if router.selected_window().is_some() {
-                router.update_selection_rect(window_id, rect)
+        let input_windows = self.input_windows();
+        self.update_input_router_and_publish_scene(|router| {
+            if was_routable {
+                router.update_window_rect(window_id, InputRect::from(rect))
             } else {
-                router.publish_selection(Some(SelectedInputWindow::new(window_id, rect)))
+                router.replace_windows(input_windows)
             }
         });
         info!(
@@ -838,80 +919,73 @@ impl BridgeThreadState {
             height = rect.height,
             "Electron overlay bounds updated"
         );
-        self.republish_latest_metadata();
 
         Ok(())
     }
 
     fn on_window_close(&mut self, window_id: u32) -> Result<(), TransportError> {
-        self.announced_windows
-            .retain(|window| window.window_id != window_id);
-
-        if self.selected.as_ref().map(|window| window.window_id) != Some(window_id) {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|window| window.window_id == window_id)
+        else {
             return Ok(());
-        }
+        };
 
-        let closed = self
-            .selected
-            .take()
-            .ok_or(TransportError::NoSelectedWindow)?;
-        self.last_closed_window_name = Some(closed.name.clone());
-        self.update_input_router(|router| router.publish_selection(None));
+        let closed = self.windows.remove(index);
+        self.closed_windows.insert(window_id, closed.name.clone());
         self.bump_state_revision();
-        self.clear_latest();
+        self.update_input_router_and_publish_scene(|router| router.remove_window(window_id));
         info!(
             window_id,
             window_name = %closed.name,
             "Electron overlay window closed"
         );
 
-        let replacement =
-            select_candidate(&self.announced_windows, &self.preferred_window_name).cloned();
-        if let Some(window) = replacement {
-            self.select_window(window)?;
-        }
-
         Ok(())
     }
 
-    fn select_window(&mut self, window: WindowMetadata) -> Result<(), TransportError> {
-        self.select_window_with_marker(window, false)
-    }
+    fn raise_scene_window(&mut self, window_id: u32, expected_generation: u64) {
+        // Validate and apply the intent under the same ordering guard used by
+        // WndProc routing. Otherwise a newer click can advance the generation
+        // after this check but before the old raise reaches the router/scene.
+        let input_order = Arc::clone(&self.input_order);
+        let input_router = Arc::clone(&self.input_router);
+        let _order = input_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    fn select_window_with_marker(
-        &mut self,
-        window: WindowMetadata,
-        reselected: bool,
-    ) -> Result<(), TransportError> {
-        if reselected {
-            info!(
-                window_id = window.window_id,
-                window_name = %window.name,
-                buffer_name = %window.buffer_name,
-                "Electron overlay metadata reselected"
+        let current_generation = self.stack_generation.load(Ordering::Acquire);
+        if current_generation != expected_generation {
+            debug!(
+                window_id,
+                expected_generation,
+                current_generation,
+                "Ignoring stale Electron click-to-front request"
             );
-        } else {
-            info!(
-                window_id = window.window_id,
-                window_name = %window.name,
-                buffer_name = %window.buffer_name,
-                "Electron overlay metadata selected"
-            );
+            return;
+        }
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|window| window.window_id == window_id)
+        else {
+            return;
+        };
+        if index + 1 == self.windows.len() {
+            return;
         }
 
-        let input_selection = SelectedInputWindow::new(window.window_id, window.rect.into());
+        let window = self.windows.remove(index);
+        self.windows.push(window);
         self.bump_state_revision();
-        self.clear_latest();
-        self.selected = Some(SelectedWindow {
-            window_id: window.window_id,
-            name: window.name,
-            rect: window.rect,
-            transparent: window.transparent,
-            buffer_name: window.buffer_name,
-            mapping: None,
-        });
-        self.update_input_router(|router| router.publish_selection(Some(input_selection)));
-        self.read_selected_mapping()
+        let messages = input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .raise_window(window_id);
+        debug_assert!(messages.is_empty(), "raising a live window is local-only");
+        self.publish_scene();
+        info!(window_id, "Electron overlay raised to top after input");
     }
 
     fn on_input_intercept(&self, intercept: bool) {
@@ -956,33 +1030,105 @@ impl BridgeThreadState {
         }
     }
 
-    fn read_selected_mapping(&mut self) -> Result<(), TransportError> {
+    /// Applies one lifecycle/pixel mutation to the input stack and publishes
+    /// the matching render scene under the same ordering guard. Readers of
+    /// `ElectronFrameBridge::scene` take this guard too, so a Present boundary
+    /// cannot observe the new hit-test state with the previous visual stack.
+    fn update_input_router_and_publish_scene(
+        &mut self,
+        update: impl FnOnce(&mut InputRouter) -> Vec<OutboundMessage>,
+    ) {
+        let invalidates_stack_intents = self
+            .scene
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .state_revision
+            != self.state_revision;
+        let input_order = Arc::clone(&self.input_order);
+        let input_router = Arc::clone(&self.input_router);
+        let outbound = Arc::clone(&self.outbound);
+        let has_messages = {
+            let _order = input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Lifecycle/metadata membership changes are ordered after any
+            // click that routed against the previous published scene. Advance
+            // the generation inside the guard so such queued raises cannot
+            // overtake this transition. Ordinary same-scene frame refreshes do
+            // not advance it, avoiding click starvation under continuous FPS.
+            if invalidates_stack_intents {
+                self.stack_generation.fetch_add(1, Ordering::AcqRel);
+            }
+            let messages = update(
+                &mut input_router
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            let has_messages = !messages.is_empty();
+            if has_messages {
+                outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(messages);
+            }
+            self.publish_scene();
+            has_messages
+        };
+
+        if has_messages {
+            if let Err(error) = unsafe {
+                PostMessageW(
+                    Some(self.hwnd),
+                    WM_BRIDGE_FLUSH_OUTBOUND,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            } {
+                warn!(?error, "Cannot wake Electron IPC worker for outbound input");
+            }
+        }
+    }
+
+    fn read_window_mapping(&mut self, window_id: u32) -> Result<(), TransportError> {
         self.ensure_frame_mutex()?;
 
-        let selected = self
-            .selected
-            .as_mut()
-            .ok_or(TransportError::NoSelectedWindow)?;
-        if selected.mapping.is_none() {
-            selected.mapping = Some(FrameMapping::open(&selected.buffer_name)?);
-        }
-
-        let mapping = selected
-            .mapping
-            .as_ref()
-            .ok_or(TransportError::NoSelectedWindow)?;
-        let mutex = self
-            .frame_mutex
-            .as_ref()
-            .ok_or(TransportError::MutexUnavailable)?;
-        let Some((width, height, bgra)) = mapping.copy_frame(mutex)? else {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|window| window.window_id == window_id)
+        else {
             return Ok(());
         };
-        let window_id = selected.window_id;
-        let name = selected.name.clone();
-        let rect = selected.rect;
-        let transparent = selected.transparent;
-        let rgba = premultiplied_bgra_to_straight_rgba(&bgra);
+        let copied = {
+            let mutex = self
+                .frame_mutex
+                .as_ref()
+                .ok_or(TransportError::MutexUnavailable)?;
+            let window = &mut self.windows[index];
+            if window.mapping.is_none() {
+                window.mapping = Some(FrameMapping::open(&window.buffer_name)?);
+            }
+            window
+                .mapping
+                .as_ref()
+                .ok_or(TransportError::NoSelectedWindow)?
+                .copy_frame(mutex)?
+        };
+        let Some((width, height, bgra)) = copied else {
+            return Ok(());
+        };
+        let first_frame_for_window = self.windows[index].latest.is_none();
+        if first_frame_for_window {
+            // A window becomes composable only when its first pixels arrive.
+            // Give that membership change its own scene revision so observers
+            // can distinguish the partial and fully populated stack even when
+            // overlay.init announced every window in one metadata revision.
+            self.bump_state_revision();
+        }
+        let name = self.windows[index].name.clone();
+        let rect = self.windows[index].rect;
+        let transparent = self.windows[index].transparent;
+        let rgba: Arc<[u8]> = premultiplied_bgra_to_straight_rgba(&bgra).into();
 
         self.sequence = self.sequence.wrapping_add(1).max(1);
         let frame = Arc::new(ElectronFrame {
@@ -994,17 +1140,28 @@ impl BridgeThreadState {
             sequence: self.sequence,
             width,
             height,
-            rgba: rgba.into(),
+            rgba: Arc::clone(&rgba),
         });
-
-        *self
-            .latest
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&frame));
+        self.windows[index].latest = Some(Arc::clone(&frame));
+        let input_windows = first_frame_for_window.then(|| self.input_windows());
+        self.update_input_router_and_publish_scene(|router| {
+            if let Some(input_windows) = input_windows {
+                // The window becomes routable at the same publication boundary
+                // where its first pixels make it compositable. Rebuild from
+                // registry order so late first frames cannot change z-order.
+                router.replace_windows(input_windows)
+            } else if transparent {
+                router.update_window_alpha_frame(window_id, width, height, Arc::clone(&rgba))
+            } else {
+                router.clear_window_alpha_frame(window_id)
+            }
+        });
 
         if !self.first_frame_logged {
             self.first_frame_logged = true;
             info!(
+                window_id,
+                window_name = %frame.name,
                 sequence = frame.sequence,
                 width = frame.width,
                 height = frame.height,
@@ -1032,45 +1189,16 @@ impl BridgeThreadState {
         self.state_revision = self.state_revision.wrapping_add(1).max(1);
     }
 
-    fn republish_latest_metadata(&self) {
-        let Some(selected) = self.selected.as_ref() else {
-            return;
-        };
-
-        let current = self
-            .latest
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let Some(current) = current else {
-            return;
-        };
-        if current.window_id != selected.window_id {
-            return;
-        }
-
-        let frame = Arc::new(ElectronFrame {
-            window_id: selected.window_id,
-            name: selected.name.clone(),
-            rect: selected.rect,
-            transparent: selected.transparent,
-            state_revision: self.state_revision,
-            sequence: current.sequence,
-            width: current.width,
-            height: current.height,
-            rgba: Arc::clone(&current.rgba),
-        });
-        *self
-            .latest
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(frame);
+    fn input_windows(&self) -> Vec<InputWindow> {
+        build_input_windows(&self.windows)
     }
 
-    fn clear_latest(&self) {
+    fn publish_scene(&mut self) {
+        let scene = build_scene_snapshot(&mut self.windows, self.state_revision);
         *self
-            .latest
+            .scene
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(scene);
     }
 }
 
@@ -1112,52 +1240,151 @@ struct InputInterceptCommand {
     intercept: bool,
 }
 
-struct SelectedWindow {
+struct RegisteredWindow {
     window_id: u32,
     buffer_name: String,
     mapping: Option<FrameMapping>,
+    latest: Option<Arc<ElectronFrame>>,
     name: String,
     rect: ElectronWindowRect,
     transparent: bool,
 }
 
-fn preferred_window_name() -> String {
-    std::env::var(ELECTRON_WINDOW_NAME_ENV)
-        .ok()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_ELECTRON_WINDOW_NAME.to_owned())
-}
-
-fn select_candidate<'a>(
-    windows: &'a [WindowMetadata],
-    preferred_window_name: &str,
-) -> Option<&'a WindowMetadata> {
-    windows
-        .iter()
-        .find(|window| window.name == preferred_window_name)
-        .or_else(|| windows.first())
-}
-
-fn upsert_announced_window(windows: &mut Vec<WindowMetadata>, window: WindowMetadata) {
-    if let Some(existing) = windows
-        .iter_mut()
-        .find(|existing| existing.window_id == window.window_id)
-    {
-        *existing = window;
-    } else {
-        windows.push(window);
+impl From<WindowMetadata> for RegisteredWindow {
+    fn from(window: WindowMetadata) -> Self {
+        Self {
+            window_id: window.window_id,
+            buffer_name: window.buffer_name,
+            mapping: None,
+            latest: None,
+            name: window.name,
+            rect: window.rect,
+            transparent: window.transparent,
+        }
     }
 }
 
-fn update_announced_window_bounds(windows: &mut [WindowMetadata], message: &WindowBoundsMessage) {
-    if let Some(window) = windows
-        .iter_mut()
-        .find(|window| window.window_id == message.window_id)
-    {
-        window.rect = message.rect;
-        if let Some(buffer_name) = message.buffer_name.as_ref() {
-            window.buffer_name = buffer_name.clone();
+impl RegisteredWindow {
+    fn is_compositable(&self) -> bool {
+        self.latest.is_some() && InputRect::from(self.rect).is_valid()
+    }
+
+    fn input_window(&self) -> InputWindow {
+        debug_assert!(self.is_compositable());
+        let window = InputWindow::new(self.window_id, self.rect.into());
+        if !self.transparent {
+            return window;
         }
+
+        self.latest.as_ref().map_or(window.clone(), |frame| {
+            window.with_alpha_frame(frame.width, frame.height, Arc::clone(&frame.rgba))
+        })
+    }
+}
+
+fn build_input_windows(windows: &[RegisteredWindow]) -> Vec<InputWindow> {
+    windows
+        .iter()
+        .filter(|window| window.is_compositable())
+        .map(RegisteredWindow::input_window)
+        .collect()
+}
+
+fn window_name_filter() -> Option<String> {
+    std::env::var(ELECTRON_WINDOW_NAME_ENV)
+        .ok()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
+fn window_matches_filter(window: &WindowMetadata, filter: Option<&str>) -> bool {
+    filter.is_none_or(|name| window.name == name)
+}
+
+fn normalize_registered_windows(
+    windows: Vec<WindowMetadata>,
+    filter: Option<&str>,
+) -> Vec<RegisteredWindow> {
+    let mut normalized = Vec::new();
+    for window in windows {
+        if !window_matches_filter(&window, filter) {
+            continue;
+        }
+        normalized.retain(|existing: &RegisteredWindow| existing.window_id != window.window_id);
+        normalized.push(window.into());
+    }
+    normalized
+}
+
+/// Registers one window at the top and returns whether the same id was
+/// already present. Removing before appending makes duplicate announcements
+/// deterministic and mirrors the legacy renderer's back-to-front vector.
+fn register_window_on_top(windows: &mut Vec<RegisteredWindow>, window: WindowMetadata) -> bool {
+    let window_id = window.window_id;
+    let existed = windows
+        .iter()
+        .any(|existing| existing.window_id == window_id);
+    windows.retain(|existing| existing.window_id != window_id);
+    windows.push(window.into());
+    existed
+}
+
+fn update_registered_window_bounds(
+    windows: &mut [RegisteredWindow],
+    message: WindowBoundsMessage,
+) -> Option<(bool, bool)> {
+    let window = windows
+        .iter_mut()
+        .find(|window| window.window_id == message.window_id)?;
+    let was_routable = InputRect::from(window.rect).is_valid();
+    window.rect = message.rect;
+    let mapping_replaced = message.buffer_name.is_some_and(|buffer_name| {
+        if buffer_name == window.buffer_name {
+            false
+        } else {
+            window.buffer_name = buffer_name;
+            window.mapping = None;
+            true
+        }
+    });
+    Some((mapping_replaced, was_routable))
+}
+
+fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -> ElectronScene {
+    let windows = windows
+        .iter_mut()
+        .filter_map(|window| {
+            if !window.is_compositable() {
+                return None;
+            }
+            let current = window.latest.as_ref().cloned()?;
+            let frame = if current.state_revision == state_revision
+                && current.name == window.name
+                && current.rect == window.rect
+                && current.transparent == window.transparent
+            {
+                Arc::clone(&current)
+            } else {
+                Arc::new(ElectronFrame {
+                    window_id: window.window_id,
+                    name: window.name.clone(),
+                    rect: window.rect,
+                    transparent: window.transparent,
+                    state_revision,
+                    sequence: current.sequence,
+                    width: current.width,
+                    height: current.height,
+                    rgba: Arc::clone(&current.rgba),
+                })
+            };
+            window.latest = Some(Arc::clone(&frame));
+            Some(frame)
+        })
+        .collect();
+
+    ElectronScene {
+        state_revision,
+        windows,
     }
 }
 
@@ -1438,22 +1665,47 @@ impl OutboundDiagnostics {
             _ => {}
         }
 
-        let OutboundMessage::Input { msg, .. } = message else {
+        let OutboundMessage::Input {
+            window_id,
+            msg,
+            wparam,
+            lparam,
+        } = message
+        else {
             return;
         };
         if (0x0200..=0x020e).contains(msg) && !self.first_mouse_logged.swap(true, Ordering::AcqRel)
         {
-            info!(message = msg, "Electron mouse input forwarded");
+            info!(
+                window_id,
+                win32_message = msg,
+                "Electron mouse input forwarded"
+            );
+        }
+        if matches!(*msg, 0x0201..=0x0209) || (*msg == 0x0200 && *wparam & 0x0013 != 0) {
+            let x = i32::from((*lparam as u16) as i16);
+            let y = i32::from(((*lparam >> 16) as u16) as i16);
+            info!(
+                window_id,
+                win32_message = msg,
+                x,
+                y,
+                "Electron pointer input forwarded"
+            );
         }
         match *msg {
-            0x0201 => info!("Electron left mouse down forwarded"),
-            0x0202 => info!("Electron left mouse up forwarded"),
+            0x0201 => info!(window_id, "Electron left mouse down forwarded"),
+            0x0202 => info!(window_id, "Electron left mouse up forwarded"),
             _ => {}
         }
         if (0x0100..=0x0109).contains(msg)
             && !self.first_keyboard_logged.swap(true, Ordering::AcqRel)
         {
-            info!(message = msg, "Electron keyboard input forwarded");
+            info!(
+                window_id,
+                win32_message = msg,
+                "Electron keyboard input forwarded"
+            );
         }
     }
 }
@@ -1823,23 +2075,188 @@ mod tests {
     }
 
     #[test]
-    fn selection_prefers_configured_name_and_falls_back_in_announcement_order() {
-        let mut windows = vec![window_metadata(10, "Fallback", 10)];
-        upsert_announced_window(&mut windows, window_metadata(20, "ExampleMainOverlay", 20));
-        upsert_announced_window(&mut windows, window_metadata(10, "Fallback", 99));
+    fn overlay_init_preserves_back_to_front_order_and_last_duplicate_position() {
+        let windows = normalize_registered_windows(
+            vec![
+                window_metadata(10, "Back", 10),
+                window_metadata(20, "Middle", 20),
+                window_metadata(10, "Back replacement", 99),
+                window_metadata(30, "Front", 30),
+            ],
+            None,
+        );
 
-        let preferred = select_candidate(&windows, "ExampleMainOverlay").unwrap();
-        assert_eq!(preferred.window_id, 20);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| (window.window_id, window.name.as_str(), window.rect.x))
+                .collect::<Vec<_>>(),
+            vec![
+                (20, "Middle", 20),
+                (10, "Back replacement", 99),
+                (30, "Front", 30),
+            ]
+        );
+    }
 
-        let fallback = select_candidate(&windows, "Missing").unwrap();
-        assert_eq!(fallback.window_id, 10);
-        assert_eq!(fallback.rect.x, 99);
+    #[test]
+    fn explicit_window_name_is_an_exact_filter_and_absent_filter_keeps_all() {
+        let announced = || {
+            vec![
+                window_metadata(10, "ExampleMainOverlay", 10),
+                window_metadata(20, "ExampleStatusOverlay", 20),
+                window_metadata(30, "ExampleMainOverlay child", 30),
+            ]
+        };
+
+        let all = normalize_registered_windows(announced(), None);
+        assert_eq!(all.len(), 3);
+
+        let filtered = normalize_registered_windows(announced(), Some("ExampleMainOverlay"));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].window_id, 10);
+    }
+
+    #[test]
+    fn streamed_registration_deduplicates_and_appends_the_window_on_top() {
+        let mut windows = normalize_registered_windows(
+            vec![
+                window_metadata(10, "Back", 10),
+                window_metadata(20, "Middle", 20),
+                window_metadata(30, "Front", 30),
+            ],
+            None,
+        );
+
+        assert!(register_window_on_top(
+            &mut windows,
+            window_metadata(20, "Middle replacement", 88),
+        ));
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            vec![10, 30, 20]
+        );
+        assert_eq!(windows.last().unwrap().name, "Middle replacement");
+        assert_eq!(windows.last().unwrap().rect.x, 88);
+    }
+
+    #[test]
+    fn bounds_update_changes_only_target_metadata_and_keeps_stack_position() {
+        let mut windows = normalize_registered_windows(
+            vec![
+                window_metadata(10, "Back", 10),
+                window_metadata(20, "Front", 20),
+            ],
+            None,
+        );
+        let replacement_rect = ElectronWindowRect {
+            x: -12,
+            y: 34,
+            width: 800,
+            height: 450,
+        };
+
+        assert_eq!(
+            update_registered_window_bounds(
+                &mut windows,
+                WindowBoundsMessage {
+                    window_id: 10,
+                    rect: replacement_rect,
+                    buffer_name: Some("replacement".to_owned()),
+                },
+            ),
+            Some((true, true))
+        );
         assert_eq!(
             windows
                 .iter()
                 .map(|window| window.window_id)
                 .collect::<Vec<_>>(),
             vec![10, 20]
+        );
+        assert_eq!(windows[0].rect, replacement_rect);
+        assert_eq!(windows[0].buffer_name, "replacement");
+        assert_eq!(windows[1].rect.x, 20);
+    }
+
+    #[test]
+    fn scene_snapshot_is_atomic_ordered_and_republishes_current_metadata() {
+        let mut invalid = window_metadata(40, "Invalid", 40);
+        invalid.rect.width = 0;
+        let mut windows = normalize_registered_windows(
+            vec![
+                window_metadata(10, "Back", 10),
+                window_metadata(20, "Waiting", 20),
+                window_metadata(30, "Front", 30),
+                invalid,
+            ],
+            None,
+        );
+        let back_pixels: Arc<[u8]> = vec![10, 20, 30, 255].into();
+        let front_pixels: Arc<[u8]> = vec![40, 50, 60, 128].into();
+        windows[0].latest = Some(Arc::new(ElectronFrame {
+            window_id: 10,
+            name: "stale".to_owned(),
+            rect: ElectronWindowRect::default(),
+            transparent: false,
+            state_revision: 1,
+            sequence: 7,
+            width: 1,
+            height: 1,
+            rgba: Arc::clone(&back_pixels),
+        }));
+        let front_rect = windows[2].rect;
+        windows[2].latest = Some(Arc::new(ElectronFrame {
+            window_id: 30,
+            name: "Front".to_owned(),
+            rect: front_rect,
+            transparent: true,
+            state_revision: 1,
+            sequence: 9,
+            width: 1,
+            height: 1,
+            rgba: Arc::clone(&front_pixels),
+        }));
+        let invalid_rect = windows[3].rect;
+        windows[3].latest = Some(Arc::new(ElectronFrame {
+            window_id: 40,
+            name: "Invalid".to_owned(),
+            rect: invalid_rect,
+            transparent: true,
+            state_revision: 1,
+            sequence: 10,
+            width: 1,
+            height: 1,
+            rgba: vec![70, 80, 90, 255].into(),
+        }));
+
+        let scene = build_scene_snapshot(&mut windows, 42);
+        assert_eq!(scene.state_revision, 42);
+        assert_eq!(
+            scene
+                .windows
+                .iter()
+                .map(|frame| frame.window_id)
+                .collect::<Vec<_>>(),
+            vec![10, 30]
+        );
+        assert_eq!(scene.windows[0].name, "Back");
+        assert_eq!(scene.windows[0].rect.x, 10);
+        assert!(scene.windows[0].transparent);
+        assert_eq!(scene.windows[0].state_revision, 42);
+        assert_eq!(scene.windows[0].sequence, 7);
+        assert!(Arc::ptr_eq(&scene.windows[0].rgba, &back_pixels));
+        assert_eq!(scene.windows[1].state_revision, 42);
+        assert!(Arc::ptr_eq(&scene.windows[1].rgba, &front_pixels));
+        assert_eq!(
+            build_input_windows(&windows)
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            vec![10, 30]
         );
     }
 
