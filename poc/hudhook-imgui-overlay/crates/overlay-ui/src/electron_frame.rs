@@ -40,8 +40,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::electron_input::{
-    AtomicInterceptionState, InputPoint, InputRect, InputRouter, InputRouterState, InputWindow,
-    OutboundMessage, OutboundQueue,
+    AtomicInterceptionState, DragMoveIntent, InputCaption, InputPoint, InputRect, InputRouter,
+    InputRouterState, InputWindow, OutboundMessage, OutboundQueue,
 };
 
 /// Optional exact window-name filter. When absent, every announced Electron
@@ -60,6 +60,7 @@ const WM_IPC_CLOSE_LINK: u32 = WM_IPC_CONNECT_LINK_ACK + 1;
 const WM_BRIDGE_SHUTDOWN: u32 = WM_APP + 0x310;
 const WM_BRIDGE_FLUSH_OUTBOUND: u32 = WM_BRIDGE_SHUTDOWN + 1;
 const WM_BRIDGE_RAISE_WINDOW: u32 = WM_BRIDGE_FLUSH_OUTBOUND + 1;
+const WM_BRIDGE_MOVE_WINDOW: u32 = WM_BRIDGE_RAISE_WINDOW + 1;
 const CONNECT_TIMER_ID: usize = 1;
 const OUTBOUND_RETRY_TIMER_ID: usize = 2;
 const CONNECT_RETRY_MILLIS: u32 = 500;
@@ -74,6 +75,62 @@ type SharedOutboundQueue = Arc<Mutex<OutboundQueue>>;
 type SharedInputOrder = Arc<Mutex<()>>;
 type SharedStackGeneration = Arc<AtomicU64>;
 
+#[derive(Default)]
+struct DragWakeSlot {
+    pending: Option<DragMoveIntent>,
+    wake_posted: bool,
+}
+
+#[derive(Clone, Default)]
+struct SharedDragState {
+    slot: Arc<Mutex<DragWakeSlot>>,
+}
+
+impl SharedDragState {
+    /// Replaces the coalesced placement and posts exactly one outstanding wake.
+    /// The post happens while holding the slot mutex: `PostMessageW` is
+    /// asynchronous, so this is cheap, and a failed post can reset only the
+    /// intent it tried to publish before a newer producer is allowed to enter.
+    fn enqueue_and_wake<E>(
+        &self,
+        intent: DragMoveIntent,
+        post_wake: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.pending = Some(intent);
+        if slot.wake_posted {
+            return Ok(());
+        }
+
+        slot.wake_posted = true;
+        if let Err(error) = post_wake() {
+            // No producer can replace `intent` while this mutex is held. Once
+            // reset completes, the next producer performs a fresh post rather
+            // than having its newer sample erased by this failure.
+            debug_assert_eq!(slot.pending, Some(intent));
+            slot.pending = None;
+            slot.wake_posted = false;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn take_pending(&self) -> Option<DragMoveIntent> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let intent = slot.pending.take();
+        // Clearing under the same mutex makes a later producer responsible for
+        // a new wake even when it arrives while this intent is being applied.
+        slot.wake_posted = false;
+        intent
+    }
+}
+
 /// One immutable frame copied out of the Electron-owned shared mapping.
 #[derive(Debug)]
 pub struct ElectronFrame {
@@ -81,7 +138,9 @@ pub struct ElectronFrame {
     pub name: String,
     pub rect: ElectronWindowRect,
     pub transparent: bool,
-    /// Changes whenever selection or placement state changes.
+    /// Changes whenever membership, stack, or producer-owned placement changes.
+    /// High-frequency compositor-local drag republishes the scene at this same
+    /// revision so it cannot invalidate its own click-to-front generation.
     pub state_revision: u64,
     pub sequence: u64,
     pub width: u32,
@@ -123,6 +182,7 @@ pub struct ElectronFrameBridge {
     outbound: SharedOutboundQueue,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
+    drag: SharedDragState,
     window: usize,
     thread: Option<JoinHandle<()>>,
 }
@@ -144,6 +204,8 @@ impl ElectronFrameBridge {
         let worker_input_order = Arc::clone(&input_order);
         let stack_generation = Arc::new(AtomicU64::new(0));
         let worker_stack_generation = Arc::clone(&stack_generation);
+        let drag = SharedDragState::default();
+        let worker_drag = drag.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
         let thread = thread::Builder::new()
@@ -155,6 +217,7 @@ impl ElectronFrameBridge {
                     worker_outbound,
                     worker_input_order,
                     worker_stack_generation,
+                    worker_drag,
                     ready_tx,
                 )
             })
@@ -181,6 +244,7 @@ impl ElectronFrameBridge {
             outbound,
             input_order,
             stack_generation,
+            drag,
             window,
             thread: Some(thread),
         })
@@ -260,7 +324,7 @@ impl ElectronFrameBridge {
     /// resulting Electron packets. No synchronous cross-process send happens
     /// on the render/present thread.
     pub fn route_window_message(&self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
-        let (has_messages, raised_window) = {
+        let (has_messages, raised_window, drag_wake_error) = {
             // State mutation and queue publication share this lock with IPC
             // commands/lifecycle updates, giving their outbound packets one
             // total order across the render and bridge threads.
@@ -300,6 +364,19 @@ impl ElectronFrameBridge {
                     .wrapping_add(1);
                 (window_id, generation)
             });
+            let drag_wake_error = input_router.take_pending_drag_move().and_then(|intent| {
+                let bridge_window = HWND(self.window as *mut c_void);
+                self.drag
+                    .enqueue_and_wake(intent, || unsafe {
+                        PostMessageW(
+                            Some(bridge_window),
+                            WM_BRIDGE_MOVE_WINDOW,
+                            WPARAM(0),
+                            LPARAM(0),
+                        )
+                    })
+                    .err()
+            });
             let has_messages = if messages.is_empty() {
                 false
             } else {
@@ -309,7 +386,7 @@ impl ElectronFrameBridge {
                     .extend(messages);
                 true
             };
-            (has_messages, raised_window)
+            (has_messages, raised_window, drag_wake_error)
         };
 
         if let Some((window_id, generation)) = raised_window {
@@ -328,6 +405,9 @@ impl ElectronFrameBridge {
                     "Cannot publish Electron click-to-front scene update"
                 );
             }
+        }
+        if let Some(error) = drag_wake_error {
+            warn!(?error, "Cannot publish Electron caption drag placement");
         }
         if !has_messages {
             return;
@@ -408,6 +488,7 @@ fn run_bridge_thread(
     outbound: SharedOutboundQueue,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
+    drag: SharedDragState,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
 ) {
     let title = wide_string(&format!("hudhook-electron-frame-{}", unsafe {
@@ -446,6 +527,7 @@ fn run_bridge_thread(
         outbound,
         input_order,
         stack_generation,
+        drag,
     ));
     let window_name_filter = state.window_name_filter.clone();
     let state_ptr = Box::into_raw(state);
@@ -606,6 +688,12 @@ unsafe extern "system" fn bridge_window_proc(
             }
             return LRESULT(0);
         }
+        WM_BRIDGE_MOVE_WINDOW => {
+            if let Some(state) = state_ptr.as_mut() {
+                state.apply_pending_drag_move();
+            }
+            return LRESULT(0);
+        }
         WM_BRIDGE_SHUTDOWN | WM_CLOSE => {
             if let Some(state) = state_ptr.as_mut() {
                 state.notify_host_of_close();
@@ -632,6 +720,7 @@ struct BridgeThreadState {
     outbound: SharedOutboundQueue,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
+    drag: SharedDragState,
     outbound_diagnostics: Arc<OutboundDiagnostics>,
     window_name_filter: Option<String>,
     windows: Vec<RegisteredWindow>,
@@ -641,6 +730,7 @@ struct BridgeThreadState {
     mutex_name: Option<String>,
     frame_mutex: Option<NamedMutex>,
     closed_windows: HashMap<u32, String>,
+    placement_epoch: u64,
 }
 
 impl BridgeThreadState {
@@ -651,6 +741,7 @@ impl BridgeThreadState {
         outbound: SharedOutboundQueue,
         input_order: SharedInputOrder,
         stack_generation: SharedStackGeneration,
+        drag: SharedDragState,
     ) -> Self {
         Self {
             hwnd,
@@ -661,6 +752,7 @@ impl BridgeThreadState {
             outbound,
             input_order,
             stack_generation,
+            drag,
             outbound_diagnostics: Arc::new(OutboundDiagnostics::default()),
             window_name_filter: window_name_filter(),
             windows: Vec::new(),
@@ -670,6 +762,7 @@ impl BridgeThreadState {
             mutex_name: None,
             frame_mutex: None,
             closed_windows: HashMap::new(),
+            placement_epoch: 0,
         }
     }
 
@@ -794,8 +887,11 @@ impl BridgeThreadState {
             }
         };
 
-        self.windows =
-            normalize_registered_windows(message.windows, self.window_name_filter.as_deref());
+        self.windows = normalize_registered_windows(
+            message.windows,
+            self.window_name_filter.as_deref(),
+            &mut self.placement_epoch,
+        );
         self.closed_windows.clear();
         self.bump_state_revision();
         let input_windows = self.input_windows();
@@ -852,7 +948,8 @@ impl BridgeThreadState {
             .is_some_and(|name| *name == window.name);
         self.closed_windows.remove(&window_id);
 
-        let reannounced = register_window_on_top(&mut self.windows, window);
+        let placement_epoch = advance_epoch(&mut self.placement_epoch);
+        let reannounced = register_window_on_top(&mut self.windows, window, placement_epoch);
         let reselected = readded_closed || reannounced;
         self.bump_state_revision();
         let input_windows = self.input_windows();
@@ -896,21 +993,19 @@ impl BridgeThreadState {
     fn on_window_bounds(&mut self, message: WindowBoundsMessage) -> Result<(), TransportError> {
         let window_id = message.window_id;
         let rect = message.rect;
-        let Some((_mapping_replaced, was_routable)) =
-            update_registered_window_bounds(&mut self.windows, message)
+        let placement_epoch = advance_epoch(&mut self.placement_epoch);
+        let Some((_mapping_replaced, _was_routable)) =
+            update_registered_window_bounds(&mut self.windows, message, placement_epoch)
         else {
             return Ok(());
         };
 
         self.bump_state_revision();
         let input_windows = self.input_windows();
-        self.update_input_router_and_publish_scene(|router| {
-            if was_routable {
-                router.update_window_rect(window_id, InputRect::from(rect))
-            } else {
-                router.replace_windows(input_windows)
-            }
-        });
+        // External producer bounds establish a new placement epoch. Rebuilding
+        // the router invalidates any queued compositor-local drag for this
+        // registration while preserving ordinary focus/capture for peers.
+        self.update_input_router_and_publish_scene(|router| router.replace_windows(input_windows));
         info!(
             window_id,
             x = rect.x,
@@ -986,6 +1081,56 @@ impl BridgeThreadState {
         debug_assert!(messages.is_empty(), "raising a live window is local-only");
         self.publish_scene();
         info!(window_id, "Electron overlay raised to top after input");
+    }
+
+    fn apply_pending_drag_move(&mut self) {
+        let Some(intent) = self.drag.take_pending() else {
+            return;
+        };
+
+        let input_order = Arc::clone(&self.input_order);
+        let input_router = Arc::clone(&self.input_router);
+        let _order = input_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(index) = self.windows.iter().position(|window| {
+            window.window_id == intent.window_id && window.placement_epoch == intent.placement_epoch
+        }) else {
+            return;
+        };
+        if !input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .apply_drag_move(intent)
+        {
+            return;
+        }
+
+        let window = &mut self.windows[index];
+        let moved = window.rect.x != intent.x || window.rect.y != intent.y;
+        window.rect.x = intent.x;
+        window.rect.y = intent.y;
+        let rect = window.rect;
+        if !moved {
+            return;
+        }
+
+        // Placement does not alter membership or stack order. Publishing a new
+        // scene Arc is sufficient because snapshot construction detects the
+        // changed rect; retaining state/stack revisions avoids invalidating the
+        // click-to-front intent generated by the same caption down.
+        self.publish_scene();
+        info!(
+            window_id = intent.window_id,
+            x = rect.x,
+            y = rect.y,
+            width = rect.width,
+            height = rect.height,
+            placement_epoch = intent.placement_epoch,
+            drag_session = intent.drag_session,
+            terminal = intent.terminal,
+            "Electron overlay moved by caption drag"
+        );
     }
 
     fn on_input_intercept(&self, intercept: bool) {
@@ -1218,6 +1363,31 @@ struct WindowMetadata {
     transparent: bool,
     buffer_name: String,
     rect: ElectronWindowRect,
+    #[serde(default)]
+    caption: Option<WindowCaptionMetadata>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+struct WindowCaptionMetadata {
+    #[serde(default)]
+    left: i32,
+    #[serde(default)]
+    right: i32,
+    #[serde(default)]
+    top: i32,
+    #[serde(default)]
+    height: i32,
+}
+
+impl From<WindowCaptionMetadata> for InputCaption {
+    fn from(caption: WindowCaptionMetadata) -> Self {
+        Self {
+            left: caption.left,
+            right: caption.right,
+            top: caption.top,
+            height: caption.height,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1248,10 +1418,12 @@ struct RegisteredWindow {
     name: String,
     rect: ElectronWindowRect,
     transparent: bool,
+    caption: Option<InputCaption>,
+    placement_epoch: u64,
 }
 
-impl From<WindowMetadata> for RegisteredWindow {
-    fn from(window: WindowMetadata) -> Self {
+impl RegisteredWindow {
+    fn from_metadata(window: WindowMetadata, placement_epoch: u64) -> Self {
         Self {
             window_id: window.window_id,
             buffer_name: window.buffer_name,
@@ -1260,18 +1432,20 @@ impl From<WindowMetadata> for RegisteredWindow {
             name: window.name,
             rect: window.rect,
             transparent: window.transparent,
+            caption: window.caption.map(InputCaption::from),
+            placement_epoch,
         }
     }
-}
 
-impl RegisteredWindow {
     fn is_compositable(&self) -> bool {
         self.latest.is_some() && InputRect::from(self.rect).is_valid()
     }
 
     fn input_window(&self) -> InputWindow {
         debug_assert!(self.is_compositable());
-        let window = InputWindow::new(self.window_id, self.rect.into());
+        let window = InputWindow::new(self.window_id, self.rect.into())
+            .with_caption(self.caption)
+            .with_placement_epoch(self.placement_epoch);
         if !self.transparent {
             return window;
         }
@@ -1304,6 +1478,7 @@ fn window_matches_filter(window: &WindowMetadata, filter: Option<&str>) -> bool 
 fn normalize_registered_windows(
     windows: Vec<WindowMetadata>,
     filter: Option<&str>,
+    placement_epoch: &mut u64,
 ) -> Vec<RegisteredWindow> {
     let mut normalized = Vec::new();
     for window in windows {
@@ -1311,7 +1486,10 @@ fn normalize_registered_windows(
             continue;
         }
         normalized.retain(|existing: &RegisteredWindow| existing.window_id != window.window_id);
-        normalized.push(window.into());
+        normalized.push(RegisteredWindow::from_metadata(
+            window,
+            advance_epoch(placement_epoch),
+        ));
     }
     normalized
 }
@@ -1319,25 +1497,31 @@ fn normalize_registered_windows(
 /// Registers one window at the top and returns whether the same id was
 /// already present. Removing before appending makes duplicate announcements
 /// deterministic and mirrors the legacy renderer's back-to-front vector.
-fn register_window_on_top(windows: &mut Vec<RegisteredWindow>, window: WindowMetadata) -> bool {
+fn register_window_on_top(
+    windows: &mut Vec<RegisteredWindow>,
+    window: WindowMetadata,
+    placement_epoch: u64,
+) -> bool {
     let window_id = window.window_id;
     let existed = windows
         .iter()
         .any(|existing| existing.window_id == window_id);
     windows.retain(|existing| existing.window_id != window_id);
-    windows.push(window.into());
+    windows.push(RegisteredWindow::from_metadata(window, placement_epoch));
     existed
 }
 
 fn update_registered_window_bounds(
     windows: &mut [RegisteredWindow],
     message: WindowBoundsMessage,
+    placement_epoch: u64,
 ) -> Option<(bool, bool)> {
     let window = windows
         .iter_mut()
         .find(|window| window.window_id == message.window_id)?;
     let was_routable = InputRect::from(window.rect).is_valid();
     window.rect = message.rect;
+    window.placement_epoch = placement_epoch;
     let mapping_replaced = message.buffer_name.is_some_and(|buffer_name| {
         if buffer_name == window.buffer_name {
             false
@@ -1348,6 +1532,11 @@ fn update_registered_window_bounds(
         }
     });
     Some((mapping_replaced, was_routable))
+}
+
+fn advance_epoch(epoch: &mut u64) -> u64 {
+    *epoch = epoch.wrapping_add(1).max(1);
+    *epoch
 }
 
 fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -> ElectronScene {
@@ -1963,6 +2152,86 @@ fn wide_string(value: &str) -> Vec<u16> {
 mod tests {
     use super::*;
 
+    fn drag_intent(sequence: u64) -> DragMoveIntent {
+        DragMoveIntent {
+            window_id: 42,
+            placement_epoch: 7,
+            drag_session: 3,
+            sequence,
+            x: sequence as i32,
+            y: -(sequence as i32),
+            terminal: false,
+        }
+    }
+
+    #[test]
+    fn failed_drag_wake_cannot_erase_a_newer_producer_intent() {
+        let drag = SharedDragState::default();
+        let first_drag = drag.clone();
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_failure_tx, release_failure_rx) = mpsc::channel();
+        let first = thread::spawn(move || {
+            first_drag.enqueue_and_wake(drag_intent(1), || {
+                first_entered_tx.send(()).unwrap();
+                release_failure_rx.recv().unwrap();
+                Err("post failed")
+            })
+        });
+        first_entered_rx.recv().unwrap();
+
+        let second_drag = drag.clone();
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (second_posted_tx, second_posted_rx) = mpsc::channel();
+        let second = thread::spawn(move || {
+            second_started_tx.send(()).unwrap();
+            second_drag.enqueue_and_wake(drag_intent(2), || {
+                second_posted_tx.send(()).unwrap();
+                Ok::<(), &'static str>(())
+            })
+        });
+        second_started_rx.recv().unwrap();
+
+        // Producer one still owns the slot while its asynchronous post call is
+        // unresolved. Its failure reset completes before producer two can
+        // replace the payload, so producer two performs a fresh wake.
+        release_failure_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), Err("post failed"));
+        assert_eq!(second.join().unwrap(), Ok(()));
+        second_posted_rx.recv().unwrap();
+        assert_eq!(drag.take_pending(), Some(drag_intent(2)));
+    }
+
+    #[test]
+    fn successful_drag_wake_coalesces_to_latest_intent_until_worker_take() {
+        let drag = SharedDragState::default();
+        let mut wake_count = 0;
+        assert_eq!(
+            drag.enqueue_and_wake(drag_intent(1), || {
+                wake_count += 1;
+                Ok::<(), ()>(())
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            drag.enqueue_and_wake(drag_intent(2), || -> Result<(), ()> {
+                panic!("an outstanding wake must suppress duplicate posts")
+            }),
+            Ok(())
+        );
+        assert_eq!(wake_count, 1);
+        assert_eq!(drag.take_pending(), Some(drag_intent(2)));
+
+        assert_eq!(
+            drag.enqueue_and_wake(drag_intent(3), || {
+                wake_count += 1;
+                Ok::<(), ()>(())
+            }),
+            Ok(())
+        );
+        assert_eq!(wake_count, 2);
+        assert_eq!(drag.take_pending(), Some(drag_intent(3)));
+    }
+
     fn window_metadata(window_id: u32, name: &str, x: i32) -> WindowMetadata {
         WindowMetadata {
             window_id,
@@ -1975,7 +2244,16 @@ mod tests {
                 width: 640,
                 height: 360,
             },
+            caption: None,
         }
+    }
+
+    fn normalize_test_windows(
+        windows: Vec<WindowMetadata>,
+        filter: Option<&str>,
+    ) -> Vec<RegisteredWindow> {
+        let mut placement_epoch = 0;
+        normalize_registered_windows(windows, filter, &mut placement_epoch)
     }
 
     #[test]
@@ -2075,8 +2353,33 @@ mod tests {
     }
 
     #[test]
+    fn window_packet_preserves_caption_geometry_for_native_drag_hit_testing() {
+        let json = r#"{
+            "windowId":42,
+            "name":"Draggable",
+            "transparent":true,
+            "bufferName":"caption-buffer",
+            "rect":{"x":64,"y":72,"width":640,"height":360},
+            "caption":{"left":10,"right":12,"top":8,"height":40}
+        }"#;
+        let metadata: WindowMetadata = serde_json::from_str(json).unwrap();
+        let registered = RegisteredWindow::from_metadata(metadata, 17);
+
+        assert_eq!(registered.placement_epoch, 17);
+        assert_eq!(
+            registered.caption,
+            Some(InputCaption {
+                left: 10,
+                right: 12,
+                top: 8,
+                height: 40,
+            })
+        );
+    }
+
+    #[test]
     fn overlay_init_preserves_back_to_front_order_and_last_duplicate_position() {
-        let windows = normalize_registered_windows(
+        let windows = normalize_test_windows(
             vec![
                 window_metadata(10, "Back", 10),
                 window_metadata(20, "Middle", 20),
@@ -2109,17 +2412,17 @@ mod tests {
             ]
         };
 
-        let all = normalize_registered_windows(announced(), None);
+        let all = normalize_test_windows(announced(), None);
         assert_eq!(all.len(), 3);
 
-        let filtered = normalize_registered_windows(announced(), Some("ExampleMainOverlay"));
+        let filtered = normalize_test_windows(announced(), Some("ExampleMainOverlay"));
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].window_id, 10);
     }
 
     #[test]
     fn streamed_registration_deduplicates_and_appends_the_window_on_top() {
-        let mut windows = normalize_registered_windows(
+        let mut windows = normalize_test_windows(
             vec![
                 window_metadata(10, "Back", 10),
                 window_metadata(20, "Middle", 20),
@@ -2131,6 +2434,7 @@ mod tests {
         assert!(register_window_on_top(
             &mut windows,
             window_metadata(20, "Middle replacement", 88),
+            99,
         ));
         assert_eq!(
             windows
@@ -2141,11 +2445,12 @@ mod tests {
         );
         assert_eq!(windows.last().unwrap().name, "Middle replacement");
         assert_eq!(windows.last().unwrap().rect.x, 88);
+        assert_eq!(windows.last().unwrap().placement_epoch, 99);
     }
 
     #[test]
     fn bounds_update_changes_only_target_metadata_and_keeps_stack_position() {
-        let mut windows = normalize_registered_windows(
+        let mut windows = normalize_test_windows(
             vec![
                 window_metadata(10, "Back", 10),
                 window_metadata(20, "Front", 20),
@@ -2167,6 +2472,7 @@ mod tests {
                     rect: replacement_rect,
                     buffer_name: Some("replacement".to_owned()),
                 },
+                99,
             ),
             Some((true, true))
         );
@@ -2179,6 +2485,7 @@ mod tests {
         );
         assert_eq!(windows[0].rect, replacement_rect);
         assert_eq!(windows[0].buffer_name, "replacement");
+        assert_eq!(windows[0].placement_epoch, 99);
         assert_eq!(windows[1].rect.x, 20);
     }
 
@@ -2186,7 +2493,7 @@ mod tests {
     fn scene_snapshot_is_atomic_ordered_and_republishes_current_metadata() {
         let mut invalid = window_metadata(40, "Invalid", 40);
         invalid.rect.width = 0;
-        let mut windows = normalize_registered_windows(
+        let mut windows = normalize_test_windows(
             vec![
                 window_metadata(10, "Back", 10),
                 window_metadata(20, "Waiting", 20),

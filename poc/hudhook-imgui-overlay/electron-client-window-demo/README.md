@@ -57,13 +57,20 @@ Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
 
 The producer registers green 640 x 360 `ExampleMainOverlay` at `(64, 72)` as
 BACK, then overlapping blue 320 x 220 `ExamplePopupOverlay` at `(200, 136)` as
-FRONT. Both pages expose aligned text fields and role-specific proof events. The
-runner proves initial BACK>FRONT composition,
+FRONT. Both pages expose aligned text fields below their SDK captions and
+role-specific proof events. The runner proves initial BACK>FRONT composition,
 FRONT-only overlap input and keyboard focus, FRONT capture during an out-of-bounds
-drag, click-to-front from the exposed BACK panel without lifecycle traffic,
+pointer gesture, click-to-front from exposed BACK client content without lifecycle traffic,
 close/re-register ordering in both directions, BACK-only overlap routing after it
-is raised, FRONT hide/show without disturbing BACK, guarded interception release,
-normal released-Escape host exit, and exact-process cleanup. Rust tests cover
+is raised, and FRONT hide/show without disturbing BACK. After those original-bounds
+checks, it drags FRONT's striped caption handle from local `(160, 45)` by
+`(+96, +72)`, verifies the composited rect moves from `(200, 136)` to
+`(296, 208)` without a producer lifecycle or `window.bounds` event. FIFO-drained
+page hover barriers bracket the no-DOM-input assertion, after which the runner
+proves the moved target retains local `(150, 98)` and the vacated caption point
+uses the new hit-test rect.
+The final phases cover guarded interception release, normal released-Escape host
+exit, and exact-process cleanup. Rust tests cover
 alpha-zero fallthrough and atomic ordered scene/router publication below that
 end-to-end boundary.
 
@@ -74,17 +81,25 @@ Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
 ```
 
-Wait for `Manual multi-window input is ready.` Click/type in either field, drag
-outside a window, and use the in-page controls to hide/show or raise BACK and
-FRONT. Close the controlled host with its title-bar X when finished; Escape and
-Alt+F4 remain intercepted while the host is focused. No `client:dev` process is
-needed. Manual mode remains attached, reports focus-loss suspension/resumption,
-and cleans only its per-run Electron tree and controlled host.
+Wait for `Manual multi-window input is ready.` Each page has a high-contrast
+striped `:: DRAG BACK ::` or `:: DRAG FRONT ::` handle inside its SDK-declared
+caption. Drag that handle to move the composited window. This is distinct from
+pressing in a text field and dragging outside the window, which only demonstrates
+pointer-capture ownership. Click/type in either field and use the in-page controls
+to hide/show or raise BACK and FRONT. Close the controlled host with its title-bar
+X when finished; Escape and Alt+F4 remain intercepted while the host is focused.
+No `client:dev` process is needed. Manual mode remains attached, reports
+focus-loss suspension/resumption, and cleans only its per-run Electron tree and
+controlled host.
 
 These modes intentionally express explicit raises through the existing
 hide/show lifecycle: close removes one registration and show appends its
 replacement on top. Click-to-front is maintained inside the injected payload.
-The public SDK and existing IPC schema still have no persistent z-order field.
+Caption movement is also payload-local: it immediately republishes the render and
+hit-test rect but deliberately leaves the hidden producer `BrowserWindow` bounds
+unchanged. A producer lifecycle event, external `setBounds()`, or reconnect can
+therefore restore producer-owned placement. The public SDK and existing IPC
+schema still have no persistent z-order or payload-to-producer placement field.
 The producer flags `--hudhook-client-multiwindow-runner` and
 `--hudhook-client-multiwindow-manual` are runner internals; use the repository
 commands above so injection, readiness checks, verification, and cleanup remain

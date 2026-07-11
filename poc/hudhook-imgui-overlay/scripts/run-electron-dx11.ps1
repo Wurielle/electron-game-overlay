@@ -54,6 +54,8 @@ $ClientInputMouseDownProofMarker = "Electron left mouse down forwarded"
 $ClientInputMouseUpProofMarker = "Electron left mouse up forwarded"
 $ClientMultiWindowReadyMarker = "HUDHOOK_CLIENT_MULTIWINDOW_READY"
 $ClientMultiWindowTargetMarker = "HUDHOOK_CLIENT_MULTIWINDOW_TARGET"
+$ClientMultiWindowDragHandleMarker = "HUDHOOK_CLIENT_MULTIWINDOW_DRAG_HANDLE"
+$ClientMultiWindowProducerBoundsMarker = "HUDHOOK_CLIENT_MULTIWINDOW_PRODUCER_BOUNDS"
 $ClientMultiWindowOverlapMarker = "HUDHOOK_CLIENT_MULTIWINDOW_OVERLAP"
 $ClientMultiWindowInterceptRequestedMarker = "HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_REQUESTED"
 $ClientMultiWindowInterceptEnabledMarker = "HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_ENABLED"
@@ -70,6 +72,7 @@ $ClientMultiWindowBackValueMarker = "HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=back 
 $ClientMultiWindowSceneMarker = "Electron overlay scene composed"
 $ClientMultiWindowSceneInitialOrder = "order=ExampleMainOverlay>ExamplePopupOverlay"
 $ClientMultiWindowSceneRaisedBackOrder = "order=ExamplePopupOverlay>ExampleMainOverlay"
+$ClientMultiWindowCaptionMovedMarker = "Electron overlay moved by caption drag"
 $ClientMultiWindowBackNameMarker = "window_name=ExampleMainOverlay"
 $ClientMultiWindowFrontNameMarker = "window_name=ExamplePopupOverlay"
 $ClientAutoStartFlag = "--start-overlay-session"
@@ -171,7 +174,7 @@ elseif ($ClientMultiWindow) {
     $ElectronCommandLineMarkers = @($ClientMultiWindowUserDataDirectory)
     $ElectronStdoutLog = Join-Path $RunDirectory "electron-client-multiwindow.stdout.log"
     $ElectronStderrLog = Join-Path $RunDirectory "electron-client-multiwindow.stderr.log"
-    $ExpectedResult = "two overlapping real Electron windows compose and route focus, keyboard, capture, close, registration, and z-order deterministically."
+    $ExpectedResult = "two overlapping real Electron windows compose, move by caption drag, and route focus, keyboard, capture, close, registration, and z-order deterministically."
 }
 elseif ($ClientMultiWindowManual) {
     $ProducerMode = "ClientMultiWindowManual"
@@ -186,7 +189,7 @@ elseif ($ClientMultiWindowManual) {
     $ElectronCommandLineMarkers = @($ClientMultiWindowUserDataDirectory)
     $ElectronStdoutLog = Join-Path $RunDirectory "electron-client-multiwindow-manual.stdout.log"
     $ElectronStderrLog = Join-Path $RunDirectory "electron-client-multiwindow-manual.stderr.log"
-    $ExpectedResult = "you can interact with, hide/show, and raise the overlapping BACK and FRONT Electron windows until closing the controlled host."
+    $ExpectedResult = "you can move, interact with, hide/show, and raise the overlapping BACK and FRONT Electron windows until closing the controlled host."
 }
 elseif ($ClientInput) {
     $ProducerMode = "ClientInput"
@@ -555,6 +558,39 @@ namespace HudhookOverlayRunner
     }
 }
 "@
+}
+
+function Invoke-WithLeftButtonDown {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Gesture
+    )
+
+    $GestureFailure = $null
+    try {
+        [HudhookOverlayRunner.NativeInputMethods]::SendLeftDown()
+        & $Gesture
+    }
+    catch {
+        $GestureFailure = $_
+    }
+    finally {
+        try {
+            # Always attempt the matching release, including when SendLeftDown
+            # itself or any assertion inside the gesture throws.
+            [HudhookOverlayRunner.NativeInputMethods]::SendLeftUp()
+        }
+        catch {
+            if ($null -eq $GestureFailure) {
+                throw
+            }
+            Write-Warning "Could not send the guarded left-button release: $($_.Exception.Message)"
+        }
+    }
+
+    if ($null -ne $GestureFailure) {
+        throw $GestureFailure
+    }
 }
 
 function Get-FileContent {
@@ -1244,6 +1280,23 @@ try {
             $ElectronOutput,
             $MultiWindowTargetPattern
         )
+        $MultiWindowDragHandlePattern = (
+            [regex]::Escape($ClientMultiWindowDragHandleMarker) + ' ' +
+            'role=(?<role>back|front) ' +
+            'windowId=(?<windowId>\d+) ' +
+            'x=(?<x>-?\d+(?:\.\d+)?) ' +
+            'y=(?<y>-?\d+(?:\.\d+)?) ' +
+            'width=(?<width>\d+(?:\.\d+)?) ' +
+            'height=(?<height>\d+(?:\.\d+)?) ' +
+            'windowX=(?<windowX>-?\d+) ' +
+            'windowY=(?<windowY>-?\d+) ' +
+            'centerX=(?<centerX>-?\d+(?:\.\d+)?) ' +
+            'centerY=(?<centerY>-?\d+(?:\.\d+)?)'
+        )
+        $MultiWindowDragHandleMatches = [regex]::Matches(
+            $ElectronOutput,
+            $MultiWindowDragHandlePattern
+        )
         $BackTargetMatches = @(
             $MultiWindowTargetMatches |
                 Where-Object { $_.Groups["role"].Value -eq "back" }
@@ -1252,13 +1305,25 @@ try {
             $MultiWindowTargetMatches |
                 Where-Object { $_.Groups["role"].Value -eq "front" }
         )
+        $BackDragHandleMatches = @(
+            $MultiWindowDragHandleMatches |
+                Where-Object { $_.Groups["role"].Value -eq "back" }
+        )
+        $FrontDragHandleMatches = @(
+            $MultiWindowDragHandleMatches |
+                Where-Object { $_.Groups["role"].Value -eq "front" }
+        )
         if ($BackTargetMatches.Count -eq 0 -or $FrontTargetMatches.Count -eq 0) {
             throw "Could not parse both role-specific multi-window targets from $ElectronStdoutLog."
+        }
+        if ($BackDragHandleMatches.Count -eq 0 -or $FrontDragHandleMatches.Count -eq 0) {
+            throw "Could not parse both role-specific caption drag handles from $ElectronStdoutLog."
         }
 
         $InvariantCulture = [System.Globalization.CultureInfo]::InvariantCulture
         $BackTargetMatch = $BackTargetMatches[$BackTargetMatches.Count - 1]
         $FrontTargetMatch = $FrontTargetMatches[$FrontTargetMatches.Count - 1]
+        $FrontDragHandleMatch = $FrontDragHandleMatches[$FrontDragHandleMatches.Count - 1]
         $BackWindowId = [int]::Parse(
             $BackTargetMatch.Groups["windowId"].Value,
             $InvariantCulture
@@ -1303,6 +1368,14 @@ try {
             $FrontTargetMatch.Groups["centerY"].Value,
             $InvariantCulture
         )
+        $FrontDragHandleCenterX = [double]::Parse(
+            $FrontDragHandleMatch.Groups["centerX"].Value,
+            $InvariantCulture
+        )
+        $FrontDragHandleCenterY = [double]::Parse(
+            $FrontDragHandleMatch.Groups["centerY"].Value,
+            $InvariantCulture
+        )
         if (
             [Math]::Abs($BackCenterX - $FrontCenterX) -gt 0.5 -or
             [Math]::Abs($BackCenterY - $FrontCenterY) -gt 0.5
@@ -1317,6 +1390,36 @@ try {
             $FrontCenterY,
             [MidpointRounding]::AwayFromZero
         )
+        $FrontDragStartClientX = [int][Math]::Round(
+            $FrontDragHandleCenterX,
+            [MidpointRounding]::AwayFromZero
+        )
+        $FrontDragStartClientY = [int][Math]::Round(
+            $FrontDragHandleCenterY,
+            [MidpointRounding]::AwayFromZero
+        )
+        $FrontDragDeltaX = 96
+        $FrontDragDeltaY = 72
+        $FrontDragEndClientX = $FrontDragStartClientX + $FrontDragDeltaX
+        $FrontDragEndClientY = $FrontDragStartClientY + $FrontDragDeltaY
+        $MovedFrontWindowX = $FrontWindowX + $FrontDragDeltaX
+        $MovedFrontWindowY = $FrontWindowY + $FrontDragDeltaY
+        $MovedFrontTargetClientX = $TargetClientX + $FrontDragDeltaX
+        $MovedFrontTargetClientY = $TargetClientY + $FrontDragDeltaY
+        if (
+            $FrontDragStartClientX -ne ($FrontWindowX + 160) -or
+            $FrontDragStartClientY -ne ($FrontWindowY + 45)
+        ) {
+            throw "The FRONT caption proof handle is not centered at the declared local point (160,45)."
+        }
+        if (
+            $FrontDragStartClientX -ge $MovedFrontWindowX -and
+            $FrontDragStartClientX -lt ($MovedFrontWindowX + 320) -and
+            $FrontDragStartClientY -ge $MovedFrontWindowY -and
+            $FrontDragStartClientY -lt ($MovedFrontWindowY + 220)
+        ) {
+            throw "The original FRONT caption point is not exclusive after the planned move."
+        }
         $CaptureClientX = $BackWindowX + 20
         $CaptureClientY = $TargetClientY
         $CaptureFrontLocalX = $CaptureClientX - $FrontWindowX
@@ -1325,9 +1428,12 @@ try {
             throw "The capture proof point is not outside the FRONT window."
         }
         $BackRaiseProbeClientX = $BackWindowX + 16
-        $BackRaiseProbeClientY = $BackWindowY + 16
+        $BackRaiseProbeClientY = $BackWindowY + 64
         if ($BackRaiseProbeClientX -ge $FrontWindowX) {
             throw "The BACK click-to-front probe is not exposed to the left of FRONT."
+        }
+        if ($BackRaiseProbeClientY -lt ($BackWindowY + 50)) {
+            throw "The BACK click-to-front probe overlaps its SDK-declared caption."
         }
 
         $BackSelectedPattern = (
@@ -1622,19 +1728,19 @@ try {
             $CaptureBackMoveBaseline = Get-RegexCount $BeforeCapturePayload $BackMovePattern
             $CaptureBackUpBaseline = Get-RegexCount $BeforeCapturePayload $BackUpPattern
 
-            [HudhookOverlayRunner.NativeInputMethods]::SendLeftDown()
-            Wait-ForProofRegexCounts `
-                -Phase "FRONT capture acquisition" `
-                -PayloadMinimumCounts @{
-                    $FrontDownPattern = $CaptureFrontDownBaseline + 1
-                } | Out-Null
-            [HudhookOverlayRunner.NativeInputMethods]::MoveMouseToClientPoint(
-                $HostWindow,
-                $CaptureClientX,
-                $CaptureClientY
-            ) | Out-Null
-            Start-Sleep -Milliseconds 100
-            [HudhookOverlayRunner.NativeInputMethods]::SendLeftUp()
+            Invoke-WithLeftButtonDown {
+                Wait-ForProofRegexCounts `
+                    -Phase "FRONT capture acquisition" `
+                    -PayloadMinimumCounts @{
+                        $FrontDownPattern = $CaptureFrontDownBaseline + 1
+                    } | Out-Null
+                [HudhookOverlayRunner.NativeInputMethods]::MoveMouseToClientPoint(
+                    $HostWindow,
+                    $CaptureClientX,
+                    $CaptureClientY
+                ) | Out-Null
+                Start-Sleep -Milliseconds 100
+            }
 
             $CaptureMoveAtOutsidePointPattern = (
                 $FrontMovePattern +
@@ -1684,11 +1790,11 @@ try {
             )
             $BackProbeDownPattern = (
                 $BackDownPattern +
-                '[^\r\n]*x=(?:15|16|17)[^\r\n]*y=(?:15|16|17)'
+                '[^\r\n]*x=(?:15|16|17)[^\r\n]*y=(?:63|64|65)'
             )
             $BackProbeUpPattern = (
                 $BackUpPattern +
-                '[^\r\n]*x=(?:15|16|17)[^\r\n]*y=(?:15|16|17)'
+                '[^\r\n]*x=(?:15|16|17)[^\r\n]*y=(?:63|64|65)'
             )
             $RaiseBackCommandPattern = [regex]::Escape(
                 "HUDHOOK_CLIENT_MULTIWINDOW_COMMAND command=raise-back"
@@ -1741,7 +1847,7 @@ try {
             Start-Sleep -Milliseconds 100
             [HudhookOverlayRunner.NativeInputMethods]::SendLeftClick()
             $ClickRaiseProof = Wait-ForProofRegexCounts `
-                -Phase "click exposed BACK panel to raise it above FRONT" `
+                -Phase "click exposed BACK client surface to raise it above FRONT" `
                 -PayloadMinimumCounts @{
                     $BackRaisedAfterInputPattern = $ClickRaiseMarkerBaseline + 1
                     $BackFocusPattern = $ClickRaiseFocusBaseline + 1
@@ -2068,6 +2174,286 @@ try {
                     $FrontShownPattern = $FrontShownBaseline + 1
                 } | Out-Null
 
+            # Caption movement is deliberately last among the compositor
+            # phases: it changes FRONT's payload-local rect, while every prior
+            # lifecycle assertion above relies on the producer's original
+            # registration bounds.
+            $CaptionMovedPattern = (
+                [regex]::Escape($ClientMultiWindowCaptionMovedMarker) +
+                '(?=[^\r\n]*window_id=' + $FrontWindowId + '(?!\d))' +
+                '(?=[^\r\n]*x=' + $MovedFrontWindowX + '(?!\d))' +
+                '(?=[^\r\n]*y=' + $MovedFrontWindowY + '(?!\d))' +
+                '[^\r\n]*'
+            )
+            $FrontBoundsUpdatePattern = (
+                [regex]::Escape($ClientWindowBoundsProofMarker) +
+                '[^\r\n]*' +
+                [regex]::Escape("window_id=$FrontWindowId")
+            )
+            $ProducerLifecycleCommandPattern = (
+                [regex]::Escape("HUDHOOK_CLIENT_MULTIWINDOW_COMMAND command=") +
+                '(?:hide-front|show-front|raise-front|raise-back)'
+            )
+            $PagePointerInputPattern = (
+                [regex]::Escape("HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=") +
+                '(?:back|front) event=(?:down|up|click|drag|capture-up)'
+            )
+            $CaptionDomPattern = [regex]::Escape(
+                "HUDHOOK_CLIENT_MULTIWINDOW_CAPTION_DOM role="
+            )
+            $CaptionStartQueueBarrierPattern = (
+                [regex]::Escape(
+                    "HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=front event=queue-barrier"
+                ) +
+                '[^\r\n]*x=(?:159|160|161)(?!\d)' +
+                '[^\r\n]*y=(?:44|45|46)(?!\d)'
+            )
+            $CaptionStartQueueBarrierBaseline = Get-RegexCount `
+                (Get-FileContent $ElectronStdoutLog) `
+                $CaptionStartQueueBarrierPattern
+            [HudhookOverlayRunner.NativeInputMethods]::MoveMouseToClientPoint(
+                $HostWindow,
+                $FrontDragStartClientX,
+                $FrontDragStartClientY
+            ) | Out-Null
+            $CaptionStartQueueBarrierProof = Wait-ForProofRegexCounts `
+                -Phase "drain outbound input before the caption gesture" `
+                -ElectronMinimumCounts @{
+                    $CaptionStartQueueBarrierPattern = $CaptionStartQueueBarrierBaseline + 1
+                }
+            # The hover marker is produced only after its normal mouse packet
+            # reaches the page through the same FIFO as every older packet.
+            # Taking baselines after it prevents delayed prior clicks from
+            # being mistaken for caption leakage.
+            $BeforeCaptionDragPayload = $CaptionStartQueueBarrierProof.Payload
+            $BeforeCaptionDragElectron = $CaptionStartQueueBarrierProof.Electron
+            $CaptionMovedBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $CaptionMovedPattern
+            $CaptionFrontDownBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $FrontDownPattern
+            $CaptionFrontMoveBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $FrontMovePattern
+            $CaptionFrontUpBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $FrontUpPattern
+            $CaptionBackDownBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $BackDownPattern
+            $CaptionBackMoveBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $BackMovePattern
+            $CaptionBackUpBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $BackUpPattern
+            $CaptionBoundsUpdateBaseline = Get-RegexCount `
+                $BeforeCaptionDragPayload `
+                $FrontBoundsUpdatePattern
+            $CaptionProducerLifecycleBaseline = Get-RegexCount `
+                $BeforeCaptionDragElectron `
+                $ProducerLifecycleCommandPattern
+            $CaptionPagePointerBaseline = Get-RegexCount `
+                $BeforeCaptionDragElectron `
+                $PagePointerInputPattern
+            $CaptionDomBaseline = Get-RegexCount `
+                $BeforeCaptionDragElectron `
+                $CaptionDomPattern
+
+            Invoke-WithLeftButtonDown {
+                Start-Sleep -Milliseconds 100
+                [HudhookOverlayRunner.NativeInputMethods]::MoveMouseToClientPoint(
+                    $HostWindow,
+                    $FrontDragEndClientX,
+                    $FrontDragEndClientY
+                ) | Out-Null
+                Start-Sleep -Milliseconds 100
+            }
+
+            $CaptionDragProof = Wait-ForProofRegexCounts `
+                -Phase "move FRONT by its payload-local caption handle" `
+                -PayloadMinimumCounts @{
+                    $CaptionMovedPattern = $CaptionMovedBaseline + 1
+                }
+            $CaptionEndQueueBarrierPattern = (
+                [regex]::Escape(
+                    "HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=front event=queue-barrier"
+                ) +
+                '[^\r\n]*x=(?:149|150|151)(?!\d)' +
+                '[^\r\n]*y=(?:97|98|99)(?!\d)'
+            )
+            $CaptionEndQueueBarrierBaseline = Get-RegexCount `
+                $CaptionDragProof.Electron `
+                $CaptionEndQueueBarrierPattern
+            [HudhookOverlayRunner.NativeInputMethods]::MoveMouseToClientPoint(
+                $HostWindow,
+                $MovedFrontTargetClientX,
+                $MovedFrontTargetClientY
+            ) | Out-Null
+            $CaptionEndQueueBarrierProof = Wait-ForProofRegexCounts `
+                -Phase "drain outbound input after the caption gesture" `
+                -ElectronMinimumCounts @{
+                    $CaptionEndQueueBarrierPattern = $CaptionEndQueueBarrierBaseline + 1
+                }
+            # The post-gesture hover is behind any accidentally forwarded
+            # caption packets in the payload FIFO. Once it reaches the page,
+            # both the payload diagnostics and renderer console markers for
+            # older packets are safe to compare against the drained baseline.
+            $CaptionDragPayloadAfter = $CaptionEndQueueBarrierProof.Payload
+            $CaptionDragElectronAfter = $CaptionEndQueueBarrierProof.Electron
+            if (
+                (Get-RegexCount $CaptionDragPayloadAfter $FrontDownPattern) -ne
+                    $CaptionFrontDownBaseline -or
+                (Get-RegexCount $CaptionDragPayloadAfter $FrontMovePattern) -ne
+                    $CaptionFrontMoveBaseline -or
+                (Get-RegexCount $CaptionDragPayloadAfter $FrontUpPattern) -ne
+                    $CaptionFrontUpBaseline -or
+                (Get-RegexCount $CaptionDragPayloadAfter $BackDownPattern) -ne
+                    $CaptionBackDownBaseline -or
+                (Get-RegexCount $CaptionDragPayloadAfter $BackMovePattern) -ne
+                    $CaptionBackMoveBaseline -or
+                (Get-RegexCount $CaptionDragPayloadAfter $BackUpPattern) -ne
+                    $CaptionBackUpBaseline -or
+                (Get-RegexCount $CaptionDragPayloadAfter $FrontBoundsUpdatePattern) -ne
+                    $CaptionBoundsUpdateBaseline -or
+                (Get-RegexCount $CaptionDragElectronAfter $ProducerLifecycleCommandPattern) -ne
+                    $CaptionProducerLifecycleBaseline -or
+                (Get-RegexCount $CaptionDragElectronAfter $PagePointerInputPattern) -ne
+                    $CaptionPagePointerBaseline -or
+                (Get-RegexCount $CaptionDragElectronAfter $CaptionDomPattern) -ne
+                    $CaptionDomBaseline
+            ) {
+                throw "The caption gesture leaked DOM/pointer input or used producer bounds/lifecycle traffic."
+            }
+
+            $ReportedFrontBoundsPattern = (
+                [regex]::Escape($ClientMultiWindowProducerBoundsMarker) +
+                '[^\r\n]*stage=reported[^\r\n]*role=front' +
+                '[^\r\n]*' + [regex]::Escape("windowId=$FrontWindowId") +
+                '[^\r\n]*x=' + $FrontWindowX + '(?!\d)' +
+                '[^\r\n]*y=' + $FrontWindowY + '(?!\d)' +
+                '[^\r\n]*width=320(?!\d)[^\r\n]*height=220(?!\d)'
+            )
+            $ReportedFrontBoundsBaseline = Get-RegexCount `
+                (Get-FileContent $ElectronStdoutLog) `
+                $ReportedFrontBoundsPattern
+            Set-Content `
+                -LiteralPath $ClientMultiWindowControlFile `
+                -Value "report-bounds" `
+                -NoNewline `
+                -Encoding Ascii
+            $ReportedBoundsProof = Wait-ForProofRegexCounts `
+                -Phase "confirm caption movement remains payload-local" `
+                -ElectronMinimumCounts @{
+                    $ReportedFrontBoundsPattern = $ReportedFrontBoundsBaseline + 1
+                }
+            if (
+                (Get-RegexCount `
+                    $ReportedBoundsProof.Electron `
+                    $ProducerLifecycleCommandPattern) -ne
+                    $CaptionProducerLifecycleBaseline
+            ) {
+                throw "A producer hide/show/raise command occurred during caption movement."
+            }
+
+            $MovedFrontTargetDownPattern = (
+                $FrontDownPattern +
+                '[^\r\n]*x=(?:149|150|151)(?!\d)' +
+                '[^\r\n]*y=(?:97|98|99)(?!\d)'
+            )
+            $MovedFrontTargetUpPattern = (
+                $FrontUpPattern +
+                '[^\r\n]*x=(?:149|150|151)(?!\d)' +
+                '[^\r\n]*y=(?:97|98|99)(?!\d)'
+            )
+            $BeforeMovedTargetPayload = Get-FileContent $PayloadLog
+            $BeforeMovedTargetElectron = Get-FileContent $ElectronStdoutLog
+            $MovedFrontDownBaseline = Get-RegexCount `
+                $BeforeMovedTargetPayload `
+                $MovedFrontTargetDownPattern
+            $MovedFrontUpBaseline = Get-RegexCount `
+                $BeforeMovedTargetPayload `
+                $MovedFrontTargetUpPattern
+            $MovedTargetBackDownBaseline = Get-RegexCount `
+                $BeforeMovedTargetPayload `
+                $BackDownPattern
+            $MovedTargetBackUpBaseline = Get-RegexCount `
+                $BeforeMovedTargetPayload `
+                $BackUpPattern
+            $MovedTargetFrontPageClickBaseline = Get-RegexCount `
+                $BeforeMovedTargetElectron `
+                $FrontPageClickPattern
+            $MovedTargetBackPageClickBaseline = Get-RegexCount `
+                $BeforeMovedTargetElectron `
+                $BackPageClickPattern
+            Start-Sleep -Milliseconds 100
+            [HudhookOverlayRunner.NativeInputMethods]::SendLeftClick()
+            $MovedTargetProof = Wait-ForProofRegexCounts `
+                -Phase "route input at FRONT's moved text target" `
+                -PayloadMinimumCounts @{
+                    $MovedFrontTargetDownPattern = $MovedFrontDownBaseline + 1
+                    $MovedFrontTargetUpPattern = $MovedFrontUpBaseline + 1
+                } `
+                -ElectronMinimumCounts @{
+                    $FrontPageClickPattern = $MovedTargetFrontPageClickBaseline + 1
+                }
+            if (
+                (Get-RegexCount $MovedTargetProof.Payload $BackDownPattern) -ne
+                    $MovedTargetBackDownBaseline -or
+                (Get-RegexCount $MovedTargetProof.Payload $BackUpPattern) -ne
+                    $MovedTargetBackUpBaseline -or
+                (Get-RegexCount $MovedTargetProof.Electron $BackPageClickPattern) -ne
+                    $MovedTargetBackPageClickBaseline
+            ) {
+                throw "BACK received input at FRONT's moved text target."
+            }
+
+            $OldCaptionBackDownPattern = (
+                $BackDownPattern +
+                '[^\r\n]*x=(?:295|296|297)(?!\d)' +
+                '[^\r\n]*y=(?:108|109|110)(?!\d)'
+            )
+            $OldCaptionBackUpPattern = (
+                $BackUpPattern +
+                '[^\r\n]*x=(?:295|296|297)(?!\d)' +
+                '[^\r\n]*y=(?:108|109|110)(?!\d)'
+            )
+            $BeforeOldCaptionProbe = Get-FileContent $PayloadLog
+            $OldCaptionBackDownBaseline = Get-RegexCount `
+                $BeforeOldCaptionProbe `
+                $OldCaptionBackDownPattern
+            $OldCaptionBackUpBaseline = Get-RegexCount `
+                $BeforeOldCaptionProbe `
+                $OldCaptionBackUpPattern
+            $OldCaptionFrontDownBaseline = Get-RegexCount `
+                $BeforeOldCaptionProbe `
+                $FrontDownPattern
+            $OldCaptionFrontUpBaseline = Get-RegexCount `
+                $BeforeOldCaptionProbe `
+                $FrontUpPattern
+            [HudhookOverlayRunner.NativeInputMethods]::MoveMouseToClientPoint(
+                $HostWindow,
+                $FrontDragStartClientX,
+                $FrontDragStartClientY
+            ) | Out-Null
+            Start-Sleep -Milliseconds 100
+            [HudhookOverlayRunner.NativeInputMethods]::SendLeftClick()
+            $OldCaptionProbeProof = Wait-ForProofRegexCounts `
+                -Phase "route the original FRONT caption point to BACK" `
+                -PayloadMinimumCounts @{
+                    $OldCaptionBackDownPattern = $OldCaptionBackDownBaseline + 1
+                    $OldCaptionBackUpPattern = $OldCaptionBackUpBaseline + 1
+                }
+            if (
+                (Get-RegexCount $OldCaptionProbeProof.Payload $FrontDownPattern) -ne
+                    $OldCaptionFrontDownBaseline -or
+                (Get-RegexCount $OldCaptionProbeProof.Payload $FrontUpPattern) -ne
+                    $OldCaptionFrontUpBaseline
+            ) {
+                throw "FRONT still received input at its original caption position after moving."
+            }
+
             $BeforeReleasePayload = Get-FileContent $PayloadLog
             $FilterDisabledPattern = [regex]::Escape(
                 $ClientInputFilterDisabledProofMarker
@@ -2137,7 +2523,7 @@ try {
             ) {
                 throw "Released Escape was incorrectly forwarded to an Electron overlay window."
             }
-            Write-Host "Verified deterministic two-window composition, routing, capture, z-order, lifecycle, and release."
+            Write-Host "Verified deterministic two-window composition, caption movement, routing, capture, z-order, lifecycle, and release."
         }
     }
 
@@ -2364,7 +2750,8 @@ try {
         if ($ClientMultiWindowManual) {
             Write-Host ""
             Write-Host "Manual multi-window input is ready. FRONT (blue) initially overlaps BACK (green)."
-            Write-Host "Use each overlay's Hide/Show/Raise buttons, click either text field, type, and drag outside a window."
+            Write-Host "Drag either striped :: DRAG ROLE :: caption handle to move that composited window."
+            Write-Host "Use Hide/Show/Raise, click either text field, type, and separately drag from a field outside its window to test pointer capture."
             Write-Host "When finished, close the controlled host with its title-bar X; Escape and Alt+F4 are intercepted."
             $ObservedManualSuspendedCount = 0
             $ObservedManualResumedCount = 0

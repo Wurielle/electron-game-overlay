@@ -450,7 +450,7 @@ function validateNativeInputTranslation(overlayInstance) {
 
 async function instrumentMultiwindowPage(
   window,
-  { role, selector, left, top, color, commands },
+  { role, selector, left, top, color, caption, commands },
 ) {
   const config = JSON.stringify({
     role,
@@ -458,6 +458,8 @@ async function instrumentMultiwindowPage(
     left,
     top,
     color,
+    caption,
+    queueBarriers: AUTOMATED_MULTIWINDOW_PROOF,
     commands: MANUAL_MULTIWINDOW_PROOF ? commands : [],
     commandChannel: MULTIWINDOW_COMMAND_CHANNEL,
   });
@@ -465,8 +467,8 @@ async function instrumentMultiwindowPage(
     `(() => {
       const config = ${config};
       const existing = window.__hudhookMultiwindowProof;
-      if (existing && typeof existing.getTargetRect === 'function') {
-        return existing.getTargetRect();
+      if (existing && typeof existing.getProofRects === 'function') {
+        return existing.getProofRects();
       }
 
       const target = document.querySelector(config.selector);
@@ -535,12 +537,91 @@ async function instrumentMultiwindowPage(
         }
       }, true);
 
+      const captionWidth =
+        window.innerWidth - config.caption.left - config.caption.right;
+      const dragHandleWidth = Math.min(180, captionWidth - 16);
+      const dragHandleHeight = Math.min(20, config.caption.height - 10);
+      if (dragHandleWidth <= 0 || dragHandleHeight <= 0) {
+        return { error: 'invalid-caption', caption: config.caption };
+      }
+
+      const dragHandle = document.createElement('div');
+      dragHandle.id = 'hudhook-client-multiwindow-drag-' + config.role;
+      dragHandle.textContent = ':: DRAG ' + config.role.toUpperCase() + ' ::';
+      dragHandle.title =
+        'Drag this caption handle to move the ' + config.role.toUpperCase() +
+        ' composited overlay window';
+      Object.assign(dragHandle.style, {
+        position: 'fixed',
+        left:
+          config.caption.left + (captionWidth - dragHandleWidth) / 2 + 'px',
+        top: config.caption.top + 5 + 'px',
+        width: dragHandleWidth + 'px',
+        height: dragHandleHeight + 'px',
+        boxSizing: 'border-box',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        border: '2px solid #ffffff',
+        borderRadius: '5px',
+        background:
+          'repeating-linear-gradient(135deg, ' + config.color +
+          ' 0 8px, rgba(17, 24, 39, 0.96) 8px 16px)',
+        boxShadow: '0 0 0 2px ' + config.color + ', 0 2px 8px #000000',
+        color: '#ffffff',
+        cursor: 'move',
+        font: '900 11px sans-serif',
+        letterSpacing: '1px',
+        lineHeight: dragHandleHeight + 'px',
+        userSelect: 'none',
+        zIndex: '2147483645'
+      });
+      let captionDomDragging = false;
+      const captionDomMarker = (event, pointer) => {
+        console.log(
+          'HUDHOOK_CLIENT_MULTIWINDOW_CAPTION_DOM role=' + config.role +
+          ' event=' + event +
+          ' x=' + pointer.clientX + ' y=' + pointer.clientY
+        );
+      };
+      dragHandle.addEventListener('mousedown', event => {
+        if (event.button !== 0) {
+          return;
+        }
+        captionDomDragging = true;
+        captionDomMarker('start', event);
+      });
+      window.addEventListener('mousemove', event => {
+        if (captionDomDragging) {
+          captionDomMarker('move', event);
+        }
+      }, true);
+      window.addEventListener('mouseup', event => {
+        if (!captionDomDragging || event.button !== 0) {
+          return;
+        }
+        captionDomMarker('end', event);
+        captionDomDragging = false;
+      }, true);
+      window.addEventListener('mousemove', event => {
+        if (config.queueBarriers && event.buttons === 0) {
+          // This listener is registered after the caption-leak listener so
+          // its marker is last for the hover event. Seeing it proves every
+          // older outbound input packet has been attempted by the bridge.
+          marker(
+            'queue-barrier',
+            'x=' + event.clientX + ' y=' + event.clientY
+          );
+        }
+      }, true);
+      document.body.appendChild(dragHandle);
+
       const panel = document.createElement('div');
       panel.id = 'hudhook-client-multiwindow-panel-' + config.role;
       Object.assign(panel.style, {
         position: 'fixed',
         left: '8px',
-        top: '8px',
+        bottom: '8px',
         display: 'flex',
         alignItems: 'center',
         gap: '6px',
@@ -580,8 +661,25 @@ async function instrumentMultiwindowPage(
           height: rect.height
         };
       };
-      window.__hudhookMultiwindowProof = { getTargetRect };
-      return getTargetRect();
+      const getDragHandleRect = () => {
+        const rect = dragHandle.getBoundingClientRect();
+        return {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        };
+      };
+      const getProofRects = () => ({
+        ...getTargetRect(),
+        dragHandle: getDragHandleRect()
+      });
+      window.__hudhookMultiwindowProof = {
+        getTargetRect,
+        getDragHandleRect,
+        getProofRects
+      };
+      return getProofRects();
     })()`,
     true,
   );
@@ -594,10 +692,24 @@ async function instrumentMultiwindowPage(
     !Number.isFinite(result.width) ||
     !Number.isFinite(result.height) ||
     result.width <= 0 ||
-    result.height <= 0
+    result.height <= 0 ||
+    !result.dragHandle ||
+    !Number.isFinite(result.dragHandle.x) ||
+    !Number.isFinite(result.dragHandle.y) ||
+    !Number.isFinite(result.dragHandle.width) ||
+    !Number.isFinite(result.dragHandle.height) ||
+    result.dragHandle.width <= 0 ||
+    result.dragHandle.height <= 0
   ) {
     throw new Error(
       `invalid ${role} multi-window target rect: ${JSON.stringify(result)}`,
+    );
+  }
+  const captionBottom = caption.top + caption.height;
+  if (result.y < captionBottom) {
+    throw new Error(
+      `${role} multi-window target overlaps its caption: ` +
+        `${JSON.stringify({ target: result, caption })}`,
     );
   }
 
@@ -632,6 +744,39 @@ function logMultiwindowTarget(details) {
   );
 }
 
+function logMultiwindowDragHandle(details) {
+  const dragHandle = details.target.dragHandle;
+  const centerX = details.bounds.x + dragHandle.x + dragHandle.width / 2;
+  const centerY = details.bounds.y + dragHandle.y + dragHandle.height / 2;
+  console.log(
+    'HUDHOOK_CLIENT_MULTIWINDOW_DRAG_HANDLE ' +
+      `role=${details.role} windowId=${details.windowId} ` +
+      `x=${formatRectValue(dragHandle.x)} ` +
+      `y=${formatRectValue(dragHandle.y)} ` +
+      `width=${formatRectValue(dragHandle.width)} ` +
+      `height=${formatRectValue(dragHandle.height)} ` +
+      `windowX=${details.bounds.x} windowY=${details.bounds.y} ` +
+      `centerX=${formatRectValue(centerX)} ` +
+      `centerY=${formatRectValue(centerY)}`,
+  );
+}
+
+function logMultiwindowProducerBounds(stage) {
+  for (const [role, window] of [
+    ['back', overlayWindow],
+    ['front', frontOverlayWindow],
+  ]) {
+    const bounds = window.browserWindow.getBounds();
+    console.log(
+      'HUDHOOK_CLIENT_MULTIWINDOW_PRODUCER_BOUNDS ' +
+        `stage=${stage} role=${role} ` +
+        `windowId=${window.browserWindow.id} ` +
+        `x=${bounds.x} y=${bounds.y} ` +
+        `width=${bounds.width} height=${bounds.height}`,
+    );
+  }
+}
+
 function applyMultiwindowCommand(command, source) {
   if (!MULTIWINDOW_PROOF || cleanupStarted) {
     return;
@@ -661,6 +806,9 @@ function applyMultiwindowCommand(command, source) {
       overlayWindow.show();
       overlayWindow.browserWindow.webContents.invalidate();
       console.log('HUDHOOK_CLIENT_MULTIWINDOW_BACK_RAISED');
+      return;
+    case 'report-bounds':
+      logMultiwindowProducerBounds('reported');
       return;
     case 'release':
       inputReleaseRequested = true;
@@ -723,6 +871,9 @@ async function startMultiwindowInputProofSequence() {
 
   logMultiwindowTarget(back);
   logMultiwindowTarget(front);
+  logMultiwindowDragHandle(back);
+  logMultiwindowDragHandle(front);
+  logMultiwindowProducerBounds('initial');
   console.log(
     'HUDHOOK_CLIENT_MULTIWINDOW_OVERLAP ' +
       `x=${formatRectValue(front.centerX)} ` +
@@ -939,8 +1090,9 @@ async function createDemo() {
       role: 'back',
       selector: '#hudhook-client-input-target',
       left: 176,
-      top: 128,
+      top: 148,
       color: '#10b981',
+      caption: { left: 10, right: 10, top: 10, height: 40 },
       commands: [
         { label: 'Raise FRONT', command: 'raise-front' },
         { label: 'Show FRONT', command: 'show-front' },
@@ -1068,8 +1220,9 @@ async function createDemo() {
         role: 'front',
         selector: 'input[type="text"]',
         left: 40,
-        top: 64,
+        top: 84,
         color: '#3b82f6',
+        caption: { left: 30, right: 30, top: 30, height: 40 },
         commands: [
           { label: 'Raise BACK', command: 'raise-back' },
           { label: 'Hide FRONT', command: 'hide-front' },

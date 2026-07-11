@@ -33,6 +33,7 @@ unchanged. The existing registration stream is the stacking contract:
 | `window.framebuffer` | Copy and publish that window's mapping/frame. |
 | `window.close` | Remove only that ID and preserve all peers. |
 | First down that acquires capture | Focus before input; publish a generated click-to-front intent for the hit window. If that hit is already topmost, this first down still advances the generation so an older queued raise cannot overtake it. Additional button-downs remain with the capture owner and do not create another intent. |
+| First left down in the SDK caption | Focus/capture/raise as above, but consume the caption gesture and move the payload-local scene/router rect instead of forwarding DOM pointer packets. |
 
 `HUDHOOK_ELECTRON_WINDOW` is now only an optional exact-name filter. If it is
 unset or empty, every announced window participates; an unmatched explicit
@@ -82,6 +83,25 @@ worker rejects stale generations, applies the raise to its ordered registry, and
 publishes matching scene/router state. Explicit producer controls use the existing
 hide/show lifecycle: close removes a window and re-registration appends it on top.
 
+Caption dragging uses the existing `window.caption` margins already published by
+the SDK. After normal z-order and alpha hit testing selects a window, a first
+left-button down inside that caption starts a payload-owned drag. The down, moves,
+and matching up are not sent through `game.input`, so dragging a caption is
+different from a DOM pointer gesture that merely exercises capture. Every move
+derives the origin from the current game-client pointer minus the original local
+anchor, avoiding cumulative drift. The bridge accepts only the latest
+registration/drag generation and atomically republishes matching render and
+hit-test bounds; close, reconnect, producer bounds for that window, focus loss,
+or capture cancellation invalidates stale work.
+
+This movement is intentionally interactive and payload-local, matching the useful
+part of the legacy renderer without extending `node-game-overlay`. Motion is
+posted to and coalesced by the bridge; each applied position atomically republishes
+the matching render and hit-test bounds. The hidden Electron `BrowserWindow`
+retains its producer-owned bounds. Reconnect, close/re-register, or a later
+producer `setBounds()` can therefore restore that placement; durable
+payload-to-producer bounds synchronization would require a new wire event.
+
 ## Deterministic acceptance
 
 `-ClientMultiWindow -Wait` creates two real overlapping Electron pages:
@@ -90,16 +110,17 @@ hide/show lifecycle: close removes a window and re-registration appends it on to
 - blue FRONT: 320 x 220 `ExamplePopupOverlay` at `(200, 136)`, registered
   second.
 
-Their text targets share an overlap point. The runner requires both per-window
-frame uploads and an `Electron overlay scene composed` marker with
+Their text targets sit below both declared captions and share an overlap point.
+The runner requires both per-window frame uploads and an
+`Electron overlay scene composed` marker with
 `order=ExampleMainOverlay>ExamplePopupOverlay` before sending input. It then
 proves:
 
 1. the initial overlap click focuses and reaches FRONT only;
 2. typed text goes only to the focused FRONT field;
-3. FRONT owns an out-of-bounds drag and BACK receives no pointer event during
-   capture;
-4. clicking BACK's exposed opaque panel produces the payload's
+3. FRONT owns an out-of-bounds DOM pointer gesture and BACK receives no pointer
+   event during capture; this phase does not move either window;
+4. clicking BACK's exposed opaque client surface below its caption produces the payload's
    `raised to top after input` evidence, recomposes FRONT>BACK without any
    producer raise/close/re-register marker, then routes the next overlap click
    only to BACK before any producer lifecycle command;
@@ -108,20 +129,28 @@ proves:
    restore, and the final overlap click is FRONT-only afterward;
 6. hiding FRONT leaves a one-window BACK scene, while showing FRONT restores both
    with FRONT on top;
-7. interception release is acknowledged after the disabled render boundary;
-8. released Escape closes the controlled host and is not forwarded to Electron;
-9. exact controlled Electron and host processes are absent after cleanup.
+7. dragging FRONT's striped caption handle from local `(160, 45)` by
+   `(+96, +72)` moves the payload-local rect from `(200, 136)` to `(296, 208)`;
+   the caption gesture emits no Electron pointer input, producer lifecycle, or
+   host `window.bounds` traffic, FIFO-drained page hover barriers cover delayed
+   outbound delivery, and a producer bounds query remains `(200, 136)`;
+8. clicking the visibly moved text field reaches FRONT with its original local
+   `(150, 98)` coordinates, while the vacated caption point reaches BACK;
+9. interception release is acknowledged after the disabled render boundary;
+10. released Escape closes the controlled host and is not forwarded to Electron;
+11. exact controlled Electron and host processes are absent after cleanup.
 
 The terminal success line is:
 
 ```text
-Verified deterministic two-window composition, routing, capture, z-order, lifecycle, and release.
+Verified deterministic two-window composition, caption movement, routing, capture, z-order, lifecycle, and release.
 ```
 
 Pure Rust tests cover arbitrary ordered registries, last-duplicate position,
 exact filtering, bounds without reorder, immutable scene metadata, alpha
 fallthrough, topmost routing, focus-before-input, keyboard focus, capture-owner
-cleanup, and click-to-front intent emission. The previous
+cleanup, caption boundaries, absolute anchor-based movement, stale-generation
+rejection, cancellation, and click-to-front intent emission. The previous
 `-ClientInput -Wait` deterministic one-window regression also remains passing.
 
 ## Manual acceptance
@@ -130,7 +159,10 @@ cleanup, and click-to-front intent emission. The previous
 are ready. FRONT is blue and initially overlaps green BACK. The operator can:
 
 - click and type in either text field;
-- drag outside a window to inspect capture ownership;
+- drag the striped `:: DRAG BACK ::` or `:: DRAG FRONT ::` caption handle to
+  move that composited window;
+- press in a text field and drag outside the window as a separate capture-owner
+  inspection that does not move the window;
 - click an exposed part of BACK and confirm the diagnostics Stack flips to put
   BACK on top;
 - use FRONT's `Raise BACK` / `Hide FRONT` controls and BACK's `Raise FRONT` /
@@ -156,8 +188,9 @@ exact process tree.
 - CPU scene/router publication is atomic, but a newly published alpha frame can
   precede its corresponding GPU upload by one `Present`, briefly making hit-test
   alpha newer than the visible texture.
-- Click-to-front is payload-local. The existing IPC schema has no persistent
-  z-order field, so reconnect restores `overlay.init` registration order.
+- Click-to-front and caption-drag placement are payload-local. The existing IPC
+  schema has no persistent z-order or payload-to-producer bounds field, so
+  reconnect restores `overlay.init` registration order and producer placement.
 - The proof is Windows x64/D3D11 only, uses the controlled upstream injector, and
   permits only one Electron producer because the Node add-on host name is fixed.
 

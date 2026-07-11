@@ -116,12 +116,52 @@ struct AlphaFrame {
     rgba: Arc<[u8]>,
 }
 
+/// Caption geometry advertised by the Electron SDK, in window-local pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputCaption {
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub height: i32,
+}
+
+impl InputCaption {
+    fn contains(self, window_rect: InputRect, point: InputPoint) -> bool {
+        if self.left < 0
+            || self.right < 0
+            || self.top < 0
+            || self.height <= 0
+            || !window_rect.is_valid()
+        {
+            return false;
+        }
+
+        let local = window_rect.to_local(point);
+        let x = i64::from(local.x);
+        let y = i64::from(local.y);
+        let left = i64::from(self.left);
+        let right = i64::from(window_rect.width) - i64::from(self.right);
+        let top = i64::from(self.top);
+        let bottom = top + i64::from(self.height);
+        let window_bottom = i64::from(window_rect.height);
+        left < right
+            && top < bottom
+            && bottom <= window_bottom
+            && x >= left
+            && x < right
+            && y >= top
+            && y < bottom
+    }
+}
+
 /// One routable Electron overlay window. Windows are stored back-to-front;
 /// the last matching window receives uncaptured pointer input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputWindow {
     pub window_id: u32,
     pub rect: InputRect,
+    caption: Option<InputCaption>,
+    placement_epoch: u64,
     alpha_frame: Option<AlphaFrame>,
 }
 
@@ -130,8 +170,20 @@ impl InputWindow {
         Self {
             window_id,
             rect,
+            caption: None,
+            placement_epoch: 0,
             alpha_frame: None,
         }
+    }
+
+    pub fn with_caption(mut self, caption: Option<InputCaption>) -> Self {
+        self.caption = caption;
+        self
+    }
+
+    pub fn with_placement_epoch(mut self, placement_epoch: u64) -> Self {
+        self.placement_epoch = placement_epoch;
+        self
     }
 
     /// Adds optional RGBA pixels for alpha-aware hit testing. Invalid or
@@ -181,11 +233,32 @@ impl InputWindow {
         let alpha_index = ((pixel_y * u64::from(frame.width) + pixel_x) * 4 + 3) as usize;
         frame.rgba[alpha_index] != 0
     }
+
+    fn caption_hit_test(&self, point: InputPoint) -> bool {
+        self.caption
+            .is_some_and(|caption| caption.contains(self.rect, point))
+    }
 }
 
 /// Compatibility name retained for the completed one-window bridge/tests.
 #[cfg(test)]
 pub type SelectedWindow = InputWindow;
+
+/// One compositor-local caption placement produced by the input router.
+///
+/// `placement_epoch` identifies the exact registration/external-bounds state,
+/// while `drag_session` and `sequence` prevent delayed coalesced work from
+/// overtaking a newer pointer sample or cancellation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragMoveIntent {
+    pub window_id: u32,
+    pub placement_epoch: u64,
+    pub drag_session: u64,
+    pub sequence: u64,
+    pub x: i32,
+    pub y: i32,
+    pub terminal: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboundMessage {
@@ -311,6 +384,23 @@ impl AtomicInterceptionState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActiveCaptionDrag {
+    window_id: u32,
+    placement_epoch: u64,
+    drag_session: u64,
+    anchor: InputPoint,
+    original_origin: InputPoint,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DragValidation {
+    window_id: u32,
+    placement_epoch: u64,
+    drag_session: u64,
+    latest_sequence: u64,
+}
+
 #[derive(Debug)]
 pub struct InputRouter {
     requested_interception: bool,
@@ -324,6 +414,15 @@ pub struct InputRouter {
     captured_buttons: u8,
     last_captured_point: Option<InputPoint>,
     pending_raise_window_id: Option<u32>,
+    active_caption_drag: Option<ActiveCaptionDrag>,
+    /// Buttons whose down transition was consumed by a caption gesture. This
+    /// survives native/lifecycle cancellation until the matching physical up,
+    /// preventing a page from observing an unmatched move or release.
+    caption_owned_buttons: u8,
+    drag_validation: Option<DragValidation>,
+    pending_drag_move: Option<DragMoveIntent>,
+    next_drag_session: u64,
+    next_drag_sequence: u64,
     acknowledgement_pending: bool,
     atomic_interception: Arc<AtomicInterceptionState>,
 }
@@ -343,6 +442,12 @@ impl Default for InputRouter {
             captured_buttons: 0,
             last_captured_point: None,
             pending_raise_window_id: None,
+            active_caption_drag: None,
+            caption_owned_buttons: 0,
+            drag_validation: None,
+            pending_drag_move: None,
+            next_drag_session: 0,
+            next_drag_sequence: 0,
             acknowledgement_pending: false,
             atomic_interception: Arc::new(AtomicInterceptionState::default()),
         }
@@ -407,6 +512,39 @@ impl InputRouter {
         self.pending_raise_window_id.take()
     }
 
+    /// Returns the latest compositor-local caption placement. Adjacent pointer
+    /// samples overwrite this slot before the bridge thread observes them.
+    pub fn take_pending_drag_move(&mut self) -> Option<DragMoveIntent> {
+        self.pending_drag_move.take()
+    }
+
+    /// Applies a bridge-thread placement only if it is still the newest sample
+    /// from the exact registration/external-bounds epoch that began the drag.
+    pub fn apply_drag_move(&mut self, intent: DragMoveIntent) -> bool {
+        let Some(validation) = self.drag_validation else {
+            return false;
+        };
+        if validation.window_id != intent.window_id
+            || validation.placement_epoch != intent.placement_epoch
+            || validation.drag_session != intent.drag_session
+            || validation.latest_sequence != intent.sequence
+        {
+            return false;
+        }
+
+        let Some(window) = self.windows.iter_mut().find(|window| {
+            window.window_id == intent.window_id && window.placement_epoch == intent.placement_epoch
+        }) else {
+            return false;
+        };
+        window.rect.x = intent.x;
+        window.rect.y = intent.y;
+        if intent.terminal {
+            self.drag_validation = None;
+        }
+        true
+    }
+
     #[cfg(test)]
     pub fn selected_window(&self) -> Option<SelectedWindow> {
         self.topmost_window().cloned()
@@ -428,6 +566,20 @@ impl InputRouter {
     pub fn replace_windows(&mut self, windows: Vec<InputWindow>) -> Vec<OutboundMessage> {
         let windows = normalize_windows(windows);
         let mut outbound = Vec::new();
+
+        let drag_remains_live = self
+            .active_caption_drag
+            .map(|drag| (drag.window_id, drag.placement_epoch))
+            .or_else(|| {
+                self.drag_validation
+                    .map(|drag| (drag.window_id, drag.placement_epoch))
+            })
+            .is_none_or(|(window_id, placement_epoch)| {
+                contains_window_epoch(&windows, window_id, placement_epoch)
+            });
+        if !drag_remains_live {
+            outbound.extend(self.cancel_pointer_capture());
+        }
 
         if self
             .captured_window_id
@@ -477,7 +629,13 @@ impl InputRouter {
         }
 
         let mut outbound = Vec::new();
-        if self.captured_window_id == Some(window_id) {
+        let owns_drag = self
+            .active_caption_drag
+            .is_some_and(|drag| drag.window_id == window_id)
+            || self
+                .drag_validation
+                .is_some_and(|drag| drag.window_id == window_id);
+        if self.captured_window_id == Some(window_id) || owns_drag {
             outbound.extend(self.cancel_pointer_capture());
         }
         if self.focused_window_id == Some(window_id) {
@@ -493,19 +651,31 @@ impl InputRouter {
 
     /// Updates one live window's bounds without changing its stack position.
     /// A non-positive rectangle removes that window.
+    #[cfg(test)]
     pub fn update_window_rect(&mut self, window_id: u32, rect: InputRect) -> Vec<OutboundMessage> {
         if !rect.is_valid() {
             return self.remove_window(window_id);
         }
+        let owns_drag = self
+            .active_caption_drag
+            .is_some_and(|drag| drag.window_id == window_id)
+            || self
+                .drag_validation
+                .is_some_and(|drag| drag.window_id == window_id);
+        let outbound = if owns_drag {
+            self.cancel_pointer_capture()
+        } else {
+            Vec::new()
+        };
         let Some(window) = self
             .windows
             .iter_mut()
             .find(|window| window.window_id == window_id)
         else {
-            return Vec::new();
+            return outbound;
         };
         window.rect = rect;
-        Vec::new()
+        outbound
     }
 
     /// Updates alpha-aware hit-test pixels without changing lifecycle or stack.
@@ -685,11 +855,18 @@ impl InputRouter {
             _ => {}
         }
 
-        if !self.effective_interception || !self.requested_interception || !self.target_focused {
+        let message_kind = classify_message(msg);
+        let routing_enabled =
+            self.effective_interception && self.requested_interception && self.target_focused;
+        if self.drain_cancelled_caption_pointer(message_kind, routing_enabled) {
             return Vec::new();
         }
 
-        match classify_message(msg) {
+        if !routing_enabled {
+            return Vec::new();
+        }
+
+        match message_kind {
             MessageKind::MouseMove => {
                 self.route_pointer(msg, wparam, decode_signed_lparam_point(lparam), None)
             }
@@ -724,6 +901,10 @@ impl InputRouter {
         client_point: InputPoint,
         transition: Option<PointerTransition>,
     ) -> Vec<OutboundMessage> {
+        if self.active_caption_drag.is_some() {
+            return self.route_caption_drag(msg, client_point, transition);
+        }
+
         let captured_before = self.captured_buttons != 0;
         let target = if captured_before {
             self.captured_window_id.and_then(|window_id| {
@@ -764,6 +945,14 @@ impl InputRouter {
                 self.pending_raise_window_id = Some(target.window_id);
             }
             self.captured_buttons |= button;
+
+            if !captured_before && button == LEFT_BUTTON && target.caption_hit_test(client_point) {
+                self.begin_caption_drag(&target, client_point);
+                self.last_captured_point = Some(client_point);
+                // Caption input belongs to the compositor. The page must not
+                // receive an unmatched down or a synthetic up on cancellation.
+                return outbound;
+            }
         }
         if self.captured_buttons != 0 {
             self.last_captured_point = Some(client_point);
@@ -790,10 +979,141 @@ impl InputRouter {
         outbound
     }
 
+    fn begin_caption_drag(&mut self, target: &InputWindow, anchor: InputPoint) {
+        self.next_drag_session = self.next_drag_session.wrapping_add(1).max(1);
+        let drag_session = self.next_drag_session;
+        self.active_caption_drag = Some(ActiveCaptionDrag {
+            window_id: target.window_id,
+            placement_epoch: target.placement_epoch,
+            drag_session,
+            anchor,
+            original_origin: InputPoint::new(target.rect.x, target.rect.y),
+        });
+        self.drag_validation = Some(DragValidation {
+            window_id: target.window_id,
+            placement_epoch: target.placement_epoch,
+            drag_session,
+            latest_sequence: 0,
+        });
+        self.caption_owned_buttons |= LEFT_BUTTON;
+        self.pending_drag_move = None;
+    }
+
+    fn route_caption_drag(
+        &mut self,
+        msg: u32,
+        client_point: InputPoint,
+        transition: Option<PointerTransition>,
+    ) -> Vec<OutboundMessage> {
+        self.last_captured_point = Some(client_point);
+        let terminal = matches!(transition, Some(PointerTransition::Up(LEFT_BUTTON)));
+        match transition {
+            Some(PointerTransition::Down(button)) => self.caption_owned_buttons |= button,
+            Some(PointerTransition::Up(button)) => self.caption_owned_buttons &= !button,
+            None => {}
+        }
+        if msg == WM_MOUSEMOVE || terminal {
+            self.queue_caption_drag_move(client_point, terminal);
+        }
+
+        if terminal {
+            self.captured_buttons &= !LEFT_BUTTON;
+            self.captured_window_id = None;
+            self.last_captured_point = None;
+            self.active_caption_drag = None;
+        }
+
+        Vec::new()
+    }
+
+    /// Drains pointer transitions already owned by a caption after the active
+    /// drag has ended or been cancelled. All pointer traffic remains
+    /// compositor-owned while any swallowed button is physically outstanding.
+    /// A repeated down for an owned button proves its old release was missed;
+    /// when routing is live, that bit is retired and the new down starts a
+    /// normal gesture instead of leaving the drain stuck indefinitely.
+    fn drain_cancelled_caption_pointer(
+        &mut self,
+        message_kind: MessageKind,
+        routing_enabled: bool,
+    ) -> bool {
+        if self.active_caption_drag.is_some() || self.caption_owned_buttons == 0 {
+            return false;
+        }
+
+        match message_kind {
+            MessageKind::MouseDown(button) if self.caption_owned_buttons & button != 0 => {
+                if routing_enabled {
+                    self.caption_owned_buttons &= !button;
+                    false
+                } else {
+                    true
+                }
+            }
+            MessageKind::MouseDown(button) => {
+                // Conservatively claim secondary buttons pressed while the
+                // cancelled caption chord is still physically outstanding.
+                self.caption_owned_buttons |= button;
+                true
+            }
+            MessageKind::MouseUp(button) if self.caption_owned_buttons & button != 0 => {
+                self.caption_owned_buttons &= !button;
+                true
+            }
+            MessageKind::MouseUp(button) => {
+                // A fresh normal down may coexist with a different stale
+                // caption-owned button. Only its captured matching up may pass.
+                self.captured_buttons & button == 0
+            }
+            MessageKind::MouseMove | MessageKind::Wheel => true,
+            MessageKind::Keyboard | MessageKind::Other => false,
+        }
+    }
+
+    fn queue_caption_drag_move(&mut self, client_point: InputPoint, terminal: bool) {
+        let Some(drag) = self.active_caption_drag else {
+            return;
+        };
+        self.next_drag_sequence = self.next_drag_sequence.wrapping_add(1).max(1);
+        let sequence = self.next_drag_sequence;
+        let x = saturating_i64_to_i32(
+            i64::from(drag.original_origin.x) + i64::from(client_point.x)
+                - i64::from(drag.anchor.x),
+        );
+        let y = saturating_i64_to_i32(
+            i64::from(drag.original_origin.y) + i64::from(client_point.y)
+                - i64::from(drag.anchor.y),
+        );
+        let intent = DragMoveIntent {
+            window_id: drag.window_id,
+            placement_epoch: drag.placement_epoch,
+            drag_session: drag.drag_session,
+            sequence,
+            x,
+            y,
+            terminal,
+        };
+        self.drag_validation = Some(DragValidation {
+            window_id: drag.window_id,
+            placement_epoch: drag.placement_epoch,
+            drag_session: drag.drag_session,
+            latest_sequence: sequence,
+        });
+        self.pending_drag_move = Some(intent);
+    }
+
     fn cancel_pointer_capture(&mut self) -> Vec<OutboundMessage> {
+        let caption_drag_active = self.active_caption_drag.take().is_some();
+        self.drag_validation = None;
+        self.pending_drag_move = None;
         let captured_buttons = self.captured_buttons;
         self.captured_buttons = 0;
         let captured_window_id = self.captured_window_id.take();
+
+        if caption_drag_active {
+            self.last_captured_point = None;
+            return Vec::new();
+        }
 
         let Some(window_id) = captured_window_id else {
             self.last_captured_point = None;
@@ -871,6 +1191,12 @@ impl InputRouter {
 
 fn contains_window(windows: &[InputWindow], window_id: u32) -> bool {
     windows.iter().any(|window| window.window_id == window_id)
+}
+
+fn contains_window_epoch(windows: &[InputWindow], window_id: u32, placement_epoch: u64) -> bool {
+    windows
+        .iter()
+        .any(|window| window.window_id == window_id && window.placement_epoch == placement_epoch)
 }
 
 fn normalize_windows(windows: Vec<InputWindow>) -> Vec<InputWindow> {
@@ -1016,6 +1342,215 @@ mod tests {
         router.route_win32_message(msg, 0, encode_signed_lparam_point(point), |_| {
             unreachable!("only wheel routing converts screen coordinates")
         })
+    }
+
+    fn draggable_window(window_id: u32, rect: InputRect, placement_epoch: u64) -> InputWindow {
+        InputWindow::new(window_id, rect)
+            .with_caption(Some(InputCaption {
+                left: 5,
+                right: 5,
+                top: 0,
+                height: 15,
+            }))
+            .with_placement_epoch(placement_epoch)
+    }
+
+    #[test]
+    fn caption_down_focuses_captures_and_raises_without_reaching_dom() {
+        let mut router = router_with_windows(vec![draggable_window(WINDOW_ID, RECT, 7)]);
+        let anchor = InputPoint::new(-10, 35);
+
+        assert_eq!(
+            route(&mut router, WM_LBUTTONDOWN, anchor),
+            vec![OutboundMessage::WindowFocused {
+                focus_window_id: WINDOW_ID,
+            }]
+        );
+        assert!(router.has_pointer_capture());
+        assert_eq!(router.focused_window_id(), Some(WINDOW_ID));
+        assert_eq!(router.take_pending_raise(), Some(WINDOW_ID));
+        assert_eq!(router.take_pending_drag_move(), None);
+    }
+
+    #[test]
+    fn caption_drag_uses_original_anchor_coalesces_and_consumes_terminal_up() {
+        let mut router = router_with_windows(vec![draggable_window(WINDOW_ID, RECT, 7)]);
+        let anchor = InputPoint::new(-10, 35);
+        assert_eq!(
+            route(&mut router, WM_LBUTTONDOWN, anchor),
+            vec![OutboundMessage::WindowFocused {
+                focus_window_id: WINDOW_ID,
+            }]
+        );
+
+        assert!(route(&mut router, WM_MOUSEMOVE, InputPoint::new(20, 55)).is_empty());
+        let first = router.take_pending_drag_move().unwrap();
+        assert_eq!((first.x, first.y, first.terminal), (10, 50, false));
+        assert!(router.apply_drag_move(first));
+
+        // Applying the first placement changes the live rect, but the next
+        // result remains relative to the immutable down anchor/original origin.
+        assert!(route(&mut router, WM_MOUSEMOVE, InputPoint::new(30, 65)).is_empty());
+        let superseded = router.take_pending_drag_move().unwrap();
+        assert_eq!((superseded.x, superseded.y), (20, 60));
+        assert!(route(&mut router, WM_LBUTTONUP, InputPoint::new(40, 75)).is_empty());
+        let terminal = router.take_pending_drag_move().unwrap();
+        assert_eq!((terminal.x, terminal.y, terminal.terminal), (30, 70, true));
+        assert!(!router.has_pointer_capture());
+        assert!(!router.apply_drag_move(superseded));
+        assert!(router.apply_drag_move(terminal));
+        assert!(!router.apply_drag_move(terminal));
+        assert_eq!(router.windows()[0].rect, InputRect::new(30, 70, 100, 50));
+    }
+
+    #[test]
+    fn caption_drag_cancel_and_same_id_new_epoch_emit_no_unmatched_dom_release() {
+        let mut router = router_with_windows(vec![draggable_window(WINDOW_ID, RECT, 7)]);
+        let anchor = InputPoint::new(-10, 35);
+        route(&mut router, WM_LBUTTONDOWN, anchor);
+        route(&mut router, WM_MOUSEMOVE, InputPoint::new(0, 45));
+        let stale = router.take_pending_drag_move().unwrap();
+
+        // Re-registration/external bounds can reuse the native ID, so the
+        // placement epoch—not the ID alone—must invalidate delayed work.
+        assert!(router
+            .replace_windows(vec![draggable_window(WINDOW_ID, RECT, 8)])
+            .is_empty());
+        assert!(!router.has_pointer_capture());
+        assert!(!router.apply_drag_move(stale));
+
+        route(&mut router, WM_LBUTTONDOWN, anchor);
+        let cancelled = router.request_interception(false);
+        assert_eq!(
+            cancelled,
+            vec![OutboundMessage::WindowFocused { focus_window_id: 0 }]
+        );
+        assert!(!cancelled
+            .iter()
+            .any(|message| matches!(message, OutboundMessage::Input { .. })));
+    }
+
+    #[test]
+    fn cancelled_caption_drag_drains_moves_and_every_owned_button_release() {
+        let mut router = router_with_windows(vec![draggable_window(WINDOW_ID, RECT, 7)]);
+        let anchor = InputPoint::new(-10, 35);
+        route(&mut router, WM_LBUTTONDOWN, anchor);
+
+        // Secondary buttons pressed during a caption gesture are compositor
+        // owned too; Electron never received either down transition.
+        assert!(route(&mut router, WM_RBUTTONDOWN, anchor).is_empty());
+        assert!(route(&mut router, WM_MOUSEMOVE, InputPoint::new(0, 45)).is_empty());
+        assert!(router.take_pending_drag_move().is_some());
+
+        assert!(router
+            .route_win32_message(WM_CAPTURECHANGED, 0, 0, |_| unreachable!())
+            .is_empty());
+        assert!(!router.has_pointer_capture());
+        assert_eq!(router.take_pending_drag_move(), None);
+
+        // Cancellation must not turn the held chord into unmatched DOM input.
+        assert!(route(&mut router, WM_MOUSEMOVE, anchor).is_empty());
+        assert!(route(&mut router, WM_RBUTTONUP, anchor).is_empty());
+        assert!(route(&mut router, WM_MOUSEMOVE, anchor).is_empty());
+        assert!(route(&mut router, WM_LBUTTONUP, anchor).is_empty());
+
+        // Once every owned release arrives, ordinary hover routing resumes.
+        assert_eq!(
+            route(&mut router, WM_MOUSEMOVE, anchor),
+            vec![OutboundMessage::Input {
+                window_id: WINDOW_ID,
+                msg: WM_MOUSEMOVE,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(10, 5)),
+            }]
+        );
+    }
+
+    #[test]
+    fn caption_terminal_keeps_secondary_release_out_of_the_dom() {
+        let mut router = router_with_windows(vec![draggable_window(WINDOW_ID, RECT, 7)]);
+        let anchor = InputPoint::new(-10, 35);
+        route(&mut router, WM_LBUTTONDOWN, anchor);
+        assert!(route(&mut router, WM_RBUTTONDOWN, anchor).is_empty());
+        assert!(route(&mut router, WM_LBUTTONUP, anchor).is_empty());
+        assert!(!router.has_pointer_capture());
+        assert!(router.take_pending_drag_move().unwrap().terminal);
+
+        assert!(route(&mut router, WM_RBUTTONUP, anchor).is_empty());
+        assert_eq!(
+            route(&mut router, WM_RBUTTONDOWN, anchor),
+            vec![OutboundMessage::Input {
+                window_id: WINDOW_ID,
+                msg: WM_RBUTTONDOWN,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(10, 5)),
+            }]
+        );
+    }
+
+    #[test]
+    fn fresh_matching_down_retires_a_stale_caption_drain_and_starts_again() {
+        let mut router = router_with_windows(vec![draggable_window(WINDOW_ID, RECT, 7)]);
+        let anchor = InputPoint::new(-10, 35);
+        route(&mut router, WM_LBUTTONDOWN, anchor);
+        assert!(router
+            .route_win32_message(WM_CANCELMODE, 0, 0, |_| unreachable!())
+            .is_empty());
+        assert!(!router.has_pointer_capture());
+
+        // If focus loss hid the old release, a physically fresh matching down
+        // proves that stale ownership can be retired instead of sticking.
+        assert!(route(&mut router, WM_LBUTTONDOWN, anchor).is_empty());
+        assert!(router.has_pointer_capture());
+        assert!(route(&mut router, WM_LBUTTONUP, anchor).is_empty());
+        assert!(!router.has_pointer_capture());
+        assert!(router.take_pending_drag_move().unwrap().terminal);
+    }
+
+    #[test]
+    fn invalid_caption_falls_back_to_normal_dom_pointer_routing() {
+        let invalid = InputWindow::new(WINDOW_ID, RECT)
+            .with_caption(Some(InputCaption {
+                left: -1,
+                right: 0,
+                top: 0,
+                height: 15,
+            }))
+            .with_placement_epoch(7);
+        let mut router = router_with_windows(vec![invalid]);
+
+        assert_eq!(
+            route(&mut router, WM_LBUTTONDOWN, InputPoint::new(-10, 35)),
+            vec![
+                OutboundMessage::WindowFocused {
+                    focus_window_id: WINDOW_ID,
+                },
+                OutboundMessage::Input {
+                    window_id: WINDOW_ID,
+                    msg: WM_LBUTTONDOWN,
+                    wparam: 0,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 5)),
+                },
+            ]
+        );
+        assert_eq!(router.take_pending_drag_move(), None);
+    }
+
+    #[test]
+    fn transparent_top_pixel_falls_through_before_caption_drag_classification() {
+        let back = draggable_window(1, InputRect::new(0, 0, 100, 50), 11);
+        let front = draggable_window(2, InputRect::new(0, 0, 100, 50), 12).with_alpha_frame(
+            1,
+            1,
+            vec![0, 0, 0, 0].into(),
+        );
+        let mut router = router_with_windows(vec![back, front]);
+
+        assert_eq!(
+            route(&mut router, WM_LBUTTONDOWN, InputPoint::new(10, 5)),
+            vec![OutboundMessage::WindowFocused { focus_window_id: 1 }]
+        );
+        assert_eq!(router.take_pending_raise(), Some(1));
     }
 
     #[test]

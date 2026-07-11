@@ -125,7 +125,8 @@ Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
 ```
 
 This attached mode launches two real offscreen Electron pages with aligned,
-overlapping text fields: green BACK is the 640 x 360 `ExampleMainOverlay` at
+overlapping text fields below both SDK captions: green BACK is the 640 x 360
+`ExampleMainOverlay` at
 `(64, 72)`, registered first; blue FRONT is the 320 x 220
 `ExamplePopupOverlay` at `(200, 136)`, registered second. The runner requires an
 `Electron overlay scene composed` marker with the initial
@@ -138,13 +139,20 @@ markers and per-window payload diagnostics:
 - the overlap click, focus packet, and typed value reach FRONT only;
 - FRONT retains left-button pointer capture while the pointer moves outside its
   bounds, and BACK receives no pointer packet during that capture;
-- clicking BACK's exposed opaque panel raises it inside the payload, recomposes
+- clicking BACK's exposed opaque client surface below its caption raises it
+  inside the payload, recomposes
   FRONT>BACK without producer lifecycle traffic, and routes the next overlap
   click to BACK only before any producer command;
 - BACK close/re-register preserves its append-top order and BACK-only keyboard
   routing, then FRONT close/re-register restores FRONT to the top;
 - hiding FRONT removes only that surface while BACK remains composed, and showing
   FRONT appends it on top again;
+- after the original-bounds lifecycle checks, dragging FRONT's striped caption
+  handle by `(+96, +72)` moves its payload-local render/router rect to
+  `(296, 208)` without DOM input, producer lifecycle traffic, or a host
+  `window.bounds` message; FIFO-drained page barriers bracket the no-leak check,
+  then the moved text target routes to FRONT at its unchanged local `(150, 98)`
+  coordinates while the vacated caption point routes to BACK;
 - interception release is acknowledged after the disabled render boundary, then
   released Escape closes the controlled host normally;
 - the exact controlled Electron and host processes are gone after cleanup.
@@ -164,9 +172,11 @@ Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
 
 No separate `client:dev` process is needed. Wait for the runner to print
 `Manual multi-window input is ready.` FRONT is blue and initially overlaps green
-BACK. Click and type in either text field, drag outside a window to exercise its
-capture owner, and use the in-page `Hide`, `Show`, and `Raise` controls to inspect
-composition and routing changes yourself.
+BACK. Drag the striped `:: DRAG BACK ::` or `:: DRAG FRONT ::` caption handle to
+move that composited window. Click and type in either text field, then press in a
+field and drag outside the window as a separate capture-owner test. Use the
+in-page `Hide`, `Show`, and `Raise` controls to inspect composition and routing
+changes yourself.
 
 Close the controlled host with its title-bar X when finished. Escape and Alt+F4
 are intercepted while the host is focused. Focus loss temporarily suspends
@@ -369,6 +379,7 @@ This milestone now covers:
 - one atomic immutable scene/router publication per lifecycle, metadata, frame, or
   stack mutation;
 - immediate per-window bounds metadata updates without redundant texture uploads;
+- interactive SDK-caption dragging with atomic payload-local render/router bounds;
 - isolated close, clear, re-register, reorder, and resume lifecycle handling;
 - regular Win32 left/right/middle mouse, vertical/horizontal-wheel, keyboard,
   system-key, character, focus, and global input interception for the hit/focused
@@ -394,13 +405,15 @@ The input/interactivity design remains in
 The completed multi-window design and acceptance record is in
 [`doc/hudhook-multiwindow-compositor-handoff.md`](../../doc/hudhook-multiwindow-compositor-handoff.md).
 
-Click-to-front order is payload-local because the existing IPC schema has no
-persistent z-order field. A reconnect therefore restores the host's current
-`overlay.init` registration order. Hide/show changes that host registration list
-through the existing close/re-register lifecycle and consequently affects later
-initialization too. CPU scene/router publication is atomic, but a newly published
-alpha frame can precede its corresponding GPU upload by one `Present`, creating a
-narrow visual-versus-hit-test timing window.
+Click-to-front order and caption-drag placement are payload-local because the
+existing IPC schema has no persistent z-order or payload-to-producer bounds
+field. The rendered and hit-test rect moves immediately, but the hidden Electron
+`BrowserWindow` retains its producer-owned bounds. A reconnect or later producer
+registration/bounds event can therefore restore that placement. Hide/show changes
+the host registration list through the existing close/re-register lifecycle and
+consequently affects later initialization too. CPU scene/router publication is
+atomic, but a newly published alpha frame can precede its corresponding GPU upload
+by one `Present`, creating a narrow visual-versus-hit-test timing window.
 
 The next shared compositor work is arbitrary-DPI/device-scale reconciliation and
 safe texture retirement. D3D12 and a production project-owned injector follow.
