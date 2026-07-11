@@ -1,11 +1,15 @@
 # Hudhook input and interactivity handoff
 
-This document is the continuation point for the next computer. The current branch is
-`feat/overlay-pocs`. The next priority is input and interactivity for the one selected
-Electron window. Multi-window/z-order, arbitrary DPI, texture retirement, and D3D12
-come after the first interactive window works.
+> Completed July 10, 2026 on `feat/overlay-pocs`. The deterministic `-ClientInput`
+> proof passed click/focus, text, vertical wheel, intercepted Escape, release, and
+> released Escape, followed by passing `-ClientWindow` and `-Client` regressions.
+> This document is retained as the design and acceptance record.
 
-## Resume the branch
+The implemented milestone makes the one selected Electron window interactive while
+preserving passive rendering by default and the existing public SDK. Multi-window
+z-order, arbitrary DPI, texture retirement, and D3D12 remain follow-up work.
+
+## Reproduce the completed proof
 
 ```powershell
 git fetch origin
@@ -13,19 +17,20 @@ git switch feat/overlay-pocs
 git pull --ff-only
 ```
 
-Run the real-client proof first:
+Run the deterministic input regression first:
 
 ```powershell
-.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Client -Wait
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientInput -Wait
 ```
 
-Run the deterministic lifecycle regression separately:
+Then rerun the lifecycle and real-client compositor regressions:
 
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientWindow -Wait
+.\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -Client -Wait
 ```
 
-Both commands must be run from a regular PowerShell at the repository root. See
+All commands must be run from a regular PowerShell at the repository root. See
 [the POC README](../poc/hudhook-imgui-overlay/README.md) for prerequisites and
 safety boundaries.
 
@@ -57,9 +62,9 @@ Primary implementation files:
 - [controlled lifecycle producer](../poc/hudhook-imgui-overlay/electron-client-window-demo/main.cjs);
 - [client opt-in startup](../apps/client/src/main/electron/app-entry.ts).
 
-## Existing return path to Electron
+## Implemented return path to Electron
 
-Most of the Electron side already exists and should be reused:
+The implementation reuses the existing Electron side:
 
 1. `OverlaySession.input.intercept()` and `.release()` send
    `command.input.intercept` through the Node add-on.
@@ -76,18 +81,18 @@ Relevant existing code:
 - [native packet schemas](../libs/node-game-overlay/src/message/gmessage.hpp);
 - [Node command serialization and input translation](../libs/node-game-overlay/src/overlay.h).
 
-The missing part is the game-side producer: the hudhook payload currently handles
-window/frame messages but ignores `command.input.intercept` and sends no input
-packets back to the Node host.
+The hudhook payload now completes the game-side producer: it handles
+`command.input.intercept`, publishes interception/focus acknowledgements, and sends
+translated input packets back to the Node host from its IPC worker.
 
-## Next milestone
+## Implemented milestone
 
-Make `ExampleMainOverlay` interactive while it remains the only selected/composited
-window. Keep passive rendering as the default and preserve the current public SDK.
-A hudhook fork is not expected: hudhook 0.9.1 publicly exposes
-`ImguiRenderLoop::after_wnd_proc()` and `message_filter()`.
+`ExampleMainOverlay` is interactive while it remains the only
+selected/composited window. Passive rendering remains the default, the public SDK
+is unchanged, and no hudhook fork was needed; hudhook 0.9.1 exposes the required
+`ImguiRenderLoop::after_wnd_proc()` and `message_filter()` seams.
 
-Acceptance criteria:
+The retained acceptance criteria are:
 
 1. Intercept off is fail-open: the game receives input and the overlay is passive.
 2. `session.input.intercept()` reaches the payload and enables effective interception.
@@ -104,22 +109,33 @@ Acceptance criteria:
 9. A controlled runner proves click, text, wheel, blocked Escape, released Escape,
    Electron markers, payload markers, and clean process exit.
 
-## Recommended implementation
+The `-ClientInput` end-to-end run proves left-click/focus ordering, typed text,
+vertical wheel, intercepted and released Escape behavior, interception
+acknowledgements, and normal host exit. Router and bridge unit tests cover
+outside-bounds pointer capture/release, outside-overlay swallowing, right/middle
+buttons, horizontal-wheel conversion, system keys, `WM_SYSCHAR`/`WM_UNICHAR`,
+move coalescing, synthetic releases on cancellation/lifecycle cleanup, guarded
+filter transitions, and transport retry classification. Those cases are unit or
+native-translator coverage, not claims about the Electron DOM end-to-end run.
 
-### 1. Make the bridge bidirectional
+## Implemented design
 
-Extend `electron_frame.rs` without sending synchronous cross-process messages from
-the render/present thread:
+### 1. Bidirectional bridge
+
+`electron_frame.rs` was extended without sending synchronous cross-process messages
+from the render/present thread:
 
 - deserialize `command.input.intercept { intercept }`;
-- store requested/effective interception in shared atomic state;
+- store requested/desired/effective interception in shared atomic state;
 - add an outbound queue owned by `ElectronFrameBridge`;
 - wake the existing IPC worker with a private `WM_APP` message;
 - drain and serialize outbound packets on that worker;
 - generalize the current `send_game_process()` packer instead of adding a second
   packet format;
-- coalesce mouse-move events, but never drop buttons, key/character events, focus,
-  releases, or intercept acknowledgements.
+- coalesce only adjacent mouse moves and preserve FIFO barriers for every other
+  queued packet;
+- use bounded transport sends, retry only idempotent focus/intercept controls, and
+  never retry non-idempotent `game.input` after an ambiguous failure.
 
 The existing envelope is:
 
@@ -132,8 +148,10 @@ length-prefixed UTF-8 message type
 length-prefixed UTF-8 JSON
 ```
 
-Send it to the current host with `WM_COPYDATA`, using the injected process ID as
-`dwData`, exactly like `game.process`.
+Send it to the current host with a two-second `SendMessageTimeoutW` for
+`WM_COPYDATA`, using the injected process ID as `dwData`. A failed idempotent
+control retries after 250 ms; input is at-most-once, and explicit rejection is not
+retried.
 
 Outbound JSON shapes:
 
@@ -143,29 +161,38 @@ Outbound JSON shapes:
 {"type":"game.input","windowId":1,"msg":512,"wparam":0,"lparam":0}
 ```
 
-A small `electron_input.rs` module is preferable for hit testing, focus/capture state,
-message classification, and pure unit tests; keep `electron_frame.rs` responsible for
-transport and selected-window publication.
+A small `electron_input.rs` module owns hit testing, project-owned focus/capture
+state, message classification, and pure unit tests; `electron_frame.rs` remains
+responsible for transport and selected-window publication.
 
-### 2. Route Win32 input through hudhook
+### 2. Win32 routing through hudhook
 
-Implement `after_wnd_proc()` and `message_filter()` in the render loop:
+The render loop implements `after_wnd_proc()` and `message_filter()`:
 
 - use interior mutable/shared input-router state because the callbacks receive
   `&self`;
-- forward regular mouse, keyboard, system-key, and `WM_CHAR` messages;
-- return `MessageFilter::InputAll` only while effective interception is enabled;
+- forward left/right/middle mouse, vertical/horizontal wheel, keyboard, system-key,
+  `WM_CHAR`, `WM_SYSCHAR`, and valid `WM_UNICHAR` messages;
+- use filtered arming and disarming phases for complete queue drains before
+  enabling Electron routing or publishing pass-through, so boundary input cannot
+  reach both destinations;
+- emit each acknowledgement only after the matching terminal filter phase is
+  published; input that races a transition may be dropped but is never
+  double-delivered;
 - clear effective interception when no selected Electron window exists, while
   retaining the requested state so re-registration can restore it;
 - keep the diagnostics ImGui window noninteractive;
 - replace the fixed `Input: pass-through` diagnostics line with requested/effective
   intercept, focus, and capture state.
 
-hudhook's actual WndProc reads the filter asynchronously from pipeline state, so a
-filter change becomes effective on a render-frame boundary. That is acceptable for
-the global intercept toggle but must be considered in tests.
+hudhook's actual WndProc reads the filter asynchronously from pipeline state.
+`message_filter()` samples the next phase, `before_render()` commits/logs the value
+hudhook just stored, and the runner waits for both that boundary and the later
+routing acknowledgement. The guarded arming drain is what makes separate WndProc
+and render threads safe without a hudhook fork. The runner also asserts that each
+payload boundary marker precedes its acknowledgement log.
 
-### 3. Preserve the coordinate contract
+### 3. Coordinate contract
 
 `ElectronFrame.rect` is expressed in game-client physical pixels.
 
@@ -177,26 +204,36 @@ the global intercept toggle but must be considered in tests.
 - route keyboard/character messages only to the focused selected window;
 - keep the first proof at the runner's forced 100% device scale.
 
-Fix two existing translation defects when starting this slice:
+This slice also fixes and hardens native translation:
 
 - decode mouse coordinates as signed 16-bit values in
   `libs/node-game-overlay/src/overlay.h`; captured drags may be negative;
 - rename the emitted Electron field `canScroll ` to `canScroll`.
+- emit horizontal wheel as a correctly signed Electron `deltaX`;
+- translate `WM_SYSCHAR` and valid UTF-32 `WM_UNICHAR` while rejecting dead,
+  reserved, invalid, and otherwise unsupported messages;
+- reject X1/X2 instead of allowing Electron 16 to misinterpret them as left clicks.
 
-Horizontal wheel and X buttons may follow the first vertical-wheel proof.
+Horizontal-wheel routing and translation are unit/self-tested, not DOM-tested.
+Faithful X1/X2 delivery remains open because Electron 16 `sendInputEvent` supports
+only left/middle/right; hudhook's blanket filter intentionally swallows X buttons
+while interception is active.
 
-### 4. Add a deterministic input runner
+### 4. Deterministic input runner
 
-Extend the controlled lifecycle producer and runner with a `-ClientInput` mode:
+The controlled lifecycle producer and runner include a `-ClientInput` mode:
 
 1. Wait for `game.process` as the lifecycle mode already does.
 2. Request `session.input.intercept()`.
-3. Instrument the real page's first text input and wheel/click handlers with stable
+3. Wait for both the enabled render-boundary marker and enabled routing
+   acknowledgement.
+4. Instrument the real page's first text input and wheel/click handlers with stable
    stdout markers; print its DOM target rect instead of hard-coding coordinates.
-4. Activate the controlled host and use Win32 `SendInput` to click the text field,
+5. Activate the controlled host and use Win32 `SendInput` to click the text field,
    type a known value, and send a vertical wheel event.
-5. Send Escape while intercepted and prove the host remains alive.
-6. Release interception, wait for the acknowledgement/frame boundary, send Escape
+6. Send Escape while intercepted and prove the host remains alive.
+7. Release interception, wait for both the disabled acknowledgement and disabled
+   render-boundary marker, send Escape
    again, and prove the host exits normally.
 
 Suggested exact markers:
@@ -216,21 +253,28 @@ The real page already contains two buttons and a text input. The popup button al
 resizes the main overlay by 20 pixels and is a useful single-click integration test.
 Do not stress-click it until texture retirement is implemented.
 
-## Unit tests
+## Unit coverage
 
-Keep the router logic platform-light enough to test:
+The router tests and native translation self-test cover:
 
 - inclusive/exclusive hit-test edges and signed coordinates;
 - game-client to overlay-local mapping;
 - wheel screen-to-client conversion seams;
+- horizontal-wheel routing and native `deltaX` translation;
 - focus packet before first mouse-down packet;
 - pointer capture through an out-of-bounds move/release;
+- matching synthetic button-up packets for `WM_CANCELMODE`, `WM_CAPTURECHANGED`,
+  release, close, focus loss, and re-registration;
 - keyboard and character gating by focus;
+- `WM_SYSCHAR`/valid `WM_UNICHAR` translation and safe rejection of unsupported
+  native messages including X1/X2;
 - close, target focus loss, intercept release, and re-registration cleanup;
 - outbound packet encoding and move coalescing;
+- guarded arming/disarming transitions, acknowledgement ordering, and
+  idempotent-control versus at-most-once-input retry policy;
 - fail-open behavior when no selected window exists.
 
-Then rerun:
+The completed verification sequence is:
 
 ```powershell
 npx nx run client:typecheck
@@ -248,8 +292,15 @@ through the Windows MSVC developer shell.
   DirectInput, XInput, GameInput, and gamepads remain compatibility work.
 - While intercept is active, block `WM_INPUT` to protect the game even though raw
   input is not yet translated.
+- X1/X2 are intentionally swallowed during interception because Electron 16's
+  public input API cannot represent them without turning them into false left clicks.
 - hudhook's public filter is blanket rather than per-message. Selective click-through
   may require a different WndProc strategy or an upstream change.
+- hudhook applies callbacks and filter changes only from `Present`; if presentation
+  stops immediately after focus loss, fail-open publication waits until it resumes.
+- the first software-capture implementation preserves drags outside the Electron rectangle
+  while messages still reach the target HWND; cross-HWND capture needs a separate
+  Win32 capture strategy.
 - High-frequency mouse movement must not build an unbounded IPC queue.
 - DOM text focus depends on sending focus before mouse down and preserving FIFO order.
 - `command.cursor` is still ignored; cursor-shape feedback is a follow-up.
@@ -264,8 +315,8 @@ through the Windows MSVC developer shell.
 
 ## Scope discipline
 
-Do not redesign the Electron SDK, shared-memory format, multi-window compositor, or
-graphics backend during the first input slice. Reuse the existing packet protocol and
-keep upstream hudhook pinned. Consider a hudhook fork only if the controlled
-one-window acceptance test demonstrates a missing hook capability that cannot live in
-project code or be contributed upstream.
+The first input slice deliberately did not redesign the Electron SDK, shared-memory
+format, multi-window compositor, or graphics backend. It reuses the existing packet
+protocol and keeps upstream hudhook pinned. A hudhook fork remains justified only if
+a controlled test demonstrates a missing hook capability that cannot live in project
+code or be contributed upstream.

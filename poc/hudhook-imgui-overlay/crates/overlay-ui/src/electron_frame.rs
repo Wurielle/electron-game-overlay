@@ -9,15 +9,17 @@ use std::ffi::c_void;
 use std::fmt;
 use std::mem::size_of;
 use std::slice;
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 
 use hudhook::tracing::{debug, info, warn};
 use serde::Deserialize;
 use windows::core::{w, Error as WindowsError, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HWND, LPARAM, LRESULT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
+    CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
 };
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::Memory::{
     MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ,
@@ -29,10 +31,16 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    FindWindowW, GetMessageW, GetWindowLongPtrW, KillTimer, PostMessageW, PostQuitMessage,
-    SendMessageW, SetTimer, SetWindowLongPtrW, TranslateMessage, GWLP_USERDATA, GWLP_WNDPROC,
-    HWND_MESSAGE, MSG, MSGFLT_ALLOW, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COPYDATA, WM_TIMER,
+    FindWindowW, GetAncestor, GetForegroundWindow, GetMessageW, GetWindowLongPtrW, KillTimer,
+    PostMessageW, PostQuitMessage, SendMessageTimeoutW, SetTimer, SetWindowLongPtrW,
+    TranslateMessage, GA_ROOT, GWLP_USERDATA, GWLP_WNDPROC, HWND_MESSAGE, MSG, MSGFLT_ALLOW,
+    SMTO_ABORTIFHUNG, SMTO_BLOCK, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COPYDATA, WM_TIMER,
     WS_POPUP,
+};
+
+use crate::electron_input::{
+    AtomicInterceptionState, InputPoint, InputRect, InputRouter, InputRouterState, OutboundMessage,
+    OutboundQueue, SelectedWindow as SelectedInputWindow,
 };
 
 /// The real client overlay preferred when no explicit override is configured.
@@ -51,12 +59,19 @@ const WM_IPC_CONNECT_LINK: u32 = WM_IPC_MESSAGE + 1;
 const WM_IPC_CONNECT_LINK_ACK: u32 = WM_IPC_CONNECT_LINK + 1;
 const WM_IPC_CLOSE_LINK: u32 = WM_IPC_CONNECT_LINK_ACK + 1;
 const WM_BRIDGE_SHUTDOWN: u32 = WM_APP + 0x310;
+const WM_BRIDGE_FLUSH_OUTBOUND: u32 = WM_BRIDGE_SHUTDOWN + 1;
 const CONNECT_TIMER_ID: usize = 1;
+const OUTBOUND_RETRY_TIMER_ID: usize = 2;
 const CONNECT_RETRY_MILLIS: u32 = 500;
+const OUTBOUND_RETRY_MILLIS: u32 = 250;
+const OUTBOUND_SEND_TIMEOUT_MILLIS: u32 = 2_000;
 const FRAME_HEADER_SIZE: usize = size_of::<i32>() * 2;
 const BYTES_PER_PIXEL: usize = 4;
 
 type LatestFrame = Arc<RwLock<Option<Arc<ElectronFrame>>>>;
+type SharedInputRouter = Arc<Mutex<InputRouter>>;
+type SharedOutboundQueue = Arc<Mutex<OutboundQueue>>;
+type SharedInputOrder = Arc<Mutex<()>>;
 
 /// One immutable frame copied out of the Electron-owned shared mapping.
 #[derive(Debug)]
@@ -82,9 +97,19 @@ pub struct ElectronWindowRect {
     pub height: i32,
 }
 
+impl From<ElectronWindowRect> for InputRect {
+    fn from(rect: ElectronWindowRect) -> Self {
+        Self::new(rect.x, rect.y, rect.width, rect.height)
+    }
+}
+
 /// Owns the background Win32 IPC thread and exposes its most recent frame.
 pub struct ElectronFrameBridge {
     latest: LatestFrame,
+    input_router: SharedInputRouter,
+    interception: Arc<AtomicInterceptionState>,
+    outbound: SharedOutboundQueue,
+    input_order: SharedInputOrder,
     window: usize,
     thread: Option<JoinHandle<()>>,
 }
@@ -94,11 +119,29 @@ impl ElectronFrameBridge {
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
         let latest = Arc::new(RwLock::new(None));
         let worker_latest = Arc::clone(&latest);
+        let input_router = Arc::new(Mutex::new(InputRouter::new()));
+        let interception = input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .atomic_interception_state();
+        let worker_input_router = Arc::clone(&input_router);
+        let outbound = Arc::new(Mutex::new(OutboundQueue::new()));
+        let worker_outbound = Arc::clone(&outbound);
+        let input_order = Arc::new(Mutex::new(()));
+        let worker_input_order = Arc::clone(&input_order);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
         let thread = thread::Builder::new()
             .name("hudhook-electron-frame".to_owned())
-            .spawn(move || run_bridge_thread(worker_latest, ready_tx))
+            .spawn(move || {
+                run_bridge_thread(
+                    worker_latest,
+                    worker_input_router,
+                    worker_outbound,
+                    worker_input_order,
+                    ready_tx,
+                )
+            })
             .map_err(ElectronFrameBridgeError::ThreadSpawn)?;
 
         let window = match ready_rx.recv() {
@@ -117,6 +160,10 @@ impl ElectronFrameBridge {
 
         Ok(Self {
             latest,
+            input_router,
+            interception,
+            outbound,
+            input_order,
             window,
             thread: Some(thread),
         })
@@ -135,10 +182,128 @@ impl ElectronFrameBridge {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
+
+    /// Returns a diagnostic snapshot of the current input routing state.
+    pub fn input_state(&self) -> InputRouterState {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .state()
+    }
+
+    /// Desired interception derived from the public request, target focus, and
+    /// selected-window lifecycle. The render loop turns this into an applied
+    /// hudhook filter through its guarded transition state machine.
+    pub fn desired_interception(&self) -> bool {
+        self.interception.desired()
+    }
+
+    /// Commits the routing/acknowledgement policy for the filter phase hudhook
+    /// just published and queues any resulting cleanup/control packets.
+    pub fn apply_input_filter(&self, routing_enabled: bool, acknowledge: bool) {
+        let has_messages = {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let messages = self
+                .input_router
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .apply_input_filter(routing_enabled, acknowledge);
+            if messages.is_empty() {
+                false
+            } else {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(messages);
+                true
+            }
+        };
+        if has_messages {
+            self.wake_outbound_worker();
+        }
+    }
+
+    /// Routes one message observed by hudhook and wakes the IPC worker for any
+    /// resulting Electron packets. No synchronous cross-process send happens
+    /// on the render/present thread.
+    pub fn route_window_message(&self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
+        let has_messages = {
+            // State mutation and queue publication share this lock with IPC
+            // commands/lifecycle updates, giving their outbound packets one
+            // total order across the render and bridge threads.
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut input_router = self
+                .input_router
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let target_root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+            let foreground = unsafe { GetForegroundWindow() };
+            let target_focused = !foreground.0.is_null()
+                && (foreground == hwnd || (!target_root.0.is_null() && foreground == target_root));
+            let mut messages = input_router.set_target_focused(target_focused);
+            messages.extend(input_router.route_win32_message(
+                msg,
+                wparam.0 as u32,
+                lparam.0 as u32,
+                |screen_point| {
+                    let mut client_point = POINT {
+                        x: screen_point.x,
+                        y: screen_point.y,
+                    };
+                    if unsafe { ScreenToClient(hwnd, &raw mut client_point) }.as_bool() {
+                        Some(InputPoint::new(client_point.x, client_point.y))
+                    } else {
+                        None
+                    }
+                },
+            ));
+            if messages.is_empty() {
+                false
+            } else {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(messages);
+                true
+            }
+        };
+        if !has_messages {
+            return;
+        }
+
+        self.wake_outbound_worker();
+    }
+
+    fn wake_outbound_worker(&self) {
+        let hwnd = HWND(self.window as *mut c_void);
+        if let Err(error) =
+            unsafe { PostMessageW(Some(hwnd), WM_BRIDGE_FLUSH_OUTBOUND, WPARAM(0), LPARAM(0)) }
+        {
+            warn!(?error, "Cannot wake Electron IPC worker for outbound input");
+        }
+    }
 }
 
 impl Drop for ElectronFrameBridge {
     fn drop(&mut self) {
+        {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut input_router = self
+                .input_router
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = input_router.request_interception(false);
+            let _ = input_router.publish_selection(None);
+        }
         let hwnd = HWND(self.window as *mut c_void);
         if let Err(error) =
             unsafe { PostMessageW(Some(hwnd), WM_BRIDGE_SHUTDOWN, WPARAM(0), LPARAM(0)) }
@@ -181,7 +346,13 @@ impl Error for ElectronFrameBridgeError {
     }
 }
 
-fn run_bridge_thread(latest: LatestFrame, ready_tx: mpsc::SyncSender<Result<usize, String>>) {
+fn run_bridge_thread(
+    latest: LatestFrame,
+    input_router: SharedInputRouter,
+    outbound: SharedOutboundQueue,
+    input_order: SharedInputOrder,
+    ready_tx: mpsc::SyncSender<Result<usize, String>>,
+) {
     let title = wide_string(&format!("hudhook-electron-frame-{}", unsafe {
         GetCurrentProcessId()
     }));
@@ -211,7 +382,13 @@ fn run_bridge_thread(latest: LatestFrame, ready_tx: mpsc::SyncSender<Result<usiz
         }
     };
 
-    let state = Box::new(BridgeThreadState::new(hwnd, latest));
+    let state = Box::new(BridgeThreadState::new(
+        hwnd,
+        latest,
+        input_router,
+        outbound,
+        input_order,
+    ));
     let preferred_window_name = state.preferred_window_name.clone();
     let state_ptr = Box::into_raw(state);
 
@@ -294,6 +471,11 @@ unsafe extern "system" fn bridge_window_proc(
             }
             return LRESULT(0);
         }
+        WM_TIMER if wparam.0 == OUTBOUND_RETRY_TIMER_ID => {
+            let _ = KillTimer(Some(hwnd), OUTBOUND_RETRY_TIMER_ID);
+            let _ = PostMessageW(Some(hwnd), WM_BRIDGE_FLUSH_OUTBOUND, WPARAM(0), LPARAM(0));
+            return LRESULT(0);
+        }
         WM_IPC_CONNECT_LINK_ACK => {
             let host = state_ptr.as_mut().and_then(|state| {
                 state.connected = true;
@@ -314,6 +496,7 @@ unsafe extern "system" fn bridge_window_proc(
                         "Cannot announce game process to Electron overlay host"
                     );
                 }
+                let _ = PostMessageW(Some(hwnd), WM_BRIDGE_FLUSH_OUTBOUND, WPARAM(0), LPARAM(0));
             }
             return LRESULT(0);
         }
@@ -330,7 +513,32 @@ unsafe extern "system" fn bridge_window_proc(
         WM_IPC_CLOSE_LINK => {
             if let Some(state) = state_ptr.as_mut() {
                 state.disconnect();
+                let _ = KillTimer(Some(hwnd), OUTBOUND_RETRY_TIMER_ID);
                 SetTimer(Some(hwnd), CONNECT_TIMER_ID, CONNECT_RETRY_MILLIS, None);
+            }
+            return LRESULT(0);
+        }
+        WM_BRIDGE_FLUSH_OUTBOUND => {
+            let transport = state_ptr.as_ref().and_then(|state| {
+                state.connected.then(|| {
+                    (
+                        state.host,
+                        Arc::clone(&state.outbound),
+                        Arc::clone(&state.outbound_diagnostics),
+                    )
+                })
+            });
+            if let Some((Some(host), outbound, diagnostics)) = transport {
+                if flush_outbound(host, &outbound, &diagnostics) {
+                    let _ = KillTimer(Some(hwnd), OUTBOUND_RETRY_TIMER_ID);
+                } else {
+                    SetTimer(
+                        Some(hwnd),
+                        OUTBOUND_RETRY_TIMER_ID,
+                        OUTBOUND_RETRY_MILLIS,
+                        None,
+                    );
+                }
             }
             return LRESULT(0);
         }
@@ -339,6 +547,7 @@ unsafe extern "system" fn bridge_window_proc(
                 state.notify_host_of_close();
             }
             let _ = KillTimer(Some(hwnd), CONNECT_TIMER_ID);
+            let _ = KillTimer(Some(hwnd), OUTBOUND_RETRY_TIMER_ID);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             let _ = DestroyWindow(hwnd);
             PostQuitMessage(0);
@@ -355,6 +564,10 @@ struct BridgeThreadState {
     host: Option<HWND>,
     connected: bool,
     latest: LatestFrame,
+    input_router: SharedInputRouter,
+    outbound: SharedOutboundQueue,
+    input_order: SharedInputOrder,
+    outbound_diagnostics: Arc<OutboundDiagnostics>,
     preferred_window_name: String,
     announced_windows: Vec<WindowMetadata>,
     state_revision: u64,
@@ -367,12 +580,22 @@ struct BridgeThreadState {
 }
 
 impl BridgeThreadState {
-    fn new(hwnd: HWND, latest: LatestFrame) -> Self {
+    fn new(
+        hwnd: HWND,
+        latest: LatestFrame,
+        input_router: SharedInputRouter,
+        outbound: SharedOutboundQueue,
+        input_order: SharedInputOrder,
+    ) -> Self {
         Self {
             hwnd,
             host: None,
             connected: false,
             latest,
+            input_router,
+            outbound,
+            input_order,
+            outbound_diagnostics: Arc::new(OutboundDiagnostics::default()),
             preferred_window_name: preferred_window_name(),
             announced_windows: Vec::new(),
             state_revision: 0,
@@ -414,6 +637,22 @@ impl BridgeThreadState {
         self.announced_windows.clear();
         self.selected = None;
         self.last_closed_window_name = None;
+        {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut input_router = self
+                .input_router
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = input_router.request_interception(false);
+            let _ = input_router.publish_selection(None);
+        }
+        self.outbound
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         self.bump_state_revision();
         self.clear_latest();
     }
@@ -478,6 +717,9 @@ impl BridgeThreadState {
                     self.on_window_close(message.window_id)
                         .map_err(DispatchError::Transport)
                 }),
+            "command.input.intercept" => serde_json::from_str::<InputInterceptCommand>(json)
+                .map_err(DispatchError::Json)
+                .map(|message| self.on_input_intercept(message.intercept)),
             _ => return,
         };
 
@@ -499,6 +741,7 @@ impl BridgeThreadState {
         self.announced_windows = message.windows;
         self.last_closed_window_name = None;
         self.selected = None;
+        self.update_input_router(|router| router.publish_selection(None));
         self.bump_state_revision();
         self.clear_latest();
 
@@ -579,6 +822,14 @@ impl BridgeThreadState {
         }
 
         self.bump_state_revision();
+        self.update_input_router(|router| {
+            let rect = InputRect::from(rect);
+            if router.selected_window().is_some() {
+                router.update_selection_rect(window_id, rect)
+            } else {
+                router.publish_selection(Some(SelectedInputWindow::new(window_id, rect)))
+            }
+        });
         info!(
             window_id,
             x = rect.x,
@@ -605,6 +856,7 @@ impl BridgeThreadState {
             .take()
             .ok_or(TransportError::NoSelectedWindow)?;
         self.last_closed_window_name = Some(closed.name.clone());
+        self.update_input_router(|router| router.publish_selection(None));
         self.bump_state_revision();
         self.clear_latest();
         info!(
@@ -647,6 +899,7 @@ impl BridgeThreadState {
             );
         }
 
+        let input_selection = SelectedInputWindow::new(window.window_id, window.rect.into());
         self.bump_state_revision();
         self.clear_latest();
         self.selected = Some(SelectedWindow {
@@ -657,7 +910,50 @@ impl BridgeThreadState {
             buffer_name: window.buffer_name,
             mapping: None,
         });
+        self.update_input_router(|router| router.publish_selection(Some(input_selection)));
         self.read_selected_mapping()
+    }
+
+    fn on_input_intercept(&self, intercept: bool) {
+        self.update_input_router(|router| router.request_interception(intercept));
+    }
+
+    fn update_input_router(&self, update: impl FnOnce(&mut InputRouter) -> Vec<OutboundMessage>) {
+        let has_messages = {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let messages = update(
+                &mut self
+                    .input_router
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            if messages.is_empty() {
+                false
+            } else {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(messages);
+                true
+            }
+        };
+        if !has_messages {
+            return;
+        }
+
+        if let Err(error) = unsafe {
+            PostMessageW(
+                Some(self.hwnd),
+                WM_BRIDGE_FLUSH_OUTBOUND,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        } {
+            warn!(?error, "Cannot wake Electron IPC worker for outbound input");
+        }
     }
 
     fn read_selected_mapping(&mut self) -> Result<(), TransportError> {
@@ -809,6 +1105,11 @@ struct WindowBoundsMessage {
     rect: ElectronWindowRect,
     #[serde(default)]
     buffer_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct InputInterceptCommand {
+    intercept: bool,
 }
 
 struct SelectedWindow {
@@ -1111,6 +1412,137 @@ fn decode_overlay_packet(bytes: &[u8]) -> Result<OverlayPacket, PacketError> {
     })
 }
 
+#[derive(Debug, Default)]
+struct OutboundDiagnostics {
+    first_mouse_logged: AtomicBool,
+    first_keyboard_logged: AtomicBool,
+}
+
+impl OutboundDiagnostics {
+    fn record(&self, message: &OutboundMessage) {
+        match message {
+            OutboundMessage::InputIntercept { intercepting: true } => {
+                info!("Electron input intercept enabled");
+            }
+            OutboundMessage::InputIntercept {
+                intercepting: false,
+            } => {
+                info!("Electron input intercept disabled");
+            }
+            OutboundMessage::WindowFocused { focus_window_id } if *focus_window_id != 0 => {
+                info!(
+                    window_id = focus_window_id,
+                    "Electron overlay focused for input"
+                );
+            }
+            _ => {}
+        }
+
+        let OutboundMessage::Input { msg, .. } = message else {
+            return;
+        };
+        if (0x0200..=0x020e).contains(msg) && !self.first_mouse_logged.swap(true, Ordering::AcqRel)
+        {
+            info!(message = msg, "Electron mouse input forwarded");
+        }
+        match *msg {
+            0x0201 => info!("Electron left mouse down forwarded"),
+            0x0202 => info!("Electron left mouse up forwarded"),
+            _ => {}
+        }
+        if (0x0100..=0x0109).contains(msg)
+            && !self.first_keyboard_logged.swap(true, Ordering::AcqRel)
+        {
+            info!(message = msg, "Electron keyboard input forwarded");
+        }
+    }
+}
+
+fn flush_outbound(
+    host: HWND,
+    outbound: &SharedOutboundQueue,
+    diagnostics: &OutboundDiagnostics,
+) -> bool {
+    loop {
+        let Some(message) = outbound
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front()
+        else {
+            return true;
+        };
+
+        if let Err(error) = send_outbound_message(host, &message) {
+            if should_retry_outbound(&message, &error) {
+                outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push_front(message);
+                warn!(
+                    ?error,
+                    "Cannot send idempotent packet to Electron overlay host; retrying"
+                );
+            } else {
+                // A SendMessageTimeout timeout is ambiguous: the receiver may
+                // have processed WM_COPYDATA without replying. Non-idempotent
+                // mouse/key packets are therefore at-most-once and are never
+                // requeued, preventing duplicate clicks or keystrokes.
+                warn!(?error, "Dropping outbound packet after send failure");
+            }
+            return false;
+        }
+
+        diagnostics.record(&message);
+    }
+}
+
+fn should_retry_outbound(message: &OutboundMessage, error: &PacketError) -> bool {
+    matches!(error, PacketError::HostSendFailed(_))
+        && !matches!(message, OutboundMessage::Input { .. })
+}
+
+fn send_outbound_message(host: HWND, message: &OutboundMessage) -> Result<(), PacketError> {
+    let (message_type, json) = outbound_message_payload(message);
+    send_overlay_message(host, message_type, &json)
+}
+
+fn outbound_message_payload(message: &OutboundMessage) -> (&'static str, String) {
+    match message {
+        OutboundMessage::InputIntercept { intercepting } => (
+            "game.input.intercept",
+            serde_json::json!({
+                "type": "game.input.intercept",
+                "intercepting": intercepting,
+            })
+            .to_string(),
+        ),
+        OutboundMessage::WindowFocused { focus_window_id } => (
+            "game.window.focused",
+            serde_json::json!({
+                "type": "game.window.focused",
+                "focusWindowId": focus_window_id,
+            })
+            .to_string(),
+        ),
+        OutboundMessage::Input {
+            window_id,
+            msg,
+            wparam,
+            lparam,
+        } => (
+            "game.input",
+            serde_json::json!({
+                "type": "game.input",
+                "windowId": window_id,
+                "msg": msg,
+                "wparam": wparam,
+                "lparam": lparam,
+            })
+            .to_string(),
+        ),
+    }
+}
+
 fn send_game_process(host: HWND) -> Result<(), PacketError> {
     let path = std::env::current_exe()
         .map_err(PacketError::CurrentExecutable)?
@@ -1121,13 +1553,11 @@ fn send_game_process(host: HWND) -> Result<(), PacketError> {
         "path": path,
     })
     .to_string();
-    let mut packet = Vec::with_capacity(json.len() + 64);
-    push_i32(&mut packet, IPC_DIRECTION_CLIENT);
-    push_i32(&mut packet, 0);
-    push_i32(&mut packet, 0);
-    push_i32(&mut packet, IPC_MESSAGE_ID);
-    push_string(&mut packet, "game.process")?;
-    push_string(&mut packet, &json)?;
+    send_overlay_message(host, "game.process", &json)
+}
+
+fn send_overlay_message(host: HWND, message_type: &str, json: &str) -> Result<(), PacketError> {
+    let mut packet = encode_overlay_packet(IPC_DIRECTION_CLIENT, message_type, json)?;
 
     let copy_data = COPYDATASTRUCT {
         dwData: unsafe { GetCurrentProcessId() } as usize,
@@ -1137,19 +1567,40 @@ fn send_game_process(host: HWND) -> Result<(), PacketError> {
             .map_err(|_| PacketError::StringTooLong(packet.len()))?,
         lpData: packet.as_mut_ptr().cast(),
     };
-    let result = unsafe {
-        SendMessageW(
+    let mut host_result = 0usize;
+    let delivered = unsafe {
+        SendMessageTimeoutW(
             host,
             WM_COPYDATA,
-            None,
-            Some(LPARAM((&copy_data as *const COPYDATASTRUCT) as isize)),
+            WPARAM(0),
+            LPARAM((&raw const copy_data) as isize),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            OUTBOUND_SEND_TIMEOUT_MILLIS,
+            Some(&raw mut host_result),
         )
     };
-    if result.0 == 0 {
+    if delivered.0 == 0 {
+        Err(PacketError::HostSendFailed(WindowsError::from_thread()))
+    } else if host_result == 0 {
         Err(PacketError::HostRejectedMessage)
     } else {
         Ok(())
     }
+}
+
+fn encode_overlay_packet(
+    direction: i32,
+    message_type: &str,
+    json: &str,
+) -> Result<Vec<u8>, PacketError> {
+    let mut packet = Vec::with_capacity(json.len() + 64);
+    push_i32(&mut packet, direction);
+    push_i32(&mut packet, 0);
+    push_i32(&mut packet, 0);
+    push_i32(&mut packet, IPC_MESSAGE_ID);
+    push_string(&mut packet, message_type)?;
+    push_string(&mut packet, json)?;
+    Ok(packet)
 }
 
 fn push_i32(output: &mut Vec<u8>, value: i32) {
@@ -1223,6 +1674,7 @@ enum PacketError {
     UnexpectedMessageId(i32),
     TrailingBytes(usize),
     CurrentExecutable(std::io::Error),
+    HostSendFailed(WindowsError),
     HostRejectedMessage,
 }
 
@@ -1237,6 +1689,12 @@ impl fmt::Display for PacketError {
             Self::TrailingBytes(count) => write!(formatter, "packet has {count} trailing bytes"),
             Self::CurrentExecutable(error) => {
                 write!(formatter, "cannot resolve target executable path: {error}")
+            }
+            Self::HostSendFailed(error) => {
+                write!(
+                    formatter,
+                    "cannot send packet to Electron overlay host: {error}"
+                )
             }
             Self::HostRejectedMessage => {
                 formatter.write_str("Electron overlay host rejected message")
@@ -1285,6 +1743,56 @@ mod tests {
             packet.json,
             r#"{"type":"window.framebuffer","windowId":42}"#
         );
+    }
+
+    #[test]
+    fn outbound_input_uses_the_existing_client_envelope_and_json_contract() {
+        let outbound = OutboundMessage::Input {
+            window_id: 42,
+            msg: 0x0200,
+            wparam: 5,
+            lparam: 0xfff6_000a,
+        };
+        let (message_type, json) = outbound_message_payload(&outbound);
+        let bytes = encode_overlay_packet(IPC_DIRECTION_CLIENT, message_type, &json).unwrap();
+        let packet = decode_overlay_packet(&bytes).unwrap();
+
+        assert_eq!(packet.direction, IPC_DIRECTION_CLIENT);
+        assert_eq!(packet.message_type, "game.input");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&packet.json).unwrap(),
+            serde_json::json!({
+                "type": "game.input",
+                "windowId": 42,
+                "msg": 0x0200,
+                "wparam": 5,
+                "lparam": 0xfff6_000a_u32,
+            })
+        );
+    }
+
+    #[test]
+    fn send_failures_retry_only_idempotent_control_packets() {
+        let send_failure =
+            PacketError::HostSendFailed(WindowsError::from_hresult(windows::core::HRESULT(-1)));
+        let input = OutboundMessage::Input {
+            window_id: 42,
+            msg: 0x0201,
+            wparam: 0,
+            lparam: 0,
+        };
+        let focus = OutboundMessage::WindowFocused {
+            focus_window_id: 42,
+        };
+        let intercept = OutboundMessage::InputIntercept { intercepting: true };
+
+        assert!(!should_retry_outbound(&input, &send_failure));
+        assert!(should_retry_outbound(&focus, &send_failure));
+        assert!(should_retry_outbound(&intercept, &send_failure));
+        assert!(!should_retry_outbound(
+            &intercept,
+            &PacketError::HostRejectedMessage
+        ));
     }
 
     #[test]

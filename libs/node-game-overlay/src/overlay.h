@@ -3,6 +3,7 @@
 #include "utils/n-utils.h"
 #include "utils/node_async_call.h"
 #include <assert.h>
+#include <cstdint>
 #include <set>
 #include <memory>
 #include <mutex>
@@ -182,7 +183,7 @@ inline std::vector<std::string> getKeyboardModifiers(WPARAM wparam, LPARAM lpara
         modifiers.push_back("shift");
     if (isKeyDown(VK_CONTROL))
         modifiers.push_back("control");
-    if (isKeyDown(VK_MENU))
+    if (isKeyDown(VK_MENU) || ((static_cast<std::uint32_t>(lparam) >> 29) & 1))
         modifiers.push_back("alt");
     if (isKeyDown(VK_LWIN) || isKeyDown(VK_RWIN))
         modifiers.push_back("meta");
@@ -665,49 +666,86 @@ class OverlayMain : public IIpcHost
         std::uint32_t lparam = eventData.Get("lparam").ToNumber();
 
         static WCHAR utf16Code = 0;
-        assert(!utf16Code || (utf16Code && msg == WM_CHAR));
-
-        if ((msg >= WM_KEYFIRST && msg <= WM_KEYLAST)
-            || (msg >= WM_SYSKEYDOWN && msg <= WM_SYSDEADCHAR))
+        if (utf16Code && msg != WM_CHAR && msg != WM_SYSCHAR)
         {
-            if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
-            {
-                object.Set("type", "keyDown");
-                object.Set("keyCode", getKeyCode(wparam));
-            }
-            else if (msg == WM_KEYUP || msg == WM_SYSKEYUP)
-            {
-                object.Set("type", "keyUp");
-                object.Set("keyCode", getKeyCode(wparam));
-            }
-            else if (msg == WM_CHAR)
-            {
-                object.Set("type", "char");
-                WCHAR code = wparam;
+            utf16Code = 0;
+        }
 
-                if (0xD800 <= code && code <= 0xDBFF)
-                {
-                    utf16Code = code;
-                }
-                else
-                {
-                    std::wstring keyCode;
-                    if (utf16Code && (0xDC00 <= code && code <= 0xDFFF))
-                    {
-                        keyCode = std::wstring(1, utf16Code);
-                        keyCode.append(std::wstring(1, code));
+        bool keyboardEvent = false;
 
-                    }
-                    else
-                    {
-                        keyCode = std::wstring(1, code);
-                    }
+        if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+        {
+            object.Set("type", "keyDown");
+            object.Set("keyCode", getKeyCode(wparam));
+            keyboardEvent = true;
+        }
+        else if (msg == WM_KEYUP || msg == WM_SYSKEYUP)
+        {
+            object.Set("type", "keyUp");
+            object.Set("keyCode", getKeyCode(wparam));
+            keyboardEvent = true;
+        }
+        else if (msg == WM_CHAR || msg == WM_SYSCHAR)
+        {
+            WCHAR code = static_cast<WCHAR>(wparam);
 
-                    utf16Code = 0;
-                    object.Set("keyCode", Windows::toUtf8(keyCode));
-                }
+            if (0xD800 <= code && code <= 0xDBFF)
+            {
+                utf16Code = code;
+                return env.Undefined();
             }
 
+            std::wstring keyCode;
+            if (utf16Code && (0xDC00 <= code && code <= 0xDFFF))
+            {
+                keyCode = std::wstring(1, utf16Code);
+                keyCode.append(std::wstring(1, code));
+            }
+            else
+            {
+                keyCode = std::wstring(1, code);
+            }
+
+            utf16Code = 0;
+            object.Set("type", "char");
+            object.Set("keyCode", Windows::toUtf8(keyCode));
+            keyboardEvent = true;
+        }
+        else if (msg == WM_UNICHAR)
+        {
+            constexpr std::uint32_t unicodeNoChar = 0xFFFF;
+            bool invalidCodePoint = wparam > 0x10FFFF
+                || (0xD800 <= wparam && wparam <= 0xDFFF);
+
+            if (wparam == unicodeNoChar || invalidCodePoint)
+            {
+                return env.Undefined();
+            }
+
+            std::wstring keyCode;
+            if (wparam <= 0xFFFF)
+            {
+                keyCode = std::wstring(1, static_cast<WCHAR>(wparam));
+            }
+            else
+            {
+                std::uint32_t code = wparam - 0x10000;
+                keyCode = std::wstring(1, static_cast<WCHAR>(0xD800 + (code >> 10)));
+                keyCode.append(std::wstring(1, static_cast<WCHAR>(0xDC00 + (code & 0x3FF))));
+            }
+
+            object.Set("type", "char");
+            object.Set("keyCode", Windows::toUtf8(keyCode));
+            keyboardEvent = true;
+        }
+        else if (msg == WM_DEADCHAR || msg == WM_SYSDEADCHAR)
+        {
+            utf16Code = 0;
+            return env.Undefined();
+        }
+
+        if (keyboardEvent)
+        {
             auto modifiersVec = getKeyboardModifiers(wparam, lparam);
 
             Napi::Array modifiers = Napi::Array::New(env, modifiersVec.size());
@@ -718,22 +756,27 @@ class OverlayMain : public IIpcHost
             }
 
             object.Set("modifiers", modifiers);
+            return object;
         }
 
-        else if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST)
+        if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST)
         {
+            if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_XBUTTONDBLCLK)
+            {
+                return env.Undefined();
+            }
+
             auto modifiersVec = getMouseModifiers(wparam, lparam);
 
             if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN
-                ||msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN
+                || msg == WM_MBUTTONDOWN
                 || msg == WM_LBUTTONDBLCLK || msg == WM_RBUTTONDBLCLK
-                || msg == WM_MBUTTONDBLCLK || msg == WM_XBUTTONDBLCLK
-                )
+                || msg == WM_MBUTTONDBLCLK)
             {
                 object.Set("type", "mouseDown");
 
                 if (msg == WM_LBUTTONDBLCLK || msg == WM_RBUTTONDBLCLK
-                    || msg == WM_MBUTTONDBLCLK || msg == WM_XBUTTONDBLCLK)
+                    || msg == WM_MBUTTONDBLCLK)
                 {
                     object.Set("clickCount", 2);
                 }
@@ -741,11 +784,9 @@ class OverlayMain : public IIpcHost
                 {
                     object.Set("clickCount", 1);
                 }
-
-
             }
             else if (msg == WM_LBUTTONUP || msg == WM_RBUTTONUP
-                || msg == WM_MBUTTONUP || msg == WM_XBUTTONUP)
+                || msg == WM_MBUTTONUP)
             {
                 object.Set("type", "mouseUp");
                 object.Set("clickCount", 1);
@@ -760,13 +801,25 @@ class OverlayMain : public IIpcHost
 
                 int delta = GET_WHEEL_DELTA_WPARAM(wparam);
                 object.Set("deltaY", delta);
-                object.Set("canScroll ", true);
+                object.Set("canScroll", true);
+            }
+            else if (msg == WM_MOUSEHWHEEL)
+            {
+                object.Set("type", "mouseWheel");
+
+                int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+                object.Set("deltaX", -delta);
+                object.Set("canScroll", true);
+            }
+            else
+            {
+                return env.Undefined();
             }
 
             //for mousewheel the cord is already translated
 
-            int x = LOWORD(lparam);
-            int y = HIWORD(lparam);
+            int x = static_cast<std::int16_t>(LOWORD(lparam));
+            int y = static_cast<std::int16_t>(HIWORD(lparam));
             object.Set("x", x);
             object.Set("y", y);
 
@@ -791,17 +844,10 @@ class OverlayMain : public IIpcHost
             }
 
             object.Set("modifiers", modifiers);
-
-        }
-
-        if (utf16Code)
-        {
-            return env.Undefined();
-        }
-        else
-        {
             return object;
         }
+
+        return env.Undefined();
     }
 
     void notifyGameProcess(std::uint32_t pid, std::string& path)

@@ -1,17 +1,37 @@
 mod electron_frame;
+mod electron_input;
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use electron_frame::{ElectronFrame, ElectronFrameBridge};
-use hudhook::imgui::{Condition, Context, Image, TextureId, Ui, WindowFlags};
-use hudhook::{ImguiRenderLoop, RenderContext};
+use hudhook::imgui::{Condition, Context, Image, Io, TextureId, Ui, WindowFlags};
+use hudhook::{ImguiRenderLoop, MessageFilter, RenderContext};
 use tracing_subscriber::EnvFilter;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
 const TEXTURE_WIDTH: u32 = 128;
 const TEXTURE_HEIGHT: u32 = 128;
+const INPUT_FILTER_DISABLED: u8 = 0;
+const INPUT_FILTER_ARMING: u8 = 1;
+const INPUT_FILTER_ENABLED: u8 = 2;
+const INPUT_FILTER_DISARMING: u8 = 3;
+
+const fn next_input_filter_phase(current_phase: u8, desired_interception: bool) -> u8 {
+    match (current_phase, desired_interception) {
+        (INPUT_FILTER_DISABLED, true) => INPUT_FILTER_ARMING,
+        (INPUT_FILTER_ARMING, true) => INPUT_FILTER_ENABLED,
+        (INPUT_FILTER_ARMING, false) => INPUT_FILTER_DISARMING,
+        (INPUT_FILTER_ENABLED, true) => INPUT_FILTER_ENABLED,
+        (INPUT_FILTER_ENABLED, false) => INPUT_FILTER_DISARMING,
+        (INPUT_FILTER_DISARMING, true) => INPUT_FILTER_ARMING,
+        (INPUT_FILTER_DISARMING, false) => INPUT_FILTER_DISABLED,
+        _ => INPUT_FILTER_DISABLED,
+    }
+}
 
 pub struct PocRenderLoop {
     backend_name: &'static str,
@@ -31,6 +51,9 @@ pub struct PocRenderLoop {
     rendered_frames: u64,
     first_frame_logged: bool,
     last_display_size: Option<[f32; 2]>,
+    input_filter_phase: AtomicU8,
+    sampled_input_filter_phase: AtomicU8,
+    applied_input_filter: AtomicBool,
 }
 
 impl PocRenderLoop {
@@ -70,6 +93,9 @@ impl PocRenderLoop {
             rendered_frames: 0,
             first_frame_logged: false,
             last_display_size: None,
+            input_filter_phase: AtomicU8::new(INPUT_FILTER_DISABLED),
+            sampled_input_filter_phase: AtomicU8::new(INPUT_FILTER_DISABLED),
+            applied_input_filter: AtomicBool::new(false),
         }
     }
 
@@ -149,7 +175,26 @@ impl PocRenderLoop {
                     "Display: {:.0} x {:.0}",
                     display_size[0], display_size[1]
                 ));
-                ui.text("Input: pass-through");
+                if let Some(input) = self
+                    .electron_bridge
+                    .as_ref()
+                    .map(ElectronFrameBridge::input_state)
+                {
+                    ui.text(format!(
+                        "Input: requested {} | effective {}",
+                        input.requested_interception, input.effective_interception
+                    ));
+                    ui.text(format!(
+                        "Focus: {} | capture {} | target {}",
+                        input
+                            .focused_window_id
+                            .map_or_else(|| "none".to_owned(), |id| id.to_string()),
+                        input.pointer_captured,
+                        input.target_focused
+                    ));
+                } else {
+                    ui.text("Input: pass-through (bridge unavailable)");
+                }
                 ui.separator();
 
                 if let Some(frame) = &self.electron_snapshot {
@@ -225,6 +270,32 @@ impl ImguiRenderLoop for PocRenderLoop {
         _context: &mut Context,
         render_context: &'a mut dyn RenderContext,
     ) {
+        // hudhook stores the value returned by message_filter immediately
+        // before this callback. Commit and log that exact sampled value here,
+        // rather than re-reading effective state after the boundary.
+        let sampled_phase = self.sampled_input_filter_phase.load(Ordering::Acquire);
+        self.input_filter_phase
+            .store(sampled_phase, Ordering::Release);
+        let sampled_input_filter = sampled_phase != INPUT_FILTER_DISABLED;
+        let previous = self
+            .applied_input_filter
+            .swap(sampled_input_filter, Ordering::AcqRel);
+        if previous != sampled_input_filter {
+            if sampled_input_filter {
+                hudhook::tracing::info!("hudhook input filter enabled at render boundary");
+            } else {
+                hudhook::tracing::info!("hudhook input filter disabled at render boundary");
+            }
+        }
+        if let Some(bridge) = &self.electron_bridge {
+            // Arming/disarming hold routing disabled for a complete filtered
+            // queue drain. Only matching terminal phases may acknowledge.
+            bridge.apply_input_filter(
+                sampled_phase == INPUT_FILTER_ENABLED,
+                matches!(sampled_phase, INPUT_FILTER_DISABLED | INPUT_FILTER_ENABLED),
+            );
+        }
+
         let latest = self
             .electron_bridge
             .as_ref()
@@ -333,6 +404,29 @@ impl ImguiRenderLoop for PocRenderLoop {
             );
         }
     }
+
+    fn after_wnd_proc(&self, hwnd: HWND, umsg: u32, wparam: WPARAM, lparam: LPARAM) {
+        if let Some(bridge) = &self.electron_bridge {
+            bridge.route_window_message(hwnd, umsg, wparam, lparam);
+        }
+    }
+
+    fn message_filter(&self, _io: &Io) -> MessageFilter {
+        let desired_interception = self
+            .electron_bridge
+            .as_ref()
+            .is_some_and(ElectronFrameBridge::desired_interception);
+        let current_phase = self.input_filter_phase.load(Ordering::Acquire);
+        let sampled_phase = next_input_filter_phase(current_phase, desired_interception);
+        self.sampled_input_filter_phase
+            .store(sampled_phase, Ordering::Release);
+
+        if sampled_phase != INPUT_FILTER_DISABLED {
+            MessageFilter::InputAll
+        } else {
+            MessageFilter::empty()
+        }
+    }
 }
 
 fn make_test_pattern() -> Vec<u8> {
@@ -388,4 +482,45 @@ fn create_log_file(dll_path: &Path) -> Option<(PathBuf, File)> {
     File::create(&fallback_path)
         .ok()
         .map(|file| (fallback_path, file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_filter_transitions_require_guarded_queue_drains() {
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_DISABLED, false),
+            INPUT_FILTER_DISABLED
+        );
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_DISABLED, true),
+            INPUT_FILTER_ARMING
+        );
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_ARMING, true),
+            INPUT_FILTER_ENABLED
+        );
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_ENABLED, true),
+            INPUT_FILTER_ENABLED
+        );
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_ARMING, false),
+            INPUT_FILTER_DISARMING
+        );
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_ENABLED, false),
+            INPUT_FILTER_DISARMING
+        );
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_DISARMING, false),
+            INPUT_FILTER_DISABLED
+        );
+        assert_eq!(
+            next_input_filter_phase(INPUT_FILTER_DISARMING, true),
+            INPUT_FILTER_ARMING
+        );
+    }
 }

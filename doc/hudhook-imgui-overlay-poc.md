@@ -17,7 +17,10 @@ Verified results:
 -   the real-client runner selects `ExampleMainOverlay` rather than accepting a fallback or status window;
 -   the hudhook payload connects to the existing Node IPC host, copies the frame on a worker thread, converts Electron's premultiplied BGRA pixels to straight RGBA, uploads it through hudhook, and composes it at the native window bounds;
 -   a transparent window moves from `(64, 72)` to `(176, 128)`, disappears after the SDK's `window.close`, and resumes after the same `BrowserWindow` re-registers with a new mapping;
--   the integrated diagnostic, `-Client`, and `-ClientWindow` runners require the exact host PID's receipt, upload, composition, and applicable lifecycle markers and safely clean up their Electron process trees in attached runs.
+-   `OverlaySession.input.intercept()` drives hudhook's guarded Win32 input filter; while it blocks the controlled host, the payload hit-tests and forwards left/right/middle mouse, vertical/horizontal wheel, keyboard, system-key, character, and focus packets to the selected Electron window, and project-owned router state maintains multi-button pointer capture;
+-   the deterministic `-ClientInput` runner proves click/focus, typed text, vertical wheel, intercepted Escape, release acknowledgement, released Escape, and clean process exit;
+-   router, bridge, and native-translator tests cover outside-bounds capture/release, outside-overlay swallowing, right/middle buttons, horizontal wheel, extended characters, synthetic cancellation/cleanup releases, guarded filter transitions, at-most-once input retry classification, and adjacent mouse-move coalescing;
+-   the integrated diagnostic, `-Client`, `-ClientWindow`, and `-ClientInput` runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
 
 No hudhook fork was required. The allowed D3D11 application smoke test and D3D12 milestone remain open. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
 
@@ -42,7 +45,7 @@ The minimum useful answer is deliberately narrow:
 -   report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
 -   let the target close cleanly.
 
-The D3D11 seam and a generic one-window Electron compositor are now proven. Production-wide game compatibility, multi-window/z-order composition, input forwarding, arbitrary-DPI coordinate mapping, resize-safe texture retirement, and D3D12 remain later work.
+The D3D11 seam and an interactive generic one-window Electron compositor are now proven. Production-wide game compatibility, multi-window/z-order composition, arbitrary-DPI coordinate mapping, resize-safe texture retirement, broader input APIs, and D3D12 remain later work.
 
 ## Decision
 
@@ -90,6 +93,9 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   one selected 640 x 360 Electron offscreen window from either a controlled producer or the real built client;
 -   transparent premultiplied-BGRA conversion and native-bounds composition;
 -   one-window move, close, and re-register lifecycle handling;
+-   one-window Win32 left/right/middle mouse, vertical/horizontal-wheel, keyboard,
+    system-key, character, focus, and global interception behavior, plus
+    project-owned multi-button pointer-capture state;
 -   compatibility with the existing Node add-on IPC, named mutex, and shared mapping;
 -   resize and clean target-exit tests;
 -   latest-frame CPU copy/conversion away from the render thread.
@@ -99,7 +105,8 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 -   multiple Electron windows, z-order, or coordinated visibility state;
 -   arbitrary-DPI and mixed-monitor coordinate mapping beyond the controlled 100% scale;
 -   Electron window resize and old-texture retirement;
--   forwarding input to Electron;
+-   raw-input translation, DirectInput, XInput, GameInput, gamepads, and faithful
+    X1/X2 delivery through Electron 16;
 -   automatic D3D11/D3D12 selection in one DLL;
 -   x86 payloads;
 -   D3D10, Vulkan, or OpenGL;
@@ -242,6 +249,17 @@ D3D11 success is still useful if a particular D3D12 target exposes an upstream b
 
 This milestone is complete. It intentionally does not redesign the current frame protocol; a versioned/double-buffered transport can follow if profiling or multi-window work shows that the existing mutex/mapping is insufficient.
 
+### Milestone 4: interactive selected Electron window
+
+1. Reuse `OverlaySession.input.intercept()` and `.release()` without changing the public SDK.
+2. Track requested/effective interception, selected-window focus, and multi-button pointer capture in project-owned Rust state.
+3. Route regular Win32 left/right/middle mouse, vertical/horizontal wheel, keyboard, system-key, `WM_CHAR`, `WM_SYSCHAR`, and valid `WM_UNICHAR` messages through hudhook's public WndProc callbacks.
+4. Queue return packets to the IPC worker, coalescing only adjacent mouse moves and preserving focus-before-click ordering.
+5. Guard hudhook's `InputAll` transitions with filtered arming/disarming drains; acknowledge only after the matching terminal filter is published, so boundary input can drop but cannot reach both destinations.
+6. Prove the behavior with `-ClientInput`, then rerun the lifecycle and real-client compositor regressions.
+
+This milestone is complete for the selected Win32 window at the controlled 1:1 device scale. Raw-input translation, DirectInput, XInput, GameInput, gamepads, and faithful X1/X2 delivery through Electron 16 remain compatibility work.
+
 ## Acceptance criteria
 
 The D3D11 milestone passes when all of the following are true:
@@ -258,6 +276,8 @@ The D3D11 milestone passes when all of the following are true:
 The D3D12 milestone uses the same criteria against the controlled D3D12 host.
 
 The Electron milestone passes when the producer validates a 640 x 360 x 4 paint buffer, the real-client run selects `ExampleMainOverlay`, premultiplied transparent pixels render correctly at the advertised bounds, move/close/re-register changes are reflected in composition, and the exact-PID logs prove receipt, upload, clear, reselect, and resume before attached cleanup.
+
+The input milestone's end-to-end acceptance passes when the selected window receives left-click/focus, text, and vertical wheel input with local coordinates; intercepted Escape reaches Electron but not the host; release produces an Electron acknowledgement after the separate disabled-at-render-boundary marker; and released Escape closes the host normally. Horizontal wheel, pointer capture outside the selected bounds, outside-overlay swallowing, right/middle buttons, extended characters, synthetic cleanup releases, guarded filter transitions, retry classification, and move coalescing are verified below the DOM end-to-end boundary.
 
 The controlled host proves the architecture deterministically. At least one allowed offline D3D11 game/application smoke test is required before adopting hudhook for the D3D11 product path. Apply the same rule to D3D12 when a suitable test target is available.
 
@@ -322,4 +342,4 @@ These commands describe the desired operator experience; the implementation READ
 -   If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
 -   If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
 
-The controlled D3D11 and generic one-window Electron compositor criteria are complete. Next, make the selected window interactive through the existing input/intercept protocol; the continuation plan is in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md). Then add multi-window state/z-order, arbitrary-DPI coordinate handling, and resize-safe texture retirement. After those compositor seams are stable, repeat the controlled graphics proof with D3D12; an allowed offline D3D11 application smoke test remains separate compatibility evidence.
+The controlled D3D11, generic one-window Electron compositor, and selected-window input criteria are complete; the input design and acceptance record is in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md). Next add multi-window state/z-order, arbitrary-DPI coordinate handling, and resize-safe texture retirement. After those compositor seams are stable, repeat the controlled graphics proof with D3D12; an allowed offline D3D11 application smoke test remains separate compatibility evidence.

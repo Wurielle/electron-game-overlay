@@ -16,6 +16,7 @@
             height: 40px;
             background-color: brown
         }
+
     </style>
     <title>Example Main Overlay</title>
 </head>
@@ -28,7 +29,7 @@
         <br /> Hello Electron!
 
         <label id="label">Label</label>
-        <input type="text"><input>
+        <input id="hudhook-client-input-target" type="text" autocomplete="off">
     </div>
     <script>
         const label = document.getElementById('label')
@@ -53,6 +54,51 @@
         videoButton.addEventListener("click", () => {
             ipcRenderer.send("showExampleVideoOverlay")
         })
+
+        const inputTarget = document.getElementById('hudhook-client-input-target')
+        let hudhookInputProofEnabled = false
+        window.hudhookInputProof = {
+            enable() {
+                if (hudhookInputProofEnabled) {
+                    return
+                }
+                hudhookInputProofEnabled = true
+                Object.assign(inputTarget.style, {
+                    position: 'fixed',
+                    left: '24px',
+                    top: '112px',
+                    width: '240px'
+                })
+                inputTarget.value = ''
+
+                inputTarget.addEventListener('focus', () => {
+                    console.log('HUDHOOK_CLIENT_INPUT_FOCUSED')
+                })
+                inputTarget.addEventListener('click', () => {
+                    console.log('HUDHOOK_CLIENT_INPUT_CLICKED')
+                })
+                inputTarget.addEventListener('input', () => {
+                    console.log(`HUDHOOK_CLIENT_INPUT_VALUE value=${inputTarget.value}`)
+                })
+                inputTarget.addEventListener('wheel', event => {
+                    console.log(`HUDHOOK_CLIENT_INPUT_WHEEL deltaY=${event.deltaY}`)
+                })
+                inputTarget.addEventListener('keydown', event => {
+                    if (event.key === 'Escape') {
+                        console.log('HUDHOOK_CLIENT_INPUT_ESCAPE_FORWARDED')
+                    }
+                })
+            },
+            getTargetRect() {
+                const rect = inputTarget.getBoundingClientRect()
+                return {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height
+                }
+            }
+        }
 
         window.onfocus = function () {
             console.log("focus")
