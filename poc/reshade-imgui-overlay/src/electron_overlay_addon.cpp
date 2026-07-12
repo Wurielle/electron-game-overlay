@@ -5,16 +5,145 @@
 #include <reshade.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace
 {
 using namespace reshade::api;
+
+constexpr std::size_t input_queue_capacity = 4096;
+static_assert((input_queue_capacity & (input_queue_capacity - 1)) == 0);
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
+static_assert(std::is_trivially_copyable_v<input_message>);
+
+struct queued_input_message
+{
+    std::uint64_t generation = 0;
+    input_message message = {};
+};
+static_assert(std::is_trivially_copyable_v<queued_input_message>);
+
+/// Bounded Vyukov queue. Producers are the arbitrary threads on which ReShade
+/// observes input; the render callback is the only consumer (guarded below).
+/// Callback publication performs no allocation, IPC, logging, or mutex wait.
+template <std::size_t Capacity>
+class bounded_input_queue
+{
+    static_assert((Capacity & (Capacity - 1)) == 0);
+
+    struct slot
+    {
+        std::atomic<std::uint64_t> sequence = 0;
+        queued_input_message message = {};
+    };
+
+public:
+    bounded_input_queue() noexcept
+    {
+        for (std::uint64_t index = 0; index < Capacity; ++index)
+            slots_[index].sequence.store(index, std::memory_order_relaxed);
+    }
+
+    bounded_input_queue(const bounded_input_queue &) = delete;
+    bounded_input_queue &operator=(const bounded_input_queue &) = delete;
+
+    bool try_push(const queued_input_message &message) noexcept
+    {
+        std::uint64_t position = enqueue_position_.load(std::memory_order_relaxed);
+        slot *target = nullptr;
+
+        for (;;)
+        {
+            target = &slots_[position & (Capacity - 1)];
+            const std::uint64_t sequence =
+                target->sequence.load(std::memory_order_acquire);
+            const std::int64_t difference =
+                static_cast<std::int64_t>(sequence - position);
+            if (difference == 0)
+            {
+                if (enqueue_position_.compare_exchange_weak(
+                        position,
+                        position + 1,
+                        std::memory_order_relaxed,
+                        std::memory_order_relaxed))
+                    break;
+            }
+            else if (difference < 0)
+            {
+                return false;
+            }
+            else
+            {
+                position = enqueue_position_.load(std::memory_order_relaxed);
+            }
+        }
+
+        target->message = message;
+        target->sequence.store(position + 1, std::memory_order_release);
+        return true;
+    }
+
+    bool try_pop(queued_input_message &message) noexcept
+    {
+        slot &source = slots_[dequeue_position_ & (Capacity - 1)];
+        const std::uint64_t sequence =
+            source.sequence.load(std::memory_order_acquire);
+        const std::int64_t difference =
+            static_cast<std::int64_t>(sequence - (dequeue_position_ + 1));
+        if (difference != 0)
+            return false;
+
+        message = source.message;
+        source.sequence.store(
+            dequeue_position_ + Capacity,
+            std::memory_order_release);
+        ++dequeue_position_;
+        return true;
+    }
+
+private:
+    std::array<slot, Capacity> slots_ = {};
+    std::atomic<std::uint64_t> enqueue_position_ = 0;
+    std::uint64_t dequeue_position_ = 0;
+};
+
+bounded_input_queue<input_queue_capacity> g_input_queue;
+std::array<queued_input_message, input_queue_capacity> g_input_batch = {};
+std::atomic_flag g_input_consumer = ATOMIC_FLAG_INIT;
+std::atomic<std::uint64_t> g_input_generation = 1;
+std::atomic<std::uint64_t> g_dropped_input_messages = 0;
+std::atomic<bool> g_input_recovery_pending = false;
+std::atomic_flag g_overflow_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_order_fault_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_raw_deferred_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_route_error_logged = ATOMIC_FLAG_INIT;
+std::uint64_t g_last_input_sequence = 0;
+bool g_has_last_input_sequence = false;
+std::uint64_t g_deferred_raw_input_messages = 0;
+std::uint64_t g_deferred_raw_buffer_messages = 0;
+std::uint64_t g_deferred_window_raw_messages = 0;
+
+void on_input_message(const input_message &message) noexcept
+{
+    const queued_input_message queued = {
+        g_input_generation.load(std::memory_order_acquire),
+        message,
+    };
+    if (g_input_queue.try_push(queued))
+        return;
+
+    g_dropped_input_messages.fetch_add(1, std::memory_order_relaxed);
+    g_input_recovery_pending.store(true, std::memory_order_release);
+}
 
 enum class input_phase : std::uint8_t
 {
@@ -46,6 +175,7 @@ struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
     HWND window = nullptr;
     input_phase phase = input_phase::disabled;
     bool first_scene_logged = false;
+    bool first_multiwindow_scene_logged = false;
     ego_status last_error = EGO_STATUS_OK;
 };
 
@@ -157,6 +287,223 @@ bool any_target_focused()
             return true;
     }
     return false;
+}
+
+struct input_consumer_release
+{
+    ~input_consumer_release()
+    {
+        g_input_consumer.clear(std::memory_order_release);
+    }
+};
+
+void log_input_overflow_once(std::uint64_t dropped)
+{
+    if (g_overflow_logged.test_and_set(std::memory_order_relaxed))
+        return;
+
+    char message[256] = {};
+    sprintf_s(
+        message,
+        "Electron ReShade input observer queue overflowed (%llu record(s) dropped); "
+        "the Electron router was reset before input delivery resumed.",
+        static_cast<unsigned long long>(dropped));
+    reshade::log::message(reshade::log::level::warning, message);
+}
+
+void discard_queued_input()
+{
+    queued_input_message discarded = {};
+    while (g_input_queue.try_pop(discarded))
+    {
+    }
+}
+
+bool reset_input_router(ego_core *core)
+{
+    // Advancing the generation makes a producer that was preempted before this
+    // reset harmless: its late publication is recognized and discarded.
+    g_input_generation.fetch_add(1, std::memory_order_acq_rel);
+    discard_queued_input();
+
+    const ego_status blur_status = ego_core_set_target_focused(core, 0);
+    if (blur_status != EGO_STATUS_OK)
+    {
+        log_core_error("input-loss blur reset", blur_status);
+        g_input_recovery_pending.store(true, std::memory_order_release);
+        return false;
+    }
+
+    const ego_status focus_status = ego_core_set_target_focused(
+        core,
+        any_target_focused() ? 1U : 0U);
+    if (focus_status != EGO_STATUS_OK)
+    {
+        log_core_error("input-loss focus restore", focus_status);
+        g_input_recovery_pending.store(true, std::memory_order_release);
+        return false;
+    }
+
+    g_last_input_sequence = 0;
+    g_has_last_input_sequence = false;
+    return true;
+}
+
+bool recover_dropped_input(ego_core *core)
+{
+    const bool recovery_requested =
+        g_input_recovery_pending.exchange(false, std::memory_order_acq_rel);
+    const std::uint64_t dropped =
+        g_dropped_input_messages.exchange(0, std::memory_order_acq_rel);
+    if (!recovery_requested && dropped == 0)
+        return true;
+
+    if (dropped != 0)
+        log_input_overflow_once(dropped);
+    if (!reset_input_router(core))
+        return false;
+
+    // An overflow that raced the reset belongs to a newer generation. Leave it
+    // for the next render callback and do not route anything in this one.
+    return !g_input_recovery_pending.load(std::memory_order_acquire) &&
+        g_dropped_input_messages.load(std::memory_order_acquire) == 0;
+}
+
+void drain_input_messages(ego_core *core)
+{
+    if (core == nullptr ||
+        g_input_consumer.test_and_set(std::memory_order_acquire))
+    {
+        return;
+    }
+    const input_consumer_release release_consumer;
+
+    if (!recover_dropped_input(core))
+        return;
+
+    std::size_t count = 0;
+    while (count < g_input_batch.size() &&
+           g_input_queue.try_pop(g_input_batch[count]))
+    {
+        ++count;
+    }
+    if (count == 0)
+        return;
+
+    if (g_input_recovery_pending.load(std::memory_order_acquire) ||
+        g_dropped_input_messages.load(std::memory_order_acquire) != 0)
+    {
+        static_cast<void>(recover_dropped_input(core));
+        return;
+    }
+
+    std::sort(
+        g_input_batch.begin(),
+        g_input_batch.begin() + count,
+        [](const queued_input_message &left, const queued_input_message &right) {
+            return left.message.sequence < right.message.sequence;
+        });
+
+    const std::uint64_t generation =
+        g_input_generation.load(std::memory_order_acquire);
+    std::uint64_t previous_sequence = g_last_input_sequence;
+    bool has_previous_sequence = g_has_last_input_sequence;
+    bool ordering_fault = false;
+    for (std::size_t index = 0; index < count; ++index)
+    {
+        const queued_input_message &queued = g_input_batch[index];
+        if (queued.generation != generation)
+            continue;
+        if (has_previous_sequence &&
+            queued.message.sequence <= previous_sequence)
+        {
+            ordering_fault = true;
+            break;
+        }
+        previous_sequence = queued.message.sequence;
+        has_previous_sequence = true;
+    }
+
+    if (ordering_fault)
+    {
+        if (!g_order_fault_logged.test_and_set(std::memory_order_relaxed))
+        {
+            reshade::log::message(
+                reshade::log::level::warning,
+                "Electron ReShade input records arrived out of global sequence; "
+                "the Electron router was reset before delivery resumed.");
+        }
+        static_cast<void>(reset_input_router(core));
+        return;
+    }
+
+    for (std::size_t index = 0; index < count; ++index)
+    {
+        const queued_input_message &queued = g_input_batch[index];
+        if (queued.generation != generation)
+            continue;
+        if (g_input_recovery_pending.load(std::memory_order_acquire) ||
+            g_dropped_input_messages.load(std::memory_order_acquire) != 0)
+        {
+            static_cast<void>(recover_dropped_input(core));
+            return;
+        }
+
+        const input_message &message = queued.message;
+        switch (message.source)
+        {
+        case input_message_source::window_message:
+            if (message.message == WM_INPUT)
+            {
+                ++g_deferred_window_raw_messages;
+                break;
+            }
+            else
+            {
+                const ego_status status = ego_core_route_window_message(
+                    core,
+                    reinterpret_cast<std::uintptr_t>(message.target_window),
+                    message.message,
+                    message.wparam,
+                    message.lparam);
+                if (status != EGO_STATUS_OK)
+                {
+                    if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
+                        log_core_error("copied input delivery", status);
+                    static_cast<void>(reset_input_router(core));
+                    return;
+                }
+                break;
+            }
+
+        case input_message_source::raw_input:
+            ++g_deferred_raw_input_messages;
+            break;
+
+        case input_message_source::raw_input_buffer:
+            ++g_deferred_raw_buffer_messages;
+            break;
+
+        default:
+            static_cast<void>(reset_input_router(core));
+            return;
+        }
+
+        if (message.source != input_message_source::window_message ||
+            message.message == WM_INPUT)
+        {
+            if (!g_raw_deferred_logged.test_and_set(std::memory_order_relaxed))
+            {
+                reshade::log::message(
+                    reshade::log::level::info,
+                    "Electron ReShade compositor is retaining and counting copied "
+                    "raw-input records; exact raw normalization is deferred.");
+            }
+        }
+
+        g_last_input_sequence = message.sequence;
+        g_has_last_input_sequence = true;
+    }
 }
 
 input_phase next_phase(input_phase current, bool desired)
@@ -445,6 +792,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
 
     const std::scoped_lock lock(data->mutex);
     ImDrawList *const draw_list = ImGui::GetBackgroundDrawList();
+    std::uint64_t rendered_window_count = 0;
     for (std::uint64_t index = 0; index < window_count; ++index)
     {
         ego_window_frame_v1 frame = {};
@@ -487,6 +835,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
             static_cast<float>(frame.rect_x) + static_cast<float>(frame.rect_width),
             static_cast<float>(frame.rect_y) + static_cast<float>(frame.rect_height));
         draw_list->AddImage(texture.view.handle, top_left, bottom_right);
+        ++rendered_window_count;
     }
 
     bool removed_texture = false;
@@ -507,14 +856,24 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
     }
 
     ego_scene_snapshot_release(snapshot);
-    if (window_count != 0 && !swapchain_state.first_scene_logged)
+    if (rendered_window_count != 0 && !swapchain_state.first_scene_logged)
     {
         swapchain_state.first_scene_logged = true;
         char message[160] = {};
         sprintf_s(
             message,
             "Electron ReShade compositor rendered its first transported scene (%llu window(s)).",
-            static_cast<unsigned long long>(window_count));
+            static_cast<unsigned long long>(rendered_window_count));
+        reshade::log::message(reshade::log::level::info, message);
+    }
+    if (rendered_window_count >= 2 && !swapchain_state.first_multiwindow_scene_logged)
+    {
+        swapchain_state.first_multiwindow_scene_logged = true;
+        char message[176] = {};
+        sprintf_s(
+            message,
+            "Electron ReShade compositor rendered its first transported multi-window scene (%llu window(s)).",
+            static_cast<unsigned long long>(rendered_window_count));
         reshade::log::message(reshade::log::level::info, message);
     }
 }
@@ -526,6 +885,7 @@ void on_reshade_overlay(effect_runtime *runtime)
         return;
 
     update_input_ownership(runtime, *data);
+    drain_input_messages(data->core);
     compose_electron_scene(runtime, *data);
 }
 } // namespace
@@ -547,9 +907,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
         reshade::register_event<reshade::addon_event::reshade_overlay>(on_reshade_overlay);
-        reshade::log::message(
-            reshade::log::level::info,
-            "Electron ReShade compositor add-on loaded.");
+        reshade::register_event<reshade::addon_event::input_message>(on_input_message);
         break;
 
     case DLL_PROCESS_DETACH:

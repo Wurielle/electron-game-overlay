@@ -7,12 +7,14 @@ The original baseline proved two things inside the target render path:
 - an always-visible Dear ImGui diagnostics panel can be rendered while the main ReShade menu is closed;
 - a generated RGBA bitmap can be uploaded through ReShade's graphics-agnostic resource API and drawn with `ImGui::Image`.
 
-The current slice adds controlled D3D11 and D3D12 input-gate hosts. ReShade's
-public `effect_runtime::block_input_next_frame()` owns game-side blocking, while
-an independent host oracle counts window messages, raw input, polling-visible
-left-button state, cursor movement, and cursor confinement. The code and staging
-launchers are implemented, and both controlled backends passed the visible
-acceptance described below on July 12, 2026.
+The current implementation adds controlled D3D11 and D3D12 input-gate hosts and
+connects the real multi-window Electron scene on D3D11. ReShade's public
+`effect_runtime::block_input_next_frame()` remains the sole game-side blocking
+authority. A narrow pinned full-add-on observer copies input only after ReShade
+has decided to suppress it, allowing the project router to deliver the exact
+legacy Win32 records to Electron without a second suppression hook. An
+independent host oracle counts window messages, raw input, polling-visible
+left-button state, cursor movement, and cursor confinement.
 
 The controlled hosts are intentionally plain and owned by this repository. Use
 them before trying any external application.
@@ -51,7 +53,13 @@ The build pins:
 - ReShade `v6.7.3` and its add-on API headers;
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
-No ReShade or ImGui source is checked into version control. The first configure downloads both into the ignored build directory.
+No ReShade or ImGui source is checked into version control. The first configure
+downloads both into the ignored build directory, then applies the tracked
+[`patches/reshade-input-observer.patch`](patches/reshade-input-observer.patch)
+to the pinned ReShade revision. The patch advances this local full-add-on ABI to
+API 19 and exposes a passive copied-input event; it cannot consume, unblock, or
+change ReShade's suppression decision. Use the runtime built by this repository
+with the Electron add-on; the stock API-18 ReShade 6.7.3 runtime is ABI-incompatible.
 
 ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is MIT-licensed. Preserve their notices if compiled POC binaries are redistributed. The helper builds the pinned ReShade runtime only into the ignored local build directory; do not commit or redistribute that runtime.
 
@@ -62,8 +70,9 @@ To build the pinned ReShade full-add-on runtime explicitly:
 ```
 
 The input-gate launchers always validate the cached binary against a local build
-stamp, pinned clean source, full-add-on configuration, and SHA-256 hash. A
-missing or invalid cache is rebuilt before staging.
+stamp, the exact seven-file observer patch, its SHA-256 hash, the pinned commit,
+the full-add-on configuration, and the runtime SHA-256 hash. A missing or
+invalid cache is rebuilt before staging.
 
 ## Run the controlled input gates
 
@@ -155,22 +164,41 @@ Pop-Location
 
 The ABI smoke validates layout, version rejection, immutable scene ownership,
 input-state metadata, and create/acquire/release/destroy linkage. The generated
-`electron_reshade_overlay_poc.addon64` has also completed a controlled D3D11
+`electron_reshade_overlay_poc.addon64` has completed a controlled D3D11
 live-producer run: it connected the existing authenticated Node transport,
 uploaded two overlapping real Electron OSR windows, rendered the transported
-scene, and returned the interception acknowledgement. Exact input delivery to
-Electron remains intentionally pending the narrow pre-suppression ReShade input
-observer; sampled ImGui state is not used as a substitute.
+scene, and returned the interception acknowledgement. ReShade-owned exact
+legacy mouse/keyboard records then drove click-to-front, text focus/input, and
+caption dragging while every host mouse, keyboard, raw, polling, cursor, and
+confinement counter remained frozen.
+
+Run that human-facing case with its dedicated script:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-electron-scene.ps1
+```
+
+The script builds and stages the pinned runtime, add-on, controlled host, and
+headless Electron producer. Drag either striped caption and click/type into the
+transported fields. Interception is requested automatically; close the host
+with its title-bar X when finished. Producer evidence is written beside
+`ReShade.log` under `build/reshade-imgui-overlay/electron-scene-d3d11`.
 
 ## What this does not prove yet
 
-- mouse/keyboard forwarding back to Electron;
+- normalized delivery of copied `WM_INPUT`/`GetRawInputBuffer` records to
+  Electron (the bounded queue retains and counts them, but legacy Win32 delivery
+  is the accepted D3D11 path today);
+- D3D12 Electron-scene parity or real-game acceptance;
+- multiple-swap-chain/render-queue ownership and safe texture retirement;
+- the SDK/client host switch or Gun Frog acceptance;
 - an attach-by-PID flow independent of ReShade installation;
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
-With transport and D3D11 composition connected, the next step is the exact
-pre-suppression input observer and copied input queue, followed by D3D12 scene
-parity and the existing real-client input/lifecycle acceptance matrix. ReShade
+The next POC gates are D3D12 scene parity and Gun Frog, followed by switching
+the SDK/client host boundary and running the existing real-client input and
+lifecycle matrix. Raw normalization and multiple-swap-chain hardening stay
+post-POC unless one of those acceptance runs exposes them as blockers. ReShade
 replaces the injected host, graphics lifecycle, ImGui ownership, and game-side
 input blocking rather than the Electron SDK contract.

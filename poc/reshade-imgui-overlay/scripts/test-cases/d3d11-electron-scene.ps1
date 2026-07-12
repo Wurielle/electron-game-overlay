@@ -1,0 +1,251 @@
+[CmdletBinding()]
+param(
+    [switch]$NoLaunch
+)
+
+$ErrorActionPreference = "Stop"
+
+$PocRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$RepoRoot = (Resolve-Path (Join-Path $PocRoot "..\..")).Path
+$BuildRoot = Join-Path $RepoRoot "build\reshade-imgui-overlay"
+$ElectronBuildRoot = Join-Path $RepoRoot "build\reshade-imgui-overlay-electron-core"
+$OutputDirectory = Join-Path $ElectronBuildRoot "RelWithDebInfo"
+$Runtime = Join-Path $BuildRoot "_deps\reshade-src\bin\x64\Release\ReShade64.dll"
+$BuiltHost = Join-Path $OutputDirectory "d3d11_overlay_test_host.exe"
+$Addon = Join-Path $OutputDirectory "electron_reshade_overlay_poc.addon64"
+$Config = Join-Path $PocRoot "config\ReShade.ini"
+$RunDirectory = Join-Path $BuildRoot "electron-scene-d3d11"
+$Electron = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
+$ElectronDemo = Join-Path $RepoRoot "poc\hudhook-imgui-overlay\electron-client-window-demo"
+$Nx = Join-Path $RepoRoot "node_modules\.bin\nx.cmd"
+$SdkDist = Join-Path $RepoRoot "libs\electron-game-overlay\dist\index.js"
+$RunHost = Join-Path $RunDirectory "d3d11_overlay_test_host.exe"
+
+$ExistingHosts = @(
+    Get-CimInstance Win32_Process -Filter "Name='d3d11_overlay_test_host.exe'" |
+        Where-Object {
+            [string]::Equals(
+                $_.ExecutablePath,
+                $RunHost,
+                [StringComparison]::OrdinalIgnoreCase)
+        }
+)
+$ExistingProducers = @(
+    Get-CimInstance Win32_Process -Filter "Name='electron.exe'" |
+        Where-Object { $_.CommandLine -like "*$ElectronDemo*" }
+)
+if ($ExistingHosts.Count -ne 0 -or $ExistingProducers.Count -ne 0) {
+    $ProcessIds = @($ExistingHosts.ProcessId) + @($ExistingProducers.ProcessId)
+    throw "Close the existing D3D11 host/overlay producer before this test (PID: $($ProcessIds -join ', '))."
+}
+
+if (-not (Test-Path -LiteralPath $Nx -PathType Leaf)) {
+    throw "The local Nx CLI is missing: $Nx. Install the workspace dependencies first."
+}
+
+& $Nx run electron-game-overlay:build
+if ($LASTEXITCODE -ne 0) {
+    throw "electron-game-overlay build failed with exit code $LASTEXITCODE."
+}
+if (-not (Test-Path -LiteralPath $SdkDist -PathType Leaf)) {
+    throw "electron-game-overlay build did not produce $SdkDist."
+}
+
+Push-Location $PocRoot
+try {
+    & cmake.exe --preset vs2022-x64-electron-core
+    if ($LASTEXITCODE -ne 0) {
+        throw "CMake configure failed with exit code $LASTEXITCODE."
+    }
+
+    & cmake.exe --build $ElectronBuildRoot `
+        --config RelWithDebInfo `
+        --target d3d11_overlay_test_host electron_reshade_overlay_poc `
+        --parallel
+    if ($LASTEXITCODE -ne 0) {
+        throw "D3D11 Electron scene build failed with exit code $LASTEXITCODE."
+    }
+}
+finally {
+    Pop-Location
+}
+
+& (Join-Path $PocRoot "scripts\build-runtime.ps1")
+
+foreach ($RequiredFile in @($Runtime, $BuiltHost, $Addon, $Config, $Electron)) {
+    if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
+        throw "Required D3D11 Electron scene artifact is missing: $RequiredFile"
+    }
+}
+if (-not (Test-Path -LiteralPath $ElectronDemo -PathType Container)) {
+    throw "Electron scene producer is missing: $ElectronDemo"
+}
+
+if (Test-Path -LiteralPath $RunDirectory) {
+    $ResolvedRunDirectory = (Resolve-Path -LiteralPath $RunDirectory).Path
+    $ResolvedBuildRoot = (Resolve-Path -LiteralPath $BuildRoot).Path
+    if (-not $ResolvedRunDirectory.StartsWith(
+            $ResolvedBuildRoot + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean Electron scene directory outside the build root: $ResolvedRunDirectory"
+    }
+    $RunItem = Get-Item -LiteralPath $ResolvedRunDirectory -Force
+    if (($RunItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to clean a reparse-point Electron scene directory: $ResolvedRunDirectory"
+    }
+    Remove-Item -LiteralPath $ResolvedRunDirectory -Recurse -Force
+}
+
+New-Item -ItemType Directory -Path $RunDirectory | Out-Null
+Copy-Item -LiteralPath $BuiltHost -Destination (Join-Path $RunDirectory "d3d11_overlay_test_host.exe")
+Copy-Item -LiteralPath $Addon -Destination (Join-Path $RunDirectory "electron_reshade_overlay_poc.addon64")
+Copy-Item -LiteralPath $Runtime -Destination (Join-Path $RunDirectory "d3d11.dll")
+Copy-Item -LiteralPath $Config -Destination (Join-Path $RunDirectory "ReShade.ini")
+New-Item -ItemType File -Path (Join-Path $RunDirectory "reshade-input-gate.enabled") | Out-Null
+
+Write-Host ""
+Write-Host "ReShade D3D11 Electron scene"
+Write-Host "  - Drag either striped caption to move that Electron window."
+Write-Host "  - Click/type in either input target; overlapping pixels select the front window."
+Write-Host "  - The host title's game-input counters must remain frozen and clip must stay off."
+Write-Host "  - Close the host with its title-bar X when finished."
+Write-Host ""
+
+if ($NoLaunch) {
+    Write-Host "ReShade D3D11 Electron scene staged: $RunDirectory"
+    return
+}
+
+$ProducerMarker = "electron-reshade-scene-$([Guid]::NewGuid().ToString('N'))"
+$UserData = Join-Path $RunDirectory $ProducerMarker
+$ProducerStdout = Join-Path $RunDirectory "electron-producer.stdout.log"
+$ProducerStderr = Join-Path $RunDirectory "electron-producer.stderr.log"
+$Log = Join-Path $RunDirectory "ReShade.log"
+$HostProcess = $null
+$ProducerProcess = $null
+
+$ControlledEnvironmentVariables = @(
+    "RESHADE_BASE_PATH_OVERRIDE",
+    "RESHADE_DISABLE_GRAPHICS_HOOK",
+    "RESHADE_DISABLE_INPUT_HOOK",
+    "RESHADE_DISABLE_LOGGING"
+)
+$PreviousEnvironment = @{}
+foreach ($VariableName in $ControlledEnvironmentVariables) {
+    $PreviousEnvironment[$VariableName] =
+        [Environment]::GetEnvironmentVariable($VariableName, "Process")
+    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+}
+
+try {
+    $HostProcess = Start-Process -FilePath $RunHost -PassThru
+
+    $HostDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ([DateTime]::UtcNow -lt $HostDeadline) {
+        $HostProcess.Refresh()
+        if ($HostProcess.HasExited) {
+            throw "The D3D11 host exited before the Electron compositor initialized."
+        }
+        if ((Test-Path -LiteralPath $Log -PathType Leaf) -and
+            (Select-String -LiteralPath $Log `
+                -SimpleMatch "initialized its transport/router core" `
+                -Quiet)) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Test-Path -LiteralPath $Log -PathType Leaf) -or
+        -not (Select-String -LiteralPath $Log `
+            -SimpleMatch "initialized its transport/router core" `
+            -Quiet)) {
+        throw "Timed out waiting for the ReShade Electron compositor. Inspect $Log."
+    }
+
+    $ProducerArguments = @(
+        "`"$ElectronDemo`"",
+        "--hudhook-client-multiwindow-manual",
+        "--hudhook-device-scale-factor=1",
+        "`"--user-data-dir=$UserData`"",
+        "--no-sandbox"
+    )
+    $ProducerProcess = Start-Process `
+        -FilePath $Electron `
+        -ArgumentList $ProducerArguments `
+        -WindowStyle Hidden `
+        -PassThru `
+        -RedirectStandardOutput $ProducerStdout `
+        -RedirectStandardError $ProducerStderr
+
+    $ProducerDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    $ProducerReady = $false
+    $SceneReady = $false
+    while ([DateTime]::UtcNow -lt $ProducerDeadline) {
+        $ProducerProcess.Refresh()
+        if ((Test-Path -LiteralPath $ProducerStdout -PathType Leaf) -and
+            (Select-String -LiteralPath $ProducerStdout `
+                -SimpleMatch "HUDHOOK_CLIENT_MULTIWINDOW_MANUAL_READY" `
+                -Quiet)) {
+            $ProducerReady = $true
+        }
+        if ((Test-Path -LiteralPath $Log -PathType Leaf) -and
+            (Select-String -LiteralPath $Log `
+                -SimpleMatch "rendered its first transported multi-window scene (2 window(s))" `
+                -Quiet)) {
+            $SceneReady = $true
+        }
+        if ($ProducerReady -and $SceneReady) {
+            break
+        }
+        if ($ProducerProcess.HasExited) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $ProducerReady) {
+        throw "Electron producer did not become ready. Inspect $ProducerStdout and $ProducerStderr."
+    }
+    if (-not $SceneReady) {
+        throw "ReShade did not render the two-window Electron scene. Inspect $Log."
+    }
+
+    Write-Host "Electron scene ready. Producer log: $ProducerStdout"
+    Wait-Process -Id $HostProcess.Id
+    $HostProcess.Refresh()
+    if ($HostProcess.ExitCode -ne 0) {
+        throw "Controlled D3D11 host exited with code $($HostProcess.ExitCode)."
+    }
+}
+finally {
+    $CleanupIds = @(
+        Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like "*$ProducerMarker*" } |
+            ForEach-Object { $_.ProcessId }
+    )
+    if ($ProducerProcess) {
+        $ProducerProcess.Refresh()
+        if (-not $ProducerProcess.HasExited) {
+            $CleanupIds += $ProducerProcess.Id
+        }
+    }
+    if ($HostProcess) {
+        $HostProcess.Refresh()
+        if (-not $HostProcess.HasExited) {
+            $CleanupIds += $HostProcess.Id
+        }
+    }
+    $CleanupIds = @($CleanupIds | Sort-Object -Unique)
+    foreach ($ProcessId in $CleanupIds) {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($ProcessId in $CleanupIds) {
+        Wait-Process -Id $ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+    }
+    foreach ($VariableName in $ControlledEnvironmentVariables) {
+        [Environment]::SetEnvironmentVariable(
+            $VariableName,
+            $PreviousEnvironment[$VariableName],
+            "Process")
+    }
+}
+
+Write-Host "ReShade log: $Log"

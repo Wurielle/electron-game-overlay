@@ -10,9 +10,13 @@ The active native-host experiment uses ReShade 6.7.3 full add-on support. Its
 controlled D3D11 and D3D12 input gates passed on July 12, 2026: overlay controls
 remained interactive, game-side message/raw/polling counters stayed frozen,
 cursor confinement was released while intercepting, resize preserved the gate,
-and release restored normal input. Gun Frog acceptance and Electron integration
-remain pending. The existing Electron SDK/client continues to use the retained
-hudhook path until those migration steps are implemented.
+and release restored normal input. The D3D11 ReShade compositor now also renders
+the real ordered multi-window Electron scene and routes exact legacy mouse and
+keyboard records through the shared Electron core; click-to-front, typing, and
+caption dragging passed without new game-side oracle activity. D3D12 Electron
+scene parity, Gun Frog acceptance, and the SDK/client host switch remain pending.
+The existing Electron SDK/client continues to use the retained hudhook path
+until those migration steps are implemented.
 
 For this project, **Steam-like** describes the behavior required inside an
 explicitly supported target: passive mode leaves game input unchanged; intercept
@@ -45,10 +49,12 @@ integrity level, graphics API, presentation mode, runtime load result, overlay
 input result, game-input suppression result, and required workaround.
 
 ReShade's managed ImGui context samples button and key state once per `Present`.
-That is sufficient for the accepted human-duration controls, but it is not the
-exact fast-edge contract required by Electron. The retained project-owned input
-queue must continue to preserve those edges when the Electron transport is
-integrated.
+The Electron path does not rely on that sample: a pinned passive full-add-on
+observer copies already-blocked records into the project-owned bounded queue.
+Exact legacy window-message delivery is accepted on D3D11. Copied `WM_INPUT`
+and `GetRawInputBuffer` records are currently retained/countable but are not yet
+normalized into Electron events. Concurrent input pumps, multiple swap chains,
+and raw-only input/text therefore remain explicit post-POC hardening.
 
 #### Overlay runtime issues to fix
 

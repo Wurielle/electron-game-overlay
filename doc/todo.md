@@ -20,10 +20,12 @@ the broader game-input and graphics-runtime compatibility layer.
     -   `poc/electron-overlay-core` now owns `electron_wire.rs`, `electron_frame.rs`, `electron_input.rs`, the authenticated Node loopback transport, ordered scene/router semantics, and premultiplied-BGRA conversion. It builds as both an `rlib` and a Windows static library; the retained hudhook POC consumes the same crate instead of duplicate modules.
 -   [x] Finish the narrow, versioned C ABI and ReShade-linked smoke target for that core.
     -   Immutable scene/name/RGBA pointers are leased by explicit snapshots, every fallible Rust export contains panics and returns fixed status codes, and the native layout/link/lifecycle smoke passes. The proven native-only D3D11/D3D12 gate targets remain independent of Cargo.
--   [ ] Port multi-window ReShade texture composition and Electron input return.
+-   [x] Port multi-window ReShade texture composition and exact legacy Electron input return on D3D11.
     -   Preserve registration order, click-to-front, alpha hit testing, caption drag, pointer capture, focus-before-input, per-packet scale tags, and desired/active raster transitions.
-    -   D3D11 now connects the real authenticated Electron producer, enumerates the ordered multi-window snapshot, uploads both live OSR textures through ReShade, renders the transported scene, and acknowledges ReShade-owned interception. Exact Electron input return is the remaining half of this item.
-    -   Add one passive full-add-on input-observer event before ReShade nulls blocked window messages, plus the equivalent pre-neutralization event for `GetRawInputBuffer`. ReShade remains the only suppression authority; the event copies data into the project queue and cannot consume or unblock input.
+    -   D3D11 connects the real authenticated Electron producer, uploads both overlapping OSR windows, renders the ordered scene, and acknowledges ReShade-owned interception.
+    -   The pinned API-19 full-add-on observer copies input only after ReShade decides to block it. A bounded lock-free queue delivers exact legacy Win32 records to the shared Electron router; controlled click-to-front, text focus/input, and caption dragging passed while every game-side oracle counter stayed frozen.
+    -   Copied `WM_INPUT` and `GetRawInputBuffer` records are retained and counted; normalizing those raw records is deferred below rather than blocking the POC.
+-   [ ] Pass the same real Electron scene and exact legacy-input acceptance on D3D12.
 -   [ ] Replace the SDK's hudhook launcher/runtime selection with the ReShade host boundary, then run the existing real-client input, lifecycle, multi-window, and D3D11/D3D12 acceptance matrix.
     -   Keep the public session/window/input surface and Electron-owned Ctrl+I toggle stable.
 
@@ -31,6 +33,8 @@ the broader game-input and graphics-runtime compatibility layer.
 
 -   [ ] Add supported-runtime installation, existing ReShade/proxy conflict detection, typed diagnostics, and clean disable/unload behavior.
 -   [ ] Add target-HWND display/client-origin ownership, real mixed-monitor acceptance, safe texture retirement, and multiple-target routing.
+-   [ ] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including buffered-record target ownership and raw-only text policy.
+-   [ ] Harden observer ordering/recovery and per-swap-chain resource/input ownership for concurrent input pumps or multiple swap chains.
 -   [ ] Expand the compatibility matrix only from observed evidence: Vulkan/OpenGL, exclusive/fullscreen variants, gamepads, DirectInput/XInput/GameInput, and other backend-specific paths.
 -   [ ] Keep competitive and anti-cheat-protected targets, anti-cheat bypasses, and VR outside the unsigned full-add-on POC.
 

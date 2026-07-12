@@ -10,7 +10,8 @@
 > swap-chain/resource lifecycle, the managed Dear ImGui context, logging, native
 > input collection, and game-side input blocking. The controlled D3D11/D3D12
 > input gates passed visible acceptance on July 12, 2026. Gun Frog acceptance
-> and Electron integration remain pending; this decision records the
+> and the SDK/client switch remain pending; D3D11 now renders and exactly routes
+> legacy input to the real multi-window Electron scene. This decision records the
 > implementation boundary without extending the controlled result to a game.
 > The hudhook implementation remains the verified Electron compositor and routing
 > reference, not the selected injected host.
@@ -44,12 +45,14 @@ What this milestone proves:
 -   both controlled backends preserve blocking and ImGui interaction through resize, then restore cursor confinement and game-side input on release.
 
 The July 12 acceptance exercised ImGui button, text, drag, and wheel controls on
-both backends. ReShade's managed ImGui context samples button and key state once
-per `Present`; exact fast-edge delivery for Electron remains the responsibility
-of the project-owned queued input path retained from the hudhook POC. This is not
-a failure of the human-duration controls used for the controlled gate.
-
-The ReShade baseline itself does not connect Electron frames or forward input. The hudhook POC closes both gaps for multiple Electron windows, including premultiplied-alpha correction, ordered visibility lifecycle, focus, a per-window project-owned pointer-capture owner, Win32 input interception, uniformly forced scale regressions, and a bounded producer-window/runtime scale-transition foundation. Broader input APIs, target-display/client-origin ownership, real mixed-monitor acceptance, and safe GPU texture retirement remain open.
+both backends. The subsequent D3D11 Electron add-on reuses the extracted
+transport/scene/router core and a local passive ReShade API-19 observer. Blocked
+legacy Win32 records are copied into a bounded queue and routed exactly rather
+than sampled at `Present`; two overlapping OSR windows passed click-to-front,
+text focus/input, and caption dragging while the game oracle remained frozen.
+Copied raw records, D3D12 Electron parity, target-display/client-origin
+ownership, mixed-monitor acceptance, multiple-swapchain ownership, and safe GPU
+texture retirement remain open.
 
 ## Original model (historical)
 
@@ -338,12 +341,13 @@ Steps 1 through 11 and the bounded producer-window portion of step 12 are comple
 The native proof-of-life, generic Electron transport, selected-window input, and
 multi-window compositor milestones are complete:
 
--   the official ReShade full add-on runtime enters the controlled D3D11 host;
--   ReShade invokes the add-on through API version 18 and owns resize/unload handling;
+-   the repository-built, pinned ReShade full-add-on runtime enters the controlled D3D11 host; stock API-18 binaries are not compatible with the local API-19 observer add-ons;
+-   ReShade invokes the baseline add-on through its pinned headers; the local passive input-observer extension advances the full-add-on ABI to API version 19 and owns resize/unload handling;
 -   the add-on draws an always-visible ImGui diagnostics panel;
 -   a generated RGBA bitmap is uploaded as a GPU resource and drawn with `ImGui::Image`;
 -   `ReShade.log` distinguishes add-on loading, texture creation, first-frame rendering, resize, and clean unload.
 -   ReShade's controlled D3D11 and D3D12 input gates passed button, text, drag, wheel, active-intercept resize, post-resize click, release, and independent game-side suppression checks on July 12, 2026;
+-   the D3D11 ReShade Electron add-on renders two ordered live OSR windows and routes exact legacy click, focus, text, and caption-drag input through the shared core while ReShade remains the sole suppression authority;
 -   upstream hudhook 0.9.1 independently hooks the controlled D3D11 host and owns the ImGui lifecycle;
 -   the public Electron SDK publishes a 640 x 360 offscreen window from both a focused lifecycle producer and the real built client through the authenticated loopback transport;
 -   a worker in the hudhook payload consumes direct BGRA frame packets, converts premultiplied BGRA to straight RGBA, and atomically publishes one immutable back-to-front scene with matching router state;

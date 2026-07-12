@@ -21,6 +21,14 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 endif()
 
 include(FetchContent)
+find_package(Git REQUIRED)
+
+set(RESHAPE_INPUT_OBSERVER_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-input-observer.patch"
+)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${RESHAPE_INPUT_OBSERVER_PATCH}"
+)
 
 # ReShade's add-on ABI is tied to the headers from the runtime release. Its
 # ImGui bridge also checks for the exact ImGui version used by that release.
@@ -46,6 +54,52 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(reshade imgui)
+
+# The public ReShade add-on API does not expose the original input record that
+# its runtime is about to suppress. Apply one pinned, passive observer seam to
+# the fetched source. It cannot alter ReShade's blocking decision and carries
+# no transient HRAWINPUT/RAWINPUT pointers across the callback boundary.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INPUT_OBSERVER_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHADE_INPUT_PATCH_ALREADY_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHADE_INPUT_PATCH_ALREADY_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INPUT_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHADE_INPUT_PATCH_CHECK
+        OUTPUT_VARIABLE RESHADE_INPUT_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHADE_INPUT_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHADE_INPUT_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "The pinned ReShade input-observer patch no longer applies.\n"
+            "${RESHADE_INPUT_PATCH_CHECK_OUTPUT}"
+            "${RESHADE_INPUT_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INPUT_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHADE_INPUT_PATCH_APPLY
+        OUTPUT_VARIABLE RESHADE_INPUT_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHADE_INPUT_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHADE_INPUT_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to apply the pinned ReShade input-observer patch.\n"
+            "${RESHADE_INPUT_PATCH_APPLY_OUTPUT}"
+            "${RESHADE_INPUT_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
 
 add_library(alternative_imgui_overlay_poc SHARED
     src/overlay_addon.cpp

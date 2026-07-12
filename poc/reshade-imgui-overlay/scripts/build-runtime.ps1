@@ -12,6 +12,45 @@ $ReShadeSource = Join-Path $BuildRoot "_deps\reshade-src"
 $Runtime = Join-Path $ReShadeSource "bin\x64\Release\ReShade64.dll"
 $BuildStamp = Join-Path $ReShadeSource "bin\x64\Release\ReShade64.build.json"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
+$ObserverPatch = Join-Path $PocRoot "patches\reshade-input-observer.patch"
+$ObserverPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ObserverPatch).Hash
+$ExpectedPatchedFiles = @(
+    "include/reshade.hpp"
+    "include/reshade_api.hpp"
+    "include/reshade_events.hpp"
+    "source/addon_manager.cpp"
+    "source/addon_manager.hpp"
+    "source/input.cpp"
+    "source/input.hpp"
+)
+
+function Test-ReShadeObserverSourceState {
+    if (-not (Test-Path -LiteralPath $ReShadeSource -PathType Container)) {
+        return $false
+    }
+
+    & git.exe -C $ReShadeSource apply --reverse --check $ObserverPatch 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    $SourceChanges = @(
+        & git.exe -C $ReShadeSource status --porcelain --untracked-files=all --ignore-submodules=none 2>$null
+    )
+    if ($LASTEXITCODE -ne 0 -or $SourceChanges.Count -ne $ExpectedPatchedFiles.Count) {
+        return $false
+    }
+
+    $ChangedFiles = @(
+        $SourceChanges | ForEach-Object {
+            if ($_.Length -lt 4) {
+                return ""
+            }
+            $_.Substring(3).Replace("\", "/")
+        }
+    )
+    return @($ChangedFiles | Where-Object { $_ -notin $ExpectedPatchedFiles }).Count -eq 0
+}
 
 function Test-RuntimeBuildCache {
     if (-not (Test-Path -LiteralPath $Runtime -PathType Leaf) -or
@@ -25,18 +64,16 @@ function Test-RuntimeBuildCache {
         return $false
     }
 
-    $CachedSourceChanges = @(
-        & git.exe -C $ReShadeSource status --porcelain --untracked-files=all --ignore-submodules=none 2>$null
-    )
-    if ($LASTEXITCODE -ne 0 -or $CachedSourceChanges.Count -ne 0) {
+    if (-not (Test-ReShadeObserverSourceState)) {
         return $false
     }
 
     try {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
-        return $Stamp.schemaVersion -eq 1 -and
+        return $Stamp.schemaVersion -eq 2 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
+            $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.configuration -eq "Release" -and
             $Stamp.platform -eq "64-bit" -and
             $Stamp.addonLevel -eq 2 -and
@@ -77,12 +114,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "ReShade dependency checkout failed with exit code $LASTEXITCODE."
 }
 
-$SourceChanges = @(& git.exe -C $ReShadeSource status --porcelain --untracked-files=all --ignore-submodules=none)
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to verify the pinned ReShade source worktree."
-}
-if ($SourceChanges.Count -ne 0) {
-    throw "Pinned ReShade source or submodules contain tracked changes; refusing to build an unverifiable runtime."
+if (-not (Test-ReShadeObserverSourceState)) {
+    throw "Pinned ReShade source does not contain exactly the expected input-observer patch."
 }
 
 $ReShadeProject = Join-Path $ReShadeSource "ReShade.vcxproj"
@@ -128,8 +161,9 @@ if (-not (Test-Path -LiteralPath $Runtime -PathType Leaf)) {
 
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     commit = $ActualReShadeCommit
+    observerPatchSha256 = $ObserverPatchHash
     configuration = "Release"
     platform = "64-bit"
     addonLevel = 2

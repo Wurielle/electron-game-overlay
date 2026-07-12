@@ -10,7 +10,10 @@
 > detours would therefore recreate an open-ended game-input compatibility layer.
 > The active experiment moves process entry, graphics/ImGui lifecycle, and
 > game-side blocking to ReShade. The controlled D3D11/D3D12 visible gates passed
-> on July 12, 2026; Gun Frog acceptance and Electron integration remain pending.
+> on July 12, 2026. Subsequent ReShade work now proves the real D3D11
+> multi-window Electron scene and exact legacy Win32 input return. Raw-input
+> normalization, D3D12 Electron parity, the SDK/client switch, and Gun Frog
+> acceptance remain open; the ReShade POC README is authoritative.
 > The authenticated Node/Rust transport, wire/frame
 > validation, ordered scene/router, Electron input translation and
 > `focusOnWebView()` behavior, multi-window/z-order/capture rules, and DPI/raster
