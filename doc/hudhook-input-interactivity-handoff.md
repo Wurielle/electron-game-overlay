@@ -9,8 +9,9 @@
 > counters did not advance in those intervals; widening guessed project-owned
 > detours would therefore recreate an open-ended game-input compatibility layer.
 > The active experiment moves process entry, graphics/ImGui lifecycle, and
-> game-side blocking to ReShade. Controlled D3D11/D3D12 and Gun Frog visible
-> acceptance remain pending. The authenticated Node/Rust transport, wire/frame
+> game-side blocking to ReShade. The controlled D3D11/D3D12 visible gates passed
+> on July 12, 2026; Gun Frog acceptance and Electron integration remain pending.
+> The authenticated Node/Rust transport, wire/frame
 > validation, ordered scene/router, Electron input translation and
 > `focusOnWebView()` behavior, multi-window/z-order/capture rules, and DPI/raster
 > contracts are intended to be reused behind the new host boundary.
@@ -42,6 +43,23 @@ existing injector, both backend payloads, and third-party notices under
 resolution, transport readiness, injector execution, and authenticated target
 connection proof. The real client imports those public SDK APIs and contains no
 separate launcher or native staging implementation.
+
+## July 12 ReShade controlled-gate update
+
+The replacement host passed its repository-owned D3D11 and D3D12 gates. During
+each intercepted interval, the independent host's window-message, raw-input,
+polling, and cursor counters remained exactly frozen while ReShade logged native
+ImGui click, text, drag, and wheel updates. Resizing from 1280 x 720 to
+1920 x 1009 preserved blocking and post-resize clicking; release restored the
+host's cursor confinement and counter activity. This verifies only the
+controlled native gates. The Gun Frog and Electron-backed acceptance runs remain
+open.
+
+ReShade's managed ImGui state samples button and key state once per `Present`.
+The accepted human-duration controls are therefore not evidence about edges that
+begin and end entirely between presentations. Exact fast-edge delivery remains
+the responsibility of the project-owned Electron input queue retained from this
+hudhook work.
 
 ## July 12 real-client validation update
 

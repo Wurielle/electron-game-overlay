@@ -9,9 +9,12 @@
 The active native-host direction is the
 [ReShade + ImGui POC](poc/reshade-imgui-overlay/README.md). ReShade 6.7.3 full
 add-on support is being evaluated as the maintained process-entry, graphics,
-swap-chain, ImGui, and game-input layer. Controlled D3D11 and D3D12 input-gate
-code and launchers are implemented, but the hands-on acceptance runs are still
-pending and this path is not yet wired into the Electron SDK/client.
+swap-chain, ImGui, and game-input layer. On July 12, 2026, the controlled D3D11
+and D3D12 input gates passed hands-on acceptance: native ImGui remained
+interactive, the independent game-side message/raw/polling counters stayed
+frozen throughout interception, resize preserved blocking, and release restored
+normal counters and cursor confinement. Gun Frog acceptance and the Electron
+SDK/client integration are still pending.
 
 The change in direction follows real-client testing against Gun Frog. The
 hudhook path successfully proved Electron OSR transport, ordered multi-window
@@ -34,11 +37,16 @@ The first Steam-like input acceptance gate is intentionally behavioral:
 - game cursor confinement/recentering no longer prevents overlay interaction;
 - release, focus loss, transport failure, or shutdown restores safe game input.
 
-That gate must pass the controlled D3D11 and D3D12 hosts and then Gun Frog before
-the new host is considered ready for SDK integration. The unsigned ReShade full
-add-on runtime is limited to controlled or permitted offline/single-player
-targets. Competitive and anti-cheat-protected software, anti-cheat bypasses, and
-VR are outside this POC.
+The controlled D3D11 and D3D12 portions of that gate are complete. It must still
+pass Gun Frog before the new host is considered ready for SDK integration. The
+unsigned ReShade full add-on runtime is limited to controlled or permitted
+offline/single-player targets. Competitive and anti-cheat-protected software,
+anti-cheat bypasses, and VR are outside this POC.
+
+ReShade's managed ImGui input state is sampled once per `Present`. That is
+appropriate for human-duration controls exercised by this gate; exact fast-edge
+delivery for Electron remains the responsibility of the project-owned input
+queue retained from the hudhook compositor proof.
 
 ## game overlay solution 
 * DirectX hook, draw in game

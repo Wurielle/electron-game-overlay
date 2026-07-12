@@ -9,8 +9,9 @@
 > the selected production-host experiment for process entry, graphics hooks,
 > swap-chain/resource lifecycle, the managed Dear ImGui context, logging, native
 > input collection, and game-side input blocking. The controlled D3D11/D3D12
-> input gates and Gun Frog acceptance are still pending; this decision records
-> the implementation boundary and does not claim that visible acceptance passed.
+> input gates passed visible acceptance on July 12, 2026. Gun Frog acceptance
+> and Electron integration remain pending; this decision records the
+> implementation boundary without extending the controlled result to a game.
 > The hudhook implementation remains the verified Electron compositor and routing
 > reference, not the selected injected host.
 
@@ -39,6 +40,14 @@ What this milestone proves:
 -   a CPU-generated RGBA frame can become a GPU resource and be drawn with `ImGui::Image`;
 -   the runtime survives D3D11 swap-chain resize handling owned by ReShade;
 -   native initialization and texture failures are visible in `ReShade.log`.
+-   controlled D3D11 and D3D12 interception keeps native ImGui interactive while an independent game-side message/raw/polling oracle remains frozen;
+-   both controlled backends preserve blocking and ImGui interaction through resize, then restore cursor confinement and game-side input on release.
+
+The July 12 acceptance exercised ImGui button, text, drag, and wheel controls on
+both backends. ReShade's managed ImGui context samples button and key state once
+per `Present`; exact fast-edge delivery for Electron remains the responsibility
+of the project-owned queued input path retained from the hudhook POC. This is not
+a failure of the human-duration controls used for the controlled gate.
 
 The ReShade baseline itself does not connect Electron frames or forward input. The hudhook POC closes both gaps for multiple Electron windows, including premultiplied-alpha correction, ordered visibility lifecycle, focus, a per-window project-owned pointer-capture owner, Win32 input interception, uniformly forced scale regressions, and a bounded producer-window/runtime scale-transition foundation. Broader input APIs, target-display/client-origin ownership, real mixed-monitor acceptance, and safe GPU texture retirement remain open.
 
@@ -334,6 +343,7 @@ multi-window compositor milestones are complete:
 -   the add-on draws an always-visible ImGui diagnostics panel;
 -   a generated RGBA bitmap is uploaded as a GPU resource and drawn with `ImGui::Image`;
 -   `ReShade.log` distinguishes add-on loading, texture creation, first-frame rendering, resize, and clean unload.
+-   ReShade's controlled D3D11 and D3D12 input gates passed button, text, drag, wheel, active-intercept resize, post-resize click, release, and independent game-side suppression checks on July 12, 2026;
 -   upstream hudhook 0.9.1 independently hooks the controlled D3D11 host and owns the ImGui lifecycle;
 -   the public Electron SDK publishes a 640 x 360 offscreen window from both a focused lifecycle producer and the real built client through the authenticated loopback transport;
 -   a worker in the hudhook payload consumes direct BGRA frame packets, converts premultiplied BGRA to straight RGBA, and atomically publishes one immutable back-to-front scene with matching router state;

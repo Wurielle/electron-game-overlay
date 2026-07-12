@@ -11,8 +11,8 @@ The current slice adds controlled D3D11 and D3D12 input-gate hosts. ReShade's
 public `effect_runtime::block_input_next_frame()` owns game-side blocking, while
 an independent host oracle counts window messages, raw input, polling-visible
 left-button state, cursor movement, and cursor confinement. The code and staging
-launchers are implemented; the visible acceptance runs described below are
-pending and must not be reported as passed yet.
+launchers are implemented, and both controlled backends passed the visible
+acceptance described below on July 12, 2026.
 
 The controlled hosts are intentionally plain and owned by this repository. Use
 them before trying any external application.
@@ -83,7 +83,7 @@ and the `reshade-input-gate.enabled` marker that enables the controlled host
 oracle. The parameterized `scripts/run-input-gate.ps1` runner remains available
 for automation and supports `-NoLaunch`.
 
-Visible acceptance is currently pending. For each backend:
+To reproduce visible acceptance for either backend:
 
 1. In pass-through mode, move, click, wheel, and press keys. The `game input`
    counters in the host title should advance and `clip=on` should describe the
@@ -109,6 +109,30 @@ A backend fails acceptance if the overlay cannot be operated, if any game-side
 counter reacts to intercepted input, if cursor confinement remains active, or if
 release/shutdown does not restore normal input.
 
+### Accepted results: July 12, 2026
+
+Both controlled backends passed. The values below are the game-side oracle
+baselines captured after activation; each remained exactly frozen while the
+ReShade log recorded an ImGui button click, keyboard text edit, drag update, and
+wheel update:
+
+- D3D11: `move=5`, `down=0`, `up=0`, `wheel=0`, `key=2`, `raw=4`,
+  `poll-left=0`, `cursor-change=0`, `clip=off`.
+- D3D12: `move=15`, `down=2`, `up=2`, `wheel=1`, `key=3`, `raw=15`,
+  `poll-left=2`, `cursor-change=2`, `clip=off`.
+
+For both backends, resizing from 1280 x 720 to 1920 x 1009 preserved
+interception and a post-resize ImGui click succeeded. Releasing interception
+restored the hostile host's cursor confinement and its game-side counters
+resumed.
+
+ReShade's managed ImGui context samples button and key state once per `Present`.
+Human-duration clicks, typing, dragging, and wheel input passed this controlled
+gate. An exact input edge that begins and ends entirely between two presentations
+is a different delivery contract: preserving those fast edges for Electron is
+the responsibility of the project-owned queued input path retained from the
+hudhook POC, not the managed ImGui sample alone.
+
 The texture baseline is part of both isolated input gates: the panel identifies
 the graphics API and displays the generated teal checkerboard below the input
 controls. If the panel does not appear, inspect `ReShade.log` in that backend's
@@ -118,13 +142,12 @@ staged input-gate directory.
 
 - Electron frame transport or shared-memory compatibility;
 - per-window state, z-order, clipping, or dirty-frame updates;
-- completed visible D3D11/D3D12 input-gate acceptance;
 - mouse/keyboard forwarding back to Electron;
 - an attach-by-PID flow independent of ReShade installation;
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
-After the native input gates pass, the next step is to connect the existing
+With the native input gates passed, the next step is to connect the existing
 authenticated Electron loopback transport, Rust wire/frame/input router, ordered
 multi-window scene, and TypeScript input translation behind the ReShade add-on
 boundary. Those components are retained from the hudhook POC; ReShade replaces

@@ -10,9 +10,10 @@ the broader game-input and graphics-runtime compatibility layer.
 
 ### POC finish line
 
--   [ ] Pass the visible ReShade-owned input gate on the controlled D3D11 host.
+-   [x] Pass the visible ReShade-owned input gate on the controlled D3D11 host.
     -   Prove overlay mouse/keyboard interaction, zero game-side message/raw/polling reactions while active, cursor confinement release, pass-through restoration, and clean shutdown.
--   [ ] Pass the same visible gate on the controlled D3D12 host.
+-   [x] Pass the same visible gate on the controlled D3D12 host.
+    -   Both controlled gates passed on July 12, 2026, including button, text, drag, wheel, active-intercept resize, post-resize click, and release restoration. ReShade's managed ImGui state is sampled once per `Present`; exact fast-edge delivery remains the project-owned Electron queue's responsibility.
 -   [ ] Pass the gate against Gun Frog before migrating the SDK/client runtime.
     -   Intercepted hover/click must operate the native ImGui probe without reaching the Unity UI; release must restore normal game behavior.
 -   [ ] Extract the backend-neutral Rust transport/compositor core behind a narrow C/C++ boundary for the ReShade add-on.

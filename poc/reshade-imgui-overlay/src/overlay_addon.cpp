@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -30,8 +31,9 @@ struct window_input_state
     std::atomic<std::uint64_t> rendered_frames = 0;
     std::atomic<std::uint64_t> interception_toggle_count = 0;
     std::atomic<std::uint64_t> probe_click_count = 0;
-    std::atomic<std::uint64_t> last_toggle_tick = 0;
     std::atomic<bool> input_interception_enabled = false;
+    std::atomic<bool> toggle_chord_armed = false;
+    std::atomic<bool> i_release_consumed = false;
 };
 
 struct __declspec(uuid("91913d40-2c94-439c-96f1-85f6666c5046")) swapchain_data
@@ -223,20 +225,38 @@ void on_reshade_overlay(effect_runtime *runtime)
         runtime->is_key_down(VK_CONTROL) ||
         runtime->is_key_down(VK_LCONTROL) ||
         runtime->is_key_down(VK_RCONTROL);
-    if (control_down && runtime->is_key_pressed('I'))
+    const bool control_pressed =
+        runtime->is_key_pressed(VK_CONTROL) ||
+        runtime->is_key_pressed(VK_LCONTROL) ||
+        runtime->is_key_pressed(VK_RCONTROL);
+    const bool control_released =
+        runtime->is_key_released(VK_CONTROL) ||
+        runtime->is_key_released(VK_LCONTROL) ||
+        runtime->is_key_released(VK_RCONTROL);
+    const bool i_down = runtime->is_key_down('I');
+    const bool i_pressed = runtime->is_key_pressed('I');
+    const bool i_released = runtime->is_key_released('I');
+
+    if ((control_down || control_pressed) && (i_down || i_pressed))
+        input_state->toggle_chord_armed = true;
+
+    if (!i_released)
     {
-        const std::uint64_t now = GetTickCount64();
-        std::uint64_t previous_toggle = input_state->last_toggle_tick.load();
-        if (now - previous_toggle > 250 &&
-            input_state->last_toggle_tick.compare_exchange_strong(previous_toggle, now))
+        if (!i_down)
         {
-            bool previous_interception = input_state->input_interception_enabled.load();
-            while (!input_state->input_interception_enabled.compare_exchange_weak(
-                previous_interception,
-                !previous_interception))
-            {
-            }
-            const bool interception_enabled = !previous_interception;
+            input_state->i_release_consumed = false;
+            if (!control_down && !control_pressed && !control_released)
+                input_state->toggle_chord_armed = false;
+        }
+    }
+    else if (!input_state->i_release_consumed.exchange(true))
+    {
+        const bool chord_armed = input_state->toggle_chord_armed.exchange(false);
+        if (chord_armed || control_down || control_pressed || control_released)
+        {
+            const bool interception_enabled =
+                !input_state->input_interception_enabled.load();
+            input_state->input_interception_enabled = interception_enabled;
             ++input_state->interception_toggle_count;
             reshade::log::message(
                 reshade::log::level::info,
@@ -295,6 +315,17 @@ void on_reshade_overlay(effect_runtime *runtime)
             static_cast<unsigned long long>(input_state->probe_click_count.load()));
         if (interception_enabled)
         {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            {
+                char click_message[160] = {};
+                sprintf_s(
+                    click_message,
+                    "Alternative compositor POC received an owned pointer click at %.0f, %.0f.",
+                    io.MousePos.x,
+                    io.MousePos.y);
+                reshade::log::message(reshade::log::level::info, click_message);
+            }
+
             if (ImGui::Button("CLICK RE SHADE INPUT PROBE", ImVec2(320.0f, 54.0f)))
             {
                 ++input_state->probe_click_count;
@@ -310,13 +341,26 @@ void on_reshade_overlay(effect_runtime *runtime)
                 sizeof(swapchain_state->keyboard_probe)))
             {
                 ++swapchain_state->text_edit_count;
+                reshade::log::message(
+                    reshade::log::level::info,
+                    "Alternative compositor POC accepted a ReShade-owned text edit.");
             }
 
             ImGui::SetNextItemWidth(320.0f);
-            ImGui::SliderFloat("Drag probe", &swapchain_state->drag_probe, 0.0f, 1.0f);
+            if (ImGui::SliderFloat("Drag probe", &swapchain_state->drag_probe, 0.0f, 1.0f))
+            {
+                reshade::log::message(
+                    reshade::log::level::info,
+                    "Alternative compositor POC accepted a ReShade-owned drag update.");
+            }
 
             if (io.MouseWheel != 0.0f)
+            {
                 swapchain_state->wheel_total += io.MouseWheel;
+                reshade::log::message(
+                    reshade::log::level::info,
+                    "Alternative compositor POC accepted a ReShade-owned wheel update.");
+            }
             ImGui::Text(
                 "Text edits: %llu | overlay wheel: %.1f",
                 static_cast<unsigned long long>(swapchain_state->text_edit_count),

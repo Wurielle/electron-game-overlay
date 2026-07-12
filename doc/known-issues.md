@@ -6,10 +6,13 @@ known issues:
 
 ### Current ReShade migration support envelope
 
-The active native-host experiment uses ReShade 6.7.3 full add-on support, but its
-visible D3D11/D3D12 input-gate runs and Gun Frog acceptance are still pending.
-The existing Electron SDK/client continues to use the retained hudhook path until
-that gate passes and the host migration is implemented.
+The active native-host experiment uses ReShade 6.7.3 full add-on support. Its
+controlled D3D11 and D3D12 input gates passed on July 12, 2026: overlay controls
+remained interactive, game-side message/raw/polling counters stayed frozen,
+cursor confinement was released while intercepting, resize preserved the gate,
+and release restored normal input. Gun Frog acceptance and Electron integration
+remain pending. The existing Electron SDK/client continues to use the retained
+hudhook path until those migration steps are implemented.
 
 For this project, **Steam-like** describes the behavior required inside an
 explicitly supported target: passive mode leaves game input unchanged; intercept
@@ -40,6 +43,12 @@ Unsupported or untested must produce a clear diagnostic rather than silently
 claiming compatibility. Maintain a matrix per target with architecture,
 integrity level, graphics API, presentation mode, runtime load result, overlay
 input result, game-input suppression result, and required workaround.
+
+ReShade's managed ImGui context samples button and key state once per `Present`.
+That is sufficient for the accepted human-duration controls, but it is not the
+exact fast-edge contract required by Electron. The retained project-owned input
+queue must continue to preserve those edges when the Electron transport is
+integrated.
 
 #### Overlay runtime issues to fix
 
