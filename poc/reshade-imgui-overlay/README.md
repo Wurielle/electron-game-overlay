@@ -138,18 +138,39 @@ the graphics API and displays the generated teal checkerboard below the input
 controls. If the panel does not appear, inspect `ReShade.log` in that backend's
 staged input-gate directory.
 
+## Electron core/compositor target
+
+The backend-neutral transport, ordered scene, and input router are extracted to
+`../electron-overlay-core`. The opt-in build links its versioned C ABI into a
+separate ReShade add-on, keeping the accepted native input-gate add-on free of
+Cargo and unchanged:
+
+```powershell
+Push-Location poc/reshade-imgui-overlay
+cmake --preset vs2022-x64-electron-core
+cmake --build --preset relwithdebinfo-electron-core
+ctest --preset electron-core
+Pop-Location
+```
+
+The ABI smoke validates layout, version rejection, immutable scene ownership,
+input-state metadata, and create/acquire/release/destroy linkage. The generated
+`electron_reshade_overlay_poc.addon64` has also completed a controlled D3D11
+live-producer run: it connected the existing authenticated Node transport,
+uploaded two overlapping real Electron OSR windows, rendered the transported
+scene, and returned the interception acknowledgement. Exact input delivery to
+Electron remains intentionally pending the narrow pre-suppression ReShade input
+observer; sampled ImGui state is not used as a substitute.
+
 ## What this does not prove yet
 
-- Electron frame transport or shared-memory compatibility;
-- per-window state, z-order, clipping, or dirty-frame updates;
 - mouse/keyboard forwarding back to Electron;
 - an attach-by-PID flow independent of ReShade installation;
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
-With the native input gates passed, the next step is to connect the existing
-authenticated Electron loopback transport, Rust wire/frame/input router, ordered
-multi-window scene, and TypeScript input translation behind the ReShade add-on
-boundary. Those components are retained from the hudhook POC; ReShade replaces
-the injected host, graphics lifecycle, ImGui ownership, and game-side input
-blocking rather than the Electron SDK contract.
+With transport and D3D11 composition connected, the next step is the exact
+pre-suppression input observer and copied input queue, followed by D3D12 scene
+parity and the existing real-client input/lifecycle acceptance matrix. ReShade
+replaces the injected host, graphics lifecycle, ImGui ownership, and game-side
+input blocking rather than the Electron SDK contract.

@@ -33,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONUP, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
 };
 
-use crate::electron_input::InputPoint;
+use electron_overlay_core::InputPoint;
 
 const INPUT_FILTER_DISABLED: u8 = 0;
 const INPUT_FILTER_ARMING: u8 = 1;

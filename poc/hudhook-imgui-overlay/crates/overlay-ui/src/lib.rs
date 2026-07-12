@@ -1,6 +1,3 @@
-mod electron_frame;
-mod electron_input;
-mod electron_wire;
 mod owned_input;
 
 use std::collections::{HashMap, HashSet};
@@ -11,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use electron_frame::{ElectronFrameBridge, ElectronScene};
+use electron_overlay_core::{ElectronFrameBridge, ElectronScene};
 use hudhook::imgui::{Condition, Context, Image, Io, StyleColor, TextureId, Ui, WindowFlags};
 use hudhook::process_input::{
     ProcessInputCounters, ProcessMouseSuppression, ProcessRawMouseHandler,

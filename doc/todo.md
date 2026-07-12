@@ -16,10 +16,14 @@ the broader game-input and graphics-runtime compatibility layer.
     -   Both controlled gates passed on July 12, 2026, including button, text, drag, wheel, active-intercept resize, post-resize click, and release restoration. ReShade's managed ImGui state is sampled once per `Present`; exact fast-edge delivery remains the project-owned Electron queue's responsibility.
 -   [ ] Pass the gate against Gun Frog before migrating the SDK/client runtime.
     -   Intercepted hover/click must operate the native ImGui probe without reaching the Unity UI; release must restore normal game behavior.
--   [ ] Extract the backend-neutral Rust transport/compositor core behind a narrow C/C++ boundary for the ReShade add-on.
-    -   Reuse `electron_wire.rs`, `electron_frame.rs`, `electron_input.rs`, the authenticated Node loopback transport, ordered scene/router semantics, and premultiplied-BGRA conversion.
+-   [x] Extract the backend-neutral Rust transport/compositor core from the hudhook renderer.
+    -   `poc/electron-overlay-core` now owns `electron_wire.rs`, `electron_frame.rs`, `electron_input.rs`, the authenticated Node loopback transport, ordered scene/router semantics, and premultiplied-BGRA conversion. It builds as both an `rlib` and a Windows static library; the retained hudhook POC consumes the same crate instead of duplicate modules.
+-   [x] Finish the narrow, versioned C ABI and ReShade-linked smoke target for that core.
+    -   Immutable scene/name/RGBA pointers are leased by explicit snapshots, every fallible Rust export contains panics and returns fixed status codes, and the native layout/link/lifecycle smoke passes. The proven native-only D3D11/D3D12 gate targets remain independent of Cargo.
 -   [ ] Port multi-window ReShade texture composition and Electron input return.
     -   Preserve registration order, click-to-front, alpha hit testing, caption drag, pointer capture, focus-before-input, per-packet scale tags, and desired/active raster transitions.
+    -   D3D11 now connects the real authenticated Electron producer, enumerates the ordered multi-window snapshot, uploads both live OSR textures through ReShade, renders the transported scene, and acknowledges ReShade-owned interception. Exact Electron input return is the remaining half of this item.
+    -   Add one passive full-add-on input-observer event before ReShade nulls blocked window messages, plus the equivalent pre-neutralization event for `GetRawInputBuffer`. ReShade remains the only suppression authority; the event copies data into the project queue and cannot consume or unblock input.
 -   [ ] Replace the SDK's hudhook launcher/runtime selection with the ReShade host boundary, then run the existing real-client input, lifecycle, multi-window, and D3D11/D3D12 acceptance matrix.
     -   Keep the public session/window/input surface and Electron-owned Ctrl+I toggle stable.
 

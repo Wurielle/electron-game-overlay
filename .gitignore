@@ -24,6 +24,7 @@ pnpm-debug.log*
 /build/
 /build_Win32/
 /build_x64/
+/poc/electron-overlay-core/target/
 /poc/hudhook-imgui-overlay/target/
 
 # Electron client generated build output

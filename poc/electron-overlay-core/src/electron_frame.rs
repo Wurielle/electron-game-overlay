@@ -1,4 +1,4 @@
-//! Client for the Electron overlay host's loopback hudhook transport.
+//! Client for the Electron overlay host's authenticated loopback transport.
 //!
 //! A message-only window still serializes scene, input, and drag mutations on
 //! one thread. Cross-process traffic uses framed TCP on the loopback interface.
@@ -16,8 +16,8 @@ use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use hudhook::tracing::{debug, info, warn};
 use serde::Deserialize;
+use tracing::{debug, info, warn};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -37,6 +37,9 @@ use crate::electron_wire::{encode_json, WireDecoder, WireFrame, WirePacket};
 
 /// Optional exact window-name filter. When absent, every announced Electron
 /// window participates in the scene.
+///
+/// The legacy environment variable name is part of the existing SDK contract
+/// and is retained while the injected rendering backend is replaced.
 pub const ELECTRON_WINDOW_NAME_ENV: &str = "HUDHOOK_ELECTRON_WINDOW";
 
 const WM_BRIDGE_SHUTDOWN: u32 = WM_APP + 0x310;
@@ -54,6 +57,8 @@ const NETWORK_COMMAND_CAPACITY: usize = 256;
 const NETWORK_INBOUND_CAPACITY: usize = 8;
 const TRANSPORT_VERSION: u32 = 1;
 const DISCOVERY_DIRECTORY: &str = "electron-game-overlay";
+// This legacy filename is an existing producer protocol detail. Changing it
+// requires a coordinated SDK migration, not a rendering-backend change.
 const DISCOVERY_FILE: &str = "hudhook-transport-v1.json";
 const BYTES_PER_PIXEL: usize = 4;
 
@@ -197,7 +202,7 @@ impl ElectronFrameBridge {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
         let thread = thread::Builder::new()
-            .name("hudhook-electron-frame".to_owned())
+            .name("electron-overlay-frame".to_owned())
             .spawn(move || {
                 run_bridge_thread(
                     worker_scene,
@@ -275,13 +280,45 @@ impl ElectronFrameBridge {
 
     /// Desired interception derived from the public request, target focus, and
     /// selected-window lifecycle. The render loop turns this into an applied
-    /// hudhook filter through its guarded transition state machine.
+    /// native filter through its guarded transition state machine.
     pub fn desired_interception(&self) -> bool {
         self.interception.desired()
     }
 
-    /// Commits the routing/acknowledgement policy for the filter phase hudhook
-    /// just published and queues any resulting cleanup/control packets.
+    /// Publishes whether the target game window is currently focused.
+    ///
+    /// Injected backends that observe focus outside the routed Win32 message
+    /// stream use this explicit seam. Any resulting Electron focus or cleanup
+    /// packets retain the same ordering and asynchronous delivery guarantees as
+    /// messages routed through [`Self::route_window_message`].
+    pub fn set_target_focused(&self, focused: bool) {
+        let has_messages = {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let messages = self
+                .input_router
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_target_focused(focused);
+            if messages.is_empty() {
+                false
+            } else {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(messages);
+                true
+            }
+        };
+        if has_messages {
+            self.wake_outbound_worker();
+        }
+    }
+
+    /// Commits the routing/acknowledgement policy for the filter phase the
+    /// backend just published and queues any resulting cleanup/control packets.
     pub fn apply_input_filter(&self, routing_enabled: bool, acknowledge: bool) {
         let has_messages = {
             let _order = self
@@ -308,9 +345,9 @@ impl ElectronFrameBridge {
         }
     }
 
-    /// Routes one message observed by hudhook and wakes the transport worker for any
-    /// resulting Electron packets. No synchronous cross-process send happens
-    /// on the render/present thread.
+    /// Routes one message observed by the injected backend and wakes the
+    /// transport worker for any resulting Electron packets. No synchronous
+    /// cross-process send happens on the render/present thread.
     pub fn route_window_message(&self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
         let (has_messages, raised_window, drag_wake_error) = {
             // State mutation and queue publication share this lock with transport
@@ -482,7 +519,7 @@ fn run_bridge_thread(
     drag: SharedDragState,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
 ) {
-    let title = wide_string(&format!("hudhook-electron-frame-{}", unsafe {
+    let title = wide_string(&format!("electron-overlay-frame-{}", unsafe {
         GetCurrentProcessId()
     }));
 
@@ -732,7 +769,7 @@ impl BridgeThreadState {
         let discovery = match read_discovery_document() {
             Ok(discovery) => discovery,
             Err(error) => {
-                debug!(%error, "hudhook transport discovery is not ready");
+                debug!(%error, "Electron overlay transport discovery is not ready");
                 return;
             }
         };
@@ -743,12 +780,12 @@ impl BridgeThreadState {
                 expected_version = TRANSPORT_VERSION,
                 producer_pid = discovery.pid,
                 target_pid = current_pid,
-                "Ignoring hudhook transport discovery for another protocol version"
+                "Ignoring Electron overlay transport discovery for another protocol version"
             );
             return;
         }
         if discovery.token.is_empty() || discovery.port == 0 {
-            debug!("Ignoring incomplete hudhook transport discovery document");
+            debug!("Ignoring incomplete Electron overlay transport discovery document");
             return;
         }
 
@@ -759,22 +796,22 @@ impl BridgeThreadState {
         ) {
             Ok(stream) => stream,
             Err(error) => {
-                debug!(?address, %error, "Cannot connect to hudhook loopback transport yet");
+                debug!(?address, %error, "Cannot connect to Electron overlay loopback transport yet");
                 return;
             }
         };
         if let Err(error) = stream.set_nodelay(true) {
-            debug!(%error, "Cannot disable hudhook transport Nagle buffering");
+            debug!(%error, "Cannot disable Electron overlay transport Nagle buffering");
         }
         if let Err(error) = stream.set_nonblocking(true) {
-            warn!(%error, "Cannot configure hudhook transport as nonblocking");
+            warn!(%error, "Cannot configure Electron overlay transport as nonblocking");
             return;
         }
 
         let hello = match game_process_packet(&discovery.token) {
             Ok(packet) => packet,
             Err(error) => {
-                warn!(%error, "Cannot build hudhook transport process hello");
+                warn!(%error, "Cannot build Electron overlay transport process hello");
                 return;
             }
         };
@@ -789,7 +826,7 @@ impl BridgeThreadState {
         ) {
             Ok(transport) => transport,
             Err(error) => {
-                warn!(%error, "Cannot start hudhook loopback transport worker");
+                warn!(%error, "Cannot start Electron overlay loopback transport worker");
                 return;
             }
         };
@@ -800,7 +837,7 @@ impl BridgeThreadState {
             host_port = discovery.port,
             producer_pid = discovery.pid,
             target_pid = current_pid,
-            "Electron frame bridge connected to hudhook transport"
+            "Electron frame bridge connected to overlay transport"
         );
         let _ = PostMessageW(
             Some(self.hwnd),
@@ -821,7 +858,7 @@ impl BridgeThreadState {
             stop.store(true, Ordering::Release);
             drop(commands);
             if thread.join().is_err() {
-                warn!("hudhook loopback transport worker panicked during shutdown");
+                warn!("Electron overlay transport worker panicked during shutdown");
             }
         }
         self.windows.clear();
@@ -862,7 +899,7 @@ impl BridgeThreadState {
                         .as_ref()
                         .is_some_and(|transport| transport.generation == generation) =>
                 {
-                    warn!(%reason, "hudhook loopback transport disconnected");
+                    warn!(%reason, "Electron overlay loopback transport disconnected");
                     self.disconnect();
                     let _ = KillTimer(Some(self.hwnd), OUTBOUND_RETRY_TIMER_ID);
                     SetTimer(
@@ -881,7 +918,7 @@ impl BridgeThreadState {
         let message_type = match serde_json::from_str::<MessageEnvelope>(json) {
             Ok(message) => message.message_type,
             Err(error) => {
-                warn!(%error, "Ignoring malformed hudhook transport JSON packet");
+                warn!(%error, "Ignoring malformed Electron overlay transport JSON packet");
                 return;
             }
         };
@@ -910,7 +947,7 @@ impl BridgeThreadState {
             let packet = match encode_json(&json) {
                 Ok(packet) => packet,
                 Err(error) => {
-                    warn!(%error, "Dropping invalid outbound hudhook transport packet");
+                    warn!(%error, "Dropping invalid outbound Electron overlay transport packet");
                     continue;
                 }
             };
@@ -928,7 +965,7 @@ impl BridgeThreadState {
                     // The worker may have written any prefix of this packet.
                     // Drop it and all worker-owned packets on reconnect so
                     // mouse/key events remain at-most-once.
-                    warn!("Dropping outbound packet after hudhook transport failure");
+                    warn!("Dropping outbound packet after Electron overlay transport failure");
                     self.disconnect();
                     let _ = KillTimer(Some(self.hwnd), OUTBOUND_RETRY_TIMER_ID);
                     SetTimer(
@@ -1378,7 +1415,7 @@ impl BridgeThreadState {
                 sequence = frame.sequence,
                 width = frame.width,
                 height = frame.height,
-                "Electron frame received from hudhook transport"
+                "Electron frame received from overlay transport"
             );
         }
 
@@ -1902,7 +1939,7 @@ fn start_network_worker(
     let stop = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop);
     let thread = thread::Builder::new()
-        .name("hudhook-electron-tcp".to_owned())
+        .name("electron-overlay-tcp".to_owned())
         .spawn(move || {
             run_network_worker(
                 window,

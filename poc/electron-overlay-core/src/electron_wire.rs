@@ -1,4 +1,4 @@
-//! Framing shared by the injected hudhook payload and the Node loopback host.
+//! Framing shared by an injected overlay backend and the Node loopback host.
 
 use std::fmt;
 

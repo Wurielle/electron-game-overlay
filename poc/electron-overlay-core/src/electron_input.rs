@@ -1,4 +1,4 @@
-//! Pure input routing for ordered Electron overlay windows.
+//! Pure, rendering-backend-neutral input routing for ordered Electron overlay windows.
 //!
 //! The native hook is responsible for supplying Win32 messages and converting
 //! wheel coordinates from screen space to game-client space. This module owns
@@ -480,8 +480,8 @@ impl Default for InputRouter {
             requested_interception: false,
             desired_interception: false,
             effective_interception: false,
-            // Fail open until hudhook observes the target as the foreground
-            // window (or receives an explicit focus/activation message).
+            // Fail open until the injected backend observes the target as the
+            // foreground window (or receives an explicit focus/activation message).
             target_focused: false,
             windows: Vec::new(),
             focused_window_id: None,
@@ -829,7 +829,7 @@ impl InputRouter {
         outbound
     }
 
-    /// Commits the routing state for the filter phase hudhook has just applied.
+    /// Commits the routing state for the filter phase the backend just applied.
     /// Arming and disarming keep routing off for complete filtered queue drains;
     /// only matching Enabled/Disabled terminal phases may acknowledge. This
     /// prevents activation and release-boundary messages from reaching both
@@ -840,8 +840,8 @@ impl InputRouter {
         acknowledge: bool,
     ) -> Vec<OutboundMessage> {
         // Keep the sampled phase's routing state stable through before_render;
-        // a concurrent request must not acknowledge a filter value hudhook has
-        // not published yet.
+        // a concurrent request must not acknowledge a filter value the backend
+        // has not published yet.
         let effective = routing_enabled;
         let changed = effective != self.effective_interception;
         let mut outbound = Vec::new();
@@ -871,11 +871,11 @@ impl InputRouter {
 
     /// Returns whether a native input message should be withheld from the game.
     /// The current integration owns mouse/raw propagation synchronously and
-    /// retains hudhook's published keyboard/raw fallback filter. This per-message
-    /// form remains useful for router-level interception tests.
+    /// retains the backend's published keyboard/raw fallback filter. This
+    /// per-message form remains useful for router-level interception tests.
     #[cfg(test)]
     pub fn should_intercept_message(&self, msg: u32) -> bool {
-        self.effective_interception && is_hudhook_input_message(msg)
+        self.effective_interception && is_overlay_input_message(msg)
     }
 
     /// Routes a Win32 message. `screen_to_client` is invoked only for
@@ -1295,10 +1295,16 @@ fn classify_message(msg: u32) -> MessageKind {
 }
 
 #[cfg(test)]
-pub fn is_hudhook_input_message(msg: u32) -> bool {
+pub fn is_overlay_input_message(msg: u32) -> bool {
     msg == WM_INPUT
         || (WM_KEYDOWN..=0x0109).contains(&msg)
         || (WM_MOUSEMOVE..=WM_MOUSEHWHEEL).contains(&msg)
+}
+
+/// Compatibility alias retained for the original hudhook POC tests.
+#[cfg(test)]
+pub fn is_hudhook_input_message(msg: u32) -> bool {
+    is_overlay_input_message(msg)
 }
 
 fn pointer_release_message(button: u8) -> u32 {

@@ -43,6 +43,14 @@ unsigned ReShade full add-on runtime is limited to controlled or permitted
 offline/single-player targets. Competitive and anti-cheat-protected software,
 anti-cheat bypasses, and VR are outside this POC.
 
+The backend-neutral Electron transport, ordered scene, and input router now live
+in `poc/electron-overlay-core` and are shared by the retained hudhook renderer
+and a versioned C ABI. A separate ReShade compositor target links that core
+without changing the proven native input gates. Its first D3D11 live-producer
+run connected the authenticated transport, rendered both overlapping Electron
+OSR windows, and acknowledged ReShade-owned interception. The next required
+slice is exact pre-suppression input observation and return to those windows.
+
 ReShade's managed ImGui input state is sampled once per `Present`. That is
 appropriate for human-duration controls exercised by this gate; exact fast-edge
 delivery for Electron remains the responsibility of the project-owned input

@@ -11,7 +11,19 @@
       "displayName": "Visual Studio 2022 x64",
       "generator": "Visual Studio 17 2022",
       "binaryDir": "${sourceDir}/../../build/reshade-imgui-overlay",
-      "architecture": "x64"
+      "architecture": "x64",
+      "cacheVariables": {
+        "RESHADE_BUILD_ELECTRON_CORE": "OFF"
+      }
+    },
+    {
+      "name": "vs2022-x64-electron-core",
+      "displayName": "Visual Studio 2022 x64 with Electron core",
+      "inherits": "vs2022-x64",
+      "binaryDir": "${sourceDir}/../../build/reshade-imgui-overlay-electron-core",
+      "cacheVariables": {
+        "RESHADE_BUILD_ELECTRON_CORE": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -32,6 +44,27 @@
       "targets": [
         "d3d12_overlay_test_host"
       ]
+    },
+    {
+      "name": "relwithdebinfo-electron-core",
+      "displayName": "RelWithDebInfo Electron core ABI smoke",
+      "configurePreset": "vs2022-x64-electron-core",
+      "configuration": "RelWithDebInfo",
+      "targets": [
+        "electron_core_abi_smoke",
+        "electron_reshade_overlay_poc"
+      ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "electron-core",
+      "displayName": "Electron core ABI smoke",
+      "configurePreset": "vs2022-x64-electron-core",
+      "configuration": "RelWithDebInfo",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }
