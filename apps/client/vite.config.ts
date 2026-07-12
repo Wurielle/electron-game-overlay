@@ -23,6 +23,9 @@ export default defineConfig({
             emptyOutDir: true,
             sourcemap: true,
             target: "node16",
+            rolldownOptions: {
+              external: ["electron-game-overlay"],
+            },
           },
         },
       },

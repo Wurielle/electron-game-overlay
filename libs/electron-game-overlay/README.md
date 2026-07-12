@@ -6,14 +6,31 @@ This library was generated with [Nx](https://nx.dev).
 
 Run `nx build electron-game-overlay` to build the library.
 
-## Payload launch ownership
+## Hudhook runtime and attachment
 
-The hudhook transport does not perform generic top-level-window discovery or DLL
-injection. The application selects the D3D11/D3D12 payload; the active client
-starts its overlay session and then invokes its configured launcher. The legacy
-`findWindows()` and `session.attachToProcess()` methods remain in the
-compatibility surface but throw a descriptive unsupported-operation error
-instead of silently reporting failure.
+`nx build electron-game-overlay` compiles the TypeScript SDK and stages the
+Windows x64 injector plus D3D11/D3D12 payloads under
+`dist/runtime/win32-x64`. Consumers select a backend with
+`parseHudhookLaunchConfig()`, create `HudhookOverlayLauncher`, then call
+`launcher.attach(session, target)`. The SDK waits for transport discovery,
+executes the injector without a shell, and resolves only after the selected
+payload authenticates back to the session. The runtime directory can be
+overridden explicitly for development tests; otherwise it resolves relative to
+the built SDK.
+
+```ts
+const overlay = new ElectronGameOverlay();
+const session = overlay.createSession();
+const config = parseHudhookLaunchConfig(process.argv);
+const launcher = config ? new HudhookOverlayLauncher(config) : null;
+
+session.start();
+await launcher?.attach(session, { processName: 'game.exe' });
+```
+
+The legacy `findWindows()` and `session.attachToProcess()` methods still throw;
+the supported Hudhook target contract is `{ processName } | { windowTitle }` on
+`HudhookOverlayLauncher.attach()`.
 
 ## Coordinate contract
 

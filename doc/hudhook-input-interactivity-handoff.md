@@ -12,7 +12,7 @@ milestone; see
 [the multi-window compositor handoff](hudhook-multiwindow-compositor-handoff.md).
 A bounded uniform 1.25 device-scale proof and per-producer-window desired/active
 scale transition foundation were subsequently added. Controlled D3D12 parity and
-real-client-owned backend/injection-request orchestration are now complete too.
+SDK-owned backend/injection-request orchestration is now complete too.
 A follow-on source migration replaced the native add-on/shared-memory path with
 the project-owned authenticated Node/Rust loopback transport and removed the old
 packages from the active client/SDK npm dependency and root build paths. Archived
@@ -20,6 +20,13 @@ Nx project definitions remain explicitly selectable as legacy reference. The
 replacement was revalidated on July 11 with the D3D11/D3D12 input, lifecycle,
 multi-window, and real-client launchers listed below. Target-game display/client-origin ownership, real
 mixed-monitor acceptance, and texture retirement remain post-POC hardening.
+
+The normal Windows x64 `electron-game-overlay` build now compiles and stages the
+existing injector, both backend payloads, and third-party notices under
+`libs/electron-game-overlay/dist/runtime/win32-x64`. The SDK owns runtime
+resolution, transport readiness, injector execution, and authenticated target
+connection proof. The real client imports those public SDK APIs and contains no
+separate launcher or native staging implementation.
 
 ## Reproduce the completed proof
 
@@ -110,8 +117,8 @@ Win32 input packets back to the Node host from its loopback worker.
 ## Implemented milestone
 
 `ExampleMainOverlay` is interactive while it remains the only
-selected/composited window. Passive rendering remains the default, the public SDK
-is unchanged, and no hudhook fork was needed; hudhook 0.9.1 exposes the required
+selected/composited window. Passive rendering remains the default, the existing
+window/input SDK surface remains compatible, and no hudhook fork was needed; hudhook 0.9.1 exposes the required
 `ImguiRenderLoop::after_wnd_proc()` and `message_filter()` seams.
 
 The retained acceptance criteria are:
@@ -153,7 +160,7 @@ in its first `game.process` packet. Node rejects malformed, wrong-version, or
 wrong-token first packets before publishing a snapshot.
 
 The discovery PID identifies the producer that owns the rendezvous document; it
-is not the target selector. The controlled real-client launcher correlates the
+is not the target selector. The SDK launcher correlates the
 authenticated hello's target PID against its expected PID at the application
 event layer. One well-known discovery document and one active producer are an
 intentional POC constraint; per-target rendezvous belongs to production-launcher
@@ -371,6 +378,8 @@ The Rust router tests and TypeScript translation tests cover:
 The replacement verification sequence is:
 
 ```powershell
+npx nx run electron-game-overlay:test
+npx nx run client:test
 npx nx run client:typecheck
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-automated.ps1
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-multiwindow-automated-125.ps1

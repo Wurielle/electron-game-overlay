@@ -102,6 +102,9 @@ export class OverlaySession {
   constructor(private readonly overlay: NativeOverlay) {}
 
   public start() {
+    if (this.closed) {
+      throw new Error('the overlay session is closed');
+    }
     if (this.started) {
       return;
     }
@@ -113,6 +116,15 @@ export class OverlaySession {
 
     this.started = true;
     this.bindScreenEvents();
+  }
+
+  /** Resolves after the authenticated hudhook rendezvous is ready for a payload. */
+  public whenReady(): Promise<void> {
+    if (this.closed) {
+      return Promise.reject(new Error('the overlay session is closed'));
+    }
+    this.ensureStarted();
+    return this.overlay.whenReady().then(() => undefined);
   }
 
   public close() {

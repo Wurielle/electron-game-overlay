@@ -9,17 +9,14 @@ import {
 import type { OverlayWindowContext } from "./example-overlay-windows";
 import {
   ElectronGameOverlay,
+  HUDHOOK_CONFIGURED_MARKER,
+  HudhookOverlayLauncher,
   type ElectronOverlayWindow,
+  type HudhookLaunchConfig,
+  type HudhookTarget,
   type OverlayHotkey,
   type OverlaySession,
 } from "electron-game-overlay";
-import {
-  HUDHOOK_CONFIGURED_MARKER,
-  HUDHOOK_TARGET_CONNECTED_MARKER,
-  HudhookOverlayLauncher,
-  type HudhookLaunchConfig,
-  type HudhookTarget,
-} from "./hudhook-launch";
 import { AppWindows } from "./window-names";
 
 const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";
@@ -49,7 +46,6 @@ class Application {
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
   private readonly hudhookLauncher: HudhookOverlayLauncher | null;
-  private readonly connectedHudhookTargetPids = new Set<number>();
   private disposed = false;
 
   constructor(hudhookConfig: HudhookLaunchConfig | null = null) {
@@ -70,9 +66,6 @@ class Application {
     });
     this.overlaySession.on("hotkeyDown", (payload) => {
       this.handleOverlayHotkeyDown(payload.name);
-    });
-    this.overlaySession.on("nativeEvent", (payload) => {
-      this.handleNativeOverlayEvent(payload);
     });
   }
 
@@ -229,9 +222,8 @@ class Application {
       this.ensureOverlaySessionStarted();
       void this.requestHudhookInjection({
         processName: autoTargetProcess,
-      }).catch(() => {
-        // HudhookOverlayLauncher emits the bounded failure diagnostics. Keep the
-        // Electron producer alive so the attached runner can collect its logs.
+      }).catch((error) => {
+        console.error("Hudhook attachment failed", error);
       });
     }
   }
@@ -362,7 +354,7 @@ class Application {
   private async attachOverlayToTitle(title: string) {
     if (!this.hudhookLauncher) {
       throw new Error(
-        "hudhook injection is not configured; restart the client with the explicit hudhook runtime options"
+        "hudhook injection is not configured; restart the client with the explicit hudhook startup options"
       );
     }
     this.startOverlaySession();
@@ -374,7 +366,7 @@ class Application {
     if (!this.hudhookLauncher) {
       return Promise.reject(new Error("hudhook injection is not configured"));
     }
-    return this.hudhookLauncher.launch(target);
+    return this.hudhookLauncher.attach(this.overlaySession, target);
   }
 
   private ensureOverlaySessionStarted() {
@@ -469,43 +461,6 @@ class Application {
     if (name === SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY) {
       this.showExampleVideoOverlay();
     }
-  }
-
-  private handleNativeOverlayEvent({
-    event,
-    payload,
-  }: {
-    event: string;
-    payload: any;
-  }) {
-    if (
-      event !== "game.process" ||
-      !this.hudhookLauncher ||
-      !this.hudhookLauncher.hasRequestedInjection
-    ) {
-      return;
-    }
-
-    const pid = payload?.pid;
-    if (!Number.isSafeInteger(pid) || pid <= 0) {
-      return;
-    }
-    const expectedTargetPid = this.hudhookLauncher.config.expectedTargetPid;
-    if (expectedTargetPid !== undefined && pid !== expectedTargetPid) {
-      console.warn(
-        `Ignored hudhook target connection from unexpected pid=${pid}; expected pid=${expectedTargetPid}`
-      );
-      return;
-    }
-    if (!this.hudhookLauncher.acceptTargetConnection(pid)) {
-      return;
-    }
-    if (this.connectedHudhookTargetPids.has(pid)) {
-      return;
-    }
-
-    this.connectedHudhookTargetPids.add(pid);
-    console.log(`${HUDHOOK_TARGET_CONNECTED_MARKER} pid=${pid}`);
   }
 
   private getOverlayWindowContext(): OverlayWindowContext {

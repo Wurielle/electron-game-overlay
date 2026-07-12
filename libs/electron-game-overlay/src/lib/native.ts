@@ -72,6 +72,7 @@ export type NativeOverlayCommand =
 
 export interface NativeOverlay {
   start(): void;
+  whenReady(): Promise<unknown>;
   stop(): void;
   setEventCallback(callback: (event: string, ...args: any[]) => void): void;
   setHotkeys(hotkeys: NativeHotkey[]): void;

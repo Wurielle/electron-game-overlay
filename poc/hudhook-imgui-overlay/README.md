@@ -141,14 +141,15 @@ From a regular PowerShell at the repository root:
 .\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-real-client.ps1
 ```
 
-`-Client` builds the repository's real Electron application and the selected
-runtime, starts and validates the controlled host, then launches the client with
-the opt-in `--start-overlay-session` and `--hudhook-overlay` flags. The client
-resolves the staged backend runtime, invokes the hudhook injector for the
-controlled process, and waits for the exact target PID to connect to its existing
+`-Client` builds the SDK-owned two-backend runtime and the repository's real
+Electron demo application, starts and validates the controlled host, then launches the
+client with the opt-in `--start-overlay-session` and `--hudhook-overlay` flags. The client
+calls the SDK, which resolves `libs/electron-game-overlay/dist/runtime/win32-x64`
+without a runtime override, invokes its hudhook injector for the controlled
+process, and waits for the exact target PID to authenticate to the existing
 overlay session. PowerShell does not invoke the injector in this mode. The runner
 still requires fresh receipt, upload, selection, and composition evidence in the
-host's PID-specific log.
+PID-specific log beside the bundled payload DLL.
 
 Hudhook remains disabled unless the client's main process receives the explicit
 startup configuration. Once enabled, the controlled auto-target or the existing
@@ -522,9 +523,10 @@ This milestone now covers:
 Controlled D3D12 parity is now complete: the hook-only texture/first-frame proof,
 live single-window input proof, repeated Electron texture updates, and the full
 two-window routing/lifecycle/caption-drag proof pass against the D3D12 host. The
-real-client launchers also prove client-owned injection request orchestration for
-both backends. The focused POC finish line is complete and revalidated: the active
-client/SDK uses only the project-owned Node/Rust loopback transport and hudhook
+real-client launchers also prove SDK-owned injection request orchestration for
+both backends. They inject through the SDK-owned runtime rather than the
+controlled host's POC staging directory or client-owned launcher code. The focused POC finish line is complete
+and revalidated: the active client/SDK uses only the project-owned Node/Rust loopback transport and hudhook
 runtime, root `npm run build`/`build:all` and the active client/SDK dependency
 path no longer build or require `node-game-overlay` or `native-game-overlay`,
 archived Nx project definitions remain explicitly selectable as legacy reference,

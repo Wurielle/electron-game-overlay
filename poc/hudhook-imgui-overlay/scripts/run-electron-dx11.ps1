@@ -199,6 +199,13 @@ $ClientWindowAppDirectory = Split-Path -Parent $ClientWindowEntry
 $ClientBuiltEntry = Join-Path $RepoRoot "apps\client\dist\main\main.js"
 $OverlaySdkBuiltEntry = Join-Path $RepoRoot "libs\electron-game-overlay\dist\index.js"
 $ClientUserDataDirectory = Join-Path $RunDirectory "electron-client-user-data"
+$SdkRuntimeDirectory = Join-Path $RepoRoot "libs\electron-game-overlay\dist\runtime\win32-x64"
+$SdkRuntimeArtifactNames = @(
+    "hudhook_overlay_injector.exe",
+    "hudhook_imgui_overlay_dx11.dll",
+    "hudhook_imgui_overlay_dx12.dll",
+    "THIRD_PARTY_NOTICES.md"
+)
 $ClientInputRunToken = [Guid]::NewGuid().ToString("N")
 $ClientInputUserDataDirectory = Join-Path $RunDirectory "electron-client-input-user-data-$ClientInputRunToken"
 $ClientInputControlFile = Join-Path $RunDirectory "electron-client-input-$ClientInputRunToken.control"
@@ -218,7 +225,6 @@ if ($Client) {
         $ClientAutoStartFlag,
         "--hudhook-overlay",
         "--hudhook-backend=$Backend",
-        "--hudhook-runtime-dir=$RunDirectory",
         "--hudhook-auto-target-process=$($BackendConfig.HostExecutableName)",
         "--force-device-scale-factor=1",
         "--user-data-dir=$ClientUserDataDirectory",
@@ -234,6 +240,12 @@ if ($Client) {
     $ElectronStdoutLog = Join-Path $RunDirectory "electron-client.stdout.log"
     $ElectronStderrLog = Join-Path $RunDirectory "electron-client.stderr.log"
     $ExpectedResult = "the real ExampleMainOverlay is rendered at its native bounds inside the controlled $BackendDisplayName host."
+    if (
+        $ElectronArguments |
+            Where-Object { $_ -eq "--hudhook-runtime-dir" -or $_.StartsWith("--hudhook-runtime-dir=") }
+    ) {
+        throw "The real-client proof must not supply a hudhook runtime override."
+    }
 }
 elseif ($ClientMultiWindow) {
     $ProducerMode = "ClientMultiWindow"
@@ -925,7 +937,13 @@ function Get-ControlledHudhookInjectorProcesses {
         return
     }
 
-    $ExpectedInjectorPath = [System.IO.Path]::GetFullPath($Injector)
+    $ExpectedInjectorExecutable = if ($Client) {
+        Join-Path $SdkRuntimeDirectory "hudhook_overlay_injector.exe"
+    }
+    else {
+        $Injector
+    }
+    $ExpectedInjectorPath = [System.IO.Path]::GetFullPath($ExpectedInjectorExecutable)
     foreach (
         $Candidate in @(
             Get-CimInstance `
@@ -961,7 +979,7 @@ function Stop-ControlledHudhookInjectors {
     foreach ($Candidate in @(Get-ControlledHudhookInjectorProcesses $ElectronProcessIds)) {
         $Process = Get-Process -Id $Candidate.ProcessId -ErrorAction SilentlyContinue
         if ($Process) {
-            Stop-LaunchedProcess $Process "client-owned hudhook injector"
+            Stop-LaunchedProcess $Process "SDK-owned hudhook injector"
         }
     }
 }
@@ -1054,6 +1072,27 @@ if ($Client -or $InteractiveProofMode) {
         }
         if ($LASTEXITCODE -ne 0) {
             throw "The Electron build failed with exit code $LASTEXITCODE."
+        }
+
+        if ($Client) {
+            if (-not (Test-Path -LiteralPath $SdkRuntimeDirectory -PathType Container)) {
+                throw "The SDK build did not stage its hudhook runtime: $SdkRuntimeDirectory"
+            }
+            $SdkRuntimeDirectory = (
+                Resolve-Path -LiteralPath $SdkRuntimeDirectory
+            ).Path
+            $ActualRuntimeArtifactNames = @(
+                Get-ChildItem -LiteralPath $SdkRuntimeDirectory -File |
+                    Select-Object -ExpandProperty Name |
+                    Sort-Object
+            )
+            $ExpectedRuntimeArtifactNames = @($SdkRuntimeArtifactNames | Sort-Object)
+            $RuntimeArtifactDifference = @(
+                Compare-Object $ExpectedRuntimeArtifactNames $ActualRuntimeArtifactNames
+            )
+            if ($RuntimeArtifactDifference.Count -gt 0) {
+                throw "The SDK runtime does not contain exactly the expected artifacts: $($ActualRuntimeArtifactNames -join ', ')"
+            }
         }
     }
     finally {
@@ -1294,7 +1333,7 @@ try {
         # avoids racing upstream hudhook's first hook installation.
         Start-Sleep -Milliseconds $ControlledHostInjectionWarmupMilliseconds
 
-        $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
+        $PayloadLog = Join-Path $SdkRuntimeDirectory "$PayloadLogStem-$($HostProcess.Id).log"
         if (Test-Path $PayloadLog) {
             Remove-Item -LiteralPath $PayloadLog -Force
         }
@@ -1399,7 +1438,7 @@ try {
         Write-Host "Verified controlled host Per-Monitor-V2 DPI awareness."
 
         # Keep title-selected injection on the same stable-Present boundary as
-        # the real-client-owned process-selected path above.
+        # the SDK-owned real-client process-selected path above.
         Start-Sleep -Milliseconds $ControlledHostInjectionWarmupMilliseconds
 
         $PayloadLog = Join-Path $RunDirectory "$PayloadLogStem-$($HostProcess.Id).log"
@@ -1509,7 +1548,7 @@ try {
         $TargetLabelJson = ConvertTo-Json `
             -Compress `
             -InputObject "process:$($BackendConfig.HostExecutableName)"
-        $RuntimeDirectoryJson = ConvertTo-Json -Compress -InputObject $RunDirectory
+        $RuntimeDirectoryJson = ConvertTo-Json -Compress -InputObject $SdkRuntimeDirectory
         $ExpectedConfiguredLine = (
             "$ClientHudhookConfiguredMarker " +
             "backend=$Backend runtime=$RuntimeDirectoryJson"
@@ -1587,7 +1626,7 @@ try {
             throw "The real client's injector-start marker did not precede both request return and exact-target connection."
         }
 
-        Write-Host "Verified client-owned hudhook request ordering and exact target PID $($HostProcess.Id)."
+        Write-Host "Verified SDK-owned hudhook request ordering and exact target PID $($HostProcess.Id)."
     }
 
     if ($ClientMultiWindowMode) {

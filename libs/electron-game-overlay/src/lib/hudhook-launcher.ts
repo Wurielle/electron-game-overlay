@@ -1,6 +1,7 @@
 import { execFile, type ChildProcess } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
+import type { OverlaySession } from './overlay-session.js';
 
 const HUDHOOK_OPT_IN_FLAG = '--hudhook-overlay';
 const HUDHOOK_BACKEND_OPTION = '--hudhook-backend';
@@ -12,6 +13,8 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const TARGET_PROOF_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
+// Keep the existing proof markers stable while launcher ownership moves from
+// the demo client into the SDK.
 export const HUDHOOK_CONFIGURED_MARKER = 'HUDHOOK_CLIENT_HUDHOOK_CONFIGURED';
 export const HUDHOOK_INJECTOR_STARTED_MARKER =
   'HUDHOOK_CLIENT_HUDHOOK_INJECTOR_STARTED';
@@ -33,6 +36,10 @@ export type HudhookLaunchConfig = Readonly<{
   expectedTargetPid?: number;
 }>;
 
+export type HudhookLaunchConfigOptions = Readonly<{
+  bundledRuntimeDirectory?: string;
+}>;
+
 export type HudhookTarget =
   | Readonly<{ processName: string }>
   | Readonly<{ windowTitle: string }>;
@@ -43,8 +50,20 @@ export type HudhookInvocation = Readonly<{
   targetLabel: string;
 }>;
 
+export type HudhookAttachResult = Readonly<{
+  backend: HudhookBackend;
+  pid: number;
+  targetLabel: string;
+}>;
+
+/** Returns the Windows x64 runtime directory staged by the SDK build. */
+export function defaultHudhookRuntimeDirectory(): string {
+  return path.resolve(__dirname, '..', 'runtime', 'win32-x64');
+}
+
 export function parseHudhookLaunchConfig(
   argv: readonly string[],
+  options: HudhookLaunchConfigOptions = {},
 ): HudhookLaunchConfig | null {
   const optInCount = argv.filter(
     (argument) => argument === HUDHOOK_OPT_IN_FLAG,
@@ -56,7 +75,7 @@ export function parseHudhookLaunchConfig(
     throw new Error(`${HUDHOOK_OPT_IN_FLAG} must be provided exactly once`);
   }
   if (process.platform !== 'win32' || process.arch !== 'x64') {
-    throw new Error('the hudhook overlay POC requires Windows x64');
+    throw new Error('the hudhook overlay runtime requires Windows x64');
   }
 
   const backendValue = readRequiredOption(argv, HUDHOOK_BACKEND_OPTION);
@@ -65,12 +84,20 @@ export function parseHudhookLaunchConfig(
   }
   const backend: HudhookBackend = backendValue;
 
-  const requestedRuntimeDirectory = readRequiredOption(
+  const runtimeDirectoryOverride = readOptionalOption(
     argv,
     HUDHOOK_RUNTIME_DIRECTORY_OPTION,
   );
+  const requestedRuntimeDirectory =
+    runtimeDirectoryOverride ??
+    options.bundledRuntimeDirectory ??
+    defaultHudhookRuntimeDirectory();
   if (!path.isAbsolute(requestedRuntimeDirectory)) {
-    throw new Error(`${HUDHOOK_RUNTIME_DIRECTORY_OPTION} must be absolute`);
+    throw new Error(
+      runtimeDirectoryOverride === undefined
+        ? 'the SDK hudhook runtime directory must be absolute'
+        : `${HUDHOOK_RUNTIME_DIRECTORY_OPTION} must be absolute`,
+    );
   }
 
   const runtimeDirectory = canonicalDirectory(requestedRuntimeDirectory);
@@ -168,6 +195,11 @@ export class HudhookOverlayLauncher {
   private activeChild: ChildProcess | null = null;
   private activeRequest: Promise<void> | null = null;
   private activeTargetLabel: string | null = null;
+  private activeAttach: {
+    targetLabel: string;
+    promise: Promise<HudhookAttachResult>;
+    cancel: (error: Error) => void;
+  } | null = null;
   private injectionRequested = false;
   private awaitingTargetProof = false;
   private targetProofTimer: ReturnType<typeof setTimeout> | null = null;
@@ -179,6 +211,11 @@ export class HudhookOverlayLauncher {
     return this.injectionRequested;
   }
 
+  /**
+   * Correlates the first authenticated payload connection with the active
+   * injection request. A configured expected PID is enforced here; it is not
+   * an exact-PID selector for the upstream injector.
+   */
   public acceptTargetConnection(pid: number) {
     if (!this.awaitingTargetProof) {
       return false;
@@ -190,6 +227,165 @@ export class HudhookOverlayLauncher {
 
     this.closeTargetProofWindow();
     return true;
+  }
+
+  /**
+   * Waits for the SDK transport, invokes the injector, and proves that the
+   * injected payload authenticated back to this Electron producer.
+   */
+  public attach(
+    session: Pick<OverlaySession, 'on' | 'onClose' | 'whenReady'>,
+    target: HudhookTarget,
+  ): Promise<HudhookAttachResult> {
+    if (this.disposed) {
+      return Promise.reject(new Error('the hudhook launcher is disposed'));
+    }
+
+    const invocation = buildHudhookInvocation(this.config, target);
+    if (this.activeAttach) {
+      if (this.activeAttach.targetLabel === invocation.targetLabel) {
+        return this.activeAttach.promise;
+      }
+      return Promise.reject(
+        new Error('a different hudhook attachment is already active'),
+      );
+    }
+
+    let cancelled = false;
+    let cancelAttach: (error: Error) => void = () => undefined;
+    const cancellation = new Promise<never>((resolve, reject) => {
+      void resolve;
+      cancelAttach = (error) => {
+        if (!cancelled) {
+          cancelled = true;
+          reject(error);
+        }
+      };
+    });
+    const promise = this.performAttach(
+      session,
+      target,
+      invocation,
+      cancellation,
+    );
+    const activeAttach = {
+      targetLabel: invocation.targetLabel,
+      promise,
+      cancel: cancelAttach,
+    };
+    this.activeAttach = activeAttach;
+
+    const clearActiveAttach = () => {
+      if (this.activeAttach === activeAttach) {
+        this.activeAttach = null;
+      }
+    };
+    promise.then(clearActiveAttach, clearActiveAttach);
+    return promise;
+  }
+
+  private async performAttach(
+    session: Pick<OverlaySession, 'on' | 'onClose' | 'whenReady'>,
+    target: HudhookTarget,
+    invocation: HudhookInvocation,
+    cancellation: Promise<never>,
+  ): Promise<HudhookAttachResult> {
+    await Promise.race([session.whenReady(), cancellation]);
+    if (this.disposed) {
+      throw new Error('the hudhook launcher is disposed');
+    }
+
+    let removeNativeEvent: (() => void) | undefined;
+    let removeCloseHandler: (() => void) | undefined;
+    let proofTimer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const cleanup = () => {
+      removeNativeEvent?.();
+      removeNativeEvent = undefined;
+      removeCloseHandler?.();
+      removeCloseHandler = undefined;
+      if (proofTimer) {
+        clearTimeout(proofTimer);
+        proofTimer = undefined;
+      }
+    };
+
+    const connectionProof = new Promise<HudhookAttachResult>(
+      (resolve, reject) => {
+        const rejectProof = (error: Error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          cleanup();
+          reject(error);
+        };
+
+        removeNativeEvent = session.on('nativeEvent', ({ event, payload }) => {
+          if (event !== 'game.process' || !this.hasRequestedInjection) {
+            return;
+          }
+
+          const pid = payload?.pid;
+          if (!Number.isSafeInteger(pid) || pid <= 0) {
+            return;
+          }
+
+          const expectedTargetPid = this.config.expectedTargetPid;
+          if (expectedTargetPid !== undefined && pid !== expectedTargetPid) {
+            console.warn(
+              `Ignored hudhook target connection from unexpected pid=${pid}; expected pid=${expectedTargetPid}`,
+            );
+            return;
+          }
+          if (!this.acceptTargetConnection(pid) || settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          console.log(`${HUDHOOK_TARGET_CONNECTED_MARKER} pid=${pid}`);
+          resolve({
+            backend: this.config.backend,
+            pid,
+            targetLabel: invocation.targetLabel,
+          });
+        });
+        removeCloseHandler = session.onClose(() => {
+          rejectProof(
+            new Error(
+              'the overlay session closed before the hudhook target connected',
+            ),
+          );
+        });
+        if (!settled) {
+          proofTimer = setTimeout(() => {
+            rejectProof(
+              new Error(
+                `the hudhook target did not connect within ${TARGET_PROOF_TIMEOUT_MS}ms`,
+              ),
+            );
+          }, TARGET_PROOF_TIMEOUT_MS);
+        }
+      },
+    );
+
+    try {
+      if (settled) {
+        return await connectionProof;
+      }
+      const [, result] = await Promise.race([
+        Promise.all([this.launch(target), connectionProof] as const),
+        cancellation,
+      ]);
+      return result;
+    } catch (error) {
+      this.stopActiveChild();
+      throw error;
+    } finally {
+      cleanup();
+      this.closeTargetProofWindow();
+    }
   }
 
   public launch(target: HudhookTarget): Promise<void> {
@@ -273,13 +469,13 @@ export class HudhookOverlayLauncher {
       return;
     }
     this.disposed = true;
+    this.activeAttach?.cancel(
+      new Error(
+        'the hudhook launcher was disposed before attachment completed',
+      ),
+    );
     this.closeTargetProofWindow();
-
-    const child = this.activeChild;
-    this.activeChild = null;
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill();
-    }
+    this.stopActiveChild();
   }
 
   private closeTargetProofWindow() {
@@ -287,6 +483,14 @@ export class HudhookOverlayLauncher {
     if (this.targetProofTimer) {
       clearTimeout(this.targetProofTimer);
       this.targetProofTimer = null;
+    }
+  }
+
+  private stopActiveChild() {
+    const child = this.activeChild;
+    this.activeChild = null;
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill();
     }
   }
 }
@@ -323,21 +527,27 @@ function readOptionalOption(argv: readonly string[], name: string) {
 }
 
 function canonicalDirectory(directoryPath: string) {
-  const canonicalPath = realpathSync(directoryPath);
-  if (!statSync(canonicalPath).isDirectory()) {
-    throw new Error(
-      `hudhook runtime path is not a directory: ${directoryPath}`,
-    );
+  try {
+    const canonicalPath = realpathSync(directoryPath);
+    if (statSync(canonicalPath).isDirectory()) {
+      return canonicalPath;
+    }
+  } catch {
+    // Report a stable launch-configuration error below.
   }
-  return canonicalPath;
+  throw new Error(`hudhook runtime directory is unavailable: ${directoryPath}`);
 }
 
 function canonicalFile(filePath: string, label: string) {
-  const canonicalPath = realpathSync(filePath);
-  if (!statSync(canonicalPath).isFile()) {
-    throw new Error(`${label} is not a file: ${filePath}`);
+  try {
+    const canonicalPath = realpathSync(filePath);
+    if (statSync(canonicalPath).isFile()) {
+      return canonicalPath;
+    }
+  } catch {
+    // Report a stable launch-configuration error below.
   }
-  return canonicalPath;
+  throw new Error(`${label} is unavailable: ${filePath}`);
 }
 
 function assertDirectChild(

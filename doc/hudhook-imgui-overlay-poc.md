@@ -33,6 +33,7 @@ Verified results:
 -   raster-changing `window.bounds` updates suppress the stale compositable raster without changing stack order, while the framed transport validates dimensions and exact BGRA byte counts before accepting a replacement frame;
 -   `-ClientMultiWindowManual -Wait` exposes the overlapping pages and their hide/show/raise controls for hands-on testing;
 -   the integrated diagnostic, `-Client`, `-ClientWindow`, `-ClientInput`, and multi-window runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
+-   a normal Windows x64 SDK build stages the injector, D3D11/D3D12 payloads, and notices under `libs/electron-game-overlay/dist/runtime/win32-x64`; the real-client launchers consume that SDK output without a runtime-directory override or client-owned launch implementation.
 
 No hudhook fork was required. The allowed-application smoke tests remain separate compatibility work. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
 

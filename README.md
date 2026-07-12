@@ -9,7 +9,7 @@
 The maintained-runtime migration is documented in the
 [hudhook + ImGui POC](poc/hudhook-imgui-overlay/README.md). Its current verified
 scope is deliberately narrower than the legacy feature list below: controlled
-Windows x64/D3D11 and D3D12, real-client-owned hudhook injection, simultaneous
+Windows x64/D3D11 and D3D12, SDK-owned hudhook injection exercised by the real client, simultaneous
 overlapping Electron windows with deterministic back-to-front ordering and
 click-to-front behavior, and regular Win32 mouse, wheel, keyboard, system-key,
 and character input with focus and pointer capture.
@@ -48,6 +48,14 @@ For example:
 The [POC README](poc/hudhook-imgui-overlay/README.md) contains the Visual Studio,
 Rust, CMake, and controlled-target prerequisites plus the complete acceptance
 matrix.
+
+`npm run build` first builds `electron-game-overlay`, including its Windows x64
+hudhook runtime, and then builds the demo client against that SDK. The injector,
+D3D11 payload, D3D12 payload, and third-party notices are staged under
+`libs/electron-game-overlay/dist/runtime/win32-x64`. With hudhook explicitly
+enabled, only `--hudhook-backend=d3d11|d3d12` is required; the SDK resolves its
+own runtime and owns readiness, injection, and target-connection proof. The
+runtime-directory option remains an optional development/test override.
 
 The original `libs/node-game-overlay` and `libs/native-game-overlay` trees remain
 as legacy source reference, but they are no longer dependencies of the active

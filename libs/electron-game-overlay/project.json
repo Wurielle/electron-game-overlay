@@ -6,6 +6,32 @@
   "tags": [],
   "// targets": "to see all targets run: nx show project electron-game-overlay --web",
   "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": ["^build"],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/poc/hudhook-imgui-overlay/Cargo.toml",
+        "{workspaceRoot}/poc/hudhook-imgui-overlay/Cargo.lock",
+        "{workspaceRoot}/poc/hudhook-imgui-overlay/rust-toolchain.toml",
+        "{workspaceRoot}/poc/hudhook-imgui-overlay/THIRD_PARTY_NOTICES.md",
+        "{workspaceRoot}/poc/hudhook-imgui-overlay/crates/**/*",
+        "{projectRoot}/scripts/stage-hudhook-runtime.ps1"
+      ],
+      "outputs": ["{projectRoot}/dist"],
+      "syncGenerators": ["@nx/js:typescript-sync"],
+      "options": {
+        "cwd": "libs/electron-game-overlay",
+        "commands": [
+          "tsc --build tsconfig.lib.json",
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-hudhook-runtime.ps1"
+        ],
+        "parallel": false
+      }
+    },
     "test": {
       "executor": "nx:run-commands",
       "dependsOn": ["build"],
