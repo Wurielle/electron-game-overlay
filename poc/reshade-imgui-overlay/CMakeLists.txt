@@ -70,6 +70,7 @@ set_target_properties(alternative_imgui_overlay_poc PROPERTIES
 
 add_executable(d3d11_overlay_test_host WIN32
     src/d3d11_test_host.cpp
+    src/input_oracle.hpp
 )
 
 target_compile_features(d3d11_overlay_test_host PRIVATE cxx_std_20)
@@ -99,6 +100,7 @@ add_dependencies(d3d11_overlay_test_host alternative_imgui_overlay_poc)
 
 add_executable(d3d12_overlay_test_host WIN32
     src/d3d12_test_host.cpp
+    src/input_oracle.hpp
 )
 
 target_compile_features(d3d12_overlay_test_host PRIVATE cxx_std_20)
@@ -117,3 +119,11 @@ target_link_libraries(d3d12_overlay_test_host PRIVATE
     d3d12
     dxgi
 )
+
+add_custom_command(TARGET d3d12_overlay_test_host POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "$<TARGET_FILE:alternative_imgui_overlay_poc>"
+        "$<TARGET_FILE_DIR:d3d12_overlay_test_host>"
+    COMMENT "Copying the ReShade add-on next to the controlled D3D12 host"
+)
+add_dependencies(d3d12_overlay_test_host alternative_imgui_overlay_poc)

@@ -5,6 +5,15 @@
 > superseded prototype baseline. The finished focused POC uses an authenticated
 > Node/Rust loopback transport with direct BGRA frame packets.
 
+> **Current host decision, July 12, 2026:** ReShade 6.7.3 full add-on support is
+> the selected production-host experiment for process entry, graphics hooks,
+> swap-chain/resource lifecycle, the managed Dear ImGui context, logging, native
+> input collection, and game-side input blocking. The controlled D3D11/D3D12
+> input gates and Gun Frog acceptance are still pending; this decision records
+> the implementation boundary and does not claim that visible acceptance passed.
+> The hudhook implementation remains the verified Electron compositor and routing
+> reference, not the selected injected host.
+
 ## Idea
 
 Use Dear ImGui inside the injected native overlay runtime as the compositor for overlay content.
@@ -17,7 +26,7 @@ This would make ImGui responsible for the native in-game overlay composition lay
 
 The first proof of concept is implemented in [`poc/reshade-imgui-overlay`](../poc/reshade-imgui-overlay/README.md).
 
-The follow-up experiment in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md) proves the same native path with released hudhook 0.9.1 and no ReShade runtime. It composes an ordered scene of overlapping Electron windows from controlled producers and the real built client through the repository's Electron SDK and project-owned authenticated loopback transport. The D3D11/D3D12 payloads render transparent content at native bounds, survive per-window move/close/re-register lifecycle changes, alpha-hit-test from front to back, and forward controlled Win32 input to the hit or focused Electron window. No hudhook fork was needed.
+The follow-up experiment in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md) proves the same native path with released hudhook 0.9.1 and no ReShade runtime. It composes an ordered scene of overlapping Electron windows from controlled producers and the real built client through the repository's Electron SDK and project-owned authenticated loopback transport. The D3D11/D3D12 payloads render transparent content at native bounds, survive per-window move/close/re-register lifecycle changes, alpha-hit-test from front to back, and forward controlled Win32 input to the hit or focused Electron window. That controlled slice initially needed no hudhook fork; the later real-game input investigation and local patch are recorded in the input handoff.
 
 The completed baseline uses the ReShade 6.7.3 full add-on runtime as the alternative native hook/runtime layer. ReShade, rather than ImGui, owns process entry, graphics API hooks, swap-chain lifecycle, input infrastructure, logging, and renderer integration. The add-on uses ReShade's managed Dear ImGui context to draw an always-visible diagnostics panel and a generated RGBA texture uploaded through ReShade's graphics-agnostic resource API.
 
@@ -352,7 +361,7 @@ The implemented hudhook path is defined in [`hudhook-imgui-overlay-poc.md`](hudh
 9. Integrate the proven hudhook path into the real client workflow and replace the old injection/transport dependencies needed to finish the POC. **Complete.**
 10. After the POC is complete, harden target-HWND display/client-origin ownership, backing-window/per-target geometry, real mixed-scale hardware/VM behavior, and deferred GPU texture retirement.
 
-The controlled D3D11 and D3D12 graphics paths, real-client integration, project-owned Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence is not an adoption gate. Target-display ownership, mixed-monitor acceptance, texture retirement, a production injector, and other geometry/DPI edge cases remain recorded post-POC hardening rather than blockers.
+The controlled D3D11 and D3D12 graphics paths, real-client integration, project-owned Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence was not an adoption gate for that completed hudhook-controlled milestone; the current host decision above supersedes its runtime selection after real-game input validation. Target-display ownership, mixed-monitor acceptance, texture retirement, a production injector, and other geometry/DPI edge cases remain recorded post-POC hardening rather than blockers.
 
 ## Research checklist for search agent
 
@@ -523,7 +532,7 @@ The SDK can keep the higher-level model:
 const overlay = new ElectronGameOverlay();
 const session = overlay.createSession();
 
-// The application launches the chosen hudhook payload for the target/backend.
+// The application launches the selected native host for the target/runtime.
 session.start();
 
 const window = session.windows.addElectronWindow(browserWindow, {
@@ -538,9 +547,11 @@ window.show();
 ```
 
 The native implementation behind that window/session/input API uses ImGui
-internally. Generic `findWindows()` and `attachToProcess()` are retained only for
-source compatibility and throw explicitly; backend-specific payload launch is
-owned by the application integration.
+internally. The planned ReShade migration keeps the public session/window/input
+surface while replacing its current hudhook launcher and runtime assets. Generic
+`findWindows()` and `attachToProcess()` are retained only for source compatibility
+and currently throw explicitly; the final supported ReShade target/runtime
+boundary is still implementation work.
 
 ## Open questions
 
@@ -551,8 +562,51 @@ owned by the application integration.
 -   How should native diagnostics be surfaced before IPC is connected?
 -   How much of the current native compositor can be replaced incrementally?
 
-## Recommendation
+## Current recommendation
 
 Try this as a native runtime experiment, not as a rewrite of the Electron SDK.
 
-Keep the Electron SDK and upstream hudhook boundary proven by this experiment. The focused POC now includes the ordered multi-window compositor, uniform scale matrix, bounded producer-window/runtime transition contract, controlled D3D11/D3D12 parity, real-client wiring, and replacement transport. The window/session/input surface remains; legacy generic process discovery/injection is explicitly unavailable because backend-specific payload launch is application-owned. Treat target-HWND display/client-origin ownership, mixed-monitor behavior, backing-window placement, deferred texture retirement, a production injector, and broader D3D12 driver/debug-layer coverage as explicit post-POC hardening unless a controlled acceptance test proves one is a direct blocker.
+Use ReShade as the process-entry, graphics, swap-chain, ImGui, logging, and
+game-side input host. Connect the existing Electron implementation behind a thin
+ReShade add-on boundary rather than recreating its proven transport and window
+semantics. A likely implementation is a small C++ add-on calling an extracted
+Rust static library through a narrow C ABI.
+
+Reuse these exact hudhook-POC results:
+
+-   the public `ElectronGameOverlay`, session, window, and input contract;
+-   Electron OSR production, `focusOnWebView()`, TypeScript input translation,
+    per-packet scale tags, and desired/active raster transitions;
+-   `libs/electron-game-overlay/src/lib/hudhook-transport.ts`, which is an
+    authenticated backend-neutral Node loopback transport despite its name;
+-   `electron_wire.rs`, `electron_frame.rs`, and `electron_input.rs`, extracted
+    from the hudhook crate into host-neutral Rust code;
+-   checked BGRA framing, premultiplied-alpha conversion, reconnect snapshots,
+    frame coalescing, and atomic ordered scene/router publication;
+-   multi-window registration order, click-to-front, alpha hit testing, caption
+    dragging, focus-before-input, multi-button pointer capture, and cleanup;
+-   the controlled hosts, Electron producers, Ctrl+I ownership, diagnostics, and
+    existing input/lifecycle/multi-window acceptance cases.
+
+Replace or retire these hudhook-specific pieces:
+
+-   the hudhook injector, backend-specific payload launch, SDK backend selection,
+    and runtime packaging;
+-   hudhook's D3D11/D3D12 render loops, `Present`-phase input filter, texture
+    cache/resource wrapper, and ImGui-context ownership;
+-   the local synchronous-WndProc hudhook patch, project-owned User32 polling,
+    cursor and buffered-raw-input detours, and their MinHook teardown/ejection
+    lifecycle;
+-   further per-game input-API detours intended to compensate for gaps in that
+    private blocking layer.
+
+The first adoption gate remains behavioral: pass-through must be fail-open;
+interception must leave the overlay fully interactive, release game cursor
+confinement/recentering, and prevent the game from observing the same input;
+release/focus loss/transport failure/shutdown must restore normal game input.
+Prove that on the controlled D3D11 and D3D12 hosts and then Gun Frog before
+switching the SDK/client runtime. Target-HWND/client-origin ownership, mixed
+monitors, multiple targets, texture retirement, broader graphics APIs, and
+installer/proxy conflicts remain post-POC hardening unless the gate exposes one
+as a direct blocker. Competitive or anti-cheat-protected targets, anti-cheat
+bypass work, and VR remain outside the unsigned full-add-on POC.

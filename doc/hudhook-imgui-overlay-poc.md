@@ -1,5 +1,15 @@
 # hudhook + ImGui overlay proof of concept
 
+> **Architecture update, July 12, 2026:** This document is retained as the
+> historical hudhook decision and controlled acceptance record. Real Gun Frog
+> testing later showed that Unity still received mouse hover/click activity while
+> the overlay was interactive under interception. ReShade is now the active host
+> experiment for process entry, graphics/ImGui lifecycle, and game-side input
+> blocking; its controlled D3D11/D3D12 and Gun Frog visible acceptance is still
+> pending. The Electron OSR transport, wire/frame processing, ordered scene and
+> input router, public session/window/input API, and multi-window/DPI contracts
+> described here remain reusable.
+
 > Current status plus historical acceptance record. Sections that describe the
 > Node add-on, named mappings, or mutexes document the superseded baseline. The
 > active implementation uses the public Electron SDK over an authenticated

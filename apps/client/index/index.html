@@ -45,6 +45,10 @@
             font-size: 13px;
         }
 
+        .status.error {
+            color: #ffaaa0;
+        }
+
         .section {
             display: flex;
             flex-direction: column;
@@ -79,6 +83,11 @@
             background: #4a575a;
         }
 
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.55;
+        }
+
         button.active {
             border-color: #9ccf9d;
             color: #102016;
@@ -108,7 +117,7 @@
 
             <div class="section">
                 <button id="start">Start session</button>
-                <button id="intercept">Intercept input</button>
+                <button id="intercept">Intercept input (Ctrl+I)</button>
             </div>
 
             <div class="section">

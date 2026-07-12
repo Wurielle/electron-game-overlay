@@ -3,6 +3,7 @@ import { ipcRenderer, IpcRendererEvent } from "electron";
 type DemoState = {
   overlayStarted: boolean;
   inputIntercepting: boolean;
+  hudhookBackend: "d3d11" | "d3d12" | null;
   windows: Record<string, boolean>;
 };
 
@@ -13,10 +14,13 @@ const overlayWindows = {
 };
 
 const windowTitleStorageKey = "demo.windowTitle";
+const demoStateChangedChannel = "overlay:state-changed";
+const inputInterceptAccelerator = "Ctrl+I";
 
 let state: DemoState = {
   overlayStarted: false,
   inputIntercepting: false,
+  hudhookBackend: null,
   windows: {},
 };
 
@@ -63,7 +67,18 @@ injectButton.addEventListener("click", async () => {
     return;
   }
 
-  await updateState(ipcRenderer.invoke("overlay:inject", title));
+  injectButton.disabled = true;
+  statusElement.classList.remove("error");
+  statusElement.textContent = `Attaching to ${title}...`;
+  try {
+    await updateState(ipcRenderer.invoke("overlay:inject", title));
+    statusElement.textContent = `Connected to ${title} with ${state.hudhookBackend?.toUpperCase()}`;
+  } catch (error) {
+    statusElement.classList.add("error");
+    statusElement.textContent = getErrorMessage(error);
+  } finally {
+    injectButton.disabled = state.hudhookBackend === null;
+  }
 });
 
 mainOverlayButton.addEventListener("click", () => {
@@ -108,6 +123,14 @@ ipcRenderer.on(
   }
 );
 
+ipcRenderer.on(
+  demoStateChangedChannel,
+  (event: IpcRendererEvent, nextState: DemoState) => {
+    state = nextState;
+    renderState();
+  }
+);
+
 window.onfocus = function () {
   console.log("focus");
 };
@@ -135,13 +158,14 @@ async function updateState(statePromise: Promise<DemoState>) {
 function renderState() {
   startButton.classList.toggle("active", state.overlayStarted);
   interceptButton.classList.toggle("active", state.inputIntercepting);
+  injectButton.disabled = state.hudhookBackend === null;
 
   startButton.textContent = state.overlayStarted
     ? "Session running"
     : "Start session";
   interceptButton.textContent = state.inputIntercepting
-    ? "Release input"
-    : "Intercept input";
+    ? `Release input (${inputInterceptAccelerator})`
+    : `Intercept input (${inputInterceptAccelerator})`;
 
   renderOverlayButton(mainOverlayButton, overlayWindows.main, "main overlay");
   renderOverlayButton(
@@ -151,9 +175,14 @@ function renderState() {
   );
   renderOverlayButton(videoOverlayButton, overlayWindows.video, "video overlay");
 
-  statusElement.textContent = state.overlayStarted
-    ? "Session ready"
-    : "Session idle";
+  statusElement.classList.remove("error");
+  statusElement.textContent = state.hudhookBackend
+    ? `${state.overlayStarted ? "Session ready" : "Session idle"} · ${state.hudhookBackend.toUpperCase()}`
+    : "Injection disabled: restart the client with a Hudhook backend";
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function renderOverlayButton(

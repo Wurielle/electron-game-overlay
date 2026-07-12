@@ -40,5 +40,20 @@ of falling back to the bundled files.
 
 The client contains no injector, native payload, or target-correlation
 implementation of its own; it is only an SDK acceptance/demo application.
-`npm run dev` builds the SDK before starting Vite; restart the dev command after
-changing SDK source so the external compiled dependency is rebuilt.
+
+Press **Ctrl+I** to toggle input interception even while the target game owns
+foreground focus. Electron owns this accelerator as a global shortcut; it is
+not also registered as a payload hotkey, so one keypress produces one toggle.
+The frontend button reflects changes made through either path.
+
+`ExampleMainOverlay` automatically pins a visible text field at `(24, 112)` and
+shows its latest DOM event in the lower-right diagnostic strip. The status
+overlay has a smaller equivalent strip. These controls are demo diagnostics:
+they make hover, click, focus, typing, and wheel receipt unambiguous during a
+real-game run.
+
+For frontend-driven attachment during development, `npm run dev` and
+`npm run dev:d3d11` start the client with the SDK's D3D11 launcher configured.
+Use `npm run dev:d3d12` for a D3D12 target. Enter the target's exact window title
+in the frontend and select **Attach**. Restart the dev command after changing SDK
+source so the external compiled dependency is rebuilt.

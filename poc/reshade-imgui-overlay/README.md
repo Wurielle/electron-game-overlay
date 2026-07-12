@@ -1,17 +1,31 @@
 # ReShade + ImGui compositor proof of concept
 
-This standalone Windows x64 proof uses the ReShade 6.7.3 full add-on runtime as the native process-entry, graphics-hook, swap-chain, input, logging, and ImGui layer. It does not use the binary-only overlay runtime already shipped in this repository.
+This active Windows x64 proof uses the ReShade 6.7.3 full add-on runtime as the native process-entry, graphics-hook, swap-chain, input, logging, and ImGui layer. It does not use the binary-only overlay runtime already shipped in this repository or the hudhook payload.
 
-The add-on proves two things inside the target render path:
+The original baseline proved two things inside the target render path:
 
 - an always-visible Dear ImGui diagnostics panel can be rendered while the main ReShade menu is closed;
 - a generated RGBA bitmap can be uploaded through ReShade's graphics-agnostic resource API and drawn with `ImGui::Image`.
 
-The included D3D11 host is intentionally plain and owned by this repository. Use it before trying any external application.
+The current slice adds controlled D3D11 and D3D12 input-gate hosts. ReShade's
+public `effect_runtime::block_input_next_frame()` owns game-side blocking, while
+an independent host oracle counts window messages, raw input, polling-visible
+left-button state, cursor movement, and cursor confinement. The code and staging
+launchers are implemented; the visible acceptance runs described below are
+pending and must not be reported as passed yet.
+
+The controlled hosts are intentionally plain and owned by this repository. Use
+them before trying any external application.
 
 ## Safety boundary
 
-Use this only with the included host or an offline/single-player application you are allowed to modify. ReShade's full add-on build is intentionally not anti-cheat allowlisted. Do not load this POC in competitive or anti-cheat-protected software.
+Use this only with the included hosts or an offline/single-player application you
+are allowed to modify. ReShade's unsigned full add-on build is intentionally not
+anti-cheat allowlisted. Do not load this POC in competitive or
+anti-cheat-protected software, and do not use it to bypass anti-cheat controls.
+Steam-like refers to the overlay's interaction behavior within the supported
+target envelope; it does not claim Steam's signing, launcher ownership,
+anti-cheat relationships, or per-game compatibility database.
 
 ## Build
 
@@ -39,32 +53,80 @@ The build pins:
 
 No ReShade or ImGui source is checked into version control. The first configure downloads both into the ignored build directory.
 
-ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is MIT-licensed. Preserve their notices if compiled POC binaries are redistributed. Do not commit or redistribute the downloaded ReShade setup/runtime; link users to the official download instead.
+ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is MIT-licensed. Preserve their notices if compiled POC binaries are redistributed. The helper builds the pinned ReShade runtime only into the ignored local build directory; do not commit or redistribute that runtime.
 
-## Run against the controlled D3D11 host
+To build the pinned ReShade full-add-on runtime explicitly:
 
-1. Download the official **ReShade 6.7.3 with full add-on support** installer from [reshade.me](https://reshade.me/).
-2. In that installer, select `build/reshade-imgui-overlay/RelWithDebInfo/d3d11_overlay_test_host.exe`.
-3. Select the DirectX 10/11/12 renderer when prompted. Installing an effect package is optional for this proof.
-4. Confirm these files sit next to the test host:
-   - the ReShade proxy DLL installed by the official setup tool;
-   - `alternative_imgui_overlay_poc.addon64` (the build copies it automatically).
-5. Start `d3d11_overlay_test_host.exe`.
-6. On the first ReShade launch, press Home and complete its short tutorial once. The POC panel is positioned below ReShade's own first-run banner.
+```powershell
+.\poc\reshade-imgui-overlay\scripts\build-runtime.ps1
+```
 
-Expected result: the animated dark background has a panel near its upper-left corner. The panel identifies the active graphics API, counts rendered frames, and displays a teal checkerboard texture. Resize the host window to exercise ReShade's swap-chain lifecycle. Press Escape to close it.
+The input-gate launchers always validate the cached binary against a local build
+stamp, pinned clean source, full-add-on configuration, and SHA-256 hash. A
+missing or invalid cache is rebuilt before staging.
 
-If the panel does not appear, inspect `ReShade.log` beside the executable. It should report loading `Alternative ImGui Compositor POC`, creating the GPU texture, and rendering the first ImGui frame.
+## Run the controlled input gates
 
-If you skipped effect-package installation, a warning about a missing `reshade-shaders` search path is expected and does not affect this add-on.
+Each human-facing backend has its own launcher:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-native-input-gate.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-native-input-gate.ps1
+```
+
+The launchers build the host and add-on, build or reuse the pinned local ReShade
+runtime, and create an isolated directory under
+`build/reshade-imgui-overlay/input-gate-d3d11` or
+`input-gate-d3d12`. D3D11 stages the runtime as `d3d11.dll`; D3D12 stages it as
+`dxgi.dll`. Both stage `ReShade.ini` with `[INPUT] InputProcessing=2`, the add-on,
+and the `reshade-input-gate.enabled` marker that enables the controlled host
+oracle. The parameterized `scripts/run-input-gate.ps1` runner remains available
+for automation and supports `-NoLaunch`.
+
+Visible acceptance is currently pending. For each backend:
+
+1. In pass-through mode, move, click, wheel, and press keys. The `game input`
+   counters in the host title should advance and `clip=on` should describe the
+   host's deliberately hostile cursor confinement.
+2. Press **Ctrl+I** once. The add-on should report `Input: RESHADE-OWNED`; this
+   label is requested state, not by itself proof that the gate passed. The
+   activating chord is detected at `Present`, so exclude that chord from the
+   steady-state counter sample; production uses the Electron-owned global
+   shortcut and sends desired state to the add-on instead.
+3. Move over the ImGui panel and click `CLICK RE SHADE INPUT PROBE`. The probe
+   count must increase, the visible pointer must remain usable, the host's
+   message/raw/polling counters must stop advancing, and the title must report
+   `clip=off`.
+4. Type into `Keyboard probe`, drag `Drag probe`, wheel over the panel, and move
+   the cursor while interception stays active. The overlay controls/counters must
+   react while none becomes new game-side oracle activity.
+5. Resize the host while interception is active. The panel must remain
+   `RESHADE-OWNED`, input must remain blocked, and the controls must still work.
+6. Press **Ctrl+I** again. Pass-through counters and host cursor confinement must
+   resume. Press **Escape** to close the host normally.
+
+A backend fails acceptance if the overlay cannot be operated, if any game-side
+counter reacts to intercepted input, if cursor confinement remains active, or if
+release/shutdown does not restore normal input.
+
+The texture baseline is part of both isolated input gates: the panel identifies
+the graphics API and displays the generated teal checkerboard below the input
+controls. If the panel does not appear, inspect `ReShade.log` in that backend's
+staged input-gate directory.
 
 ## What this does not prove yet
 
 - Electron frame transport or shared-memory compatibility;
 - per-window state, z-order, clipping, or dirty-frame updates;
+- completed visible D3D11/D3D12 input-gate acceptance;
 - mouse/keyboard forwarding back to Electron;
 - an attach-by-PID flow independent of ReShade installation;
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
-The next useful step is to replace the generated texture with a versioned shared-memory BGRA frame and update it only when the producer publishes a new sequence number.
+After the native input gates pass, the next step is to connect the existing
+authenticated Electron loopback transport, Rust wire/frame/input router, ordered
+multi-window scene, and TypeScript input translation behind the ReShade add-on
+boundary. Those components are retained from the hudhook POC; ReShade replaces
+the injected host, graphics lifecycle, ImGui ownership, and game-side input
+blocking rather than the Electron SDK contract.

@@ -1,6 +1,7 @@
 mod electron_frame;
 mod electron_input;
 mod electron_wire;
+mod owned_input;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -8,10 +9,16 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use electron_frame::{ElectronFrameBridge, ElectronScene};
-use hudhook::imgui::{Condition, Context, Image, Io, TextureId, Ui, WindowFlags};
+use hudhook::imgui::{Condition, Context, Image, Io, StyleColor, TextureId, Ui, WindowFlags};
+use hudhook::process_input::{
+    ProcessInputCounters, ProcessMouseSuppression, ProcessRawMouseHandler,
+};
+use hudhook::sync_input::SynchronousWndProcHandler;
 use hudhook::{ImguiRenderLoop, MessageFilter, RenderContext};
+use owned_input::OwnedPointerInput;
 use tracing_subscriber::EnvFilter;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
@@ -58,12 +65,18 @@ pub struct PocRenderLoop {
     electron_resume_pending: HashSet<u32>,
     electron_logged_scene_revision: u64,
     rendered_frames: u64,
+    imgui_probe_click_count: u64,
     first_frame_logged: bool,
     last_display_size: Option<[f32; 2]>,
     framebuffer_scale_normalization_logged: bool,
     input_filter_phase: AtomicU8,
     sampled_input_filter_phase: AtomicU8,
     applied_input_filter: AtomicBool,
+    process_mouse_suppression: Arc<ProcessMouseSuppression>,
+    last_process_input_counters: ProcessInputCounters,
+    last_process_input_report: Instant,
+    owned_pointer_input: Arc<OwnedPointerInput>,
+    owned_input_logged: bool,
 }
 
 impl PocRenderLoop {
@@ -85,6 +98,14 @@ impl PocRenderLoop {
             }
         };
 
+        let process_mouse_suppression = Arc::new(ProcessMouseSuppression::new());
+        let owned_pointer_input = Arc::new(OwnedPointerInput::new(Arc::clone(
+            &process_mouse_suppression,
+        )));
+        let process_raw_mouse_handler: Arc<dyn ProcessRawMouseHandler> =
+            owned_pointer_input.clone();
+        process_mouse_suppression.set_raw_mouse_handler(Arc::downgrade(&process_raw_mouse_handler));
+
         Self {
             backend_name,
             pixels: make_test_pattern(),
@@ -99,12 +120,70 @@ impl PocRenderLoop {
             electron_resume_pending: HashSet::new(),
             electron_logged_scene_revision: 0,
             rendered_frames: 0,
+            imgui_probe_click_count: 0,
             first_frame_logged: false,
             last_display_size: None,
             framebuffer_scale_normalization_logged: false,
             input_filter_phase: AtomicU8::new(INPUT_FILTER_DISABLED),
             sampled_input_filter_phase: AtomicU8::new(INPUT_FILTER_DISABLED),
             applied_input_filter: AtomicBool::new(false),
+            process_mouse_suppression,
+            last_process_input_counters: ProcessInputCounters::default(),
+            last_process_input_report: Instant::now(),
+            owned_pointer_input,
+            owned_input_logged: false,
+        }
+    }
+
+    fn report_process_input_counters(&mut self) {
+        let counters = self.process_mouse_suppression.counters();
+        let previous_masked = total_masked_process_input(self.last_process_input_counters);
+        let masked = total_masked_process_input(counters);
+        if masked == previous_masked
+            || (previous_masked != 0
+                && self.last_process_input_report.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+
+        self.last_process_input_counters = counters;
+        self.last_process_input_report = Instant::now();
+        hudhook::tracing::info!(
+            phase = ?self.process_mouse_suppression.phase(),
+            async_calls = counters.get_async_key_state.calls,
+            async_masked = counters.get_async_key_state.masked,
+            key_calls = counters.get_key_state.calls,
+            key_masked = counters.get_key_state.masked,
+            keyboard_calls = counters.get_keyboard_state.calls,
+            keyboard_masked = counters.get_keyboard_state.masked,
+            cursor_calls = counters.get_cursor_pos.calls,
+            cursor_masked = counters.get_cursor_pos.masked,
+            raw_buffer_calls = counters.get_raw_input_buffer.calls,
+            raw_buffer_masked = counters.get_raw_input_buffer.masked,
+            "process-wide mouse polling suppression observed"
+        );
+    }
+
+    fn drain_owned_pointer_input(&mut self, context: &mut Context) {
+        let events = self.owned_pointer_input.drain();
+        if events.is_empty() {
+            return;
+        }
+
+        for event in events.iter().copied() {
+            event.feed_imgui(context.io_mut());
+            if let Some(bridge) = &self.electron_bridge {
+                let (hwnd, message, wparam, lparam) = event.win32();
+                bridge.route_window_message(hwnd, message, wparam, lparam);
+            }
+        }
+
+        if !self.owned_input_logged {
+            self.owned_input_logged = true;
+            hudhook::tracing::info!(
+                event_count = events.len(),
+                "synchronous owned pointer input reached ImGui and Electron"
+            );
         }
     }
 
@@ -297,9 +376,115 @@ impl PocRenderLoop {
                 }
             });
     }
+
+    fn effective_input_interception(&self) -> bool {
+        self.electron_bridge
+            .as_ref()
+            .is_some_and(|bridge| bridge.input_state().effective_interception)
+    }
+
+    fn render_imgui_input_probe(
+        &mut self,
+        ui: &Ui,
+        display_size: [f32; 2],
+        effective_interception: bool,
+    ) {
+        let flags = WindowFlags::NO_RESIZE
+            | WindowFlags::NO_MOVE
+            | WindowFlags::NO_COLLAPSE
+            | WindowFlags::NO_SCROLLBAR
+            | WindowFlags::NO_SCROLL_WITH_MOUSE
+            | WindowFlags::NO_SAVED_SETTINGS
+            | WindowFlags::NO_FOCUS_ON_APPEARING
+            | WindowFlags::NO_NAV;
+
+        ui.window("NATIVE IMGUI INPUT PROBE##standalone-input-probe")
+            .position(
+                [24.0, (display_size[1] - 24.0).max(24.0)],
+                Condition::Always,
+            )
+            .position_pivot([0.0, 1.0])
+            .size([440.0, 250.0], Condition::Always)
+            .bg_alpha(0.96)
+            .flags(flags)
+            .build(|| {
+                if effective_interception {
+                    ui.text_colored(
+                        [0.25, 1.0, 0.55, 1.0],
+                        "INTERCEPTION ENABLED - native ImGui input test",
+                    );
+                } else {
+                    ui.text_colored(
+                        [1.0, 0.45, 0.2, 1.0],
+                        "INTERCEPTION OFF - enable it before testing",
+                    );
+                }
+                ui.text("This control does not use Electron rendering or input routing.");
+                ui.separator();
+
+                let _button = ui.push_style_color(
+                    StyleColor::Button,
+                    if effective_interception {
+                        [0.05, 0.48, 0.82, 1.0]
+                    } else {
+                        [0.38, 0.18, 0.12, 1.0]
+                    },
+                );
+                let _button_hovered =
+                    ui.push_style_color(StyleColor::ButtonHovered, [0.05, 0.72, 1.0, 1.0]);
+                let _button_active =
+                    ui.push_style_color(StyleColor::ButtonActive, [0.95, 0.28, 0.16, 1.0]);
+                let clicked = ui.button_with_size(
+                    "CLICK AND HOLD THIS NATIVE BUTTON##imgui-input-probe-button",
+                    [408.0, 72.0],
+                );
+                let hovered = ui.is_item_hovered();
+                let active = ui.is_item_active();
+                let mouse_position = ui.io().mouse_pos;
+                let want_capture_mouse = ui.io().want_capture_mouse;
+
+                if clicked {
+                    self.imgui_probe_click_count = self.imgui_probe_click_count.saturating_add(1);
+                    hudhook::tracing::info!(
+                        click_count = self.imgui_probe_click_count,
+                        effective_interception,
+                        mouse_x = mouse_position[0],
+                        mouse_y = mouse_position[1],
+                        "native ImGui input probe clicked"
+                    );
+                }
+
+                let (state, color) = if active {
+                    ("ACTIVE (button held)", [1.0, 0.35, 0.2, 1.0])
+                } else if hovered {
+                    ("HOVERED", [1.0, 0.9, 0.2, 1.0])
+                } else {
+                    ("IDLE", [0.72, 0.76, 0.82, 1.0])
+                };
+                ui.text_colored(color, format!("State: {state}"));
+                ui.same_line();
+                ui.text(format!("Clicks: {}", self.imgui_probe_click_count));
+                ui.text(format!(
+                    "Hovered: {hovered} | Active: {active} | Software cursor: {}",
+                    if effective_interception { "ON" } else { "OFF" }
+                ));
+                ui.text(format!(
+                    "Mouse: ({:.1}, {:.1}) | want_capture_mouse: {want_capture_mouse}",
+                    mouse_position[0], mouse_position[1]
+                ));
+            });
+    }
 }
 
 impl ImguiRenderLoop for PocRenderLoop {
+    fn process_mouse_suppression(&self) -> Option<Arc<ProcessMouseSuppression>> {
+        Some(Arc::clone(&self.process_mouse_suppression))
+    }
+
+    fn synchronous_wnd_proc_handler(&self) -> Option<Arc<dyn SynchronousWndProcHandler>> {
+        Some(self.owned_pointer_input.clone())
+    }
+
     fn initialize<'a>(
         &'a mut self,
         _context: &mut Context,
@@ -367,6 +552,10 @@ impl ImguiRenderLoop for PocRenderLoop {
                 matches!(sampled_phase, INPUT_FILTER_DISABLED | INPUT_FILTER_ENABLED),
             );
         }
+        self.owned_pointer_input.reconcile_physical_buttons();
+        self.drain_owned_pointer_input(context);
+        self.report_process_input_counters();
+        context.io_mut().mouse_draw_cursor = self.effective_input_interception();
 
         let Some(scene) = self
             .electron_bridge
@@ -496,6 +685,8 @@ impl ImguiRenderLoop for PocRenderLoop {
 
         self.compose_electron_overlays(ui);
         self.render_diagnostics(ui, display_size);
+        let effective_interception = self.effective_input_interception();
+        self.render_imgui_input_probe(ui, display_size, effective_interception);
 
         if !self.first_frame_logged {
             self.first_frame_logged = true;
@@ -523,13 +714,27 @@ impl ImguiRenderLoop for PocRenderLoop {
         let sampled_phase = next_input_filter_phase(current_phase, desired_interception);
         self.sampled_input_filter_phase
             .store(sampled_phase, Ordering::Release);
+        self.owned_pointer_input.set_phase(sampled_phase);
 
         if sampled_phase != INPUT_FILTER_DISABLED {
-            MessageFilter::InputAll
+            // Mouse and WM_INPUT propagation belong to the synchronous owned
+            // handler. Hudhook keeps translating/blocking legacy keyboard
+            // messages until the keyboard source moves to the same seam.
+            MessageFilter::InputKeyboard | MessageFilter::InputRaw
         } else {
             MessageFilter::empty()
         }
     }
+}
+
+const fn total_masked_process_input(counters: ProcessInputCounters) -> u64 {
+    counters
+        .get_async_key_state
+        .masked
+        .saturating_add(counters.get_key_state.masked)
+        .saturating_add(counters.get_keyboard_state.masked)
+        .saturating_add(counters.get_cursor_pos.masked)
+        .saturating_add(counters.get_raw_input_buffer.masked)
 }
 
 fn normalize_native_pixel_framebuffer_scale(scale: &mut [f32; 2]) -> Option<[f32; 2]> {

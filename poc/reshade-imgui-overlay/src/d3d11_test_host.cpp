@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cwchar>
 
+#include "input_oracle.hpp"
+
 namespace
 {
 using Microsoft::WRL::ComPtr;
@@ -25,6 +27,7 @@ struct graphics_state
 };
 
 graphics_state g_graphics;
+input_oracle g_input_oracle;
 
 bool enable_per_monitor_v2_awareness()
 {
@@ -142,6 +145,8 @@ void resize_swap_chain(UINT width, UINT height)
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
+    g_input_oracle.observe_window_message(window, message, w_param);
+
     switch (message)
     {
     case WM_DPICHANGED:
@@ -176,6 +181,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
         break;
 
     case WM_DESTROY:
+        g_input_oracle.shutdown();
         PostQuitMessage(0);
         return 0;
     }
@@ -244,6 +250,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 
     ShowWindow(g_graphics.window, show_command);
     UpdateWindow(g_graphics.window);
+    if (!g_input_oracle.initialize(g_graphics.window))
+        report_graphics_failure(L"Unable to register the controlled raw-input oracle.");
 
     const auto start_time = std::chrono::steady_clock::now();
     MSG message = {};
@@ -277,6 +285,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         g_graphics.context->OMSetRenderTargets(1, &render_target, nullptr);
         g_graphics.context->ClearRenderTargetView(render_target, clear_color);
         g_graphics.swap_chain->Present(1, 0);
+        g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
     }
 
     g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -284,6 +293,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     g_graphics.swap_chain.Reset();
     g_graphics.context.Reset();
     g_graphics.device.Reset();
+    g_input_oracle.shutdown();
 
     UnregisterClassW(kWindowClassName, instance);
     return static_cast<int>(message.wParam);

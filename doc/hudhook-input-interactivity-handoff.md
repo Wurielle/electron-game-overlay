@@ -1,5 +1,20 @@
 # Hudhook input and interactivity handoff
 
+> **Host decision update, July 12, 2026:** This remains the verified Electron
+> transport, compositor, routing, and controlled-input acceptance record, but
+> hudhook is no longer the selected production host. The final Gun Frog run
+> restored Electron and native ImGui interaction, yet Unity continued to receive
+> mouse hover/click activity while interception was active. `GetCursorPos` was
+> masked throughout the intercepted intervals, while `GetRawInputBuffer` call
+> counters did not advance in those intervals; widening guessed project-owned
+> detours would therefore recreate an open-ended game-input compatibility layer.
+> The active experiment moves process entry, graphics/ImGui lifecycle, and
+> game-side blocking to ReShade. Controlled D3D11/D3D12 and Gun Frog visible
+> acceptance remain pending. The authenticated Node/Rust transport, wire/frame
+> validation, ordered scene/router, Electron input translation and
+> `focusOnWebView()` behavior, multi-window/z-order/capture rules, and DPI/raster
+> contracts are intended to be reused behind the new host boundary.
+
 > Completed July 10, 2026 on `feat/overlay-pocs`. The deterministic `-ClientInput`
 > proof passed click/focus, text, vertical wheel, intercepted Escape, release, and
 > released Escape, followed by passing `-ClientWindow` and `-Client` regressions.
@@ -28,7 +43,76 @@ resolution, transport readiness, injector execution, and authenticated target
 connection proof. The real client imports those public SDK APIs and contains no
 separate launcher or native staging implementation.
 
-## Reproduce the completed proof
+## July 12 real-client validation update
+
+Testing against Gun Frog (Unity 6000.0.58f1, D3D11) exposed two gaps that the
+controlled Win32 host does not cover:
+
+- the SDK queued input for the correct OSR window, but called
+  `WebContents.focus()`, which is a no-op in Electron 16's offscreen view. The
+  SDK now calls `BrowserWindow.focusOnWebView()` immediately before every
+  `sendInputEvent()` packet. That focuses Chromium's render widget without
+  activating a native window or taking foreground ownership from the game;
+- hudhook's WndProc filter stops the game's camera movement, but Unity UI can
+  still observe hover/button state through cursor, polling, raw-input, or native
+  Input System paths outside that WndProc.
+
+The demo client now registers **Ctrl+I** through Electron's `globalShortcut`,
+does not register that chord in the payload, pushes
+shortcut-driven state changes to the visible renderer, and displays/logs a DOM
+input receipt marker in `ExampleMainOverlay`.
+
+The injected payload also renders a standalone lower-left native ImGui input
+probe above the Electron textures. Its button reports hover/active state, click
+count, numeric ImGui mouse position, `want_capture_mouse`, effective
+interception, and software-cursor state. It consumes hudhook/ImGui input directly
+and therefore gives real-game testing a binary comparison against the Electron
+return path before any composition architecture is replaced.
+
+A bounded process-input adapter is now installed with the payload. It calls
+the original User32 APIs, then masks mouse virtual keys from
+`GetAsyncKeyState`, `GetKeyState`, and `GetKeyboardState`, and returns an
+off-client point from game-facing `GetCursorPos` calls during arming, enabled,
+and disarming phases. Hudhook's own raw copier calls the saved cursor trampoline
+so those game-facing values never contaminate overlay coordinates.
+
+The first Gun Frog rerun then proved correct DOM hover coordinates but zero
+mouse-button packets for both Electron and native ImGui. UnityPlayer imports
+`GetRawInputBuffer`, whose buffered records can bypass the hooked render HWND.
+The adapter now copies those original mouse records into the shared owned queue,
+then applies ReShade's maintained neutralization pattern to the game-facing
+records. Hudhook binds the swap-chain HWND to the owned source before installing
+its replacement WndProc, and activation seeds the route from the unfiltered
+client cursor, so a buffered-only first click no longer depends on an earlier
+window message. Absolute buffered packets resample that cursor. A physical
+high-bit snapshot repairs a missing held-button down/up edge; the racy
+`GetAsyncKeyState` low-bit hint is deliberately not synthesized because it can
+duplicate the corresponding buffered raw pair. Per-API counters now include the
+raw-buffer path. This remains narrower than general Unity Input System or
+DirectInput support.
+
+The local path patch also improves hudhook 0.9.1 teardown ordering: ejection is
+scheduled outside the active Present callback, MinHook entry points are
+disabled, guarded callbacks drain, and WndProc/backend cleanup is fallible. A
+cleanup failure leaves the module loaded. Runtime unload is not part of the POC
+acceptance contract, however: a callback suspended before its Rust entry guard
+still requires lower-level quiescence. The client never calls `eject()` and the
+supported POC teardown remains target-process exit; transactional construction,
+same-process retry, and fully proven runtime unload are tracked separately.
+
+The native ImGui failure under interception then isolated a lower seam defect:
+hudhook 0.9.1 queued the opaque `HRAWINPUT` and called `GetRawInputData` only at a
+later `Present`, after the receiving WndProc had returned. It also returned one
+for every filtered message and skipped the required foreground `WM_INPUT`
+`DefWindowProcW` cleanup. The POC now path-patches a narrow local 0.9.1 fork that
+copies raw mouse/keyboard data synchronously and exposes a thread-safe WndProc
+observer. The project observer owns mouse/raw propagation during terminal
+interception, queues normalized pointer events once, and fans the same ordered
+batch to ImGui and Electron during `before_render`. Arming/disarming consume but
+do not route pointer events; focus loss and release synthesize button-up cleanup.
+Legacy/raw keyboard packets remain on hudhook's copied-input queue for this slice.
+
+## Reproduce the completed controlled proof
 
 ```powershell
 git fetch origin
@@ -97,7 +181,10 @@ The implementation reuses the existing Electron side:
 3. `OverlaySession` receives `game.input`, calls the pure TypeScript
    `translateInputEvent()`, divides the returned local physical `x`/`y` by the
    packet's optional `scaleFactorMicros`, and calls
-   `BrowserWindow.webContents.sendInputEvent()` with signed DIP coordinates.
+   `BrowserWindow.focusOnWebView()` followed by
+   `BrowserWindow.webContents.sendInputEvent()` with signed DIP coordinates. It
+   never calls `BrowserWindow.focus()` for this path, so the game retains native
+   foreground ownership.
    New payload packets carry the scale active when they were routed, preventing
    queued input from being reinterpreted after a later scale commit; an untagged
    legacy packet falls back to that window's current active factor.
@@ -118,8 +205,9 @@ Win32 input packets back to the Node host from its loopback worker.
 
 `ExampleMainOverlay` is interactive while it remains the only
 selected/composited window. Passive rendering remains the default, the existing
-window/input SDK surface remains compatible, and no hudhook fork was needed; hudhook 0.9.1 exposes the required
-`ImguiRenderLoop::after_wnd_proc()` and `message_filter()` seams.
+window/input SDK surface remains compatible. The original controlled proof used
+hudhook's public `after_wnd_proc()` and `message_filter()` seams; real-game input
+now additionally uses the narrow local synchronous-WndProc patch described above.
 
 The retained acceptance criteria are:
 
@@ -204,12 +292,15 @@ responsible for transport and selected-window publication.
 
 ### 2. Win32 routing through hudhook
 
-The render loop implements `after_wnd_proc()` and `message_filter()`:
+The render loop combines the synchronous owned-pointer observer with
+`after_wnd_proc()` and `message_filter()`:
 
 - use interior mutable/shared input-router state because the callbacks receive
   `&self`;
-- forward left/right/middle mouse, vertical/horizontal wheel, keyboard, system-key,
-  `WM_CHAR`, `WM_SYSCHAR`, and valid `WM_UNICHAR` messages;
+- synchronously normalize left/right/middle/X mouse, raw mouse motion/buttons,
+  and vertical/horizontal wheel into one pointer queue for ImGui and Electron;
+- leave legacy/raw keyboard, system-key, `WM_CHAR`, `WM_SYSCHAR`, and valid
+  `WM_UNICHAR` on hudhook's copied-input queue;
 - use filtered arming and disarming phases for complete queue drains before
   enabling Electron routing or publishing pass-through, so boundary input cannot
   reach both destinations;
@@ -222,12 +313,14 @@ The render loop implements `after_wnd_proc()` and `message_filter()`:
 - replace the fixed `Input: pass-through` diagnostics line with requested/effective
   intercept, focus, and capture state.
 
-hudhook's actual WndProc reads the filter asynchronously from pipeline state.
+hudhook's actual WndProc still reads the published keyboard/raw fallback filter
+asynchronously from pipeline state, while the project observer makes the mouse
+propagation decision synchronously.
 `message_filter()` samples the next phase, `before_render()` commits/logs the value
 hudhook just stored, and the runner waits for both that boundary and the later
-routing acknowledgement. The guarded arming drain is what makes separate WndProc
-and render threads safe without a hudhook fork. The runner also asserts that each
-payload boundary marker precedes its acknowledgement log.
+routing acknowledgement. The guarded arming drain keeps routing disabled while
+the synchronous observer already blocks boundary pointer traffic. The runner also
+asserts that each payload boundary marker precedes its acknowledgement log.
 
 ### 3. Coordinate contract
 
@@ -315,7 +408,7 @@ Input translation is now project-owned TypeScript rather than native add-on code
 
 Horizontal-wheel routing and translation are unit/self-tested, not DOM-tested.
 Faithful X1/X2 delivery remains open because Electron 16 `sendInputEvent` supports
-only left/middle/right; hudhook's blanket filter intentionally swallows X buttons
+only left/middle/right; the owned pointer handler intentionally swallows X buttons
 while interception is active.
 
 ### 4. Deterministic input runner
@@ -396,14 +489,26 @@ through the Windows MSVC developer shell.
 
 ## Known limitations and traps
 
-- The first input slice covers Win32 messages only. Raw-input-only games,
-  DirectInput, XInput, GameInput, and gamepads remain compatibility work.
-- While intercept is active, block `WM_INPUT` to protect the game even though raw
-  input is not yet translated.
+- Synchronous raw mouse packets, a virtual relative cursor, User32 polling, and
+  ReShade-aligned buffered raw-mouse neutralization are covered by implementation
+  and automated tests.
+  Gun Frog still needs the manual acceptance rerun. Raw-keyboard-only text
+  generation, DirectInput, XInput, GameInput, and gamepads
+  remain compatibility work.
+- WndProc filtering alone does not guarantee game-UI suppression. If Gun Frog
+  still reacts while `raw_buffer_calls` stays zero, or while raw records are
+  masked, stop adding guessed detours and evaluate a ReShade add-on host.
+- Raw mouse is copied and translated synchronously. Raw keyboard is copied safely
+  and fed to ImGui, but Electron still depends on the legacy key/character stream.
 - X1/X2 are intentionally swallowed during interception because Electron 16's
   public input API cannot represent them without turning them into false left clicks.
-- hudhook's public filter is blanket rather than per-message. Selective click-through
-  may require a different WndProc strategy or an upstream change.
+- The local synchronous observer supplies per-message WndProc ownership. Move it
+  to a pinned upstream revision after contribution rather than growing a permanent
+  graphics fork.
+- Runtime DLL ejection and same-process hook retry are not supported POC paths.
+  The client never invokes `hudhook::eject()`; target-process exit is the tested
+  teardown until detour-entry quiescence and transactional hook construction are
+  completed.
 - hudhook applies callbacks and filter changes only from `Present`; if presentation
   stops immediately after focus loss, fail-open publication waits until it resumes.
 - the first software-capture implementation preserves drags outside the Electron rectangle
@@ -436,6 +541,9 @@ through the Windows MSVC developer shell.
 The original input slice deliberately did not redesign the Electron SDK,
 multi-window compositor, or graphics backend. The follow-on migration replaced its
 transport and input translator while preserving the public SDK event shapes and
-keeping upstream hudhook pinned. A hudhook fork remains justified only if a
-controlled test demonstrates a missing hook capability that cannot live in project
-code or be contributed upstream.
+keeping hudhook pinned at 0.9.1. Real-game validation demonstrated a missing
+synchronous input capability plus unsafe custom-hook teardown ordering, so the
+current path patch carries those reusable seams and the bounded process-input adapter.
+Graphics rendering behavior and render backends remain upstream; the intended
+endpoint is upstream contributions or a pinned revision, not an expanding
+permanent fork.

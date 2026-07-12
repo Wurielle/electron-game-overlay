@@ -4,25 +4,41 @@
 
 [![Build status](https://ci.appveyor.com/api/projects/status/sgi7go37f72f52a5?svg=true)](https://ci.appveyor.com/project/hiitiger/goverlay)
 
-## hudhook + ImGui migration POC
+## ReShade + ImGui host migration
 
-The maintained-runtime migration is documented in the
-[hudhook + ImGui POC](poc/hudhook-imgui-overlay/README.md). Its current verified
-scope is deliberately narrower than the legacy feature list below: controlled
-Windows x64/D3D11 and D3D12, SDK-owned hudhook injection exercised by the real client, simultaneous
-overlapping Electron windows with deterministic back-to-front ordering and
-click-to-front behavior, and regular Win32 mouse, wheel, keyboard, system-key,
-and character input with focus and pointer capture.
-The completed multi-window design and acceptance record is in the
-[hudhook multi-window compositor handoff](doc/hudhook-multiwindow-compositor-handoff.md).
-With `HUDHOOK_ELECTRON_WINDOW` unset, the payload composes every announced
-window; setting it opts into an exact-name filter.
-Electron frames and input now use an authenticated loopback transport built on
-Node core networking; the active client/SDK path does not load the legacy native
-Node add-on or shared-memory renderer. X1/X2 and raw input are blocked but not
-forwarded during interception. Target-display/client-origin ownership, physical
-mixed-monitor acceptance, safe texture retirement, broader input APIs, and a
-production injector remain post-POC work.
+The active native-host direction is the
+[ReShade + ImGui POC](poc/reshade-imgui-overlay/README.md). ReShade 6.7.3 full
+add-on support is being evaluated as the maintained process-entry, graphics,
+swap-chain, ImGui, and game-input layer. Controlled D3D11 and D3D12 input-gate
+code and launchers are implemented, but the hands-on acceptance runs are still
+pending and this path is not yet wired into the Electron SDK/client.
+
+The change in direction follows real-client testing against Gun Frog. The
+hudhook path successfully proved Electron OSR transport, ordered multi-window
+composition, focus, capture, and input return, but the game still observed mouse
+hover/click state while interception was requested. Expanding project-owned
+User32/raw-input detours into another game-input compatibility framework is no
+longer the production direction. The
+[hudhook + ImGui POC](poc/hudhook-imgui-overlay/README.md) and its
+[multi-window handoff](doc/hudhook-multiwindow-compositor-handoff.md) remain the
+verified compositor/transport acceptance record and reusable implementation
+source.
+
+The first Steam-like input acceptance gate is intentionally behavioral:
+
+- pass-through mode leaves normal game input unchanged;
+- intercept mode gives the visible overlay hover, click, drag, wheel, keyboard,
+  text, focus, and pointer-capture behavior;
+- the game does not observe the same mouse or keyboard activity through window
+  messages, raw input, or polling while interception is active;
+- game cursor confinement/recentering no longer prevents overlay interaction;
+- release, focus loss, transport failure, or shutdown restores safe game input.
+
+That gate must pass the controlled D3D11 and D3D12 hosts and then Gun Frog before
+the new host is considered ready for SDK integration. The unsigned ReShade full
+add-on runtime is limited to controlled or permitted offline/single-player
+targets. Competitive and anti-cheat-protected software, anti-cheat bypasses, and
+VR are outside this POC.
 
 ## game overlay solution 
 * DirectX hook, draw in game
@@ -34,7 +50,7 @@ production injector remain post-POC work.
 
 ![demo](https://raw.githubusercontent.com/hiitiger/goverlay/master/screenshot/gelectron3.gif)
 
-## Run the maintained POC
+## Run the retained hudhook POC
 
 Install the JavaScript dependencies with `npm install`, then use one of the
 named launchers in the [test-case catalog](poc/hudhook-imgui-overlay/scripts/test-cases/README.md).
@@ -45,7 +61,7 @@ For example:
 .\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-real-client.ps1
 ```
 
-The [POC README](poc/hudhook-imgui-overlay/README.md) contains the Visual Studio,
+The [hudhook POC README](poc/hudhook-imgui-overlay/README.md) contains the Visual Studio,
 Rust, CMake, and controlled-target prerequisites plus the complete acceptance
 matrix.
 

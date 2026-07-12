@@ -376,7 +376,6 @@ export class OverlaySession {
     if (!overlayWindow || !overlayWindow.visible || !scaleState) {
       return;
     }
-    const window = overlayWindow.browserWindow;
 
     const inputEvent = this.overlay.translateInputEvent(payload);
     if (!inputEvent) {
@@ -394,7 +393,27 @@ export class OverlaySession {
       inputEvent.y = physicalInputToDip(inputEvent.y, inputScaleFactor);
     }
 
-    window.webContents.sendInputEvent(inputEvent);
+    const webContents = this.focusInputWebContents(overlayWindow);
+    if (!webContents) {
+      return;
+    }
+
+    // Reassert Chromium page focus immediately before dispatch. Electron's
+    // WebContents.focus() is a no-op for offscreen rendering, while this OSR
+    // API focuses the render widget without activating a native window or
+    // taking foreground ownership away from the game.
+    webContents.sendInputEvent(inputEvent);
+  }
+
+  private focusInputWebContents(window: ElectronOverlayWindow) {
+    const browserWindow = window.browserWindow;
+    const webContents = browserWindow.webContents;
+    if (browserWindow.isDestroyed() || webContents.isDestroyed()) {
+      return null;
+    }
+
+    browserWindow.focusOnWebView();
+    return webContents;
   }
 
   private handleEvent(event: string, payload: any) {
@@ -412,9 +431,13 @@ export class OverlaySession {
         window.blurWebView();
       });
 
-      const focusWin = BrowserWindow.fromId(payload.focusWindowId);
-      if (focusWin) {
-        focusWin.focusOnWebView();
+      const overlayWindow = this.windowsByNativeId.get(payload.focusWindowId);
+      if (overlayWindow) {
+        this.focusInputWebContents(overlayWindow);
+      } else {
+        // Retain compatibility with focus events for BrowserWindows that are
+        // not present in this session's registered-window map.
+        BrowserWindow.fromId(payload.focusWindowId)?.focusOnWebView();
       }
       this.emitEvent('windowFocused', {
         windowId: payload.focusWindowId,

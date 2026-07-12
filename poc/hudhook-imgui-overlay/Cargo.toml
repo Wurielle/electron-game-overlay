@@ -5,7 +5,14 @@ members = [
     "crates/payload-dx11",
     "crates/payload-dx12",
 ]
+exclude = ["vendor/hudhook"]
 resolver = "2"
+
+[patch.crates-io]
+# hudhook 0.9.1 defers WM_INPUT decoding until Present and tears custom hooks
+# down after freeing MinHook trampolines. This local patch owns raw input while
+# valid, safely drains hook callbacks, and supplies bounded User32 suppression.
+hudhook = { path = "vendor/hudhook" }
 
 [workspace.package]
 edition = "2021"
@@ -25,5 +32,6 @@ windows = { version = "=0.62.2", features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }

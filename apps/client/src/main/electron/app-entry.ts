@@ -1,4 +1,11 @@
-import { BrowserWindow, ipcMain, Menu, shell, Tray } from "electron";
+import {
+  BrowserWindow,
+  globalShortcut,
+  ipcMain,
+  Menu,
+  shell,
+  Tray,
+} from "electron";
 import * as path from "path";
 import {
   createExampleMainOverlayWindow,
@@ -17,18 +24,20 @@ import {
   type OverlayHotkey,
   type OverlaySession,
 } from "electron-game-overlay";
+import {
+  INPUT_INTERCEPT_ACCELERATOR,
+  InputInterceptShortcut,
+} from "./input-intercept-shortcut";
 import { AppWindows } from "./window-names";
 
 const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";
 const AUTO_START_OVERLAY_FLAG = "--start-overlay-session";
 const AUTO_START_OVERLAY_MARKER = "HUDHOOK_CLIENT_OVERLAY_SESSION_READY";
+const DEMO_STATE_CHANGED_CHANNEL = "overlay:state-changed";
 
 const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
-  {
-    name: "overlay.hotkey.toggleInputIntercept",
-    keyCode: 113,
-    modifiers: { ctrl: true },
-  },
+  // Ctrl+I belongs exclusively to Electron's globalShortcut. Registering it
+  // in the payload as well would make one physical keypress toggle twice.
   {
     name: SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY,
     keyCode: 114,
@@ -46,6 +55,7 @@ class Application {
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
   private readonly hudhookLauncher: HudhookOverlayLauncher | null;
+  private readonly inputInterceptShortcut: InputInterceptShortcut;
   private disposed = false;
 
   constructor(hudhookConfig: HudhookLaunchConfig | null = null) {
@@ -58,6 +68,10 @@ class Application {
     this.hudhookLauncher = hudhookConfig
       ? new HudhookOverlayLauncher(hudhookConfig)
       : null;
+    this.inputInterceptShortcut = new InputInterceptShortcut(
+      globalShortcut,
+      () => this.toggleInputInterceptFromShortcut()
+    );
     this.overlaySession.onQuit(() => {
       this.markQuit = true;
     });
@@ -203,6 +217,7 @@ class Application {
     this.setupIpc();
     this.createMainWindow();
     this.setupSystemTray();
+    this.registerInputInterceptShortcut();
 
     if (this.hudhookLauncher) {
       console.log(
@@ -243,6 +258,7 @@ class Application {
       return;
     }
     this.disposed = true;
+    this.inputInterceptShortcut.dispose();
     this.hudhookLauncher?.dispose();
     this.overlay.dispose();
     if (this.tray) {
@@ -385,6 +401,45 @@ class Application {
       this.overlaySession.input.release();
     }
     this.inputIntercepting = intercept;
+    this.publishDemoState();
+  }
+
+  private registerInputInterceptShortcut() {
+    try {
+      if (!this.inputInterceptShortcut.register()) {
+        console.warn(
+          `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`,
+        error
+      );
+    }
+  }
+
+  private toggleInputInterceptFromShortcut() {
+    if (this.disposed) {
+      return;
+    }
+    this.ensureOverlaySessionStarted();
+    this.setInputIntercept(!this.inputIntercepting);
+  }
+
+  private publishDemoState() {
+    const mainWindow = this.mainWindow;
+    if (
+      !mainWindow ||
+      mainWindow.isDestroyed() ||
+      mainWindow.webContents.isDestroyed()
+    ) {
+      return;
+    }
+    mainWindow.webContents.send(
+      DEMO_STATE_CHANGED_CHANNEL,
+      this.getDemoState()
+    );
   }
 
   private setExampleOverlayWindowVisible(name: string, visible: boolean) {
@@ -436,6 +491,7 @@ class Application {
     return {
       overlayStarted: this.overlayStarted,
       inputIntercepting: this.inputIntercepting,
+      hudhookBackend: this.hudhookLauncher?.config.backend ?? null,
       windows: {
         [AppWindows.exampleMainOverlay]:
           this.overlayWindows.get(AppWindows.exampleMainOverlay)?.visible ||

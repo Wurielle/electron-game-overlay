@@ -55,6 +55,12 @@ so an already queued packet cannot be reinterpreted after a scale commit. A
 packet from a legacy payload has no tag and falls back to the receiving window's
 current active scale before `webContents.sendInputEvent()`.
 
+Immediately before each returned input packet, the session calls
+`BrowserWindow.focusOnWebView()`. Electron 16's `WebContents.focus()` does not
+focus an offscreen render widget; `focusOnWebView()` supplies Chromium page
+focus without activating the hidden native window or taking foreground focus
+from the game.
+
 Each registered window now tracks a desired display/scale separately from the
 active scale used by its published frame and input. Window move/resize events and
 Electron display add/remove/metrics events update the desired state and request

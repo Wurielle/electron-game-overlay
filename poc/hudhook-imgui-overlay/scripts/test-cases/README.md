@@ -27,6 +27,7 @@ session, so concurrent producers would replace each other's rendezvous metadata.
 | `dx11-hook-only.ps1`                 | Manual                | hudhook injection, ImGui rendering, generated texture, and resize handling without Electron | Press Escape in the host        |
 | `dx11-electron-diagnostic.ps1`       | Manual                | Synthetic Electron OSR frame transport, upload, and composition                             | Press Escape in the host        |
 | `dx11-real-client.ps1`               | Manual                | SDK-owned runtime/attach lifecycle and `ExampleMainOverlay` composition                     | Press Escape in the host        |
+| `dx11-real-game-input-manual.ps1`    | Manual                | Real-game synchronous ImGui/Electron pointer capture and independent game-suppression gates | Close the Electron client       |
 | `dx11-window-lifecycle.ps1`          | Automated then manual | Bounds, close, clear, re-registration, and resumed composition                              | Press Escape after verification |
 | `dx11-input-automated.ps1`           | Automated             | Single-window focus, click, typing, wheel, interception, release, and cleanup               | Closes itself                   |
 | `dx11-input-manual.ps1`              | Manual                | Hands-on single-window mouse, keyboard, wheel, and focus behavior                           | Use the host title-bar X        |
@@ -43,6 +44,19 @@ session, so concurrent producers would replace each other's rendezvous metadata.
 | `d3d12-input-manual.ps1`             | Manual                | Hands-on D3D12 single-window input                                                          | Use the host title-bar X        |
 | `d3d12-multiwindow-automated-100.ps1` | Automated            | D3D12 composition, routing, capture, z-order, caption dragging, and cleanup                 | Closes itself                   |
 | `d3d12-multiwindow-manual.ps1`       | Manual                | Hands-on D3D12 two-window compositor                                                        | Use the host title-bar X        |
+
+`dx11-real-game-input-manual.ps1` is the non-controlled game case. It rebuilds
+the SDK/client, stages the current payload, and starts the D3D11-configured demo
+client. Launch the game yourself, use the renderer's Attach action, and press
+**Ctrl+I** to toggle interception. Acceptance has two independent gates: the
+native ImGui probe and Electron UI must receive pointer input, and the game must
+not hover/click or move underneath. Passing the first does not imply the second
+for games that use device APIs outside the covered WndProc/User32/raw-buffer paths. The
+normal client now arms a fixed, visible DOM proof field automatically. The
+payload log reports `process-wide mouse polling suppression observed` with
+per-API masked counters, including `raw_buffer_calls`/`raw_buffer_masked`; if
+the game still reacts while the raw-buffer counter stays zero, record that
+result rather than adding another guessed hook.
 
 The two real-client launchers start the controlled target first and pass the
 backend, target process name, and exact expected PID to the real Electron client.

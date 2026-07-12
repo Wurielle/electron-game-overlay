@@ -1,5 +1,63 @@
 # Todo
 
+## ReShade host migration
+
+Further expansion of project-owned hudhook input detours is frozen. Gun Frog
+proved that the overlay could receive routed input while Unity still observed
+mouse hover/click state through a path outside the bounded User32/raw-buffer
+adapter. ReShade is now the selected production-host experiment because it owns
+the broader game-input and graphics-runtime compatibility layer.
+
+### POC finish line
+
+-   [ ] Pass the visible ReShade-owned input gate on the controlled D3D11 host.
+    -   Prove overlay mouse/keyboard interaction, zero game-side message/raw/polling reactions while active, cursor confinement release, pass-through restoration, and clean shutdown.
+-   [ ] Pass the same visible gate on the controlled D3D12 host.
+-   [ ] Pass the gate against Gun Frog before migrating the SDK/client runtime.
+    -   Intercepted hover/click must operate the native ImGui probe without reaching the Unity UI; release must restore normal game behavior.
+-   [ ] Extract the backend-neutral Rust transport/compositor core behind a narrow C/C++ boundary for the ReShade add-on.
+    -   Reuse `electron_wire.rs`, `electron_frame.rs`, `electron_input.rs`, the authenticated Node loopback transport, ordered scene/router semantics, and premultiplied-BGRA conversion.
+-   [ ] Port multi-window ReShade texture composition and Electron input return.
+    -   Preserve registration order, click-to-front, alpha hit testing, caption drag, pointer capture, focus-before-input, per-packet scale tags, and desired/active raster transitions.
+-   [ ] Replace the SDK's hudhook launcher/runtime selection with the ReShade host boundary, then run the existing real-client input, lifecycle, multi-window, and D3D11/D3D12 acceptance matrix.
+    -   Keep the public session/window/input surface and Electron-owned Ctrl+I toggle stable.
+
+### Post-POC compatibility and hardening
+
+-   [ ] Add supported-runtime installation, existing ReShade/proxy conflict detection, typed diagnostics, and clean disable/unload behavior.
+-   [ ] Add target-HWND display/client-origin ownership, real mixed-monitor acceptance, safe texture retirement, and multiple-target routing.
+-   [ ] Expand the compatibility matrix only from observed evidence: Vulkan/OpenGL, exclusive/fullscreen variants, gamepads, DirectInput/XInput/GameInput, and other backend-specific paths.
+-   [ ] Keep competitive and anti-cheat-protected targets, anti-cheat bypasses, and VR outside the unsigned full-add-on POC.
+
+## Retained hudhook follow-ups (historical/deferred)
+
+These items document the completed hudhook experiment and possible upstream work;
+they are not the active production-host roadmap.
+
+-   [x] Replace hudhook 0.9.1's deferred `WM_INPUT` handle use with a synchronous owned-input seam.
+    -   The local path patch copies raw mouse/keyboard packets while the receiving WndProc is active, performs foreground `DefWindowProcW` cleanup, and exposes a thread-safe synchronous observer.
+    -   The project observer owns intercepted mouse/raw propagation and fans one normalized pointer queue to ImGui and Electron. Upstream this narrow patch or replace it with a pinned revision after contribution.
+-   [ ] Move legacy/raw keyboard and text onto the same owned event queue as pointer input.
+    -   Pointer delivery is synchronous, while hudhook currently drains copied keyboard messages before `before_render`; a click and following key within one presentation interval can therefore be reordered.
+    -   Raw-keyboard-only text requires explicit Unicode generation; keep the existing legacy key/character path until that is implemented and tested.
+-   [x] Add a guarded custom-input-hook teardown phase and bounded process mouse adapter.
+    -   Ejection now runs outside an active detour, disables every MinHook entry point, drains guarded callbacks, performs fallible WndProc/backend cleanup, and only then calls `MH_Uninitialize()`. Cleanup failure keeps the module pinned.
+    -   The payload masks mouse buttons from `GetAsyncKeyState`, `GetKeyState`, and `GetKeyboardState`, returns a game-only off-client `GetCursorPos`, and neutralizes `GetRawInputBuffer` mouse records after copying them into the owned overlay queue. The pipeline binds its target HWND and seeds the real client cursor before buffered-only input can arrive. High-bit physical state repairs missing held-button edges; the racy low-bit press hint is ignored so it cannot duplicate a buffered click pair.
+    -   The raw-buffer behavior follows ReShade's maintained BSD-licensed Win32 implementation. Per-API call/masked counters are reported from the render thread; if Gun Frog still reacts while `raw_buffer_calls` remains zero, stop expanding this adapter and move the backend to ReShade instead of guessing more APIs.
+-   [ ] Harden runtime ejection and same-process hook retry before exposing either as a supported SDK feature.
+    -   The current client never calls hudhook's `eject()`; closing the target process is the supported POC teardown.
+    -   A thread redirected into a detour but suspended before the Rust guard can outlive the current drain barrier. Keep runtime unload out of the public SDK until entry accounting is established at the detour boundary or the DLL is deliberately pinned after deactivation.
+    -   Make partial DX9/DX11/DX12 hook construction transactional, replace the process-input `OnceLock` bundle with resettable lifecycle state, and make non-owner MinHook removal retry-safe.
+-   [ ] Prove or reject the bounded polling adapter against Gun Frog and a second real title.
+    -   Keep DirectInput, other Unity Input System device APIs, XInput, and GameInput as distinct compatibility adapters; do not mark them covered by the User32/raw-buffer proof.
+    -   If either title requires one of those broader paths, record the counter evidence and evaluate a ReShade add-on host rather than growing an open-ended local hook matrix.
+-   [ ] Add SDK-owned graphics-backend auto-detection for target attachment.
+    -   Desired behavior: applications use `backend: "auto"` by default instead of selecting D3D11 or D3D12 for each game/client launch.
+    -   Resolve the backend after selecting the target process, using loaded graphics modules and bounded startup observation rather than client-specific game lists.
+    -   If D3D11 and D3D12 are both present or detection remains inconclusive, return a typed diagnostic and allow an explicit backend override.
+    -   Keep detection and payload selection in `electron-game-overlay`; the demo client should only display the selected backend or ambiguity.
+    -   Do not inject both backend payloads as a fallback, because duplicate payload connections/hooks would make session ownership ambiguous.
+
 ## API modernization
 
 -   [ ] Modernize `node-game-overlay` to expose a higher-level API that matches the `electron-game-overlay` SDK shape.

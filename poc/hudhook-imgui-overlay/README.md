@@ -1,6 +1,19 @@
 # hudhook + ImGui D3D11/D3D12 proof of concept
 
-This standalone Windows x64 proof uses upstream [hudhook 0.9.1](https://github.com/veeenu/hudhook/tree/0.9.1) unchanged to inject project-owned backend payloads, hook D3D11 and D3D12 swap chains, and render Dear ImGui.
+> **Archived production-host candidate:** Keep these launchers and controlled
+> proofs as the verified Electron transport, compositor, routing, and regression
+> baseline. Real Gun Frog validation showed that the game could still observe
+> mouse hover/click activity while interception was active, so the production
+> host experiment has moved to
+> [ReShade](../reshade-imgui-overlay/README.md). The hudhook POC remains runnable
+> and its reusable backend-neutral Electron/Rust components will be carried
+> forward; further private game-input detour expansion is deferred.
+
+This standalone Windows x64 proof uses a documented local path patch over
+[hudhook 0.9.1](https://github.com/veeenu/hudhook/tree/0.9.1) to inject
+project-owned backend payloads, hook D3D11 and D3D12 swap chains, render Dear
+ImGui, and provide safe Win32 input ownership. Graphics rendering behavior
+remains the published 0.9.1 implementation.
 
 It deliberately does not install or load ReShade. The completed ReShade POC remains beside it as a separate reference implementation.
 
@@ -320,6 +333,56 @@ state changes. Manual mode remains attached until the host closes, even if
 `-Wait` is omitted, and then cleans only the Electron process tree and host that
 it launched. The test-case launcher selects the attached behavior for you.
 
+## Native ImGui input probe
+
+The payload currently renders a standalone **NATIVE IMGUI INPUT PROBE** in the
+lower-left corner above all Electron textures. It is intentionally independent
+of Electron composition and input forwarding. The panel contains one large
+native ImGui button and reports `IDLE` / `HOVERED` / `ACTIVE`, click count,
+numeric `io.mouse_pos`, `io.want_capture_mouse`, effective interception, and
+software-cursor state. Each accepted click also writes
+`native ImGui input probe clicked` to the payload log.
+
+Start the real-game case with:
+
+```powershell
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-game-input-manual.ps1
+```
+
+Launch and attach to the game through the client. First hover and click the probe
+with interception off. Then press **Ctrl+I**, confirm the panel says
+`INTERCEPTION ENABLED`, and test two independent gates:
+
+1. The software cursor tracks, the native probe reaches `HOVERED`/`ACTIVE` and
+   increments its click count, and the Electron overlay accepts click, drag, and
+   wheel input.
+2. The game camera and game UI do not move, hover, or click underneath those
+   overlay interactions.
+
+The PID-specific payload log beside the staged DLL must contain
+`synchronous owned pointer input reached ImGui and Electron`; clicking the probe
+also writes `native ImGui input probe clicked`. When the game polls User32 or
+drains buffered raw input, the
+log additionally reports `process-wide mouse polling suppression observed` with
+per-API call and masked counts, including `raw_buffer_calls` and
+`raw_buffer_masked`. While holding a mouse button,
+toggle interception off and repeat once after focus loss/regain to verify that
+neither ImGui nor Electron capture stays stuck. Finally press **Ctrl+I** again
+and verify normal game input returns.
+
+Gate 1 exercises the synchronous WndProc/raw-input seam added by the local
+hudhook 0.9.1 patch. Gate 2 additionally exercises the bounded process adapter
+for mouse-button polling, a game-only off-client cursor, and buffered raw mouse
+records. The `GetRawInputBuffer` behavior follows ReShade's maintained blocking
+pattern, while the original records are copied into the shared ImGui/Electron
+queue before the game-facing copy is neutralized. The swap-chain HWND is bound
+to that queue before the replacement WndProc is installed, and interception
+seeds the route with the unfiltered client cursor so the first buffered click is
+not route-dependent. DirectInput, broader Unity Input System device APIs, and
+other device paths are not covered; if the game still reacts while the new
+raw-buffer counters stay zero, record that as the stop signal for evaluating a
+ReShade-backed host.
+
 ## Run the deterministic input regression
 
 ```powershell
@@ -329,10 +392,10 @@ it launched. The test-case launcher selects the attached behavior for you.
 `-ClientInput` uses the same real `ExampleMainOverlay` page and waits for the
 injected target's `game.process` event before requesting input interception. The
 runner first rebuilds the Electron overlay SDK so its project-owned TypeScript
-input translation fixes cannot be stale. A proof-only page hook then validates signed
-coordinates and the exact wheel field contract before enabling its DOM markers.
-Normal uses of the example page do not install those listeners or log field text. The
-page reports the text field's live DOM rectangle; the runner maps its center
+input translation fixes cannot be stale. The normal client and proof producer
+both arm the same visible DOM target; the deterministic producer additionally
+validates signed coordinates and the exact wheel field contract. The page
+reports the text field's live DOM rectangle; the runner maps its center
 through the overlay bounds and controlled host client area instead of relying on
 hard-coded screen coordinates. It activates only the host it launched and uses
 Win32 `SendInput` to click and focus the field, type
@@ -485,13 +548,18 @@ fresh payload evidence still fails.
 
 The upstream hudhook 0.9.1 injector is sufficient for this controlled POC, but it is not the intended production launcher. It does not reject a zero return from remote `LoadLibraryW`, and its fixed `MAX_PATH` copy reads beyond the source path buffer. The controlled runner compensates for the first issue by requiring fresh payload evidence, but the production launcher should use a small project-owned injector—or an upstream hudhook fix—that sizes the remote buffer from the actual path and validates every Windows API result.
 
-This does not require forking or modifying hudhook's graphics hooks, renderer lifecycle, or ImGui integration.
+The injector fixes do not require modifying hudhook's graphics hooks. The
+separate local path patch owns synchronous Win32 input, bounded process-input
+suppression, and guarded teardown ordering for those custom hooks. Runtime DLL
+ejection remains outside the supported POC path; target-process exit is the
+tested teardown.
 
 ## Current scope
 
 This milestone now covers:
 
-- D3D11 and D3D12 injection and Dear ImGui rendering through upstream hudhook 0.9.1;
+- D3D11 and D3D12 injection and Dear ImGui rendering through hudhook 0.9.1,
+  with local Win32-input and guarded-teardown patches;
 - the real built Electron client's existing overlay-session startup path and
   opt-in ownership of backend-specific hudhook injection requests;
 - simultaneous Electron windows over the authenticated Node/Rust loopback transport,
@@ -525,8 +593,10 @@ live single-window input proof, repeated Electron texture updates, and the full
 two-window routing/lifecycle/caption-drag proof pass against the D3D12 host. The
 real-client launchers also prove SDK-owned injection request orchestration for
 both backends. They inject through the SDK-owned runtime rather than the
-controlled host's POC staging directory or client-owned launcher code. The focused POC finish line is complete
-and revalidated: the active client/SDK uses only the project-owned Node/Rust loopback transport and hudhook
+controlled host's POC staging directory or client-owned launcher code. The
+controlled POC finish line is complete and revalidated; the Gun Frog
+suppression gate still requires the manual rerun described above. The active
+client/SDK uses only the project-owned Node/Rust loopback transport and hudhook
 runtime, root `npm run build`/`build:all` and the active client/SDK dependency
 path no longer build or require `node-game-overlay` or `native-game-overlay`,
 archived Nx project definitions remain explicitly selectable as legacy reference,
@@ -535,9 +605,10 @@ multi-window, lifecycle, and real-client launchers pass on the replacement.
 
 Post-POC hardening remains tracked, but does not block that finish line:
 
-- raw-input-only games, DirectInput, XInput, GameInput, gamepads, and faithful
-  X1/X2 mouse-button delivery (Electron 16 cannot represent those buttons through
-  `sendInputEvent`, so interception intentionally swallows them);
+- raw-keyboard-only text generation, DirectInput, XInput,
+  GameInput, gamepads, broader polling/device suppression, and faithful X1/X2 mouse-button delivery (Electron 16
+  cannot represent those buttons through `sendInputEvent`, so interception
+  intentionally swallows them);
 - target-game display ownership, physical client-origin mapping, backing
   `BrowserWindow` placement, and per-target geometry routing;
 - manual mixed-scale hardware/VM acceptance beyond the forced uniform
@@ -549,9 +620,10 @@ Post-POC hardening remains tracked, but does not block that finish line:
 - broader D3D12 driver/debug-layer coverage for repeated texture replacement;
   the controlled adapter passes, while upstream 0.9.1 does not explicitly
   transition an existing shader-resource texture back to copy-destination;
-- eventual one-payload backend auto-detection and a production-quality
-  project-owned injector beyond the controlled integration, including exact-PID
-  target selection instead of the current controlled process-name selector;
+- SDK-owned one-payload backend auto-detection with a typed explicit fallback
+  for ambiguous targets, plus a production-quality project-owned injector beyond
+  the controlled integration, including exact-PID target selection instead of
+  the current controlled process-name selector;
 - x86 targets and any anti-cheat compatibility work.
 
 The input/interactivity design remains in
@@ -569,8 +641,11 @@ consequently affects later initialization too. CPU scene/router publication is
 atomic, but a newly published alpha frame can precede its corresponding GPU upload
 by one `Present`, creating a narrow visual-versus-hit-test timing window.
 
-The focused POC is finished. Target-display/client-origin ownership, manual
-mixed-scale hardware/VM acceptance, safe texture retirement, and related
-geometry/DPI edge cases stay in the post-POC backlog.
-A hudhook fork is justified only if testing reproduces a required graphics-hook
-change that cannot live in this project or be contributed upstream.
+The controlled POC is finished. The remaining current acceptance item is the
+Gun Frog rerun for the bounded process-input adapter. Target-display/client-origin
+ownership, manual mixed-scale hardware/VM acceptance, safe texture retirement,
+and related geometry/DPI edge cases stay in the post-POC backlog.
+The local hudhook fork changes Win32 input ownership and guarded hook teardown;
+graphics rendering behavior and render backends remain the published 0.9.1
+implementation. Replace the path patch with a pinned upstream revision after
+the reusable lifecycle/input seams are contributed.

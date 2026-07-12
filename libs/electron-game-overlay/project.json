@@ -19,6 +19,7 @@
         "{workspaceRoot}/poc/hudhook-imgui-overlay/rust-toolchain.toml",
         "{workspaceRoot}/poc/hudhook-imgui-overlay/THIRD_PARTY_NOTICES.md",
         "{workspaceRoot}/poc/hudhook-imgui-overlay/crates/**/*",
+        "{workspaceRoot}/poc/hudhook-imgui-overlay/vendor/hudhook/**/*",
         "{projectRoot}/scripts/stage-hudhook-runtime.ps1"
       ],
       "outputs": ["{projectRoot}/dist"],

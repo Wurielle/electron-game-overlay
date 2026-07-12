@@ -17,6 +17,20 @@
             background-color: brown
         }
 
+        #hudhook-input-diagnostic {
+            position: fixed;
+            right: 10px;
+            bottom: 10px;
+            max-width: 420px;
+            padding: 5px 8px;
+            border: 1px solid rgba(255, 255, 255, 0.45);
+            border-radius: 4px;
+            background: rgba(0, 0, 0, 0.72);
+            color: #d6f8ff;
+            font: 12px monospace;
+            pointer-events: none;
+        }
+
     </style>
     <title>Example Main Overlay</title>
 </head>
@@ -30,6 +44,7 @@
 
         <label id="label">Label</label>
         <input id="hudhook-client-input-target" type="text" autocomplete="off">
+        <div id="hudhook-input-diagnostic">DOM input: waiting</div>
     </div>
     <script>
         const label = document.getElementById('label')
@@ -56,6 +71,46 @@
         })
 
         const inputTarget = document.getElementById('hudhook-client-input-target')
+        const inputDiagnostic = document.getElementById('hudhook-input-diagnostic')
+        const diagnosticEvents = [
+            'mouseover',
+            'mousedown',
+            'mouseup',
+            'click',
+            'focusin',
+            'input',
+            'keydown',
+            'wheel'
+        ]
+        const diagnosticTarget = event => {
+            const target = event.target
+            if (!(target instanceof Element)) {
+                return 'unknown'
+            }
+            return target.id || target.tagName.toLowerCase()
+        }
+        const showInputDiagnostic = (event, log) => {
+            const point = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+                ? ` @ ${Math.round(event.clientX)},${Math.round(event.clientY)}`
+                : ''
+            const value = event.type === 'input' && event.target instanceof HTMLInputElement
+                ? ` value=${JSON.stringify(event.target.value)}`
+                : ''
+            const message = `${event.type} target=${diagnosticTarget(event)}${point}${value}`
+            inputDiagnostic.textContent = `DOM input: ${message}`
+            if (log) {
+                console.log(`HUDHOOK_CLIENT_INPUT_DIAGNOSTIC ${message}`)
+            }
+        }
+        document.addEventListener('mousemove', event => {
+            showInputDiagnostic(event, false)
+        }, true)
+        diagnosticEvents.forEach(type => {
+            document.addEventListener(type, event => {
+                showInputDiagnostic(event, true)
+            }, true)
+        })
+
         let hudhookInputProofEnabled = false
         window.hudhookInputProof = {
             enable() {
@@ -70,6 +125,11 @@
                     width: '240px'
                 })
                 inputTarget.value = ''
+                const targetRect = inputTarget.getBoundingClientRect()
+                inputDiagnostic.textContent = `DOM input proof: ready @ ${Math.round(targetRect.x)},${Math.round(targetRect.y)}`
+                console.log(
+                    `HUDHOOK_CLIENT_INPUT_PROOF_READY x=${Math.round(targetRect.x)} y=${Math.round(targetRect.y)} width=${Math.round(targetRect.width)} height=${Math.round(targetRect.height)}`
+                )
 
                 inputTarget.addEventListener('focus', () => {
                     console.log('HUDHOOK_CLIENT_INPUT_FOCUSED')

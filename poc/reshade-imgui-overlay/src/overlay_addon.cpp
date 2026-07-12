@@ -1,9 +1,15 @@
+#include <Windows.h>
+
 #include <imgui.h>
 #include <reshade.hpp>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 namespace
 {
@@ -17,8 +23,30 @@ struct __declspec(uuid("99890b3d-b6ef-484d-9b49-eb65de7f9fc9")) device_data
 {
     resource texture = {};
     resource_view texture_view = {};
-    std::uint64_t rendered_frames = 0;
 };
+
+struct window_input_state
+{
+    std::atomic<std::uint64_t> rendered_frames = 0;
+    std::atomic<std::uint64_t> interception_toggle_count = 0;
+    std::atomic<std::uint64_t> probe_click_count = 0;
+    std::atomic<std::uint64_t> last_toggle_tick = 0;
+    std::atomic<bool> input_interception_enabled = false;
+};
+
+struct __declspec(uuid("91913d40-2c94-439c-96f1-85f6666c5046")) swapchain_data
+{
+    explicit swapchain_data(std::shared_ptr<window_input_state> shared_state) : state(std::move(shared_state)) {}
+
+    std::shared_ptr<window_input_state> state;
+    char keyboard_probe[128] = {};
+    std::uint64_t text_edit_count = 0;
+    float drag_probe = 0.5f;
+    float wheel_total = 0.0f;
+};
+
+std::mutex g_window_states_mutex;
+std::unordered_map<HWND, std::weak_ptr<window_input_state>> g_window_states;
 
 constexpr auto make_test_pattern()
 {
@@ -129,26 +157,116 @@ void on_destroy_device(device *device)
     device->destroy_private_data<device_data>();
 }
 
-void on_reshade_overlay(effect_runtime *runtime)
+void on_init_swapchain(swapchain *swapchain, bool resize)
 {
-    device *const device = runtime->get_device();
-    auto *const data = device->get_private_data<device_data>();
+    if (resize)
+        return;
+
+    const auto window = static_cast<HWND>(swapchain->get_hwnd());
+    std::shared_ptr<window_input_state> state;
+
+    if (window != nullptr)
+    {
+        const std::scoped_lock lock(g_window_states_mutex);
+        state = g_window_states[window].lock();
+        if (state == nullptr)
+        {
+            state = std::make_shared<window_input_state>();
+            g_window_states[window] = state;
+        }
+    }
+    else
+    {
+        state = std::make_shared<window_input_state>();
+    }
+
+    swapchain->create_private_data<swapchain_data>(std::move(state));
+}
+
+void on_destroy_swapchain(swapchain *swapchain, bool resize)
+{
+    if (resize)
+        return;
+
+    auto *const data = swapchain->get_private_data<swapchain_data>();
     if (data == nullptr)
         return;
 
-    ++data->rendered_frames;
-    const bool is_first_frame = data->rendered_frames == 1;
+    const auto window = static_cast<HWND>(swapchain->get_hwnd());
+    std::shared_ptr<window_input_state> state = data->state;
+    swapchain->destroy_private_data<swapchain_data>();
+
+    if (window != nullptr)
+    {
+        state.reset();
+        const std::scoped_lock lock(g_window_states_mutex);
+        const auto entry = g_window_states.find(window);
+        if (entry != g_window_states.end() && entry->second.expired())
+            g_window_states.erase(entry);
+    }
+}
+
+void on_reshade_overlay(effect_runtime *runtime)
+{
+    device *const device = runtime->get_device();
+    auto *const device_state = device->get_private_data<device_data>();
+    auto *const swapchain_state = runtime->get_private_data<swapchain_data>();
+    if (device_state == nullptr || swapchain_state == nullptr || swapchain_state->state == nullptr)
+        return;
+
+    const std::shared_ptr<window_input_state> input_state = swapchain_state->state;
+
+    const std::uint64_t rendered_frames = input_state->rendered_frames.fetch_add(1) + 1;
+    const bool is_first_frame = rendered_frames == 1;
+
+    const bool control_down =
+        runtime->is_key_down(VK_CONTROL) ||
+        runtime->is_key_down(VK_LCONTROL) ||
+        runtime->is_key_down(VK_RCONTROL);
+    if (control_down && runtime->is_key_pressed('I'))
+    {
+        const std::uint64_t now = GetTickCount64();
+        std::uint64_t previous_toggle = input_state->last_toggle_tick.load();
+        if (now - previous_toggle > 250 &&
+            input_state->last_toggle_tick.compare_exchange_strong(previous_toggle, now))
+        {
+            bool previous_interception = input_state->input_interception_enabled.load();
+            while (!input_state->input_interception_enabled.compare_exchange_weak(
+                previous_interception,
+                !previous_interception))
+            {
+            }
+            const bool interception_enabled = !previous_interception;
+            ++input_state->interception_toggle_count;
+            reshade::log::message(
+                reshade::log::level::info,
+                interception_enabled
+                    ? "Alternative compositor POC enabled ReShade-owned input interception."
+                    : "Alternative compositor POC disabled ReShade-owned input interception.");
+        }
+    }
+
+    const bool interception_enabled = input_state->input_interception_enabled.load();
+    if (interception_enabled)
+        runtime->block_input_next_frame();
+
+    ImGuiIO &io = ImGui::GetIO();
+    CURSORINFO cursor_info = { sizeof(CURSORINFO) };
+    const bool native_cursor_visible =
+        GetCursorInfo(&cursor_info) != FALSE && (cursor_info.flags & CURSOR_SHOWING) != 0;
+    if (interception_enabled && !native_cursor_visible)
+        io.MouseDrawCursor = true;
 
     ImGui::SetNextWindowPos(ImVec2(24.0f, 128.0f), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.88f);
 
-    constexpr ImGuiWindowFlags window_flags =
+    ImGuiWindowFlags window_flags =
         ImGuiWindowFlags_NoDecoration |
         ImGuiWindowFlags_AlwaysAutoResize |
         ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoNav |
-        ImGuiWindowFlags_NoInputs;
+        ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!interception_enabled)
+        window_flags |= ImGuiWindowFlags_NoInputs;
 
     if (ImGui::Begin("Alternative compositor POC##always_visible", nullptr, window_flags))
     {
@@ -156,14 +274,60 @@ void on_reshade_overlay(effect_runtime *runtime)
         ImGui::Separator();
         ImGui::Text("Hook/runtime: ReShade 6.7.3");
         ImGui::Text("Graphics API: %s", api_name(device->get_api()));
-        ImGui::Text("Rendered frames: %llu", static_cast<unsigned long long>(data->rendered_frames));
-        ImGui::TextUnformatted("Input: pass-through for this first proof");
+        ImGui::Text("Render callbacks: %llu", static_cast<unsigned long long>(rendered_frames));
+        ImGui::TextColored(
+            interception_enabled
+                ? ImVec4(0.25f, 0.95f, 0.72f, 1.0f)
+                : ImVec4(0.85f, 0.70f, 0.35f, 1.0f),
+            interception_enabled
+                ? "Input: RESHADE-OWNED (game blocked)"
+                : "Input: pass-through");
+        ImGui::TextUnformatted("Ctrl+I toggles interception");
+        ImGui::Text(
+            "Mouse %.0f, %.0f | capture %s | software cursor %s",
+            io.MousePos.x,
+            io.MousePos.y,
+            io.WantCaptureMouse ? "true" : "false",
+            io.MouseDrawCursor ? "true" : "false");
+        ImGui::Text(
+            "Toggles: %llu | probe clicks: %llu",
+            static_cast<unsigned long long>(input_state->interception_toggle_count.load()),
+            static_cast<unsigned long long>(input_state->probe_click_count.load()));
+        if (interception_enabled)
+        {
+            if (ImGui::Button("CLICK RE SHADE INPUT PROBE", ImVec2(320.0f, 54.0f)))
+            {
+                ++input_state->probe_click_count;
+                reshade::log::message(
+                    reshade::log::level::info,
+                    "Alternative compositor POC accepted a ReShade-owned ImGui click.");
+            }
+
+            ImGui::SetNextItemWidth(320.0f);
+            if (ImGui::InputText(
+                "Keyboard probe",
+                swapchain_state->keyboard_probe,
+                sizeof(swapchain_state->keyboard_probe)))
+            {
+                ++swapchain_state->text_edit_count;
+            }
+
+            ImGui::SetNextItemWidth(320.0f);
+            ImGui::SliderFloat("Drag probe", &swapchain_state->drag_probe, 0.0f, 1.0f);
+
+            if (io.MouseWheel != 0.0f)
+                swapchain_state->wheel_total += io.MouseWheel;
+            ImGui::Text(
+                "Text edits: %llu | overlay wheel: %.1f",
+                static_cast<unsigned long long>(swapchain_state->text_edit_count),
+                swapchain_state->wheel_total);
+        }
         ImGui::Spacing();
 
-        if (data->texture_view.handle != 0)
+        if (device_state->texture_view.handle != 0)
         {
             ImGui::Image(
-                data->texture_view.handle,
+                device_state->texture_view.handle,
                 ImVec2(static_cast<float>(kTextureWidth), static_cast<float>(kTextureHeight)));
             ImGui::SameLine();
             ImGui::BeginGroup();
@@ -202,6 +366,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 
         reshade::register_event<reshade::addon_event::init_device>(on_init_device);
         reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
+        reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
+        reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
         reshade::register_event<reshade::addon_event::reshade_overlay>(on_reshade_overlay);
 
         reshade::log::message(

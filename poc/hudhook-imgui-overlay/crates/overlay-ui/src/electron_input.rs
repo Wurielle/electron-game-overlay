@@ -870,9 +870,9 @@ impl InputRouter {
     }
 
     /// Returns whether a native input message should be withheld from the game.
-    /// The current hudhook integration uses its blanket `InputAll` filter while
-    /// this state is true; this per-message form is also useful to test raw-input
-    /// and outside-overlay fail-open behavior.
+    /// The current integration owns mouse/raw propagation synchronously and
+    /// retains hudhook's published keyboard/raw fallback filter. This per-message
+    /// form remains useful for router-level interception tests.
     #[cfg(test)]
     pub fn should_intercept_message(&self, msg: u32) -> bool {
         self.effective_interception && is_hudhook_input_message(msg)
@@ -2263,7 +2263,7 @@ mod tests {
         assert!(router.effective_interception());
         // A request can race after message_filter sampled Enabled. That
         // terminal phase must not acknowledge false; Disarming first turns
-        // routing off while InputAll remains published.
+        // routing off while the native input owners remain blocking.
         assert!(router.apply_input_filter(true, true).is_empty());
         assert!(router.effective_interception());
         assert!(router.apply_input_filter(false, false).is_empty());

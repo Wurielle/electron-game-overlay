@@ -19,6 +19,40 @@ export type OverlayWindowContext = {
   isQuitting: () => boolean;
 };
 
+const HUDHOOK_CLIENT_INPUT_MARKER = "HUDHOOK_CLIENT_";
+
+function forwardHudhookInputDiagnostics(window: Electron.BrowserWindow) {
+  window.webContents.on("console-message", (_event, _level, message) => {
+    if (message.startsWith(HUDHOOK_CLIENT_INPUT_MARKER)) {
+      console.log(message);
+    }
+  });
+}
+
+function enableHudhookInputProof(window: Electron.BrowserWindow) {
+  window.webContents.once("did-finish-load", () => {
+    void window.webContents
+      .executeJavaScript(`(() => {
+        const proof = window.hudhookInputProof;
+        if (!proof || typeof proof.enable !== "function") {
+          throw new Error("window.hudhookInputProof is unavailable");
+        }
+        proof.enable();
+        return typeof proof.getTargetRect === "function"
+          ? proof.getTargetRect()
+          : null;
+      })()`)
+      .then((rect) => {
+        console.log(
+          `HUDHOOK_CLIENT_INPUT_PROOF_ARMED rect=${JSON.stringify(rect)}`
+        );
+      })
+      .catch((error) => {
+        console.warn("HUDHOOK_CLIENT_INPUT_PROOF_FAILED", error);
+      });
+  });
+}
+
 export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
   const options: Electron.BrowserWindowConstructorOptions = {
     x: 1,
@@ -36,6 +70,8 @@ export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
   };
 
   const window = context.createWindow(AppWindows.exampleMainOverlay, options);
+  forwardHudhookInputDiagnostics(window);
+  enableHudhookInputProof(window);
   window.loadURL(
     global.CONFIG.resolveRendererUrl("index/example-main-overlay.html")
   );
@@ -86,6 +122,7 @@ export function createExampleStatusOverlayWindow(context: OverlayWindowContext) 
 
   const name = AppWindows.exampleStatusOverlay;
   const window = context.createWindow(name, options);
+  forwardHudhookInputDiagnostics(window);
   window.loadURL(
     global.CONFIG.resolveRendererUrl("index/example-status-overlay.html")
   );

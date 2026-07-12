@@ -1,18 +1,21 @@
 import { defineConfig } from "vite";
 import electron from "vite-plugin-electron/simple";
 import path from "node:path";
+import { buildElectronDevArguments } from "./src/main/dev-launch";
 
 const workspaceRoot = path.resolve(__dirname, "../..");
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   root: __dirname,
   publicDir: "public",
   plugins: [
     electron({
       main: {
         entry: "src/main/main.ts",
-        onstart({ startup }) {
-          startup([workspaceRoot, "--no-sandbox"], { cwd: workspaceRoot });
+        async onstart({ startup }) {
+          await startup(buildElectronDevArguments(workspaceRoot, mode), {
+            cwd: workspaceRoot,
+          });
         },
         vite: {
           resolve: {
@@ -50,4 +53,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
