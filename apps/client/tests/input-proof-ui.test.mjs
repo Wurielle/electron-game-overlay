@@ -212,7 +212,10 @@ test('the demo prearms native Steam-path injection before WMI lifecycle events',
   assert.match(watcher, /import\('wql-process-monitor'\)/);
   assert.match(watcher, /process\.once\('disconnect'/);
   assert.match(watcher, /closeEventSink/);
-  assert.match(autoAttacher, /STEAM_APPS_PATH_FRAGMENT = ['"]\\\\steamapps\\\\/);
+  assert.match(
+    autoAttacher,
+    /STEAM_APPS_PATH_FRAGMENT = ['"]\\\\steamapps\\\\/,
+  );
   assert.match(autoAttacher, /UnityCrashHandler64\.exe/);
   assert.match(autoAttacher, /this\.armNextSteamProcess\(\)/);
   assert.match(
@@ -250,6 +253,10 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(windowNames, /demoControlOverlay = ["']demo-control-overlay/);
   assert.match(windowFactories, /createDemoControlOverlayWindow/);
   assert.match(windowFactories, /demo-control-overlay\.html/);
+  assert.match(
+    windowFactories,
+    /if \(context\.demoPresentation\)[\s\S]{0,100}followTarget\(\{ area: 'render' \}\)/,
+  );
   assert.match(appEntry, /DEMO_PRESENTATION_FLAG/);
   assert.match(
     appEntry,
@@ -262,6 +269,9 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(appEntry, /this\.syncDemoControlOverlay\(\)/);
   assert.match(appEntry, /for \(const window of this\.windows\.values\(\)\)/);
   assert.match(appEntry, /presentation: this\.demoPresentationEnabled/);
+  assert.match(appEntry, /this\.overlaySession\.targets\.list\(\)\.at\(-1\)/);
+  assert.match(appEntry, /targetSurfaceChanged/);
+  assert.match(appEntry, /targetSurfaceRemoved/);
   assert.match(appEntry, /ipcMain\.handle\('overlay:create-popup'/);
   assert.match(appEntry, /event === 'game\.window\.focused'/);
   assert.match(appEntry, /this\.keepDemoControlOverlayOnTop\(payload\)/);
@@ -294,6 +304,9 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(controlOverlay, /overlay:create-popup/);
   assert.match(controlOverlay, /overlay:set-input-intercept/);
   assert.match(controlOverlay, /inputInterceptEffective/);
+  assert.match(controlOverlay, /state\.targetSurface/);
+  assert.match(controlOverlay, /surface\.graphicsApi/);
+  assert.match(controlOverlay, /surface\?\.renderSize\?\.width/);
   assert.match(controlOverlay, /Ctrl\+I/);
 });
 

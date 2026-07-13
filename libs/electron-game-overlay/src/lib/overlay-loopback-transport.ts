@@ -16,6 +16,11 @@ import type {
   NativeOverlayWindowDetails,
   NativeOverlayWindowGeometry,
 } from './native.js';
+import {
+  parseOverlayGraphicsFps,
+  parseOverlayTargetSurface,
+  parseOverlayTargetSurfaceRemoved,
+} from './target-surface.js';
 
 export const OVERLAY_TRANSPORT_PROTOCOL_VERSION = 1;
 export const MAX_JSON_BODY_BYTES = 1024 * 1024;
@@ -188,7 +193,11 @@ function defaultIsProcessAlive(pid: number): boolean {
 }
 
 export function defaultOverlayDiscoveryPath(): string {
-  return join(tmpdir(), 'electron-game-overlay', 'electron-overlay-transport-v1.json');
+  return join(
+    tmpdir(),
+    'electron-game-overlay',
+    'electron-overlay-transport-v1.json',
+  );
 }
 
 export function encodeJsonTransportPacket(value: JsonObject): Buffer {
@@ -839,14 +848,39 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
 
     const eventName = parsed.type;
+    const authoritativePayload: JsonObject = { ...parsed, pid: client.pid };
+    delete authoritativePayload.type;
+    if (eventName === 'game.target.surface') {
+      const surface = parseOverlayTargetSurface(authoritativePayload);
+      if (!surface) {
+        return false;
+      }
+      this.emitEvent(eventName, { ...surface });
+      return true;
+    }
+    if (eventName === 'game.target.surface.removed') {
+      const removed = parseOverlayTargetSurfaceRemoved(authoritativePayload);
+      if (!removed) {
+        return false;
+      }
+      this.emitEvent(eventName, { ...removed });
+      return true;
+    }
+    if (eventName === 'game.graphics.fps') {
+      const fps = parseOverlayGraphicsFps(authoritativePayload);
+      if (!fps) {
+        return false;
+      }
+      this.emitEvent(eventName, { ...fps });
+      return true;
+    }
     if (
       (eventName === 'game.window.focused' && parsed.focusWindowId === 0) ||
       (eventName === 'game.input.intercept' && parsed.intercepting === false)
     ) {
       client.inputTranslator?.reset();
     }
-    const payload: JsonObject = { ...parsed, pid: client.pid };
-    delete payload.type;
+    const payload: JsonObject = authoritativePayload;
     this.emitEvent(eventName, payload);
     return true;
   }

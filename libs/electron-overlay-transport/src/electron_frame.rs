@@ -31,7 +31,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::electron_input::{
     AtomicInterceptionState, DragMoveIntent, InputCaption, InputPoint, InputRect, InputRouter,
-    InputRouterState, InputWindow, OutboundMessage, OutboundQueue,
+    InputRouterState, InputWindow, OutboundMessage, OutboundQueue, TargetSurface,
+    GRAPHICS_API_D3D10, GRAPHICS_API_D3D11, GRAPHICS_API_D3D12, GRAPHICS_API_D3D9,
+    GRAPHICS_API_OPENGL, GRAPHICS_API_VULKAN, TARGET_SURFACE_FOCUSED, TARGET_SURFACE_FULLSCREEN,
+    TARGET_SURFACE_MINIMIZED, TARGET_SURFACE_VISIBLE,
 };
 use crate::electron_wire::{encode_json, WireDecoder, WireFrame, WirePacket};
 
@@ -65,6 +68,90 @@ type SharedInputRouter = Arc<Mutex<InputRouter>>;
 type SharedOutboundQueue = Arc<Mutex<OutboundQueue>>;
 type SharedInputOrder = Arc<Mutex<()>>;
 type SharedStackGeneration = Arc<AtomicU64>;
+type SharedTargetSurfaces = Arc<Mutex<RetainedTargetSurfaces>>;
+
+#[derive(Debug, Default)]
+struct RetainedTargetSurfaces {
+    /// Oldest to newest revision. Live surfaces and removal tombstones share
+    /// one canonical sequence so a same-process reconnect can reconcile state
+    /// retained by the Electron host.
+    states: Vec<RetainedTargetSurfaceState>,
+}
+
+impl RetainedTargetSurfaces {
+    fn publish(&mut self, surface: TargetSurface) -> bool {
+        self.transition(RetainedTargetSurfaceState::Live(surface))
+    }
+
+    fn remove(&mut self, surface_id: u64, revision: u64) -> bool {
+        self.transition(RetainedTargetSurfaceState::Removed {
+            surface_id,
+            revision,
+        })
+    }
+
+    fn snapshot(&self) -> Vec<OutboundMessage> {
+        self.states
+            .iter()
+            .copied()
+            .map(RetainedTargetSurfaceState::outbound)
+            .collect()
+    }
+
+    fn transition(&mut self, next: RetainedTargetSurfaceState) -> bool {
+        if let Some(index) = self
+            .states
+            .iter()
+            .position(|retained| retained.surface_id() == next.surface_id())
+        {
+            if self.states[index].revision() >= next.revision() {
+                return false;
+            }
+            self.states.remove(index);
+        }
+
+        let insertion = self
+            .states
+            .partition_point(|retained| retained.revision() <= next.revision());
+        self.states.insert(insertion, next);
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetainedTargetSurfaceState {
+    Live(TargetSurface),
+    Removed { surface_id: u64, revision: u64 },
+}
+
+impl RetainedTargetSurfaceState {
+    fn surface_id(self) -> u64 {
+        match self {
+            Self::Live(surface) => surface.surface_id,
+            Self::Removed { surface_id, .. } => surface_id,
+        }
+    }
+
+    fn revision(self) -> u64 {
+        match self {
+            Self::Live(surface) => surface.revision,
+            Self::Removed { revision, .. } => revision,
+        }
+    }
+
+    fn outbound(self) -> OutboundMessage {
+        match self {
+            Self::Live(surface) => OutboundMessage::TargetSurface(surface),
+            Self::Removed {
+                surface_id,
+                revision,
+            } => OutboundMessage::TargetSurfaceRemoved {
+                surface_id,
+                revision,
+            },
+        }
+    }
+}
 
 #[derive(Default)]
 struct DragWakeSlot {
@@ -171,6 +258,7 @@ pub struct ElectronFrameBridge {
     input_router: SharedInputRouter,
     interception: Arc<AtomicInterceptionState>,
     outbound: SharedOutboundQueue,
+    target_surfaces: SharedTargetSurfaces,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
@@ -191,6 +279,8 @@ impl ElectronFrameBridge {
         let worker_input_router = Arc::clone(&input_router);
         let outbound = Arc::new(Mutex::new(OutboundQueue::new()));
         let worker_outbound = Arc::clone(&outbound);
+        let target_surfaces = Arc::new(Mutex::new(RetainedTargetSurfaces::default()));
+        let worker_target_surfaces = Arc::clone(&target_surfaces);
         let input_order = Arc::new(Mutex::new(()));
         let worker_input_order = Arc::clone(&input_order);
         let stack_generation = Arc::new(AtomicU64::new(0));
@@ -206,6 +296,7 @@ impl ElectronFrameBridge {
                     worker_scene,
                     worker_input_router,
                     worker_outbound,
+                    worker_target_surfaces,
                     worker_input_order,
                     worker_stack_generation,
                     worker_drag,
@@ -233,6 +324,7 @@ impl ElectronFrameBridge {
             input_router,
             interception,
             outbound,
+            target_surfaces,
             input_order,
             stack_generation,
             drag,
@@ -343,6 +435,70 @@ impl ElectronFrameBridge {
         }
     }
 
+    /// Queues the latest geometry and state for one injected render surface.
+    /// Stale revisions are ignored. Accepted telemetry is coalesced before it
+    /// crosses the loopback transport, while input and control packets remain
+    /// barriers.
+    pub fn publish_target_surface(&self, surface: TargetSurface) {
+        let accepted = {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let accepted = self
+                .target_surfaces
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .publish(surface);
+            if accepted {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(OutboundMessage::TargetSurface(surface));
+            }
+            accepted
+        };
+        if accepted {
+            self.wake_outbound_worker();
+        }
+    }
+
+    /// Queues a revisioned lifecycle tombstone for a render surface. Tombstones
+    /// survive transient transport loss so a retaining host can reconcile an
+    /// explicit removal after same-process reauthentication.
+    pub fn remove_target_surface(&self, surface_id: u64, revision: u64) {
+        let accepted = {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let accepted = self
+                .target_surfaces
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(surface_id, revision);
+            if accepted {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(OutboundMessage::TargetSurfaceRemoved {
+                        surface_id,
+                        revision,
+                    });
+            }
+            accepted
+        };
+        if accepted {
+            self.wake_outbound_worker();
+        }
+    }
+
+    /// Queues a process-level graphics frame-rate sample in thousandths of an
+    /// FPS. Adjacent samples are coalesced to the most recent value.
+    pub fn publish_fps(&self, fps_milli: u32) {
+        self.publish_outbound(OutboundMessage::GraphicsFps { fps_milli });
+    }
+
     /// Routes one message observed by the injected backend and wakes the
     /// transport worker for any resulting Electron packets. No synchronous
     /// cross-process send happens on the render/present thread.
@@ -450,6 +606,20 @@ impl ElectronFrameBridge {
             );
         }
     }
+
+    fn publish_outbound(&self, message: OutboundMessage) {
+        {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.outbound
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(message);
+        }
+        self.wake_outbound_worker();
+    }
 }
 
 impl Drop for ElectronFrameBridge {
@@ -512,6 +682,7 @@ fn run_bridge_thread(
     scene: PublishedScene,
     input_router: SharedInputRouter,
     outbound: SharedOutboundQueue,
+    target_surfaces: SharedTargetSurfaces,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
@@ -551,6 +722,7 @@ fn run_bridge_thread(
         scene,
         input_router,
         outbound,
+        target_surfaces,
         input_order,
         stack_generation,
         drag,
@@ -712,6 +884,7 @@ struct BridgeThreadState {
     scene: PublishedScene,
     input_router: SharedInputRouter,
     outbound: SharedOutboundQueue,
+    target_surfaces: SharedTargetSurfaces,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
@@ -731,6 +904,7 @@ impl BridgeThreadState {
         scene: PublishedScene,
         input_router: SharedInputRouter,
         outbound: SharedOutboundQueue,
+        target_surfaces: SharedTargetSurfaces,
         input_order: SharedInputOrder,
         stack_generation: SharedStackGeneration,
         drag: SharedDragState,
@@ -745,6 +919,7 @@ impl BridgeThreadState {
             scene,
             input_router,
             outbound,
+            target_surfaces,
             input_order,
             stack_generation,
             drag,
@@ -830,6 +1005,7 @@ impl BridgeThreadState {
         };
 
         self.transport = Some(transport);
+        self.replay_current_target_surfaces();
         let _ = KillTimer(Some(self.hwnd), CONNECT_TIMER_ID);
         info!(
             host_port = discovery.port,
@@ -843,6 +1019,22 @@ impl BridgeThreadState {
             WPARAM(0),
             LPARAM(0),
         );
+    }
+
+    fn replay_current_target_surfaces(&self) {
+        let _order = self
+            .input_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let states = self
+            .target_surfaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .snapshot();
+        self.outbound
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .replay_target_surfaces(states);
     }
 
     fn disconnect(&mut self) {
@@ -1894,6 +2086,98 @@ fn outbound_message_payload(message: &OutboundMessage) -> (&'static str, String)
             })
             .to_string(),
         ),
+        OutboundMessage::TargetSurface(surface) => (
+            "game.target.surface",
+            serde_json::json!({
+                "type": "game.target.surface",
+                "surfaceId": hex_u64(surface.surface_id),
+                "hwnd": hex_u64(surface.target_hwnd),
+                "revision": surface.revision,
+                "graphicsApi": graphics_api_name(surface.graphics_api),
+                "renderSize": {
+                    "width": surface.render_width,
+                    "height": surface.render_height,
+                },
+                "clientBounds": {
+                    "x": 0,
+                    "y": 0,
+                    "width": surface.client_width,
+                    "height": surface.client_height,
+                },
+                "clientScreenBounds": {
+                    "x": surface.client_screen_x,
+                    "y": surface.client_screen_y,
+                    "width": surface.client_width,
+                    "height": surface.client_height,
+                },
+                "windowScreenBounds": {
+                    "x": surface.window_screen_x,
+                    "y": surface.window_screen_y,
+                    "width": surface.window_width,
+                    "height": surface.window_height,
+                },
+                "dpi": {
+                    "x": surface.dpi_x,
+                    "y": surface.dpi_y,
+                },
+                "monitor": {
+                    "id": hex_u64(surface.monitor_handle),
+                    "bounds": {
+                        "x": surface.monitor_x,
+                        "y": surface.monitor_y,
+                        "width": surface.monitor_width,
+                        "height": surface.monitor_height,
+                    },
+                    "workArea": {
+                        "x": surface.work_x,
+                        "y": surface.work_y,
+                        "width": surface.work_width,
+                        "height": surface.work_height,
+                    },
+                },
+                "focused": surface.state_flags & TARGET_SURFACE_FOCUSED != 0,
+                "minimized": surface.state_flags & TARGET_SURFACE_MINIMIZED != 0,
+                "visible": surface.state_flags & TARGET_SURFACE_VISIBLE != 0,
+                "fullscreen": surface.state_flags & TARGET_SURFACE_FULLSCREEN != 0,
+            })
+            .to_string(),
+        ),
+        OutboundMessage::TargetSurfaceRemoved {
+            surface_id,
+            revision,
+        } => (
+            "game.target.surface.removed",
+            serde_json::json!({
+                "type": "game.target.surface.removed",
+                "surfaceId": hex_u64(*surface_id),
+                "revision": revision,
+            })
+            .to_string(),
+        ),
+        OutboundMessage::GraphicsFps { fps_milli } => (
+            "game.graphics.fps",
+            serde_json::json!({
+                "type": "game.graphics.fps",
+                "fps": f64::from(*fps_milli) / 1000.0,
+            })
+            .to_string(),
+        ),
+    }
+}
+
+fn hex_u64(value: u64) -> String {
+    format!("0x{value:x}")
+}
+
+fn graphics_api_name(graphics_api: u32) -> &'static str {
+    match graphics_api {
+        GRAPHICS_API_D3D9 => "d3d9",
+        GRAPHICS_API_D3D10 => "d3d10",
+        GRAPHICS_API_D3D11 => "d3d11",
+        GRAPHICS_API_D3D12 => "d3d12",
+        GRAPHICS_API_OPENGL => "opengl",
+        GRAPHICS_API_VULKAN => "vulkan",
+        _ => "unknown",
     }
 }
 
@@ -2231,6 +2515,37 @@ mod tests {
         }
     }
 
+    fn target_surface(surface_id: u64, revision: u64) -> TargetSurface {
+        TargetSurface {
+            surface_id,
+            target_hwnd: surface_id + 0x1000,
+            monitor_handle: 0x2000,
+            revision,
+            graphics_api: GRAPHICS_API_D3D11,
+            render_width: 1920,
+            render_height: 1080,
+            client_screen_x: 0,
+            client_screen_y: 0,
+            client_width: 1920,
+            client_height: 1080,
+            window_screen_x: -8,
+            window_screen_y: -31,
+            window_width: 1936,
+            window_height: 1119,
+            dpi_x: 96,
+            dpi_y: 96,
+            monitor_x: 0,
+            monitor_y: 0,
+            monitor_width: 1920,
+            monitor_height: 1080,
+            work_x: 0,
+            work_y: 0,
+            work_width: 1920,
+            work_height: 1040,
+            state_flags: TARGET_SURFACE_FOCUSED | TARGET_SURFACE_VISIBLE,
+        }
+    }
+
     fn normalize_test_windows(
         windows: Vec<WindowMetadata>,
         filter: Option<&str>,
@@ -2245,10 +2560,159 @@ mod tests {
             Arc::new(RwLock::new(Arc::new(ElectronScene::default()))),
             Arc::new(Mutex::new(InputRouter::new())),
             Arc::new(Mutex::new(OutboundQueue::new())),
+            Arc::new(Mutex::new(RetainedTargetSurfaces::default())),
             Arc::new(Mutex::new(())),
             Arc::new(AtomicU64::new(0)),
             SharedDragState::default(),
         )
+    }
+
+    #[test]
+    fn retained_target_surfaces_keep_revision_order_and_removal_tombstones() {
+        let mut retained = RetainedTargetSurfaces::default();
+        assert!(retained.publish(target_surface(1, 3)));
+        assert!(retained.remove(2, 5));
+        assert!(retained.publish(target_surface(3, 4)));
+        assert!(retained.publish(target_surface(1, 6)));
+
+        assert_eq!(
+            retained.snapshot(),
+            vec![
+                OutboundMessage::TargetSurface(target_surface(3, 4)),
+                OutboundMessage::TargetSurfaceRemoved {
+                    surface_id: 2,
+                    revision: 5,
+                },
+                OutboundMessage::TargetSurface(target_surface(1, 6)),
+            ]
+        );
+    }
+
+    #[test]
+    fn retained_target_surfaces_reject_stale_publish_and_remove_transitions() {
+        let mut retained = RetainedTargetSurfaces::default();
+        assert!(retained.publish(target_surface(1, 5)));
+        assert!(!retained.publish(target_surface(1, 4)));
+        assert!(!retained.remove(1, 5));
+        assert_eq!(
+            retained.snapshot(),
+            vec![OutboundMessage::TargetSurface(target_surface(1, 5))]
+        );
+
+        assert!(retained.remove(1, 6));
+        assert!(!retained.publish(target_surface(1, 5)));
+        assert!(!retained.remove(1, 4));
+        assert_eq!(
+            retained.snapshot(),
+            vec![OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 1,
+                revision: 6,
+            }]
+        );
+
+        assert!(retained.publish(target_surface(1, 7)));
+        assert_eq!(
+            retained.snapshot(),
+            vec![OutboundMessage::TargetSurface(target_surface(1, 7))]
+        );
+    }
+
+    #[test]
+    fn reconnect_replays_retained_surfaces_but_not_disconnected_input_or_control() {
+        let mut state = test_bridge_state();
+        {
+            let mut retained = state.target_surfaces.lock().unwrap();
+            retained.publish(target_surface(1, 1));
+            retained.publish(target_surface(2, 3));
+            retained.publish(target_surface(1, 4));
+        }
+        state.outbound.lock().unwrap().extend([
+            OutboundMessage::WindowFocused {
+                focus_window_id: 42,
+            },
+            OutboundMessage::InputIntercept { intercepting: true },
+        ]);
+
+        state.disconnect();
+        assert!(state.outbound.lock().unwrap().is_empty());
+        assert_eq!(
+            state.target_surfaces.lock().unwrap().snapshot(),
+            vec![
+                OutboundMessage::TargetSurface(target_surface(2, 3)),
+                OutboundMessage::TargetSurface(target_surface(1, 4)),
+            ]
+        );
+
+        let live_control = OutboundMessage::WindowFocused {
+            focus_window_id: 77,
+        };
+        let live_fps = OutboundMessage::GraphicsFps { fps_milli: 60_000 };
+        state
+            .outbound
+            .lock()
+            .unwrap()
+            .extend([live_control.clone(), live_fps.clone()]);
+        state.replay_current_target_surfaces();
+
+        let mut outbound = state.outbound.lock().unwrap();
+        assert_eq!(outbound.len(), 4);
+        assert_eq!(
+            outbound.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(2, 3)))
+        );
+        assert_eq!(
+            outbound.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(1, 4)))
+        );
+        assert_eq!(outbound.pop_front(), Some(live_control));
+        assert_eq!(outbound.pop_front(), Some(live_fps));
+        assert!(outbound.is_empty());
+    }
+
+    #[test]
+    fn reconnect_replay_replaces_stale_packets_with_live_state_or_tombstone() {
+        let state = test_bridge_state();
+        state
+            .target_surfaces
+            .lock()
+            .unwrap()
+            .publish(target_surface(1, 5));
+        state.outbound.lock().unwrap().extend([
+            OutboundMessage::TargetSurface(target_surface(1, 2)),
+            OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 1,
+                revision: 3,
+            },
+        ]);
+
+        state.replay_current_target_surfaces();
+        {
+            let mut outbound = state.outbound.lock().unwrap();
+            assert_eq!(outbound.len(), 1);
+            assert_eq!(
+                outbound.pop_front(),
+                Some(OutboundMessage::TargetSurface(target_surface(1, 5)))
+            );
+        }
+
+        assert!(state.target_surfaces.lock().unwrap().remove(1, 6));
+        state.outbound.lock().unwrap().extend([
+            OutboundMessage::TargetSurface(target_surface(1, 5)),
+            OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 1,
+                revision: 6,
+            },
+        ]);
+        state.replay_current_target_surfaces();
+        let mut outbound = state.outbound.lock().unwrap();
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(
+            outbound.pop_front(),
+            Some(OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 1,
+                revision: 6,
+            })
+        );
     }
 
     struct PartialWriter {
@@ -2434,6 +2898,115 @@ mod tests {
             .unwrap()
             .get("scaleFactorMicros")
             .is_none());
+    }
+
+    #[test]
+    fn target_surface_serializes_canonical_nested_geometry_and_hex_identifiers() {
+        let surface = TargetSurface {
+            surface_id: 0xabcd_ef01_2345_6789,
+            target_hwnd: 0xfedc_ba98_7654_3210,
+            monitor_handle: 0x8000_0000_0000_0042,
+            revision: 17,
+            graphics_api: GRAPHICS_API_D3D12,
+            render_width: 2560,
+            render_height: 1440,
+            client_screen_x: -1920,
+            client_screen_y: 20,
+            client_width: 1920,
+            client_height: 1080,
+            window_screen_x: -1928,
+            window_screen_y: -11,
+            window_width: 1936,
+            window_height: 1119,
+            dpi_x: 144,
+            dpi_y: 144,
+            monitor_x: -2560,
+            monitor_y: 0,
+            monitor_width: 2560,
+            monitor_height: 1440,
+            work_x: -2560,
+            work_y: 0,
+            work_width: 2560,
+            work_height: 1400,
+            state_flags: TARGET_SURFACE_FOCUSED
+                | TARGET_SURFACE_VISIBLE
+                | TARGET_SURFACE_FULLSCREEN,
+        };
+        let (message_type, json) =
+            outbound_message_payload(&OutboundMessage::TargetSurface(surface));
+        let packet = encode_json(&json).unwrap();
+        let mut decoder = WireDecoder::default();
+        let packets = decoder.push(&packet).unwrap();
+        let WirePacket::Json(packet_json) = &packets[0] else {
+            panic!("expected JSON packet");
+        };
+
+        assert_eq!(message_type, "game.target.surface");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(packet_json).unwrap(),
+            serde_json::json!({
+                "type": "game.target.surface",
+                "surfaceId": "0xabcdef0123456789",
+                "hwnd": "0xfedcba9876543210",
+                "revision": 17,
+                "graphicsApi": "d3d12",
+                "renderSize": { "width": 2560, "height": 1440 },
+                "clientBounds": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
+                "clientScreenBounds": { "x": -1920, "y": 20, "width": 1920, "height": 1080 },
+                "windowScreenBounds": { "x": -1928, "y": -11, "width": 1936, "height": 1119 },
+                "dpi": { "x": 144, "y": 144 },
+                "monitor": {
+                    "id": "0x8000000000000042",
+                    "bounds": { "x": -2560, "y": 0, "width": 2560, "height": 1440 },
+                    "workArea": { "x": -2560, "y": 0, "width": 2560, "height": 1400 },
+                },
+                "focused": true,
+                "minimized": false,
+                "visible": true,
+                "fullscreen": true,
+            })
+        );
+    }
+
+    #[test]
+    fn graphics_api_names_cover_reshade_values_and_unknown_values() {
+        assert_eq!(graphics_api_name(GRAPHICS_API_D3D9), "d3d9");
+        assert_eq!(graphics_api_name(GRAPHICS_API_D3D10), "d3d10");
+        assert_eq!(graphics_api_name(GRAPHICS_API_D3D11), "d3d11");
+        assert_eq!(graphics_api_name(GRAPHICS_API_D3D12), "d3d12");
+        assert_eq!(graphics_api_name(GRAPHICS_API_OPENGL), "opengl");
+        assert_eq!(graphics_api_name(GRAPHICS_API_VULKAN), "vulkan");
+        assert_eq!(graphics_api_name(0), "unknown");
+        assert_eq!(graphics_api_name(u32::MAX), "unknown");
+    }
+
+    #[test]
+    fn surface_removal_and_milli_fps_serialize_as_authenticated_wire_messages() {
+        let (removed_type, removed_json) =
+            outbound_message_payload(&OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 0xdead_beef_cafe_babe,
+                revision: 99,
+            });
+        assert_eq!(removed_type, "game.target.surface.removed");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&removed_json).unwrap(),
+            serde_json::json!({
+                "type": "game.target.surface.removed",
+                "surfaceId": "0xdeadbeefcafebabe",
+                "revision": 99,
+            })
+        );
+
+        let (fps_type, fps_json) =
+            outbound_message_payload(&OutboundMessage::GraphicsFps { fps_milli: 59_940 });
+        assert_eq!(fps_type, "game.graphics.fps");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fps_json).unwrap(),
+            serde_json::json!({
+                "type": "game.graphics.fps",
+                "fps": 59.94,
+            })
+        );
     }
 
     #[test]

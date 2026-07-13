@@ -74,10 +74,24 @@ inside each process, so application code does not choose a graphics payload.
 Press **Ctrl+I** while a game is focused to toggle interception.
 
 The normal demo starts with one compact in-game information dock. It shows the
-shortcut, attachment, interception, and frame-rate state without opening all of
-the test windows at once. Enabling interception expands that same dock into a
-clickable menu for opening the input playground, diagnostics strip, transparent
-popup, and video surface. Releasing interception collapses it again.
+shortcut, attachment, interception, injected graphics API/render resolution,
+and real render-process frame-rate state without opening all of the test windows
+at once. Enabling interception expands that same dock into a clickable menu for
+opening the target-following input playground, diagnostics strip, transparent
+popup, and video surface. The main playground uses the public `followTarget()`
+API and fills the reported game render surface. Releasing interception
+collapses the dock again.
+
+Applications can inspect the same retained target state or follow it directly:
+
+```ts
+session.on('targetSurfaceChanged', (surface) => {
+  console.log(surface.graphicsApi, surface.renderSize);
+});
+session.on('fps', ({ pid, fps }) => console.log(pid, fps));
+
+overlayWindow.followTarget({ area: 'render' });
+```
 
 The client retains its WMI watcher only for demo status and lifecycle evidence;
 its roughly one-second notification delay no longer starts injection. The

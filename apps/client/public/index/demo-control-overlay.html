@@ -592,6 +592,7 @@
           pid: null,
           error: null,
         },
+        targetSurface: null,
         windows: {},
         presentation: null,
       };
@@ -735,6 +736,7 @@
 
       function renderTarget() {
         const autoAttach = state.steamAutoAttach;
+        const surfaceDetail = getTargetSurfaceDetail();
         elements.watcher.classList.toggle('visible', Boolean(autoAttach));
 
         if (autoAttach) {
@@ -752,7 +754,7 @@
           );
           const target = connectedTarget || pendingTarget;
           if (target) {
-            elements.target.innerHTML = `<strong>${escapeHtml(target.processName)}</strong> · PID ${target.pid}`;
+            elements.target.innerHTML = `<strong>${escapeHtml(target.processName)}</strong> · PID ${target.pid}${surfaceDetail}`;
             return;
           }
           if (autoAttach.watcherError) {
@@ -770,7 +772,7 @@
         elements.watcher.dataset.status = 'disabled';
         const attachment = state.attachment || {};
         if (attachment.phase === 'connected') {
-          elements.target.innerHTML = `<strong>${escapeHtml(attachment.processName || 'Connected')}</strong>${attachment.pid ? ` · PID ${attachment.pid}` : ''}`;
+          elements.target.innerHTML = `<strong>${escapeHtml(attachment.processName || 'Connected')}</strong>${attachment.pid ? ` · PID ${attachment.pid}` : ''}${surfaceDetail}`;
         } else if (attachment.phase === 'attaching') {
           elements.target.innerHTML = `<strong>Connecting:</strong> ${escapeHtml(attachment.processName || 'target')}`;
         } else if (attachment.error) {
@@ -780,6 +782,25 @@
           elements.target.innerHTML =
             '<strong>Target:</strong> waiting for game';
         }
+      }
+
+      function getTargetSurfaceDetail() {
+        const surface = state.targetSurface;
+        const width = Number(surface?.renderSize?.width);
+        const height = Number(surface?.renderSize?.height);
+        if (
+          !Number.isSafeInteger(width) ||
+          width <= 0 ||
+          !Number.isSafeInteger(height) ||
+          height <= 0
+        ) {
+          return '';
+        }
+        const api =
+          typeof surface.graphicsApi === 'string'
+            ? ` · ${escapeHtml(surface.graphicsApi.toUpperCase())}`
+            : '';
+        return `${api} · ${width}×${height}`;
       }
 
       function renderWindowButton(button, name, label) {

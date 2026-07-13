@@ -30,9 +30,7 @@ export type OverlayProcessTarget = (
 };
 
 export type OverlaySessionEventMap = {
-  fps: {
-    fps: number;
-  };
+  fps: OverlayGraphicsFps;
   hotkeyDown: {
     name: string;
   };
@@ -43,13 +41,14 @@ export type OverlaySessionEventMap = {
   windowFocused: {
     windowId: number;
   };
+  targetSurfaceChanged: OverlayTargetSurface;
+  targetSurfaceRemoved: OverlayTargetSurfaceRemoved;
 };
 
 export type OverlaySessionEventName = keyof OverlaySessionEventMap;
 
-export type OverlaySessionEventHandler<Event extends OverlaySessionEventName> = (
-  payload: OverlaySessionEventMap[Event]
-) => void;
+export type OverlaySessionEventHandler<Event extends OverlaySessionEventName> =
+  (payload: OverlaySessionEventMap[Event]) => void;
 
 export type Rect = {
   x: number;
@@ -57,6 +56,73 @@ export type Rect = {
   width: number;
   height: number;
 };
+
+export type OverlayGraphicsApi =
+  | 'd3d9'
+  | 'd3d10'
+  | 'd3d11'
+  | 'd3d12'
+  | 'opengl'
+  | 'vulkan'
+  | 'unknown';
+
+export type OverlayTargetSize = Readonly<{
+  width: number;
+  height: number;
+}>;
+
+export type OverlayTargetRect = Readonly<Rect>;
+
+export type OverlayTargetDpi = Readonly<{
+  x: number;
+  y: number;
+  /** Chromium/Windows scale derived from the horizontal target DPI. */
+  scaleFactor: number;
+}>;
+
+export type OverlayTargetMonitor = Readonly<{
+  id: string;
+  bounds: OverlayTargetRect;
+  workArea: OverlayTargetRect;
+}>;
+
+/** An immutable snapshot of a render surface owned by an injected process. */
+export type OverlayTargetSurface = Readonly<{
+  pid: number;
+  surfaceId: string;
+  hwnd: string;
+  revision: number;
+  graphicsApi: OverlayGraphicsApi;
+  renderSize: OverlayTargetSize;
+  clientBounds: OverlayTargetRect;
+  clientScreenBounds: OverlayTargetRect;
+  windowScreenBounds: OverlayTargetRect;
+  dpi: OverlayTargetDpi;
+  monitor: OverlayTargetMonitor;
+  focused: boolean;
+  minimized: boolean;
+  visible: boolean;
+  fullscreen: boolean;
+}>;
+
+export type OverlayTargetSurfaceRemoved = Readonly<{
+  pid: number;
+  surfaceId: string;
+  revision: number;
+}>;
+
+export type OverlayGraphicsFps = Readonly<{
+  pid: number;
+  fps: number;
+}>;
+
+export type OverlayTargetFollowArea = 'render' | 'client';
+
+export type ElectronOverlayWindowFollowTargetOptions = Readonly<{
+  pid?: number;
+  surfaceId?: string;
+  area?: OverlayTargetFollowArea;
+}>;
 
 export type ElectronOverlayWindowBaseOptions = {
   id?: string;
@@ -67,7 +133,8 @@ export type ElectronOverlayWindowBaseOptions = {
   transparent?: boolean;
 };
 
-export type AttachElectronOverlayWindowOptions = ElectronOverlayWindowBaseOptions;
+export type AttachElectronOverlayWindowOptions =
+  ElectronOverlayWindowBaseOptions;
 
 export type CreateElectronOverlayWindowOptions =
   ElectronOverlayWindowBaseOptions & {
@@ -76,6 +143,7 @@ export type CreateElectronOverlayWindowOptions =
     file?: string;
   };
 
-export type ElectronOverlayWindowOptions = CreateElectronOverlayWindowOptions & {
-  existingWindow?: Electron.BrowserWindow;
-};
+export type ElectronOverlayWindowOptions =
+  CreateElectronOverlayWindowOptions & {
+    existingWindow?: Electron.BrowserWindow;
+  };

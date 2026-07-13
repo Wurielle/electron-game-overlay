@@ -32,6 +32,30 @@ const overlayWindow = (name, x = 0) => ({
   scaleFactorMicros: 1_250_000,
 });
 
+const targetSurfaceMessage = (overrides = {}) => ({
+  type: 'game.target.surface',
+  pid: 9999,
+  surfaceId: '0x1234',
+  hwnd: '0xabcd',
+  revision: 7,
+  graphicsApi: 'd3d12',
+  renderSize: { width: 2560, height: 1440 },
+  clientBounds: { x: 0, y: 0, width: 2560, height: 1440 },
+  clientScreenBounds: { x: -2560, y: 40, width: 2560, height: 1440 },
+  windowScreenBounds: { x: -2568, y: 9, width: 2576, height: 1479 },
+  dpi: { x: 120, y: 120 },
+  monitor: {
+    id: '0x55',
+    bounds: { x: -2560, y: 0, width: 2560, height: 1440 },
+    workArea: { x: -2560, y: 0, width: 2560, height: 1400 },
+  },
+  focused: true,
+  minimized: false,
+  visible: true,
+  fullscreen: true,
+  ...overrides,
+});
+
 const connect = (port) =>
   new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
@@ -346,6 +370,91 @@ test('invalid authentication is closed without receiving a snapshot', async (t) 
     }),
   );
   await closed;
+});
+
+test('authenticated surface and FPS telemetry is validated with an authoritative PID', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-telemetry-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const events = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\telemetry.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+  socket.write(encodeJsonTransportPacket(targetSurfaceMessage()));
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.graphics.fps',
+      pid: 9999,
+      fps: 143.625,
+    }),
+  );
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.target.surface.removed',
+      pid: 9999,
+      surfaceId: '0x1234',
+      revision: 8,
+    }),
+  );
+  await waitFor(() => events.length === 4);
+
+  const surface = events[1];
+  assert.equal(surface.event, 'game.target.surface');
+  assert.equal(surface.payload.pid, 4321);
+  assert.equal(surface.payload.dpi.scaleFactor, 1.25);
+  assert.deepEqual(surface.payload.clientScreenBounds, {
+    x: -2560,
+    y: 40,
+    width: 2560,
+    height: 1440,
+  });
+  assert.deepEqual(events[2], {
+    event: 'game.graphics.fps',
+    payload: { pid: 4321, fps: 143.625 },
+  });
+  assert.deepEqual(events[3], {
+    event: 'game.target.surface.removed',
+    payload: { pid: 4321, surfaceId: '0x1234', revision: 8 },
+  });
+
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  socket.write(
+    encodeJsonTransportPacket(
+      targetSurfaceMessage({
+        surfaceId: '0xABCD',
+      }),
+    ),
+  );
+  await closed;
+  assert.equal(events.length, 5, 'only transport loss follows malformed data');
+  assert.equal(events.at(-1).event, 'game.process.transport-lost');
 });
 
 test('authenticated clients cannot forge server-owned lifecycle events', async (t) => {

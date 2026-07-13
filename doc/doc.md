@@ -67,6 +67,52 @@ application already owns the producer. `show()`, `hide()`, `setBounds()`, and
 borders, and constraints are Electron device-independent pixels; the SDK
 converts them to the physical-pixel wire and composition space.
 
+## Read target state and follow its surface
+
+After the injected swap chain starts rendering, the session exposes retained,
+immutable target telemetry:
+
+```ts
+session.on('targetSurfaceChanged', (surface) => {
+  console.log(surface.pid, surface.hwnd, surface.graphicsApi);
+  console.log(surface.renderSize, surface.clientScreenBounds, surface.dpi);
+});
+
+session.on('targetSurfaceRemoved', ({ pid, surfaceId }) => {
+  console.log('surface ended', pid, surfaceId);
+});
+
+session.on('fps', ({ pid, fps }) => {
+  console.log('injected render FPS', pid, fps);
+});
+
+const liveSurfaces = session.targets.list();
+const surface = session.targets.get(targetPid, surfaceId);
+```
+
+The runtime reports physical render/client/window geometry, DPI, monitor and
+work-area bounds, target state, and the selected graphics API. The SDK adds the
+authenticated PID and computes `dpi.scaleFactor`. FPS comes from the injected
+render context rather than Chromium paints.
+
+Use target-follow mode for an Electron surface that must cover the game:
+
+```ts
+window.followTarget({ area: 'render' });
+
+// Pin a specific retained surface, or use client-area dimensions instead.
+window.followTarget({ pid: targetPid, surfaceId, area: 'client' });
+
+window.stopFollowingTarget();
+```
+
+With no selectors, the newest live surface is used. The hidden backing window
+is moved to the target monitor in Electron DIP, while the injected compositor
+receives game-local physical bounds starting at `(0, 0)`. Resizes and display,
+DPI, or fullscreen changes are reapplied automatically. The previous raster
+stays active until Electron paints the matching new size. Stopping follow mode
+restores the window's pre-follow content bounds.
+
 ## Arm and attach the target
 
 The normal launcher reads the bundled runtime from the built SDK:

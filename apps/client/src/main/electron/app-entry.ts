@@ -147,6 +147,12 @@ class Application {
     this.overlaySession.on('fps', (payload) => {
       this.handleOverlayFps(payload.fps);
     });
+    this.overlaySession.on('targetSurfaceChanged', () => {
+      this.publishDemoState();
+    });
+    this.overlaySession.on('targetSurfaceRemoved', () => {
+      this.publishDemoState();
+    });
     this.overlaySession.on('hotkeyDown', (payload) => {
       this.handleOverlayHotkeyDown(payload.name);
     });
@@ -595,7 +601,13 @@ class Application {
 
   private setExampleOverlayWindowVisible(name: string, visible: boolean) {
     if (visible) {
-      this.ensureExampleOverlayWindow(name).show();
+      const overlayWindow = this.ensureExampleOverlayWindow(name);
+      overlayWindow.show();
+      if (name !== AppWindows.demoControlOverlay) {
+        this.keepDemoControlOverlayOnTop({
+          focusWindowId: overlayWindow.nativeId,
+        });
+      }
     } else {
       this.overlayWindows.get(name)?.hide();
     }
@@ -664,6 +676,7 @@ class Application {
   }
 
   private getDemoState() {
+    const targetSurface = this.overlaySession.targets.list().at(-1) ?? null;
     return {
       overlayStarted: this.overlayStarted,
       inputInterceptRequested: this.inputInterceptRequested,
@@ -678,6 +691,7 @@ class Application {
         : null,
       steamAutoAttach: this.steamGameAutoAttacher?.state ?? null,
       attachment: this.reshadeAttachment,
+      targetSurface,
       windows: {
         [AppWindows.demoControlOverlay]:
           this.overlayWindows.get(AppWindows.demoControlOverlay)?.visible ||

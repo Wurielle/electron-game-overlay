@@ -151,6 +151,64 @@ The four aligned Electron controls stayed isolated from Unity while interception
 was acknowledged; Ctrl+I produced the negative acknowledgement and the same
 underlying Quit position then closed the game.
 
+## Target telemetry and target-follow windows
+
+The injected runtime publishes an immutable target-surface snapshot after the
+swap chain is ready and whenever its geometry or state changes. The snapshot
+includes the authoritative process and surface IDs, target HWND, graphics API,
+render size, client and outer-window screen bounds, DPI, monitor/work-area
+bounds, focus, visibility, minimized state, and a fullscreen-like flag.
+
+```ts
+session.on('targetSurfaceChanged', (surface) => {
+  console.log(
+    surface.pid,
+    surface.graphicsApi,
+    surface.renderSize.width,
+    surface.renderSize.height,
+  );
+});
+
+session.on('fps', ({ pid, fps }) => {
+  console.log(`target ${pid}: ${fps.toFixed(1)} FPS`);
+});
+
+const surfaces = session.targets.list();
+const exact = session.targets.get(surfaces[0].pid, surfaces[0].surfaceId);
+```
+
+`fps` is sampled inside the injected render process; it is not an Electron
+paint-rate counter. Surface state survives a transient transport loss so a
+same-PID runtime can reauthenticate, and is cleared only by an authoritative
+surface removal or OS-confirmed process disconnect.
+
+An Electron window can follow the newest matching live target:
+
+```ts
+const window = session.windows.create({
+  id: 'fullscreen-overlay',
+  transparent: true,
+  file: '/absolute/path/to/overlay.html',
+});
+
+window.followTarget({ area: 'render' });
+window.show();
+
+// Optional selectors:
+window.followTarget({ pid: targetPid, surfaceId, area: 'client' });
+window.stopFollowingTarget();
+```
+
+`render` sizes the OSR raster to the reported render surface; `client` uses the
+physical game-client dimensions. The SDK places the hidden backing
+`BrowserWindow` on the target display in Electron DIP while publishing
+compositor-local physical bounds beginning at `(0, 0)`. Target moves, resizes,
+DPI/display changes, fullscreen transitions, and attempted manual producer
+moves/resizes reapply the layout. A new size becomes active only after a
+matching OSR paint arrives, so old pixels are never labeled with new target
+dimensions. `stopFollowingTarget()` restores the content bounds the window had
+before follow mode started.
+
 ## Coordinate contract
 
 The public Electron-facing API uses device-independent pixels (DIP): window
@@ -216,14 +274,12 @@ Control packets remain ordered. A `rasterChanged` bounds update discards the
 cached old-size pixels until the matching frame arrives, and reconnect replays a
 canonical ordered metadata snapshot followed by each retained frame.
 
-`BrowserWindow` bounds remain game-client-local DIP, not desktop-global screen
-coordinates. Display matching currently follows the hidden producer window's
-backing placement. The SDK still does not own the target game HWND's display or
-physical client origin. The current runtime publishes one producer scene through one
-authenticated producer/target rendezvous; multiple simultaneous targets and
-per-target geometry are not implemented. Therefore this is a bounded
-producer-window/runtime transition foundation, not a completed mixed-monitor target contract. Target-HWND display
-ownership, backing-window placement, multiple simultaneous target routing,
-physical/VM mixed-scale acceptance, and Electron 42 OSR behavior remain
-follow-up work. The production transport intentionally supports one active
-producer/target rendezvous at a time.
+Ordinary `setBounds()` placement remains Electron DIP and is converted to
+game-local physical composition coordinates. A followed window is different:
+the SDK owns its hidden desktop placement from the target HWND/client telemetry
+and publishes a local `(0, 0)` surface. The retained target model is keyed by
+PID and surface ID, but the production rendezvous still supports one active
+producer/target connection at a time. Multiple simultaneous targets, real
+physical/VM mixed-scale acceptance, unusual exclusive-fullscreen paths, and
+Electron 42 OSR behavior remain follow-up work rather than current compatibility
+claims.

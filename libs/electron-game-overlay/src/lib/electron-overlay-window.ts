@@ -1,6 +1,10 @@
 import { BrowserWindow } from 'electron';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
-import type { ElectronOverlayWindowOptions, Rect } from './types.js';
+import type {
+  ElectronOverlayWindowFollowTargetOptions,
+  ElectronOverlayWindowOptions,
+  Rect,
+} from './types.js';
 
 export class ElectronOverlayWindow {
   public readonly id: string;
@@ -118,6 +122,21 @@ export class ElectronOverlayWindow {
 
   public getBounds() {
     return this.browserWindow.getBounds();
+  }
+
+  /** Keeps this window's OSR surface sized to a live injected render target. */
+  public followTarget(options: ElectronOverlayWindowFollowTargetOptions = {}) {
+    if (this.destroyed) {
+      return;
+    }
+    this.bridge.followTarget(this, options);
+  }
+
+  public stopFollowingTarget() {
+    if (this.destroyed) {
+      return;
+    }
+    this.bridge.stopFollowingTarget(this);
   }
 
   private bindBrowserWindow() {

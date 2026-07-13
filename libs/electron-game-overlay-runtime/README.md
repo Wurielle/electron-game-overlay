@@ -78,7 +78,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies five tracked
+downloads both into the ignored build directory, then applies six tracked
 patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -97,6 +97,11 @@ patches to the pinned ReShade revision:
   normalized, case-insensitive executable-path fragments. It ignores processes
   already present when armed and accepts repeatable executable-basename
   exclusions for helper processes before selecting a target.
+- `reshade-injector-path-watcher-process-identity.patch` keys that startup
+  baseline by PID plus a retained process handle. Exited process objects are
+  removed promptly, so Windows PID reuse cannot make a newly launched game look
+  like an old process that should be ignored. The watcher polls every 50 ms and
+  does not reopen every baseline process on each pass.
 
 Use the runtime built by this repository with the Electron add-on; the stock
 API-18 ReShade 6.7.3 runtime is ABI-incompatible.
@@ -113,7 +118,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-7 build stamp, the five patch
+The launchers validate the cache against a schema-8 build stamp, the six patch
 SHA-256 hashes, the pinned commit, exact normalized contents of all eight patched
 source files, the full-add-on configuration, and the runtime/injector SHA-256
 hashes. CMake performs the same commit, eight-path, and normalized-content check
@@ -450,8 +455,9 @@ closed the host-switch milestone for this accepted target path.
 - graceful client disable/unload, post-render injection or existing-device/
   swap-chain adoption, arbitrary watcher latency, additional games, or broader
   graphics/presentation compatibility;
-- process identity beyond exact PID plus verified executable basename, including
-  stale watcher events that can encounter PID reuse;
+- end-to-end process identity beyond exact PID plus verified executable
+  basename for exact-PID requests and WMI lifecycle correlation; the prearmed
+  path-watcher baseline itself now retains handles for exact process objects;
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
@@ -460,8 +466,9 @@ two-cycle fresh-client D3D12 gate, and same-client target restart/reinjection.
 Exact-PID near-process-creation support is implemented and has dedicated
 suspended D3D11/D3D12 gates with passing acceptance. Raw normalization,
 graceful disable/unload, post-render attachment, arbitrary watcher latency,
-stronger process-creation identity, other games and APIs, and multiple-swap-chain
-hardening stay outside the accepted boundary. Package publishing is deferred
+end-to-end process-creation correlation beyond the native watcher baseline,
+other games and APIs, and multiple-swap-chain hardening stay outside the
+accepted boundary. Package publishing is deferred
 while repository-local SDK/client testing continues. ReShade replaces the
 injected host, graphics lifecycle, ImGui ownership, and game-side input blocking
 rather than the Electron SDK contract.

@@ -31,6 +31,19 @@ typedef int32_t ego_status;
 #define EGO_STATUS_INTERNAL_ERROR (-INT32_C(6))
 #define EGO_STATUS_PANIC (-INT32_C(7))
 
+#define EGO_GRAPHICS_API_UNKNOWN UINT32_C(0)
+#define EGO_GRAPHICS_API_D3D9 UINT32_C(0x9000)
+#define EGO_GRAPHICS_API_D3D10 UINT32_C(0xa000)
+#define EGO_GRAPHICS_API_D3D11 UINT32_C(0xb000)
+#define EGO_GRAPHICS_API_D3D12 UINT32_C(0xc000)
+#define EGO_GRAPHICS_API_OPENGL UINT32_C(0x10000)
+#define EGO_GRAPHICS_API_VULKAN UINT32_C(0x20000)
+
+#define EGO_TARGET_SURFACE_FOCUSED UINT32_C(1)
+#define EGO_TARGET_SURFACE_MINIMIZED UINT32_C(2)
+#define EGO_TARGET_SURFACE_VISIBLE UINT32_C(4)
+#define EGO_TARGET_SURFACE_FULLSCREEN UINT32_C(8)
+
 typedef struct ego_transport ego_transport;
 typedef struct ego_scene_snapshot ego_scene_snapshot;
 
@@ -72,6 +85,37 @@ typedef struct ego_input_state_v1 {
     uint32_t captured_window_id;
 } ego_input_state_v1;
 
+typedef struct ego_target_surface_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t surface_id;
+    uint64_t target_hwnd;
+    uint64_t monitor_handle;
+    uint64_t revision;
+    uint32_t graphics_api;
+    uint32_t render_width;
+    uint32_t render_height;
+    int32_t client_screen_x;
+    int32_t client_screen_y;
+    uint32_t client_width;
+    uint32_t client_height;
+    int32_t window_screen_x;
+    int32_t window_screen_y;
+    uint32_t window_width;
+    uint32_t window_height;
+    uint32_t dpi_x;
+    uint32_t dpi_y;
+    int32_t monitor_x;
+    int32_t monitor_y;
+    uint32_t monitor_width;
+    uint32_t monitor_height;
+    int32_t work_x;
+    int32_t work_y;
+    uint32_t work_width;
+    uint32_t work_height;
+    uint32_t state_flags;
+} ego_target_surface_v1;
+
 uint32_t EGO_CALL ego_abi_version(void);
 
 ego_status EGO_CALL ego_transport_create(
@@ -104,6 +148,17 @@ ego_status EGO_CALL ego_transport_apply_input_filter(
 ego_status EGO_CALL ego_transport_get_input_state(
     const ego_transport *transport,
     ego_input_state_v1 *inout_state);
+
+ego_status EGO_CALL ego_transport_publish_target_surface(
+    ego_transport *transport,
+    const ego_target_surface_v1 *surface);
+ego_status EGO_CALL ego_transport_remove_target_surface(
+    ego_transport *transport,
+    uint64_t surface_id,
+    uint64_t revision);
+ego_status EGO_CALL ego_transport_publish_fps(
+    ego_transport *transport,
+    uint32_t fps_milli);
 
 /* Observes/routes a copied message. The status is not an input-block decision. */
 ego_status EGO_CALL ego_transport_route_window_message(

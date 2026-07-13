@@ -267,6 +267,55 @@ pub struct DragMoveIntent {
     pub terminal: bool,
 }
 
+pub const GRAPHICS_API_UNKNOWN: u32 = 0;
+pub const GRAPHICS_API_D3D9: u32 = 0x9000;
+pub const GRAPHICS_API_D3D10: u32 = 0xa000;
+pub const GRAPHICS_API_D3D11: u32 = 0xb000;
+pub const GRAPHICS_API_D3D12: u32 = 0xc000;
+pub const GRAPHICS_API_OPENGL: u32 = 0x10000;
+pub const GRAPHICS_API_VULKAN: u32 = 0x20000;
+
+pub const TARGET_SURFACE_FOCUSED: u32 = 1;
+pub const TARGET_SURFACE_MINIMIZED: u32 = 2;
+pub const TARGET_SURFACE_VISIBLE: u32 = 4;
+pub const TARGET_SURFACE_FULLSCREEN: u32 = 8;
+pub const TARGET_SURFACE_STATE_FLAGS: u32 = TARGET_SURFACE_FOCUSED
+    | TARGET_SURFACE_MINIMIZED
+    | TARGET_SURFACE_VISIBLE
+    | TARGET_SURFACE_FULLSCREEN;
+
+/// Immutable target swap-chain and owning-window geometry published by a
+/// native compositor backend. Coordinates are physical screen/client pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetSurface {
+    pub surface_id: u64,
+    pub target_hwnd: u64,
+    pub monitor_handle: u64,
+    pub revision: u64,
+    pub graphics_api: u32,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub client_screen_x: i32,
+    pub client_screen_y: i32,
+    pub client_width: u32,
+    pub client_height: u32,
+    pub window_screen_x: i32,
+    pub window_screen_y: i32,
+    pub window_width: u32,
+    pub window_height: u32,
+    pub dpi_x: u32,
+    pub dpi_y: u32,
+    pub monitor_x: i32,
+    pub monitor_y: i32,
+    pub monitor_width: u32,
+    pub monitor_height: u32,
+    pub work_x: i32,
+    pub work_y: i32,
+    pub work_width: u32,
+    pub work_height: u32,
+    pub state_flags: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboundMessage {
     InputIntercept {
@@ -287,6 +336,14 @@ pub enum OutboundMessage {
         wparam: u32,
         lparam: u32,
         scale_factor_micros: u32,
+    },
+    TargetSurface(TargetSurface),
+    TargetSurfaceRemoved {
+        surface_id: u64,
+        revision: u64,
+    },
+    GraphicsFps {
+        fps_milli: u32,
     },
 }
 
@@ -327,11 +384,37 @@ impl OutboundMessage {
             _ => None,
         }
     }
+
+    fn telemetry_key(&self) -> Option<TelemetryKey> {
+        match self {
+            Self::TargetSurface(surface) => Some(TelemetryKey::TargetSurface(surface.surface_id)),
+            Self::TargetSurfaceRemoved { surface_id, .. } => {
+                Some(TelemetryKey::TargetSurface(*surface_id))
+            }
+            Self::GraphicsFps { .. } => Some(TelemetryKey::GraphicsFps),
+            _ => None,
+        }
+    }
+
+    fn is_target_surface_state(&self) -> bool {
+        matches!(
+            self,
+            Self::TargetSurface(_) | Self::TargetSurfaceRemoved { .. }
+        )
+    }
 }
 
-/// FIFO outbound storage with lossless control/input ordering. Only a mouse
-/// move at the tail may be replaced; a focus, button, key, character, wheel,
-/// release, or interception acknowledgement is always an ordering barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TelemetryKey {
+    TargetSurface(u64),
+    GraphicsFps,
+}
+
+/// FIFO outbound storage with lossless control/input ordering. Adjacent mouse
+/// moves may be replaced at the tail. Within a run containing only telemetry,
+/// each surface and the process FPS sample retain only their latest state and
+/// move to the tail on change; every intervening focus, button, key, character,
+/// wheel, release, or interception acknowledgement remains an ordering barrier.
 #[derive(Debug, Default)]
 pub struct OutboundQueue {
     messages: VecDeque<OutboundMessage>,
@@ -343,6 +426,27 @@ impl OutboundQueue {
     }
 
     pub fn push(&mut self, message: OutboundMessage) {
+        if let Some(key) = message.telemetry_key() {
+            let run_start = self
+                .messages
+                .iter()
+                .rposition(|pending| pending.telemetry_key().is_none())
+                .map_or(0, |barrier| barrier + 1);
+            if let Some(index) =
+                self.messages
+                    .iter()
+                    .enumerate()
+                    .skip(run_start)
+                    .find_map(|(index, pending)| {
+                        (pending.telemetry_key() == Some(key)).then_some(index)
+                    })
+            {
+                self.messages.remove(index);
+            }
+            self.messages.push_back(message);
+            return;
+        }
+
         if let Some((window_id, WM_MOUSEMOVE, _, _, _)) = message.input_fields() {
             if self.messages.back().is_some_and(|pending| {
                 matches!(
@@ -375,6 +479,25 @@ impl OutboundQueue {
     /// Restores an unsent message ahead of later concurrently queued work.
     pub fn push_front(&mut self, message: OutboundMessage) {
         self.messages.push_front(message);
+    }
+
+    /// Rebuilds connection-local surface telemetry from the retained current
+    /// state. Stale connection-local packets are replaced by the canonical
+    /// revision-ordered live states and removal tombstones. That snapshot is
+    /// placed before transient messages so a newly authenticated host receives
+    /// state before live input/control, whose relative order is otherwise
+    /// unchanged.
+    pub(crate) fn replay_target_surfaces(
+        &mut self,
+        states: impl IntoIterator<Item = OutboundMessage>,
+    ) {
+        let transient = self
+            .messages
+            .drain(..)
+            .filter(|message| !message.is_target_surface_state())
+            .collect::<VecDeque<_>>();
+        self.messages.extend(states);
+        self.messages.extend(transient);
     }
 
     #[cfg(test)]
@@ -1401,6 +1524,37 @@ mod tests {
                 height: 15,
             }))
             .with_placement_epoch(placement_epoch)
+    }
+
+    fn target_surface(surface_id: u64, revision: u64) -> TargetSurface {
+        TargetSurface {
+            surface_id,
+            target_hwnd: 0x1234,
+            monitor_handle: 0x5678,
+            revision,
+            graphics_api: GRAPHICS_API_D3D11,
+            render_width: 1920,
+            render_height: 1080,
+            client_screen_x: -1920,
+            client_screen_y: 0,
+            client_width: 1920,
+            client_height: 1080,
+            window_screen_x: -1928,
+            window_screen_y: -31,
+            window_width: 1936,
+            window_height: 1119,
+            dpi_x: 144,
+            dpi_y: 144,
+            monitor_x: -2560,
+            monitor_y: 0,
+            monitor_width: 2560,
+            monitor_height: 1440,
+            work_x: -2560,
+            work_y: 0,
+            work_width: 2560,
+            work_height: 1400,
+            state_flags: TARGET_SURFACE_FOCUSED | TARGET_SURFACE_VISIBLE,
+        }
     }
 
     #[test]
@@ -2573,5 +2727,153 @@ mod tests {
             Some(OutboundMessage::InputIntercept { intercepting: true })
         );
         assert_eq!(queue.pop_front(), Some(move_message(3)));
+    }
+
+    #[test]
+    fn telemetry_run_coalesces_by_key_and_preserves_last_change_order() {
+        let mut queue = OutboundQueue::new();
+        queue.extend([
+            OutboundMessage::TargetSurface(target_surface(1, 1)),
+            OutboundMessage::TargetSurface(target_surface(1, 2)),
+            OutboundMessage::TargetSurface(target_surface(2, 1)),
+            OutboundMessage::TargetSurface(target_surface(1, 3)),
+        ]);
+
+        assert_eq!(queue.len(), 2);
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(2, 1)))
+        );
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(1, 3)))
+        );
+    }
+
+    #[test]
+    fn fps_samples_coalesce_without_crossing_input_or_control_barriers() {
+        let input = OutboundMessage::Input {
+            window_id: WINDOW_ID,
+            msg: WM_LBUTTONDOWN,
+            wparam: 0,
+            lparam: 4,
+        };
+        let control = OutboundMessage::InputIntercept { intercepting: true };
+        let mut queue = OutboundQueue::new();
+        queue.extend([
+            OutboundMessage::GraphicsFps { fps_milli: 59_000 },
+            OutboundMessage::GraphicsFps { fps_milli: 59_940 },
+            input.clone(),
+            OutboundMessage::GraphicsFps { fps_milli: 60_000 },
+            control.clone(),
+            OutboundMessage::GraphicsFps { fps_milli: 61_000 },
+            OutboundMessage::GraphicsFps { fps_milli: 61_250 },
+        ]);
+
+        assert_eq!(queue.len(), 5);
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::GraphicsFps { fps_milli: 59_940 })
+        );
+        assert_eq!(queue.pop_front(), Some(input));
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::GraphicsFps { fps_milli: 60_000 })
+        );
+        assert_eq!(queue.pop_front(), Some(control));
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::GraphicsFps { fps_milli: 61_250 })
+        );
+    }
+
+    #[test]
+    fn surface_updates_and_tombstones_share_a_telemetry_key_until_a_barrier() {
+        let input = OutboundMessage::Input {
+            window_id: WINDOW_ID,
+            msg: WM_LBUTTONDOWN,
+            wparam: 0,
+            lparam: 9,
+        };
+        let mut queue = OutboundQueue::new();
+        queue.extend([
+            OutboundMessage::TargetSurface(target_surface(1, 1)),
+            OutboundMessage::GraphicsFps { fps_milli: 59_000 },
+            OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 1,
+                revision: 2,
+            },
+            OutboundMessage::TargetSurface(target_surface(2, 3)),
+            OutboundMessage::GraphicsFps { fps_milli: 60_000 },
+            OutboundMessage::TargetSurface(target_surface(1, 4)),
+            input.clone(),
+            OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 1,
+                revision: 5,
+            },
+        ]);
+
+        assert_eq!(queue.len(), 5);
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(2, 3)))
+        );
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::GraphicsFps { fps_milli: 60_000 })
+        );
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(1, 4)))
+        );
+        assert_eq!(queue.pop_front(), Some(input));
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 1,
+                revision: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn surface_replay_replaces_only_connection_local_surface_packets() {
+        let input = OutboundMessage::Input {
+            window_id: WINDOW_ID,
+            msg: WM_LBUTTONDOWN,
+            wparam: 0,
+            lparam: 7,
+        };
+        let control = OutboundMessage::InputIntercept { intercepting: true };
+        let fps = OutboundMessage::GraphicsFps { fps_milli: 60_000 };
+        let mut queue = OutboundQueue::new();
+        queue.extend([
+            input.clone(),
+            OutboundMessage::TargetSurface(target_surface(1, 1)),
+            control.clone(),
+            OutboundMessage::TargetSurfaceRemoved {
+                surface_id: 2,
+                revision: 2,
+            },
+            fps.clone(),
+        ]);
+
+        queue.replay_target_surfaces([
+            OutboundMessage::TargetSurface(target_surface(2, 4)),
+            OutboundMessage::TargetSurface(target_surface(1, 5)),
+        ]);
+
+        assert_eq!(queue.len(), 5);
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(2, 4)))
+        );
+        assert_eq!(
+            queue.pop_front(),
+            Some(OutboundMessage::TargetSurface(target_surface(1, 5)))
+        );
+        assert_eq!(queue.pop_front(), Some(input));
+        assert_eq!(queue.pop_front(), Some(control));
+        assert_eq!(queue.pop_front(), Some(fps));
     }
 }

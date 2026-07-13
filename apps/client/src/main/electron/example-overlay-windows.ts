@@ -252,6 +252,9 @@ export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
     captionHeight: 40,
     transparent: true,
   });
+  if (context.demoPresentation) {
+    overlayWindow.followTarget({ area: 'render' });
+  }
   overlayWindow.show();
   return overlayWindow;
 }

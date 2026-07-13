@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -130,6 +131,9 @@ std::atomic_flag g_overflow_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_order_fault_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_raw_deferred_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_route_error_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_target_surface_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_fps_logged = ATOMIC_FLAG_INIT;
+std::atomic<std::uint64_t> g_target_surface_revision_sequence = 0;
 std::uint64_t g_last_input_sequence = 0;
 bool g_has_last_input_sequence = false;
 std::uint64_t g_deferred_raw_input_messages = 0;
@@ -313,9 +317,16 @@ struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
     ego_transport *transport = nullptr;
     HWND window = nullptr;
     input_phase phase = input_phase::disabled;
+    ego_target_surface_v1 last_target_surface = {};
+    std::uint64_t target_surface_id = 0;
+    std::uint64_t target_surface_revision = 0;
+    std::uint64_t last_fps_publication_tick = 0;
+    bool has_target_surface = false;
     bool first_scene_logged = false;
     bool first_multiwindow_scene_logged = false;
     ego_status last_error = EGO_STATUS_OK;
+    ego_status last_target_surface_error = EGO_STATUS_OK;
+    ego_status last_fps_error = EGO_STATUS_OK;
 };
 
 std::mutex g_transport_mutex;
@@ -799,6 +810,385 @@ bool update_texture(
     return true;
 }
 
+std::uint32_t transport_graphics_api(device_api api) noexcept
+{
+    switch (api)
+    {
+    case device_api::d3d9:
+        return EGO_GRAPHICS_API_D3D9;
+    case device_api::d3d10:
+        return EGO_GRAPHICS_API_D3D10;
+    case device_api::d3d11:
+        return EGO_GRAPHICS_API_D3D11;
+    case device_api::d3d12:
+        return EGO_GRAPHICS_API_D3D12;
+    case device_api::opengl:
+        return EGO_GRAPHICS_API_OPENGL;
+    case device_api::vulkan:
+        return EGO_GRAPHICS_API_VULKAN;
+    default:
+        return EGO_GRAPHICS_API_UNKNOWN;
+    }
+}
+
+bool positive_rect_dimensions(
+    const RECT &rect,
+    std::uint32_t &width,
+    std::uint32_t &height) noexcept
+{
+    const std::int64_t signed_width =
+        static_cast<std::int64_t>(rect.right) - rect.left;
+    const std::int64_t signed_height =
+        static_cast<std::int64_t>(rect.bottom) - rect.top;
+    if (signed_width <= 0 || signed_height <= 0 ||
+        signed_width > std::numeric_limits<std::uint32_t>::max() ||
+        signed_height > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+
+    width = static_cast<std::uint32_t>(signed_width);
+    height = static_cast<std::uint32_t>(signed_height);
+    return true;
+}
+
+class scoped_thread_dpi_awareness
+{
+public:
+    scoped_thread_dpi_awareness() noexcept
+        : previous_context_(SetThreadDpiAwarenessContext(
+              DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+    {
+    }
+
+    scoped_thread_dpi_awareness(const scoped_thread_dpi_awareness &) = delete;
+    scoped_thread_dpi_awareness &operator=(
+        const scoped_thread_dpi_awareness &) = delete;
+
+    ~scoped_thread_dpi_awareness()
+    {
+        if (previous_context_ != nullptr)
+            static_cast<void>(SetThreadDpiAwarenessContext(previous_context_));
+    }
+
+    [[nodiscard]] bool active() const noexcept
+    {
+        return previous_context_ != nullptr;
+    }
+
+private:
+    DPI_AWARENESS_CONTEXT previous_context_ = nullptr;
+};
+
+std::uint64_t next_target_surface_revision() noexcept
+{
+    std::uint64_t current =
+        g_target_surface_revision_sequence.load(std::memory_order_relaxed);
+    while (current != std::numeric_limits<std::uint64_t>::max())
+    {
+        const std::uint64_t next = current + 1;
+        if (g_target_surface_revision_sequence.compare_exchange_weak(
+                current,
+                next,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed))
+        {
+            return next;
+        }
+    }
+
+    // Do not wrap to zero or publish an event older than one already observed.
+    return 0;
+}
+
+bool equivalent_target_surface(
+    const ego_target_surface_v1 &left,
+    const ego_target_surface_v1 &right) noexcept
+{
+    return left.struct_size == right.struct_size &&
+        left.abi_version == right.abi_version &&
+        left.surface_id == right.surface_id &&
+        left.target_hwnd == right.target_hwnd &&
+        left.monitor_handle == right.monitor_handle &&
+        left.graphics_api == right.graphics_api &&
+        left.render_width == right.render_width &&
+        left.render_height == right.render_height &&
+        left.client_screen_x == right.client_screen_x &&
+        left.client_screen_y == right.client_screen_y &&
+        left.client_width == right.client_width &&
+        left.client_height == right.client_height &&
+        left.window_screen_x == right.window_screen_x &&
+        left.window_screen_y == right.window_screen_y &&
+        left.window_width == right.window_width &&
+        left.window_height == right.window_height &&
+        left.dpi_x == right.dpi_x &&
+        left.dpi_y == right.dpi_y &&
+        left.monitor_x == right.monitor_x &&
+        left.monitor_y == right.monitor_y &&
+        left.monitor_width == right.monitor_width &&
+        left.monitor_height == right.monitor_height &&
+        left.work_x == right.work_x &&
+        left.work_y == right.work_y &&
+        left.work_width == right.work_width &&
+        left.work_height == right.work_height &&
+        left.state_flags == right.state_flags;
+}
+
+bool capture_target_surface(
+    effect_runtime *runtime,
+    const swapchain_data &data,
+    ego_target_surface_v1 &surface) noexcept
+{
+    const auto surface_id = static_cast<std::uint64_t>(
+        reinterpret_cast<std::uintptr_t>(runtime));
+    if (surface_id == 0)
+        return false;
+
+    const scoped_thread_dpi_awareness dpi_awareness;
+    if (!dpi_awareness.active())
+        return false;
+
+    const HWND runtime_window = static_cast<HWND>(runtime->get_hwnd());
+    const HWND window = runtime_window != nullptr ? runtime_window : data.window;
+    if (window == nullptr || IsWindow(window) == FALSE)
+        return false;
+
+    std::uint32_t render_width = 0;
+    std::uint32_t render_height = 0;
+    runtime->get_screenshot_width_and_height(&render_width, &render_height);
+    if (render_width == 0 || render_height == 0)
+        return false;
+
+    RECT client_rect = {};
+    std::uint32_t client_width = 0;
+    std::uint32_t client_height = 0;
+    if (GetClientRect(window, &client_rect) == FALSE ||
+        !positive_rect_dimensions(client_rect, client_width, client_height))
+    {
+        return false;
+    }
+
+    POINT client_origin = { client_rect.left, client_rect.top };
+    if (ClientToScreen(window, &client_origin) == FALSE)
+        return false;
+
+    RECT window_rect = {};
+    std::uint32_t window_width = 0;
+    std::uint32_t window_height = 0;
+    if (GetWindowRect(window, &window_rect) == FALSE ||
+        !positive_rect_dimensions(window_rect, window_width, window_height))
+    {
+        window_rect.left = client_origin.x;
+        window_rect.top = client_origin.y;
+        window_width = client_width;
+        window_height = client_height;
+    }
+
+    const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    if (monitor == nullptr)
+        return false;
+
+    MONITORINFO monitor_info = {};
+    monitor_info.cbSize = sizeof(monitor_info);
+    std::uint32_t monitor_width = 0;
+    std::uint32_t monitor_height = 0;
+    std::uint32_t work_width = 0;
+    std::uint32_t work_height = 0;
+    if (GetMonitorInfoW(monitor, &monitor_info) == FALSE ||
+        !positive_rect_dimensions(
+            monitor_info.rcMonitor,
+            monitor_width,
+            monitor_height) ||
+        !positive_rect_dimensions(
+            monitor_info.rcWork,
+            work_width,
+            work_height))
+    {
+        return false;
+    }
+
+    std::uint32_t state_flags = 0;
+    const HWND foreground = GetForegroundWindow();
+    const HWND root = GetAncestor(window, GA_ROOT);
+    if (foreground == window || (root != nullptr && foreground == root))
+        state_flags |= EGO_TARGET_SURFACE_FOCUSED;
+    if (IsIconic(window) != FALSE)
+        state_flags |= EGO_TARGET_SURFACE_MINIMIZED;
+    if (IsWindowVisible(window) != FALSE)
+        state_flags |= EGO_TARGET_SURFACE_VISIBLE;
+
+    const std::int64_t client_right =
+        static_cast<std::int64_t>(client_origin.x) + client_width;
+    const std::int64_t client_bottom =
+        static_cast<std::int64_t>(client_origin.y) + client_height;
+    if (client_origin.x <= monitor_info.rcMonitor.left &&
+        client_origin.y <= monitor_info.rcMonitor.top &&
+        client_right >= monitor_info.rcMonitor.right &&
+        client_bottom >= monitor_info.rcMonitor.bottom)
+    {
+        state_flags |= EGO_TARGET_SURFACE_FULLSCREEN;
+    }
+
+    std::uint32_t dpi = GetDpiForWindow(window);
+    if (dpi == 0)
+        dpi = USER_DEFAULT_SCREEN_DPI;
+
+    surface = {};
+    surface.struct_size = sizeof(surface);
+    surface.abi_version = EGO_ABI_VERSION;
+    surface.surface_id = surface_id;
+    surface.target_hwnd = static_cast<std::uint64_t>(
+        reinterpret_cast<std::uintptr_t>(window));
+    surface.monitor_handle = static_cast<std::uint64_t>(
+        reinterpret_cast<std::uintptr_t>(monitor));
+    surface.graphics_api = transport_graphics_api(runtime->get_device()->get_api());
+    surface.render_width = render_width;
+    surface.render_height = render_height;
+    surface.client_screen_x = client_origin.x;
+    surface.client_screen_y = client_origin.y;
+    surface.client_width = client_width;
+    surface.client_height = client_height;
+    surface.window_screen_x = window_rect.left;
+    surface.window_screen_y = window_rect.top;
+    surface.window_width = window_width;
+    surface.window_height = window_height;
+    surface.dpi_x = dpi;
+    surface.dpi_y = dpi;
+    surface.monitor_x = monitor_info.rcMonitor.left;
+    surface.monitor_y = monitor_info.rcMonitor.top;
+    surface.monitor_width = monitor_width;
+    surface.monitor_height = monitor_height;
+    surface.work_x = monitor_info.rcWork.left;
+    surface.work_y = monitor_info.rcWork.top;
+    surface.work_width = work_width;
+    surface.work_height = work_height;
+    surface.state_flags = state_flags;
+    return true;
+}
+
+void publish_target_surface(effect_runtime *runtime, swapchain_data &data)
+{
+    if (data.transport == nullptr)
+        return;
+
+    ego_target_surface_v1 surface = {};
+    if (!capture_target_surface(runtime, data, surface))
+        return;
+    if (data.has_target_surface &&
+        equivalent_target_surface(data.last_target_surface, surface))
+    {
+        return;
+    }
+
+    surface.revision = next_target_surface_revision();
+    if (surface.revision == 0)
+        return;
+    data.target_surface_revision = surface.revision;
+    const ego_status status =
+        ego_transport_publish_target_surface(data.transport, &surface);
+    if (status != EGO_STATUS_OK)
+    {
+        if (status != data.last_target_surface_error)
+        {
+            data.last_target_surface_error = status;
+            log_transport_error("target-surface publication", status);
+        }
+        return;
+    }
+
+    data.last_target_surface_error = EGO_STATUS_OK;
+    data.last_target_surface = surface;
+    data.target_surface_id = surface.surface_id;
+    data.has_target_surface = true;
+
+    if (!g_target_surface_logged.test_and_set(std::memory_order_relaxed))
+    {
+        char message[256] = {};
+        sprintf_s(
+            message,
+            "Electron game overlay runtime published its first target-surface "
+            "telemetry (surface %llu, API 0x%x, render %ux%u, client %ux%u).",
+            static_cast<unsigned long long>(surface.surface_id),
+            surface.graphics_api,
+            surface.render_width,
+            surface.render_height,
+            surface.client_width,
+            surface.client_height);
+        reshade::log::message(reshade::log::level::info, message);
+    }
+}
+
+void remove_target_surface(swapchain_data &data)
+{
+    if (data.transport == nullptr || !data.has_target_surface ||
+        data.target_surface_id == 0)
+    {
+        return;
+    }
+
+    const std::uint64_t removal_revision = next_target_surface_revision();
+    if (removal_revision == 0)
+        return;
+    data.target_surface_revision = removal_revision;
+    const ego_status status = ego_transport_remove_target_surface(
+        data.transport,
+        data.target_surface_id,
+        removal_revision);
+    if (status != EGO_STATUS_OK)
+        log_transport_error("target-surface removal", status);
+
+    data.has_target_surface = false;
+}
+
+void publish_render_fps(swapchain_data &data)
+{
+    if (data.transport == nullptr)
+        return;
+
+    constexpr std::uint64_t publication_interval_ms = 1000;
+    const std::uint64_t now = GetTickCount64();
+    if (data.last_fps_publication_tick != 0 &&
+        now - data.last_fps_publication_tick < publication_interval_ms)
+    {
+        return;
+    }
+
+    const float fps = ImGui::GetIO().Framerate;
+    if (!std::isfinite(fps) || fps <= 0.0f)
+        return;
+
+    const double scaled_fps = std::round(static_cast<double>(fps) * 1000.0);
+    const std::uint32_t fps_milli = static_cast<std::uint32_t>(std::min(
+        scaled_fps,
+        static_cast<double>(std::numeric_limits<std::uint32_t>::max())));
+    if (fps_milli == 0)
+        return;
+
+    data.last_fps_publication_tick = now;
+    const ego_status status = ego_transport_publish_fps(data.transport, fps_milli);
+    if (status != EGO_STATUS_OK)
+    {
+        if (status != data.last_fps_error)
+        {
+            data.last_fps_error = status;
+            log_transport_error("injected render FPS publication", status);
+        }
+        return;
+    }
+
+    data.last_fps_error = EGO_STATUS_OK;
+    if (!g_fps_logged.test_and_set(std::memory_order_relaxed))
+    {
+        char message[192] = {};
+        sprintf_s(
+            message,
+            "Electron game overlay runtime published its first injected render FPS "
+            "sample (%.3f FPS).",
+            static_cast<double>(fps_milli) / 1000.0);
+        reshade::log::message(reshade::log::level::info, message);
+    }
+}
+
 void on_init_device(device *device)
 {
     device->create_private_data<device_data>();
@@ -843,6 +1233,7 @@ void on_destroy_swapchain(swapchain *swapchain, bool resize)
 
     ego_transport *const transport = data->transport;
     const HWND window = data->window;
+    remove_target_surface(*data);
     swapchain->destroy_private_data<swapchain_data>();
     release_transport(transport, window);
 }
@@ -1039,6 +1430,8 @@ void on_reshade_overlay(effect_runtime *runtime)
     if (data == nullptr)
         return;
 
+    publish_target_surface(runtime, *data);
+    publish_render_fps(*data);
     update_input_ownership(runtime, *data);
     drain_input_messages(data->transport);
     compose_electron_scene(runtime, *data);

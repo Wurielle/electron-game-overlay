@@ -49,10 +49,11 @@ mode is active.
 
 Inside the game, the normal demo initially registers one compact control dock.
 It remains visible with the **Ctrl+I** shortcut, target/watcher state, effective
-input state, and FPS. Press **Ctrl+I** to request interception and expand the
-dock into a clickable launcher for four representative Electron surfaces:
+input state, injected graphics API/render resolution, and real render-process
+FPS. Press **Ctrl+I** to request interception and expand the dock into a
+clickable launcher for four representative Electron surfaces:
 
-- a resizable input playground;
+- a target-following input playground that fills the reported render surface;
 - a compact FPS/input diagnostic strip;
 - independent transparent popup windows;
 - a singleton video surface.
@@ -63,6 +64,13 @@ overlay input ownership is confirmed. Press **Ctrl+I** again, or use **Release
 input**, to collapse the menu and return input to the game. The presentation
 dock is enabled by
 `--demo-presentation`, which `npm run dev` supplies automatically.
+
+The dock reads `session.targets.list()` and the typed FPS event. The main test
+window calls `followTarget({ area: 'render' })`, so target resize, display/DPI,
+and fullscreen changes resize its hidden Electron backing surface while the
+in-game compositor keeps local `(0, 0)` coordinates. Controlled acceptance
+modes keep their fixed proof geometry and do not enable this presentation-only
+layout.
 
 The status watcher runs in a forked Node child because its WMI/COM event sink is
 not compatible with Electron main's existing COM initialization. Its detection

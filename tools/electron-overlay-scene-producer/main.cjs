@@ -157,11 +157,11 @@ const EXPECTED_FRONT_FRAME_HEIGHT = Math.floor(
 );
 const OVERLAY_FILE = path.resolve(
   __dirname,
-  '../../../apps/client/public/index/example-main-overlay.html',
+  '../../apps/client/public/index/example-main-overlay.html',
 );
 const POPUP_OVERLAY_FILE = path.resolve(
   __dirname,
-  '../../../apps/client/public/index/example-popup-overlay.html',
+  '../../apps/client/public/index/example-popup-overlay.html',
 );
 
 // Make Electron's screen metrics, renderer DPR, OSR bitmap, and the SDK's

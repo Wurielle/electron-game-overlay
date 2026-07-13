@@ -13,7 +13,12 @@ use std::sync::Arc;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
-use crate::{ElectronFrameBridge, ElectronScene};
+use crate::{
+    ElectronFrameBridge, ElectronScene, TargetSurface, GRAPHICS_API_D3D10, GRAPHICS_API_D3D11,
+    GRAPHICS_API_D3D12, GRAPHICS_API_D3D9, GRAPHICS_API_OPENGL, GRAPHICS_API_UNKNOWN,
+    GRAPHICS_API_VULKAN, TARGET_SURFACE_FOCUSED, TARGET_SURFACE_FULLSCREEN,
+    TARGET_SURFACE_MINIMIZED, TARGET_SURFACE_STATE_FLAGS, TARGET_SURFACE_VISIBLE,
+};
 
 pub const EGO_ABI_VERSION: u32 = 1;
 
@@ -26,7 +31,21 @@ pub const EGO_STATUS_OUT_OF_RANGE: i32 = -5;
 pub const EGO_STATUS_INTERNAL_ERROR: i32 = -6;
 pub const EGO_STATUS_PANIC: i32 = -7;
 
+pub const EGO_GRAPHICS_API_UNKNOWN: u32 = GRAPHICS_API_UNKNOWN;
+pub const EGO_GRAPHICS_API_D3D9: u32 = GRAPHICS_API_D3D9;
+pub const EGO_GRAPHICS_API_D3D10: u32 = GRAPHICS_API_D3D10;
+pub const EGO_GRAPHICS_API_D3D11: u32 = GRAPHICS_API_D3D11;
+pub const EGO_GRAPHICS_API_D3D12: u32 = GRAPHICS_API_D3D12;
+pub const EGO_GRAPHICS_API_OPENGL: u32 = GRAPHICS_API_OPENGL;
+pub const EGO_GRAPHICS_API_VULKAN: u32 = GRAPHICS_API_VULKAN;
+
+pub const EGO_TARGET_SURFACE_FOCUSED: u32 = TARGET_SURFACE_FOCUSED;
+pub const EGO_TARGET_SURFACE_MINIMIZED: u32 = TARGET_SURFACE_MINIMIZED;
+pub const EGO_TARGET_SURFACE_VISIBLE: u32 = TARGET_SURFACE_VISIBLE;
+pub const EGO_TARGET_SURFACE_FULLSCREEN: u32 = TARGET_SURFACE_FULLSCREEN;
+
 const BYTES_PER_PIXEL: u32 = 4;
+const MAX_SAFE_JSON_INTEGER_U64: u64 = 9_007_199_254_740_991;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -84,6 +103,39 @@ pub struct EgoInputStateV1 {
     pub focused_window_id: u32,
     pub has_captured_window: u32,
     pub captured_window_id: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EgoTargetSurfaceV1 {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub surface_id: u64,
+    pub target_hwnd: u64,
+    pub monitor_handle: u64,
+    pub revision: u64,
+    pub graphics_api: u32,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub client_screen_x: i32,
+    pub client_screen_y: i32,
+    pub client_width: u32,
+    pub client_height: u32,
+    pub window_screen_x: i32,
+    pub window_screen_y: i32,
+    pub window_width: u32,
+    pub window_height: u32,
+    pub dpi_x: u32,
+    pub dpi_y: u32,
+    pub monitor_x: i32,
+    pub monitor_y: i32,
+    pub monitor_width: u32,
+    pub monitor_height: u32,
+    pub work_x: i32,
+    pub work_y: i32,
+    pub work_width: u32,
+    pub work_height: u32,
+    pub state_flags: u32,
 }
 
 #[derive(Debug)]
@@ -242,6 +294,112 @@ unsafe fn validate_output_record<T>(struct_size: u32, abi_version: u32) -> FfiRe
         ));
     }
     Ok(())
+}
+
+fn validate_positive_dimension(name: &str, value: u32) -> FfiResult {
+    if value == 0 {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            format!("target surface {name} must be greater than zero"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_target_surface_revision(revision: u64) -> FfiResult {
+    if !(1..=MAX_SAFE_JSON_INTEGER_U64).contains(&revision) {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            format!(
+                "target surface revision {revision} is outside the exact JSON integer range 1..={MAX_SAFE_JSON_INTEGER_U64}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_target_surface(surface: &EgoTargetSurfaceV1) -> FfiResult {
+    unsafe {
+        validate_output_record::<EgoTargetSurfaceV1>(surface.struct_size, surface.abi_version)?;
+    }
+    if surface.surface_id == 0 {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "target surface ID is zero",
+        ));
+    }
+    if surface.target_hwnd == 0 {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "target surface HWND is null",
+        ));
+    }
+    if surface.monitor_handle == 0 {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "target surface monitor handle is null",
+        ));
+    }
+    validate_target_surface_revision(surface.revision)?;
+    for (name, value) in [
+        ("render width", surface.render_width),
+        ("render height", surface.render_height),
+        ("client width", surface.client_width),
+        ("client height", surface.client_height),
+        ("window width", surface.window_width),
+        ("window height", surface.window_height),
+        ("horizontal DPI", surface.dpi_x),
+        ("vertical DPI", surface.dpi_y),
+        ("monitor width", surface.monitor_width),
+        ("monitor height", surface.monitor_height),
+        ("work-area width", surface.work_width),
+        ("work-area height", surface.work_height),
+    ] {
+        validate_positive_dimension(name, value)?;
+    }
+    if surface.state_flags & !TARGET_SURFACE_STATE_FLAGS != 0 {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            format!(
+                "target surface state flags {:#x} contain unsupported bits",
+                surface.state_flags
+            ),
+        ));
+    }
+    Ok(())
+}
+
+impl From<EgoTargetSurfaceV1> for TargetSurface {
+    fn from(surface: EgoTargetSurfaceV1) -> Self {
+        Self {
+            surface_id: surface.surface_id,
+            target_hwnd: surface.target_hwnd,
+            monitor_handle: surface.monitor_handle,
+            revision: surface.revision,
+            graphics_api: surface.graphics_api,
+            render_width: surface.render_width,
+            render_height: surface.render_height,
+            client_screen_x: surface.client_screen_x,
+            client_screen_y: surface.client_screen_y,
+            client_width: surface.client_width,
+            client_height: surface.client_height,
+            window_screen_x: surface.window_screen_x,
+            window_screen_y: surface.window_screen_y,
+            window_width: surface.window_width,
+            window_height: surface.window_height,
+            dpi_x: surface.dpi_x,
+            dpi_y: surface.dpi_y,
+            monitor_x: surface.monitor_x,
+            monitor_y: surface.monitor_y,
+            monitor_width: surface.monitor_width,
+            monitor_height: surface.monitor_height,
+            work_x: surface.work_x,
+            work_y: surface.work_y,
+            work_width: surface.work_width,
+            work_height: surface.work_height,
+            state_flags: surface.state_flags,
+        }
+    }
 }
 
 #[no_mangle]
@@ -485,6 +643,64 @@ pub unsafe extern "C" fn ego_transport_get_input_state(
 }
 
 /// # Safety
+/// `transport` must remain live for the call. `surface` must point to a
+/// readable record initialized with its size and ABI version.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_publish_target_surface(
+    transport: *mut EgoTransport,
+    surface: *const EgoTargetSurfaceV1,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        let surface = surface.as_ref().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "target surface pointer is null",
+            )
+        })?;
+        validate_target_surface(surface)?;
+        transport.bridge.publish_target_surface((*surface).into());
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_remove_target_surface(
+    transport: *mut EgoTransport,
+    surface_id: u64,
+    revision: u64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if surface_id == 0 {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "target surface ID is zero",
+            ));
+        }
+        validate_target_surface_revision(revision)?;
+        transport.bridge.remove_target_surface(surface_id, revision);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_publish_fps(
+    transport: *mut EgoTransport,
+    fps_milli: u32,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        transport.bridge.publish_fps(fps_milli);
+        Ok(())
+    })
+}
+
+/// # Safety
 /// `transport` must remain live for the call. `target_hwnd` must identify a
 /// live target window for any message whose coordinate conversion uses that
 /// HWND.
@@ -577,11 +793,73 @@ pub unsafe extern "C" fn ego_get_last_error_message(
 mod tests {
     use super::*;
 
+    fn valid_target_surface() -> EgoTargetSurfaceV1 {
+        EgoTargetSurfaceV1 {
+            struct_size: std::mem::size_of::<EgoTargetSurfaceV1>() as u32,
+            abi_version: EGO_ABI_VERSION,
+            surface_id: 0x1000,
+            target_hwnd: 0x2000,
+            monitor_handle: 0x3000,
+            revision: 1,
+            graphics_api: EGO_GRAPHICS_API_D3D11,
+            render_width: 1920,
+            render_height: 1080,
+            client_screen_x: -1920,
+            client_screen_y: 10,
+            client_width: 1920,
+            client_height: 1080,
+            window_screen_x: -1928,
+            window_screen_y: -21,
+            window_width: 1936,
+            window_height: 1119,
+            dpi_x: 144,
+            dpi_y: 144,
+            monitor_x: -2560,
+            monitor_y: 0,
+            monitor_width: 2560,
+            monitor_height: 1440,
+            work_x: -2560,
+            work_y: 0,
+            work_width: 2560,
+            work_height: 1400,
+            state_flags: EGO_TARGET_SURFACE_FOCUSED | EGO_TARGET_SURFACE_VISIBLE,
+        }
+    }
+
     #[test]
     fn abi_layouts_are_stable_on_x64() {
         assert_eq!(std::mem::size_of::<EgoWindowFrameV1>(), 96);
         assert_eq!(std::mem::size_of::<EgoInputStateV1>(), 64);
+        assert_eq!(std::mem::size_of::<EgoTargetSurfaceV1>(), 128);
+        assert_eq!(std::mem::align_of::<EgoTargetSurfaceV1>(), 8);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, struct_size), 0);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, abi_version), 4);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, surface_id), 8);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, target_hwnd), 16);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, monitor_handle), 24);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, revision), 32);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, graphics_api), 40);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, render_width), 44);
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, render_height), 48);
+        assert_eq!(
+            std::mem::offset_of!(EgoTargetSurfaceV1, client_screen_x),
+            52
+        );
+        assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, state_flags), 124);
         assert_eq!(ego_abi_version(), EGO_ABI_VERSION);
+        assert_eq!(EGO_GRAPHICS_API_D3D9, 0x9000);
+        assert_eq!(EGO_GRAPHICS_API_D3D10, 0xa000);
+        assert_eq!(EGO_GRAPHICS_API_D3D11, 0xb000);
+        assert_eq!(EGO_GRAPHICS_API_D3D12, 0xc000);
+        assert_eq!(EGO_GRAPHICS_API_OPENGL, 0x10000);
+        assert_eq!(EGO_GRAPHICS_API_VULKAN, 0x20000);
+        assert_eq!(
+            EGO_TARGET_SURFACE_FOCUSED
+                | EGO_TARGET_SURFACE_MINIMIZED
+                | EGO_TARGET_SURFACE_VISIBLE
+                | EGO_TARGET_SURFACE_FULLSCREEN,
+            TARGET_SURFACE_STATE_FLAGS
+        );
     }
 
     #[test]
@@ -609,5 +887,130 @@ mod tests {
         assert!(String::from_utf8(bytes)
             .unwrap()
             .contains("transport pointer is null"));
+    }
+
+    #[test]
+    fn target_surface_record_validation_rejects_bad_headers_handles_dimensions_and_flags() {
+        let mut surface = valid_target_surface();
+
+        surface.struct_size -= 1;
+        assert_eq!(
+            validate_target_surface(&surface).unwrap_err().status,
+            EGO_STATUS_BUFFER_TOO_SMALL
+        );
+        surface = valid_target_surface();
+        surface.abi_version += 1;
+        assert_eq!(
+            validate_target_surface(&surface).unwrap_err().status,
+            EGO_STATUS_ABI_MISMATCH
+        );
+
+        for clear in [
+            (|record: &mut EgoTargetSurfaceV1| record.surface_id = 0)
+                as fn(&mut EgoTargetSurfaceV1),
+            |record| record.target_hwnd = 0,
+            |record| record.monitor_handle = 0,
+            |record| record.render_width = 0,
+            |record| record.render_height = 0,
+            |record| record.client_width = 0,
+            |record| record.client_height = 0,
+            |record| record.window_width = 0,
+            |record| record.window_height = 0,
+            |record| record.dpi_x = 0,
+            |record| record.dpi_y = 0,
+            |record| record.monitor_width = 0,
+            |record| record.monitor_height = 0,
+            |record| record.work_width = 0,
+            |record| record.work_height = 0,
+        ] {
+            let mut invalid = valid_target_surface();
+            clear(&mut invalid);
+            assert_eq!(
+                validate_target_surface(&invalid).unwrap_err().status,
+                EGO_STATUS_INVALID_ARGUMENT
+            );
+        }
+
+        surface = valid_target_surface();
+        surface.state_flags = TARGET_SURFACE_STATE_FLAGS | 0x10;
+        assert_eq!(
+            validate_target_surface(&surface).unwrap_err().status,
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+
+        surface = valid_target_surface();
+        surface.revision = 0;
+        assert_eq!(
+            validate_target_surface(&surface).unwrap_err().status,
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        surface.revision = MAX_SAFE_JSON_INTEGER_U64 + 1;
+        assert_eq!(
+            validate_target_surface(&surface).unwrap_err().status,
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        surface.revision = MAX_SAFE_JSON_INTEGER_U64;
+        assert!(validate_target_surface(&surface).is_ok());
+
+        surface = valid_target_surface();
+        surface.graphics_api = u32::MAX;
+        assert!(validate_target_surface(&surface).is_ok());
+    }
+
+    #[test]
+    fn telemetry_c_abi_smoke_publishes_updates_fps_and_removal() {
+        let mut transport = ptr::null_mut();
+        assert_eq!(
+            unsafe { ego_transport_create(EGO_ABI_VERSION, &mut transport) },
+            EGO_STATUS_OK
+        );
+        assert!(!transport.is_null());
+
+        let surface = valid_target_surface();
+        assert_eq!(
+            unsafe { ego_transport_publish_target_surface(transport, &surface) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_publish_fps(transport, 59_940) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_remove_target_surface(transport, surface.surface_id, 2) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_remove_target_surface(
+                    transport,
+                    surface.surface_id,
+                    MAX_SAFE_JSON_INTEGER_U64,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_remove_target_surface(transport, surface.surface_id, 0) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_remove_target_surface(
+                    transport,
+                    surface.surface_id,
+                    MAX_SAFE_JSON_INTEGER_U64 + 1,
+                )
+            },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { ego_transport_remove_target_surface(transport, 0, 3) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { ego_transport_publish_target_surface(transport, ptr::null()) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(unsafe { ego_transport_destroy(transport) }, EGO_STATUS_OK);
     }
 }

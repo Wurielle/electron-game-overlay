@@ -38,7 +38,22 @@ and rendered their first transported scenes. Visual inspection confirmed the
 compact information dock, the expanded Ctrl+I launcher, and the full main
 Electron test window in the game.
 
-That result covers sequential launch/relaunch after the watcher is genuinely
+That initial success still missed a Windows PID-reuse defect. The watcher kept
+its startup baseline as bare numeric PIDs, so a later process that reused any
+baseline PID was incorrectly treated as the old process forever. A real
+same-client rerun reproduced the reported intermittent no-overlay launch: Gun
+Frog matched `\\steamapps\\`, but the armed injector never selected it and
+ReShade was absent from the process. The watcher baseline now retains a handle
+to each exact startup process object instead. A July 13 final verification kept
+one Electron client alive while Gun Frog PID 19052 was launched, closed, and
+relaunched as PID 22644. Both runs selected the game, loaded the D3D11
+runtime/add-on, published target telemetry/FPS, and rendered the dock. On the
+second run Ctrl+I opened the
+intercept menu and clicking `Open status window` rendered that Electron surface
+inside Gun Frog while input was captured; closing the game left another watcher
+armed for the next launch.
+
+Those results cover sequential launch/relaunch after the watcher is genuinely
 running. The current `STEAM_GAME_AUTO_ATTACH_ARMING` log is a request marker,
 not a native-ready acknowledgement: session readiness, runtime staging, and
 injector spawn still follow it. The one-shot watcher also rearms only after the
@@ -149,18 +164,28 @@ add-on-load, or first-scene markers. The pinned runtime did not adopt the
 existing device or swap chain, so this route is unsupported. Evidence is under
 `build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
 
-The exact-PID path currently identifies a target by PID plus verified executable
-basename. Process creation time or an equivalent identity token is not yet
-carried end to end, so PID reuse after a stale watcher event remains a hardening
-item. The suspended gates also establish ordering, not an arbitrary safe delay
-for a normal running process. Package publishing is intentionally deferred while
-the repository-built client and SDK remain under local acceptance testing.
+The native path watcher's ignore-baseline now retains exact process handles,
+closing the sequential relaunch defect above. Exact-PID requests and the demo's
+WMI lifecycle correlation still identify targets by PID plus verified executable
+basename; a creation token is not yet carried end to end. Delayed WMI events
+across PID reuse therefore remain a lifecycle-hardening item. The suspended
+gates also establish ordering, not an arbitrary safe delay for a normal running
+process. Package publishing is intentionally deferred while the repository-built
+client and SDK remain under local acceptance testing.
 
 The accepted Gun Frog shutdown emitted a non-fatal ReShade warning about an
 inconsistent `ID3D11Device3` reference count. There was no crash,
 target-directory log, input ordering fault, or router reset. Treat the warning
 as recorded resource-retirement/unload hardening rather than an input-gate
 failure.
+
+The runtime now publishes target HWND, render/client/window geometry, DPI,
+monitor bounds, graphics API, state, and real injected FPS to the SDK. The
+SDK's `followTarget()` layout uses that physical geometry and has simulated
+cross-display/scale coverage. Real mixed-scale hardware or VM acceptance is
+still outstanding. The public `fullscreen` value is a geometry-derived signal
+that the client covers its monitor, not proof of DXGI exclusive-fullscreen
+state.
 
 For this project, **Steam-like** describes the behavior required inside an
 explicitly supported target: passive mode leaves game input unchanged; intercept
@@ -183,9 +208,9 @@ not supported by the current production runtime:
   chains, and multiple simultaneous targets until each has an explicit test;
 - coexistence with an existing ReShade installation or another proxy DLL until
   conflict detection and a supported installation strategy are implemented;
-- physical/VM mixed-monitor target ownership, target-client origin mapping,
-  safe texture retirement, or broader gamepad/DirectInput/XInput/GameInput
-  handling until their recorded acceptance work is complete.
+- real physical/VM mixed-scale target-follow acceptance, safe texture
+  retirement, or broader gamepad/DirectInput/XInput/GameInput handling until
+  their recorded acceptance work is complete.
 
 Unsupported or untested must produce a clear diagnostic rather than silently
 claiming compatibility. Maintain a matrix per target with architecture,
@@ -202,6 +227,11 @@ Captured Ctrl/Shift state is preserved. Copied `WM_INPUT` and
 normalized into Electron events. Touch/pen, secondary/X pointer buttons,
 double-click semantics, pointer wheel, concurrent input pumps, multiple swap
 chains, and raw-only input/text therefore remain explicit runtime hardening.
+Target FPS is currently process-scoped and sampled per observed swap chain, so
+multi-swap-chain support also needs an explicit primary-surface policy. Final
+swap-chain destruction can race the asynchronous explicit surface-removal
+packet; OS-confirmed process disconnect still clears retained SDK target state,
+while bounded graceful transport draining remains a lifecycle hardening item.
 
 #### Overlay runtime issues to fix
 

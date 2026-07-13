@@ -7,6 +7,15 @@ import {
   type NativeOverlay,
 } from './native.js';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
+import {
+  getTargetFollowPhysicalBounds,
+  normalizeTargetFollowOptions,
+  parseOverlayGraphicsFps,
+  parseOverlayTargetSurface,
+  parseOverlayTargetSurfaceRemoved,
+  selectTargetSurface,
+  targetSurfaceKey,
+} from './target-surface.js';
 import { getWindowContentBounds } from './window-content-bounds.js';
 import {
   armAmbiguousPaintBarrier,
@@ -27,6 +36,7 @@ import {
 import type {
   AttachElectronOverlayWindowOptions,
   CreateElectronOverlayWindowOptions,
+  ElectronOverlayWindowFollowTargetOptions,
   ElectronOverlayWindowOptions,
   OverlayHotkey,
   OverlayProcessAttachResult,
@@ -34,14 +44,27 @@ import type {
   OverlaySessionEventHandler,
   OverlaySessionEventMap,
   OverlaySessionEventName,
+  OverlayTargetSurface,
   Rect,
 } from './types.js';
 
+type OverlayScreen = Pick<
+  typeof screen,
+  'getDisplayMatching' | 'on' | 'removeListener' | 'screenToDipRect'
+>;
+
 export class OverlaySession {
   private readonly windowsById = new Map<string, ElectronOverlayWindow>();
+  private readonly electronScreen: OverlayScreen = screen;
   private readonly windowsByNativeId = new Map<number, ElectronOverlayWindow>();
   private readonly windowScaleStates = new Map<number, WindowScaleState>();
   private readonly publishedWindowGeometry = new Map<number, WindowGeometry>();
+  private readonly targetSurfaces = new Map<string, OverlayTargetSurface>();
+  private readonly targetFollowOptions = new Map<
+    number,
+    ElectronOverlayWindowFollowTargetOptions
+  >();
+  private readonly targetFollowRestoreBounds = new Map<number, Rect>();
   private readonly unmatchedFrameDiagnostics = new Map<number, string>();
   private readonly ambiguousCaptureTokens = new Map<number, symbol>();
   private readonly ambiguousCaptureRetryTasks = new Map<
@@ -78,11 +101,20 @@ export class OverlaySession {
     get: (id: string) => this.getWindow(id),
   };
 
+  public readonly targets = {
+    list: (): readonly OverlayTargetSurface[] =>
+      Object.freeze(Array.from(this.targetSurfaces.values())),
+    get: (pid: number, surfaceId: string): OverlayTargetSurface | null =>
+      this.targetSurfaces.get(targetSurfaceKey(pid, surfaceId)) ?? null,
+  };
+
   private readonly windowBridge: OverlayWindowBridge = {
     registerWindow: (window) => this.registerWindow(window),
     unregisterWindow: (window) => this.unregisterWindow(window),
     removeWindow: (window) => this.removeWindow(window),
-    syncWindowGeometry: (window) => this.syncWindowGeometry(window),
+    syncWindowGeometry: (window) => this.handleWindowGeometryChanged(window),
+    followTarget: (window, options) => this.followWindowTarget(window, options),
+    stopFollowingTarget: (window) => this.stopWindowFollowingTarget(window),
     sendFrame: (window, image) => this.sendFrame(window, image),
     sendCursor: (type) => this.sendCursor(type),
   };
@@ -142,6 +174,9 @@ export class OverlaySession {
     this.windowsByNativeId.clear();
     this.windowScaleStates.clear();
     this.publishedWindowGeometry.clear();
+    this.targetSurfaces.clear();
+    this.targetFollowOptions.clear();
+    this.targetFollowRestoreBounds.clear();
     this.unmatchedFrameDiagnostics.clear();
     this.ambiguousCaptureTokens.clear();
     for (const retry of this.ambiguousCaptureRetryTasks.values()) {
@@ -230,6 +265,97 @@ export class OverlaySession {
     return this.windowsById.get(id) || null;
   }
 
+  private followWindowTarget(
+    window: ElectronOverlayWindow,
+    options: ElectronOverlayWindowFollowTargetOptions,
+  ) {
+    this.ensureStarted();
+    const normalizedOptions = normalizeTargetFollowOptions(options);
+    if (!this.targetFollowOptions.has(window.nativeId)) {
+      this.targetFollowRestoreBounds.set(
+        window.nativeId,
+        getWindowContentBounds(window.browserWindow),
+      );
+    }
+    this.targetFollowOptions.set(window.nativeId, normalizedOptions);
+    this.applyTargetFollow(window);
+  }
+
+  private stopWindowFollowingTarget(window: ElectronOverlayWindow) {
+    if (!this.targetFollowOptions.delete(window.nativeId)) {
+      return;
+    }
+    const restoreBounds = this.targetFollowRestoreBounds.get(window.nativeId);
+    this.targetFollowRestoreBounds.delete(window.nativeId);
+    if (window.browserWindow.isDestroyed()) {
+      return;
+    }
+    if (
+      restoreBounds &&
+      !sameRect(getWindowContentBounds(window.browserWindow), restoreBounds)
+    ) {
+      window.browserWindow.setContentBounds(restoreBounds, false);
+    }
+    if (window.visible && this.started) {
+      this.syncWindowGeometry(window);
+    }
+  }
+
+  private handleWindowGeometryChanged(window: ElectronOverlayWindow) {
+    if (this.targetFollowOptions.has(window.nativeId)) {
+      this.applyTargetFollow(window);
+    } else {
+      this.syncWindowGeometry(window);
+    }
+  }
+
+  private applyTargetFollow(window: ElectronOverlayWindow) {
+    const options = this.targetFollowOptions.get(window.nativeId);
+    if (!options || window.browserWindow.isDestroyed()) {
+      return;
+    }
+
+    const surface = selectTargetSurface(
+      Array.from(this.targetSurfaces.values()),
+      options,
+    );
+    if (!surface) {
+      return;
+    }
+
+    const physicalBounds = getTargetFollowPhysicalBounds(
+      surface,
+      options.area ?? 'render',
+    );
+    if (physicalBounds.width <= 0 || physicalBounds.height <= 0) {
+      return;
+    }
+
+    const converted = this.electronScreen.screenToDipRect(null, physicalBounds);
+    const targetBounds = {
+      x: converted.x,
+      y: converted.y,
+      width: Math.max(1, converted.width),
+      height: Math.max(1, converted.height),
+    };
+    const currentBounds = getWindowContentBounds(window.browserWindow);
+    if (!sameRect(currentBounds, targetBounds)) {
+      window.browserWindow.setContentBounds(targetBounds, false);
+    }
+
+    if (window.visible) {
+      this.syncWindowGeometry(window);
+    }
+  }
+
+  private reapplyTargetFollowers() {
+    for (const window of this.windowsById.values()) {
+      if (this.targetFollowOptions.has(window.nativeId)) {
+        this.applyTargetFollow(window);
+      }
+    }
+  }
+
   private setInputIntercept(intercept: boolean) {
     this.ensureStarted();
     this.overlay.sendCommand({
@@ -240,6 +366,7 @@ export class OverlaySession {
 
   private registerWindow(window: ElectronOverlayWindow) {
     this.ensureStarted();
+    this.applyTargetFollow(window);
     const browserWindow = window.browserWindow;
     const rasterBounds = getWindowContentBounds(browserWindow);
     const display = this.getWindowDisplayScale(rasterBounds);
@@ -272,6 +399,8 @@ export class OverlaySession {
     this.windowsByNativeId.delete(window.nativeId);
     this.windowScaleStates.delete(window.nativeId);
     this.publishedWindowGeometry.delete(window.nativeId);
+    this.targetFollowOptions.delete(window.nativeId);
+    this.targetFollowRestoreBounds.delete(window.nativeId);
     this.unmatchedFrameDiagnostics.delete(window.nativeId);
   }
 
@@ -417,13 +546,14 @@ export class OverlaySession {
   }
 
   private handleEvent(event: string, payload: any) {
-    this.emitEvent('nativeEvent', {
-      event,
-      payload,
-    });
-
     if (event === 'game.input') {
       this.forwardGameInput(payload);
+    } else if (event === 'game.target.surface') {
+      this.retainTargetSurface(payload);
+    } else if (event === 'game.target.surface.removed') {
+      this.removeTargetSurface(payload);
+    } else if (event === 'game.process.disconnected') {
+      this.removeTargetSurfacesForProcess(payload?.pid);
     } else if (event === 'game.window.focused') {
       console.log('focusWindowId', payload.focusWindowId);
 
@@ -442,14 +572,87 @@ export class OverlaySession {
       this.emitEvent('windowFocused', {
         windowId: payload.focusWindowId,
       });
-    } else if (event === 'graphics.fps') {
-      this.emitEvent('fps', {
-        fps: payload.fps,
-      });
+    } else if (event === 'game.graphics.fps') {
+      const fps = parseOverlayGraphicsFps(payload);
+      if (fps) {
+        this.emitEvent('fps', fps);
+      }
     } else if (event === 'game.hotkey.down') {
       this.emitEvent('hotkeyDown', {
         name: payload.name,
       });
+    }
+
+    // Public observers run only after canonical state and layout have been
+    // updated, so a consumer cannot mutate the raw payload out from under the
+    // SDK's parsers or interrupt an internal target-follow transition.
+    this.emitEvent('nativeEvent', {
+      event,
+      payload,
+    });
+  }
+
+  private retainTargetSurface(payload: unknown) {
+    const surface = parseOverlayTargetSurface(payload);
+    if (!surface) {
+      return;
+    }
+
+    const key = targetSurfaceKey(surface.pid, surface.surfaceId);
+    const existing = this.targetSurfaces.get(key);
+    if (existing && existing.revision >= surface.revision) {
+      return;
+    }
+
+    // Delete first so iteration order remains the surface change order. The
+    // default follow selector intentionally tracks its newest member.
+    this.targetSurfaces.delete(key);
+    this.targetSurfaces.set(key, surface);
+    this.reapplyTargetFollowers();
+    this.emitEvent('targetSurfaceChanged', surface);
+  }
+
+  private removeTargetSurface(payload: unknown) {
+    const removed = parseOverlayTargetSurfaceRemoved(payload);
+    if (!removed) {
+      return;
+    }
+
+    const key = targetSurfaceKey(removed.pid, removed.surfaceId);
+    const existing = this.targetSurfaces.get(key);
+    if (!existing || existing.revision > removed.revision) {
+      return;
+    }
+
+    this.targetSurfaces.delete(key);
+    this.reapplyTargetFollowers();
+    this.emitEvent('targetSurfaceRemoved', removed);
+  }
+
+  private removeTargetSurfacesForProcess(pid: unknown) {
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) {
+      return;
+    }
+
+    const removedSurfaces = [];
+    for (const [key, surface] of Array.from(this.targetSurfaces.entries())) {
+      if (surface.pid !== pid) {
+        continue;
+      }
+      this.targetSurfaces.delete(key);
+      removedSurfaces.push(
+        Object.freeze({
+          pid: surface.pid,
+          surfaceId: surface.surfaceId,
+          revision: surface.revision,
+        }),
+      );
+    }
+    if (removedSurfaces.length > 0) {
+      this.reapplyTargetFollowers();
+      for (const removed of removedSurfaces) {
+        this.emitEvent('targetSurfaceRemoved', removed);
+      }
     }
   }
 
@@ -463,7 +666,11 @@ export class OverlaySession {
     }
 
     for (const handler of handlers) {
-      handler(payload);
+      try {
+        handler(payload);
+      } catch (error) {
+        console.warn(`Electron overlay ${event} event handler failed`, error);
+      }
     }
   }
 
@@ -490,9 +697,12 @@ export class OverlaySession {
       return;
     }
 
-    screen.on('display-added', this.handleDisplayAdded);
-    screen.on('display-removed', this.handleDisplayRemoved);
-    screen.on('display-metrics-changed', this.handleDisplayMetricsChanged);
+    this.electronScreen.on('display-added', this.handleDisplayAdded);
+    this.electronScreen.on('display-removed', this.handleDisplayRemoved);
+    this.electronScreen.on(
+      'display-metrics-changed',
+      this.handleDisplayMetricsChanged,
+    );
     this.screenEventsBound = true;
   }
 
@@ -501,9 +711,15 @@ export class OverlaySession {
       return;
     }
 
-    screen.removeListener('display-added', this.handleDisplayAdded);
-    screen.removeListener('display-removed', this.handleDisplayRemoved);
-    screen.removeListener(
+    this.electronScreen.removeListener(
+      'display-added',
+      this.handleDisplayAdded,
+    );
+    this.electronScreen.removeListener(
+      'display-removed',
+      this.handleDisplayRemoved,
+    );
+    this.electronScreen.removeListener(
       'display-metrics-changed',
       this.handleDisplayMetricsChanged,
     );
@@ -521,7 +737,11 @@ export class OverlaySession {
       }
 
       try {
-        this.syncWindowGeometry(window);
+        if (this.targetFollowOptions.has(window.nativeId)) {
+          this.applyTargetFollow(window);
+        } else {
+          this.syncWindowGeometry(window);
+        }
       } catch (error) {
         console.warn(
           `Cannot reconcile Electron overlay display state for window ${window.nativeId}`,
@@ -532,7 +752,7 @@ export class OverlaySession {
   }
 
   private getWindowDisplayScale(browserBounds: Rect): WindowDisplayScale {
-    const display = screen.getDisplayMatching(browserBounds);
+    const display = this.electronScreen.getDisplayMatching(browserBounds);
     const scaleFactor =
       Number.isFinite(display.scaleFactor) && display.scaleFactor > 0
         ? display.scaleFactor
@@ -550,7 +770,7 @@ export class OverlaySession {
     window: ElectronOverlayWindow,
     state: WindowScaleState,
   ): WindowGeometry {
-    return getPhysicalWindowGeometry(
+    const geometry = getPhysicalWindowGeometry(
       state.activeRasterBounds,
       state.activeDisplay,
       {
@@ -560,6 +780,25 @@ export class OverlaySession {
       },
       state.activeFrameSize,
     );
+    if (!this.targetFollowOptions.has(window.nativeId)) {
+      return geometry;
+    }
+
+    return {
+      ...geometry,
+      rect: {
+        x: 0,
+        y: 0,
+        width: state.activeFrameSize.width,
+        height: state.activeFrameSize.height,
+      },
+      minWidth: state.activeFrameSize.width,
+      maxWidth: state.activeFrameSize.width,
+      minHeight: state.activeFrameSize.height,
+      maxHeight: state.activeFrameSize.height,
+      caption: { left: 0, right: 0, top: 0, height: 0 },
+      dragBorderWidth: 0,
+    };
   }
 
   private publishWindowGeometry(
@@ -875,5 +1114,14 @@ function frameSizeWithinTolerance(
     actual.height > 0 &&
     Math.abs(actual.width - expected.width) <= 1 &&
     Math.abs(actual.height - expected.height) <= 1
+  );
+}
+
+function sameRect(left: Rect, right: Rect) {
+  return (
+    left.x === right.x &&
+    left.y === right.y &&
+    left.width === right.width &&
+    left.height === right.height
   );
 }

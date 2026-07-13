@@ -31,6 +31,9 @@ set(RESHAPE_SOURCE_PATCHES
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-exact-pid.patch"
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher.patch"
 )
+set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher-process-identity.patch"
+)
 set(RESHAPE_EXPECTED_PATCHED_FILES
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -49,10 +52,11 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
     "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
-    "tools/injector.cpp=853B5BBEC22968A695E658F392C36C080AE8217FEB5261C86555CFDD23977D26"
+    "tools/injector.cpp=4EFC2A96B4D6CDF5BF5C7994A4C8151188C599C99CC755801EC47F568D3F04D6"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
+    "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -211,11 +215,20 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply five narrow pinned seams: the passive copied-input observer, an injector
+# Apply six narrow pinned seams: the passive copied-input observer, an injector
 # base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, and a one-shot prearmed path watcher. The
-# watcher patch is terminal so existing exact-PID trees can be migrated without
-# resetting or replacing those ignored source trees.
+# watcher patches are terminal so existing exact-PID and original watcher trees
+# can migrate without resetting or replacing those ignored source trees.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
 list(GET RESHAPE_SOURCE_PATCHES 4 RESHAPE_PATH_WATCHER_PATCH)
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
@@ -412,6 +425,54 @@ if(NOT RESHAPE_PATH_WATCHER_PATCH_APPLIED EQUAL 0)
         )
     endif()
 endif()
+endif()
+
+endif()
+
+# The process-identity patch is deliberately layered after the original path
+# watcher so existing ignored build trees migrate without resetting fetched
+# source. It retains handles for startup-baseline processes, so exited process
+# objects are distinguishable from later processes even if Windows reuses a PID.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned path-watcher process-identity patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to migrate the ReShade path watcher to process identities.\n"
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY_ERROR}"
+        )
+    endif()
 endif()
 
 # Fail configuration unless this FetchContent tree is exactly the pinned

@@ -57,7 +57,8 @@ pointer wheel normalization remain explicit runtime hardening.
 
 Adds a one-shot `inject.exe --path-contains <fragment>` prelaunch watcher that
 snapshots and ignores processes already present when armed, then polls new
-processes every millisecond and resolves their absolute executable paths. Path
+processes every 50 milliseconds and resolves new candidates' absolute
+executable paths. Path
 matching is case-insensitive and treats forward and backward slashes equally.
 Repeatable `--exclude-name <exe basename>` arguments skip helper processes such
 as Unity crash handlers before selection. The watcher flushes a stable armed
@@ -65,10 +66,21 @@ line immediately and reports the matched absolute path before the existing
 matching-PID line. Failures that are still safe to retry emit the existing
 `ReShade injection not started.` marker.
 
+## `reshade-injector-path-watcher-process-identity.patch`
+
+Layers over the path watcher and changes its startup baseline from bare process
+IDs to retained process handles keyed by PID. A retained handle identifies the
+exact process object and becomes signaled when that process exits; the watcher
+then closes and removes it before examining later candidates. Windows PID reuse
+therefore cannot make a replacement process look like the old baseline process.
+The same retained handles avoid reopening every ignored process on each poll.
+This patch remains separate so build trees containing the original watcher
+migrate forward without resetting the pinned ReShade checkout.
+
 CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact eight-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all five patch
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all six patch
 hashes, the full-add-on configuration, and runtime/injector hashes before
 accepting its cache.
