@@ -17,7 +17,9 @@ migration then passed the same Gun Frog gate through the built production client
 and SDK ReShade launcher on July 13. The same production path subsequently
 passed two isolated controlled D3D12 cycles with both Electron windows,
 interception/release, caption dragging, normal target exit, cleanup, and fresh
-relaunch.
+relaunch. The restart lifecycle subsequently passed with one Electron client
+and overlay session across two new target PIDs, using the real frontend Inject
+action and distinct isolated ReShade runs.
 
 ### POC finish line
 
@@ -45,12 +47,14 @@ relaunch.
   - `gun-frog-client-sdk.ps1` passed against PID 11104: all four aligned Electron controls stayed inside the overlay, Ctrl+I produced the negative acknowledgement, the identical released Quit position closed the game, and the runner persisted `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS` in the client-run `result.txt`.
 - [x] Pass the controlled production-client lifecycle, multi-window, and D3D12 gate twice with a fresh relaunch.
   - `d3d12-client-sdk.ps1` passed against PIDs 17248 and 13528 with distinct isolated ReShade runs. Both Electron windows accepted input, the foreground target oracle froze during interception, caption drag was verified behaviorally, release restored legacy/raw/primary-pointer input and confinement, released Escape closed each host, and no test process remained. Evidence under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630` contains `D3D12_REAL_CLIENT_SDK_GATE_PASS`.
+- [x] Re-arm the SDK and frontend after an exact target disconnect without restarting Electron.
+  - `d3d12-client-sdk-reinjection.ps1` kept Electron PID 17756 alive across target PIDs 19764 and 17940. The SDK pinned each injector-selected PID, rejected forged lifecycle events, kept its injection latch across transient transport loss, returned to `idle` only after the OS confirmed the selected target had exited, staged distinct runs, and passed the second D3D12 scene/input/interception cycle. Evidence under `build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105` contains `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`.
 
 ### Post-POC compatibility and hardening
 
 - [ ] Add supported-runtime installation, existing ReShade/proxy conflict detection, typed diagnostics, and clean disable/unload behavior.
 - [ ] Investigate the non-fatal ReShade `ID3D11Device3` reference-count warning emitted during the accepted Gun Frog shutdown as part of resource retirement/unload hardening.
-- [ ] Replace the POC injector's prelaunch basename watcher with a PID-correlated production attach boundary, preserve the isolated base-path behavior, and prove late attachment separately.
+- [ ] Add caller-selected PID targeting for ambiguous same-basename processes and prove late attachment separately. The current production boundary already pins the injector-selected PID to the authenticated transport and uses isolated run directories.
 - [ ] Expand real-client compatibility through additional permitted games; do not infer other-game support from the accepted Gun Frog path or controlled hosts.
 - [ ] Add target-HWND display/client-origin ownership, real mixed-monitor acceptance, safe texture retirement, and multiple-target routing.
 - [ ] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including buffered-record target ownership and raw-only text policy.

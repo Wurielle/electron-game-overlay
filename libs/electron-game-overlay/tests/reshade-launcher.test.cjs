@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const childProcess = require('node:child_process');
+const fsPromises = require('node:fs/promises');
+const { EventEmitter } = require('node:events');
 const {
   existsSync,
   mkdirSync,
@@ -18,6 +20,7 @@ const {
   RESHADE_CLIENT_INJECTOR_STARTED_MARKER,
   RESHADE_CLIENT_RUNTIME_STAGED_MARKER,
   RESHADE_CLIENT_TARGET_CONNECTED_MARKER,
+  RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER,
   ReShadeOverlayLauncher,
   buildReShadeInvocation,
   defaultReShadeRunsRootDirectory,
@@ -32,9 +35,10 @@ const artifacts = [
   'electron_reshade_overlay_poc.addon64',
   'ReShade.ini',
 ];
-const injectorSuccess =
-  "Waiting for a 'Gun Frog.exe' process to spawn ...\n" +
-  'Found a matching process with PID 4242! Injecting ReShade ... Succeeded!\n';
+const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>
+  `Waiting for a '${processName}' process to spawn ...\n` +
+  `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n`;
+const injectorSuccess = injectorSuccessFor(4242);
 const temporaryDirectories = new Set();
 
 test.afterEach(() => {
@@ -170,7 +174,7 @@ test('startup and target validation reject incomplete or unsafe inputs', () => {
 
 test('launch copies the exact runtime, uses one process argument, and preserves logs', async () => {
   const fixture = createRuntime();
-  const config = createConfig(fixture);
+  const config = createConfig(fixture, { expectedTargetPid: 4242 });
   const execution = stubExecFile();
   const originalLog = console.log;
   const markers = [];
@@ -178,7 +182,11 @@ test('launch copies the exact runtime, uses one process argument, and preserves 
   const launcher = new ReShadeOverlayLauncher(config);
 
   try {
+    assert.equal(launcher.state, 'idle');
     const request = launcher.launch({ processName: 'Gun Frog.exe' });
+    assert.equal(launcher.state, 'attaching');
+    assert.equal(launcher.acceptTargetConnection(7), false);
+    assert.equal(launcher.state, 'attaching');
     assert.equal(
       launcher.launch({ processName: 'Gun Frog.exe' }),
       request,
@@ -209,6 +217,7 @@ test('launch copies the exact runtime, uses one process argument, and preserves 
     const result = await request;
     assert.equal(result.processName, 'Gun Frog.exe');
     assert.equal(result.targetLabel, 'process:Gun Frog.exe');
+    assert.equal(result.injectorTargetPid, 4242);
     assert.equal(result.runDirectory, runDirectory);
     assert.equal(launcher.runDirectory, runDirectory);
     assert.equal(
@@ -235,13 +244,72 @@ test('launch copies the exact runtime, uses one process argument, and preserves 
         `${RESHADE_CLIENT_INJECTOR_RETURNED_MARKER} target="Gun Frog.exe"`,
       ),
     );
+    assert.equal(launcher.acceptTargetConnection(4242), true);
+    assert.equal(launcher.state, 'connected');
+    assert.equal(launcher.acceptTargetConnection(4242), false);
     await assert.rejects(
       launcher.launch({ processName: 'Gun Frog.exe' }),
-      /automatic reinjection is disabled/,
+      /already connected/,
+    );
+    await assert.rejects(
+      launcher.attach(createSessionHarness().session, {
+        processName: 'Gun Frog.exe',
+      }),
+      /already connected/,
     );
   } finally {
     launcher.dispose();
     console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('missing low-level connection proof stays conservatively latched', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const proofTimerHandle = Object.freeze({ proofTimer: true });
+  let proofTimerCallback;
+  global.setTimeout = (callback, delay, ...args) => {
+    if (delay === 120_000 && proofTimerCallback === undefined) {
+      proofTimerCallback = () => callback(...args);
+      return proofTimerHandle;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (handle !== proofTimerHandle) {
+      originalClearTimeout(handle);
+    }
+  };
+
+  try {
+    const request = launcher.launch({ processName: 'game.exe' });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, injectorSuccessFor(4242, 'game.exe'), '');
+    await request;
+    assert.equal(launcher.state, 'attaching');
+    assert.equal(typeof proofTimerCallback, 'function');
+
+    proofTimerCallback();
+    assert.equal(launcher.state, 'attaching');
+    assert.equal(launcher.acceptTargetConnection(4242), false);
+    await assert.rejects(
+      launcher.launch({ processName: 'game.exe' }),
+      /awaiting target connection/,
+    );
+    await assert.rejects(
+      launcher.attach(createSessionHarness().session, {
+        processName: 'game.exe',
+      }),
+      /awaiting target connection/,
+    );
+  } finally {
+    launcher.dispose();
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
     execution.restore();
   }
 });
@@ -273,6 +341,17 @@ test('launch rejects a false-positive injector return and keeps its evidence', a
       readFileSync(path.join(runDirectory, 'inject.stderr.log'), 'utf8'),
       'warning\n',
     );
+    assert.equal(launcher.state, 'blocked');
+    await assert.rejects(
+      launcher.launch({ processName: 'game.exe' }),
+      /outcome is indeterminate/,
+    );
+    await assert.rejects(
+      launcher.attach(createSessionHarness().session, {
+        processName: 'game.exe',
+      }),
+      /outcome is indeterminate/,
+    );
   } finally {
     launcher.dispose();
     console.error = originalError;
@@ -280,7 +359,179 @@ test('launch rejects a false-positive injector return and keeps its evidence', a
   }
 });
 
-test('attach waits for readiness, injector proof, and matching authenticated PID', async () => {
+test('success marker with a missing PID blocks retries', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const originalError = console.error;
+  console.error = () => undefined;
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+
+  try {
+    const request = launcher.launch({ processName: 'game.exe' });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, 'Injecting ReShade ... Succeeded!\n', '');
+    await assert.rejects(request, /valid matched process PID/);
+    assert.equal(launcher.state, 'blocked');
+    await assert.rejects(
+      launcher.launch({ processName: 'game.exe' }),
+      /outcome is indeterminate/,
+    );
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    execution.restore();
+  }
+});
+
+test('ambiguous injector callback and expected-PID mismatch block retries', async (t) => {
+  await t.test('success marker accompanied by callback error', async () => {
+    const fixture = createRuntime();
+    const execution = stubExecFile();
+    const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+    const originalError = console.error;
+    console.error = () => undefined;
+    try {
+      const request = launcher.launch({ processName: 'game.exe' });
+      await waitFor(() => execution.calls.length === 1);
+      const callbackError = Object.assign(new Error('late callback failure'), {
+        code: 'ETIMEDOUT',
+      });
+      execution.calls[0].callback(
+        callbackError,
+        injectorSuccessFor(9001, 'game.exe'),
+        '',
+      );
+      await assert.rejects(request, /late callback failure/);
+      assert.equal(launcher.state, 'blocked');
+      await assert.rejects(
+        launcher.launch({ processName: 'game.exe' }),
+        /outcome is indeterminate/,
+      );
+    } finally {
+      launcher.dispose();
+      console.error = originalError;
+      execution.restore();
+    }
+  });
+
+  await t.test('successful injector selected an unexpected PID', async () => {
+    const fixture = createRuntime();
+    const execution = stubExecFile();
+    const launcher = new ReShadeOverlayLauncher(
+      createConfig(fixture, { expectedTargetPid: 9001 }),
+    );
+    const originalError = console.error;
+    console.error = () => undefined;
+    try {
+      const request = launcher.launch({ processName: 'game.exe' });
+      await waitFor(() => execution.calls.length === 1);
+      execution.calls[0].callback(
+        null,
+        injectorSuccessFor(9002, 'game.exe'),
+        '',
+      );
+      await assert.rejects(request, /selected pid=9002; expected pid=9001/);
+      assert.equal(launcher.state, 'blocked');
+      await assert.rejects(
+        launcher.attach(createSessionHarness().session, {
+          processName: 'game.exe',
+        }),
+        /outcome is indeterminate/,
+      );
+    } finally {
+      launcher.dispose();
+      console.error = originalError;
+      execution.restore();
+    }
+  });
+});
+
+test('session loss after successful injection proof blocks retries', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  const markers = [];
+  console.log = (message) => markers.push(String(message));
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, injectorSuccessFor(9101, 'game.exe'), '');
+    await waitFor(() =>
+      markers.includes(
+        `${RESHADE_CLIENT_INJECTOR_RETURNED_MARKER} target="game.exe"`,
+      ),
+    );
+    sessionHarness.close();
+    await assert.rejects(attachment, /session closed before.*target connected/);
+    assert.equal(launcher.state, 'blocked');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+    await assert.rejects(
+      launcher.attach(createSessionHarness().session, {
+        processName: 'game.exe',
+      }),
+      /outcome is indeterminate/,
+    );
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('connection-proof timeout after successful injection blocks retries', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const proofTimers = [];
+  global.setTimeout = (callback, delay, ...args) => {
+    if (delay === 120_000) {
+      const handle = { callback: () => callback(...args) };
+      proofTimers.push(handle);
+      return handle;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (!proofTimers.includes(handle)) {
+      originalClearTimeout(handle);
+    }
+  };
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, injectorSuccessFor(9201, 'game.exe'), '');
+    await waitFor(() => proofTimers.length === 2);
+    proofTimers[0].callback();
+
+    await assert.rejects(attachment, /did not connect within/);
+    assert.equal(launcher.state, 'blocked');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+    await assert.rejects(
+      launcher.launch({ processName: 'game.exe' }),
+      /outcome is indeterminate/,
+    );
+  } finally {
+    launcher.dispose();
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+    execution.restore();
+  }
+});
+
+test('attach requires matching path and PID, rejects live duplicates, and cleans up on disconnect', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
   const readiness = deferred();
@@ -309,9 +560,20 @@ test('attach waits for readiness, injector proof, and matching authenticated PID
     assert.equal(sessionHarness.closeHandlerCount, 1);
 
     execution.calls[0].callback(null, injectorSuccess, '');
-    sessionHarness.emitNative('game.process', { pid: 7 });
+    sessionHarness.emitNative('game.process', {
+      pid: 4242,
+      path: 'C:\\games\\Other Game.exe',
+    });
+    sessionHarness.emitNative('game.process', {
+      pid: 7,
+      path: 'C:\\games\\Gun Frog.exe',
+    });
     await flushMicrotasks();
-    sessionHarness.emitNative('game.process', { pid: 4242 });
+    assert.equal((await settleWithin(attachment, 20)).status, 'timeout');
+    sessionHarness.emitNative('game.process', {
+      pid: 4242,
+      path: 'C:\\games\\GUN FROG.EXE',
+    });
 
     const [firstResult, secondResult] = await Promise.all([
       attachment,
@@ -324,6 +586,116 @@ test('attach waits for readiness, injector proof, and matching authenticated PID
     assert.ok(
       markers.includes(`${RESHADE_CLIENT_TARGET_CONNECTED_MARKER} pid=4242`),
     );
+    assert.equal(launcher.state, 'connected');
+    assert.equal(sessionHarness.nativeHandlerCount, 1);
+    assert.equal(sessionHarness.closeHandlerCount, 1);
+
+    sessionHarness.emitNative('game.process.transport-lost', {
+      pid: 4242,
+      path: 'C:\\games\\GUN FROG.EXE',
+    });
+    assert.equal(launcher.state, 'connected');
+    sessionHarness.emitNative('game.process', {
+      pid: 4242,
+      path: 'D:\\reconnected\\renamed-image.bin',
+    });
+    assert.equal(launcher.state, 'connected');
+
+    await assert.rejects(
+      launcher.attach(sessionHarness.session, {
+        processName: 'Gun Frog.exe',
+      }),
+      /already connected/,
+    );
+    await assert.rejects(
+      launcher.attach(sessionHarness.session, { processName: 'game.exe' }),
+      /different ReShade target is already connected/,
+    );
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 7,
+      path: 'C:\\games\\GUN FROG.EXE',
+    });
+    assert.equal(launcher.state, 'connected');
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 4242,
+      path: 'C:\\games\\GUN FROG.EXE',
+    });
+    assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+    assert.ok(
+      markers.includes(`${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=4242`),
+    );
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('one launcher attaches twice with injector-pinned PIDs and distinct staged runs', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const firstAttachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    sessionHarness.emitNative('game.process', {
+      pid: 5100,
+      path: 'C:\\games\\game.exe',
+    });
+    execution.calls[0].callback(null, injectorSuccessFor(5101, 'game.exe'), '');
+    await flushMicrotasks();
+    assert.equal(
+      (await settleWithin(firstAttachment, 20)).status,
+      'timeout',
+      'a stale same-name connection must not satisfy the injector PID pin',
+    );
+    sessionHarness.emitNative('game.process', {
+      pid: 5101,
+      path: 'C:\\games\\game.exe',
+    });
+    const firstResult = await firstAttachment;
+    assert.equal(firstResult.pid, 5101);
+    assert.equal(firstResult.injectorTargetPid, 5101);
+    assert.equal(launcher.state, 'connected');
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 5101,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal(launcher.state, 'idle');
+
+    const secondAttachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, injectorSuccessFor(6101, 'game.exe'), '');
+    sessionHarness.emitNative('game.process', {
+      pid: 6101,
+      path: 'D:\\other\\GAME.EXE',
+    });
+    const secondResult = await secondAttachment;
+    assert.equal(secondResult.pid, 6101);
+    assert.equal(secondResult.injectorTargetPid, 6101);
+    assert.notEqual(secondResult.runDirectory, firstResult.runDirectory);
+    assert.notEqual(
+      execution.calls[1].options.cwd,
+      execution.calls[0].options.cwd,
+    );
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 6101,
+      path: 'D:\\other\\GAME.EXE',
+    });
+    assert.equal(launcher.state, 'idle');
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);
   } finally {
@@ -333,11 +705,257 @@ test('attach waits for readiness, injector proof, and matching authenticated PID
   }
 });
 
+test('a candidate disconnect before injector PID proof rejects once pinned and permits retry', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const disconnectedAttachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    sessionHarness.emitNative('game.process', {
+      pid: 8101,
+      path: 'C:\\games\\game.exe',
+    });
+    sessionHarness.emitNative('game.process.transport-lost', {
+      pid: 8101,
+      path: 'C:\\games\\game.exe',
+    });
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 8101,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal(
+      (await settleWithin(disconnectedAttachment, 20)).status,
+      'timeout',
+      'an unpinned same-name process could still be unrelated',
+    );
+
+    execution.calls[0].callback(null, injectorSuccessFor(8101, 'game.exe'), '');
+    const disconnectedOutcome = await settleWithin(disconnectedAttachment, 250);
+    assert.equal(disconnectedOutcome.status, 'rejected');
+    assert.match(
+      disconnectedOutcome.error.message,
+      /pid=8101 disconnected before attachment completed/,
+    );
+    assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+
+    const retry = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, injectorSuccessFor(8102, 'game.exe'), '');
+    sessionHarness.emitNative('game.process', {
+      pid: 8102,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal((await retry).pid, 8102);
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 8102,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('candidate transport loss before PID proof requires same-PID reauthentication', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    sessionHarness.emitNative('game.process', {
+      pid: 8201,
+      path: 'C:\\games\\game.exe',
+    });
+    sessionHarness.emitNative('game.process.transport-lost', {
+      pid: 8201,
+      path: 'C:\\games\\game.exe',
+    });
+    execution.calls[0].callback(null, injectorSuccessFor(8201, 'game.exe'), '');
+    assert.equal((await settleWithin(attachment, 20)).status, 'timeout');
+
+    sessionHarness.emitNative('game.process', {
+      pid: 8201,
+      path: 'D:\\reauthenticated\\renamed-image.bin',
+    });
+    assert.equal((await attachment).pid, 8201);
+    assert.equal(launcher.state, 'connected');
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 8201,
+      path: 'unrelated-path-after-pid-proof',
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('a failed attachment returns to idle and can be retried without leaked listeners', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile({ autoSpawn: false });
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.error = () => undefined;
+  console.log = () => undefined;
+
+  try {
+    const failedAttachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const spawnError = Object.assign(new Error('injector did not spawn'), {
+      code: 'ENOENT',
+    });
+    execution.calls[0].callback(spawnError, '', 'failure\n');
+    await assert.rejects(failedAttachment, /injector did not spawn/);
+    assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+
+    const retriedAttachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+    });
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].spawn();
+    execution.calls[1].callback(null, injectorSuccessFor(7002, 'game.exe'), '');
+    sessionHarness.emitNative('game.process', {
+      pid: 7002,
+      path: 'C:\\games\\game.exe',
+    });
+    const retriedResult = await retriedAttachment;
+    assert.equal(retriedResult.pid, 7002);
+    assert.notEqual(retriedResult.runDirectory, execution.calls[0].options.cwd);
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 7002,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('timeout, session close, and dispose cannot spawn after delayed staging', async () => {
+  for (const scenario of ['timeout', 'session-close', 'dispose']) {
+    const fixture = createRuntime();
+    const execution = stubExecFile();
+    const staging = delayRuntimeStaging(fixture.runsRootDirectory);
+    const sessionHarness = createSessionHarness();
+    const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+    const originalSetTimeout = global.setTimeout;
+    const originalClearTimeout = global.clearTimeout;
+    const proofTimers = [];
+    if (scenario === 'timeout') {
+      global.setTimeout = (callback, delay, ...args) => {
+        if (delay === 120_000) {
+          const handle = { callback: () => callback(...args) };
+          proofTimers.push(handle);
+          return handle;
+        }
+        return originalSetTimeout(callback, delay, ...args);
+      };
+      global.clearTimeout = (handle) => {
+        if (!proofTimers.includes(handle)) {
+          originalClearTimeout(handle);
+        }
+      };
+    }
+
+    try {
+      const attachment = launcher.attach(sessionHarness.session, {
+        processName: 'game.exe',
+      });
+      await staging.entered;
+
+      if (scenario === 'timeout') {
+        assert.equal(proofTimers.length, 2);
+        proofTimers[0].callback();
+      } else if (scenario === 'session-close') {
+        sessionHarness.close();
+      } else {
+        launcher.dispose();
+      }
+
+      const earlyOutcome = await settleWithin(attachment, 20);
+      assert.equal(
+        earlyOutcome.status,
+        scenario === 'dispose' ? 'rejected' : 'timeout',
+        `${scenario} must not expose a retryable result while staging is unresolved`,
+      );
+      assert.equal(execution.calls.length, 0);
+
+      staging.release();
+      await staging.finished;
+      await flushMicrotasks();
+      const outcome =
+        scenario === 'dispose'
+          ? earlyOutcome
+          : await settleWithin(attachment, 500);
+      assert.equal(outcome.status, 'rejected');
+      assert.equal(execution.calls.length, 0);
+      if (scenario === 'dispose') {
+        assert.match(outcome.error.message, /disposed before attachment/);
+        await assert.rejects(
+          launcher.launch({ processName: 'game.exe' }),
+          /launcher is disposed/,
+        );
+      } else {
+        assert.equal(launcher.state, 'blocked');
+        await assert.rejects(
+          launcher.launch({ processName: 'game.exe' }),
+          /outcome is indeterminate/,
+        );
+      }
+    } finally {
+      staging.release();
+      staging.restore();
+      launcher.dispose();
+      global.setTimeout = originalSetTimeout;
+      global.clearTimeout = originalClearTimeout;
+      execution.restore();
+    }
+  }
+});
+
 test('disposing a pending attachment kills the injector and rejects promptly', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
   const sessionHarness = createSessionHarness();
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalError = console.error;
+  const errors = [];
+  console.error = (message) => errors.push(String(message));
 
   try {
     const attachment = launcher.attach(sessionHarness.session, {
@@ -356,11 +974,13 @@ test('disposing a pending attachment kills the injector and rejects promptly', a
     );
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);
+    assert.equal(launcher.state, 'idle');
 
     call.callback(null, injectorSuccess, '');
-    await flushMicrotasks();
+    await waitFor(() => errors.length === 1);
   } finally {
     launcher.dispose();
+    console.error = originalError;
     execution.restore();
   }
 });
@@ -391,12 +1011,12 @@ function createConfig(fixture, overrides = {}) {
   return Object.freeze({ ...config, ...overrides });
 }
 
-function stubExecFile() {
+function stubExecFile({ autoSpawn = true } = {}) {
   const originalExecFile = childProcess.execFile;
   const calls = [];
 
   childProcess.execFile = (executable, args, options, callback) => {
-    const child = {
+    const child = Object.assign(new EventEmitter(), {
       exitCode: null,
       signalCode: null,
       killed: false,
@@ -404,8 +1024,25 @@ function stubExecFile() {
         this.killed = true;
         return true;
       },
+    });
+    let spawned = false;
+    const spawn = () => {
+      if (!spawned && !child.killed) {
+        spawned = true;
+        child.emit('spawn');
+      }
     };
-    calls.push({ executable, arguments: args, options, callback, child });
+    calls.push({
+      executable,
+      arguments: args,
+      options,
+      callback,
+      child,
+      spawn,
+    });
+    if (autoSpawn) {
+      queueMicrotask(spawn);
+    }
     return child;
   };
 
@@ -413,6 +1050,51 @@ function stubExecFile() {
     calls,
     restore() {
       childProcess.execFile = originalExecFile;
+    },
+  };
+}
+
+function delayRuntimeStaging(runsRootDirectory) {
+  const originalMkdir = fsPromises.mkdir;
+  const originalCopyFile = fsPromises.copyFile;
+  const entered = deferred();
+  const release = deferred();
+  const finished = deferred();
+  let intercepted = false;
+  let completedCopies = 0;
+  fsPromises.mkdir = async (directoryPath, options) => {
+    if (
+      !intercepted &&
+      path.resolve(directoryPath) === path.resolve(runsRootDirectory)
+    ) {
+      intercepted = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalMkdir(directoryPath, options);
+  };
+  fsPromises.copyFile = async (sourcePath, destinationPath) => {
+    const result = await originalCopyFile(sourcePath, destinationPath);
+    if (
+      path
+        .resolve(destinationPath)
+        .startsWith(`${path.resolve(runsRootDirectory)}${path.sep}`)
+    ) {
+      completedCopies += 1;
+      if (completedCopies === artifacts.length) {
+        finished.resolve();
+      }
+    }
+    return result;
+  };
+
+  return {
+    entered: entered.promise,
+    finished: finished.promise,
+    release: release.resolve,
+    restore() {
+      fsPromises.mkdir = originalMkdir;
+      fsPromises.copyFile = originalCopyFile;
     },
   };
 }

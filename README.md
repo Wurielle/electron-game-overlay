@@ -22,7 +22,10 @@ game normally. The built production client and SDK ReShade launcher then passed
 the same four-control gate against Gun Frog on July 13. That production path
 also passed two fresh controlled D3D12 client/host cycles with both Electron
 windows, interception, text, caption dragging, release, normal target exit, and
-isolated relaunch. The active client host switch and focused POC finish line are
+isolated relaunch. A separate gate then kept one Electron client alive across
+two target exits, re-armed through the frontend, and passed the same D3D12
+scene/input boundary with a fresh injector-selected PID and isolated runtime on
+each cycle. The active client host switch and focused POC finish line are
 complete for those bounded, arm-before-launch paths.
 
 The change in direction follows real-client testing against Gun Frog. The
@@ -76,6 +79,7 @@ Developer PowerShell, and launch one named test case:
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-electron-scene.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-electron-scene.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-electron-scene.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-client-sdk.ps1
 ```
@@ -85,7 +89,10 @@ drives the real client and public SDK through two isolated controlled D3D12
 cycles and emits `D3D12_REAL_CLIENT_SDK_GATE_PASS`. The preferred real-game gate
 is `gun-frog-client-sdk.ps1`: it arms the SDK ReShade launcher for `Gun Frog.exe`
 before Steam starts the game and validates the four Electron menu clicks plus
-the Ctrl+I release acknowledgement. For a hands-on dev run, use
+the Ctrl+I release acknowledgement. Use
+`d3d12-client-sdk-reinjection.ps1` for the restart case: it keeps one Electron
+client alive, closes and reopens the controlled target, and injects both times
+through the frontend. For a hands-on dev run, use
 `npm run dev:gun-frog`, wait for the injector to arm, then launch Gun Frog
 yourself. Neither gate is evidence for late injection or arbitrary games. The
 [ReShade POC README](poc/reshade-imgui-overlay/README.md) contains the complete

@@ -19,8 +19,9 @@ counters to stay frozen too. Gun Frog passed its initial corrected gate on July
 12 and an exact four-button menu/release gate on July 13, 2026. The production
 Electron client and public SDK now use the ReShade launcher for the accepted
 process-name, arm-before-launch Gun Frog path. The same production path also
-passed two fresh controlled D3D12 lifecycle/multi-window cycles. Late injection,
-arbitrary fast-start target timing, and games beyond Gun Frog remain unverified.
+passed two fresh controlled D3D12 lifecycle/multi-window cycles and a separate
+same-Electron-client restart/reinjection cycle. Late injection, arbitrary
+fast-start target timing, and games beyond Gun Frog remain unverified.
 
 The first injected Gun Frog run is a recorded failed gate, not acceptance:
 Electron received and rendered a full click while the same physical click also
@@ -78,6 +79,19 @@ fast D3D12 initialization. It validates the prearmed SDK launcher and automatic
 ReShade D3D12 selection for a cooperating target, not general injection timing.
 Forced client cleanup plus a fresh launch is accepted here; graceful client
 disable/unload remains open.
+
+The same-client gate passed through
+`poc/reshade-imgui-overlay/scripts/test-cases/d3d12-client-sdk-reinjection.ps1`.
+Electron PID 17756 attached to target PIDs 19764 and 17940 in sequence. The
+launcher correlated each authenticated transport with the injector-selected
+PID. Socket close emitted a transient transport-loss event and retained the
+injection latch; only OS-confirmed process exit emitted the terminal disconnect
+that returned the SDK and frontend to `idle`. Client-originated lifecycle
+messages are reserved and rejected. Outcomes after the injector may have
+spawned remain `blocked` until launcher disposal when no target PID exit can be
+proven. The runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`;
+evidence is retained under
+`build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
 
 The accepted Gun Frog shutdown emitted a non-fatal ReShade warning about an
 inconsistent `ID3D11Device3` reference count. There was no crash,

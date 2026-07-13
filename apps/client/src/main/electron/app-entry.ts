@@ -34,7 +34,17 @@ const AUTO_START_OVERLAY_FLAG = '--start-overlay-session';
 const GUN_FROG_INPUT_PROOF_FLAG = '--gun-frog-input-proof';
 const AUTO_START_OVERLAY_MARKER = 'RESHADE_CLIENT_OVERLAY_SESSION_READY';
 const RESHADE_CONFIGURED_MARKER = 'RESHADE_CLIENT_CONFIGURED';
+const RESHADE_ATTACHMENT_STATE_MARKER = 'RESHADE_CLIENT_ATTACHMENT_STATE';
 const DEMO_STATE_CHANGED_CHANNEL = 'overlay:state-changed';
+
+type ReShadeAttachmentPhase = 'idle' | 'attaching' | 'connected';
+
+type ReShadeAttachmentState = Readonly<{
+  phase: ReShadeAttachmentPhase;
+  processName: string | null;
+  pid: number | null;
+  error: string | null;
+}>;
 
 const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
   // Ctrl+I belongs exclusively to Electron's globalShortcut. Registering it
@@ -58,6 +68,13 @@ class Application {
   private overlaySession: OverlaySession;
   private readonly reshadeLauncher: ReShadeOverlayLauncher | null;
   private readonly inputInterceptShortcut: InputInterceptShortcut;
+  private reshadeAttachment: ReShadeAttachmentState = {
+    phase: 'idle',
+    processName: null,
+    pid: null,
+    error: null,
+  };
+  private reshadeAttachmentAttempt = 0;
   private readonly gunFrogInputProof: boolean;
   private gunFrogInterceptRequested = false;
   private gunFrogButtonsReady = false;
@@ -245,10 +262,7 @@ class Application {
 
     const autoTargetProcess = this.reshadeLauncher?.config.autoTargetProcess;
     if (autoTargetProcess) {
-      this.ensureOverlaySessionStarted();
-      void this.requestReShadeInjection({
-        processName: autoTargetProcess,
-      }).catch((error) => {
+      void this.attachOverlayToProcess(autoTargetProcess).catch((error) => {
         console.error('ReShade attachment failed', error);
       });
     }
@@ -384,9 +398,59 @@ class Application {
         'ReShade injection is not configured; restart the client with the explicit ReShade startup options',
       );
     }
-    this.startOverlaySession();
-    await this.requestReShadeInjection({ processName });
-    return this.getDemoState();
+
+    const normalizedProcessName = processName.trim();
+    if (!normalizedProcessName) {
+      throw new Error('Enter a game executable name before injecting');
+    }
+    if (this.reshadeAttachment.phase !== 'idle') {
+      throw new Error(
+        this.reshadeAttachment.phase === 'attaching'
+          ? `ReShade is already attaching to ${this.reshadeAttachment.processName}`
+          : `ReShade is already connected to ${this.reshadeAttachment.processName} (PID ${this.reshadeAttachment.pid})`,
+      );
+    }
+
+    const attempt = ++this.reshadeAttachmentAttempt;
+    this.setReShadeAttachmentState({
+      phase: 'attaching',
+      processName: normalizedProcessName,
+      pid: null,
+      error: null,
+    });
+    try {
+      this.startOverlaySession();
+      const result = await this.requestReShadeInjection({
+        processName: normalizedProcessName,
+      });
+      if (this.isCurrentReShadeAttachment(attempt, 'attaching')) {
+        this.setReShadeAttachmentState({
+          phase: 'connected',
+          processName: normalizedProcessName,
+          pid: result.pid,
+          error: null,
+        });
+        this.markGunFrogTargetConnected();
+      }
+      return this.getDemoState();
+    } catch (error) {
+      if (this.isCurrentReShadeAttachment(attempt, 'attaching')) {
+        const attachmentError = getErrorMessage(error);
+        const retryIsSafe = this.reshadeLauncher.state === 'idle';
+        this.setReShadeAttachmentState(
+          {
+            // An indeterminate injector outcome remains latched in the SDK.
+            // Keep the client non-idle until the launcher proves retry safety.
+            phase: retryIsSafe ? 'idle' : 'attaching',
+            processName: normalizedProcessName,
+            pid: null,
+            error: attachmentError,
+          },
+          retryIsSafe ? 'attach-failed' : 'attach-indeterminate',
+        );
+      }
+      throw error;
+    }
   }
 
   private requestReShadeInjection(target: ReShadeTarget) {
@@ -510,6 +574,7 @@ class Application {
       inputInterceptRequested: this.inputInterceptRequested,
       inputInterceptEffective: this.inputInterceptEffective,
       runtime: this.reshadeLauncher ? 'reshade' : null,
+      attachment: this.reshadeAttachment,
       windows: {
         [AppWindows.exampleMainOverlay]:
           this.overlayWindows.get(AppWindows.exampleMainOverlay)?.visible ||
@@ -564,12 +629,17 @@ class Application {
 
   private handleOverlayNativeEvent(event: string, payload: any) {
     if (event === 'game.process') {
-      this.gunFrogTargetConnected = true;
-      if (this.gunFrogInputProof && !this.gunFrogInterceptRequested) {
-        this.gunFrogInterceptRequested = true;
-        this.setInputIntercept(true);
-      }
-      this.maybeLogGunFrogProofReady();
+      this.handleReShadeTargetReconnected(payload);
+      return;
+    }
+
+    if (event === 'game.process.transport-lost') {
+      this.handleReShadeTargetTransportLost(payload);
+      return;
+    }
+
+    if (event === 'game.process.disconnected') {
+      this.handleReShadeTargetDisconnected(payload);
       return;
     }
 
@@ -584,6 +654,107 @@ class Application {
       this.publishDemoState();
       this.maybeLogGunFrogProofReady();
     }
+  }
+
+  private handleReShadeTargetReconnected(payload: any) {
+    if (
+      !Number.isSafeInteger(payload?.pid) ||
+      payload.pid <= 0 ||
+      this.reshadeAttachment.phase !== 'connected' ||
+      this.reshadeAttachment.pid !== payload.pid
+    ) {
+      return;
+    }
+
+    this.markGunFrogTargetConnected();
+  }
+
+  private handleReShadeTargetTransportLost(payload: any) {
+    if (!Number.isSafeInteger(payload?.pid) || payload.pid <= 0) {
+      return;
+    }
+
+    if (
+      this.reshadeAttachment.phase === 'connected' &&
+      this.reshadeAttachment.pid !== payload.pid
+    ) {
+      return;
+    }
+    if (
+      this.reshadeAttachment.phase !== 'connected' &&
+      this.reshadeAttachment.phase !== 'attaching'
+    ) {
+      return;
+    }
+
+    // Transport loss is not proof that the target exited. Preserve the
+    // attachment phase (and therefore the injection latch), but discard an
+    // acknowledgement that no live transport can currently guarantee.
+    this.inputInterceptEffective = false;
+    this.gunFrogTargetConnected = false;
+    this.gunFrogProofReadyLogged = false;
+    this.publishDemoState();
+  }
+
+  private handleReShadeTargetDisconnected(payload: any) {
+    if (!Number.isSafeInteger(payload?.pid) || payload.pid <= 0) {
+      return;
+    }
+
+    const disconnectedPid = payload.pid as number;
+    if (
+      this.reshadeAttachment.phase !== 'connected' ||
+      this.reshadeAttachment.pid !== disconnectedPid
+    ) {
+      return;
+    }
+
+    const processName = this.reshadeAttachment.processName;
+    ++this.reshadeAttachmentAttempt;
+    // Keep the requested intent so the session snapshot applies interception
+    // to the next target, but never show a stale effective acknowledgement.
+    this.inputInterceptEffective = false;
+    this.gunFrogTargetConnected = false;
+    this.gunFrogProofReadyLogged = false;
+    this.setReShadeAttachmentState(
+      {
+        phase: 'idle',
+        processName,
+        pid: disconnectedPid,
+        error: null,
+      },
+      'target-disconnected',
+    );
+  }
+
+  private markGunFrogTargetConnected() {
+    this.gunFrogTargetConnected = true;
+    if (this.gunFrogInputProof && !this.gunFrogInterceptRequested) {
+      this.gunFrogInterceptRequested = true;
+      this.setInputIntercept(true);
+    }
+    this.maybeLogGunFrogProofReady();
+  }
+
+  private setReShadeAttachmentState(
+    state: ReShadeAttachmentState,
+    reason?: 'attach-failed' | 'attach-indeterminate' | 'target-disconnected',
+  ) {
+    this.reshadeAttachment = state;
+    console.log(
+      `${RESHADE_ATTACHMENT_STATE_MARKER} phase=${state.phase} processName=${JSON.stringify(state.processName)} pid=${state.pid ?? 'none'}${reason ? ` reason=${reason}` : ''}`,
+    );
+    this.publishDemoState();
+  }
+
+  private isCurrentReShadeAttachment(
+    attempt: number,
+    phase: ReShadeAttachmentPhase,
+  ) {
+    return (
+      attempt === this.reshadeAttachmentAttempt &&
+      this.reshadeAttachment.phase === phase
+    );
   }
 
   private maybeLogGunFrogProofReady() {
@@ -604,6 +775,10 @@ class Application {
   private showExampleVideoOverlay() {
     this.setExampleOverlayWindowVisible(AppWindows.exampleVideoOverlay, true);
   }
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export { Application };

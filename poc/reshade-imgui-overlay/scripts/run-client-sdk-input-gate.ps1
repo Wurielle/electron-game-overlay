@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("d3d11", "d3d12")]
     [string]$Backend,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [Parameter(DontShow = $true)]
+    [switch]$FunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -1057,6 +1059,10 @@ function Invoke-ClientSdkAttempt {
             }
         }
     }
+}
+
+if ($FunctionsOnly) {
+    return
 }
 
 if (-not (Test-Path -LiteralPath $Electron -PathType Leaf)) {

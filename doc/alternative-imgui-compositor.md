@@ -19,8 +19,9 @@
 > Quit position closed the game only after release. The production client and
 > public SDK now pass that exact Gun Frog boundary through the ReShade launcher
 > on the process-name, arm-before-launch path. The same production path also
-> passed two fresh controlled D3D12 multi-window/lifecycle cycles. Late
-> injection, arbitrary fast-start targets, and other games remain unverified.
+> passed two fresh controlled D3D12 multi-window/lifecycle cycles and a
+> same-Electron-client target restart/reinjection cycle. Late injection,
+> arbitrary fast-start targets, and other games remain unverified.
 > The hudhook implementation remains the verified Electron compositor and routing
 > reference, not the selected injected host.
 
@@ -362,6 +363,7 @@ multi-window compositor milestones are complete:
 - the Gun Frog rerun clicked an Electron control directly above Unity's `Continue` button without activating the game, then passed text, front/back raising, and caption dragging; the strengthened four-button run delivered unique Continue/New Game/Settings/Quit markers only to Electron while the game stayed alive on its menu, then emitted the full release lifecycle and let the same underlying Quit position close the game;
 - the built production client and public SDK ReShade launcher passed the same exact Gun Frog gate on PID 11104: positive interception acknowledgement, one click on each aligned Electron control while the menu stayed alive, Ctrl+I negative acknowledgement, and the identical Quit position closing the game; the dedicated runner emitted `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`;
 - the production client/public SDK also passed two isolated controlled D3D12 cycles on PIDs 17248 and 13528: both Electron windows accepted input, caption drag remained interactive at the moved coordinates, the foreground game oracle froze while intercepted, release restored legacy/raw/primary-pointer input and confinement, released Escape closed each target, and a clean fresh relaunch completed; the runner emitted `D3D12_REAL_CLIENT_SDK_GATE_PASS`;
+- the reusable `attach(session, target)` lifecycle then kept Electron PID 17756 alive across controlled target PIDs 19764 and 17940, pinned each injector-selected PID, kept the injection latch across transient transport loss, returned to `idle` after each OS-confirmed target exit, staged distinct runtime directories, and passed the second D3D12 scene/input cycle; the frontend-driven runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`;
 - upstream hudhook 0.9.1 independently hooks the controlled D3D11 host and owns the ImGui lifecycle;
 - the public Electron SDK publishes a 640 x 360 offscreen window from both a focused lifecycle producer and the real built client through the authenticated loopback transport;
 - a worker in the hudhook payload consumes direct BGRA frame packets, converts premultiplied BGRA to straight RGBA, and atomically publishes one immutable back-to-front scene with matching router state;
@@ -646,8 +648,9 @@ confinement/recentering, and prevent the game from observing the same input;
 release/focus loss/transport failure/shutdown must restore normal game input.
 That behavior is now proven on the controlled D3D11 and D3D12 hosts and Gun Frog;
 the production SDK/client ReShade path passes the same Gun Frog gate and two
-fresh controlled D3D12 lifecycle/multi-window cycles when armed by process name
-before launch. Target-HWND/client-origin ownership, mixed monitors, multiple
+fresh controlled D3D12 lifecycle/multi-window cycles, plus a same-client target
+restart/reinjection cycle, when armed by process name before launch.
+Target-HWND/client-origin ownership, mixed monitors, multiple
 targets, texture retirement, broader game/API coverage, late injection,
 arbitrary fast-start target timing, graceful disable/unload, and installer/proxy
 conflicts remain post-POC hardening. Competitive or anti-cheat-protected targets, anti-cheat

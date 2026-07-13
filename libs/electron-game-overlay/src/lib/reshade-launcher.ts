@@ -24,6 +24,8 @@ const INJECTOR_STDOUT_FILE_NAME = 'inject.stdout.log';
 const INJECTOR_STDERR_FILE_NAME = 'inject.stderr.log';
 const RESHADE_LOG_FILE_NAME = 'ReShade.log';
 const INJECTOR_SUCCESS_MARKER = 'Injecting ReShade ... Succeeded!';
+const INJECTOR_TARGET_PID_PATTERN =
+  /^Found a matching process with PID ([1-9][0-9]*)!/m;
 const REQUEST_TIMEOUT_MS = 120_000;
 const TARGET_PROOF_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -38,6 +40,8 @@ export const RESHADE_CLIENT_INJECTOR_FAILED_MARKER =
   'RESHADE_CLIENT_INJECTOR_FAILED';
 export const RESHADE_CLIENT_TARGET_CONNECTED_MARKER =
   'RESHADE_CLIENT_TARGET_CONNECTED';
+export const RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER =
+  'RESHADE_CLIENT_TARGET_DISCONNECTED';
 
 const RUNTIME_ARTIFACTS = Object.freeze([
   INJECTOR_FILE_NAME,
@@ -76,6 +80,7 @@ export type ReShadeInvocation = Readonly<{
 export type ReShadeLaunchResult = Readonly<{
   processName: string;
   targetLabel: string;
+  injectorTargetPid: number;
   runDirectory: string;
   injectorStdoutPath: string;
   injectorStderrPath: string;
@@ -94,6 +99,35 @@ type StagedRuntime = Readonly<{
   injectorStderrPath: string;
   reshadeLogPath: string;
 }>;
+
+export type ReShadeAttachmentState =
+  | 'idle'
+  | 'attaching'
+  | 'connected'
+  | 'blocked';
+
+type ReShadeRetrySafety = 'definite-safe' | 'indeterminate';
+
+class ReShadeOperationError extends Error {
+  constructor(
+    message: string,
+    public readonly retrySafety: ReShadeRetrySafety,
+  ) {
+    super(message);
+    this.name = 'ReShadeOperationError';
+  }
+}
+
+type ReShadeTargetConnection = Readonly<{
+  pid: number;
+  path: string;
+}>;
+
+type ConnectedTarget = ReShadeTargetConnection &
+  Readonly<{
+    targetLabel: string;
+    removeListeners: () => void;
+  }>;
 
 /** Returns the patched ReShade runtime directory staged by the SDK build. */
 export function defaultReShadeRuntimeDirectory(): string {
@@ -237,24 +271,41 @@ export class ReShadeOverlayLauncher {
     promise: Promise<ReShadeAttachResult>;
     cancel: (error: Error) => void;
   } | null = null;
-  private injectionRequested = false;
+  private attachmentState: ReShadeAttachmentState = 'idle';
+  private attachmentTargetLabel: string | null = null;
+  private connectedTarget: ConnectedTarget | null = null;
   private awaitingTargetProof = false;
   private targetProofTimer: ReturnType<typeof setTimeout> | null = null;
   private latestRunDirectory: string | null = null;
+  private launchGeneration = 0;
   private disposed = false;
 
   constructor(public readonly config: ReShadeLaunchConfig) {}
 
   public get hasRequestedInjection(): boolean {
-    return this.injectionRequested;
+    return this.attachmentState !== 'idle';
+  }
+
+  public get state(): ReShadeAttachmentState {
+    return this.attachmentState;
   }
 
   public get runDirectory(): string | null {
     return this.latestRunDirectory;
   }
 
+  /**
+   * Completes the proof window opened by the low-level {@link launch} API.
+   * A successful proof deliberately remains connected until disposal because
+   * this API has no OverlaySession from which to observe target disconnects.
+   * Use {@link attach} when automatic reuse after target exit is required.
+   */
   public acceptTargetConnection(pid: number): boolean {
-    if (!this.awaitingTargetProof) {
+    if (
+      !this.awaitingTargetProof ||
+      this.attachmentState !== 'attaching' ||
+      this.activeAttach !== null
+    ) {
       return false;
     }
     const expectedTargetPid = this.config.expectedTargetPid;
@@ -262,6 +313,7 @@ export class ReShadeOverlayLauncher {
       return false;
     }
 
+    this.attachmentState = 'connected';
     this.closeTargetProofWindow();
     return true;
   }
@@ -285,6 +337,27 @@ export class ReShadeOverlayLauncher {
       }
       return Promise.reject(
         new Error('a different ReShade attachment is already active'),
+      );
+    }
+    if (this.attachmentState === 'connected') {
+      return Promise.reject(
+        new Error(
+          this.attachmentTargetLabel === targetLabel
+            ? 'the ReShade target is already connected'
+            : 'a different ReShade target is already connected',
+        ),
+      );
+    }
+    if (this.attachmentState === 'blocked') {
+      return Promise.reject(
+        new Error(
+          'the prior ReShade injection outcome is indeterminate; dispose the launcher before retrying',
+        ),
+      );
+    }
+    if (this.attachmentState === 'attaching') {
+      return Promise.reject(
+        new Error('a ReShade injection is already awaiting target connection'),
       );
     }
 
@@ -316,6 +389,12 @@ export class ReShadeOverlayLauncher {
     return promise;
   }
 
+  /**
+   * Starts one low-level injection and opens a bounded connection-proof window.
+   * Missing that proof remains conservatively latched: without a session event
+   * source, the launcher cannot establish that reinjection would be safe.
+   * Prefer {@link attach} for reusable process lifecycle management.
+   */
   public launch(target: ReShadeTarget): Promise<ReShadeLaunchResult> {
     if (this.disposed) {
       return Promise.reject(new Error('the ReShade launcher is disposed'));
@@ -330,24 +409,43 @@ export class ReShadeOverlayLauncher {
         new Error('a different ReShade injection request is already active'),
       );
     }
-    if (this.injectionRequested) {
+    if (this.attachmentState === 'connected') {
       return Promise.reject(
         new Error(
-          'a ReShade injection was already requested; automatic reinjection is disabled',
+          this.attachmentTargetLabel === targetLabel
+            ? 'the ReShade target is already connected'
+            : 'a different ReShade target is already connected',
         ),
       );
     }
+    if (this.attachmentState === 'blocked') {
+      return Promise.reject(
+        new Error(
+          'the prior ReShade injection outcome is indeterminate; dispose the launcher before retrying',
+        ),
+      );
+    }
+    if (this.attachmentState === 'attaching') {
+      return Promise.reject(
+        new Error('a ReShade injection is already awaiting target connection'),
+      );
+    }
 
-    this.injectionRequested = true;
+    this.attachmentState = 'attaching';
+    this.attachmentTargetLabel = targetLabel;
     this.awaitingTargetProof = true;
     this.targetProofTimer = setTimeout(() => {
-      this.awaitingTargetProof = false;
-      this.targetProofTimer = null;
+      this.closeTargetProofWindow();
     }, TARGET_PROOF_TIMEOUT_MS);
     this.activeTargetLabel = targetLabel;
 
-    const request = this.performLaunch(target, targetLabel).catch((error) => {
-      this.closeTargetProofWindow();
+    const launchGeneration = ++this.launchGeneration;
+    const request = this.performLaunch(
+      target,
+      targetLabel,
+      launchGeneration,
+    ).catch((error) => {
+      this.applyFailureState(targetLabel, error);
       throw error;
     });
     this.activeRequest = request;
@@ -371,8 +469,12 @@ export class ReShadeOverlayLauncher {
         'the ReShade launcher was disposed before attachment completed',
       ),
     );
-    this.closeTargetProofWindow();
-    this.stopActiveChild();
+    if (this.attachmentTargetLabel) {
+      this.resetTargetState(this.attachmentTargetLabel);
+    } else {
+      this.closeTargetProofWindow();
+    }
+    this.invalidateActiveLaunch();
   }
 
   private async performAttach(
@@ -385,102 +487,285 @@ export class ReShadeOverlayLauncher {
       throw new Error('the ReShade launcher is disposed');
     }
 
+    const targetLabel = targetLabelFor(target);
     let removeNativeEvent: (() => void) | undefined;
     let removeCloseHandler: (() => void) | undefined;
     let proofTimer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    const cleanup = () => {
-      removeNativeEvent?.();
-      removeNativeEvent = undefined;
-      removeCloseHandler?.();
-      removeCloseHandler = undefined;
+    let proofSettled = false;
+    let attachmentCompleted = false;
+    let injectorTargetPid: number | undefined;
+    let resolveConnectionProof: (
+      connection: ReShadeTargetConnection,
+    ) => void = () => undefined;
+    let rejectConnectionProof: (error: Error) => void = () => undefined;
+    let rejectConnectionLost: (error: Error) => void = () => undefined;
+    const candidatesByPid = new Map<number, ReShadeTargetConnection>();
+    const disconnectedCandidatesByPid = new Map<
+      number,
+      ReShadeTargetConnection
+    >();
+    const recognizedCandidatePids = new Set<number>();
+
+    const clearProofTimer = () => {
       if (proofTimer) {
         clearTimeout(proofTimer);
         proofTimer = undefined;
       }
     };
+    let listenersRemoved = false;
+    const removeListeners = () => {
+      if (listenersRemoved) {
+        return;
+      }
+      listenersRemoved = true;
+      removeNativeEvent?.();
+      removeNativeEvent = undefined;
+      removeCloseHandler?.();
+      removeCloseHandler = undefined;
+      clearProofTimer();
+    };
 
-    const connectionProof = new Promise<number>((resolve, reject) => {
-      const rejectProof = (error: Error) => {
-        if (settled) {
+    const tryAcceptCandidate = () => {
+      if (
+        proofSettled ||
+        injectorTargetPid === undefined ||
+        this.attachmentState !== 'attaching' ||
+        this.attachmentTargetLabel !== targetLabel
+      ) {
+        return;
+      }
+      const disconnectedCandidate =
+        disconnectedCandidatesByPid.get(injectorTargetPid);
+      if (disconnectedCandidate) {
+        proofSettled = true;
+        removeListeners();
+        this.resetTargetState(targetLabel);
+        rejectConnectionLost(
+          new ReShadeOperationError(
+            `the ReShade target pid=${disconnectedCandidate.pid} disconnected before attachment completed`,
+            'definite-safe',
+          ),
+        );
+        return;
+      }
+      const connection = candidatesByPid.get(injectorTargetPid);
+      if (!connection) {
+        return;
+      }
+
+      proofSettled = true;
+      clearProofTimer();
+      this.closeTargetProofWindow();
+      this.attachmentState = 'connected';
+      const connectedTarget: ConnectedTarget = Object.freeze({
+        ...connection,
+        targetLabel,
+        removeListeners,
+      });
+      this.connectedTarget = connectedTarget;
+      console.log(
+        `${RESHADE_CLIENT_TARGET_CONNECTED_MARKER} pid=${connection.pid}`,
+      );
+      resolveConnectionProof(connection);
+    };
+
+    const connectionProof = new Promise<ReShadeTargetConnection>(
+      (resolve, reject) => {
+        resolveConnectionProof = resolve;
+        rejectConnectionProof = reject;
+      },
+    );
+    const connectionLost = new Promise<never>((resolve, reject) => {
+      void resolve;
+      rejectConnectionLost = reject;
+    });
+
+    removeNativeEvent = session.on('nativeEvent', ({ event, payload }) => {
+      if (event === 'game.process') {
+        const connection = readTargetConnection(payload);
+        if (!connection || !this.hasRequestedInjection) {
           return;
         }
-        settled = true;
-        cleanup();
-        reject(error);
-      };
-
-      removeNativeEvent = session.on('nativeEvent', ({ event, payload }) => {
-        if (event !== 'game.process' || !this.hasRequestedInjection) {
-          return;
-        }
-
-        const pid = payload?.pid;
-        if (!Number.isSafeInteger(pid) || pid <= 0) {
+        if (
+          !recognizedCandidatePids.has(connection.pid) &&
+          !targetPathMatchesProcessName(connection.path, target.processName)
+        ) {
+          console.warn(
+            `Ignored ReShade target connection from unexpected path=${JSON.stringify(connection.path)}; expected basename=${JSON.stringify(target.processName)}`,
+          );
           return;
         }
         const expectedTargetPid = this.config.expectedTargetPid;
-        if (expectedTargetPid !== undefined && pid !== expectedTargetPid) {
+        if (
+          expectedTargetPid !== undefined &&
+          connection.pid !== expectedTargetPid
+        ) {
           console.warn(
-            `Ignored ReShade target connection from unexpected pid=${pid}; expected pid=${expectedTargetPid}`,
+            `Ignored ReShade target connection from unexpected pid=${connection.pid}; expected pid=${expectedTargetPid}`,
           );
           return;
         }
-        if (!this.acceptTargetConnection(pid) || settled) {
-          return;
-        }
+        recognizedCandidatePids.add(connection.pid);
+        disconnectedCandidatesByPid.delete(connection.pid);
+        candidatesByPid.set(connection.pid, connection);
+        tryAcceptCandidate();
+        return;
+      }
 
-        settled = true;
-        cleanup();
-        console.log(`${RESHADE_CLIENT_TARGET_CONNECTED_MARKER} pid=${pid}`);
-        resolve(pid);
-      });
-      removeCloseHandler = session.onClose(() => {
-        rejectProof(
-          new Error(
-            'the overlay session closed before the ReShade target connected',
+      if (event === 'game.process.transport-lost') {
+        const connection = readTargetConnection(payload);
+        if (connection && recognizedCandidatePids.has(connection.pid)) {
+          candidatesByPid.delete(connection.pid);
+        }
+        return;
+      }
+
+      if (event !== 'game.process.disconnected') {
+        return;
+      }
+      const connection = readTargetConnection(payload);
+      if (!connection) {
+        return;
+      }
+      const candidate = candidatesByPid.get(connection.pid);
+      if (candidate) {
+        candidatesByPid.delete(connection.pid);
+      }
+      if (!proofSettled && recognizedCandidatePids.has(connection.pid)) {
+        disconnectedCandidatesByPid.set(connection.pid, connection);
+      }
+      if (
+        !proofSettled &&
+        (injectorTargetPid === connection.pid ||
+          this.config.expectedTargetPid === connection.pid)
+      ) {
+        proofSettled = true;
+        removeListeners();
+        this.resetTargetState(targetLabel);
+        rejectConnectionLost(
+          new ReShadeOperationError(
+            `the ReShade target pid=${connection.pid} disconnected before attachment completed`,
+            'definite-safe',
           ),
         );
-      });
-      if (!settled) {
-        proofTimer = setTimeout(() => {
-          rejectProof(
-            new Error(
-              `the ReShade target did not connect within ${TARGET_PROOF_TIMEOUT_MS}ms`,
-            ),
-          );
-        }, TARGET_PROOF_TIMEOUT_MS);
+        return;
+      }
+      const connectedTarget = this.connectedTarget;
+      if (
+        !connectedTarget ||
+        connectedTarget.targetLabel !== targetLabel ||
+        connectedTarget.pid !== connection.pid
+      ) {
+        return;
+      }
+
+      const wasAttachmentCompleted = attachmentCompleted;
+      this.disconnectConnectedTarget(connectedTarget);
+      if (!wasAttachmentCompleted) {
+        rejectConnectionLost(
+          new ReShadeOperationError(
+            `the ReShade target pid=${connection.pid} disconnected before attachment completed`,
+            'definite-safe',
+          ),
+        );
       }
     });
+    removeCloseHandler = session.onClose(() => {
+      const connectedTarget = this.connectedTarget;
+      if (connectedTarget?.targetLabel === targetLabel) {
+        const wasAttachmentCompleted = attachmentCompleted;
+        this.blockTargetState(targetLabel);
+        if (!wasAttachmentCompleted) {
+          rejectConnectionLost(
+            new ReShadeOperationError(
+              'the overlay session closed before the ReShade attachment completed',
+              'indeterminate',
+            ),
+          );
+        }
+        return;
+      }
+      if (!proofSettled) {
+        proofSettled = true;
+        removeListeners();
+        this.blockTargetState(targetLabel);
+        rejectConnectionProof(
+          new ReShadeOperationError(
+            'the overlay session closed before the ReShade target connected',
+            'indeterminate',
+          ),
+        );
+      }
+    });
+    if (!proofSettled) {
+      proofTimer = setTimeout(() => {
+        if (proofSettled) {
+          return;
+        }
+        proofSettled = true;
+        removeListeners();
+        this.blockTargetState(targetLabel);
+        rejectConnectionProof(
+          new ReShadeOperationError(
+            `the ReShade target did not connect within ${TARGET_PROOF_TIMEOUT_MS}ms`,
+            'indeterminate',
+          ),
+        );
+      }, TARGET_PROOF_TIMEOUT_MS);
+    }
 
+    let launch: Promise<ReShadeLaunchResult> | undefined;
     try {
+      launch = this.launch(target).then((result) => {
+        injectorTargetPid = result.injectorTargetPid;
+        tryAcceptCandidate();
+        return result;
+      });
       const outcome = await Promise.race([
-        Promise.all([this.launch(target), connectionProof] as const),
+        Promise.all([launch, connectionProof] as const),
         cancellation,
+        connectionLost,
       ]);
-      const [launchResult, pid] = outcome;
-      return Object.freeze({ ...launchResult, pid });
+      const [launchResult, connection] = outcome;
+      attachmentCompleted = true;
+      return Object.freeze({ ...launchResult, pid: connection.pid });
     } catch (error) {
-      this.stopActiveChild();
+      this.invalidateActiveLaunch();
+      if (launch && !this.disposed) {
+        await launch.catch(() => undefined);
+      }
+      this.applyFailureState(targetLabel, error);
       throw error;
     } finally {
-      cleanup();
-      this.closeTargetProofWindow();
+      clearProofTimer();
+      if (
+        !attachmentCompleted ||
+        this.connectedTarget?.targetLabel !== targetLabel
+      ) {
+        removeListeners();
+        if (this.attachmentState !== 'blocked') {
+          this.resetTargetState(targetLabel);
+        }
+      }
     }
   }
 
   private async performLaunch(
     target: ReShadeTarget,
     targetLabel: string,
+    launchGeneration: number,
   ): Promise<ReShadeLaunchResult> {
     const staged = await this.stageRuntime(target.processName);
+    this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     this.latestRunDirectory = staged.runDirectory;
     const invocation = buildReShadeInvocation(target, staged.runDirectory);
+    this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     console.log(
       `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target=${JSON.stringify(target.processName)}`,
     );
 
     return new Promise<ReShadeLaunchResult>((resolve, reject) => {
+      let didSpawn = false;
       const child = execFile(
         invocation.executable,
         [...invocation.arguments],
@@ -503,9 +788,13 @@ export class ReShadeOverlayLauncher {
             error,
             stdout,
             stderr,
+            didSpawn,
           ).then(resolve, reject);
         },
       );
+      child.once('spawn', () => {
+        didSpawn = true;
+      });
       this.activeChild = child;
     });
   }
@@ -554,11 +843,25 @@ export class ReShadeOverlayLauncher {
     error: Error | null,
     stdout: string,
     stderr: string,
+    didSpawn: boolean,
   ): Promise<ReShadeLaunchResult> {
-    await Promise.all([
-      writeFile(staged.injectorStdoutPath, stdout, 'utf8'),
-      writeFile(staged.injectorStderrPath, stderr, 'utf8'),
-    ]);
+    try {
+      await Promise.all([
+        writeFile(staged.injectorStdoutPath, stdout, 'utf8'),
+        writeFile(staged.injectorStderrPath, stderr, 'utf8'),
+      ]);
+    } catch (evidenceError) {
+      const detail = `ReShade injector completed but its evidence logs could not be preserved: ${formatUnknownError(evidenceError)}`;
+      console.error(
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+      );
+      throw new ReShadeOperationError(
+        detail,
+        !didSpawn && error && !stdout.includes(INJECTOR_SUCCESS_MARKER)
+          ? 'definite-safe'
+          : 'indeterminate',
+      );
+    }
 
     if (this.disposed) {
       const detail =
@@ -566,17 +869,57 @@ export class ReShadeOverlayLauncher {
       console.error(
         `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
       );
-      throw new Error(detail);
+      throw new ReShadeOperationError(detail, 'indeterminate');
     }
 
-    if (error || !stdout.includes(INJECTOR_SUCCESS_MARKER)) {
-      const detail = error
-        ? formatLaunchError(error, stdout, stderr)
-        : `ReShade injector stdout did not contain ${JSON.stringify(INJECTOR_SUCCESS_MARKER)}`;
+    const hasSuccessMarker = stdout.includes(INJECTOR_SUCCESS_MARKER);
+    if (error) {
+      const detail = formatLaunchError(error, stdout, stderr);
       console.error(
         `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
       );
-      throw new Error(detail);
+      throw new ReShadeOperationError(
+        detail,
+        !didSpawn && !hasSuccessMarker ? 'definite-safe' : 'indeterminate',
+      );
+    }
+    if (!hasSuccessMarker) {
+      const detail = `ReShade injector stdout did not contain ${JSON.stringify(INJECTOR_SUCCESS_MARKER)}`;
+      console.error(
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+      );
+      throw new ReShadeOperationError(detail, 'indeterminate');
+    }
+    if (!didSpawn) {
+      const detail =
+        'ReShade injector reported success without a confirmed child-process spawn';
+      console.error(
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+      );
+      throw new ReShadeOperationError(detail, 'indeterminate');
+    }
+
+    let injectorTargetPid: number;
+    try {
+      injectorTargetPid = parseInjectorTargetPid(stdout);
+    } catch (parseError) {
+      const detail =
+        parseError instanceof Error ? parseError.message : String(parseError);
+      console.error(
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+      );
+      throw new ReShadeOperationError(detail, 'indeterminate');
+    }
+    const expectedTargetPid = this.config.expectedTargetPid;
+    if (
+      expectedTargetPid !== undefined &&
+      injectorTargetPid !== expectedTargetPid
+    ) {
+      const detail = `ReShade injector selected pid=${injectorTargetPid}; expected pid=${expectedTargetPid}`;
+      console.error(
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+      );
+      throw new ReShadeOperationError(detail, 'indeterminate');
     }
 
     console.log(
@@ -585,11 +928,61 @@ export class ReShadeOverlayLauncher {
     return Object.freeze({
       processName,
       targetLabel,
+      injectorTargetPid,
       runDirectory: staged.runDirectory,
       injectorStdoutPath: staged.injectorStdoutPath,
       injectorStderrPath: staged.injectorStderrPath,
       reshadeLogPath: staged.reshadeLogPath,
     });
+  }
+
+  private disconnectConnectedTarget(target: ConnectedTarget): void {
+    if (this.connectedTarget !== target) {
+      return;
+    }
+    console.log(
+      `${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=${target.pid}`,
+    );
+    this.resetTargetState(target.targetLabel);
+  }
+
+  private applyFailureState(targetLabel: string, error: unknown): void {
+    if (
+      this.attachmentState === 'blocked' ||
+      (error instanceof ReShadeOperationError &&
+        error.retrySafety === 'indeterminate')
+    ) {
+      this.blockTargetState(targetLabel);
+      return;
+    }
+    this.resetTargetState(targetLabel);
+  }
+
+  private blockTargetState(targetLabel: string): void {
+    if (this.attachmentTargetLabel !== targetLabel) {
+      return;
+    }
+    const connectedTarget = this.connectedTarget;
+    if (connectedTarget?.targetLabel === targetLabel) {
+      this.connectedTarget = null;
+      connectedTarget.removeListeners();
+    }
+    this.attachmentState = 'blocked';
+    this.closeTargetProofWindow();
+  }
+
+  private resetTargetState(targetLabel: string): void {
+    if (this.attachmentTargetLabel !== targetLabel) {
+      return;
+    }
+    const connectedTarget = this.connectedTarget;
+    if (connectedTarget?.targetLabel === targetLabel) {
+      this.connectedTarget = null;
+      connectedTarget.removeListeners();
+    }
+    this.attachmentState = 'idle';
+    this.attachmentTargetLabel = null;
+    this.closeTargetProofWindow();
   }
 
   private closeTargetProofWindow(): void {
@@ -598,6 +991,29 @@ export class ReShadeOverlayLauncher {
       clearTimeout(this.targetProofTimer);
       this.targetProofTimer = null;
     }
+  }
+
+  private assertLaunchCanSpawn(
+    targetLabel: string,
+    launchGeneration: number,
+  ): void {
+    if (
+      this.disposed ||
+      this.launchGeneration !== launchGeneration ||
+      this.attachmentTargetLabel !== targetLabel ||
+      this.attachmentState === 'idle' ||
+      this.attachmentState === 'blocked'
+    ) {
+      throw new ReShadeOperationError(
+        'the ReShade injection was canceled before the injector started',
+        'definite-safe',
+      );
+    }
+  }
+
+  private invalidateActiveLaunch(): void {
+    this.launchGeneration += 1;
+    this.stopActiveChild();
   }
 
   private stopActiveChild(): void {
@@ -612,6 +1028,45 @@ export class ReShadeOverlayLauncher {
 function targetLabelFor(target: ReShadeTarget): string {
   validateProcessName(target.processName);
   return `process:${target.processName}`;
+}
+
+function parseInjectorTargetPid(stdout: string): number {
+  const match = INJECTOR_TARGET_PID_PATTERN.exec(stdout);
+  const pid = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
+    throw new Error(
+      'ReShade injector stdout did not contain a valid matched process PID',
+    );
+  }
+  return pid;
+}
+
+function readTargetConnection(
+  payload: unknown,
+): ReShadeTargetConnection | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const candidate = payload as { pid?: unknown; path?: unknown };
+  if (
+    !Number.isSafeInteger(candidate.pid) ||
+    (candidate.pid as number) <= 0 ||
+    (candidate.pid as number) > 0xffffffff ||
+    typeof candidate.path !== 'string' ||
+    candidate.path.length === 0
+  ) {
+    return null;
+  }
+  return Object.freeze({ pid: candidate.pid as number, path: candidate.path });
+}
+
+function targetPathMatchesProcessName(
+  targetPath: string,
+  processName: string,
+): boolean {
+  return (
+    path.win32.basename(targetPath).toLowerCase() === processName.toLowerCase()
+  );
 }
 
 function readOptionalOption(argv: readonly string[], name: string) {
@@ -694,6 +1149,10 @@ function validateProcessName(processName: string): void {
   ) {
     throw new Error('the ReShade target process must be a valid .exe basename');
   }
+}
+
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function formatLaunchError(

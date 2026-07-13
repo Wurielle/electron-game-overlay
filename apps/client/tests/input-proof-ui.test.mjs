@@ -93,3 +93,84 @@ test('the Gun Frog client proof publishes four aligned Electron controls and rea
     /HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=back event=gun-frog-click/,
   );
 });
+
+test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
+  const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
+  const renderer = readClientFile('src', 'renderer', 'main.ts');
+  const clientPage = readClientFile('index', 'index.html');
+
+  assert.match(appEntry, /phase: ReShadeAttachmentPhase/);
+  assert.match(appEntry, /'idle' \| 'attaching' \| 'connected'/);
+  assert.match(appEntry, /RESHADE_CLIENT_ATTACHMENT_STATE/);
+  assert.match(appEntry, /event === 'game\.process\.transport-lost'/);
+  assert.match(appEntry, /event === 'game\.process\.disconnected'/);
+  assert.doesNotMatch(appEntry, /PendingReShadeConnection/);
+  assert.doesNotMatch(appEntry, /basename\(payload\.path\)/);
+  assert.match(appEntry, /this\.reshadeLauncher\.state === 'idle'/);
+  assert.match(appEntry, /'attach-indeterminate'/);
+  assert.match(appEntry, /this\.reshadeAttachment\.phase !== 'connected'/);
+  assert.match(appEntry, /this\.reshadeAttachment\.pid !== disconnectedPid/);
+  assert.match(
+    appEntry,
+    /pid: result\.pid,[\s\S]{0,160}?this\.markGunFrogTargetConnected\(\)/,
+  );
+  assert.match(appEntry, /\+\+this\.reshadeAttachmentAttempt/);
+  assert.match(appEntry, /this\.inputInterceptEffective = false/);
+  assert.match(appEntry, /attachment: this\.reshadeAttachment/);
+
+  const reconnectHandler = sourceSection(
+    appEntry,
+    'private handleReShadeTargetReconnected',
+    'private handleReShadeTargetTransportLost',
+  );
+  assert.match(reconnectHandler, /phase !== 'connected'/);
+  assert.match(
+    reconnectHandler,
+    /this\.reshadeAttachment\.pid !== payload\.pid/,
+  );
+  assert.match(reconnectHandler, /this\.markGunFrogTargetConnected\(\)/);
+
+  const transportLostHandler = sourceSection(
+    appEntry,
+    'private handleReShadeTargetTransportLost',
+    'private handleReShadeTargetDisconnected',
+  );
+  assert.match(transportLostHandler, /phase === 'connected'/);
+  assert.match(transportLostHandler, /phase !== 'attaching'/);
+  assert.match(transportLostHandler, /this\.inputInterceptEffective = false/);
+  assert.doesNotMatch(transportLostHandler, /setReShadeAttachmentState/);
+
+  assert.match(
+    renderer,
+    /state\.runtime === null \|\| state\.attachment\.phase !== 'idle'/,
+  );
+  assert.match(
+    renderer,
+    /injectButton\.disabled = true;[\s\S]{0,160}?ipcRenderer\.invoke\('overlay:inject'/,
+  );
+  assert.match(
+    renderer,
+    /statusElement\.dataset\.attachmentPhase = state\.attachment\.phase/,
+  );
+  assert.match(renderer, /Ready to inject again/);
+  assert.match(clientPage, /data-attachment-phase="idle"/);
+
+  const statusRenderer = sourceSection(
+    renderer,
+    'function renderAttachmentStatus',
+    'function getErrorMessage',
+  );
+  assert.ok(
+    statusRenderer.indexOf('if (state.attachment.error)') <
+      statusRenderer.indexOf("state.attachment.phase === 'attaching'"),
+    'attachment errors should render before the generic attaching status',
+  );
+});
+
+function sourceSection(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1, `missing source marker: ${startMarker}`);
+  assert.notEqual(end, -1, `missing source marker: ${endMarker}`);
+  return source.slice(start, end);
+}

@@ -15,7 +15,8 @@ configuration under `dist/runtime/win32-x64/reshade`. Consumers call
 executable process name with `launcher.attach(session, target)`. Each request
 copies the immutable SDK assets into a writable isolated run directory. The SDK
 waits for transport discovery, executes the injector without a shell, and
-resolves only after the injected add-on authenticates back to the session.
+parses the injector-selected PID, then resolves only after an add-on with that
+PID and the expected executable basename authenticates back to the session.
 ReShade selects the target graphics API; callers do not select D3D11 or D3D12.
 
 ```ts
@@ -27,6 +28,28 @@ const launcher = config ? new ReShadeOverlayLauncher(config) : null;
 session.start();
 await launcher?.attach(session, { processName: 'game.exe' });
 ```
+
+`attach()` is reusable. Its public state is `idle`, `attaching`, `connected`, or
+`blocked`. A socket close first emits `game.process.transport-lost`; that is not
+proof that the target exited, so the injection latch remains active while a
+same-PID payload can reauthenticate. The transport polls process liveness and
+emits `game.process.disconnected` only after the OS confirms that PID is gone.
+That terminal event returns the launcher to `idle`, so the same launcher and
+session can attach the restarted executable with a new isolated runtime
+directory. Client-originated lifecycle events are rejected by the authenticated
+transport.
+
+Failures known to occur before the injector process spawns return to `idle`.
+Once an injector may have run, an unprovable outcome is deliberately
+`blocked` until the launcher is disposed; retrying could otherwise inject a
+second runtime into a live target. An OS-confirmed exit of the selected PID is
+the other safe re-arm boundary when that PID authenticated and is observable by
+the transport.
+
+The lower-level `launch()` / `acceptTargetConnection()` pair has no session
+event source and is intentionally one-shot. It stays latched after proof (or an
+expired proof window) rather than risking a second injector against a live
+target. Applications that need restart/reinjection must use `attach()`.
 
 Arm the launcher before starting the target process. The accepted real-game
 production-client proof uses `{ processName: 'Gun Frog.exe' }`; late attachment
@@ -49,11 +72,26 @@ confinement; released Escape closed each target normally. The runner emitted
 `D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is retained under
 `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`.
 
+The restart/reinjection gate is available through:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
+```
+
+It passed on July 13, 2026 with Electron PID 17756 across controlled target PIDs
+19764 and 17940. Each frontend Inject action selected a distinct target PID and
+runtime directory; each target exit returned the SDK and frontend to `idle`,
+and the second D3D12 scene passed both-window input, interception, and release.
+The runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`; evidence is
+under
+`build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
+
 The controlled host cooperates with the prearmed launcher before its deliberately
 fast graphics initialization. This proves SDK-owned launch and ReShade's D3D12
 selection for that host, not arbitrary fast-start target timing. Each client is
-force-cleaned after target exit before a fresh client relaunch; graceful client
-disable/unload remains separate lifecycle hardening.
+force-cleaned after target exit in the original gate; the reinjection gate keeps
+one client/session alive while replacing the target. Graceful injected-runtime
+disable/unload while a target remains alive is separate lifecycle hardening.
 
 The real production client/SDK gate passed against Gun Frog on July 13, 2026
 through `poc/reshade-imgui-overlay/scripts/test-cases/gun-frog-client-sdk.ps1`.

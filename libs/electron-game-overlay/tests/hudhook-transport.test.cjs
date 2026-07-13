@@ -348,7 +348,204 @@ test('invalid authentication is closed without receiving a snapshot', async (t) 
   await closed;
 });
 
-test('modifier state is reset when routing is lost or a payload reconnects', async (t) => {
+test('authenticated clients cannot forge server-owned lifecycle events', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'hudhook-disconnect-auth-test-'),
+  );
+  let processAlive = true;
+  const transport = new HudhookLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => processAlive,
+    processExitPollIntervalMs: 5,
+  });
+  const events = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const authenticate = async () => {
+    const expectedProcessEvents =
+      events.filter(({ event }) => event === 'game.process').length + 1;
+    socket = await connect(record.port);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid: 4321,
+        path: 'C:\\games\\real.exe',
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    await waitFor(
+      () =>
+        events.filter(({ event }) => event === 'game.process').length ===
+        expectedProcessEvents,
+    );
+  };
+
+  for (const reservedEvent of [
+    'game.process.disconnected',
+    'game.process.transport-lost',
+  ]) {
+    await authenticate();
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    socket.write(
+      encodeJsonTransportPacket({
+        type: reservedEvent,
+        pid: 9999,
+        path: 'C:\\games\\forged.exe',
+      }),
+    );
+    await closed;
+  }
+
+  assert.deepEqual(
+    events.filter(({ event }) => event === 'game.process.transport-lost'),
+    [
+      {
+        event: 'game.process.transport-lost',
+        payload: { pid: 4321, path: 'C:\\games\\real.exe' },
+      },
+      {
+        event: 'game.process.transport-lost',
+        payload: { pid: 4321, path: 'C:\\games\\real.exe' },
+      },
+    ],
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+  );
+
+  processAlive = false;
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.disconnected')
+        .length === 1,
+  );
+  assert.deepEqual(
+    events.filter(({ event }) => event === 'game.process.disconnected'),
+    [
+      {
+        event: 'game.process.disconnected',
+        payload: { pid: 4321, path: 'C:\\games\\real.exe' },
+      },
+    ],
+  );
+  assert.deepEqual(
+    events
+      .filter(({ event }) =>
+        ['game.process.transport-lost', 'game.process.disconnected'].includes(
+          event,
+        ),
+      )
+      .map(({ event }) => event),
+    [
+      'game.process.transport-lost',
+      'game.process.transport-lost',
+      'game.process.disconnected',
+    ],
+  );
+});
+
+test('sequential same-PID reauthentication cancels exit confirmation', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'hudhook-process-exit-test-'),
+  );
+  let processAlive = true;
+  const transport = new HudhookLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => processAlive,
+    processExitPollIntervalMs: 5,
+  });
+  const sockets = [];
+  const events = [];
+  let throwOnNextTransportLoss = true;
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+    if (event === 'game.process.transport-lost' && throwOnNextTransportLoss) {
+      throwOnNextTransportLoss = false;
+      throw new Error('consumer lifecycle callback failed');
+    }
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const authenticate = async () => {
+    const socket = await connect(record.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid: 4321,
+        path: 'C:\\games\\test.exe',
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+
+  let socket = await authenticate();
+  socket.destroy();
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.transport-lost')
+        .length === 1,
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+  );
+
+  socket = await authenticate();
+  processAlive = false;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+    'reauthentication must cancel the prior socket exit watch',
+  );
+
+  socket.destroy();
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.disconnected')
+        .length === 1,
+  );
+  assert.deepEqual(
+    events.filter(({ event }) => event === 'game.process.disconnected'),
+    [
+      {
+        event: 'game.process.disconnected',
+        payload: { pid: 4321, path: 'C:\\games\\test.exe' },
+      },
+    ],
+  );
+});
+
+test('reconnects reset input state and emit only authoritative disconnects', async (t) => {
   const tempDirectory = await mkdtemp(
     path.join(os.tmpdir(), 'hudhook-input-state-test-'),
   );
@@ -450,7 +647,37 @@ test('modifier state is reset when routing is lost or a payload reconnects', asy
   );
   socket = await authenticate();
   await replacedSocketClosed;
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+    'closing a replaced same-PID socket must not report the new socket as disconnected',
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.transport-lost')
+      .length,
+    0,
+    'closing a replaced same-PID socket must not report transient transport loss',
+  );
   input(0x43);
   await waitFor(() => translated.length === 6);
   assert.deepEqual(translated[5].modifiers, []);
+
+  socket.destroy();
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.disconnected')
+        .length === 1,
+  );
+  assert.deepEqual(
+    events.find(({ event }) => event === 'game.process.disconnected'),
+    {
+      event: 'game.process.disconnected',
+      payload: { pid: 4321, path: 'C:\\games\\test.exe' },
+    },
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.transport-lost')
+      .length,
+    1,
+  );
 });

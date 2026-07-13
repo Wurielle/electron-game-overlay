@@ -38,6 +38,17 @@ arm-before-launch; late injection into an already running game is not claimed.
 `--reshade-runtime-dir=<absolute-path>` remains a strict development/test
 override; invalid or incomplete runtime assets fail instead of falling back.
 
+The status moves from `idle` to `attaching` and then to `connected` only after
+the SDK has correlated the injector-selected PID with its authenticated
+transport. When that exact target exits, the client returns to `idle`, clears
+the stale effective-interception acknowledgement, and enables **Arm, then
+launch** for the restarted process. The Electron client does not need to be
+restarted. A transient transport loss clears the effective acknowledgement but
+keeps Inject disabled until the same PID reconnects or the OS confirms that the
+target exited. If an injector may have run but its result cannot be proven, the
+client displays the error and remains latched; restart the client before
+retrying rather than risk injecting a live target twice.
+
 The client contains no injector, native payload, or target-correlation
 implementation of its own; it is only an SDK acceptance/demo application.
 
@@ -67,6 +78,20 @@ Escape. It force-cleans only the isolated client process tree and repeats the
 entire run with fresh client data and a distinct ReShade directory. The two-cycle
 gate passed on July 13, 2026 with `D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is
 under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`.
+
+The dedicated same-client restart gate is:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
+```
+
+It drives the frontend Inject control twice while keeping one Electron process
+and overlay session alive. On July 13, 2026 Electron PID 17756 passed against
+target PIDs 19764 and 17940 with distinct staged runtime directories. Each
+OS-confirmed exit returned the client to `idle`; both D3D12 windows, input
+interception/release, and no-leftover-process checks passed. Its marker is
+`D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`; evidence is under
+`build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
 
 For the accepted real-game proof, close Gun Frog first and run:
 

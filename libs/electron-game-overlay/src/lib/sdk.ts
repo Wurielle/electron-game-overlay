@@ -26,6 +26,7 @@ export {
   RESHADE_CLIENT_INJECTOR_STARTED_MARKER,
   RESHADE_CLIENT_RUNTIME_STAGED_MARKER,
   RESHADE_CLIENT_TARGET_CONNECTED_MARKER,
+  RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER,
   ReShadeOverlayLauncher,
   buildReShadeInvocation,
   defaultReShadeRunsRootDirectory,
@@ -34,6 +35,7 @@ export {
 } from './reshade-launcher.js';
 export type {
   ReShadeAttachResult,
+  ReShadeAttachmentState,
   ReShadeInvocation,
   ReShadeLaunchConfig,
   ReShadeLaunchConfigOptions,

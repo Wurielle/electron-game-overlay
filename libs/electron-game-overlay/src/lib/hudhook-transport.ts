@@ -26,6 +26,9 @@ const PACKET_KIND_FRAME = 2;
 const PACKET_PREFIX_BYTES = 5;
 const FRAME_HEADER_BYTES = 12;
 const LOOPBACK_HOST = '127.0.0.1';
+const DEFAULT_PROCESS_EXIT_POLL_INTERVAL_MS = 250;
+const MIN_PROCESS_EXIT_POLL_INTERVAL_MS = 1;
+const MAX_PROCESS_EXIT_POLL_INTERVAL_MS = 60_000;
 
 export interface HudhookDiscoveryRecord {
   version: 1;
@@ -37,6 +40,8 @@ export interface HudhookDiscoveryRecord {
 export interface HudhookLoopbackTransportOptions {
   discoveryPath?: string;
   tokenFactory?: () => string;
+  isProcessAlive?: (pid: number) => boolean;
+  processExitPollIntervalMs?: number;
 }
 
 interface JsonObject {
@@ -162,6 +167,26 @@ interface ClientState {
   inputTranslator?: InputEventTranslator;
 }
 
+interface ProcessExitWatch {
+  pid: number;
+  path: string;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+function defaultIsProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ESRCH'
+    );
+  }
+}
+
 export function defaultHudhookDiscoveryPath(): string {
   return join(tmpdir(), 'electron-game-overlay', 'hudhook-transport-v1.json');
 }
@@ -283,7 +308,14 @@ function fpsPositionNumber(
 export class HudhookLoopbackTransport implements NativeOverlay {
   private readonly discoveryPath: string;
   private readonly tokenFactory: () => string;
+  private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly processExitPollIntervalMs: number;
   private readonly clients = new Set<ClientState>();
+  private readonly activeClientsByPid = new Map<number, ClientState>();
+  private readonly processExitWatchesByPid = new Map<
+    number,
+    ProcessExitWatch
+  >();
   private readonly windows = new Map<number, WindowMessage>();
   private readonly latestFrames = new Map<number, Buffer>();
   private readonly inputTranslatorsByPid = new Map<
@@ -309,6 +341,19 @@ export class HudhookLoopbackTransport implements NativeOverlay {
     this.discoveryPath = options.discoveryPath ?? defaultHudhookDiscoveryPath();
     this.tokenFactory =
       options.tokenFactory ?? (() => randomBytes(32).toString('hex'));
+    this.isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+    this.processExitPollIntervalMs =
+      options.processExitPollIntervalMs ??
+      DEFAULT_PROCESS_EXIT_POLL_INTERVAL_MS;
+    if (
+      !Number.isSafeInteger(this.processExitPollIntervalMs) ||
+      this.processExitPollIntervalMs < MIN_PROCESS_EXIT_POLL_INTERVAL_MS ||
+      this.processExitPollIntervalMs > MAX_PROCESS_EXIT_POLL_INTERVAL_MS
+    ) {
+      throw new RangeError(
+        `processExitPollIntervalMs must be an integer between ${MIN_PROCESS_EXIT_POLL_INTERVAL_MS} and ${MAX_PROCESS_EXIT_POLL_INTERVAL_MS}`,
+      );
+    }
   }
 
   public start(): void {
@@ -385,12 +430,16 @@ export class HudhookLoopbackTransport implements NativeOverlay {
       }
     }
 
+    this.clearProcessExitWatches();
+
     for (const client of this.clients) {
+      client.authenticated = false;
       client.inputTranslator?.reset();
       client.writer.clear();
       client.socket.destroy();
     }
     this.clients.clear();
+    this.activeClientsByPid.clear();
     this.inputTranslatorsByPid.clear();
     this.windows.clear();
     this.latestFrames.clear();
@@ -698,6 +747,10 @@ export class HudhookLoopbackTransport implements NativeOverlay {
     socket.on('drain', () => client.writer.handleDrain());
     socket.on('error', () => socket.destroy());
     socket.on('close', () => {
+      const isAuthoritativeClient =
+        client.authenticated &&
+        client.pid !== undefined &&
+        this.activeClientsByPid.get(client.pid) === client;
       client.inputTranslator?.reset();
       if (
         client.pid !== undefined &&
@@ -705,8 +758,20 @@ export class HudhookLoopbackTransport implements NativeOverlay {
       ) {
         this.inputTranslatorsByPid.delete(client.pid);
       }
+      if (isAuthoritativeClient && client.pid !== undefined) {
+        this.activeClientsByPid.delete(client.pid);
+      }
       client.writer.clear();
       this.clients.delete(client);
+      if (isAuthoritativeClient && client.pid !== undefined) {
+        const targetPath = client.path ?? '';
+        const exitWatch = this.registerProcessExitWatch(client.pid, targetPath);
+        this.emitLifecycleEvent('game.process.transport-lost', {
+          pid: client.pid,
+          path: targetPath,
+        });
+        this.pollProcessExit(exitWatch);
+      }
     });
   }
 
@@ -764,7 +829,12 @@ export class HudhookLoopbackTransport implements NativeOverlay {
     if (!client.authenticated) {
       return this.authenticateClient(client, parsed);
     }
-    if (!parsed.type.startsWith('game.') || parsed.type === 'game.process') {
+    if (
+      !parsed.type.startsWith('game.') ||
+      parsed.type === 'game.process' ||
+      parsed.type === 'game.process.disconnected' ||
+      parsed.type === 'game.process.transport-lost'
+    ) {
       return false;
     }
 
@@ -797,23 +867,23 @@ export class HudhookLoopbackTransport implements NativeOverlay {
       return false;
     }
 
-    for (const existing of this.clients) {
-      if (
-        existing !== client &&
-        existing.authenticated &&
-        existing.pid === hello.pid
-      ) {
-        existing.authenticated = false;
-        existing.inputTranslator?.reset();
-        existing.socket.destroy();
-      }
+    const existing = this.activeClientsByPid.get(hello.pid);
+    if (existing && existing !== client) {
+      // A payload can reconnect before the old socket's close callback runs.
+      // Retire it first so that callback cannot publish a false disconnect for
+      // the newly authoritative socket with the same PID.
+      existing.authenticated = false;
+      existing.inputTranslator?.reset();
+      existing.socket.destroy();
     }
 
     const inputTranslator = new InputEventTranslator();
+    this.cancelProcessExitWatch(hello.pid);
     client.authenticated = true;
     client.pid = hello.pid;
     client.path = hello.path;
     client.inputTranslator = inputTranslator;
+    this.activeClientsByPid.set(hello.pid, client);
     this.inputTranslatorsByPid.set(hello.pid, inputTranslator);
     this.sendAuthenticatedSnapshot(client);
     this.emitEvent('game.process', {
@@ -861,6 +931,70 @@ export class HudhookLoopbackTransport implements NativeOverlay {
       this.callback(event, payload);
     } else {
       this.pendingEvents.push({ event, payload });
+    }
+  }
+
+  private emitLifecycleEvent(event: string, payload: JsonObject): void {
+    try {
+      this.emitEvent(event, payload);
+    } catch {
+      // Lifecycle observation must continue even if a consumer callback fails.
+    }
+  }
+
+  private registerProcessExitWatch(
+    pid: number,
+    targetPath: string,
+  ): ProcessExitWatch {
+    this.cancelProcessExitWatch(pid);
+    const watch: ProcessExitWatch = { pid, path: targetPath };
+    this.processExitWatchesByPid.set(pid, watch);
+    return watch;
+  }
+
+  private pollProcessExit(watch: ProcessExitWatch): void {
+    if (this.processExitWatchesByPid.get(watch.pid) !== watch) {
+      return;
+    }
+
+    let alive = true;
+    try {
+      alive = this.isProcessAlive(watch.pid);
+    } catch {
+      // Failure to inspect a process is not proof that it exited.
+      alive = true;
+    }
+    if (!alive) {
+      this.processExitWatchesByPid.delete(watch.pid);
+      this.emitLifecycleEvent('game.process.disconnected', {
+        pid: watch.pid,
+        path: watch.path,
+      });
+      return;
+    }
+
+    watch.timer = setTimeout(
+      () => this.pollProcessExit(watch),
+      this.processExitPollIntervalMs,
+    );
+    watch.timer.unref();
+  }
+
+  private cancelProcessExitWatch(pid: number): void {
+    const watch = this.processExitWatchesByPid.get(pid);
+    if (!watch) {
+      return;
+    }
+    this.processExitWatchesByPid.delete(pid);
+    if (watch.timer) {
+      clearTimeout(watch.timer);
+      watch.timer = undefined;
+    }
+  }
+
+  private clearProcessExitWatches(): void {
+    for (const pid of this.processExitWatchesByPid.keys()) {
+      this.cancelProcessExitWatch(pid);
     }
   }
 

@@ -5,6 +5,12 @@ type DemoState = {
   inputInterceptRequested: boolean;
   inputInterceptEffective: boolean;
   runtime: 'reshade' | null;
+  attachment: {
+    phase: 'idle' | 'attaching' | 'connected';
+    processName: string | null;
+    pid: number | null;
+    error: string | null;
+  };
   windows: Record<string, boolean>;
 };
 
@@ -23,6 +29,12 @@ let state: DemoState = {
   inputInterceptRequested: false,
   inputInterceptEffective: false,
   runtime: null,
+  attachment: {
+    phase: 'idle',
+    processName: null,
+    pid: null,
+    error: null,
+  },
   windows: {},
 };
 
@@ -72,16 +84,15 @@ injectButton.addEventListener('click', async () => {
   }
 
   injectButton.disabled = true;
-  statusElement.classList.remove('error');
-  statusElement.textContent = `Arming ReShade for ${processName}. Launch the game now...`;
   try {
     await updateState(ipcRenderer.invoke('overlay:inject', processName));
-    statusElement.textContent = `Connected to ${processName} with ReShade`;
   } catch (error) {
-    statusElement.classList.add('error');
-    statusElement.textContent = getErrorMessage(error);
+    if (!state.attachment.error) {
+      statusElement.classList.add('error');
+      statusElement.textContent = getErrorMessage(error);
+    }
   } finally {
-    injectButton.disabled = state.runtime === null;
+    renderInjectAvailability();
   }
 });
 
@@ -162,7 +173,8 @@ async function updateState(statePromise: Promise<DemoState>) {
 function renderState() {
   startButton.classList.toggle('active', state.overlayStarted);
   interceptButton.classList.toggle('active', state.inputInterceptEffective);
-  injectButton.disabled = state.runtime === null;
+  renderInjectAvailability();
+  statusElement.dataset.attachmentPhase = state.attachment.phase;
 
   startButton.textContent = state.overlayStarted
     ? 'Session running'
@@ -187,10 +199,44 @@ function renderState() {
     'video overlay',
   );
 
-  statusElement.classList.remove('error');
-  statusElement.textContent = state.runtime
-    ? `${state.overlayStarted ? 'Session ready' : 'Session idle'} · ReShade`
-    : 'Injection disabled: restart the client with ReShade enabled';
+  renderAttachmentStatus();
+}
+
+function renderInjectAvailability() {
+  injectButton.disabled =
+    state.runtime === null || state.attachment.phase !== 'idle';
+}
+
+function renderAttachmentStatus() {
+  statusElement.classList.toggle('error', Boolean(state.attachment.error));
+
+  if (!state.runtime) {
+    statusElement.textContent =
+      'Injection disabled: restart the client with ReShade enabled';
+    return;
+  }
+
+  if (state.attachment.error) {
+    statusElement.textContent = state.attachment.error;
+    return;
+  }
+
+  if (state.attachment.phase === 'attaching') {
+    statusElement.textContent = `Arming ReShade for ${state.attachment.processName}. Launch the game now...`;
+    return;
+  }
+
+  if (state.attachment.phase === 'connected') {
+    statusElement.textContent = `Connected to ${state.attachment.processName} (PID ${state.attachment.pid}) with ReShade`;
+    return;
+  }
+
+  if (state.attachment.processName && state.attachment.pid) {
+    statusElement.textContent = `Disconnected from ${state.attachment.processName} (PID ${state.attachment.pid}). Ready to inject again.`;
+    return;
+  }
+
+  statusElement.textContent = `${state.overlayStarted ? 'Session ready' : 'Session idle'} · ReShade`;
 }
 
 function getErrorMessage(error: unknown) {

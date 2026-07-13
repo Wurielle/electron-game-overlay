@@ -257,6 +257,30 @@ cooperating target; it does not prove late injection or arbitrary fast-start
 D3D12 game timing. Client cleanup in this gate is forced teardown followed by a
 fresh launch, not graceful runtime disable/unload.
 
+## Run the same-client restart/reinjection gate
+
+Use the dedicated frontend-driven wrapper:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
+```
+
+This gate keeps one production Electron client and overlay session alive. It
+enters the target basename and clicks the real frontend Inject control, starts a
+controlled D3D12 target, and verifies its selected PID, two-window scene, normal
+exit, authoritative OS-confirmed disconnect marker, SDK/frontend `idle` state,
+and enabled Inject control. It then repeats attachment through the frontend with
+a new target and adds the full input interception/release proof before closing
+that target. The two cycles must use distinct target PIDs and isolated ReShade
+run directories.
+
+The gate passed on July 13, 2026 with Electron PID 17756 and target PIDs 19764
+then 17940. Both frontend actions disabled Inject synchronously; both exits
+returned to `idle`; the second scene accepted main/status input and preserved
+the game-side interception oracle. Evidence is under
+`build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`, whose
+`result.txt` contains `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`.
+
 ## Run the real client/SDK Gun Frog gate
 
 Use the dedicated production-client acceptance wrapper:
@@ -353,15 +377,16 @@ closed the host-switch milestone for this accepted target path.
 - multiple-swap-chain/render-queue ownership and safe texture retirement;
 - graceful client disable/unload, late injection, arbitrary fast-start target
   timing, additional games, or broader graphics/presentation compatibility;
-- a PID-correlated production attach flow (the acceptance runner uses a bounded
-  prelaunch basename watcher and isolated base path);
+- caller-selected PID targeting when multiple same-basename processes exist
+  (the SDK pins the injector-selected PID, but the frontend still arms by
+  executable basename);
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
-The focused POC now includes the production client/SDK Gun Frog gate and the
-two-cycle controlled production-client D3D12 gate. Raw normalization, graceful
-disable/unload, late/PID-correlated attachment, arbitrary fast-start targets,
-other games and APIs, and multiple-swap-chain hardening stay outside that
-accepted boundary. ReShade replaces the injected host, graphics lifecycle,
-ImGui ownership, and game-side input blocking rather than the Electron SDK
-contract.
+The focused POC now includes the production client/SDK Gun Frog gate, the
+two-cycle fresh-client D3D12 gate, and same-client target restart/reinjection.
+Raw normalization, graceful disable/unload, late or caller-selected-PID
+attachment, arbitrary fast-start targets, other games and APIs, and
+multiple-swap-chain hardening stay outside that accepted boundary. ReShade
+replaces the injected host, graphics lifecycle, ImGui ownership, and game-side
+input blocking rather than the Electron SDK contract.
