@@ -1,3 +1,0 @@
-[submodule "libs/native-game-overlay/sln"]
-	path = libs/native-game-overlay/sln
-	url = git@github.com:hiitiger/game-overlay.git

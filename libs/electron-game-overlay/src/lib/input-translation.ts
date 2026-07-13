@@ -228,7 +228,7 @@ function isKeyboardMessage(msg: number): boolean {
 }
 
 /**
- * Converts the Win32 messages emitted by the hudhook payload into Electron's
+ * Converts the Win32 messages emitted by the injected runtime into Electron's
  * sendInputEvent shape. Modifier state is reconstructed from the ordered input
  * stream because this pure TypeScript replacement cannot call GetAsyncKeyState.
  */

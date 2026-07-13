@@ -3,11 +3,15 @@
 > **Archived production-host candidate:** Keep these launchers and controlled
 > proofs as the verified Electron transport, compositor, routing, and regression
 > baseline. Real Gun Frog validation showed that the game could still observe
-> mouse hover/click activity while interception was active, so the production
-> host experiment has moved to
-> [ReShade](../reshade-imgui-overlay/README.md). The hudhook POC remains runnable
-> and its reusable backend-neutral Electron/Rust components will be carried
-> forward; further private game-input detour expansion is deferred.
+> mouse hover/click activity while interception was active, so the selected
+> production host is now the
+> [Electron game overlay runtime](../../libs/electron-game-overlay-runtime/README.md).
+> The controlled-host hudhook regressions remain runnable for historical work.
+> The former production-client cases are archived launchers that point to their
+> current runtime replacements. Reusable
+> backend-neutral Electron/Rust components were promoted to
+> `libs/electron-overlay-transport`; further private game-input detour expansion
+> is deferred.
 
 This standalone Windows x64 proof uses a documented local path patch over
 [hudhook 0.9.1](https://github.com/veeenu/hudhook/tree/0.9.1) to inject
@@ -15,7 +19,9 @@ project-owned backend payloads, hook D3D11 and D3D12 swap chains, render Dear
 ImGui, and provide safe Win32 input ownership. Graphics rendering behavior
 remains the published 0.9.1 implementation.
 
-It deliberately does not install or load ReShade. The completed ReShade POC remains beside it as a separate reference implementation.
+It deliberately does not install or load ReShade. The promoted production
+runtime remains a separate implementation under
+`libs/electron-game-overlay-runtime`.
 
 The payload renders:
 
@@ -115,14 +121,17 @@ The clean run directory intentionally contains no ReShade proxy, configuration, 
 ## Test-case launchers
 
 Human-facing tests have zero-argument launchers under
-[`scripts/test-cases`](scripts/test-cases/README.md). Run the script whose name
-matches the scenario you want to inspect:
+[`scripts/test-cases`](scripts/test-cases/README.md). Run a controlled-host
+launcher whose name matches the scenario you want to inspect. The three
+client-bound entries are retained as discoverable archived files and exit with
+migration guidance:
 
 | Test case | Launcher |
 | --- | --- |
 | Hook and generated-texture smoke test | `dx11-hook-only.ps1` |
 | Electron SDK/transport diagnostic producer | `dx11-electron-diagnostic.ps1` |
-| Real client integration | `dx11-real-client.ps1` |
+| Archived real client integration (not runnable) | `dx11-real-client.ps1` |
+| Archived real-game client input case (not runnable) | `dx11-real-game-input-manual.ps1` |
 | Window lifecycle regression | `dx11-window-lifecycle.ps1` |
 | Automated input regression | `dx11-input-automated.ps1` |
 | Hands-on input demo | `dx11-input-manual.ps1` |
@@ -133,7 +142,7 @@ matches the scenario you want to inspect:
 | Hands-on multi-window demo | `dx11-multiwindow-manual.ps1` |
 | D3D12 hook and generated-texture smoke test | `d3d12-hook-only.ps1` |
 | D3D12 Electron diagnostic | `d3d12-electron-diagnostic.ps1` |
-| D3D12 real client integration | `d3d12-real-client.ps1` |
+| Archived D3D12 real client integration (not runnable) | `d3d12-real-client.ps1` |
 | D3D12 lifecycle regression | `d3d12-window-lifecycle.ps1` |
 | D3D12 automated input regression | `d3d12-input-automated.ps1` |
 | D3D12 hands-on input demo | `d3d12-input-manual.ps1` |
@@ -145,40 +154,31 @@ advanced/CI interface for custom combinations. Multi-window launchers
 temporarily clear `HUDHOOK_ELECTRON_WINDOW` and restore its original value when
 they finish.
 
-## Run the real client integration (recommended)
+## Archived client-bound launchers
 
-From a regular PowerShell at the repository root:
+The three launchers below remain discoverable so the accepted historical cases
+and their replacement routes are not lost. They are intentionally not runnable:
+each exits immediately with migration guidance because the production SDK no
+longer contains the hudhook launcher or payloads.
 
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-client.ps1
 .\poc\hudhook-imgui-overlay\scripts\test-cases\d3d12-real-client.ps1
+.\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-game-input-manual.ps1
 ```
 
-`-Client` builds the SDK-owned two-backend runtime and the repository's real
-Electron demo application, starts and validates the controlled host, then launches the
-client with the opt-in `--start-overlay-session` and `--hudhook-overlay` flags. The client
-calls the SDK, which resolves `libs/electron-game-overlay/dist/runtime/win32-x64`
-without a runtime override, invokes its hudhook injector for the controlled
-process, and waits for the exact target PID to authenticate to the existing
-overlay session. PowerShell does not invoke the injector in this mode. The runner
-still requires fresh receipt, upload, selection, and composition evidence in the
-PID-specific log beside the bundled payload DLL.
+Use the current production cases instead:
 
-Hudhook remains disabled unless the client's main process receives the explicit
-startup configuration. Once enabled, the controlled auto-target or the existing
-renderer Attach action may issue the launcher's single validated request. The
-current upstream API selects the automated target by its controlled executable
-basename. The runner first rejects pre-existing matching hosts, then uses the
-announced PID as post-load correlation; the PID is proof, not yet the injector's
-selection primitive.
+- D3D11 exact-PID SDK gate:
+  `libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-client-sdk-process-start-injection.ps1`;
+- D3D12 SDK gate:
+  `libs/electron-game-overlay-runtime/scripts/test-cases/d3d12-client-sdk.ps1`;
+- hands-on permitted real-game testing: run `npm run dev`, arm the ReShade
+  target by executable name or exact PID, and use **Ctrl+I** to toggle
+  interception.
 
-Expected result: the real transparent `ExampleMainOverlay` is drawn inside the
-controlled host at its native Electron bounds, with the diagnostics kept separate
-in the top-right corner. Press Escape in the host when finished. The launcher
-waits for the host, stops only the Electron process tree it launched, and returns
-the host exit code.
-
-Useful proof markers are:
+The markers below are the historical evidence contract from when the two
+controlled real-client launchers were runnable:
 
 - `HUDHOOK_CLIENT_OVERLAY_SESSION_READY` in `electron-client.stdout.log`;
 - `HUDHOOK_CLIENT_HUDHOOK_CONFIGURED`;
@@ -191,9 +191,10 @@ Useful proof markers are:
 - `Electron frame uploaded to GPU`;
 - `Electron overlay composed at native bounds`.
 
-The runner verifies that the session-ready and runtime-configured markers precede
-the injector start, and that injector start precedes both request return and exact
-target connection. Request return and target connection may race with each other.
+The historical runner verified that the session-ready and runtime-configured
+markers preceded the injector start, and that injector start preceded both
+request return and exact target connection. Request return and target connection
+may race with each other.
 `HUDHOOK_CLIENT_HUDHOOK_INJECTOR_RETURNED` proves only that the client's injection
 request completed; the exact-PID connection and payload log remain the evidence
 that the DLL actually loaded and rendered.
@@ -343,13 +344,15 @@ numeric `io.mouse_pos`, `io.want_capture_mouse`, effective interception, and
 software-cursor state. Each accepted click also writes
 `native ImGui input probe clicked` to the payload log.
 
-Start the real-game case with:
+The archived real-game client launcher remains discoverable at:
 
 ```powershell
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-real-game-input-manual.ps1
 ```
 
-Launch and attach to the game through the client. First hover and click the probe
+It is not runnable and exits immediately with the current ReShade workflow. The
+following steps preserve the historical acceptance procedure: launch and attach
+to the game through the then-current client, then first hover and click the probe
 with interception off. Then press **Ctrl+I**, confirm the panel says
 `INTERCEPTION ENABLED`, and test two independent gates:
 
@@ -380,8 +383,8 @@ to that queue before the replacement WndProc is installed, and interception
 seeds the route with the unfiltered client cursor so the first buffered click is
 not route-dependent. DirectInput, broader Unity Input System device APIs, and
 other device paths are not covered; if the game still reacts while the new
-raw-buffer counters stay zero, record that as the stop signal for evaluating a
-ReShade-backed host.
+raw-buffer counters stay zero, that recorded stop signal is why the production
+host moved to ReShade.
 
 ## Run the deterministic input regression
 
@@ -392,9 +395,9 @@ ReShade-backed host.
 `-ClientInput` uses the same real `ExampleMainOverlay` page and waits for the
 injected target's `game.process` event before requesting input interception. The
 runner first rebuilds the Electron overlay SDK so its project-owned TypeScript
-input translation fixes cannot be stale. The normal client and proof producer
-both arm the same visible DOM target; the deterministic producer additionally
-validates signed coordinates and the exact wheel field contract. The page
+input translation fixes cannot be stale. The retained proof page and controlled
+producer both arm the same visible DOM target; the deterministic producer
+additionally validates signed coordinates and the exact wheel field contract. The page
 reports the text field's live DOM rectangle; the runner maps its center
 through the overlay bounds and controlled host client area instead of relying on
 hard-coded screen coordinates. It activates only the host it launched and uses
@@ -546,7 +549,12 @@ the payload produces a log. The warm-up reduces this controlled startup race but
 does not turn the upstream injector into a production guarantee; a run with no
 fresh payload evidence still fails.
 
-The upstream hudhook 0.9.1 injector is sufficient for this controlled POC, but it is not the intended production launcher. It does not reject a zero return from remote `LoadLibraryW`, and its fixed `MAX_PATH` copy reads beyond the source path buffer. The controlled runner compensates for the first issue by requiring fresh payload evidence, but the production launcher should use a small project-owned injector—or an upstream hudhook fix—that sizes the remote buffer from the actual path and validates every Windows API result.
+The upstream hudhook 0.9.1 injector is sufficient for this controlled POC, but
+was rejected as a production launcher. It does not reject a zero return from
+remote `LoadLibraryW`, and its fixed `MAX_PATH` copy reads beyond the source path
+buffer. The controlled runner compensates for the first issue by requiring fresh
+payload evidence. A project-owned replacement was considered during the POC;
+the selected production path now uses the pinned ReShade injector instead.
 
 The injector fixes do not require modifying hudhook's graphics hooks. The
 separate local path patch owns synchronous Win32 input, bounded process-input
@@ -554,14 +562,15 @@ suppression, and guarded teardown ordering for those custom hooks. Runtime DLL
 ejection remains outside the supported POC path; target-process exit is the
 tested teardown.
 
-## Current scope
+## Historical accepted scope
 
-This milestone now covers:
+The completed hudhook milestone proved:
 
 - D3D11 and D3D12 injection and Dear ImGui rendering through hudhook 0.9.1,
   with local Win32-input and guarded-teardown patches;
-- the real built Electron client's existing overlay-session startup path and
-  opt-in ownership of backend-specific hudhook injection requests;
+- the then-current real Electron client's overlay-session startup path and
+  opt-in ownership of backend-specific hudhook injection requests; those
+  client-bound launchers are now archived;
 - simultaneous Electron windows over the authenticated Node/Rust loopback transport,
   with raw BGRA frame packets, JSON controls, registration-order back-to-front
   composition, deduplication, append-on-register,
@@ -591,17 +600,19 @@ This milestone now covers:
 Controlled D3D12 parity is now complete: the hook-only texture/first-frame proof,
 live single-window input proof, repeated Electron texture updates, and the full
 two-window routing/lifecycle/caption-drag proof pass against the D3D12 host. The
-real-client launchers also prove SDK-owned injection request orchestration for
-both backends. They inject through the SDK-owned runtime rather than the
-controlled host's POC staging directory or client-owned launcher code. The
-controlled POC finish line is complete and revalidated; the Gun Frog
-suppression gate still requires the manual rerun described above. The active
-client/SDK uses only the project-owned Node/Rust loopback transport and hudhook
-runtime, root `npm run build`/`build:all` and the active client/SDK dependency
-path no longer build or require `node-game-overlay` or `native-game-overlay`,
-archived Nx project definitions remain explicitly selectable as legacy reference,
-and the D3D11/D3D12 input,
-multi-window, lifecycle, and real-client launchers pass on the replacement.
+historical client acceptance also covered SDK-owned injection request
+orchestration for both backends through launcher files that are now archived.
+Those runs used the then-current SDK-owned runtime rather than the controlled
+host's POC staging directory or client-owned launcher code. All three
+client-bound launcher files now exit with migration guidance. The
+controlled POC finish line is complete and revalidated. Its Gun Frog suppression
+failure is retained as the host-selection record. The active client/SDK now uses
+the shared Node/Rust loopback transport with the production ReShade runtime.
+Hudhook payloads and its injector are not production build inputs, and the
+superseded native binary and Node add-on packages have been removed. The POC's
+D3D11/D3D12 input, multi-window, and lifecycle launchers remain runnable
+historical regressions; the retained client launcher files remain discoverable
+records only.
 
 Post-POC hardening remains tracked, but does not block that finish line:
 
@@ -641,10 +652,12 @@ consequently affects later initialization too. CPU scene/router publication is
 atomic, but a newly published alpha frame can precede its corresponding GPU upload
 by one `Present`, creating a narrow visual-versus-hit-test timing window.
 
-The controlled POC is finished. The remaining current acceptance item is the
-Gun Frog rerun for the bounded process-input adapter. Target-display/client-origin
-ownership, manual mixed-scale hardware/VM acceptance, safe texture retirement,
-and related geometry/DPI edge cases stay in the post-POC backlog.
+The controlled POC is finished. The Gun Frog rerun failed the game-suppression
+boundary and is retained as the decision record that moved production ownership
+to ReShade; it is not a pending hudhook acceptance item. Target-display/client-
+origin ownership, manual mixed-scale hardware/VM acceptance, safe texture
+retirement, and related geometry/DPI edge cases remain relevant only to retained
+historical regression work.
 The local hudhook fork changes Win32 input ownership and guarded hook teardown;
 graphics rendering behavior and render backends remain the published 0.9.1
 implementation. Replace the path patch with a pinned upstream revision after

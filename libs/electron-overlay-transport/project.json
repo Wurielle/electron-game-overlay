@@ -1,0 +1,35 @@
+{
+  "name": "electron-overlay-transport",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/electron-overlay-transport/src",
+  "projectType": "library",
+  "tags": ["scope:native", "type:transport"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "inputs": ["default"],
+      "outputs": [
+        "{workspaceRoot}/build/electron-overlay-transport/cargo/x86_64-pc-windows-msvc/release"
+      ],
+      "options": {
+        "cwd": "libs/electron-overlay-transport",
+        "command": "cargo build --locked --release --target x86_64-pc-windows-msvc --target-dir ../../build/electron-overlay-transport/cargo"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "inputs": ["default"],
+      "outputs": [
+        "{workspaceRoot}/build/electron-overlay-transport/cargo-test"
+      ],
+      "options": {
+        "cwd": "libs/electron-overlay-transport",
+        "command": "cargo test --locked --target x86_64-pc-windows-msvc --target-dir ../../build/electron-overlay-transport/cargo-test"
+      }
+    }
+  }
+}

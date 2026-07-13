@@ -51,7 +51,7 @@ test('the SDK resolves the ReShade runtime used by the demo', () => {
   assert.equal(path.basename(config.runtimePath), 'ReShade64.dll');
   assert.equal(
     path.basename(config.addonPath),
-    'electron_reshade_overlay_poc.addon64',
+    'electron_game_overlay.addon64',
   );
 });
 

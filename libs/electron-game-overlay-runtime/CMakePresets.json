@@ -1,0 +1,70 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022-x64",
+      "displayName": "Visual Studio 2022 x64 native test hosts",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/../../build/electron-game-overlay-runtime",
+      "architecture": "x64",
+      "cacheVariables": {
+        "ELECTRON_GAME_OVERLAY_BUILD_ADDON": "OFF"
+      }
+    },
+    {
+      "name": "vs2022-x64-production",
+      "displayName": "Visual Studio 2022 x64 production overlay runtime",
+      "inherits": "vs2022-x64",
+      "binaryDir": "${sourceDir}/../../build/electron-game-overlay-runtime-production",
+      "cacheVariables": {
+        "ELECTRON_GAME_OVERLAY_BUILD_ADDON": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "relwithdebinfo",
+      "displayName": "RelWithDebInfo D3D11 host",
+      "configurePreset": "vs2022-x64",
+      "configuration": "RelWithDebInfo",
+      "targets": [
+        "d3d11_overlay_test_host"
+      ]
+    },
+    {
+      "name": "relwithdebinfo-dx12",
+      "displayName": "RelWithDebInfo D3D12 host",
+      "configurePreset": "vs2022-x64",
+      "configuration": "RelWithDebInfo",
+      "targets": [
+        "d3d12_overlay_test_host"
+      ]
+    },
+    {
+      "name": "relwithdebinfo-production",
+      "displayName": "RelWithDebInfo production add-on and transport ABI smoke",
+      "configurePreset": "vs2022-x64-production",
+      "configuration": "RelWithDebInfo",
+      "targets": [
+        "electron_overlay_transport_abi_smoke",
+        "electron_game_overlay"
+      ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "electron-overlay-transport",
+      "displayName": "Electron overlay transport ABI smoke",
+      "configurePreset": "vs2022-x64-production",
+      "configuration": "RelWithDebInfo",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

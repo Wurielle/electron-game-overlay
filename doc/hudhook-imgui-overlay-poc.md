@@ -3,10 +3,11 @@
 > **Architecture update, July 12, 2026:** This document is retained as the
 > historical hudhook decision and controlled acceptance record. Real Gun Frog
 > testing later showed that Unity still received mouse hover/click activity while
-> the overlay was interactive under interception. ReShade is now the active host
-> experiment for process entry, graphics/ImGui lifecycle, and game-side input
-> blocking; its controlled D3D11/D3D12 and Gun Frog visible acceptance is still
-> pending. The Electron OSR transport, wire/frame processing, ordered scene and
+> the overlay was interactive under interception. ReShade is now the production
+> host for process entry, graphics/ImGui lifecycle, and game-side input blocking.
+> Its controlled D3D11/D3D12, production-client, restart, exact-PID process-start,
+> and Gun Frog gates subsequently passed. The Electron OSR transport,
+> wire/frame processing, ordered scene and
 > input router, public session/window/input API, and multi-window/DPI contracts
 > described here remain reusable.
 
@@ -43,7 +44,10 @@ Verified results:
 -   raster-changing `window.bounds` updates suppress the stale compositable raster without changing stack order, while the framed transport validates dimensions and exact BGRA byte counts before accepting a replacement frame;
 -   `-ClientMultiWindowManual -Wait` exposes the overlapping pages and their hide/show/raise controls for hands-on testing;
 -   the integrated diagnostic, `-Client`, `-ClientWindow`, `-ClientInput`, and multi-window runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
--   a normal Windows x64 SDK build stages the injector, D3D11/D3D12 payloads, and notices under `libs/electron-game-overlay/dist/runtime/win32-x64`; the real-client launchers consume that SDK output without a runtime-directory override or client-owned launch implementation.
+-   at the time of the historical acceptance, a Windows x64 SDK build staged
+    the injector and D3D11/D3D12 payloads. The production SDK no longer stages
+    hudhook; current builds stage `electron_game_overlay.addon64` and its pinned
+    ReShade runtime instead.
 
 No hudhook fork was required. The allowed-application smoke tests remain separate compatibility work. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
 
@@ -74,7 +78,8 @@ The D3D11 and controlled D3D12 seams and an interactive ordered multi-window Ele
 
 Use [hudhook 0.9.1](https://github.com/veeenu/hudhook/tree/0.9.1) as released for the first attempt.
 
-This is intentionally different from the completed [ReShade POC](../poc/reshade-imgui-overlay/README.md):
+This is intentionally different from the promoted
+[ReShade runtime](../libs/electron-game-overlay-runtime/README.md):
 
 | Concern | ReShade baseline | hudhook POC |
 | --- | --- | --- |
@@ -162,12 +167,14 @@ The POC may use a Cargo workspace with one shared overlay crate and small backen
 
 ## Controlled test host
 
-Reuse the existing D3D11 host from `poc/reshade-imgui-overlay` so both experiments exercise the same target. Preserve the ReShade POC and its executable.
+Reuse the controlled D3D11 host from `libs/electron-game-overlay-runtime` so
+both paths exercise the same target. Preserve the production runtime and its
+executable.
 
 Build it from a Visual Studio Developer PowerShell at the repository root:
 
 ```powershell
-Push-Location poc/reshade-imgui-overlay
+Push-Location libs/electron-game-overlay-runtime
 cmake --preset vs2022-x64
 cmake --build --preset relwithdebinfo
 Pop-Location

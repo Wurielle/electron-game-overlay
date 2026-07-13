@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use electron_overlay_core::{ElectronFrameBridge, ElectronScene};
+use electron_overlay_transport::{ElectronFrameBridge, ElectronScene};
 use hudhook::imgui::{Condition, Context, Image, Io, StyleColor, TextureId, Ui, WindowFlags};
 use hudhook::process_input::{
     ProcessInputCounters, ProcessMouseSuppression, ProcessRawMouseHandler,

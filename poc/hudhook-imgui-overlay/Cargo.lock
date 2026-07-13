@@ -46,7 +46,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c00d31b1d19317b4777ec879192d3745bd97d05262b4b19cb1dda284b9d22f19"
 
 [[package]]
-name = "electron-overlay-core"
+name = "electron-overlay-transport"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -96,7 +96,7 @@ dependencies = [
 name = "hudhook-imgui-overlay-ui"
 version = "0.1.0"
 dependencies = [
- "electron-overlay-core",
+ "electron-overlay-transport",
  "hudhook",
  "tracing-subscriber",
  "windows",

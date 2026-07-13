@@ -58,8 +58,8 @@ Enter-VsDevShell `
     -SkipAutomaticLocation `
     -DevCmdArguments "-arch=x64 -host_arch=x64" | Out-Null
 
-$ReShadePocRoot = Join-Path $RepoRoot "poc\reshade-imgui-overlay"
-Push-Location $ReShadePocRoot
+$RuntimeRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
+Push-Location $RuntimeRoot
 try {
     & $CMake --preset vs2022-x64
     if ($LASTEXITCODE -ne 0) {
@@ -93,7 +93,7 @@ finally {
     Pop-Location
 }
 
-$HostSource = Join-Path $RepoRoot "build\reshade-imgui-overlay\RelWithDebInfo\d3d11_overlay_test_host.exe"
+$HostSource = Join-Path $RepoRoot "build\electron-game-overlay-runtime\RelWithDebInfo\d3d11_overlay_test_host.exe"
 $CargoRelease = Join-Path $CargoTarget "x86_64-pc-windows-msvc\release"
 $PayloadSource = Join-Path $CargoRelease "hudhook_imgui_overlay_dx11.dll"
 $InjectorSource = Join-Path $CargoRelease "hudhook-overlay-injector.exe"

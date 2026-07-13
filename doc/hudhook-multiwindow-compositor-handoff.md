@@ -291,9 +291,9 @@ exact process tree.
 
 Primary implementation files are:
 
-- [frame/scene transport bridge](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_frame.rs);
-- [wire framing](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_wire.rs);
-- [ordered input router](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_input.rs);
+- [frame/scene transport bridge](../libs/electron-overlay-transport/src/electron_frame.rs);
+- [wire framing](../libs/electron-overlay-transport/src/electron_wire.rs);
+- [ordered input router](../libs/electron-overlay-transport/src/electron_input.rs);
 - [per-window renderer](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/lib.rs);
-- [controlled Electron producer](../poc/hudhook-imgui-overlay/electron-client-window-demo/main.cjs);
+- [controlled Electron producer](../tools/electron-overlay-scene-producer/main.cjs);
 - [automated/manual runner](../poc/hudhook-imgui-overlay/scripts/run-electron-dx11.ps1).

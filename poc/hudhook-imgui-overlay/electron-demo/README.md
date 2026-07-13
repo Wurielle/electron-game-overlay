@@ -1,6 +1,10 @@
 # Electron frame producer
 
-This small Electron 16 application creates one fixed, opaque 640 x 360 offscreen `BrowserWindow` and sends its full paint frames through the repository's public `electron-game-overlay` SDK. The SDK owns an authenticated loopback TCP transport and forwards bounded binary BGRA frames without loading a native Node add-on.
+This historical Electron 16 producer creates one fixed, opaque 640 x 360
+offscreen `BrowserWindow` and sends its full paint frames through the
+repository's public `electron-game-overlay` SDK. The backend-neutral engine now
+lives in `libs/electron-overlay-transport`; the SDK forwards bounded binary BGRA
+frames without loading a native Node add-on.
 
 It does not inject a graphics payload. The hudhook POC runner starts this process alongside the controlled D3D11 host and injector.
 

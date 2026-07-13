@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-electron-overlay-core = { path = "../../../electron-overlay-core" }
+electron-overlay-transport = { path = "../../../../libs/electron-overlay-transport" }
 hudhook.workspace = true
 tracing-subscriber.workspace = true
 windows.workspace = true

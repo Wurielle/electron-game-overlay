@@ -1,4 +1,4 @@
-# gelectron
+# Electron game overlay client
 
 ## SDK demo client
 
@@ -17,12 +17,16 @@ apps/client/dist/main/main.js
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject.exe
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.dll
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.build.json
-libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_reshade_overlay_poc.addon64
+libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay.addon64
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade.ini
 ```
 
+The native sources live in the Nx projects `electron-overlay-transport` and
+`electron-game-overlay-runtime`. This application contains no native host code;
+it exists to exercise the public SDK.
+
 The native build requires Rust, CMake, Git, and Visual Studio 2022 C++ Build
-Tools. The SDK uses the locked Rust core and the pinned locally patched ReShade
+Tools. The SDK uses the locked Rust transport engine and the pinned locally patched ReShade
 revision; a stock ReShade 6.7.3 runtime is not ABI-compatible with the add-on.
 
 The normal client uses the SDK's ReShade launcher. ReShade selects the graphics
@@ -76,7 +80,7 @@ The dedicated controlled D3D12 integration gate builds and drives this real
 client through the public SDK:
 
 ```powershell
-.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk.ps1
 ```
 
 It exercises both Electron windows, keeps the controlled target in the
@@ -85,13 +89,15 @@ re-clicks the moved main window, releases input, proves legacy/raw/primary
 pointer input and cursor confinement resume, and closes the target with released
 Escape. It force-cleans only the isolated client process tree and repeats the
 entire run with fresh client data and a distinct ReShade directory. The two-cycle
-gate passed on July 13, 2026 with `D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is
-under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`.
+gate passed on July 13, 2026 with `D3D12_REAL_CLIENT_SDK_GATE_PASS`. Its
+historical pre-promotion evidence is under
+`build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`; current runs use
+`build/electron-game-overlay-runtime`.
 
 The dedicated same-client restart gate is:
 
 ```powershell
-.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 ```
 
 It drives the frontend Inject control twice while keeping one Electron process
@@ -100,14 +106,16 @@ target PIDs 19764 and 17940 with distinct staged runtime directories. Each
 OS-confirmed exit returned the client to `idle`; both D3D12 windows, input
 interception/release, and no-leftover-process checks passed. Its marker is
 `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`; evidence is under
+the historical path
 `build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
+Current runs use `build/electron-game-overlay-runtime`.
 
 The exact-PID process-start gates are available separately for both controlled
 backends:
 
 ```powershell
-.\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
-.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
 ```
 
 They create the target with Windows `CREATE_SUSPENDED`, enter its basename and
@@ -119,11 +127,13 @@ Both gates passed on July 13, 2026:
 
 - D3D11 targeted PID 7428. The process-create-to-frontend-click interval was
   72.393 ms, and the runner emitted
-  `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Evidence is under
+  `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Historical
+  pre-promotion evidence is under
   `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`.
 - D3D12 targeted PID 21508. The process-create-to-frontend-click interval was
   84.061 ms, and the runner emitted
-  `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Evidence is under
+  `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Historical
+  pre-promotion evidence is under
   `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
 
 Both runs proved the exact injector arguments and that ReShade loaded before
@@ -146,7 +156,7 @@ Ctrl+I to release, and click the same Quit position again. The dedicated
 repository acceptance wrapper automates build/startup and validates the logs:
 
 ```powershell
-.\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk.ps1
 ```
 
 That real-game client/SDK gate passed on July 13, 2026. The controlled D3D12

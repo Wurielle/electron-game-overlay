@@ -1,6 +1,8 @@
 # electron-game-overlay
 
-This library was generated with [Nx](https://nx.dev).
+This is the public Electron SDK. It uses the backend-neutral
+`electron-overlay-transport` engine and stages the Windows
+`electron-game-overlay-runtime`; consumers do not load a native Node add-on.
 
 ## Building
 
@@ -8,7 +10,8 @@ Run `nx build electron-game-overlay` to build the library.
 
 ## ReShade runtime and attachment
 
-`nx build electron-game-overlay` compiles the TypeScript SDK and stages the
+`nx build electron-game-overlay` builds its native Nx dependencies, compiles the
+TypeScript SDK, and stages the
 patched Windows x64 ReShade runtime, injector, build stamp, Electron add-on, and
 configuration under `dist/runtime/win32-x64/reshade`. Consumers call
 `parseReShadeLaunchConfig()`, create `ReShadeOverlayLauncher`, then arm an
@@ -18,6 +21,9 @@ waits for transport discovery, executes the injector without a shell, and
 parses the injector-selected PID, then resolves only after an add-on with that
 PID and the expected executable basename authenticates back to the session.
 ReShade selects the target graphics API; callers do not select D3D11 or D3D12.
+The staged add-on is `electron_game_overlay.addon64`.
+Pass `--reshade-overlay` exactly once to the Electron main process to opt in to
+the bundled runtime configuration.
 
 ```ts
 const overlay = new ElectronGameOverlay();
@@ -86,7 +92,7 @@ throw.
 The controlled production client/SDK D3D12 gate is available through:
 
 ```powershell
-.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk.ps1
 ```
 
 It passed twice on July 13, 2026, using two isolated client-data and ReShade run
@@ -94,22 +100,24 @@ directories. Both real Electron windows accepted focus, text, and caption-drag
 interaction while the target stayed foreground and its input oracle stayed
 frozen. Release restored legacy, raw, and primary mouse-pointer input plus cursor
 confinement; released Escape closed each target normally. The runner emitted
-`D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is retained under
-`build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`.
+`D3D12_REAL_CLIENT_SDK_GATE_PASS`. Historical pre-promotion evidence is retained
+under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`; current
+runs use `build/electron-game-overlay-runtime`.
 
 The restart/reinjection gate is available through:
 
 ```powershell
-.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 ```
 
 It passed on July 13, 2026 with Electron PID 17756 across controlled target PIDs
 19764 and 17940. Each frontend Inject action selected a distinct target PID and
 runtime directory; each target exit returned the SDK and frontend to `idle`,
 and the second D3D12 scene passed both-window input, interception, and release.
-The runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`; evidence is
-under
+The runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`; historical
+pre-promotion evidence is under
 `build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
+Current runs use `build/electron-game-overlay-runtime`.
 
 The controlled host cooperates with the prearmed launcher before its deliberately
 fast graphics initialization. This proves SDK-owned launch and ReShade's D3D12
@@ -119,7 +127,8 @@ one client/session alive while replacing the target. Graceful injected-runtime
 disable/unload while a target remains alive is separate lifecycle hardening.
 
 The real production client/SDK gate passed against Gun Frog on July 13, 2026
-through `poc/reshade-imgui-overlay/scripts/test-cases/gun-frog-client-sdk.ps1`.
+through
+`libs/electron-game-overlay-runtime/scripts/test-cases/gun-frog-client-sdk.ps1`.
 The four aligned Electron controls stayed isolated from Unity while interception
 was acknowledged; Ctrl+I produced the negative acknowledgement and the same
 underlying Quit position then closed the game.
@@ -192,11 +201,11 @@ canonical ordered metadata snapshot followed by each retained frame.
 `BrowserWindow` bounds remain game-client-local DIP, not desktop-global screen
 coordinates. Display matching currently follows the hidden producer window's
 backing placement. The SDK still does not own the target game HWND's display or
-physical client origin. The focused POC publishes one producer scene through one
+physical client origin. The current runtime publishes one producer scene through one
 authenticated producer/target rendezvous; multiple simultaneous targets and
 per-target geometry are not implemented. Therefore this is a bounded
 producer-window/runtime transition foundation, not a completed mixed-monitor target contract. Target-HWND display
 ownership, backing-window placement, multiple simultaneous target routing,
 physical/VM mixed-scale acceptance, and Electron 42 OSR behavior remain
-follow-up work. The completed POC transport intentionally supports one active
+follow-up work. The production transport intentionally supports one active
 producer/target rendezvous at a time.

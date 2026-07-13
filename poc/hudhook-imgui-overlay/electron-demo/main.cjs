@@ -201,7 +201,7 @@ async function createDemo() {
   });
 
   // ElectronOverlayWindow.show() registers the BrowserWindow with the native
-  // overlay after session.start() has initialized the hudhook transport.
+  // overlay after session.start() has initialized the overlay transport.
   overlayWindow.show();
 
   log(

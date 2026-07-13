@@ -118,7 +118,7 @@ export class OverlaySession {
     this.bindScreenEvents();
   }
 
-  /** Resolves after the authenticated hudhook rendezvous is ready for a payload. */
+  /** Resolves after the authenticated overlay transport is ready for a runtime. */
   public whenReady(): Promise<void> {
     if (this.closed) {
       return Promise.reject(new Error('the overlay session is closed'));
@@ -210,7 +210,7 @@ export class OverlaySession {
     };
   }
 
-  /** @deprecated Hudhook payload discovery and launch are application-owned. */
+  /** @deprecated Injected-runtime discovery and launch are application-owned. */
   public attachToProcess(
     target: OverlayProcessTarget,
   ): OverlayProcessAttachResult | OverlayProcessAttachResult[] | null {

@@ -1,4 +1,4 @@
-import { HudhookLoopbackTransport } from './hudhook-transport.js';
+import { OverlayLoopbackTransport } from './overlay-loopback-transport.js';
 import type { NativeInputMessage } from './input-translation.js';
 
 export interface NativeHotkey {
@@ -93,7 +93,7 @@ export interface NativeOverlay {
 }
 
 const PROCESS_INJECTION_UNAVAILABLE_MESSAGE =
-  'Process discovery and DLL injection are unavailable in the hudhook transport. Configure and invoke an application-owned backend-specific hudhook launcher for the target.';
+  'Process discovery and DLL injection are unavailable in the overlay transport. Configure and invoke a backend-specific launcher for the target.';
 
 export function createProcessInjectionUnavailableError(): Error {
   return new Error(PROCESS_INJECTION_UNAVAILABLE_MESSAGE);
@@ -102,6 +102,6 @@ export function createProcessInjectionUnavailableError(): Error {
 let singleton: NativeOverlay | undefined;
 
 export function loadNativeOverlay(): NativeOverlay {
-  singleton ??= new HudhookLoopbackTransport();
+  singleton ??= new OverlayLoopbackTransport();
   return singleton;
 }

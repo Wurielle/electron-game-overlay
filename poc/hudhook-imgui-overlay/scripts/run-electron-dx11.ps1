@@ -194,7 +194,7 @@ $PayloadLogStem = [System.IO.Path]::GetFileNameWithoutExtension($BackendConfig.P
 $ElectronExecutable = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
 $DiagnosticEntry = Join-Path $HudhookRoot "electron-demo\main.cjs"
 $DiagnosticAppDirectory = Split-Path -Parent $DiagnosticEntry
-$ClientWindowEntry = Join-Path $HudhookRoot "electron-client-window-demo\main.cjs"
+$ClientWindowEntry = Join-Path $RepoRoot "tools\electron-overlay-scene-producer\main.cjs"
 $ClientWindowAppDirectory = Split-Path -Parent $ClientWindowEntry
 $ClientBuiltEntry = Join-Path $RepoRoot "apps\client\dist\main\main.js"
 $OverlaySdkBuiltEntry = Join-Path $RepoRoot "libs\electron-game-overlay\dist\index.js"
@@ -213,7 +213,7 @@ $ClientMultiWindowRunToken = [Guid]::NewGuid().ToString("N")
 $ClientMultiWindowUserDataDirectory = Join-Path $RunDirectory "electron-client-multiwindow-user-data-$ClientMultiWindowRunToken"
 $ClientMultiWindowControlFile = Join-Path $RunDirectory "electron-client-multiwindow-$ClientMultiWindowRunToken.control"
 $WindowTitle = $BackendConfig.WindowTitle
-$HudhookTransportDiscovery = Join-Path $env:TEMP "electron-game-overlay\hudhook-transport-v1.json"
+$HudhookTransportDiscovery = Join-Path $env:TEMP "electron-game-overlay\electron-overlay-transport-v1.json"
 $ControlledHostInjectionWarmupMilliseconds = 750
 
 if ($Client) {
@@ -994,7 +994,7 @@ function Remove-StaleHudhookTransportDiscovery {
         $ProducerPid = [int]$Discovery.pid
     }
     catch {
-        Write-Warning "Ignoring malformed hudhook transport discovery file: $HudhookTransportDiscovery"
+        Write-Warning "Ignoring malformed overlay transport discovery file: $HudhookTransportDiscovery"
         return
     }
 

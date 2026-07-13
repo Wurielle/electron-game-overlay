@@ -1,0 +1,6 @@
+{
+  "name": "electron-game-overlay-scene-producer",
+  "version": "0.0.0",
+  "private": true,
+  "main": "main.cjs"
+}

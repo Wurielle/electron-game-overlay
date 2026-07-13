@@ -1,9 +1,15 @@
-# D3D11 and D3D12 test-case launchers
+# Historical hudhook D3D11 and D3D12 test-case launchers
 
-Each PowerShell file in this directory is one complete test case with no required
-parameters. Run a launcher from the repository root; it resolves the shared
-runner relative to its own location, builds what it needs, stays attached, and
-cleans up the controlled processes when the case finishes.
+These cases are retained POC regressions. They do not participate in the normal
+SDK build or stage a production runtime. Current ReShade/SDK acceptance cases
+live under `libs/electron-game-overlay-runtime/scripts/test-cases`.
+
+Every historical case keeps a zero-argument PowerShell file in this directory so
+it remains discoverable. Runnable controlled-host launchers resolve the shared
+runner relative to their location, build what they need, stay attached, and
+clean up their controlled processes. The three client-bound launchers named
+below are archived records: they deliberately exit immediately with current
+ReShade migration guidance.
 
 List the available cases:
 
@@ -17,7 +23,8 @@ Launch one, for example:
 .\poc\hudhook-imgui-overlay\scripts\test-cases\dx11-input-manual.ps1
 ```
 
-No separate `client:dev` process is needed. Run only one case at a time, and
+No separate `client:dev` process is needed for a runnable controlled-host case.
+Run only one such case at a time, and
 close Izabela Next or any other active overlay producer before starting. This
 POC publishes one well-known discovery document for the authenticated loopback
 session, so concurrent producers would replace each other's rendezvous metadata.
@@ -26,8 +33,8 @@ session, so concurrent producers would replace each other's rendezvous metadata.
 | ------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------- | ------------------------------- |
 | `dx11-hook-only.ps1`                 | Manual                | hudhook injection, ImGui rendering, generated texture, and resize handling without Electron | Press Escape in the host        |
 | `dx11-electron-diagnostic.ps1`       | Manual                | Synthetic Electron OSR frame transport, upload, and composition                             | Press Escape in the host        |
-| `dx11-real-client.ps1`               | Manual                | SDK-owned runtime/attach lifecycle and `ExampleMainOverlay` composition                     | Press Escape in the host        |
-| `dx11-real-game-input-manual.ps1`    | Manual                | Real-game synchronous ImGui/Electron pointer capture and independent game-suppression gates | Close the Electron client       |
+| `dx11-real-client.ps1`               | Archived              | Recorded client/POC runtime lifecycle and `ExampleMainOverlay` composition                   | Exits with D3D11 migration guidance |
+| `dx11-real-game-input-manual.ps1`    | Archived              | Recorded real-game ImGui/Electron and game-suppression investigation                        | Exits with manual ReShade guidance |
 | `dx11-window-lifecycle.ps1`          | Automated then manual | Bounds, close, clear, re-registration, and resumed composition                              | Press Escape after verification |
 | `dx11-input-automated.ps1`           | Automated             | Single-window focus, click, typing, wheel, interception, release, and cleanup               | Closes itself                   |
 | `dx11-input-manual.ps1`              | Manual                | Hands-on single-window mouse, keyboard, wheel, and focus behavior                           | Use the host title-bar X        |
@@ -38,41 +45,30 @@ session, so concurrent producers would replace each other's rendezvous metadata.
 | `dx11-multiwindow-manual.ps1`        | Manual                | Hands-on two-window input, focus, z-order, controls, capture, and caption dragging          | Use the host title-bar X        |
 | `d3d12-hook-only.ps1`                | Manual                | D3D12 hudhook injection, ImGui rendering, generated texture, and resize survival            | Press Escape in the host        |
 | `d3d12-electron-diagnostic.ps1`      | Manual                | D3D12 Electron OSR frame transport, repeated upload, and composition                        | Press Escape in the host        |
-| `d3d12-real-client.ps1`              | Manual                | SDK-owned D3D12 runtime/attach lifecycle and `ExampleMainOverlay` composition                | Press Escape in the host        |
+| `d3d12-real-client.ps1`              | Archived              | Recorded client/POC D3D12 lifecycle and `ExampleMainOverlay` composition                    | Exits with D3D12 migration guidance |
 | `d3d12-window-lifecycle.ps1`         | Automated then manual | D3D12 bounds, close, clear, re-registration, and resumed composition                        | Press Escape after verification |
 | `d3d12-input-automated.ps1`          | Automated             | D3D12 focus, click, typing, wheel, interception, release, and cleanup                       | Closes itself                   |
 | `d3d12-input-manual.ps1`             | Manual                | Hands-on D3D12 single-window input                                                          | Use the host title-bar X        |
 | `d3d12-multiwindow-automated-100.ps1` | Automated            | D3D12 composition, routing, capture, z-order, caption dragging, and cleanup                 | Closes itself                   |
 | `d3d12-multiwindow-manual.ps1`       | Manual                | Hands-on D3D12 two-window compositor                                                        | Use the host title-bar X        |
 
-`dx11-real-game-input-manual.ps1` is the non-controlled game case. It rebuilds
-the SDK/client, stages the current payload, and starts the D3D11-configured demo
-client. Launch the game yourself, use the renderer's Attach action, and press
-**Ctrl+I** to toggle interception. Acceptance has two independent gates: the
-native ImGui probe and Electron UI must receive pointer input, and the game must
-not hover/click or move underneath. Passing the first does not imply the second
-for games that use device APIs outside the covered WndProc/User32/raw-buffer paths. The
-normal client now arms a fixed, visible DOM proof field automatically. The
-payload log reports `process-wide mouse polling suppression observed` with
-per-API masked counters, including `raw_buffer_calls`/`raw_buffer_masked`; if
-the game still reacts while the raw-buffer counter stays zero, record that
-result rather than adding another guessed hook.
+`dx11-real-game-input-manual.ps1` records the former non-controlled game case.
+It is not runnable now that the production client no longer contains the
+hudhook launcher. When the case was active, its two independent acceptance gates
+required native ImGui/Electron pointer receipt and zero game hover/click/movement
+underneath. Gun Frog failed the second gate, which is why production input
+ownership moved to ReShade. Run `npm run dev`, arm the permitted target by name
+or exact PID, and use **Ctrl+I** for current hands-on real-game testing.
 
-The two real-client launchers start the controlled target first and pass the
-backend, target process name, and exact expected PID to the real Electron client.
-They intentionally do not pass `--hudhook-runtime-dir`. The client calls the
-SDK, which invokes the injector and selected payload from
-`libs/electron-game-overlay/dist/runtime/win32-x64`; the runner verifies the
-exact four-file SDK build output, configured/start/return markers, exact-PID
-connection, and the payload's receipt/upload/composition log beside the DLL.
-Injector return alone is not treated as proof that the payload loaded. Every
-other Electron launcher retains the external PowerShell-owned injector flow.
+The `dx11-real-client.ps1` and `d3d12-real-client.ps1` files document the former
+controlled client/POC integration. They are not runnable and intentionally fail
+before building or launching anything. Hudhook is no longer bundled under
+`libs/electron-game-overlay/dist/runtime/win32-x64`; current application testing
+must use the production ReShade launchers named in each archived file.
 
-Hudhook remains gated by the client's explicit main-process startup configuration.
-Once enabled, the controlled auto-target or the existing renderer Attach action
-may issue the single validated request. The expected PID correlates the payload
-connection after controlled process-name selection; exact-PID selection remains
-production-launcher hardening.
+Hudhook flags and launcher behavior described by these cases are historical POC
+interfaces, not supported production-client configuration. The production SDK
+uses ReShade name-only or exact-PID targeting.
 
 The multi-window launchers temporarily clear `HUDHOOK_ELECTRON_WINDOW` so a
 stale single-window filter cannot invalidate the case, then restore its original
@@ -99,5 +95,6 @@ continue to call the parameterized implementation directly:
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx12.ps1 -ClientMultiWindow -Wait
 ```
 
-The raw runner remains the source of truth; the files here only bind one named
-case to one fixed argument set.
+The raw runner remains the source of truth for runnable controlled-host cases;
+their launcher files bind one named case to one fixed argument set. The three
+archived files contain only their retirement reason and replacement command.

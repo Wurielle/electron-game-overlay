@@ -2,11 +2,12 @@
 
 > Historical design exploration with a current outcome summary. References to
 > the Node add-on, named shared mappings, or its Win32 IPC host describe the
-> superseded prototype baseline. The finished focused POC uses an authenticated
+> superseded prototype baseline; those legacy packages have been removed. The
+> production stack uses an authenticated
 > Node/Rust loopback transport with direct BGRA frame packets.
 
 > **Current host decision, July 13, 2026:** ReShade 6.7.3 full add-on support is
-> the selected production-host experiment for process entry, graphics hooks,
+> the selected production host for process entry, graphics hooks,
 > swap-chain/resource lifecycle, the managed Dear ImGui context, logging, native
 > input collection, and game-side input blocking. The controlled D3D11/D3D12
 > input gates and real Electron scenes passed visible acceptance. A first Gun
@@ -37,9 +38,12 @@ The Electron side would still render offscreen windows into bitmap frames. The n
 
 This would make ImGui responsible for the native in-game overlay composition layer, not for the application UI itself.
 
-## Prototype status
+## Production outcome
 
-The first proof of concept is implemented in [`poc/reshade-imgui-overlay`](../poc/reshade-imgui-overlay/README.md).
+The accepted implementation is now the
+[`electron-game-overlay-runtime`](../libs/electron-game-overlay-runtime/README.md)
+production package. Its backend-neutral transport, frame, scene, and input
+engine lives in `libs/electron-overlay-transport`.
 
 The follow-up experiment in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overlay-poc.md) proves the same native path with released hudhook 0.9.1 and no ReShade runtime. It composes an ordered scene of overlapping Electron windows from controlled producers and the real built client through the repository's Electron SDK and project-owned authenticated loopback transport. The D3D11/D3D12 payloads render transparent content at native bounds, survive per-window move/close/re-register lifecycle changes, alpha-hit-test from front to back, and forward controlled Win32 input to the hit or focused Electron window. That controlled slice initially needed no hudhook fork; the later real-game input investigation and local patch are recorded in the input handoff.
 
@@ -71,11 +75,11 @@ remain open.
 
 ## Original model (historical)
 
-The current overlay pipeline is roughly:
+The removed legacy pipeline was roughly:
 
 1. Electron creates offscreen `BrowserWindow` instances.
 2. Electron captures frame buffers from those windows.
-3. The Electron SDK sends frame buffers, window bounds, visibility, and input state through `node-game-overlay`.
+3. The Electron SDK sends frame buffers, window bounds, visibility, and input state through a native Node add-on.
 4. The injected native runtime receives those messages.
 5. The native runtime draws those overlay frames into the target game's render output.
 6. Native input events are forwarded back to Electron.
@@ -370,7 +374,7 @@ multi-window compositor milestones are complete:
 - a generated RGBA bitmap is uploaded as a GPU resource and drawn with `ImGui::Image`;
 - `ReShade.log` distinguishes add-on loading, texture creation, first-frame rendering, resize, and clean unload.
 - ReShade's controlled D3D11 and D3D12 input gates passed button, text, drag, wheel, active-intercept resize, post-resize click, release, and independent game-side suppression checks on July 12, 2026;
-- the D3D11 and D3D12 ReShade Electron add-on renders two ordered live OSR windows and routes exact legacy click, focus, text, and caption-drag input through the shared core while ReShade remains the sole suppression authority;
+- the D3D11 and D3D12 ReShade Electron add-on renders two ordered live OSR windows and routes exact legacy click, focus, text, and caption-drag input through the shared transport engine while ReShade remains the sole suppression authority;
 - a mouse-in-pointer oracle reproduced Gun Frog's second-input-path failure; the pinned runtime now blocks `PT_MOUSE` client `WM_POINTER`, updates native ImGui state, and translates primary move/left-click once on Electron's ordered consumer, with every legacy/raw/polling/pointer counter frozen on both backends;
 - the Gun Frog rerun clicked an Electron control directly above Unity's `Continue` button without activating the game, then passed text, front/back raising, and caption dragging; the strengthened four-button run delivered unique Continue/New Game/Settings/Quit markers only to Electron while the game stayed alive on its menu, then emitted the full release lifecycle and let the same underlying Quit position close the game;
 - the built production client and public SDK ReShade launcher passed the same exact Gun Frog gate on PID 11104: positive interception acknowledgement, one click on each aligned Electron control while the menu stayed alive, Ctrl+I negative acknowledgement, and the identical Quit position closing the game; the dedicated runner emitted `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`;
@@ -673,4 +677,4 @@ identity across PID reuse, arbitrary watcher latency, graceful disable/unload,
 and installer/proxy conflicts remain post-POC hardening. Post-render injection
 is unsupported unless existing-device/swap-chain adoption is added. Package
 publishing is deferred. Competitive or anti-cheat-protected targets, anti-cheat
-bypass work, and VR remain outside the unsigned full-add-on POC.
+bypass work, and VR remain outside the unsigned full-add-on runtime boundary.

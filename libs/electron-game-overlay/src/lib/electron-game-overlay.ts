@@ -23,7 +23,7 @@ export class ElectronGameOverlay {
     return session;
   }
 
-  /** @deprecated Hudhook payload discovery and launch are application-owned. */
+  /** @deprecated Injected-runtime discovery and launch are application-owned. */
   public findWindows(includeMinimized = false): NativeWindow[] {
     void includeMinimized;
     throw createProcessInjectionUnavailableError();

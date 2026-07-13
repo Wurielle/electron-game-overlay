@@ -8,7 +8,7 @@
 > masked throughout the intercepted intervals, while `GetRawInputBuffer` call
 > counters did not advance in those intervals; widening guessed project-owned
 > detours would therefore recreate an open-ended game-input compatibility layer.
-> The active experiment moves process entry, graphics/ImGui lifecycle, and
+> The production runtime moves process entry, graphics/ImGui lifecycle, and
 > game-side blocking to ReShade. The controlled D3D11/D3D12 visible gates and
 > real multi-window Electron scenes passed. The first ReShade Gun Frog run then
 > exposed Unity 6's separate mouse-in-pointer projection: Electron received the
@@ -29,7 +29,9 @@
 > arm-before-launch path. The production path also passed two isolated
 > controlled D3D12 multi-window/lifecycle cycles. Raw-input normalization,
 > graceful disable/unload, late injection, arbitrary fast-start targets, and
-> other games remain hardening; the ReShade POC README is authoritative.
+> other games remain hardening; the
+> [production runtime README](../libs/electron-game-overlay-runtime/README.md)
+> is authoritative.
 > The authenticated Node/Rust transport, wire/frame
 > validation, ordered scene/router, Electron input translation and
 > `focusOnWebView()` behavior, multi-window/z-order/capture rules, and DPI/raster
@@ -47,12 +49,13 @@ milestone; see
 [the multi-window compositor handoff](hudhook-multiwindow-compositor-handoff.md).
 A bounded uniform 1.25 device-scale proof and per-producer-window desired/active
 scale transition foundation were subsequently added. Controlled D3D12 parity and
-SDK-owned backend/injection-request orchestration is now complete too.
+The then-current SDK-owned hudhook backend/injection-request orchestration was
+also completed for the historical gate.
 A follow-on source migration replaced the native add-on/shared-memory path with
 the project-owned authenticated Node/Rust loopback transport and removed the old
-packages from the active client/SDK npm dependency and root build paths. Archived
-Nx project definitions remain explicitly selectable as legacy reference. The
-replacement was revalidated on July 11 with the D3D11/D3D12 input, lifecycle,
+packages from the active client/SDK npm dependency and root build paths. Those
+legacy package trees have now been removed. The replacement transport was
+revalidated on July 11 with the D3D11/D3D12 input, lifecycle,
 multi-window, and real-client launchers listed below. Target-game display/client-origin ownership, real
 mixed-monitor acceptance, and texture retirement remain post-POC hardening.
 
@@ -104,7 +107,8 @@ only a navigation action.
 
 ## July 13 real client/SDK Gun Frog acceptance
 
-`poc/reshade-imgui-overlay/scripts/test-cases/gun-frog-client-sdk.ps1` built the
+`libs/electron-game-overlay-runtime/scripts/test-cases/gun-frog-client-sdk.ps1`
+built the
 production client and SDK ReShade launcher, armed by process name before Gun
 Frog launched, and attached to PID 11104. The client received a positive
 interception acknowledgement, then the exact aligned Electron Continue, New
@@ -114,6 +118,7 @@ same Quit position closed the game. The runner emitted
 `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`.
 
 Evidence is retained under
+the historical pre-promotion path
 `build/reshade-imgui-overlay/client-Gun-Frog-20260713-005018` and
 `%TEMP%/electron-game-overlay/reshade-runs/Gun-Frog.exe-yE20tq`; the persisted
 client-run `result.txt` contains the same pass marker. This acceptance
@@ -122,7 +127,8 @@ establish late injection or compatibility with other games.
 
 ## July 13 controlled D3D12 production client/SDK acceptance
 
-`poc/reshade-imgui-overlay/scripts/test-cases/d3d12-client-sdk.ps1` drove the
+`libs/electron-game-overlay-runtime/scripts/test-cases/d3d12-client-sdk.ps1`
+drove the
 built production client and public SDK through two isolated attempts against
 target PIDs 17248 and 13528. Both transported Electron windows accepted focus
 and text; the main caption moved, and its field remained clickable at the moved
@@ -134,7 +140,9 @@ released Escape closed each target normally.
 The runner force-cleaned each isolated Electron process tree, required no
 host/client/injector leftovers, and relaunched with a distinct ReShade run
 directory. It emitted `D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is retained
-under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`. The
+under the historical pre-promotion path
+`build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`. Current runs use
+`build/electron-game-overlay-runtime`. The
 controlled host's test-only injection-wait marker gives the prearmed injector
 time to hook before deliberately fast D3D12 initialization. This is not evidence
 for arbitrary fast-start games, late attachment, or graceful client
@@ -265,12 +273,12 @@ The current tree proves all of the following on controlled Windows x64 targets:
 
 Primary implementation files:
 
-- [frame/transport bridge](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_frame.rs);
-- [Node loopback transport](../libs/electron-game-overlay/src/lib/hudhook-transport.ts);
+- [frame/transport bridge](../libs/electron-overlay-transport/src/electron_frame.rs);
+- [Node loopback transport](../libs/electron-game-overlay/src/lib/overlay-loopback-transport.ts);
 - [project-owned input translation](../libs/electron-game-overlay/src/lib/input-translation.ts);
 - [hudhook render loop](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/lib.rs);
 - [real-client/lifecycle runner](../poc/hudhook-imgui-overlay/scripts/run-electron-dx11.ps1);
-- [controlled lifecycle producer](../poc/hudhook-imgui-overlay/electron-client-window-demo/main.cjs);
+- [controlled lifecycle producer](../tools/electron-overlay-scene-producer/main.cjs);
 - [client opt-in startup](../apps/client/src/main/electron/app-entry.ts).
 
 ## Implemented return path to Electron
@@ -296,9 +304,9 @@ The implementation reuses the existing Electron side:
 Relevant existing code:
 
 - [OverlaySession input API and forwarding](../libs/electron-game-overlay/src/lib/overlay-session.ts);
-- [Node packet framing, authentication, and session state](../libs/electron-game-overlay/src/lib/hudhook-transport.ts);
+- [Node packet framing, authentication, and session state](../libs/electron-game-overlay/src/lib/overlay-loopback-transport.ts);
 - [TypeScript Win32-to-Electron translation](../libs/electron-game-overlay/src/lib/input-translation.ts);
-- [Rust packet framing and validation](../poc/hudhook-imgui-overlay/crates/overlay-ui/src/electron_wire.rs).
+- [Rust packet framing and validation](../libs/electron-overlay-transport/src/electron_wire.rs).
 
 The hudhook payload now completes the game-side producer: it handles
 `command.input.intercept`, publishes interception/focus acknowledgements, and sends
@@ -342,7 +350,7 @@ TypeScript-translator coverage, not claims about the Electron DOM end-to-end run
 
 ### 1. Bidirectional bridge
 
-`HudhookLoopbackTransport` starts a Node TCP server on `127.0.0.1` with an
+`OverlayLoopbackTransport` starts a Node TCP server on `127.0.0.1` with an
 ephemeral port. It atomically publishes a versioned discovery document under the
 user's temporary directory containing the producer PID, port, and a fresh
 256-bit token. The Rust payload reads that document, connects only to IPv4

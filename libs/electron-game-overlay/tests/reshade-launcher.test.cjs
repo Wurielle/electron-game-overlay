@@ -32,7 +32,7 @@ const artifacts = [
   'inject.exe',
   'ReShade64.dll',
   'ReShade64.build.json',
-  'electron_reshade_overlay_poc.addon64',
+  'electron_game_overlay.addon64',
   'ReShade.ini',
 ];
 const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>

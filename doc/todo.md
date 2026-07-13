@@ -1,6 +1,6 @@
 # Todo
 
-## ReShade host migration
+## Production ReShade runtime
 
 Further expansion of project-owned hudhook input detours is frozen. A ReShade
 Gun Frog run proved that Electron could receive a blocked legacy click while
@@ -21,7 +21,11 @@ relaunch. The restart lifecycle subsequently passed with one Electron client
 and overlay session across two new target PIDs, using the real frontend Inject
 action and distinct isolated ReShade runs.
 
-### POC finish line
+New runs use `build/electron-game-overlay-runtime`. Dated
+`build/reshade-imgui-overlay/...` paths below are historical pre-promotion
+acceptance evidence and are intentionally preserved as records.
+
+### Completed promotion milestones
 
 - [x] Pass the visible ReShade-owned input gate on the controlled D3D11 host.
   - Prove overlay mouse/keyboard interaction, zero game-side message/raw/polling reactions while active, cursor confinement release, pass-through restoration, and clean shutdown.
@@ -31,9 +35,13 @@ action and distinct isolated ReShade runs.
   - The first ReShade run rendered and operated both Electron windows, but a click on Electron also activated Unity's underlying `Continue` control. The controlled pointer oracle identified and closed the `WM_POINTER` gap.
   - The July 12 rerun clicked the Electron BACK button directly over `Continue`; Electron logged the complete down/drag/up/click sequence and the game stayed on its menu. Both windows accepted focus/text, raising either window and caption dragging worked. Clicking the manual `Release input` control produced the disable acknowledgement, after which the same game control immediately entered gameplay. Normal close succeeded, and no game-directory log, input-order fault, or router reset appeared.
   - The July 13 strengthened acceptance aligned four Electron buttons exactly over Continue, New Game, Settings, and Quit. Each emitted a unique `HUDHOOK_CLIENT_MULTIWINDOW_INPUT ... event=gun-frog-click name=<...>` marker while Gun Frog remained on the menu and alive. Manual release emitted `RELEASE_REQUESTED`, `INTERCEPT_DISABLED`, and `LIFECYCLE_COMPLETE`; clicking the same underlying Quit position afterward closed Gun Frog.
-- [x] Extract the backend-neutral Rust transport/compositor core from the hudhook renderer.
-  - `poc/electron-overlay-core` now owns `electron_wire.rs`, `electron_frame.rs`, `electron_input.rs`, the authenticated Node loopback transport, ordered scene/router semantics, and premultiplied-BGRA conversion. It builds as both an `rlib` and a Windows static library; the retained hudhook POC consumes the same crate instead of duplicate modules.
-- [x] Finish the narrow, versioned C ABI and ReShade-linked smoke target for that core.
+- [x] Extract and promote the backend-neutral Rust transport/scene/input engine.
+  - `libs/electron-overlay-transport` owns `electron_wire.rs`,
+    `electron_frame.rs`, `electron_input.rs`, ordered scene/router semantics,
+    and premultiplied-BGRA conversion. It builds as both an `rlib` and a Windows
+    static library; the retained hudhook POC consumes the same crate instead of
+    duplicate modules.
+- [x] Finish the narrow, versioned C ABI and ReShade-linked smoke target for that engine.
   - Immutable scene/name/RGBA pointers are leased by explicit snapshots, every fallible Rust export contains panics and returns fixed status codes, and the native layout/link/lifecycle smoke passes. The proven native-only D3D11/D3D12 gate targets remain independent of Cargo.
 - [x] Port multi-window ReShade texture composition and exact legacy Electron input return on D3D11.
   - Preserve registration order, click-to-front, alpha hit testing, caption drag, pointer capture, focus-before-input, per-packet scale tags, and desired/active raster transitions.
@@ -54,7 +62,7 @@ action and distinct isolated ReShade runs.
   - `d3d11-client-sdk-process-start-injection.ps1` passed against PID 7428 with a 72.393 ms process-create-to-frontend-click interval. Exact injector arguments and pre-`ResumeThread` ReShade loading were proven; transport, D3D11, two windows, and input passed after resume. The target exited 0, the frontend returned to `idle`, and no test process remained. Evidence under `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623` contains `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`.
   - `d3d12-client-sdk-process-start-injection.ps1` passed the same boundary against PID 21508 with an 84.061 ms interval. Evidence under `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642` contains `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; D3D12, two windows, input, exit 0, frontend `idle`, and no-leftover checks passed.
 
-### Post-POC compatibility and hardening
+### Runtime compatibility and hardening
 
 - [ ] Add supported-runtime installation, existing ReShade/proxy conflict detection, typed diagnostics, and clean disable/unload behavior.
 - [ ] Investigate the non-fatal ReShade `ID3D11Device3` reference-count warning emitted during the accepted Gun Frog shutdown as part of resource retirement/unload hardening.
@@ -68,7 +76,7 @@ action and distinct isolated ReShade runs.
 - [ ] Extend the accepted `WM_POINTER` translation beyond primary mouse move/left click to secondary/X buttons, double-click semantics, pointer wheel, and explicit touch/pen policy, with duplicate-projection tests.
 - [ ] Harden observer ordering/recovery and per-swap-chain resource/input ownership for concurrent input pumps or multiple swap chains.
 - [ ] Expand the compatibility matrix only from observed evidence: Vulkan/OpenGL, exclusive/fullscreen variants, gamepads, DirectInput/XInput/GameInput, and other backend-specific paths.
-- [ ] Keep competitive and anti-cheat-protected targets, anti-cheat bypasses, and VR outside the unsigned full-add-on POC.
+- [ ] Keep competitive and anti-cheat-protected targets, anti-cheat bypasses, and VR outside the unsigned full-add-on runtime boundary.
 
 ## Retained hudhook follow-ups (historical/deferred)
 
@@ -95,47 +103,34 @@ they are not the active production-host roadmap.
 - [x] Remove manual graphics-backend selection from the active client path.
   - The selected ReShade host identifies the target graphics API; applications arm one process name and no longer choose a D3D11 or D3D12 payload. The former hudhook auto-detection task is retained only as historical context and will not be implemented in the inactive path.
 
-## API modernization
+## Production package boundary
 
-- [ ] Modernize `node-game-overlay` to expose a higher-level API that matches the `electron-game-overlay` SDK shape.
-  - Current issue: `libs/node-game-overlay` exposes the native addon as a flat, low-level function surface through `index.d.ts`: `start()`, `stop()`, `sendCommand(...)`, `addWindow(...)`, `closeWindow(...)`, `sendFrameBuffer(...)`, and `setEventCallback(...)`. This mirrors the native transport but is awkward for application code and easy to misuse.
-  - Desired direction: create a typed JS/TS wrapper around the native addon with concepts similar to `ElectronGameOverlay`, `OverlaySession`, `input.intercept()`, `input.release()`, `attachToProcess(...)`, and window handles with `show()`, `hide()`, `destroy()`, `setBounds(...)`, and `sendFrame(...)`.
-  - Possible API sketch:
-    - `const overlay = new GameOverlay()`
-    - `const session = overlay.createSession()`
-    - `session.attachToProcess({ title })` and later `session.attachToProcess({ pid })`
-    - `session.input.intercept()` / `session.input.release()`
-    - `const window = session.windows.add({ id, name, nativeHandle, bounds, ... })`
-    - `window.show()` / `window.hide()` / `window.destroy()` / `window.setBounds(...)`
-    - `window.sendFrame(buffer, width, height)`
-    - `session.on("graphicsWindow", handler)`, `session.on("fps", handler)`, `session.on("input", handler)`, etc.
-  - Keep low-level native calls available internally, but avoid requiring app code to manually build command payloads like `{ command: "input.intercept", intercept }`.
-  - Align naming and event types with `libs/electron-game-overlay/src/lib/overlay-session.ts` where practical, so the Electron SDK can become a thin adapter over the node SDK instead of owning generic overlay/session behavior itself.
-  - Migration note: keep backwards-compatible exports temporarily or expose them under an explicit `native`/`unsafe` namespace while the higher-level API becomes the default.
-
-## Native ownership and packaging
-
-- [ ] Bring the native overlay submodules/prebuilt runtime into a package owned by this repo.
-  - Current issue: important runtime behavior lives in native binaries copied from `libs/native-game-overlay/prebuilt`, including behavior we need to change such as the default background/clear color shown when input interception is active and no overlay windows are visible. As long as that code is only consumed as prebuilt runtime files, the JS/SDK packages cannot fully control or fix those behaviors.
-  - Desired direction: package the native runtime sources and build outputs as part of this Nx workspace, with explicit ownership over `n_overlay.dll`, `n_overlay.x64.dll`, `injector_helper.exe`, and `injector_helper.x64.exe`.
-  - Possible package shape:
-    - keep `native-game-overlay` as the native runtime package,
-    - build or stage both x86/x64 runtime artifacts through Nx targets,
-    - make `node-game-overlay` depend on those targets instead of manually copying opaque binaries,
-    - expose versioned native runtime assets as package outputs.
-  - Why this matters: it lets us add native/runtime options, such as configurable transparent/default background color, hook diagnostics, graphics API support, presentation-mode fixes, and compatibility patches without waiting on external submodule/prebuilt updates.
-  - Migration note: preserve the current prebuilt copy flow until source builds are reliable, then replace the prebuilt artifacts with workspace-built outputs.
+- [x] Promote the active native implementation into owned Nx packages.
+  - `libs/electron-overlay-transport` owns the backend-neutral Rust engine and
+    C ABI.
+  - `libs/electron-game-overlay-runtime` owns the Windows ReShade injector,
+    add-on, controlled hosts, patches, and test launchers.
+  - `libs/electron-game-overlay` owns the public TypeScript/Electron SDK and
+    stages the runtime as a build dependency.
+  - The superseded binary runtime and native Node add-on packages have been
+    removed; they are not future modernization targets.
 
 ## Diagnostics and logging
 
 - [ ] Improve error logging and diagnostics across every overlay layer.
-  - Current issue: failures can happen in multiple places: Electron SDK code, `node-game-overlay`, native addon loading, injector helper launch, DLL injection, IPC connection, graphics API hook setup, frame upload, input forwarding, and per-game rendering. Today those failures are hard to distinguish, which makes agent-driven debugging and user support slow.
+  - Current issue: failures can happen in multiple places: Electron SDK code,
+    runtime staging, injector launch, DLL injection, authenticated transport,
+    graphics API hook setup, frame upload, input forwarding, and per-game
+    rendering. Today those failures are hard to distinguish, which makes
+    agent-driven debugging and user support slow.
   - Desired direction: make every layer report structured diagnostics with enough context to identify where the failure occurred and what the next action should be.
   - Suggested logging layers:
     - `electron-game-overlay`: typed events such as `session.on("diagnostic", ...)`, attach results, window registration state, frame send failures, focus/input forwarding failures.
-    - `node-game-overlay`: native addon load path, runtime asset paths, missing DLL/helper files, inject result details, process/window selection details, IPC client connect/disconnect events.
-    - injector helper: helper startup, target window/process, target bitness, DLL path, injection method, Windows error codes from failed API calls.
-    - injected DLL/runtime: graphics backend detected, hook targets attempted, hook success/failure, swap chain/window creation, present path used, frame composition errors, input intercept state.
+    - `electron-overlay-transport`: rendezvous, authentication, producer/target
+      connection state, packet validation, scene publication, and input routing.
+    - `electron-game-overlay-runtime`: staged asset paths, injector arguments and
+      results, target identity, graphics backend, hook/runtime initialization,
+      swap-chain creation, frame composition, and input-intercept state.
   - DLL logging options: write to `OutputDebugString` for DebugView/Visual Studio, write rotating log files under a configurable temp/app-data directory, or send diagnostic IPC messages back to the host when the IPC link is available. Before IPC is connected, the DLL should still log locally so early injection/hook failures are not lost.
   - Possible API shape: `new GameOverlay({ logger, logLevel, diagnostics: true })`, `session.on("diagnostic", event => ...)`, and a stable diagnostic event schema with `layer`, `code`, `severity`, `message`, `context`, and optional `windowsErrorCode`.
   - Agent workflow goal: when a user reports "nothing appears", logs should show whether the failure is asset copy, injection launch, DLL load, IPC connect, graphics hook, window registration, frame upload, or game compatibility.

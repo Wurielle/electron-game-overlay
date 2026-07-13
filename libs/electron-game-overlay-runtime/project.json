@@ -1,0 +1,54 @@
+{
+  "name": "electron-game-overlay-runtime",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/electron-game-overlay-runtime/src",
+  "projectType": "library",
+  "tags": ["scope:native", "type:runtime"],
+  "implicitDependencies": ["electron-overlay-transport"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": ["^build"],
+      "inputs": ["default", "^default"],
+      "outputs": [
+        "{projectRoot}/dist",
+        "{workspaceRoot}/build/electron-game-overlay-runtime",
+        "{workspaceRoot}/build/electron-game-overlay-runtime-production"
+      ],
+      "options": {
+        "cwd": "libs/electron-game-overlay-runtime",
+        "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1"
+      }
+    },
+    "build-test-hosts": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": ["build"],
+      "outputs": [
+        "{workspaceRoot}/build/electron-game-overlay-runtime/RelWithDebInfo"
+      ],
+      "options": {
+        "cwd": "libs/electron-game-overlay-runtime",
+        "commands": [
+          "cmake.exe --build ../../build/electron-game-overlay-runtime --config RelWithDebInfo --target d3d11_overlay_test_host --parallel",
+          "cmake.exe --build ../../build/electron-game-overlay-runtime --config RelWithDebInfo --target d3d12_overlay_test_host --parallel"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": ["build"],
+      "inputs": ["default", "^default"],
+      "options": {
+        "cwd": "libs/electron-game-overlay-runtime",
+        "command": "ctest.exe --preset electron-overlay-transport"
+      }
+    }
+  }
+}

@@ -1,57 +1,165 @@
-# gelectron document
+# SDK usage guide
 
-To enable an electron app to have the ability to show its web browser window in another game process, we need to injecting a module (dll in Windows) to the game, make an IPC connection with our electron process, copy the screenshot of our electron app's browser window and render it over the game's surface.
+`electron-game-overlay` publishes Electron offscreen `BrowserWindow` surfaces to
+an injected ReShade + Dear ImGui runtime. The SDK owns the producer session,
+window lifecycle, frame transport, returned input, target attachment, and safe
+restart state. Consumers do not call a native Node add-on or copy DLLs by hand.
 
-Then, since we also want our injected web page can reponse to user's input, we need to intercept the game's input so that we can pass the input to out electron app and send it the the browser window.
+## Build the repository package
 
-## modules we have
+From the repository root:
 
-#### `n_overlay.dll`(`n_overlay.x64.dll` for x64)
+```powershell
+npm install
+npx nx build electron-game-overlay
+```
 
-This is the most important module (a dll), it will be injected into game process so that we can communicate with a game process and draw our own stuff on game window.
+The build compiles the TypeScript SDK and its native dependencies, then stages
+the Windows x64 runtime under
+`libs/electron-game-overlay/dist/runtime/win32-x64/reshade`. The staged set
+includes `inject.exe`, `ReShade64.dll`, `ReShade64.build.json`,
+`electron_game_overlay.addon64`, and `ReShade.ini`.
 
-#### `n_ovhelper.exe`(`n_ovhelper.x64.exe` for x64)
+The native toolchain requires Rust, CMake, Git, and Visual Studio 2022 with the
+Desktop development with C++ workload. The runtime and add-on are a pinned,
+patched pair; do not replace `ReShade64.dll` with a stock ReShade build.
 
-This is a helper process which do the real dll injecting work for use.
+## Create a session and overlay window
 
-#### `node-game-overlay`
+Create the session from Electron's main process. The SDK forces created windows
+into offscreen rendering mode and sends their paint frames automatically.
 
-This is the node addon used in our electron app, use it to communicate with game process (`n_overlay.dll`), like sending electron webview framebuffer and recieve game input data.
-It also doing do injecting using `n_ovhelper.exe`, get the system's foreground window(we can check if it's the game window to decide when we will do injecting).
+```ts
+import {
+  ElectronGameOverlay,
+  ReShadeOverlayLauncher,
+  parseReShadeLaunchConfig,
+} from 'electron-game-overlay';
 
-## how to use in your own project
+const overlay = new ElectronGameOverlay();
+const session = overlay.createSession();
 
-so with the modules, basicly what we need to do is
+session.start();
 
-0. make sure your compile x86 and x64 version native modules for the game you want to inejct
-    1. build `native-game-overlay` with Release config for x86 or x64 version, you'll get `n_ovhelper.exe` and `n_overlay.dll` for x86 version (or `n_ovhelper.x64.exe` and `n_overlay.x64.dll` for the x64 version)
-    2. add `node-game-overlay` addons to your electron ap's dependency, nodejs should automatically build them, if not cd to their directory and build them manually.
-    3. copy `n_ovhelper.exe` and `n_overlay.dll` to `node_modules/node-game-overlay`.
-1. prepare a game
-2. the electron app
-    1. Create an electorn app
-    2. import `node-game-overlay` addon (as `IOverlay` for example),
-        1. use `IOverlay.start()` to start the overlay server
-        2. set up hotkeys and event callbacks (`game.input` is the most important one)
-    3. create a transparent browser window (so we can capture it surface and pass it to the game)
-        1. after create the transparent browser window, use `IOverlay.addWindow(...)` to add it to the overlay windows
-        2. listen on its paint event and send the framebuffer to overlay use `IOverlay.sendFrameBuffer`
-    4. on `game.input` event, translate the event to electron's format use `IOverlay.translateInputEvent`, and pass to electorn's window `window.webContents.sendInputEvent(inputEvent)`
-    5. don't forget to handle window's `resize` events
-3. do injecting.
-    1. call `injectProcess` to help us inject the `n_overlay.dll` module to the game process
-4. if everything is ok ,you should see the injected browser window in game process
+const window = session.windows.create({
+  id: 'main-overlay',
+  name: 'Main overlay',
+  bounds: { x: 40, y: 40, width: 640, height: 360 },
+  captionHeight: 32,
+  dragBorder: 6,
+  transparent: true,
+  file: '/absolute/path/to/overlay.html',
+  browserWindow: {
+    frame: false,
+    transparent: true,
+    webPreferences: {
+      contextIsolation: true,
+    },
+  },
+});
 
-## features
+window.show();
+```
 
-#### hotkeys
+Use `session.windows.attach(existingBrowserWindow, options)` when the
+application already owns the producer. `show()`, `hide()`, `setBounds()`, and
+`destroy()` update the injected scene. Public bounds, caption dimensions, drag
+borders, and constraints are Electron device-independent pixels; the SDK
+converts them to the physical-pixel wire and composition space.
 
-check out how the demo (apps/client/src/main/electron/app-entry.ts) uses hotkeys by `this.Overlay!.setHotkeys`
+## Arm and attach the target
 
-#### cusomize window show/hide
+The normal launcher reads the bundled runtime from the built SDK:
 
-if we look at the demo, we can find that on the topleft, a small browser window is always show in the game and other windows will show or hide responding to our hotkey.
+```ts
+const config = parseReShadeLaunchConfig(process.argv);
+if (!config) {
+  throw new Error('ReShade overlay startup was not enabled');
+}
 
-Actually we can decide which window will always stay in game and which will only appear if we calls it.
+const launcher = new ReShadeOverlayLauncher(config);
+await launcher.attach(session, { processName: 'game.exe' });
+```
 
-Now, I do it in the `n_overlay` module, so if you want to do some customizing you need to change to code in n_overlay.
+Pass `--reshade-overlay` exactly once to the Electron main process to opt in and
+make `parseReShadeLaunchConfig()` return the bundled configuration. The optional
+`--reshade-runtime-dir=<absolute-path>` override is for controlled development
+and tests; an invalid or incomplete directory fails instead of silently falling
+back.
+
+For name-only selection, arm before the target starts. ReShade chooses D3D11 or
+D3D12 after it enters the target; there is no graphics-backend option in the
+application API.
+
+A process watcher may provide the exact process it just observed:
+
+```ts
+await launcher.attach(session, {
+  processName: detectedProcess.name,
+  pid: detectedProcess.pid,
+});
+```
+
+The PID must be a positive uint32. The injector verifies the executable
+basename before remote mutation. Call this immediately after process creation
+and before graphics-device and swap-chain initialization. The runtime does not
+currently adopt an already-rendering device or swap chain, so this is not a
+general late-attachment API.
+
+`attach()` moves through `idle`, `attaching`, `connected`, and, for an
+unprovable injector outcome, `blocked`. A transport close is not treated as
+proof that the target exited. Once Windows confirms the selected PID is gone,
+the launcher returns to `idle` and the same session can attach a restarted
+target. A `blocked` launcher must be disposed before retrying so a live target
+cannot accidentally receive a second runtime.
+
+## Input and lifecycle
+
+Request and release interception through the session:
+
+```ts
+session.input.intercept();
+session.input.release();
+```
+
+The request is asynchronous at the native boundary. Applications should reflect
+the runtime's effective acknowledgement before treating the overlay as owning
+input. The demo client uses Electron's `globalShortcut` for **Ctrl+I**, so the
+toggle remains available while the game owns foreground focus.
+
+Before each returned packet, the SDK focuses Chromium's offscreen render widget
+without activating the hidden producer window. It translates the injected
+runtime's physical coordinates back to Electron DIP using the scale factor that
+was active when the packet was routed.
+
+Clean up all three owners:
+
+```ts
+launcher.dispose();
+session.close();
+overlay.dispose();
+```
+
+Closing a target process remains the supported injected-runtime teardown. Safe
+disable and unload while a target stays alive are deferred hardening.
+
+## Test the integration
+
+Use the dedicated launchers under
+`libs/electron-game-overlay-runtime/scripts/test-cases`. For example:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+```
+
+New evidence is written below `build/electron-game-overlay-runtime`. Dated
+`build/reshade-imgui-overlay/...` paths elsewhere in the documentation are
+historical evidence created before the production package was renamed.
+
+Use the unsigned full add-on runtime only with the included controlled hosts or
+an offline/single-player target you are allowed to modify. Anti-cheat bypasses,
+competitive protected targets, arbitrary post-render injection, and universal
+game compatibility are outside the supported boundary.
