@@ -1,0 +1,33 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index a75dade..02eee45 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -16,8 +16,8 @@ struct loading_data
+ 	WCHAR load_path[MAX_PATH] = L"";
+ 	decltype(&GetLastError) GetLastError = nullptr;
+ 	decltype(&LoadLibraryW) LoadLibraryW = nullptr;
+-	const WCHAR env_var_name[30] = L"RESHADE_DISABLE_LOADING_CHECK";
+-	const WCHAR env_var_value[2] = L"1";
++	const WCHAR env_var_name[30] = L"RESHADE_BASE_PATH_OVERRIDE";
++	WCHAR env_var_value[MAX_PATH] = L"";
+ 	decltype(&SetEnvironmentVariableW) SetEnvironmentVariableW = nullptr;
+ };
+ 
+@@ -130,9 +130,6 @@ int wmain(int argc, wchar_t *argv[])
+ 
+ 	wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
+ 
+-	// Wait just a little bit for the application to initialize
+-	Sleep(50);
+-
+ 	// Open target application process
+ 	const scoped_handle remote_process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+ 	if (remote_process == nullptr)
+@@ -163,6 +160,7 @@ int wmain(int argc, wchar_t *argv[])
+ 	if (wchar_t *const load_path_filename = wcsrchr(arg.load_path, L'\\'))
+ 		*load_path_filename = '\0';
+ #endif
++	wcscpy_s(arg.env_var_value, arg.load_path);
+ 	wcscat_s(arg.load_path, L"\\");
+ 	wcscat_s(arg.load_path, remote_is_wow64 ? L"ReShade32.dll" : L"ReShade64.dll");
+ 

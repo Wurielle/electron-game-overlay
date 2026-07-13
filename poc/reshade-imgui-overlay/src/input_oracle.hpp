@@ -25,9 +25,11 @@ public:
         devices[1].hwndTarget = window;
         raw_input_registered_ =
             RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE)) != FALSE;
+        mouse_in_pointer_enabled_ =
+            EnableMouseInPointer(TRUE) != FALSE || IsMouseInPointerEnabled() != FALSE;
         if (GetForegroundWindow() == window || GetFocus() == window)
             apply_client_clip(window);
-        return raw_input_registered_;
+        return raw_input_registered_ && mouse_in_pointer_enabled_;
     }
 
     void shutdown()
@@ -76,6 +78,15 @@ public:
             break;
         case WM_INPUT:
             ++raw_input_messages_;
+            break;
+        case WM_POINTERUPDATE:
+            ++pointer_update_messages_;
+            break;
+        case WM_POINTERDOWN:
+            ++pointer_down_messages_;
+            break;
+        case WM_POINTERUP:
+            ++pointer_up_messages_;
             break;
         case WM_SETFOCUS:
             apply_client_clip(window);
@@ -132,7 +143,7 @@ public:
         wchar_t title[512] = {};
         swprintf_s(
             title,
-            L"%s | game input: move=%llu down=%llu up=%llu wheel=%llu key=%llu raw=%llu poll-left=%llu cursor-change=%llu clip=%s",
+            L"%s | game input: move=%llu down=%llu up=%llu wheel=%llu key=%llu raw=%llu ptr=%llu/%llu/%llu poll-left=%llu cursor-change=%llu clip=%s",
             base_title,
             static_cast<unsigned long long>(mouse_move_messages_),
             static_cast<unsigned long long>(left_button_down_messages_),
@@ -140,6 +151,9 @@ public:
             static_cast<unsigned long long>(mouse_wheel_messages_),
             static_cast<unsigned long long>(key_down_messages_),
             static_cast<unsigned long long>(raw_input_messages_),
+            static_cast<unsigned long long>(pointer_update_messages_),
+            static_cast<unsigned long long>(pointer_down_messages_),
+            static_cast<unsigned long long>(pointer_up_messages_),
             static_cast<unsigned long long>(polled_left_button_frames_),
             static_cast<unsigned long long>(cursor_change_samples_),
             clip_active ? L"on" : L"off");
@@ -189,6 +203,9 @@ private:
     std::uint64_t mouse_wheel_messages_ = 0;
     std::uint64_t key_down_messages_ = 0;
     std::uint64_t raw_input_messages_ = 0;
+    std::uint64_t pointer_update_messages_ = 0;
+    std::uint64_t pointer_down_messages_ = 0;
+    std::uint64_t pointer_up_messages_ = 0;
     std::uint64_t polled_left_button_frames_ = 0;
     std::uint64_t cursor_change_samples_ = 0;
     POINT last_cursor_ = {};
@@ -196,4 +213,5 @@ private:
     bool cursor_initialized_ = false;
     bool enabled_ = false;
     bool raw_input_registered_ = false;
+    bool mouse_in_pointer_enabled_ = false;
 };

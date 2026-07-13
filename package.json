@@ -10,8 +10,7 @@
   "scripts": {
     "build": "nx run client:build",
     "dev": "nx run client:dev",
-    "dev:d3d11": "nx run client:dev --args=\"--mode=hudhook-d3d11\"",
-    "dev:d3d12": "nx run client:dev --args=\"--mode=hudhook-d3d12\"",
+    "dev:gun-frog": "nx run client:dev --args=\"--mode=gun-frog\"",
     "typecheck": "nx run client:typecheck",
     "build:all": "nx run-many -t build --projects=electron-game-overlay,client"
   },

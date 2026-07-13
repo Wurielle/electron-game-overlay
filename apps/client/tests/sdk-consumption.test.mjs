@@ -4,10 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import {
-  buildElectronDevArguments,
-  hudhookDevBackend,
-} from '../src/main/dev-launch.ts';
+import { buildElectronDevArguments } from '../src/main/dev-launch.ts';
 
 const require = createRequire(import.meta.url);
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -21,8 +18,8 @@ test('the built demo consumes the SDK instead of bundling a client launcher', ()
   );
 
   assert.match(mainBundle, /require\(["']electron-game-overlay["']\)/);
-  assert.equal(typeof sdk.HudhookOverlayLauncher, 'function');
-  assert.equal(typeof sdk.parseHudhookLaunchConfig, 'function');
+  assert.equal(typeof sdk.ReShadeOverlayLauncher, 'function');
+  assert.equal(typeof sdk.parseReShadeLaunchConfig, 'function');
   assert.equal(typeof sdk.OverlaySession.prototype.whenReady, 'function');
 });
 
@@ -42,39 +39,34 @@ test('the built demo gives Ctrl+I to one global shortcut owner', () => {
   assert.match(rendererBundle, /overlay:state-changed/);
 });
 
-test('the SDK resolves the runtime used by the demo', () => {
-  const config = sdk.parseHudhookLaunchConfig([
+test('the SDK resolves the ReShade runtime used by the demo', () => {
+  const config = sdk.parseReShadeLaunchConfig([
     'electron.exe',
-    '--hudhook-overlay',
-    '--hudhook-backend=d3d11',
+    '--reshade-overlay',
   ]);
 
   assert.ok(config);
-  assert.equal(config.runtimeDirectory, sdk.defaultHudhookRuntimeDirectory());
+  assert.ok(path.isAbsolute(config.runtimeDirectory));
+  assert.equal(path.basename(config.injectorPath), 'inject.exe');
+  assert.equal(path.basename(config.runtimePath), 'ReShade64.dll');
   assert.equal(
-    path.basename(config.injectorPath),
-    'hudhook_overlay_injector.exe',
-  );
-  assert.equal(
-    path.basename(config.payloadPath),
-    'hudhook_imgui_overlay_dx11.dll',
+    path.basename(config.addonPath),
+    'electron_reshade_overlay_poc.addon64',
   );
 });
 
-test('dev launch configures D3D11 by default and supports D3D12 explicitly', () => {
-  assert.equal(hudhookDevBackend('development'), 'd3d11');
-  assert.equal(hudhookDevBackend('hudhook-d3d11'), 'd3d11');
-  assert.equal(hudhookDevBackend('hudhook-d3d12'), 'd3d12');
+test('dev launch enables ReShade without selecting a graphics backend', () => {
   assert.deepEqual(buildElectronDevArguments('C:\\repo', 'development'), [
     'C:\\repo',
     '--no-sandbox',
-    '--hudhook-overlay',
-    '--hudhook-backend=d3d11',
+    '--reshade-overlay',
   ]);
-  assert.deepEqual(buildElectronDevArguments('C:\\repo', 'hudhook-d3d12'), [
+  assert.deepEqual(buildElectronDevArguments('C:\\repo', 'gun-frog'), [
     'C:\\repo',
     '--no-sandbox',
-    '--hudhook-overlay',
-    '--hudhook-backend=d3d12',
+    '--reshade-overlay',
+    '--reshade-auto-target-process=Gun Frog.exe',
+    '--start-overlay-session',
+    '--gun-frog-input-proof',
   ]);
 });

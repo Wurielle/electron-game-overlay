@@ -10,13 +10,61 @@ The active native-host experiment uses ReShade 6.7.3 full add-on support. Its
 controlled D3D11 and D3D12 input gates passed on July 12, 2026: overlay controls
 remained interactive, game-side message/raw/polling counters stayed frozen,
 cursor confinement was released while intercepting, resize preserved the gate,
-and release restored normal input. The D3D11 ReShade compositor now also renders
-the real ordered multi-window Electron scene and routes exact legacy mouse and
-keyboard records through the shared Electron core; click-to-front, typing, and
-caption dragging passed without new game-side oracle activity. D3D12 Electron
-scene parity, Gun Frog acceptance, and the SDK/client host switch remain pending.
-The existing Electron SDK/client continues to use the retained hudhook path
-until those migration steps are implemented.
+and release restored normal input. The D3D11 and D3D12 ReShade compositors now
+also render the real ordered multi-window Electron scene and route exact mouse
+and keyboard records through the shared Electron core; click-to-front, typing,
+and caption dragging passed without new game-side oracle activity. The oracle
+now enables Windows mouse-in-pointer and requires `WM_POINTER` update/down/up
+counters to stay frozen too. Gun Frog passed its initial corrected gate on July
+12 and an exact four-button menu/release gate on July 13, 2026. The production
+Electron client and public SDK now use the ReShade launcher for the accepted
+process-name, arm-before-launch Gun Frog path. Late injection and other games
+remain unverified.
+
+The first injected Gun Frog run is a recorded failed gate, not acceptance:
+Electron received and rendered a full click while the same physical click also
+activated Unity's underlying `Continue` control. Gun Frog uses Unity 6 with
+`Unity.InputSystem.ForUI`, and `UnityPlayer.dll` enables mouse-in-pointer. The
+controlled hosts reproduced the split: ReShade froze legacy/raw/polled input but
+allowed `WM_POINTERUPDATE/DOWN/UP`. A pinned compatibility patch now suppresses
+that `PT_MOUSE` client-pointer projection and updates ReShade's managed mouse
+state. The add-on captures pointer metadata without mutating route state, then
+converts primary move/left-click records into one Electron legacy stream only
+after global sequence ordering on the single consumer. Native ImGui and Electron
+both passed this regression on controlled D3D11 and D3D12. The subsequent Gun
+Frog rerun clicked Electron directly above Unity's `Continue` control; Electron
+received the complete click while the game stayed on its menu. Text, z-order
+changes, and caption drag also passed. The manual release control produced the
+disable acknowledgement; the next click on Continue entered gameplay, proving
+normal pass-through restoration. Normal shutdown then closed the real-game
+input gate.
+
+The July 13 strengthened acceptance placed Electron controls exactly over Gun
+Frog's Continue, New Game, Settings, and Quit buttons. All four emitted distinct
+`HUDHOOK_CLIENT_MULTIWINDOW_INPUT ... event=gun-frog-click name=<...>` records
+while Unity remained on the menu and the process stayed alive. Manual release
+then emitted `RELEASE_REQUESTED`, `INTERCEPT_DISABLED`, and
+`LIFECYCLE_COMPLETE`; a click at the same underlying Quit position closed Gun
+Frog only after interception was disabled. This is the current exact real-game
+menu acceptance boundary.
+
+The production client/SDK gate passed the same boundary through
+`poc/reshade-imgui-overlay/scripts/test-cases/gun-frog-client-sdk.ps1`. The
+built client armed for `Gun Frog.exe` before launch, received a positive input
+interception acknowledgement for PID 11104, and clicked the aligned Continue,
+New Game, Settings, and Quit Electron controls once each while Gun Frog stayed
+alive on its menu. Ctrl+I produced the negative acknowledgement, then the same
+Quit position closed the game. The runner emitted
+`GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`; evidence is retained under
+`build/reshade-imgui-overlay/client-Gun-Frog-20260713-005018` and
+`%TEMP%/electron-game-overlay/reshade-runs/Gun-Frog.exe-yE20tq`. The persisted
+client-run `result.txt` contains the same pass marker.
+
+The accepted Gun Frog shutdown emitted a non-fatal ReShade warning about an
+inconsistent `ID3D11Device3` reference count. There was no crash,
+target-directory log, input ordering fault, or router reset. Treat the warning
+as recorded resource-retirement/unload hardening rather than an input-gate
+failure.
 
 For this project, **Steam-like** describes the behavior required inside an
 explicitly supported target: passive mode leaves game input unchanged; intercept
@@ -30,18 +78,18 @@ The initial candidate envelope is Windows x64 with controlled D3D11 and D3D12
 hosts, followed by permitted offline/single-player applications. These cases are
 not supported by the current POC:
 
--   competitive, anti-cheat-protected, protected, or otherwise restricted
-    processes; no stealth or anti-cheat bypass work is in scope;
--   target/runtime integrity-level mismatch or an elevated target launched from
-    a lower-integrity client;
--   x86 targets and VR runtimes (`reshade_overlay` is not invoked for VR);
--   Vulkan, OpenGL, D3D9, unusual/exclusive presentation paths, multiple swap
-    chains, and multiple simultaneous targets until each has an explicit test;
--   coexistence with an existing ReShade installation or another proxy DLL until
-    conflict detection and a supported installation strategy are implemented;
--   physical/VM mixed-monitor target ownership, target-client origin mapping,
-    safe texture retirement, or broader gamepad/DirectInput/XInput/GameInput
-    handling until their recorded acceptance work is complete.
+- competitive, anti-cheat-protected, protected, or otherwise restricted
+  processes; no stealth or anti-cheat bypass work is in scope;
+- target/runtime integrity-level mismatch or an elevated target launched from
+  a lower-integrity client;
+- x86 targets and VR runtimes (`reshade_overlay` is not invoked for VR);
+- Vulkan, OpenGL, D3D9, unusual/exclusive presentation paths, multiple swap
+  chains, and multiple simultaneous targets until each has an explicit test;
+- coexistence with an existing ReShade installation or another proxy DLL until
+  conflict detection and a supported installation strategy are implemented;
+- physical/VM mixed-monitor target ownership, target-client origin mapping,
+  safe texture retirement, or broader gamepad/DirectInput/XInput/GameInput
+  handling until their recorded acceptance work is complete.
 
 Unsupported or untested must produce a clear diagnostic rather than silently
 claiming compatibility. Maintain a matrix per target with architecture,
@@ -51,57 +99,60 @@ input result, game-input suppression result, and required workaround.
 ReShade's managed ImGui context samples button and key state once per `Present`.
 The Electron path does not rely on that sample: a pinned passive full-add-on
 observer copies already-blocked records into the project-owned bounded queue.
-Exact legacy window-message delivery is accepted on D3D11. Copied `WM_INPUT`
-and `GetRawInputBuffer` records are currently retained/countable but are not yet
-normalized into Electron events. Concurrent input pumps, multiple swap chains,
-and raw-only input/text therefore remain explicit post-POC hardening.
+Exact legacy window-message delivery and ordered primary `PT_MOUSE`
+`WM_POINTER` move/left-click translation are accepted on D3D11 and D3D12.
+Captured Ctrl/Shift state is preserved. Copied `WM_INPUT` and
+`GetRawInputBuffer` records are currently retained/countable but are not yet
+normalized into Electron events. Touch/pen, secondary/X pointer buttons,
+double-click semantics, pointer wheel, concurrent input pumps, multiple swap
+chains, and raw-only input/text therefore remain explicit post-POC hardening.
 
 #### Overlay runtime issues to fix
 
--   [ ] Intercept mode shows a non-configurable background when no overlay windows are visible.
-    -   Source / likely cause: the injected native overlay runtime (`libs/native-game-overlay/prebuilt/n_overlay.dll` and `libs/native-game-overlay/prebuilt/n_overlay.x64.dll`) appears to clear or draw the overlay layer with an internal default color while input interception is active. The current JS/node message API only exposes `command.input.intercept` in `libs/node-game-overlay/src/message/gmessage.hpp`; there is no background color or clear-color field in `OverlayInit`, `InputInterceptCommand`, or the Electron SDK API.
-    -   Possible solution: add a configurable clear/background color to the native overlay protocol, expose it through `node-game-overlay`, then surface it in `electron-game-overlay` as a typed session/overlay option. If the intended default is transparent, change the native renderer clear path to use a transparent clear color when no overlay windows are present.
--   [x] Reassert Chromium page focus before forwarding input to an offscreen overlay.
-    -   Root cause: Electron 16's offscreen `WebContents.focus()` path is a no-op and its OSR view reports itself unfocused. Calling it before `webContents.sendInputEvent(...)` did not focus Chromium's render widget.
-    -   Resolution: `OverlaySession` now calls `BrowserWindow.focusOnWebView()` immediately before every forwarded packet. This is the Electron 16 OSR-specific page-focus path and does not activate the hidden native window or take foreground ownership from the game.
--   [ ] Overlay compatibility is not universal across all games.
-    -   Legacy source / likely cause: the original native protocol only reports graphics hook details for `d3d9` and `dxgi` in `libs/node-game-overlay/src/message/gmessage.hpp`. That covers D3D9 and DXGI-backed DirectX versions, but does not prove support for every graphics API or presentation path a game can use, such as Vulkan, OpenGL, D3D12-specific paths, unusual swap-chain modes, exclusive fullscreen behavior, multiple swap chains, protected/anti-cheat processes, elevated integrity processes, or game-specific render timing. Steam Overlay can appear universal because Steam owns the launcher/runtime integration, has broad backend support, and can carry a large compatibility database and per-game handling over time.
-    -   Current direction: let ReShade own the maintained graphics/input host rather than expanding private hudhook detours. Expose runtime and hook status through the SDK, fail clearly for unsupported or partially hooked targets, and add backends/presentation modes only with explicit acceptance evidence. Keep the compatibility matrix described above.
+- [ ] Intercept mode shows a non-configurable background when no overlay windows are visible.
+  - Source / likely cause: the injected native overlay runtime (`libs/native-game-overlay/prebuilt/n_overlay.dll` and `libs/native-game-overlay/prebuilt/n_overlay.x64.dll`) appears to clear or draw the overlay layer with an internal default color while input interception is active. The current JS/node message API only exposes `command.input.intercept` in `libs/node-game-overlay/src/message/gmessage.hpp`; there is no background color or clear-color field in `OverlayInit`, `InputInterceptCommand`, or the Electron SDK API.
+  - Possible solution: add a configurable clear/background color to the native overlay protocol, expose it through `node-game-overlay`, then surface it in `electron-game-overlay` as a typed session/overlay option. If the intended default is transparent, change the native renderer clear path to use a transparent clear color when no overlay windows are present.
+- [x] Reassert Chromium page focus before forwarding input to an offscreen overlay.
+  - Root cause: Electron 16's offscreen `WebContents.focus()` path is a no-op and its OSR view reports itself unfocused. Calling it before `webContents.sendInputEvent(...)` did not focus Chromium's render widget.
+  - Resolution: `OverlaySession` now calls `BrowserWindow.focusOnWebView()` immediately before every forwarded packet. This is the Electron 16 OSR-specific page-focus path and does not activate the hidden native window or take foreground ownership from the game.
+- [ ] Overlay compatibility is not universal across all games.
+  - Legacy source / likely cause: the original native protocol only reports graphics hook details for `d3d9` and `dxgi` in `libs/node-game-overlay/src/message/gmessage.hpp`. That covers D3D9 and DXGI-backed DirectX versions, but does not prove support for every graphics API or presentation path a game can use, such as Vulkan, OpenGL, D3D12-specific paths, unusual swap-chain modes, exclusive fullscreen behavior, multiple swap chains, protected/anti-cheat processes, elevated integrity processes, or game-specific render timing. Steam Overlay can appear universal because Steam owns the launcher/runtime integration, has broad backend support, and can carry a large compatibility database and per-game handling over time.
+  - Current direction: let ReShade own the maintained graphics/input host rather than expanding private hudhook detours. Expose runtime and hook status through the SDK, fail clearly for unsupported or partially hooked targets, and add backends/presentation modes only with explicit acceptance evidence. Keep the compatibility matrix described above.
 
 #### Origin overlay and Steam overlay
 
 It can work together with Steam overlay, but unfortunately did not work with Origin overlay.
 
 The coexistence statement and game list below describe the legacy overlay runtime
-and are not compatibility claims for the pending ReShade-host migration.
+and are not compatibility claims for the active ReShade client host.
 
 #### Games that I played and tested
 
 Some of the games can use multiple versions of graphics API, make sure set graphics api to one of dx9, dx10, dx11
 
--   [x] League of Legends
--   [x] Dota 2
--   [x] CS:GO
--   [x] Team Fortress 2
--   [x] Life Is Strange
--   [x] Ori
--   [x] GTA 5
--   [x] Fallout 4
--   [x] Rise Of The Tomb Raider
--   [x] Guts and Glory
--   [x] PlayerUnknown's Battlegrounds
--   [x] Life is Strange Before the Storm
--   [x] Child of Light
--   [x] Borderlands 2
--   [x] Cuphead
--   [x] Witcher 3
--   [x] WORLD OF FINAL FANTASY®
--   [x] Left 4 Dead 2
--   [x] Tom Clancy's The Division
--   [x] Tom Clancy's Rainbow Six Siege
--   [x] Half-Life 2
+- [x] League of Legends
+- [x] Dota 2
+- [x] CS:GO
+- [x] Team Fortress 2
+- [x] Life Is Strange
+- [x] Ori
+- [x] GTA 5
+- [x] Fallout 4
+- [x] Rise Of The Tomb Raider
+- [x] Guts and Glory
+- [x] PlayerUnknown's Battlegrounds
+- [x] Life is Strange Before the Storm
+- [x] Child of Light
+- [x] Borderlands 2
+- [x] Cuphead
+- [x] Witcher 3
+- [x] WORLD OF FINAL FANTASY®
+- [x] Left 4 Dead 2
+- [x] Tom Clancy's The Division
+- [x] Tom Clancy's Rainbow Six Siege
+- [x] Half-Life 2
 
 #### games that have issues for now
 
--   [ ] Battlefield 1
--   [ ] Star Wars battlefront 2
+- [ ] Battlefield 1
+- [ ] Star Wars battlefront 2

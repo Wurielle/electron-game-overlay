@@ -1,28 +1,28 @@
-import { app as ElectronApp } from "electron"
-import { parseHudhookLaunchConfig } from "electron-game-overlay"
+import { app as ElectronApp } from 'electron';
+import { parseReShadeLaunchConfig } from 'electron-game-overlay';
 
-import "./utils/config"
+import './utils/config';
 
-import { Application } from "./electron/app-entry"
+import { Application } from './electron/app-entry';
 
-const appEntry = new Application(parseHudhookLaunchConfig(process.argv))
+const appEntry = new Application(parseReShadeLaunchConfig(process.argv));
 
-ElectronApp.disableHardwareAcceleration()
+ElectronApp.disableHardwareAcceleration();
 
-ElectronApp.on("before-quit", () => {
-    appEntry.dispose()
-})
+ElectronApp.on('before-quit', () => {
+  appEntry.dispose();
+});
 
-ElectronApp.on("ready", () => {
-    appEntry.start()
-})
+ElectronApp.on('ready', () => {
+  appEntry.start();
+});
 
-ElectronApp.on("window-all-closed", () => {
-    if (process.platform !== "darwin") {
-        ElectronApp.quit()
-    }
-})
+ElectronApp.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    ElectronApp.quit();
+  }
+});
 
-ElectronApp.on("activate", () => {
-    appEntry.activate()
-})
+ElectronApp.on('activate', () => {
+  appEntry.activate();
+});

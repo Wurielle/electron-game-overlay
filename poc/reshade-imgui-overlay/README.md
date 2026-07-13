@@ -8,13 +8,19 @@ The original baseline proved two things inside the target render path:
 - a generated RGBA bitmap can be uploaded through ReShade's graphics-agnostic resource API and drawn with `ImGui::Image`.
 
 The current implementation adds controlled D3D11 and D3D12 input-gate hosts and
-connects the real multi-window Electron scene on D3D11. ReShade's public
+connects the real multi-window Electron scene on both backends. ReShade's public
 `effect_runtime::block_input_next_frame()` remains the sole game-side blocking
 authority. A narrow pinned full-add-on observer copies input only after ReShade
 has decided to suppress it, allowing the project router to deliver the exact
 legacy Win32 records to Electron without a second suppression hook. An
 independent host oracle counts window messages, raw input, polling-visible
-left-button state, cursor movement, and cursor confinement.
+left-button state, Windows pointer messages, cursor movement, and cursor
+confinement. A second narrow patch closes ReShade's `WM_POINTER` gap for
+mouse-in-pointer applications. It restricts the new classification to `PT_MOUSE`
+and updates ReShade's managed mouse state for native ImGui. The add-on snapshots
+pointer metadata at the callback and, only after global sequence ordering on the
+single consumer, turns primary move/left-click records into the same Electron
+legacy route.
 
 The controlled hosts are intentionally plain and owned by this repository. Use
 them before trying any external application.
@@ -54,14 +60,23 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies the tracked
-[`patches/reshade-input-observer.patch`](patches/reshade-input-observer.patch)
-to the pinned ReShade revision. The patch advances this local full-add-on ABI to
-API 19 and exposes a passive copied-input event; it cannot consume, unblock, or
-change ReShade's suppression decision. Use the runtime built by this repository
-with the Electron add-on; the stock API-18 ReShade 6.7.3 runtime is ABI-incompatible.
+downloads both into the ignored build directory, then applies three tracked
+patches to the pinned ReShade revision:
 
-ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is MIT-licensed. Preserve their notices if compiled POC binaries are redistributed. The helper builds the pinned ReShade runtime only into the ignored local build directory; do not commit or redistribute that runtime.
+- `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
+  and exposes a passive copied-input event after ReShade decides to block;
+- `reshade-injector-base-path.patch` keeps injected configuration, add-ons, and
+  logs in the isolated injector stage and removes the startup delay that missed
+  early Unity swap-chain creation;
+- `reshade-pointer-input-block.patch` classifies client `PT_MOUSE`
+  `WM_POINTER` messages as blockable input and updates ReShade's managed cursor,
+  five-button, and vertical-wheel state before suppression. Touch, pen,
+  non-client pointer activation, and title-bar handling remain outside the seam.
+
+Use the runtime built by this repository with the Electron add-on; the stock
+API-18 ReShade 6.7.3 runtime is ABI-incompatible.
+
+ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is MIT-licensed. Preserve their notices if compiled POC binaries are redistributed. The helper builds the pinned ReShade runtime and x64 injector only into the ignored local build directory; it does not run the injector. Do not commit or redistribute those binaries.
 
 To build the pinned ReShade full-add-on runtime explicitly:
 
@@ -69,10 +84,12 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\poc\reshade-imgui-overlay\scripts\build-runtime.ps1
 ```
 
-The input-gate launchers always validate the cached binary against a local build
-stamp, the exact seven-file observer patch, its SHA-256 hash, the pinned commit,
-the full-add-on configuration, and the runtime SHA-256 hash. A missing or
-invalid cache is rebuilt before staging.
+The launchers validate the cache against a schema-5 build stamp, the three patch
+SHA-256 hashes, the pinned commit, exact normalized contents of all eight patched
+source files, the full-add-on configuration, and the runtime/injector SHA-256
+hashes. CMake performs the same commit, eight-path, and normalized-content check
+independently for every fetched source tree before generating native targets.
+Extra edits inside an expected fetched-source file invalidate the build.
 
 ## Run the controlled input gates
 
@@ -95,7 +112,7 @@ for automation and supports `-NoLaunch`.
 To reproduce visible acceptance for either backend:
 
 1. In pass-through mode, move, click, wheel, and press keys. The `game input`
-   counters in the host title should advance and `clip=on` should describe the
+   counters, including `ptr=update/down/up`, in the host title should advance and `clip=on` should describe the
    host's deliberately hostile cursor confinement.
 2. Press **Ctrl+I** once. The add-on should report `Input: RESHADE-OWNED`; this
    label is requested state, not by itself proof that the gate passed. The
@@ -104,8 +121,8 @@ To reproduce visible acceptance for either backend:
    shortcut and sends desired state to the add-on instead.
 3. Move over the ImGui panel and click `CLICK RE SHADE INPUT PROBE`. The probe
    count must increase, the visible pointer must remain usable, the host's
-   message/raw/polling counters must stop advancing, and the title must report
-   `clip=off`.
+   message/raw/polling/pointer counters must stop advancing, and the title must
+   report `clip=off`.
 4. Type into `Keyboard probe`, drag `Drag probe`, wheel over the panel, and move
    the cursor while interception stays active. The overlay controls/counters must
    react while none becomes new game-side oracle activity.
@@ -134,6 +151,14 @@ For both backends, resizing from 1280 x 720 to 1920 x 1009 preserved
 interception and a post-resize ImGui click succeeded. Releasing interception
 restored the hostile host's cursor confinement and its game-side counters
 resumed.
+
+The later mouse-in-pointer regression repeated both the native ImGui gate and the
+real Electron scene on both backends. Native button, text, drag, and vertical
+wheel controls remained interactive. Electron logged ordered
+down/focus/drag/up/click packets while every game-side counter remained frozen,
+including `raw`, `poll-left`, and `ptr`. Releasing interception resumed all
+legacy/raw/pointer/polling/cursor counters and cursor confinement. This is the
+controlled proof for the Unity-style second mouse projection.
 
 ReShade's managed ImGui context samples button and key state once per `Present`.
 Human-duration clicks, typing, dragging, and wheel input passed this controlled
@@ -164,41 +189,137 @@ Pop-Location
 
 The ABI smoke validates layout, version rejection, immutable scene ownership,
 input-state metadata, and create/acquire/release/destroy linkage. The generated
-`electron_reshade_overlay_poc.addon64` has completed a controlled D3D11
-live-producer run: it connected the existing authenticated Node transport,
+`electron_reshade_overlay_poc.addon64` has completed controlled D3D11 and D3D12
+live-producer runs: it connected the existing authenticated Node transport,
 uploaded two overlapping real Electron OSR windows, rendered the transported
 scene, and returned the interception acknowledgement. ReShade-owned exact
-legacy mouse/keyboard records then drove click-to-front, text focus/input, and
-caption dragging while every host mouse, keyboard, raw, polling, cursor, and
-confinement counter remained frozen.
+legacy mouse/keyboard records, plus the primary `PT_MOUSE` `WM_POINTER` stream
+normalized on the ordered single consumer, then drove click-to-front, text
+focus/input, and caption dragging while every host mouse, keyboard, raw, pointer,
+polling, cursor, and confinement counter remained frozen.
 
-Run that human-facing case with its dedicated script:
+Run each human-facing case with its dedicated script:
 
 ```powershell
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-electron-scene.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-electron-scene.ps1
 ```
 
-The script builds and stages the pinned runtime, add-on, controlled host, and
+Each launcher builds and stages the pinned runtime, add-on, controlled host, and
 headless Electron producer. Drag either striped caption and click/type into the
 transported fields. Interception is requested automatically; close the host
-with its title-bar X when finished. Producer evidence is written beside
-`ReShade.log` under `build/reshade-imgui-overlay/electron-scene-d3d11`.
+with its title-bar X when finished. Manual multi-window scenes also expose a
+`Release input` button on the BACK window for the inverse pass-through check;
+after using it, restart the case to intercept again. Producer evidence is written beside
+`ReShade.log` under a timestamped
+`build/reshade-imgui-overlay/electron-scene-d3d11-*` or
+`electron-scene-d3d12-*` directory, so a staging-only run cannot erase accepted
+evidence. The parameterized `scripts/run-electron-scene.ps1` remains available
+for automation and supports `-NoLaunch`.
+
+## Run the real client/SDK Gun Frog gate
+
+Use the dedicated production-client acceptance wrapper:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-client-sdk.ps1
+```
+
+It builds the real client and SDK, starts the SDK-owned ReShade launcher for the
+`Gun Frog.exe` process name, waits until the injector is armed, and only then
+launches the Steam game. The runner requires a positive interception
+acknowledgement and the rendered real-client scene before interaction. Click the
+aligned Electron Continue, New Game, Settings, and Quit controls once each, keep
+Gun Frog alive on its menu, press Ctrl+I to release, and click the identical Quit
+position again. The final click must close Gun Frog and the runner must emit
+`GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`.
+
+For a hands-on equivalent, run `npm run dev:gun-frog`, wait for the ReShade
+injector to arm, and then launch Gun Frog yourself. Both paths are explicitly
+process-name, arm-before-launch tests; they do not prove late injection.
+
+This real client/SDK gate passed on July 13, 2026 against PID 11104. All four
+unique Electron click markers occurred between the positive and negative input
+acknowledgements; Gun Frog stayed alive on its menu until Ctrl+I released input,
+then the same Quit coordinate closed it. Evidence is preserved under
+`build/reshade-imgui-overlay/client-Gun-Frog-20260713-005018` and
+`%TEMP%/electron-game-overlay/reshade-runs/Gun-Frog.exe-yE20tq`. The persisted
+client-run `result.txt` contains `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`.
+
+## Run the Gun Frog acceptance gate
+
+The earlier standalone-producer Gun Frog gate remains available separately:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-electron-scene.ps1
+```
+
+It builds and stages the pinned runtime, the repository-patched ReShade x64
+injector from that same revision, the add-on, configuration, and Electron
+producer in a timestamped ignored directory. It arms
+the injector before launching the Steam app, waits for the exact two-window scene
+and interception acknowledgement, and preserves all logs. It never copies a
+proxy into the game directory and fails if a new game-directory `ReShade.log`
+appears. The script does not accept Steam account/session prompts; make that
+choice yourself and keep Gun Frog focused. Once ready:
+
+1. Confirm the four colored Electron buttons exactly cover Gun Frog's Continue,
+   New Game, Settings, and Quit controls.
+2. Click each Electron button once while interception is enabled. The game must
+   remain on the menu and alive through all four clicks. The producer log must
+   contain one unique `HUDHOOK_CLIENT_MULTIWINDOW_INPUT` record with
+   `event=gun-frog-click` and
+   `name=<continue|new-game|settings|quit>` for each.
+3. Click the Electron `Release input` control and confirm
+   `HUDHOOK_CLIENT_MULTIWINDOW_RELEASE_REQUESTED`,
+   `HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_DISABLED`, and
+   `HUDHOOK_CLIENT_MULTIWINDOW_LIFECYCLE_COMPLETE` in the producer log.
+4. Click the same underlying Quit position again. With interception released,
+   that click must reach Gun Frog and close its process.
+
+Use `-NoLaunch` to stage only.
+
+This gate passed on July 12, 2026. The first run had failed because clicking
+Electron also activated Unity's underlying `Continue` control. After the
+`PT_MOUSE` compatibility patch, the accepted rerun clicked an Electron BACK
+button directly over that same game control: Electron logged its full
+down/drag/up/click route while Gun Frog remained on the menu. Both transported
+windows accepted focus and text, front/back raising worked, caption dragging
+moved one window, and the two-window scene stayed rendered. A manual Electron
+`Release input` control received the complete intercepted click, ReShade
+acknowledged `INTERCEPT_DISABLED`, and the next physical click activated Gun
+Frog's Continue control and entered gameplay, proving pass-through restoration.
+Normal close then shut the game down. No target-directory `ReShade.log`, input
+ordering fault, or router reset was produced.
+
+The strengthened four-control acceptance passed on July 13, 2026. The Electron
+buttons exactly covered Continue, New Game, Settings, and Quit; every click
+emitted its unique `gun-frog-click` name while Gun Frog stayed on the menu and
+its process remained alive. Manual release emitted `RELEASE_REQUESTED`,
+`INTERCEPT_DISABLED`, and `LIFECYCLE_COMPLETE`. Clicking the same underlying
+Quit position after release then closed Gun Frog, completing the inverse
+pass-through proof. The real production client/SDK gate above subsequently
+closed the host-switch milestone for this accepted target path.
 
 ## What this does not prove yet
 
 - normalized delivery of copied `WM_INPUT`/`GetRawInputBuffer` records to
   Electron (the bounded queue retains and counts them, but legacy Win32 delivery
-  is the accepted D3D11 path today);
-- D3D12 Electron-scene parity or real-game acceptance;
+  is accepted on D3D11 and D3D12 today);
+- secondary/X-button, double-click, and wheel translation from `WM_POINTER` (the
+  accepted Electron POC route covers primary mouse move/left click and preserves
+  captured Ctrl/Shift state); touch and pen remain unconverted and fail open to
+  the target;
 - multiple-swap-chain/render-queue ownership and safe texture retirement;
-- the SDK/client host switch or Gun Frog acceptance;
-- an attach-by-PID flow independent of ReShade installation;
+- late injection, other games, or the remaining broader real-client lifecycle
+  matrix;
+- a PID-correlated production attach flow (the acceptance runner uses a bounded
+  prelaunch basename watcher and isolated base path);
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
-The next POC gates are D3D12 scene parity and Gun Frog, followed by switching
-the SDK/client host boundary and running the existing real-client input and
-lifecycle matrix. Raw normalization and multiple-swap-chain hardening stay
-post-POC unless one of those acceptance runs exposes them as blockers. ReShade
+The focused POC now includes the production client/SDK Gun Frog gate. Raw
+normalization, the remaining real-client lifecycle/backend matrix, other games,
+and multiple-swap-chain hardening stay outside that accepted boundary. ReShade
 replaces the injected host, graphics lifecycle, ImGui ownership, and game-side
 input blocking rather than the Electron SDK contract.

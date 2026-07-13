@@ -20,7 +20,18 @@
         "{workspaceRoot}/poc/hudhook-imgui-overlay/THIRD_PARTY_NOTICES.md",
         "{workspaceRoot}/poc/hudhook-imgui-overlay/crates/**/*",
         "{workspaceRoot}/poc/hudhook-imgui-overlay/vendor/hudhook/**/*",
-        "{projectRoot}/scripts/stage-hudhook-runtime.ps1"
+        "{workspaceRoot}/poc/electron-overlay-core/Cargo.toml",
+        "{workspaceRoot}/poc/electron-overlay-core/Cargo.lock",
+        "{workspaceRoot}/poc/electron-overlay-core/include/**/*",
+        "{workspaceRoot}/poc/electron-overlay-core/src/**/*",
+        "{workspaceRoot}/poc/reshade-imgui-overlay/CMakeLists.txt",
+        "{workspaceRoot}/poc/reshade-imgui-overlay/CMakePresets.json",
+        "{workspaceRoot}/poc/reshade-imgui-overlay/config/ReShade.ini",
+        "{workspaceRoot}/poc/reshade-imgui-overlay/patches/**/*",
+        "{workspaceRoot}/poc/reshade-imgui-overlay/scripts/build-runtime.ps1",
+        "{workspaceRoot}/poc/reshade-imgui-overlay/src/electron_overlay_addon.cpp",
+        "{projectRoot}/scripts/stage-hudhook-runtime.ps1",
+        "{projectRoot}/scripts/stage-reshade-runtime.ps1"
       ],
       "outputs": ["{projectRoot}/dist"],
       "syncGenerators": ["@nx/js:typescript-sync"],
@@ -28,7 +39,8 @@
         "cwd": "libs/electron-game-overlay",
         "commands": [
           "tsc --build tsconfig.lib.json",
-          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-hudhook-runtime.ps1"
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-hudhook-runtime.ps1",
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-reshade-runtime.ps1"
         ],
         "parallel": false
       }

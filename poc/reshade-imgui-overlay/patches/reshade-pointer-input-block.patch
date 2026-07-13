@@ -1,0 +1,93 @@
+diff --git a/source/input.cpp b/source/input.cpp
+index b3dffa3..7c39c63 100644
+--- a/source/input.cpp
++++ b/source/input.cpp
+@@ -133,6 +133,26 @@ std::shared_ptr<reshade::input> reshade::input::register_window(window_handle wi
+ 	}
+ }
+ 
++static bool get_pointer_mouse_info(const MSG &message, POINTER_INFO &pointer_info)
++{
++	switch (message.message)
++	{
++	case WM_POINTERUPDATE:
++	case WM_POINTERDOWN:
++	case WM_POINTERUP:
++	case WM_POINTERENTER:
++	case WM_POINTERLEAVE:
++	case WM_POINTERWHEEL:
++	case WM_POINTERHWHEEL:
++		break;
++	default:
++		return false;
++	}
++
++	return GetPointerInfo(GET_POINTERID_WPARAM(message.wParam), &pointer_info) != FALSE &&
++		pointer_info.pointerType == PT_MOUSE;
++}
++
+ bool reshade::input::handle_window_message(const void *message_data, api::input_message *blocked_message)
+ {
+ 	assert(message_data != nullptr);
+@@ -151,7 +171,12 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 		blocked_message->time = details.time;
+ 	}
+ 
+-	bool is_mouse_message = details.message >= WM_MOUSEFIRST && details.message <= WM_MOUSELAST;
++	POINTER_INFO pointer_info = {};
++	const bool is_pointer_mouse_message = get_pointer_mouse_info(details, pointer_info);
++
++	bool is_mouse_message =
++		(details.message >= WM_MOUSEFIRST && details.message <= WM_MOUSELAST) ||
++		is_pointer_mouse_message;
+ 	bool is_keyboard_message = details.message >= WM_KEYFIRST && details.message <= WM_KEYLAST;
+ 	if (blocked_message != nullptr && details.message != WM_INPUT)
+ 		blocked_message->device_type = is_mouse_message ? api::input_device_type::mouse : api::input_device_type::keyboard;
+@@ -430,6 +455,47 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 		assert(HIWORD(details.wParam) == XBUTTON1 || HIWORD(details.wParam) == XBUTTON2);
+ 		input->_keys[VK_XBUTTON1 + (HIWORD(details.wParam) - XBUTTON1)] = 0x08;
+ 		break;
++	case WM_POINTERDOWN:
++	case WM_POINTERUP:
++		switch (pointer_info.ButtonChangeType)
++		{
++		case POINTER_CHANGE_FIRSTBUTTON_DOWN:
++			input->_keys[VK_LBUTTON] = 0x88;
++			break;
++		case POINTER_CHANGE_FIRSTBUTTON_UP:
++			input->_keys[VK_LBUTTON] = 0x08;
++			break;
++		case POINTER_CHANGE_SECONDBUTTON_DOWN:
++			input->_keys[VK_RBUTTON] = 0x88;
++			break;
++		case POINTER_CHANGE_SECONDBUTTON_UP:
++			input->_keys[VK_RBUTTON] = 0x08;
++			break;
++		case POINTER_CHANGE_THIRDBUTTON_DOWN:
++			input->_keys[VK_MBUTTON] = 0x88;
++			break;
++		case POINTER_CHANGE_THIRDBUTTON_UP:
++			input->_keys[VK_MBUTTON] = 0x08;
++			break;
++		case POINTER_CHANGE_FOURTHBUTTON_DOWN:
++			input->_keys[VK_XBUTTON1] = 0x88;
++			break;
++		case POINTER_CHANGE_FOURTHBUTTON_UP:
++			input->_keys[VK_XBUTTON1] = 0x08;
++			break;
++		case POINTER_CHANGE_FIFTHBUTTON_DOWN:
++			input->_keys[VK_XBUTTON2] = 0x88;
++			break;
++		case POINTER_CHANGE_FIFTHBUTTON_UP:
++			input->_keys[VK_XBUTTON2] = 0x08;
++			break;
++		default:
++			break;
++		}
++		break;
++	case WM_POINTERWHEEL:
++		input->_mouse_wheel_delta += GET_WHEEL_DELTA_WPARAM(details.wParam) / WHEEL_DELTA;
++		break;
+ 	}
+ 
+ 	return (is_mouse_message && input->is_blocking_mouse_input()) || (is_keyboard_message && input->is_blocking_keyboard_input());

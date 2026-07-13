@@ -1,146 +1,147 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-
-<head>
+  <head>
     <meta charset="UTF-8" />
     <title>Electron Game Overlay Demo</title>
     <style>
-        * {
-            box-sizing: border-box;
-        }
+      * {
+        box-sizing: border-box;
+      }
 
-        body {
-            margin: 0;
-            overflow: hidden;
-            color: #e8ecdc;
-            background-color: #2f383a;
-            font-family: "Segoe UI", Arial, sans-serif;
-        }
+      body {
+        margin: 0;
+        overflow: hidden;
+        color: #e8ecdc;
+        background-color: #2f383a;
+        font-family: 'Segoe UI', Arial, sans-serif;
+      }
 
-        .content {
-            position: absolute;
-            width: 100%;
-            height: 100%;
-            display: grid;
-            grid-template-columns: 320px minmax(0, 1fr);
-            gap: 18px;
-            padding: 18px;
-        }
+      .content {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        display: grid;
+        grid-template-columns: 320px minmax(0, 1fr);
+        gap: 18px;
+        padding: 18px;
+      }
 
-        .panel {
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }
+      .panel {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
 
-        h1 {
-            margin: 0;
-            font-size: 20px;
-            font-weight: 600;
-        }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+      }
 
-        .status {
-            min-height: 22px;
-            color: #b9c7be;
-            font-size: 13px;
-        }
+      .status {
+        min-height: 22px;
+        color: #b9c7be;
+        font-size: 13px;
+      }
 
-        .status.error {
-            color: #ffaaa0;
-        }
+      .status.error {
+        color: #ffaaa0;
+      }
 
-        .section {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
+      .section {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
 
-        .row {
-            display: flex;
-            gap: 8px;
-        }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
 
-        input,
-        button {
-            min-height: 34px;
-            border: 1px solid #617174;
-            color: #eef3ef;
-            background: #3c4749;
-            font: inherit;
-        }
+      input,
+      button {
+        min-height: 34px;
+        border: 1px solid #617174;
+        color: #eef3ef;
+        background: #3c4749;
+        font: inherit;
+      }
 
-        input {
-            width: 100%;
-            padding: 0 10px;
-        }
+      input {
+        width: 100%;
+        padding: 0 10px;
+      }
 
-        button {
-            cursor: pointer;
-            padding: 0 12px;
-        }
+      button {
+        cursor: pointer;
+        padding: 0 12px;
+      }
 
-        button:hover {
-            background: #4a575a;
-        }
+      button:hover {
+        background: #4a575a;
+      }
 
-        button:disabled {
-            cursor: not-allowed;
-            opacity: 0.55;
-        }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
 
-        button.active {
-            border-color: #9ccf9d;
-            color: #102016;
-            background: #9ccf9d;
-        }
+      button.active {
+        border-color: #9ccf9d;
+        color: #102016;
+        background: #9ccf9d;
+      }
 
-        .preview {
-            min-width: 0;
-            overflow: hidden;
-            background: #202729;
-        }
+      .preview {
+        min-width: 0;
+        overflow: hidden;
+        background: #202729;
+      }
 
-        .preview img {
-            width: 100%;
-            max-width: 640px;
-            height: auto;
-            display: block;
-        }
+      .preview img {
+        width: 100%;
+        max-width: 640px;
+        height: auto;
+        display: block;
+      }
     </style>
-</head>
+  </head>
 
-<body>
+  <body>
     <div class="content">
-        <div class="panel">
-            <h1>Overlay Demo</h1>
-            <div id="status" class="status"></div>
+      <div class="panel">
+        <h1>Overlay Demo</h1>
+        <div id="status" class="status"></div>
 
-            <div class="section">
-                <button id="start">Start session</button>
-                <button id="intercept">Intercept input (Ctrl+I)</button>
-            </div>
-
-            <div class="section">
-                <div class="row">
-                    <input id="title" placeholder="Game window title" />
-                    <button id="inject">Attach</button>
-                </div>
-            </div>
-
-            <div class="section">
-                <button id="toggle-main-overlay">Hide main overlay</button>
-                <button id="toggle-status-overlay">Hide status overlay</button>
-                <button id="toggle-video-overlay">Show video overlay</button>
-                <button id="show-popup-overlay">Show popup overlay</button>
-            </div>
+        <div class="section">
+          <button id="start">Start session</button>
+          <button id="intercept">Intercept input (Ctrl+I)</button>
         </div>
 
-        <div class="preview">
-            <img id="image" />
+        <div class="section">
+          <div class="row">
+            <input
+              id="process-name"
+              placeholder="Game executable name (for example, Gun Frog.exe)"
+            />
+            <button id="inject">Arm, then launch</button>
+          </div>
         </div>
+
+        <div class="section">
+          <button id="toggle-main-overlay">Hide main overlay</button>
+          <button id="toggle-status-overlay">Hide status overlay</button>
+          <button id="toggle-video-overlay">Show video overlay</button>
+          <button id="show-popup-overlay">Show popup overlay</button>
+        </div>
+      </div>
+
+      <div class="preview">
+        <img id="image" />
+      </div>
     </div>
 
     <script type="module" src="../src/renderer/main.ts"></script>
-</body>
-
+  </body>
 </html>

@@ -5,35 +5,36 @@ import {
   Menu,
   shell,
   Tray,
-} from "electron";
-import * as path from "path";
+} from 'electron';
+import * as path from 'path';
 import {
   createExampleMainOverlayWindow,
   createExamplePopupOverlayWindow,
   createExampleStatusOverlayWindow,
   createExampleVideoOverlayWindow,
-} from "./example-overlay-windows";
-import type { OverlayWindowContext } from "./example-overlay-windows";
+} from './example-overlay-windows';
+import type { OverlayWindowContext } from './example-overlay-windows';
 import {
   ElectronGameOverlay,
-  HUDHOOK_CONFIGURED_MARKER,
-  HudhookOverlayLauncher,
+  ReShadeOverlayLauncher,
   type ElectronOverlayWindow,
-  type HudhookLaunchConfig,
-  type HudhookTarget,
   type OverlayHotkey,
   type OverlaySession,
-} from "electron-game-overlay";
+  type ReShadeLaunchConfig,
+  type ReShadeTarget,
+} from 'electron-game-overlay';
 import {
   INPUT_INTERCEPT_ACCELERATOR,
   InputInterceptShortcut,
-} from "./input-intercept-shortcut";
-import { AppWindows } from "./window-names";
+} from './input-intercept-shortcut';
+import { AppWindows } from './window-names';
 
-const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = "app.showExampleVideoOverlay";
-const AUTO_START_OVERLAY_FLAG = "--start-overlay-session";
-const AUTO_START_OVERLAY_MARKER = "HUDHOOK_CLIENT_OVERLAY_SESSION_READY";
-const DEMO_STATE_CHANGED_CHANNEL = "overlay:state-changed";
+const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = 'app.showExampleVideoOverlay';
+const AUTO_START_OVERLAY_FLAG = '--start-overlay-session';
+const GUN_FROG_INPUT_PROOF_FLAG = '--gun-frog-input-proof';
+const AUTO_START_OVERLAY_MARKER = 'RESHADE_CLIENT_OVERLAY_SESSION_READY';
+const RESHADE_CONFIGURED_MARKER = 'RESHADE_CLIENT_CONFIGURED';
+const DEMO_STATE_CHANGED_CHANNEL = 'overlay:state-changed';
 
 const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
   // Ctrl+I belongs exclusively to Electron's globalShortcut. Registering it
@@ -51,35 +52,45 @@ class Application {
   private tray: Electron.Tray | null;
   private markQuit = false;
   private overlayStarted = false;
-  private inputIntercepting = false;
+  private inputInterceptRequested = false;
+  private inputInterceptEffective = false;
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
-  private readonly hudhookLauncher: HudhookOverlayLauncher | null;
+  private readonly reshadeLauncher: ReShadeOverlayLauncher | null;
   private readonly inputInterceptShortcut: InputInterceptShortcut;
+  private readonly gunFrogInputProof: boolean;
+  private gunFrogInterceptRequested = false;
+  private gunFrogButtonsReady = false;
+  private gunFrogTargetConnected = false;
+  private gunFrogProofReadyLogged = false;
   private disposed = false;
 
-  constructor(hudhookConfig: HudhookLaunchConfig | null = null) {
+  constructor(reshadeConfig: ReShadeLaunchConfig | null = null) {
     this.windows = new Map();
     this.overlayWindows = new Map();
     this.tray = null;
 
     this.overlay = new ElectronGameOverlay();
     this.overlaySession = this.overlay.createSession();
-    this.hudhookLauncher = hudhookConfig
-      ? new HudhookOverlayLauncher(hudhookConfig)
+    this.reshadeLauncher = reshadeConfig
+      ? new ReShadeOverlayLauncher(reshadeConfig)
       : null;
+    this.gunFrogInputProof = process.argv.includes(GUN_FROG_INPUT_PROOF_FLAG);
     this.inputInterceptShortcut = new InputInterceptShortcut(
       globalShortcut,
-      () => this.toggleInputInterceptFromShortcut()
+      () => this.toggleInputInterceptFromShortcut(),
     );
     this.overlaySession.onQuit(() => {
       this.markQuit = true;
     });
-    this.overlaySession.on("fps", (payload) => {
+    this.overlaySession.on('fps', (payload) => {
       this.handleOverlayFps(payload.fps);
     });
-    this.overlaySession.on("hotkeyDown", (payload) => {
+    this.overlaySession.on('hotkeyDown', (payload) => {
       this.handleOverlayHotkeyDown(payload.name);
+    });
+    this.overlaySession.on('nativeEvent', ({ event, payload }) => {
+      this.handleOverlayNativeEvent(event, payload);
     });
   }
 
@@ -92,21 +103,21 @@ class Application {
       this.windows.delete(AppWindows.main);
     } else {
       this.windows.set(AppWindows.main, window);
-      window.on("closed", () => {
+      window.on('closed', () => {
         this.mainWindow = null;
       });
 
       window.loadURL(global.CONFIG.entryUrl);
 
-      window.on("ready-to-show", () => {
+      window.on('ready-to-show', () => {
         this.showAndFocusWindow(AppWindows.main);
       });
 
-      window.webContents.on("did-fail-load", () => {
+      window.webContents.on('did-fail-load', () => {
         window.reload();
       });
 
-      window.on("close", (event) => {
+      window.on('close', (event) => {
         if (this.markQuit) {
           return;
         }
@@ -188,26 +199,26 @@ class Application {
   public setupSystemTray() {
     if (!this.tray) {
       this.tray = new Tray(
-        path.join(global.CONFIG.distDir, "assets/icon-16.png")
+        path.join(global.CONFIG.distDir, 'assets/icon-16.png'),
       );
       const contextMenu = Menu.buildFromTemplate([
         {
-          label: "OpenMainWindow",
+          label: 'OpenMainWindow',
           click: () => {
             this.showAndFocusWindow(AppWindows.main);
           },
         },
         {
-          label: "Quit",
+          label: 'Quit',
           click: () => {
             this.quit();
           },
         },
       ]);
-      this.tray.setToolTip("WelCome");
+      this.tray.setToolTip('WelCome');
       this.tray.setContextMenu(contextMenu);
 
-      this.tray.on("click", () => {
+      this.tray.on('click', () => {
         this.showAndFocusWindow(AppWindows.main);
       });
     }
@@ -219,26 +230,26 @@ class Application {
     this.setupSystemTray();
     this.registerInputInterceptShortcut();
 
-    if (this.hudhookLauncher) {
+    if (this.reshadeLauncher) {
       console.log(
-        `${HUDHOOK_CONFIGURED_MARKER} backend=${this.hudhookLauncher.config.backend} runtime=${JSON.stringify(this.hudhookLauncher.config.runtimeDirectory)}`
+        `${RESHADE_CONFIGURED_MARKER} runtime=${JSON.stringify(this.reshadeLauncher.config.runtimeDirectory)}`,
       );
     }
 
     if (process.argv.includes(AUTO_START_OVERLAY_FLAG)) {
       const state = this.startOverlaySession();
       console.log(
-        `${AUTO_START_OVERLAY_MARKER} windows=${JSON.stringify(state.windows)}`
+        `${AUTO_START_OVERLAY_MARKER} windows=${JSON.stringify(state.windows)}`,
       );
     }
 
-    const autoTargetProcess = this.hudhookLauncher?.config.autoTargetProcess;
+    const autoTargetProcess = this.reshadeLauncher?.config.autoTargetProcess;
     if (autoTargetProcess) {
       this.ensureOverlaySessionStarted();
-      void this.requestHudhookInjection({
+      void this.requestReShadeInjection({
         processName: autoTargetProcess,
       }).catch((error) => {
-        console.error("Hudhook attachment failed", error);
+        console.error('ReShade attachment failed', error);
       });
     }
   }
@@ -259,7 +270,7 @@ class Application {
     }
     this.disposed = true;
     this.inputInterceptShortcut.dispose();
-    this.hudhookLauncher?.dispose();
+    this.reshadeLauncher?.dispose();
     this.overlay.dispose();
     if (this.tray) {
       this.tray.destroy();
@@ -273,26 +284,26 @@ class Application {
 
   private createWindow(
     name: string,
-    option: Electron.BrowserWindowConstructorOptions
+    option: Electron.BrowserWindowConstructorOptions,
   ) {
     const window = new BrowserWindow(option);
     this.windows.set(name, window);
-    window.on("closed", () => {
+    window.on('closed', () => {
       this.windows.delete(name);
     });
-    window.webContents.on("new-window", (e, url) => {
+    window.webContents.on('new-window', (e, url) => {
       e.preventDefault();
       shell.openExternal(url);
     });
 
     if (global.DEBUG) {
       window.webContents.on(
-        "before-input-event",
+        'before-input-event',
         (event: Electron.Event, input: Electron.Input) => {
-          if (input.key === "F12" && input.type === "keyDown") {
+          if (input.key === 'F12' && input.type === 'keyDown') {
             window.webContents.openDevTools();
           }
-        }
+        },
       );
     }
 
@@ -300,60 +311,60 @@ class Application {
   }
 
   private setupIpc() {
-    ipcMain.handle("overlay:get-state", () => this.getDemoState());
+    ipcMain.handle('overlay:get-state', () => this.getDemoState());
 
-    ipcMain.handle("overlay:start", () => this.startOverlaySession());
+    ipcMain.handle('overlay:start', () => this.startOverlaySession());
 
-    ipcMain.handle("overlay:inject", async (event, title: string) =>
-      this.attachOverlayToTitle(title)
+    ipcMain.handle('overlay:inject', async (event, processName: string) =>
+      this.attachOverlayToProcess(processName),
     );
 
     ipcMain.handle(
-      "overlay:set-input-intercept",
+      'overlay:set-input-intercept',
       (event, intercept: boolean) => {
         this.ensureOverlaySessionStarted();
         this.setInputIntercept(intercept);
         return this.getDemoState();
-      }
+      },
     );
 
     ipcMain.handle(
-      "overlay:set-window-visible",
+      'overlay:set-window-visible',
       (event, name: string, visible: boolean) => {
         this.ensureOverlaySessionStarted();
         this.setExampleOverlayWindowVisible(name, visible);
         return this.getDemoState();
-      }
+      },
     );
 
-    ipcMain.on("start", () => {
+    ipcMain.on('start', () => {
       this.startOverlaySession();
     });
 
-    ipcMain.on("inject", (event, arg) => {
-      void this.attachOverlayToTitle(arg).catch((error) => {
+    ipcMain.on('inject', (event, arg) => {
+      void this.attachOverlayToProcess(arg).catch((error) => {
         console.error(
-          "Cannot attach the overlay to the requested target",
-          error
+          'Cannot attach the overlay to the requested target',
+          error,
         );
       });
     });
 
-    ipcMain.on("showExamplePopupOverlay", () => {
+    ipcMain.on('showExamplePopupOverlay', () => {
       this.ensureOverlaySessionStarted();
       createExamplePopupOverlayWindow(this.getOverlayWindowContext());
     });
 
-    ipcMain.on("showExampleVideoOverlay", () => {
+    ipcMain.on('showExampleVideoOverlay', () => {
       this.setExampleOverlayWindowVisible(AppWindows.exampleVideoOverlay, true);
     });
 
-    ipcMain.on("startIntercept", () => {
+    ipcMain.on('startIntercept', () => {
       this.ensureOverlaySessionStarted();
       this.setInputIntercept(true);
     });
 
-    ipcMain.on("stopIntercept", () => {
+    ipcMain.on('stopIntercept', () => {
       this.ensureOverlaySessionStarted();
       this.setInputIntercept(false);
     });
@@ -367,27 +378,27 @@ class Application {
     return this.getDemoState();
   }
 
-  private async attachOverlayToTitle(title: string) {
-    if (!this.hudhookLauncher) {
+  private async attachOverlayToProcess(processName: string) {
+    if (!this.reshadeLauncher) {
       throw new Error(
-        "hudhook injection is not configured; restart the client with the explicit hudhook startup options"
+        'ReShade injection is not configured; restart the client with the explicit ReShade startup options',
       );
     }
     this.startOverlaySession();
-    await this.requestHudhookInjection({ windowTitle: title });
+    await this.requestReShadeInjection({ processName });
     return this.getDemoState();
   }
 
-  private requestHudhookInjection(target: HudhookTarget) {
-    if (!this.hudhookLauncher) {
-      return Promise.reject(new Error("hudhook injection is not configured"));
+  private requestReShadeInjection(target: ReShadeTarget) {
+    if (!this.reshadeLauncher) {
+      return Promise.reject(new Error('ReShade injection is not configured'));
     }
-    return this.hudhookLauncher.attach(this.overlaySession, target);
+    return this.reshadeLauncher.attach(this.overlaySession, target);
   }
 
   private ensureOverlaySessionStarted() {
     if (!this.overlayStarted) {
-      console.log("starting overlay...");
+      console.log('starting overlay...');
       this.overlaySession.start();
       this.overlaySession.setHotkeys(EXAMPLE_OVERLAY_HOTKEYS);
       this.overlayStarted = true;
@@ -395,12 +406,15 @@ class Application {
   }
 
   private setInputIntercept(intercept: boolean) {
+    if (this.inputInterceptRequested === intercept) {
+      return;
+    }
     if (intercept) {
       this.overlaySession.input.intercept();
     } else {
       this.overlaySession.input.release();
     }
-    this.inputIntercepting = intercept;
+    this.inputInterceptRequested = intercept;
     this.publishDemoState();
   }
 
@@ -408,13 +422,13 @@ class Application {
     try {
       if (!this.inputInterceptShortcut.register()) {
         console.warn(
-          `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`
+          `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`,
         );
       }
     } catch (error) {
       console.warn(
         `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`,
-        error
+        error,
       );
     }
   }
@@ -424,7 +438,7 @@ class Application {
       return;
     }
     this.ensureOverlaySessionStarted();
-    this.setInputIntercept(!this.inputIntercepting);
+    this.setInputIntercept(!this.inputInterceptRequested);
   }
 
   private publishDemoState() {
@@ -438,7 +452,7 @@ class Application {
     }
     mainWindow.webContents.send(
       DEMO_STATE_CHANGED_CHANNEL,
-      this.getDemoState()
+      this.getDemoState(),
     );
   }
 
@@ -460,15 +474,15 @@ class Application {
     let overlayWindow: ElectronOverlayWindow;
     if (name === AppWindows.exampleMainOverlay) {
       overlayWindow = createExampleMainOverlayWindow(
-        this.getOverlayWindowContext()
+        this.getOverlayWindowContext(),
       );
     } else if (name === AppWindows.exampleStatusOverlay) {
       overlayWindow = createExampleStatusOverlayWindow(
-        this.getOverlayWindowContext()
+        this.getOverlayWindowContext(),
       );
     } else if (name === AppWindows.exampleVideoOverlay) {
       overlayWindow = createExampleVideoOverlayWindow(
-        this.getOverlayWindowContext()
+        this.getOverlayWindowContext(),
       );
     } else {
       throw new Error(`Unknown example overlay window: ${name}`);
@@ -478,7 +492,10 @@ class Application {
     return overlayWindow;
   }
 
-  private trackOverlayWindow(name: string, overlayWindow: ElectronOverlayWindow) {
+  private trackOverlayWindow(
+    name: string,
+    overlayWindow: ElectronOverlayWindow,
+  ) {
     this.overlayWindows.set(name, overlayWindow);
     overlayWindow.onClose(() => {
       if (this.overlayWindows.get(name) === overlayWindow) {
@@ -490,8 +507,9 @@ class Application {
   private getDemoState() {
     return {
       overlayStarted: this.overlayStarted,
-      inputIntercepting: this.inputIntercepting,
-      hudhookBackend: this.hudhookLauncher?.config.backend ?? null,
+      inputInterceptRequested: this.inputInterceptRequested,
+      inputInterceptEffective: this.inputInterceptEffective,
+      runtime: this.reshadeLauncher ? 'reshade' : null,
       windows: {
         [AppWindows.exampleMainOverlay]:
           this.overlayWindows.get(AppWindows.exampleMainOverlay)?.visible ||
@@ -509,7 +527,7 @@ class Application {
   private handleOverlayFps(fps: number) {
     const statusWindow = this.getWindow(AppWindows.exampleStatusOverlay);
     if (statusWindow) {
-      statusWindow.webContents.send("fps", fps);
+      statusWindow.webContents.send('fps', fps);
     }
   }
 
@@ -524,7 +542,7 @@ class Application {
       createWindow: (name, options) => this.createWindow(name, options),
       attachElectronOverlayWindow: (
         window,
-        { name, dragBorder, captionHeight, transparent }
+        { name, dragBorder, captionHeight, transparent },
       ) =>
         this.overlaySession.windows.attach(window, {
           id: name,
@@ -536,7 +554,51 @@ class Application {
       closeWindow: (name) => this.closeWindow(name),
       getMainWindow: () => this.mainWindow,
       isQuitting: () => this.markQuit,
+      gunFrogInputProof: this.gunFrogInputProof,
+      onGunFrogButtonsReady: () => {
+        this.gunFrogButtonsReady = true;
+        this.maybeLogGunFrogProofReady();
+      },
     };
+  }
+
+  private handleOverlayNativeEvent(event: string, payload: any) {
+    if (event === 'game.process') {
+      this.gunFrogTargetConnected = true;
+      if (this.gunFrogInputProof && !this.gunFrogInterceptRequested) {
+        this.gunFrogInterceptRequested = true;
+        this.setInputIntercept(true);
+      }
+      this.maybeLogGunFrogProofReady();
+      return;
+    }
+
+    if (
+      event === 'game.input.intercept' &&
+      typeof payload?.intercepting === 'boolean'
+    ) {
+      this.inputInterceptEffective = payload.intercepting;
+      console.log(
+        `HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=${payload.intercepting}`,
+      );
+      this.publishDemoState();
+      this.maybeLogGunFrogProofReady();
+    }
+  }
+
+  private maybeLogGunFrogProofReady() {
+    if (
+      !this.gunFrogInputProof ||
+      this.gunFrogProofReadyLogged ||
+      !this.gunFrogButtonsReady ||
+      !this.gunFrogTargetConnected ||
+      !this.inputInterceptEffective
+    ) {
+      return;
+    }
+
+    this.gunFrogProofReadyLogged = true;
+    console.log('HUDHOOK_CLIENT_GUN_FROG_PROOF_READY');
   }
 
   private showExampleVideoOverlay() {

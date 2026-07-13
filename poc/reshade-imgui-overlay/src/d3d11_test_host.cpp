@@ -251,7 +251,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     ShowWindow(g_graphics.window, show_command);
     UpdateWindow(g_graphics.window);
     if (!g_input_oracle.initialize(g_graphics.window))
-        report_graphics_failure(L"Unable to register the controlled raw-input oracle.");
+        report_graphics_failure(L"Unable to initialize the controlled raw/pointer-input oracle.");
 
     const auto start_time = std::chrono::steady_clock::now();
     MSG message = {};

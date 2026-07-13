@@ -29,6 +29,10 @@ struct queued_input_message
 {
     std::uint64_t generation = 0;
     input_message message = {};
+    std::uint32_t pointer_id = 0;
+    std::uint32_t pointer_type = PT_POINTER;
+    std::uint32_t pointer_key_states = 0;
+    bool pointer_metadata_valid = false;
 };
 static_assert(std::is_trivially_copyable_v<queued_input_message>);
 
@@ -131,13 +135,148 @@ bool g_has_last_input_sequence = false;
 std::uint64_t g_deferred_raw_input_messages = 0;
 std::uint64_t g_deferred_raw_buffer_messages = 0;
 std::uint64_t g_deferred_window_raw_messages = 0;
+std::atomic<bool> g_pointer_route_reset_pending = false;
+
+struct ordered_pointer_state
+{
+    std::uintptr_t target_window = 0;
+    std::uint32_t pointer_id = 0;
+    bool primary_down = false;
+};
+
+ordered_pointer_state g_ordered_pointer_state = {};
+
+bool is_pointer_mouse_message(std::uint32_t message) noexcept
+{
+    switch (message)
+    {
+    case WM_POINTERUPDATE:
+    case WM_POINTERDOWN:
+    case WM_POINTERUP:
+    case WM_POINTERENTER:
+    case WM_POINTERLEAVE:
+    case WM_POINTERWHEEL:
+    case WM_POINTERHWHEEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::int64_t encode_client_point(std::int32_t x, std::int32_t y) noexcept
+{
+    const std::uint32_t packed =
+        static_cast<std::uint16_t>(x) |
+        (static_cast<std::uint32_t>(static_cast<std::uint16_t>(y)) << 16U);
+    return static_cast<std::int64_t>(packed);
+}
+
+void capture_pointer_metadata(queued_input_message &queued) noexcept
+{
+    if (queued.message.source != input_message_source::window_message ||
+        !is_pointer_mouse_message(queued.message.message))
+    {
+        return;
+    }
+
+    const std::uint32_t pointer_id = GET_POINTERID_WPARAM(
+        static_cast<WPARAM>(queued.message.wparam));
+    POINTER_INFO pointer_info = {};
+    if (GetPointerInfo(pointer_id, &pointer_info) == FALSE)
+        return;
+
+    queued.pointer_id = pointer_id;
+    queued.pointer_type = static_cast<std::uint32_t>(pointer_info.pointerType);
+    queued.pointer_key_states = pointer_info.dwKeyStates;
+    queued.pointer_metadata_valid = true;
+}
+
+void reset_ordered_pointer_state() noexcept
+{
+    g_ordered_pointer_state = {};
+}
+
+bool translate_pointer_mouse_message(
+    const queued_input_message &queued,
+    input_message &message) noexcept
+{
+    if (!is_pointer_mouse_message(message.message))
+        return true;
+    if (!queued.pointer_metadata_valid ||
+        queued.pointer_type != static_cast<std::uint32_t>(PT_MOUSE))
+    {
+        return false;
+    }
+
+    const bool client_point_valid =
+        (message.flags & static_cast<std::uint32_t>(
+                             input_message_flags::client_point_valid)) != 0;
+    const WPARAM pointer_wparam = static_cast<WPARAM>(message.wparam);
+    const std::uint64_t mouse_modifiers = queued.pointer_key_states &
+        static_cast<std::uint32_t>(MK_CONTROL | MK_SHIFT);
+    const std::uintptr_t target_window =
+        reinterpret_cast<std::uintptr_t>(message.target_window);
+
+    switch (message.message)
+    {
+    case WM_POINTERUPDATE:
+        if (!client_point_valid)
+            return false;
+        message.message = WM_MOUSEMOVE;
+        message.wparam = mouse_modifiers;
+        if (g_ordered_pointer_state.primary_down &&
+            g_ordered_pointer_state.pointer_id == queued.pointer_id &&
+            g_ordered_pointer_state.target_window == target_window)
+        {
+            message.wparam |= MK_LBUTTON;
+        }
+        message.lparam = encode_client_point(message.client_x, message.client_y);
+        return true;
+
+    case WM_POINTERDOWN:
+        if (!client_point_valid ||
+            !IS_POINTER_FIRSTBUTTON_WPARAM(pointer_wparam))
+        {
+            return false;
+        }
+        g_ordered_pointer_state = {
+            target_window,
+            queued.pointer_id,
+            true,
+        };
+        message.message = WM_LBUTTONDOWN;
+        message.wparam = mouse_modifiers | MK_LBUTTON;
+        message.lparam = encode_client_point(message.client_x, message.client_y);
+        return true;
+
+    case WM_POINTERUP:
+        if (!client_point_valid ||
+            !g_ordered_pointer_state.primary_down ||
+            g_ordered_pointer_state.pointer_id != queued.pointer_id ||
+            g_ordered_pointer_state.target_window != target_window)
+        {
+            return false;
+        }
+        reset_ordered_pointer_state();
+        message.message = WM_LBUTTONUP;
+        message.wparam = mouse_modifiers;
+        message.lparam = encode_client_point(message.client_x, message.client_y);
+        return true;
+
+    default:
+        // Enter/leave and pointer-wheel records are suppressed for the game but
+        // are not part of the accepted Electron POC route. Non-client pointer
+        // activation is deliberately left outside the ReShade patch entirely.
+        return false;
+    }
+}
 
 void on_input_message(const input_message &message) noexcept
 {
-    const queued_input_message queued = {
-        g_input_generation.load(std::memory_order_acquire),
-        message,
-    };
+    queued_input_message queued = {};
+    queued.generation = g_input_generation.load(std::memory_order_acquire);
+    queued.message = message;
+    capture_pointer_metadata(queued);
     if (g_input_queue.try_push(queued))
         return;
 
@@ -324,6 +463,8 @@ bool reset_input_router(ego_core *core)
     // Advancing the generation makes a producer that was preempted before this
     // reset harmless: its late publication is recognized and discarded.
     g_input_generation.fetch_add(1, std::memory_order_acq_rel);
+    reset_ordered_pointer_state();
+    g_pointer_route_reset_pending.store(false, std::memory_order_release);
     discard_queued_input();
 
     const ego_status blur_status = ego_core_set_target_focused(core, 0);
@@ -377,6 +518,9 @@ void drain_input_messages(ego_core *core)
         return;
     }
     const input_consumer_release release_consumer;
+
+    if (g_pointer_route_reset_pending.exchange(false, std::memory_order_acq_rel))
+        reset_ordered_pointer_state();
 
     if (!recover_dropped_input(core))
         return;
@@ -449,7 +593,16 @@ void drain_input_messages(ego_core *core)
             return;
         }
 
-        const input_message &message = queued.message;
+        input_message routed_message = queued.message;
+        if (routed_message.source == input_message_source::window_message &&
+            !translate_pointer_mouse_message(queued, routed_message))
+        {
+            g_last_input_sequence = queued.message.sequence;
+            g_has_last_input_sequence = true;
+            continue;
+        }
+
+        const input_message &message = routed_message;
         switch (message.source)
         {
         case input_message_source::window_message:
@@ -725,6 +878,8 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
         runtime->block_input_next_frame();
 
     const bool routing_enabled = data.phase == input_phase::enabled;
+    if (!routing_enabled)
+        g_pointer_route_reset_pending.store(true, std::memory_order_release);
     const bool acknowledge =
         data.phase == input_phase::disabled || data.phase == input_phase::enabled;
     status = ego_core_apply_input_filter(

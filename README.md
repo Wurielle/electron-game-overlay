@@ -13,8 +13,14 @@ swap-chain, ImGui, and game-input layer. On July 12, 2026, the controlled D3D11
 and D3D12 input gates passed hands-on acceptance: native ImGui remained
 interactive, the independent game-side message/raw/polling counters stayed
 frozen throughout interception, resize preserved blocking, and release restored
-normal counters and cursor confinement. Gun Frog acceptance and the Electron
-SDK/client integration are still pending.
+normal counters and cursor confinement. The real Electron scene subsequently
+passed the same gate on both backends. On July 13, Gun Frog passed an exact
+four-control menu proof: Electron alone received clicks aligned over Continue,
+New Game, Settings, and Quit while the game stayed on its menu and remained
+alive; after Electron acknowledged release, the same Quit position closed the
+game normally. The built production client and SDK ReShade launcher then passed
+the same four-control gate against Gun Frog on July 13; the active client host
+switch is complete for that accepted process-name, arm-before-launch path.
 
 The change in direction follows real-client testing against Gun Frog. The
 hudhook path successfully proved Electron OSR transport, ordered multi-window
@@ -37,9 +43,9 @@ The first Steam-like input acceptance gate is intentionally behavioral:
 - game cursor confinement/recentering no longer prevents overlay interaction;
 - release, focus loss, transport failure, or shutdown restores safe game input.
 
-The controlled D3D11 and D3D12 portions of that gate are complete. It must still
-pass Gun Frog before the new host is considered ready for SDK integration. The
-unsigned ReShade full add-on runtime is limited to controlled or permitted
+The controlled D3D11/D3D12, standalone Gun Frog, and real client/SDK Gun Frog
+portions of that gate are complete. The unsigned ReShade full add-on runtime is
+limited to controlled or permitted
 offline/single-player targets. Competitive and anti-cheat-protected software,
 anti-cheat bypasses, and VR are outside this POC.
 
@@ -47,20 +53,44 @@ The backend-neutral Electron transport, ordered scene, and input router now live
 in `poc/electron-overlay-core` and are shared by the retained hudhook renderer
 and a versioned C ABI. A separate ReShade compositor target links that core
 without changing the proven native input gates. Its first D3D11 live-producer
-run connected the authenticated transport, rendered both overlapping Electron
-OSR windows, and acknowledged ReShade-owned interception. The next required
-slice is exact pre-suppression input observation and return to those windows.
+run grew into accepted D3D11 and D3D12 scenes that render both overlapping
+Electron OSR windows and route exact blocked legacy and primary mouse-pointer
+input through the shared core. The pinned ReShade patches closed the additional
+Unity mouse-in-pointer path exposed by Gun Frog while leaving ReShade as the
+only game-side suppression authority.
 
 ReShade's managed ImGui input state is sampled once per `Present`. That is
-appropriate for human-duration controls exercised by this gate; exact fast-edge
-delivery for Electron remains the responsibility of the project-owned input
-queue retained from the hudhook compositor proof.
+appropriate for native ImGui controls. Electron input instead uses the
+project-owned ordered observer queue, so its accepted route does not depend on
+the `Present` sample.
 
-## game overlay solution 
-* DirectX hook, draw in game
-* support any GUI framework, use the power of web/Electron/WPF/Qt to inject any app to overlay in your game
-* easy window management
-* input intercept in game
+## Run the active ReShade POC
+
+Install the JavaScript dependencies with `npm install`, use a Visual Studio
+Developer PowerShell, and launch one named test case:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-electron-scene.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-electron-scene.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-electron-scene.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-client-sdk.ps1
+```
+
+The preferred Gun Frog gate is `gun-frog-client-sdk.ps1`: it builds and launches
+the real client, arms the SDK ReShade launcher for `Gun Frog.exe` before Steam
+starts the game, and validates the four Electron menu clicks plus the Ctrl+I
+release acknowledgement. For a hands-on dev run, use `npm run dev:gun-frog`,
+wait for the injector to arm, then launch Gun Frog yourself. This is not evidence
+for late injection or arbitrary games. The
+[ReShade POC README](poc/reshade-imgui-overlay/README.md) contains the complete
+safety boundary, prerequisites, evidence markers, and retained limitations.
+
+## game overlay solution
+
+- DirectX hook, draw in game
+- support any GUI framework, use the power of web/Electron/WPF/Qt to inject any app to overlay in your game
+- easy window management
+- input intercept in game
 
 ## screenshot
 
@@ -81,13 +111,13 @@ The [hudhook POC README](poc/hudhook-imgui-overlay/README.md) contains the Visua
 Rust, CMake, and controlled-target prerequisites plus the complete acceptance
 matrix.
 
-`npm run build` first builds `electron-game-overlay`, including its Windows x64
-hudhook runtime, and then builds the demo client against that SDK. The injector,
-D3D11 payload, D3D12 payload, and third-party notices are staged under
-`libs/electron-game-overlay/dist/runtime/win32-x64`. With hudhook explicitly
-enabled, only `--hudhook-backend=d3d11|d3d12` is required; the SDK resolves its
-own runtime and owns readiness, injection, and target-connection proof. The
-runtime-directory option remains an optional development/test override.
+`npm run build` builds `electron-game-overlay`, stages the pinned patched
+ReShade runtime, injector, add-on, configuration, and build stamp under
+`libs/electron-game-overlay/dist/runtime/win32-x64/reshade`, then builds the demo
+client against that SDK. The active launcher takes an executable process name
+and lets ReShade select the graphics API; application code no longer chooses a
+D3D11/D3D12 payload. Retained hudhook artifacts and launchers remain historical
+test support, not the normal client path.
 
 The original `libs/node-game-overlay` and `libs/native-game-overlay` trees remain
 as legacy source reference, but they are no longer dependencies of the active

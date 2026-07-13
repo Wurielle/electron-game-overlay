@@ -1,108 +1,112 @@
-import { ipcRenderer, IpcRendererEvent } from "electron";
+import { ipcRenderer, IpcRendererEvent } from 'electron';
 
 type DemoState = {
   overlayStarted: boolean;
-  inputIntercepting: boolean;
-  hudhookBackend: "d3d11" | "d3d12" | null;
+  inputInterceptRequested: boolean;
+  inputInterceptEffective: boolean;
+  runtime: 'reshade' | null;
   windows: Record<string, boolean>;
 };
 
 const overlayWindows = {
-  main: "example-main-overlay",
-  status: "example-status-overlay",
-  video: "example-video-overlay",
+  main: 'example-main-overlay',
+  status: 'example-status-overlay',
+  video: 'example-video-overlay',
 };
 
-const windowTitleStorageKey = "demo.windowTitle";
-const demoStateChangedChannel = "overlay:state-changed";
-const inputInterceptAccelerator = "Ctrl+I";
+const processNameStorageKey = 'demo.processName';
+const demoStateChangedChannel = 'overlay:state-changed';
+const inputInterceptAccelerator = 'Ctrl+I';
 
 let state: DemoState = {
   overlayStarted: false,
-  inputIntercepting: false,
-  hudhookBackend: null,
+  inputInterceptRequested: false,
+  inputInterceptEffective: false,
+  runtime: null,
   windows: {},
 };
 
-const startButton = document.getElementById("start") as HTMLButtonElement;
+const startButton = document.getElementById('start') as HTMLButtonElement;
 const interceptButton = document.getElementById(
-  "intercept"
+  'intercept',
 ) as HTMLButtonElement;
-const injectButton = document.getElementById("inject") as HTMLButtonElement;
+const injectButton = document.getElementById('inject') as HTMLButtonElement;
 const popupButton = document.getElementById(
-  "show-popup-overlay"
+  'show-popup-overlay',
 ) as HTMLButtonElement;
 const mainOverlayButton = document.getElementById(
-  "toggle-main-overlay"
+  'toggle-main-overlay',
 ) as HTMLButtonElement;
 const statusOverlayButton = document.getElementById(
-  "toggle-status-overlay"
+  'toggle-status-overlay',
 ) as HTMLButtonElement;
 const videoOverlayButton = document.getElementById(
-  "toggle-video-overlay"
+  'toggle-video-overlay',
 ) as HTMLButtonElement;
-const titleInput = document.getElementById("title") as HTMLInputElement;
-const statusElement = document.getElementById("status") as HTMLDivElement;
-const imageElem = document.getElementById("image") as HTMLImageElement;
+const processNameInput = document.getElementById(
+  'process-name',
+) as HTMLInputElement;
+const statusElement = document.getElementById('status') as HTMLDivElement;
+const imageElem = document.getElementById('image') as HTMLImageElement;
 
-titleInput.value =
-  localStorage.getItem(windowTitleStorageKey) ?? titleInput.value;
+processNameInput.value =
+  localStorage.getItem(processNameStorageKey) ?? processNameInput.value;
 
-startButton.addEventListener("click", async () => {
-  await updateState(ipcRenderer.invoke("overlay:start"));
+startButton.addEventListener('click', async () => {
+  await updateState(ipcRenderer.invoke('overlay:start'));
 });
 
-interceptButton.addEventListener("click", async () => {
+interceptButton.addEventListener('click', async () => {
   await updateState(
     ipcRenderer.invoke(
-      "overlay:set-input-intercept",
-      !state.inputIntercepting
-    )
+      'overlay:set-input-intercept',
+      !state.inputInterceptRequested,
+    ),
   );
 });
 
-injectButton.addEventListener("click", async () => {
-  const title = titleInput.value.trim();
-  if (!title) {
+injectButton.addEventListener('click', async () => {
+  const processName = processNameInput.value.trim();
+  if (!processName) {
     return;
   }
 
   injectButton.disabled = true;
-  statusElement.classList.remove("error");
-  statusElement.textContent = `Attaching to ${title}...`;
+  statusElement.classList.remove('error');
+  statusElement.textContent = `Arming ReShade for ${processName}. Launch the game now...`;
   try {
-    await updateState(ipcRenderer.invoke("overlay:inject", title));
-    statusElement.textContent = `Connected to ${title} with ${state.hudhookBackend?.toUpperCase()}`;
+    await updateState(ipcRenderer.invoke('overlay:inject', processName));
+    statusElement.textContent = `Connected to ${processName} with ReShade`;
   } catch (error) {
-    statusElement.classList.add("error");
+    statusElement.classList.add('error');
     statusElement.textContent = getErrorMessage(error);
   } finally {
-    injectButton.disabled = state.hudhookBackend === null;
+    injectButton.disabled = state.runtime === null;
   }
 });
 
-mainOverlayButton.addEventListener("click", () => {
+mainOverlayButton.addEventListener('click', () => {
   toggleOverlayWindow(overlayWindows.main);
 });
 
-statusOverlayButton.addEventListener("click", () => {
+statusOverlayButton.addEventListener('click', () => {
   toggleOverlayWindow(overlayWindows.status);
 });
 
-videoOverlayButton.addEventListener("click", () => {
+videoOverlayButton.addEventListener('click', () => {
   toggleOverlayWindow(overlayWindows.video);
 });
 
-popupButton.addEventListener("click", () => {
-  ipcRenderer.send("showExamplePopupOverlay");
+popupButton.addEventListener('click', () => {
+  ipcRenderer.send('showExamplePopupOverlay');
 });
 
-titleInput.addEventListener("input", () => {
-  localStorage.setItem(windowTitleStorageKey, titleInput.value);
+processNameInput.addEventListener('input', () => {
+  localStorage.setItem(processNameStorageKey, processNameInput.value);
 });
 
 ipcRenderer.on(
-  "exampleMainOverlayImage",
+  'exampleMainOverlayImage',
   (event: IpcRendererEvent, arg: { image: string }) => {
     const { image } = arg;
     // imageElem.onload = function() {
@@ -120,7 +124,7 @@ ipcRenderer.on(
     //   )
     // }
     imageElem.src = image;
-  }
+  },
 );
 
 ipcRenderer.on(
@@ -128,25 +132,25 @@ ipcRenderer.on(
   (event: IpcRendererEvent, nextState: DemoState) => {
     state = nextState;
     renderState();
-  }
+  },
 );
 
 window.onfocus = function () {
-  console.log("focus");
+  console.log('focus');
 };
 window.onblur = function () {
-  console.log("blur");
+  console.log('blur');
 };
 
-void updateState(ipcRenderer.invoke("overlay:get-state"));
+void updateState(ipcRenderer.invoke('overlay:get-state'));
 
 async function toggleOverlayWindow(name: string) {
   await updateState(
     ipcRenderer.invoke(
-      "overlay:set-window-visible",
+      'overlay:set-window-visible',
       name,
-      !state.windows[name]
-    )
+      !state.windows[name],
+    ),
   );
 }
 
@@ -156,29 +160,37 @@ async function updateState(statePromise: Promise<DemoState>) {
 }
 
 function renderState() {
-  startButton.classList.toggle("active", state.overlayStarted);
-  interceptButton.classList.toggle("active", state.inputIntercepting);
-  injectButton.disabled = state.hudhookBackend === null;
+  startButton.classList.toggle('active', state.overlayStarted);
+  interceptButton.classList.toggle('active', state.inputInterceptEffective);
+  injectButton.disabled = state.runtime === null;
 
   startButton.textContent = state.overlayStarted
-    ? "Session running"
-    : "Start session";
-  interceptButton.textContent = state.inputIntercepting
-    ? `Release input (${inputInterceptAccelerator})`
-    : `Intercept input (${inputInterceptAccelerator})`;
+    ? 'Session running'
+    : 'Start session';
+  interceptButton.textContent = state.inputInterceptRequested
+    ? state.inputInterceptEffective
+      ? `Release input (${inputInterceptAccelerator})`
+      : `Interception requested (${inputInterceptAccelerator})`
+    : state.inputInterceptEffective
+      ? `Releasing input (${inputInterceptAccelerator})`
+      : `Intercept input (${inputInterceptAccelerator})`;
 
-  renderOverlayButton(mainOverlayButton, overlayWindows.main, "main overlay");
+  renderOverlayButton(mainOverlayButton, overlayWindows.main, 'main overlay');
   renderOverlayButton(
     statusOverlayButton,
     overlayWindows.status,
-    "status overlay"
+    'status overlay',
   );
-  renderOverlayButton(videoOverlayButton, overlayWindows.video, "video overlay");
+  renderOverlayButton(
+    videoOverlayButton,
+    overlayWindows.video,
+    'video overlay',
+  );
 
-  statusElement.classList.remove("error");
-  statusElement.textContent = state.hudhookBackend
-    ? `${state.overlayStarted ? "Session ready" : "Session idle"} · ${state.hudhookBackend.toUpperCase()}`
-    : "Injection disabled: restart the client with a Hudhook backend";
+  statusElement.classList.remove('error');
+  statusElement.textContent = state.runtime
+    ? `${state.overlayStarted ? 'Session ready' : 'Session idle'} · ReShade`
+    : 'Injection disabled: restart the client with ReShade enabled';
 }
 
 function getErrorMessage(error: unknown) {
@@ -188,9 +200,9 @@ function getErrorMessage(error: unknown) {
 function renderOverlayButton(
   button: HTMLButtonElement,
   windowName: string,
-  label: string
+  label: string,
 ) {
   const visible = Boolean(state.windows[windowName]);
-  button.classList.toggle("active", visible);
-  button.textContent = `${visible ? "Hide" : "Show"} ${label}`;
+  button.classList.toggle('active', visible);
+  button.textContent = `${visible ? 'Hide' : 'Show'} ${label}`;
 }

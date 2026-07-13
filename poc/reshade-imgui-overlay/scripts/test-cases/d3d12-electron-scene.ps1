@@ -6,5 +6,5 @@ param(
 $ErrorActionPreference = "Stop"
 
 & (Join-Path $PSScriptRoot "..\run-electron-scene.ps1") `
-    -Backend d3d11 `
+    -Backend d3d12 `
     -NoLaunch:$NoLaunch

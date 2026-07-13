@@ -1,17 +1,18 @@
-export type HudhookDevBackend = 'd3d11' | 'd3d12';
-
-export function hudhookDevBackend(mode: string): HudhookDevBackend {
-  return mode === 'hudhook-d3d12' ? 'd3d12' : 'd3d11';
-}
+const GUN_FROG_DEV_MODE = 'gun-frog';
 
 export function buildElectronDevArguments(
   workspaceRoot: string,
   mode: string,
 ): string[] {
-  return [
-    workspaceRoot,
-    '--no-sandbox',
-    '--hudhook-overlay',
-    `--hudhook-backend=${hudhookDevBackend(mode)}`,
-  ];
+  const arguments_ = [workspaceRoot, '--no-sandbox', '--reshade-overlay'];
+
+  if (mode === GUN_FROG_DEV_MODE) {
+    arguments_.push(
+      '--reshade-auto-target-process=Gun Frog.exe',
+      '--start-overlay-session',
+      '--gun-frog-input-proof',
+    );
+  }
+
+  return arguments_;
 }

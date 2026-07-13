@@ -20,6 +20,26 @@ export type {
   HudhookLaunchConfigOptions,
   HudhookTarget,
 } from './hudhook-launcher.js';
+export {
+  RESHADE_CLIENT_INJECTOR_FAILED_MARKER,
+  RESHADE_CLIENT_INJECTOR_RETURNED_MARKER,
+  RESHADE_CLIENT_INJECTOR_STARTED_MARKER,
+  RESHADE_CLIENT_RUNTIME_STAGED_MARKER,
+  RESHADE_CLIENT_TARGET_CONNECTED_MARKER,
+  ReShadeOverlayLauncher,
+  buildReShadeInvocation,
+  defaultReShadeRunsRootDirectory,
+  defaultReShadeRuntimeDirectory,
+  parseReShadeLaunchConfig,
+} from './reshade-launcher.js';
+export type {
+  ReShadeAttachResult,
+  ReShadeInvocation,
+  ReShadeLaunchConfig,
+  ReShadeLaunchConfigOptions,
+  ReShadeLaunchResult,
+  ReShadeTarget,
+} from './reshade-launcher.js';
 export type {
   AttachElectronOverlayWindowOptions,
   CreateElectronOverlayWindowOptions,

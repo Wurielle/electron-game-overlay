@@ -1,172 +1,271 @@
 <html>
-
-<head>
+  <head>
     <style>
-        body {
-            background-color: rgba(67, 138, 138, 0.25);
-            margin: 10px;
-        }
+      body {
+        background-color: rgba(67, 138, 138, 0.25);
+        margin: 10px;
+      }
 
-        h1 {
-            color: maroon;
-            margin-left: 40px;
-        }
+      h1 {
+        color: maroon;
+        margin-left: 40px;
+      }
 
-        .caption {
-            height: 40px;
-            background-color: brown
-        }
+      .caption {
+        height: 40px;
+        background-color: brown;
+      }
 
-        #hudhook-input-diagnostic {
-            position: fixed;
-            right: 10px;
-            bottom: 10px;
-            max-width: 420px;
-            padding: 5px 8px;
-            border: 1px solid rgba(255, 255, 255, 0.45);
-            border-radius: 4px;
-            background: rgba(0, 0, 0, 0.72);
-            color: #d6f8ff;
-            font: 12px monospace;
-            pointer-events: none;
-        }
+      #hudhook-input-diagnostic {
+        position: fixed;
+        right: 10px;
+        bottom: 10px;
+        max-width: 420px;
+        padding: 5px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.72);
+        color: #d6f8ff;
+        font: 12px monospace;
+        pointer-events: none;
+      }
 
+      .gun-frog-proof-button {
+        position: fixed;
+        box-sizing: border-box;
+        width: 335px;
+        height: 56px;
+        border: 4px solid #ffffff;
+        border-radius: 8px;
+        box-shadow:
+          0 0 0 3px #111827,
+          0 4px 14px #000000;
+        color: #ffffff;
+        cursor: pointer;
+        font: 900 20px sans-serif;
+        letter-spacing: 1px;
+        opacity: 0.96;
+        text-shadow: 0 2px 2px #000000;
+        z-index: 2147483647;
+      }
     </style>
     <title>Example Main Overlay</title>
-</head>
+  </head>
 
-<body>
+  <body>
     <div>
-        <div class="caption"></div>
-        <button id="show-popup-overlay">Popup overlay</button>
-        <button id="show-video-overlay">Video overlay</button>
-        <br /> Hello Electron!
+      <div class="caption"></div>
+      <button id="show-popup-overlay">Popup overlay</button>
+      <button id="show-video-overlay">Video overlay</button>
+      <br />
+      Hello Electron!
 
-        <label id="label">Label</label>
-        <input id="hudhook-client-input-target" type="text" autocomplete="off">
-        <div id="hudhook-input-diagnostic">DOM input: waiting</div>
+      <label id="label">Label</label>
+      <input id="hudhook-client-input-target" type="text" autocomplete="off" />
+      <div id="hudhook-input-diagnostic">DOM input: waiting</div>
     </div>
     <script>
-        const label = document.getElementById('label')
-        setInterval(() => {
-            label.innerText = (new Date()).toString()
-            // console.log(label.innerText)
-        }, 1000)
+      const label = document.getElementById('label');
+      setInterval(() => {
+        label.innerText = new Date().toString();
+        // console.log(label.innerText)
+      }, 1000);
 
-        const {
-            ipcRenderer,
-            remote
-        } = window.require('electron')
+      const { ipcRenderer, remote } = window.require('electron');
 
-        const popupButton = document.getElementById('show-popup-overlay')
-        popupButton.addEventListener('click', () => {
-            remote.getCurrentWindow().setSize(window.innerWidth + 20, window.innerHeight + 20)
-            console.log('button click ', (new Date()).toString())
-            ipcRenderer.send('showExamplePopupOverlay')
-        })
+      const popupButton = document.getElementById('show-popup-overlay');
+      popupButton.addEventListener('click', () => {
+        remote
+          .getCurrentWindow()
+          .setSize(window.innerWidth + 20, window.innerHeight + 20);
+        console.log('button click ', new Date().toString());
+        ipcRenderer.send('showExamplePopupOverlay');
+      });
 
-        const videoButton = document.getElementById("show-video-overlay")
-        videoButton.addEventListener("click", () => {
-            ipcRenderer.send("showExampleVideoOverlay")
-        })
+      const videoButton = document.getElementById('show-video-overlay');
+      videoButton.addEventListener('click', () => {
+        ipcRenderer.send('showExampleVideoOverlay');
+      });
 
-        const inputTarget = document.getElementById('hudhook-client-input-target')
-        const inputDiagnostic = document.getElementById('hudhook-input-diagnostic')
-        const diagnosticEvents = [
-            'mouseover',
-            'mousedown',
-            'mouseup',
-            'click',
-            'focusin',
-            'input',
-            'keydown',
-            'wheel'
-        ]
-        const diagnosticTarget = event => {
-            const target = event.target
-            if (!(target instanceof Element)) {
-                return 'unknown'
+      const inputTarget = document.getElementById(
+        'hudhook-client-input-target',
+      );
+      const inputDiagnostic = document.getElementById(
+        'hudhook-input-diagnostic',
+      );
+      const diagnosticEvents = [
+        'mouseover',
+        'mousedown',
+        'mouseup',
+        'click',
+        'focusin',
+        'input',
+        'keydown',
+        'wheel',
+      ];
+      const diagnosticTarget = (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return 'unknown';
+        }
+        return target.id || target.tagName.toLowerCase();
+      };
+      const showInputDiagnostic = (event, log) => {
+        const point =
+          Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+            ? ` @ ${Math.round(event.clientX)},${Math.round(event.clientY)}`
+            : '';
+        const value =
+          event.type === 'input' && event.target instanceof HTMLInputElement
+            ? ` value=${JSON.stringify(event.target.value)}`
+            : '';
+        const message = `${event.type} target=${diagnosticTarget(event)}${point}${value}`;
+        inputDiagnostic.textContent = `DOM input: ${message}`;
+        if (log) {
+          console.log(`HUDHOOK_CLIENT_INPUT_DIAGNOSTIC ${message}`);
+        }
+      };
+      document.addEventListener(
+        'mousemove',
+        (event) => {
+          showInputDiagnostic(event, false);
+        },
+        true,
+      );
+      diagnosticEvents.forEach((type) => {
+        document.addEventListener(
+          type,
+          (event) => {
+            showInputDiagnostic(event, true);
+          },
+          true,
+        );
+      });
+
+      let hudhookInputProofEnabled = false;
+      window.hudhookInputProof = {
+        enable() {
+          if (hudhookInputProofEnabled) {
+            return;
+          }
+          hudhookInputProofEnabled = true;
+          Object.assign(inputTarget.style, {
+            position: 'fixed',
+            left: '24px',
+            top: '112px',
+            width: '240px',
+          });
+          inputTarget.value = '';
+          const targetRect = inputTarget.getBoundingClientRect();
+          inputDiagnostic.textContent = `DOM input proof: ready @ ${Math.round(targetRect.x)},${Math.round(targetRect.y)}`;
+          console.log(
+            `HUDHOOK_CLIENT_INPUT_PROOF_READY x=${Math.round(targetRect.x)} y=${Math.round(targetRect.y)} width=${Math.round(targetRect.width)} height=${Math.round(targetRect.height)}`,
+          );
+
+          inputTarget.addEventListener('focus', () => {
+            console.log('HUDHOOK_CLIENT_INPUT_FOCUSED');
+          });
+          inputTarget.addEventListener('click', () => {
+            console.log('HUDHOOK_CLIENT_INPUT_CLICKED');
+          });
+          inputTarget.addEventListener('input', () => {
+            console.log(
+              `HUDHOOK_CLIENT_INPUT_VALUE value=${inputTarget.value}`,
+            );
+          });
+          inputTarget.addEventListener('wheel', (event) => {
+            console.log(`HUDHOOK_CLIENT_INPUT_WHEEL deltaY=${event.deltaY}`);
+          });
+          inputTarget.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+              console.log('HUDHOOK_CLIENT_INPUT_ESCAPE_FORWARDED');
             }
-            return target.id || target.tagName.toLowerCase()
-        }
-        const showInputDiagnostic = (event, log) => {
-            const point = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
-                ? ` @ ${Math.round(event.clientX)},${Math.round(event.clientY)}`
-                : ''
-            const value = event.type === 'input' && event.target instanceof HTMLInputElement
-                ? ` value=${JSON.stringify(event.target.value)}`
-                : ''
-            const message = `${event.type} target=${diagnosticTarget(event)}${point}${value}`
-            inputDiagnostic.textContent = `DOM input: ${message}`
-            if (log) {
-                console.log(`HUDHOOK_CLIENT_INPUT_DIAGNOSTIC ${message}`)
-            }
-        }
-        document.addEventListener('mousemove', event => {
-            showInputDiagnostic(event, false)
-        }, true)
-        diagnosticEvents.forEach(type => {
-            document.addEventListener(type, event => {
-                showInputDiagnostic(event, true)
-            }, true)
-        })
+          });
+        },
+        getTargetRect() {
+          const rect = inputTarget.getBoundingClientRect();
+          return {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          };
+        },
+      };
 
-        let hudhookInputProofEnabled = false
-        window.hudhookInputProof = {
-            enable() {
-                if (hudhookInputProofEnabled) {
-                    return
-                }
-                hudhookInputProofEnabled = true
-                Object.assign(inputTarget.style, {
-                    position: 'fixed',
-                    left: '24px',
-                    top: '112px',
-                    width: '240px'
-                })
-                inputTarget.value = ''
-                const targetRect = inputTarget.getBoundingClientRect()
-                inputDiagnostic.textContent = `DOM input proof: ready @ ${Math.round(targetRect.x)},${Math.round(targetRect.y)}`
-                console.log(
-                    `HUDHOOK_CLIENT_INPUT_PROOF_READY x=${Math.round(targetRect.x)} y=${Math.round(targetRect.y)} width=${Math.round(targetRect.width)} height=${Math.round(targetRect.height)}`
-                )
+      const gunFrogButtonDefinitions = [
+        {
+          name: 'continue',
+          label: 'CONTINUE',
+          left: 36,
+          top: 80,
+          color: '#dc2626',
+        },
+        {
+          name: 'new-game',
+          label: 'NEW GAME',
+          left: 36,
+          top: 154,
+          color: '#ea580c',
+        },
+        {
+          name: 'settings',
+          label: 'SETTINGS',
+          left: 36,
+          top: 227,
+          color: '#ca8a04',
+        },
+        { name: 'quit', label: 'QUIT', left: 36, top: 301, color: '#9333ea' },
+      ];
+      const gunFrogButtonElements = [];
+      window.gunFrogInputProof = {
+        enable() {
+          if (gunFrogButtonElements.length !== 0) {
+            return;
+          }
+          for (const definition of gunFrogButtonDefinitions) {
+            const button = document.createElement('button');
+            button.id = `hudhook-gun-frog-${definition.name}`;
+            button.type = 'button';
+            button.className = 'gun-frog-proof-button';
+            button.textContent = `ELECTRON: ${definition.label}`;
+            Object.assign(button.style, {
+              left: `${definition.left}px`,
+              top: `${definition.top}px`,
+              background: definition.color,
+            });
+            button.addEventListener('click', () => {
+              console.log(
+                `HUDHOOK_CLIENT_MULTIWINDOW_INPUT role=back event=gun-frog-click name=${definition.name}`,
+              );
+            });
+            document.body.appendChild(button);
+            gunFrogButtonElements.push({
+              name: definition.name,
+              element: button,
+            });
+          }
+        },
+        getButtonRects() {
+          return gunFrogButtonElements.map(({ name, element }) => {
+            const rect = element.getBoundingClientRect();
+            return {
+              name,
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            };
+          });
+        },
+      };
 
-                inputTarget.addEventListener('focus', () => {
-                    console.log('HUDHOOK_CLIENT_INPUT_FOCUSED')
-                })
-                inputTarget.addEventListener('click', () => {
-                    console.log('HUDHOOK_CLIENT_INPUT_CLICKED')
-                })
-                inputTarget.addEventListener('input', () => {
-                    console.log(`HUDHOOK_CLIENT_INPUT_VALUE value=${inputTarget.value}`)
-                })
-                inputTarget.addEventListener('wheel', event => {
-                    console.log(`HUDHOOK_CLIENT_INPUT_WHEEL deltaY=${event.deltaY}`)
-                })
-                inputTarget.addEventListener('keydown', event => {
-                    if (event.key === 'Escape') {
-                        console.log('HUDHOOK_CLIENT_INPUT_ESCAPE_FORWARDED')
-                    }
-                })
-            },
-            getTargetRect() {
-                const rect = inputTarget.getBoundingClientRect()
-                return {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height
-                }
-            }
-        }
-
-        window.onfocus = function () {
-            console.log("focus")
-        }
-        window.onblur = function () {
-            console.log("blur")
-        }
+      window.onfocus = function () {
+        console.log('focus');
+      };
+      window.onblur = function () {
+        console.log('blur');
+      };
     </script>
-</body>
-
+  </body>
 </html>

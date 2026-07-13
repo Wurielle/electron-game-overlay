@@ -23,12 +23,165 @@ endif()
 include(FetchContent)
 find_package(Git REQUIRED)
 
-set(RESHAPE_INPUT_OBSERVER_PATCH
+set(RESHAPE_PINNED_COMMIT "4a50d1eddace85734871d91792ff214f13f66c01")
+set(RESHAPE_SOURCE_PATCHES
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-input-observer.patch"
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-base-path.patch"
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-pointer-input-block.patch"
+)
+set(RESHAPE_EXPECTED_PATCHED_FILES
+    "include/reshade.hpp"
+    "include/reshade_api.hpp"
+    "include/reshade_events.hpp"
+    "source/addon_manager.cpp"
+    "source/addon_manager.hpp"
+    "source/input.cpp"
+    "source/input.hpp"
+    "tools/injector.cpp"
+)
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "include/reshade.hpp=CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
+    "include/reshade_api.hpp=80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
+    "include/reshade_events.hpp=8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
+    "source/addon_manager.cpp=1023CA3F0A271855CAF9B3D47B03D54443B60433B16EB0C2ED5023B26046046C"
+    "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
+    "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
+    "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
+    "tools/injector.cpp=EBD824F04F88A2E27754C0D1F5AB8A34919B73FA9D0F1743E4D95FFE9AD9097C"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${RESHAPE_INPUT_OBSERVER_PATCH}"
+    ${RESHAPE_SOURCE_PATCHES}
 )
+
+function(verify_reshade_pinned_commit source_dir)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+        WORKING_DIRECTORY "${source_dir}"
+        RESULT_VARIABLE RESHAPE_COMMIT_RESULT
+        OUTPUT_VARIABLE RESHAPE_ACTUAL_COMMIT
+        ERROR_VARIABLE RESHAPE_COMMIT_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(NOT RESHAPE_COMMIT_RESULT EQUAL 0 OR
+        NOT RESHAPE_ACTUAL_COMMIT STREQUAL RESHAPE_PINNED_COMMIT)
+        message(FATAL_ERROR
+            "Fetched ReShade source is not the pinned commit "
+            "${RESHAPE_PINNED_COMMIT}.\n"
+            "Actual commit: '${RESHAPE_ACTUAL_COMMIT}'\n"
+            "${RESHAPE_COMMIT_ERROR}"
+        )
+    endif()
+endfunction()
+
+function(verify_reshade_patched_source source_dir)
+    verify_reshade_pinned_commit("${source_dir}")
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" status --porcelain=v1
+            --untracked-files=all --ignore-submodules=none
+        WORKING_DIRECTORY "${source_dir}"
+        RESULT_VARIABLE RESHAPE_STATUS_RESULT
+        OUTPUT_VARIABLE RESHAPE_STATUS_OUTPUT
+        ERROR_VARIABLE RESHAPE_STATUS_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(NOT RESHAPE_STATUS_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to inspect the fetched ReShade source state.\n"
+            "${RESHAPE_STATUS_ERROR}"
+        )
+    endif()
+
+    string(REPLACE "\r\n" "\n" RESHAPE_STATUS_OUTPUT
+        "${RESHAPE_STATUS_OUTPUT}")
+    string(REPLACE "\r" "\n" RESHAPE_STATUS_OUTPUT
+        "${RESHAPE_STATUS_OUTPUT}")
+    set(RESHAPE_ACTUAL_PATCHED_FILES)
+    if(NOT RESHAPE_STATUS_OUTPUT STREQUAL "")
+        string(REPLACE "\n" ";" RESHAPE_STATUS_LINES
+            "${RESHAPE_STATUS_OUTPUT}")
+        foreach(RESHAPE_STATUS_LINE IN LISTS RESHAPE_STATUS_LINES)
+            string(LENGTH "${RESHAPE_STATUS_LINE}" RESHAPE_STATUS_LINE_LENGTH)
+            if(RESHAPE_STATUS_LINE_LENGTH LESS 4)
+                message(FATAL_ERROR
+                    "Unexpected entry in fetched ReShade status: "
+                    "'${RESHAPE_STATUS_LINE}'"
+                )
+            endif()
+            string(SUBSTRING "${RESHAPE_STATUS_LINE}" 3 -1
+                RESHAPE_STATUS_PATH)
+            list(APPEND RESHAPE_ACTUAL_PATCHED_FILES "${RESHAPE_STATUS_PATH}")
+        endforeach()
+    endif()
+
+    set(RESHAPE_SORTED_EXPECTED_FILES ${RESHAPE_EXPECTED_PATCHED_FILES})
+    list(SORT RESHAPE_SORTED_EXPECTED_FILES)
+    list(SORT RESHAPE_ACTUAL_PATCHED_FILES)
+    list(JOIN RESHAPE_SORTED_EXPECTED_FILES "\n"
+        RESHAPE_EXPECTED_FILES_TEXT)
+    list(JOIN RESHAPE_ACTUAL_PATCHED_FILES "\n"
+        RESHAPE_ACTUAL_FILES_TEXT)
+    if(NOT RESHAPE_ACTUAL_FILES_TEXT STREQUAL RESHAPE_EXPECTED_FILES_TEXT)
+        message(FATAL_ERROR
+            "The fetched ReShade tree does not contain exactly the eight "
+            "pinned modified files.\n"
+            "Expected:\n${RESHAPE_EXPECTED_FILES_TEXT}\n"
+            "Actual:\n${RESHAPE_ACTUAL_FILES_TEXT}"
+        )
+    endif()
+
+    foreach(RESHAPE_CONTENT_ENTRY IN LISTS
+        RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256)
+        string(FIND "${RESHAPE_CONTENT_ENTRY}" "=" RESHAPE_HASH_SEPARATOR)
+        if(RESHAPE_HASH_SEPARATOR LESS 1)
+            message(FATAL_ERROR
+                "Invalid pinned ReShade content-hash entry: "
+                "'${RESHAPE_CONTENT_ENTRY}'"
+            )
+        endif()
+        math(EXPR RESHAPE_HASH_OFFSET "${RESHAPE_HASH_SEPARATOR} + 1")
+        string(SUBSTRING "${RESHAPE_CONTENT_ENTRY}" 0
+            ${RESHAPE_HASH_SEPARATOR} RESHAPE_PATCHED_FILE)
+        string(SUBSTRING "${RESHAPE_CONTENT_ENTRY}" ${RESHAPE_HASH_OFFSET} -1
+            RESHAPE_EXPECTED_CONTENT_HASH)
+        set(RESHAPE_PATCHED_PATH "${source_dir}/${RESHAPE_PATCHED_FILE}")
+        if(NOT EXISTS "${RESHAPE_PATCHED_PATH}")
+            message(FATAL_ERROR
+                "Pinned patched ReShade file is missing: "
+                "${RESHAPE_PATCHED_FILE}"
+            )
+        endif()
+
+        # Match build-runtime.ps1's ReadAllText behavior: discard a UTF-8 BOM,
+        # normalize CRLF and bare CR to LF, then hash the resulting UTF-8 text.
+        file(READ "${RESHAPE_PATCHED_PATH}" RESHAPE_CONTENT_PREFIX
+            LIMIT 3 HEX)
+        string(TOLOWER "${RESHAPE_CONTENT_PREFIX}" RESHAPE_CONTENT_PREFIX)
+        if(RESHAPE_CONTENT_PREFIX STREQUAL "efbbbf")
+            file(READ "${RESHAPE_PATCHED_PATH}" RESHAPE_PATCHED_CONTENT
+                OFFSET 3)
+        else()
+            file(READ "${RESHAPE_PATCHED_PATH}" RESHAPE_PATCHED_CONTENT)
+        endif()
+        string(REPLACE "\r\n" "\n" RESHAPE_PATCHED_CONTENT
+            "${RESHAPE_PATCHED_CONTENT}")
+        string(REPLACE "\r" "\n" RESHAPE_PATCHED_CONTENT
+            "${RESHAPE_PATCHED_CONTENT}")
+        string(SHA256 RESHAPE_ACTUAL_CONTENT_HASH
+            "${RESHAPE_PATCHED_CONTENT}")
+        string(TOUPPER "${RESHAPE_ACTUAL_CONTENT_HASH}"
+            RESHAPE_ACTUAL_CONTENT_HASH)
+        if(NOT RESHAPE_ACTUAL_CONTENT_HASH STREQUAL
+            RESHAPE_EXPECTED_CONTENT_HASH)
+            message(FATAL_ERROR
+                "Pinned patched ReShade content hash mismatch for "
+                "${RESHAPE_PATCHED_FILE}.\n"
+                "Expected: ${RESHAPE_EXPECTED_CONTENT_HASH}\n"
+                "Actual:   ${RESHAPE_ACTUAL_CONTENT_HASH}"
+            )
+        endif()
+    endforeach()
+endfunction()
 
 # ReShade's add-on ABI is tied to the headers from the runtime release. Its
 # ImGui bridge also checks for the exact ImGui version used by that release.
@@ -36,7 +189,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 FetchContent_Declare(
     reshade
     GIT_REPOSITORY https://github.com/crosire/reshade.git
-    GIT_TAG 4a50d1eddace85734871d91792ff214f13f66c01
+    GIT_TAG ${RESHAPE_PINNED_COMMIT}
     GIT_SHALLOW TRUE
     GIT_PROGRESS TRUE
     GIT_SUBMODULES ""
@@ -54,52 +207,90 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(reshade imgui)
+verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# The public ReShade add-on API does not expose the original input record that
-# its runtime is about to suppress. Apply one pinned, passive observer seam to
-# the fetched source. It cannot alter ReShade's blocking decision and carries
-# no transient HRAWINPUT/RAWINPUT pointers across the callback boundary.
+# Apply three narrow pinned seams: the passive copied-input observer, an
+# injector base-path override that keeps runtime state in its isolated stage,
+# and coverage for Windows' second mouse projection through WM_POINTER. The
+# pointer patch intentionally layers over the observer's input.cpp hunk, so its
+# reverse check is also the terminal marker for the ordered patch stack.
+list(GET RESHAPE_SOURCE_PATCHES 2 RESHAPE_POINTER_INPUT_PATCH)
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
-        "${RESHAPE_INPUT_OBSERVER_PATCH}"
+        "${RESHAPE_POINTER_INPUT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-    RESULT_VARIABLE RESHADE_INPUT_PATCH_ALREADY_APPLIED
+    RESULT_VARIABLE RESHAPE_PATCH_STACK_ALREADY_APPLIED
     OUTPUT_QUIET
     ERROR_QUIET
 )
-if(NOT RESHADE_INPUT_PATCH_ALREADY_APPLIED EQUAL 0)
-    execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
-            "${RESHAPE_INPUT_OBSERVER_PATCH}"
-        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-        RESULT_VARIABLE RESHADE_INPUT_PATCH_CHECK
-        OUTPUT_VARIABLE RESHADE_INPUT_PATCH_CHECK_OUTPUT
-        ERROR_VARIABLE RESHADE_INPUT_PATCH_CHECK_ERROR
-    )
-    if(NOT RESHADE_INPUT_PATCH_CHECK EQUAL 0)
-        message(FATAL_ERROR
-            "The pinned ReShade input-observer patch no longer applies.\n"
-            "${RESHADE_INPUT_PATCH_CHECK_OUTPUT}"
-            "${RESHADE_INPUT_PATCH_CHECK_ERROR}"
-        )
-    endif()
 
+if(RESHAPE_PATCH_STACK_ALREADY_APPLIED EQUAL 0)
+    list(GET RESHAPE_SOURCE_PATCHES 1 RESHAPE_INJECTOR_PATCH)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
-            "${RESHAPE_INPUT_OBSERVER_PATCH}"
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_INJECTOR_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-        RESULT_VARIABLE RESHADE_INPUT_PATCH_APPLY
-        OUTPUT_VARIABLE RESHADE_INPUT_PATCH_APPLY_OUTPUT
-        ERROR_VARIABLE RESHADE_INPUT_PATCH_APPLY_ERROR
+        RESULT_VARIABLE RESHAPE_INJECTOR_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
     )
-    if(NOT RESHADE_INPUT_PATCH_APPLY EQUAL 0)
+    if(NOT RESHAPE_INJECTOR_PATCH_APPLIED EQUAL 0)
         message(FATAL_ERROR
-            "Unable to apply the pinned ReShade input-observer patch.\n"
-            "${RESHADE_INPUT_PATCH_APPLY_OUTPUT}"
-            "${RESHADE_INPUT_PATCH_APPLY_ERROR}"
+            "The terminal ReShade input patch is present without the pinned injector patch."
         )
     endif()
+else()
+foreach(RESHAPE_SOURCE_PATCH IN LISTS RESHAPE_SOURCE_PATCHES)
+    get_filename_component(RESHAPE_SOURCE_PATCH_NAME
+        "${RESHAPE_SOURCE_PATCH}" NAME)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_SOURCE_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHADE_SOURCE_PATCH_ALREADY_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(NOT RESHADE_SOURCE_PATCH_ALREADY_APPLIED EQUAL 0)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --check
+                "${RESHAPE_SOURCE_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHADE_SOURCE_PATCH_CHECK
+            OUTPUT_VARIABLE RESHADE_SOURCE_PATCH_CHECK_OUTPUT
+            ERROR_VARIABLE RESHADE_SOURCE_PATCH_CHECK_ERROR
+        )
+        if(NOT RESHADE_SOURCE_PATCH_CHECK EQUAL 0)
+            message(FATAL_ERROR
+                "Pinned ReShade patch '${RESHAPE_SOURCE_PATCH_NAME}' no longer applies.\n"
+                "${RESHADE_SOURCE_PATCH_CHECK_OUTPUT}"
+                "${RESHADE_SOURCE_PATCH_CHECK_ERROR}"
+            )
+        endif()
+
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+                "${RESHAPE_SOURCE_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHADE_SOURCE_PATCH_APPLY
+            OUTPUT_VARIABLE RESHADE_SOURCE_PATCH_APPLY_OUTPUT
+            ERROR_VARIABLE RESHADE_SOURCE_PATCH_APPLY_ERROR
+        )
+        if(NOT RESHADE_SOURCE_PATCH_APPLY EQUAL 0)
+            message(FATAL_ERROR
+                "Unable to apply pinned ReShade patch '${RESHAPE_SOURCE_PATCH_NAME}'.\n"
+                "${RESHADE_SOURCE_PATCH_APPLY_OUTPUT}"
+                "${RESHADE_SOURCE_PATCH_APPLY_ERROR}"
+            )
+        endif()
+    endif()
+endforeach()
 endif()
+
+# Fail configuration unless this FetchContent tree is exactly the pinned
+# ordered patch stack. This runs independently for the regular and
+# electron-core presets, before CMake generates any build targets.
+verify_reshade_patched_source("${reshade_SOURCE_DIR}")
 
 add_library(alternative_imgui_overlay_poc SHARED
     src/overlay_addon.cpp

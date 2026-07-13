@@ -1,6 +1,6 @@
 # Hudhook input and interactivity handoff
 
-> **Host decision update, July 12, 2026:** This remains the verified Electron
+> **Host decision update, July 13, 2026:** This remains the verified Electron
 > transport, compositor, routing, and controlled-input acceptance record, but
 > hudhook is no longer the selected production host. The final Gun Frog run
 > restored Electron and native ImGui interaction, yet Unity continued to receive
@@ -9,11 +9,26 @@
 > counters did not advance in those intervals; widening guessed project-owned
 > detours would therefore recreate an open-ended game-input compatibility layer.
 > The active experiment moves process entry, graphics/ImGui lifecycle, and
-> game-side blocking to ReShade. The controlled D3D11/D3D12 visible gates passed
-> on July 12, 2026. Subsequent ReShade work now proves the real D3D11
-> multi-window Electron scene and exact legacy Win32 input return. Raw-input
-> normalization, D3D12 Electron parity, the SDK/client switch, and Gun Frog
-> acceptance remain open; the ReShade POC README is authoritative.
+> game-side blocking to ReShade. The controlled D3D11/D3D12 visible gates and
+> real multi-window Electron scenes passed. The first ReShade Gun Frog run then
+> exposed Unity 6's separate mouse-in-pointer projection: Electron received the
+> blocked legacy click while `WM_POINTER` still activated the underlying Unity
+> control. A pinned ReShade patch and controlled pointer oracle now suppress the
+> `PT_MOUSE` stream, keep native ImGui interactive, and translate primary
+> move/left-click records on the ordered Electron consumer on D3D11/D3D12.
+> The real Gun Frog rerun subsequently passed the same input boundary: an
+> Electron click directly above Unity's `Continue` control stayed in Electron,
+> with text, z-order, and caption dragging working too. Releasing through the
+> manual Electron control was acknowledged, and the next Continue click entered
+> gameplay, proving pass-through restoration. A July 13 strengthened run then
+> aligned Electron buttons over Continue, New Game, Settings, and Quit: all four
+> reached only Electron while Gun Frog remained on its menu and alive; after the
+> complete release acknowledgement, the same underlying Quit position closed
+> the game. The production client and SDK subsequently passed that exact Gun
+> Frog boundary through the ReShade launcher on the process-name,
+> arm-before-launch path. Raw-input normalization, late injection, other games,
+> and broader lifecycle coverage remain hardening; the ReShade POC README is
+> authoritative.
 > The authenticated Node/Rust transport, wire/frame
 > validation, ordered scene/router, Electron input translation and
 > `focusOnWebView()` behavior, multi-window/z-order/capture rules, and DPI/raster
@@ -40,12 +55,14 @@ replacement was revalidated on July 11 with the D3D11/D3D12 input, lifecycle,
 multi-window, and real-client launchers listed below. Target-game display/client-origin ownership, real
 mixed-monitor acceptance, and texture retirement remain post-POC hardening.
 
-The normal Windows x64 `electron-game-overlay` build now compiles and stages the
-existing injector, both backend payloads, and third-party notices under
-`libs/electron-game-overlay/dist/runtime/win32-x64`. The SDK owns runtime
-resolution, transport readiness, injector execution, and authenticated target
-connection proof. The real client imports those public SDK APIs and contains no
-separate launcher or native staging implementation.
+The normal Windows x64 `electron-game-overlay` build now stages the ReShade
+launcher, runtime, project add-on, configuration, and build manifest under
+`libs/electron-game-overlay/dist/runtime/win32-x64/reshade`. The public
+`ReShadeOverlayLauncher` owns per-run isolation, process-name pre-launch arming,
+transport readiness, and authenticated target connection proof; ReShade selects
+the graphics API without a manual client backend setting. The real client
+imports those public SDK APIs and contains no separate launcher or native
+staging implementation.
 
 ## July 12 ReShade controlled-gate update
 
@@ -54,9 +71,52 @@ each intercepted interval, the independent host's window-message, raw-input,
 polling, and cursor counters remained exactly frozen while ReShade logged native
 ImGui click, text, drag, and wheel updates. Resizing from 1280 x 720 to
 1920 x 1009 preserved blocking and post-resize clicking; release restored the
-host's cursor confinement and counter activity. This verifies only the
-controlled native gates. The Gun Frog and Electron-backed acceptance runs remain
-open.
+host's cursor confinement and counter activity.
+
+The real Electron scene now passes on both backends too. A later oracle revision
+calls `EnableMouseInPointer(TRUE)` and counts `WM_POINTERUPDATE/DOWN/UP`. Before
+the compatibility patch, Electron received the click while these game counters
+advanced to `1/1/1`, reproducing the Gun Frog split. After the patch, native
+ImGui again accepted button, text, drag, and vertical wheel, and Electron logged
+ordered down/focus/drag/up/click packets. Every legacy/raw/polled/pointer counter
+remained frozen on D3D11 and D3D12, then resumed on release. Pointer ID, type,
+target, and Ctrl/Shift state are captured synchronously, but down/up state is
+interpreted only after the single consumer sorts the global observer sequence.
+The July 12 Gun Frog rerun then passed the same route and the inverse release
+check, closing the standalone real-game gate. The production client/SDK gate
+subsequently passed on July 13 through the ReShade launcher.
+
+## July 13 exact Gun Frog menu acceptance
+
+The dedicated wrapper placed four Electron buttons exactly over Gun Frog's
+Continue, New Game, Settings, and Quit controls. Each click emitted its unique
+`HUDHOOK_CLIENT_MULTIWINDOW_INPUT ... event=gun-frog-click name=<continue|new-game|settings|quit>`
+record while interception remained enabled; Unity stayed on the menu and its
+process remained alive through all four. Clicking the Electron release control
+then emitted `HUDHOOK_CLIENT_MULTIWINDOW_RELEASE_REQUESTED`,
+`HUDHOOK_CLIENT_MULTIWINDOW_INTERCEPT_DISABLED`, and
+`HUDHOOK_CLIENT_MULTIWINDOW_LIFECYCLE_COMPLETE`. A final click at the same Quit
+position reached the underlying game and closed the Gun Frog process, proving
+the inverse pass-through boundary on the destructive menu action rather than
+only a navigation action.
+
+## July 13 real client/SDK Gun Frog acceptance
+
+`poc/reshade-imgui-overlay/scripts/test-cases/gun-frog-client-sdk.ps1` built the
+production client and SDK ReShade launcher, armed by process name before Gun
+Frog launched, and attached to PID 11104. The client received a positive
+interception acknowledgement, then the exact aligned Electron Continue, New
+Game, Settings, and Quit controls were clicked once each while Gun Frog stayed
+alive on its menu. Ctrl+I produced the negative acknowledgement, after which the
+same Quit position closed the game. The runner emitted
+`GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`.
+
+Evidence is retained under
+`build/reshade-imgui-overlay/client-Gun-Frog-20260713-005018` and
+`%TEMP%/electron-game-overlay/reshade-runs/Gun-Frog.exe-yE20tq`; the persisted
+client-run `result.txt` contains the same pass marker. This acceptance
+is limited to the verified process-name, arm-before-launch path; it does not
+establish late injection or compatibility with other games.
 
 ReShade's managed ImGui state samples button and key state once per `Present`.
 The accepted human-duration controls are therefore not evidence about edges that
@@ -513,9 +573,9 @@ through the Windows MSVC developer shell.
 - Synchronous raw mouse packets, a virtual relative cursor, User32 polling, and
   ReShade-aligned buffered raw-mouse neutralization are covered by implementation
   and automated tests.
-  Gun Frog still needs the manual acceptance rerun. Raw-keyboard-only text
-  generation, DirectInput, XInput, GameInput, and gamepads
-  remain compatibility work.
+  The retained hudhook path never passed its Gun Frog manual gate; the selected
+  ReShade host now has. Raw-keyboard-only text generation, DirectInput, XInput,
+  GameInput, and gamepads remain compatibility work.
 - WndProc filtering alone does not guarantee game-UI suppression. If Gun Frog
   still reacts while `raw_buffer_calls` stays zero, or while raw records are
   masked, stop adding guessed detours and evaluate a ReShade add-on host.

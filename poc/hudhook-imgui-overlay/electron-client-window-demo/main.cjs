@@ -3,15 +3,25 @@ const path = require('node:path');
 
 const { app, ipcMain, screen } = require('electron');
 
+const GUN_FROG_BUTTON_PROOF = process.argv.includes(
+  '--hudhook-gun-frog-buttons',
+);
 const WINDOW_NAME = 'ExampleMainOverlay';
 const WINDOW_WIDTH = 640;
 const WINDOW_HEIGHT = 360;
-const INITIAL_BOUNDS = {
-  x: 64,
-  y: 72,
-  width: WINDOW_WIDTH,
-  height: WINDOW_HEIGHT,
-};
+const INITIAL_BOUNDS = GUN_FROG_BUTTON_PROOF
+  ? {
+      x: 64,
+      y: 270,
+      width: WINDOW_WIDTH,
+      height: WINDOW_HEIGHT,
+    }
+  : {
+      x: 64,
+      y: 72,
+      width: WINDOW_WIDTH,
+      height: WINDOW_HEIGHT,
+    };
 const MOVED_BOUNDS = {
   x: 176,
   y: 128,
@@ -22,12 +32,57 @@ const FRAME_RATE = 30;
 const FRONT_WINDOW_NAME = 'ExamplePopupOverlay';
 const FRONT_WINDOW_WIDTH = 320;
 const FRONT_WINDOW_HEIGHT = 220;
-const FRONT_BOUNDS = {
-  x: 200,
-  y: 136,
-  width: FRONT_WINDOW_WIDTH,
-  height: FRONT_WINDOW_HEIGHT,
-};
+const FRONT_BOUNDS = GUN_FROG_BUTTON_PROOF
+  ? {
+      x: 800,
+      y: 100,
+      width: FRONT_WINDOW_WIDTH,
+      height: FRONT_WINDOW_HEIGHT,
+    }
+  : {
+      x: 200,
+      y: 136,
+      width: FRONT_WINDOW_WIDTH,
+      height: FRONT_WINDOW_HEIGHT,
+    };
+const GUN_FROG_BUTTON_OVERLAYS = [
+  {
+    name: 'continue',
+    label: 'CONTINUE',
+    left: 36,
+    top: 80,
+    width: 335,
+    height: 56,
+    color: '#dc2626',
+  },
+  {
+    name: 'new-game',
+    label: 'NEW GAME',
+    left: 36,
+    top: 154,
+    width: 335,
+    height: 56,
+    color: '#ea580c',
+  },
+  {
+    name: 'settings',
+    label: 'SETTINGS',
+    left: 36,
+    top: 227,
+    width: 335,
+    height: 56,
+    color: '#ca8a04',
+  },
+  {
+    name: 'quit',
+    label: 'QUIT',
+    left: 36,
+    top: 301,
+    width: 335,
+    height: 56,
+    color: '#9333ea',
+  },
+];
 const INITIAL_LIFECYCLE_DELAY_MS = 2500;
 const LIFECYCLE_STEP_DELAY_MS = 750;
 const TARGET_CONNECTION_TIMEOUT_MS = 30000;
@@ -54,6 +109,11 @@ const MANUAL_MULTIWINDOW_PROOF = process.argv.includes(
 );
 const MULTIWINDOW_PROOF =
   AUTOMATED_MULTIWINDOW_PROOF || MANUAL_MULTIWINDOW_PROOF;
+if (GUN_FROG_BUTTON_PROOF && !MANUAL_MULTIWINDOW_PROOF) {
+  throw new Error(
+    '--hudhook-gun-frog-buttons requires --hudhook-client-multiwindow-manual',
+  );
+}
 const INPUT_PROOF =
   AUTOMATED_INPUT_PROOF || MANUAL_INPUT_PROOF || MULTIWINDOW_PROOF;
 const INPUT_CONTROL_ARGUMENT = '--input-control-file=';
@@ -346,7 +406,8 @@ function handleNativeEvent({ event, payload }) {
     payload?.intercepting === false &&
     (MANUAL_INPUT_PROOF || MANUAL_MULTIWINDOW_PROOF) &&
     inputInterceptRequested &&
-    inputInterceptEnabled
+    inputInterceptEnabled &&
+    !inputReleaseRequested
   ) {
     inputInterceptEnabled = false;
     console.log(
@@ -492,7 +553,7 @@ function validateNativeInputTranslation(overlayInstance) {
 
 async function instrumentMultiwindowPage(
   window,
-  { role, selector, left, top, color, caption, commands },
+  { role, selector, left, top, color, caption, commands, gunFrogButtons },
 ) {
   const config = JSON.stringify({
     role,
@@ -503,6 +564,7 @@ async function instrumentMultiwindowPage(
     caption,
     queueBarriers: AUTOMATED_MULTIWINDOW_PROOF,
     commands: MANUAL_MULTIWINDOW_PROOF ? commands : [],
+    gunFrogButtons: gunFrogButtons || [],
     commandChannel: MULTIWINDOW_COMMAND_CHANNEL,
   });
   const result = await window.browserWindow.webContents.executeJavaScript(
@@ -578,6 +640,55 @@ async function instrumentMultiwindowPage(
           marker('capture-up', 'x=' + event.clientX + ' y=' + event.clientY);
         }
       }, true);
+
+      const gunFrogButtonElements = [];
+      for (const proofButton of config.gunFrogButtons) {
+        const button = document.createElement('button');
+        button.id = 'hudhook-gun-frog-' + proofButton.name;
+        button.type = 'button';
+        button.textContent = 'ELECTRON: ' + proofButton.label;
+        Object.assign(button.style, {
+          position: 'fixed',
+          left: proofButton.left + 'px',
+          top: proofButton.top + 'px',
+          width: proofButton.width + 'px',
+          height: proofButton.height + 'px',
+          boxSizing: 'border-box',
+          border: '4px solid #ffffff',
+          borderRadius: '8px',
+          background: proofButton.color,
+          boxShadow: '0 0 0 3px #111827, 0 4px 14px #000000',
+          color: '#ffffff',
+          cursor: 'pointer',
+          font: '900 20px sans-serif',
+          letterSpacing: '1px',
+          opacity: '0.96',
+          textShadow: '0 2px 2px #000000',
+          zIndex: '2147483647'
+        });
+        button.addEventListener('mousedown', event => {
+          marker(
+            'gun-frog-down',
+            'name=' + proofButton.name +
+              ' x=' + event.clientX + ' y=' + event.clientY
+          );
+        });
+        button.addEventListener('mouseup', event => {
+          marker(
+            'gun-frog-up',
+            'name=' + proofButton.name +
+              ' x=' + event.clientX + ' y=' + event.clientY
+          );
+        });
+        button.addEventListener('click', () => {
+          marker('gun-frog-click', 'name=' + proofButton.name);
+        });
+        document.body.appendChild(button);
+        gunFrogButtonElements.push({
+          name: proofButton.name,
+          element: button
+        });
+      }
 
       const captionWidth =
         window.innerWidth - config.caption.left - config.caption.right;
@@ -676,6 +787,16 @@ async function instrumentMultiwindowPage(
         font: 'bold 12px sans-serif',
         zIndex: '2147483647'
       });
+      if (config.gunFrogButtons.length > 0) {
+        Object.assign(panel.style, {
+          left: '400px',
+          right: '8px',
+          top: '60px',
+          bottom: 'auto',
+          flexDirection: 'column',
+          alignItems: 'stretch'
+        });
+      }
 
       const label = document.createElement('span');
       label.textContent = config.role.toUpperCase();
@@ -713,14 +834,27 @@ async function instrumentMultiwindowPage(
           height: rect.height
         };
       };
+      const getGunFrogButtonRects = () =>
+        gunFrogButtonElements.map(({ name, element }) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            name,
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height
+          };
+        });
       const getProofRects = () => ({
         ...getTargetRect(),
         dragHandle: getDragHandleRect(),
+        gunFrogButtons: getGunFrogButtonRects(),
         devicePixelRatio: window.devicePixelRatio
       });
       window.__hudhookMultiwindowProof = {
         getTargetRect,
         getDragHandleRect,
+        getGunFrogButtonRects,
         getProofRects
       };
       return getProofRects();
@@ -750,11 +884,19 @@ async function instrumentMultiwindowPage(
       `invalid ${role} multi-window target rect: ${JSON.stringify(result)}`,
     );
   }
-  const captionBottom = caption.top + caption.height;
-  if (result.y < captionBottom) {
+  const targetRight = result.x + result.width;
+  const targetBottom = result.y + result.height;
+  const dragHandleRight = result.dragHandle.x + result.dragHandle.width;
+  const dragHandleBottom = result.dragHandle.y + result.dragHandle.height;
+  if (
+    result.x < dragHandleRight &&
+    targetRight > result.dragHandle.x &&
+    result.y < dragHandleBottom &&
+    targetBottom > result.dragHandle.y
+  ) {
     throw new Error(
       `${role} multi-window target overlaps its caption: ` +
-        `${JSON.stringify({ target: result, caption })}`,
+        `${JSON.stringify({ target: result, dragHandle: result.dragHandle })}`,
     );
   }
   if (
@@ -914,8 +1056,9 @@ async function startMultiwindowInputProofSequence() {
     frontMultiwindowTarget,
   );
   if (
-    Math.abs(back.centerX - front.centerX) > 0.5 ||
-    Math.abs(back.centerY - front.centerY) > 0.5
+    !GUN_FROG_BUTTON_PROOF &&
+    (Math.abs(back.centerX - front.centerX) > 0.5 ||
+      Math.abs(back.centerY - front.centerY) > 0.5)
   ) {
     throw new Error(
       `multi-window targets are not aligned: ${JSON.stringify({ back, front })}`,
@@ -927,11 +1070,31 @@ async function startMultiwindowInputProofSequence() {
   logMultiwindowDragHandle(back);
   logMultiwindowDragHandle(front);
   logMultiwindowProducerBounds('initial');
-  console.log(
-    'HUDHOOK_CLIENT_MULTIWINDOW_OVERLAP ' +
-      `x=${formatRectValue(front.centerX)} ` +
-      `y=${formatRectValue(front.centerY)}`,
-  );
+  if (GUN_FROG_BUTTON_PROOF) {
+    const buttons = backMultiwindowTarget.gunFrogButtons;
+    if (!Array.isArray(buttons) || buttons.length !== 4) {
+      throw new Error(
+        `Gun Frog button overlays are unavailable: ${JSON.stringify(buttons)}`,
+      );
+    }
+    for (const button of buttons) {
+      console.log(
+        'HUDHOOK_GUN_FROG_BUTTON ' +
+          `name=${button.name} ` +
+          `x=${formatRectValue(INITIAL_BOUNDS.x + button.x)} ` +
+          `y=${formatRectValue(INITIAL_BOUNDS.y + button.y)} ` +
+          `width=${formatRectValue(button.width)} ` +
+          `height=${formatRectValue(button.height)}`,
+      );
+    }
+    console.log('HUDHOOK_GUN_FROG_BUTTONS_READY');
+  } else {
+    console.log(
+      'HUDHOOK_CLIENT_MULTIWINDOW_OVERLAP ' +
+        `x=${formatRectValue(front.centerX)} ` +
+        `y=${formatRectValue(front.centerY)}`,
+    );
+  }
 
   inputInterceptRequested = true;
   session.input.intercept();
@@ -1171,11 +1334,15 @@ async function createDemo() {
       left: 176,
       top: 148,
       color: '#10b981',
-      caption: { left: 10, right: 10, top: 10, height: 40 },
+      caption: GUN_FROG_BUTTON_PROOF
+        ? { left: 440, right: 10, top: 250, height: 40 }
+        : { left: 10, right: 10, top: 10, height: 40 },
       commands: [
         { label: 'Raise FRONT', command: 'raise-front' },
         { label: 'Show FRONT', command: 'show-front' },
+        { label: 'Release input', command: 'release' },
       ],
+      gunFrogButtons: GUN_FROG_BUTTON_PROOF ? GUN_FROG_BUTTON_OVERLAYS : [],
     })
       .then((target) => {
         backDevicePixelRatio = target.devicePixelRatio;

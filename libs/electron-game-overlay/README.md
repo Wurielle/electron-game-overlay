@@ -6,31 +6,40 @@ This library was generated with [Nx](https://nx.dev).
 
 Run `nx build electron-game-overlay` to build the library.
 
-## Hudhook runtime and attachment
+## ReShade runtime and attachment
 
 `nx build electron-game-overlay` compiles the TypeScript SDK and stages the
-Windows x64 injector plus D3D11/D3D12 payloads under
-`dist/runtime/win32-x64`. Consumers select a backend with
-`parseHudhookLaunchConfig()`, create `HudhookOverlayLauncher`, then call
-`launcher.attach(session, target)`. The SDK waits for transport discovery,
-executes the injector without a shell, and resolves only after the selected
-payload authenticates back to the session. The runtime directory can be
-overridden explicitly for development tests; otherwise it resolves relative to
-the built SDK.
+patched Windows x64 ReShade runtime, injector, build stamp, Electron add-on, and
+configuration under `dist/runtime/win32-x64/reshade`. Consumers call
+`parseReShadeLaunchConfig()`, create `ReShadeOverlayLauncher`, then arm an
+executable process name with `launcher.attach(session, target)`. Each request
+copies the immutable SDK assets into a writable isolated run directory. The SDK
+waits for transport discovery, executes the injector without a shell, and
+resolves only after the injected add-on authenticates back to the session.
+ReShade selects the target graphics API; callers do not select D3D11 or D3D12.
 
 ```ts
 const overlay = new ElectronGameOverlay();
 const session = overlay.createSession();
-const config = parseHudhookLaunchConfig(process.argv);
-const launcher = config ? new HudhookOverlayLauncher(config) : null;
+const config = parseReShadeLaunchConfig(process.argv);
+const launcher = config ? new ReShadeOverlayLauncher(config) : null;
 
 session.start();
 await launcher?.attach(session, { processName: 'game.exe' });
 ```
 
-The legacy `findWindows()` and `session.attachToProcess()` methods still throw;
-the supported Hudhook target contract is `{ processName } | { windowTitle }` on
-`HudhookOverlayLauncher.attach()`.
+Arm the launcher before starting the target process. The accepted production
+client proof uses `{ processName: 'Gun Frog.exe' }`; late attachment to an
+already running game and other games are not yet compatibility claims. The
+runtime directory can be overridden explicitly for development tests;
+otherwise it resolves relative to the built SDK. The legacy `findWindows()` and
+`session.attachToProcess()` methods still throw.
+
+The real production client/SDK gate passed against Gun Frog on July 13, 2026
+through `poc/reshade-imgui-overlay/scripts/test-cases/gun-frog-client-sdk.ps1`.
+The four aligned Electron controls stayed isolated from Unity while interception
+was acknowledged; Ctrl+I produced the negative acknowledgement and the same
+underlying Quit position then closed the game.
 
 ## Coordinate contract
 
@@ -84,7 +93,7 @@ publishing the ambiguous callback.
 The compatible `window.bounds` update now carries the complete physical
 geometry: rectangle, resize constraints, caption margins/height, and drag-border
 width. A raster-changing commit sends `rasterChanged: true` before its frame;
-hudhook clears that window's latest compositable raster so old pixels are not
+the native compositor clears that window's latest compositable raster so old pixels are not
 drawn with new metadata, then republishes it when the matching framebuffer
 arrives. This suppresses stale display without retiring the cached GPU texture,
 which remains separate work.
