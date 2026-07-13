@@ -29,6 +29,7 @@
     "vite-plugin-electron-renderer": "^1.0.0"
   },
   "dependencies": {
-    "electron-game-overlay": "file:libs/electron-game-overlay"
+    "electron-game-overlay": "file:libs/electron-game-overlay",
+    "wql-process-monitor": "3.0.1"
   }
 }

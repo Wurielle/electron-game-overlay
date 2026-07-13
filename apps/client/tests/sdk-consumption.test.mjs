@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
@@ -21,6 +21,10 @@ test('the built demo consumes the SDK instead of bundling a client launcher', ()
   assert.equal(typeof sdk.ReShadeOverlayLauncher, 'function');
   assert.equal(typeof sdk.parseReShadeLaunchConfig, 'function');
   assert.equal(typeof sdk.OverlaySession.prototype.whenReady, 'function');
+  assert.equal(
+    existsSync(path.join(clientRoot, 'dist', 'process-watcher', 'index.cjs')),
+    true,
+  );
 });
 
 test('the built demo gives Ctrl+I to one global shortcut owner', () => {
@@ -60,6 +64,7 @@ test('dev launch enables ReShade without selecting a graphics backend', () => {
     'C:\\repo',
     '--no-sandbox',
     '--reshade-overlay',
+    '--steam-auto-attach',
   ]);
   assert.deepEqual(buildElectronDevArguments('C:\\repo', 'gun-frog'), [
     'C:\\repo',

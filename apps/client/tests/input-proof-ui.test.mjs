@@ -121,7 +121,8 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
     /processName: normalizedProcessName,[\s\S]{0,100}?pid: normalizedPid/,
   );
   assert.match(appEntry, /\+\+this\.reshadeAttachmentAttempt/);
-  assert.match(appEntry, /this\.inputInterceptEffective = false/);
+  assert.match(appEntry, /new TargetInputInterceptState\(\)/);
+  assert.match(appEntry, /this\.handleTargetTransportEnded\(payload\)/);
   assert.match(appEntry, /attachment: this\.reshadeAttachment/);
 
   const reconnectHandler = sourceSection(
@@ -143,12 +144,11 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
   assert.match(transportLostHandler, /phase === 'connected'/);
   assert.match(transportLostHandler, /phase !== 'attaching'/);
-  assert.match(transportLostHandler, /this\.inputInterceptEffective = false/);
   assert.doesNotMatch(transportLostHandler, /setReShadeAttachmentState/);
 
   assert.match(
     renderer,
-    /state\.runtime === null \|\| state\.attachment\.phase !== 'idle'/,
+    /state\.runtime === null \|\|[\s\S]{0,100}?steamAutoAttachEnabled \|\|[\s\S]{0,100}?state\.attachment\.phase !== 'idle'/,
   );
   assert.match(
     renderer,
@@ -179,6 +179,32 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
       statusRenderer.indexOf("state.attachment.phase === 'attaching'"),
     'attachment errors should render before the generic attaching status',
   );
+});
+
+test('the demo auto-attaches every launched Steam application PID', () => {
+  const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
+  const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
+  const renderer = readClientFile('src', 'renderer', 'main.ts');
+  const watcher = readClientFile('process-watcher', 'index.cjs');
+
+  assert.match(devLaunch, /--steam-auto-attach/);
+  assert.match(appEntry, /new SteamGameAutoAttacher/);
+  assert.match(appEntry, /new ForkedProcessWatcher/);
+  assert.match(appEntry, /this\.steamGameAutoAttacher\.start\(\)/);
+  assert.match(appEntry, /this\.steamGameAutoAttacher\?\.dispose\(\)/);
+  assert.match(
+    appEntry,
+    /steamAutoAttach: this\.steamGameAutoAttacher\?\.state/,
+  );
+  assert.match(
+    appEntry,
+    /Manual injection is disabled while Steam process auto-attach is enabled/,
+  );
+  assert.match(renderer, /steamAutoAttachEnabled/);
+  assert.match(renderer, /Launch a Steam game to inject automatically/);
+  assert.match(watcher, /import\('wql-process-monitor'\)/);
+  assert.match(watcher, /process\.once\('disconnect'/);
+  assert.match(watcher, /closeEventSink/);
 });
 
 function sourceSection(source, startMarker, endMarker) {

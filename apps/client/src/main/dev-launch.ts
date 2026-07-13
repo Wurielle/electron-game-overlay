@@ -1,4 +1,5 @@
 const GUN_FROG_DEV_MODE = 'gun-frog';
+const STEAM_AUTO_ATTACH_FLAG = '--steam-auto-attach';
 
 export function buildElectronDevArguments(
   workspaceRoot: string,
@@ -12,6 +13,8 @@ export function buildElectronDevArguments(
       '--start-overlay-session',
       '--gun-frog-input-proof',
     );
+  } else {
+    arguments_.push(STEAM_AUTO_ATTACH_FLAG);
   }
 
   return arguments_;

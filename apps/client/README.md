@@ -14,6 +14,7 @@ then builds this demo client. The relevant output is:
 
 ```text
 apps/client/dist/main/main.js
+apps/client/dist/process-watcher/index.cjs
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject.exe
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.dll
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.build.json
@@ -36,18 +37,33 @@ API inside the target, so there is no D3D11/D3D12 client option:
 npm run dev
 ```
 
-Enter an executable basename such as `game.exe`. For the accepted name-only
-flow, leave **Exact PID (optional)** empty, click **Inject / arm**, and only then
-launch the game. The accepted Gun Frog path remains process-name
-arm-before-launch.
+The normal development command enables this client's demo-only Steam process
+watcher. Launch a game normally through Steam; when a newly created process has
+a normalized executable path containing `/steamapps/` (case-insensitive), the
+client gives that exact PID its own SDK launcher. Multiple matching processes
+can be tracked concurrently while sharing the same overlay session. The UI
+shows watcher and target status and disables manual injection controls while
+automatic mode is active.
 
-The demo also exposes the public SDK's optional exact-PID target. A process
-watcher can supply `{ processName, pid }` immediately after it observes the new
-process. The PID must be a positive uint32, the process must already exist, and
-the injector verifies that the opened process image has the requested basename
-before any remote mutation. This path is intended to run before the target
-creates its graphics device and swap chain; manually finding and entering a PID
-after a game is already rendering is not a supported late-attachment workflow.
+The watcher runs in a forked Node child because its WMI/COM event sink is not
+compatible with Electron main's existing COM initialization. Detection usually
+arrives about a second after process creation. Processes whose executable paths
+cannot be read, including some elevated targets, are ignored, and an
+unsuspended target can still initialize graphics before injection. This is a
+demo convenience rather than a new SDK responsibility or a guarantee of
+general late attachment.
+
+The accepted Gun Frog flow remains the separate `npm run dev:gun-frog`
+process-name arm-before-launch mode. Controlled launchers and clients started
+without `--steam-auto-attach` retain the manual executable/PID controls.
+
+The demo uses the public SDK's optional exact-PID target. A process watcher can
+supply `{ processName, pid }` immediately after it observes the new process. The
+PID must be a positive uint32, the process must already exist, and the injector
+verifies that the opened process image has the requested basename before any
+remote mutation. This path is intended to run before the target creates its
+graphics device and swap chain; manually finding and entering a PID after a
+game is already rendering is not a supported late-attachment workflow.
 `--reshade-runtime-dir=<absolute-path>` remains a strict development/test
 override; invalid or incomplete runtime assets fail instead of falling back.
 
@@ -62,8 +78,8 @@ target exited. If an injector may have run but its result cannot be proven, the
 client displays the error and remains latched; restart the client before
 retrying rather than risk injecting a live target twice.
 
-The client contains no injector, native payload, or target-correlation
-implementation of its own; it is only an SDK acceptance/demo application.
+The client contains no injector or native payload. Its Steam watcher and
+per-process coordinator are demo-only orchestration around the public SDK.
 
 Press **Ctrl+I** to toggle input interception even while the target game owns
 foreground focus. Electron owns this accelerator as a global shortcut; it is

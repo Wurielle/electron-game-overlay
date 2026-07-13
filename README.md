@@ -64,10 +64,17 @@ Start the Electron client with:
 npm run dev
 ```
 
-Enter an executable basename, such as `game.exe`, click **Inject / arm**, then
-launch the target. ReShade selects D3D11 or D3D12 inside the process; application
-code does not choose a graphics payload. Press **Ctrl+I** while the game is
-focused to toggle interception.
+This demo command starts a client-only process watcher. Every newly created
+process whose normalized executable path contains `/steamapps/` is attached by
+its exact PID, so launching a Steam game is enough; the manual target controls
+are disabled while the watcher is active. ReShade selects D3D11 or D3D12 inside
+each process, so application code does not choose a graphics payload. Press
+**Ctrl+I** while a game is focused to toggle interception.
+
+The watcher is demo convenience, not part of the SDK. It detects ordinary
+unsuspended processes shortly after creation, so a particularly fast target can
+still create its graphics device before injection. The controlled acceptance
+launchers remain the deterministic way to test injection-before-graphics.
 
 The SDK also accepts an exact PID:
 
@@ -132,9 +139,9 @@ only after release. Exact-PID near-process-creation injection and same-client
 target restart also passed their dedicated gates.
 
 These results do not establish arbitrary late injection, every game, Vulkan,
-OpenGL, unusual presentation paths, multiple simultaneous targets, anti-cheat
-compatibility, or VR. Use the unsigned full add-on runtime only with the
-included controlled hosts or an offline/single-player application you are
+OpenGL, unusual presentation paths, live simultaneous-game acceptance,
+anti-cheat compatibility, or VR. Use the unsigned full add-on runtime only with
+the included controlled hosts or an offline/single-player application you are
 allowed to modify. Do not use it to bypass anti-cheat controls.
 
 ## Historical hudhook experiment

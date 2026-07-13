@@ -5,6 +5,19 @@ type DemoState = {
   inputInterceptRequested: boolean;
   inputInterceptEffective: boolean;
   runtime: 'reshade' | null;
+  steamAutoAttach: null | {
+    enabled: true;
+    pattern: '**/steamapps/**';
+    watcherStatus: 'starting' | 'running' | 'failed' | 'stopped';
+    watcherError: string | null;
+    targets: Array<{
+      pid: number;
+      processName: string;
+      filepath: string;
+      phase: 'attaching' | 'connected' | 'failed';
+      error: string | null;
+    }>;
+  };
   attachment: {
     phase: 'idle' | 'attaching' | 'connected';
     processName: string | null;
@@ -29,6 +42,7 @@ let state: DemoState = {
   inputInterceptRequested: false,
   inputInterceptEffective: false,
   runtime: null,
+  steamAutoAttach: null,
   attachment: {
     phase: 'idle',
     processName: null,
@@ -189,6 +203,8 @@ function renderState() {
   interceptButton.classList.toggle('active', state.inputInterceptEffective);
   renderInjectAvailability();
   statusElement.dataset.attachmentPhase = state.attachment.phase;
+  statusElement.dataset.steamAutoAttach =
+    state.steamAutoAttach?.watcherStatus ?? 'disabled';
 
   startButton.textContent = state.overlayStarted
     ? 'Session running'
@@ -217,16 +233,53 @@ function renderState() {
 }
 
 function renderInjectAvailability() {
+  const steamAutoAttachEnabled = state.steamAutoAttach !== null;
   injectButton.disabled =
-    state.runtime === null || state.attachment.phase !== 'idle';
+    state.runtime === null ||
+    steamAutoAttachEnabled ||
+    state.attachment.phase !== 'idle';
+  processNameInput.disabled = steamAutoAttachEnabled;
+  processPidInput.disabled = steamAutoAttachEnabled;
+  injectButton.textContent = steamAutoAttachEnabled
+    ? 'Steam auto-watch active'
+    : 'Inject / arm';
 }
 
 function renderAttachmentStatus() {
-  statusElement.classList.toggle('error', Boolean(state.attachment.error));
+  statusElement.classList.toggle(
+    'error',
+    Boolean(state.steamAutoAttach?.watcherError || state.attachment.error),
+  );
 
   if (!state.runtime) {
     statusElement.textContent =
       'Injection disabled: restart the client with ReShade enabled';
+    return;
+  }
+
+  const steamAutoAttach = state.steamAutoAttach;
+  if (steamAutoAttach) {
+    if (steamAutoAttach.watcherError) {
+      statusElement.textContent = `Steam process watcher failed: ${steamAutoAttach.watcherError}`;
+      return;
+    }
+    if (steamAutoAttach.watcherStatus !== 'running') {
+      statusElement.textContent = 'Starting Steam process watcher...';
+      return;
+    }
+
+    const connected = steamAutoAttach.targets.filter(
+      ({ phase }) => phase === 'connected',
+    ).length;
+    const attaching = steamAutoAttach.targets.filter(
+      ({ phase }) => phase === 'attaching',
+    ).length;
+    const failed = steamAutoAttach.targets.filter(
+      ({ phase }) => phase === 'failed',
+    ).length;
+    statusElement.textContent = steamAutoAttach.targets.length
+      ? `Watching ${steamAutoAttach.pattern} · ${connected} connected · ${attaching} attaching · ${failed} failed`
+      : `Watching ${steamAutoAttach.pattern}. Launch a Steam game to inject automatically.`;
     return;
   }
 

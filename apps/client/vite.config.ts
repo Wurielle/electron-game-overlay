@@ -1,9 +1,18 @@
 import { defineConfig } from "vite";
 import electron from "vite-plugin-electron/simple";
+import { copyFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { buildElectronDevArguments } from "./src/main/dev-launch";
 
 const workspaceRoot = path.resolve(__dirname, "../..");
+const processWatcherSource = path.resolve(
+  __dirname,
+  "process-watcher/index.cjs",
+);
+const processWatcherOutput = path.resolve(
+  __dirname,
+  "dist/process-watcher/index.cjs",
+);
 
 export default defineConfig(({ mode }) => ({
   root: __dirname,
@@ -36,6 +45,14 @@ export default defineConfig(({ mode }) => ({
         prebuildEsm: true,
       },
     }),
+    {
+      name: "copy-demo-process-watcher",
+      apply: "build",
+      closeBundle() {
+        mkdirSync(path.dirname(processWatcherOutput), { recursive: true });
+        copyFileSync(processWatcherSource, processWatcherOutput);
+      },
+    },
   ],
   build: {
     outDir: "dist",

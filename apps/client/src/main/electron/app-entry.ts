@@ -27,11 +27,17 @@ import {
   INPUT_INTERCEPT_ACCELERATOR,
   InputInterceptShortcut,
 } from './input-intercept-shortcut';
+import {
+  ForkedProcessWatcher,
+  SteamGameAutoAttacher,
+} from './steam-game-auto-attacher';
+import { TargetInputInterceptState } from './target-input-intercept-state';
 import { AppWindows } from './window-names';
 
 const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = 'app.showExampleVideoOverlay';
 const AUTO_START_OVERLAY_FLAG = '--start-overlay-session';
 const GUN_FROG_INPUT_PROOF_FLAG = '--gun-frog-input-proof';
+const STEAM_AUTO_ATTACH_FLAG = '--steam-auto-attach';
 const AUTO_START_OVERLAY_MARKER = 'RESHADE_CLIENT_OVERLAY_SESSION_READY';
 const RESHADE_CONFIGURED_MARKER = 'RESHADE_CLIENT_CONFIGURED';
 const RESHADE_ATTACHMENT_STATE_MARKER = 'RESHADE_CLIENT_ATTACHMENT_STATE';
@@ -64,9 +70,11 @@ class Application {
   private overlayStarted = false;
   private inputInterceptRequested = false;
   private inputInterceptEffective = false;
+  private readonly targetInputInterceptState = new TargetInputInterceptState();
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
   private readonly reshadeLauncher: ReShadeOverlayLauncher | null;
+  private readonly steamGameAutoAttacher: SteamGameAutoAttacher | null;
   private readonly inputInterceptShortcut: InputInterceptShortcut;
   private reshadeAttachment: ReShadeAttachmentState = {
     phase: 'idle',
@@ -92,6 +100,34 @@ class Application {
     this.reshadeLauncher = reshadeConfig
       ? new ReShadeOverlayLauncher(reshadeConfig)
       : null;
+    const steamAutoAttachRequested = process.argv.includes(
+      STEAM_AUTO_ATTACH_FLAG,
+    );
+    if (
+      steamAutoAttachRequested &&
+      (reshadeConfig?.autoTargetProcess || reshadeConfig?.expectedTargetPid)
+    ) {
+      throw new Error(
+        `${STEAM_AUTO_ATTACH_FLAG} cannot be combined with a configured ReShade auto target`,
+      );
+    }
+    this.steamGameAutoAttacher =
+      steamAutoAttachRequested && reshadeConfig
+        ? new SteamGameAutoAttacher({
+            session: this.overlaySession,
+            reshadeConfig,
+            watcherFactory: () =>
+              new ForkedProcessWatcher(resolveProcessWatcherEntry()),
+          })
+        : null;
+    if (steamAutoAttachRequested && !reshadeConfig) {
+      console.warn(
+        `${STEAM_AUTO_ATTACH_FLAG} was ignored because ReShade is not configured`,
+      );
+    }
+    this.steamGameAutoAttacher?.onStateChange(() => {
+      this.publishDemoState();
+    });
     this.gunFrogInputProof = process.argv.includes(GUN_FROG_INPUT_PROOF_FLAG);
     this.inputInterceptShortcut = new InputInterceptShortcut(
       globalShortcut,
@@ -260,6 +296,11 @@ class Application {
       );
     }
 
+    if (this.steamGameAutoAttacher) {
+      this.startOverlaySession();
+      this.steamGameAutoAttacher.start();
+    }
+
     const autoTargetProcess = this.reshadeLauncher?.config.autoTargetProcess;
     if (autoTargetProcess) {
       void this.attachOverlayToProcess(autoTargetProcess).catch((error) => {
@@ -283,6 +324,7 @@ class Application {
       return;
     }
     this.disposed = true;
+    void this.steamGameAutoAttacher?.dispose();
     this.inputInterceptShortcut.dispose();
     this.reshadeLauncher?.dispose();
     this.overlay.dispose();
@@ -395,6 +437,11 @@ class Application {
   }
 
   private async attachOverlayToProcess(processName: string, pid?: number) {
+    if (this.steamGameAutoAttacher) {
+      throw new Error(
+        'Manual injection is disabled while Steam process auto-attach is enabled',
+      );
+    }
     if (!this.reshadeLauncher) {
       throw new Error(
         'ReShade injection is not configured; restart the client with the explicit ReShade startup options',
@@ -483,6 +530,7 @@ class Application {
       this.overlaySession.input.release();
     }
     this.inputInterceptRequested = intercept;
+    this.refreshInputInterceptEffective();
     this.publishDemoState();
   }
 
@@ -578,6 +626,7 @@ class Application {
       inputInterceptRequested: this.inputInterceptRequested,
       inputInterceptEffective: this.inputInterceptEffective,
       runtime: this.reshadeLauncher ? 'reshade' : null,
+      steamAutoAttach: this.steamGameAutoAttacher?.state ?? null,
       attachment: this.reshadeAttachment,
       windows: {
         [AppWindows.exampleMainOverlay]:
@@ -633,31 +682,64 @@ class Application {
 
   private handleOverlayNativeEvent(event: string, payload: any) {
     if (event === 'game.process') {
+      const pid = getNativeEventPid(payload);
+      if (pid !== null) {
+        this.targetInputInterceptState.connect(pid);
+        this.refreshInputInterceptEffective();
+      }
       this.handleReShadeTargetReconnected(payload);
       return;
     }
 
     if (event === 'game.process.transport-lost') {
+      this.handleTargetTransportEnded(payload);
       this.handleReShadeTargetTransportLost(payload);
       return;
     }
 
     if (event === 'game.process.disconnected') {
+      this.handleTargetTransportEnded(payload);
       this.handleReShadeTargetDisconnected(payload);
       return;
     }
 
     if (
       event === 'game.input.intercept' &&
-      typeof payload?.intercepting === 'boolean'
+      typeof payload?.intercepting === 'boolean' &&
+      getNativeEventPid(payload) !== null
     ) {
-      this.inputInterceptEffective = payload.intercepting;
+      const pid = getNativeEventPid(payload) as number;
+      if (
+        !this.targetInputInterceptState.acknowledge(pid, payload.intercepting)
+      ) {
+        return;
+      }
+      this.refreshInputInterceptEffective();
       console.log(
         `HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=${payload.intercepting}`,
       );
-      this.publishDemoState();
       this.maybeLogGunFrogProofReady();
     }
+  }
+
+  private handleTargetTransportEnded(payload: any) {
+    const pid = getNativeEventPid(payload);
+    if (pid === null) {
+      return;
+    }
+    this.targetInputInterceptState.disconnect(pid);
+    this.refreshInputInterceptEffective();
+  }
+
+  private refreshInputInterceptEffective() {
+    const effective = this.targetInputInterceptState.isEffective(
+      this.inputInterceptRequested,
+    );
+    if (this.inputInterceptEffective === effective) {
+      return;
+    }
+    this.inputInterceptEffective = effective;
+    this.publishDemoState();
   }
 
   private handleReShadeTargetReconnected(payload: any) {
@@ -694,7 +776,6 @@ class Application {
     // Transport loss is not proof that the target exited. Preserve the
     // attachment phase (and therefore the injection latch), but discard an
     // acknowledgement that no live transport can currently guarantee.
-    this.inputInterceptEffective = false;
     this.gunFrogTargetConnected = false;
     this.gunFrogProofReadyLogged = false;
     this.publishDemoState();
@@ -717,7 +798,6 @@ class Application {
     ++this.reshadeAttachmentAttempt;
     // Keep the requested intent so the session snapshot applies interception
     // to the next target, but never show a stale effective acknowledgement.
-    this.inputInterceptEffective = false;
     this.gunFrogTargetConnected = false;
     this.gunFrogProofReadyLogged = false;
     this.setReShadeAttachmentState(
@@ -785,6 +865,12 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function getNativeEventPid(payload: any): number | null {
+  return Number.isSafeInteger(payload?.pid) && payload.pid > 0
+    ? (payload.pid as number)
+    : null;
+}
+
 function normalizeOptionalTargetPid(pid: unknown): number | undefined {
   if (pid === undefined || pid === null) {
     return undefined;
@@ -799,6 +885,13 @@ function normalizeOptionalTargetPid(pid: unknown): number | undefined {
     );
   }
   return pid as number;
+}
+
+function resolveProcessWatcherEntry(): string {
+  const clientRoot = process.env.VITE_DEV_SERVER_URL
+    ? path.resolve(global.CONFIG.distDir, '..')
+    : global.CONFIG.distDir;
+  return path.join(clientRoot, 'process-watcher', 'index.cjs');
 }
 
 export { Application };
