@@ -8,10 +8,13 @@ import {
 } from 'electron';
 import * as path from 'path';
 import {
+  createDemoControlOverlayWindow,
   createExampleMainOverlayWindow,
   createExamplePopupOverlayWindow,
   createExampleStatusOverlayWindow,
   createExampleVideoOverlayWindow,
+  DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
+  DEMO_CONTROL_OVERLAY_EXPANDED_SIZE,
 } from './example-overlay-windows';
 import type { OverlayWindowContext } from './example-overlay-windows';
 import {
@@ -38,6 +41,7 @@ const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = 'app.showExampleVideoOverlay';
 const AUTO_START_OVERLAY_FLAG = '--start-overlay-session';
 const GUN_FROG_INPUT_PROOF_FLAG = '--gun-frog-input-proof';
 const STEAM_AUTO_ATTACH_FLAG = '--steam-auto-attach';
+const DEMO_PRESENTATION_FLAG = '--demo-presentation';
 const AUTO_START_OVERLAY_MARKER = 'RESHADE_CLIENT_OVERLAY_SESSION_READY';
 const RESHADE_CONFIGURED_MARKER = 'RESHADE_CLIENT_CONFIGURED';
 const RESHADE_ATTACHMENT_STATE_MARKER = 'RESHADE_CLIENT_ATTACHMENT_STATE';
@@ -84,16 +88,21 @@ class Application {
   };
   private reshadeAttachmentAttempt = 0;
   private readonly gunFrogInputProof: boolean;
+  private readonly demoPresentationEnabled: boolean;
   private gunFrogInterceptRequested = false;
   private gunFrogButtonsReady = false;
   private gunFrogTargetConnected = false;
   private gunFrogProofReadyLogged = false;
+  private demoControlRaiseQueued = false;
   private disposed = false;
 
   constructor(reshadeConfig: ReShadeLaunchConfig | null = null) {
     this.windows = new Map();
     this.overlayWindows = new Map();
     this.tray = null;
+    this.gunFrogInputProof = process.argv.includes(GUN_FROG_INPUT_PROOF_FLAG);
+    this.demoPresentationEnabled =
+      process.argv.includes(DEMO_PRESENTATION_FLAG) && !this.gunFrogInputProof;
 
     this.overlay = new ElectronGameOverlay();
     this.overlaySession = this.overlay.createSession();
@@ -128,7 +137,6 @@ class Application {
     this.steamGameAutoAttacher?.onStateChange(() => {
       this.publishDemoState();
     });
-    this.gunFrogInputProof = process.argv.includes(GUN_FROG_INPUT_PROOF_FLAG);
     this.inputInterceptShortcut = new InputInterceptShortcut(
       globalShortcut,
       () => this.toggleInputInterceptFromShortcut(),
@@ -395,6 +403,13 @@ class Application {
       },
     );
 
+    ipcMain.handle('overlay:create-popup', () => {
+      this.ensureOverlaySessionStarted();
+      createExamplePopupOverlayWindow(this.getOverlayWindowContext());
+      this.publishDemoState();
+      return this.getDemoState();
+    });
+
     ipcMain.on('start', () => {
       this.startOverlaySession();
     });
@@ -430,8 +445,12 @@ class Application {
 
   private startOverlaySession() {
     this.ensureOverlaySessionStarted();
-    this.ensureExampleOverlayWindow(AppWindows.exampleMainOverlay).show();
-    this.ensureExampleOverlayWindow(AppWindows.exampleStatusOverlay).show();
+    if (this.demoPresentationEnabled) {
+      this.syncDemoControlOverlay();
+    } else {
+      this.ensureExampleOverlayWindow(AppWindows.exampleMainOverlay).show();
+      this.ensureExampleOverlayWindow(AppWindows.exampleStatusOverlay).show();
+    }
 
     return this.getDemoState();
   }
@@ -530,6 +549,7 @@ class Application {
       this.overlaySession.input.release();
     }
     this.inputInterceptRequested = intercept;
+    this.syncDemoControlOverlay();
     this.refreshInputInterceptEffective();
     this.publishDemoState();
   }
@@ -558,27 +578,28 @@ class Application {
   }
 
   private publishDemoState() {
-    const mainWindow = this.mainWindow;
-    if (
-      !mainWindow ||
-      mainWindow.isDestroyed() ||
-      mainWindow.webContents.isDestroyed()
-    ) {
-      return;
+    const state = this.getDemoState();
+    const publishedWindowIds = new Set<number>();
+    for (const window of this.windows.values()) {
+      if (
+        window.isDestroyed() ||
+        window.webContents.isDestroyed() ||
+        publishedWindowIds.has(window.id)
+      ) {
+        continue;
+      }
+      publishedWindowIds.add(window.id);
+      window.webContents.send(DEMO_STATE_CHANGED_CHANNEL, state);
     }
-    mainWindow.webContents.send(
-      DEMO_STATE_CHANGED_CHANNEL,
-      this.getDemoState(),
-    );
   }
 
   private setExampleOverlayWindowVisible(name: string, visible: boolean) {
     if (visible) {
       this.ensureExampleOverlayWindow(name).show();
-      return;
+    } else {
+      this.overlayWindows.get(name)?.hide();
     }
-
-    this.overlayWindows.get(name)?.hide();
+    this.publishDemoState();
   }
 
   private ensureExampleOverlayWindow(name: string) {
@@ -588,7 +609,11 @@ class Application {
     }
 
     let overlayWindow: ElectronOverlayWindow;
-    if (name === AppWindows.exampleMainOverlay) {
+    if (name === AppWindows.demoControlOverlay) {
+      overlayWindow = createDemoControlOverlayWindow(
+        this.getOverlayWindowContext(),
+      );
+    } else if (name === AppWindows.exampleMainOverlay) {
       overlayWindow = createExampleMainOverlayWindow(
         this.getOverlayWindowContext(),
       );
@@ -616,8 +641,26 @@ class Application {
     overlayWindow.onClose(() => {
       if (this.overlayWindows.get(name) === overlayWindow) {
         this.overlayWindows.delete(name);
+        if (!this.disposed) {
+          this.publishDemoState();
+        }
       }
     });
+  }
+
+  private syncDemoControlOverlay() {
+    if (!this.demoPresentationEnabled) {
+      return;
+    }
+    const overlayWindow = this.ensureExampleOverlayWindow(
+      AppWindows.demoControlOverlay,
+    );
+    overlayWindow.show();
+    overlayWindow.setBounds(
+      this.inputInterceptRequested
+        ? DEMO_CONTROL_OVERLAY_EXPANDED_SIZE
+        : DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
+    );
   }
 
   private getDemoState() {
@@ -626,9 +669,19 @@ class Application {
       inputInterceptRequested: this.inputInterceptRequested,
       inputInterceptEffective: this.inputInterceptEffective,
       runtime: this.reshadeLauncher ? 'reshade' : null,
+      presentation: this.demoPresentationEnabled
+        ? {
+            enabled: true as const,
+            shortcut: INPUT_INTERCEPT_ACCELERATOR,
+            menuExpanded: this.inputInterceptRequested,
+          }
+        : null,
       steamAutoAttach: this.steamGameAutoAttacher?.state ?? null,
       attachment: this.reshadeAttachment,
       windows: {
+        [AppWindows.demoControlOverlay]:
+          this.overlayWindows.get(AppWindows.demoControlOverlay)?.visible ||
+          false,
         [AppWindows.exampleMainOverlay]:
           this.overlayWindows.get(AppWindows.exampleMainOverlay)?.visible ||
           false,
@@ -643,9 +696,14 @@ class Application {
   }
 
   private handleOverlayFps(fps: number) {
-    const statusWindow = this.getWindow(AppWindows.exampleStatusOverlay);
-    if (statusWindow) {
-      statusWindow.webContents.send('fps', fps);
+    for (const name of [
+      AppWindows.demoControlOverlay,
+      AppWindows.exampleStatusOverlay,
+    ]) {
+      const window = this.getWindow(name);
+      if (window && !window.webContents.isDestroyed()) {
+        window.webContents.send('fps', fps);
+      }
     }
   }
 
@@ -673,6 +731,7 @@ class Application {
       getMainWindow: () => this.mainWindow,
       isQuitting: () => this.markQuit,
       gunFrogInputProof: this.gunFrogInputProof,
+      demoPresentation: this.demoPresentationEnabled,
       onGunFrogButtonsReady: () => {
         this.gunFrogButtonsReady = true;
         this.maybeLogGunFrogProofReady();
@@ -681,6 +740,11 @@ class Application {
   }
 
   private handleOverlayNativeEvent(event: string, payload: any) {
+    if (event === 'game.window.focused') {
+      this.keepDemoControlOverlayOnTop(payload);
+      return;
+    }
+
     if (event === 'game.process') {
       const pid = getNativeEventPid(payload);
       if (pid !== null) {
@@ -720,6 +784,43 @@ class Application {
       );
       this.maybeLogGunFrogProofReady();
     }
+  }
+
+  private keepDemoControlOverlayOnTop(payload: any) {
+    if (
+      !this.demoPresentationEnabled ||
+      this.demoControlRaiseQueued ||
+      !Number.isSafeInteger(payload?.focusWindowId) ||
+      payload.focusWindowId <= 0
+    ) {
+      return;
+    }
+    const controlOverlay = this.overlayWindows.get(
+      AppWindows.demoControlOverlay,
+    );
+    if (
+      !controlOverlay?.visible ||
+      payload.focusWindowId === controlOverlay.nativeId
+    ) {
+      return;
+    }
+
+    this.demoControlRaiseQueued = true;
+    queueMicrotask(() => {
+      this.demoControlRaiseQueued = false;
+      const current = this.overlayWindows.get(AppWindows.demoControlOverlay);
+      if (
+        this.disposed ||
+        current !== controlOverlay ||
+        !current.visible ||
+        current.browserWindow.isDestroyed()
+      ) {
+        return;
+      }
+      current.hide();
+      current.show();
+      current.browserWindow.webContents.invalidate();
+    });
   }
 
   private handleTargetTransportEnded(payload: any) {

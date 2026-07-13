@@ -1,0 +1,248 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 883ad77..4ab6a64 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -8,6 +8,9 @@
+ #include <sddl.h>
+ #include <AclAPI.h>
+ #include <TlHelp32.h>
++#include <string>
++#include <unordered_set>
++#include <vector>
+ 
+ #define RESHADE_LOADING_THREAD_FUNC 1
+ 
+@@ -112,6 +115,114 @@ static void print_injection_not_started()
+ 	wprintf(L"ReShade injection not started.\n");
+ }
+ 
++static std::wstring normalize_path_separators(const wchar_t *value)
++{
++	std::wstring normalized = value != nullptr ? value : L"";
++	for (wchar_t &character : normalized)
++	{
++		if (character == L'\\')
++			character = L'/';
++	}
++	return normalized;
++}
++
++static bool path_contains_case_insensitive(const std::wstring &path, const std::wstring &fragment)
++{
++	if (fragment.empty() || fragment.size() > path.size())
++		return false;
++
++	for (size_t offset = 0; offset <= path.size() - fragment.size(); ++offset)
++	{
++		if (CompareStringOrdinal(
++				path.data() + offset,
++				static_cast<int>(fragment.size()),
++				fragment.data(),
++				static_cast<int>(fragment.size()),
++				TRUE) == CSTR_EQUAL)
++			return true;
++	}
++
++	return false;
++}
++
++static DWORD snapshot_process_ids(std::unordered_set<DWORD> &process_ids)
++{
++	const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
++	if (snapshot == INVALID_HANDLE_VALUE)
++		return GetLastError();
++
++	PROCESSENTRY32W process = { sizeof(process) };
++	for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
++		process_ids.insert(process.th32ProcessID);
++
++	return ERROR_SUCCESS;
++}
++
++static bool process_name_is_excluded(const wchar_t *name, const std::vector<std::wstring> &excluded_names)
++{
++	for (const std::wstring &excluded_name : excluded_names)
++	{
++		if (_wcsicmp(name, excluded_name.c_str()) == 0)
++			return true;
++	}
++
++	return false;
++}
++
++static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path)
++{
++	std::unordered_set<DWORD> ignored_process_ids;
++	if (const DWORD error = snapshot_process_ids(ignored_process_ids); error != ERROR_SUCCESS)
++		return error;
++
++	const std::wstring normalized_fragment = normalize_path_separators(fragment);
++	wprintf(L"ReShade path watcher armed.\n");
++	fflush(stdout);
++
++	while (pid == 0)
++	{
++		const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
++		if (snapshot == INVALID_HANDLE_VALUE)
++			return GetLastError();
++
++		PROCESSENTRY32W process = { sizeof(process) };
++		for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
++		{
++			if (ignored_process_ids.find(process.th32ProcessID) != ignored_process_ids.end())
++				continue;
++			if (process_name_is_excluded(process.szExeFile, excluded_names))
++			{
++				ignored_process_ids.insert(process.th32ProcessID);
++				continue;
++			}
++
++			const scoped_handle candidate = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process.th32ProcessID);
++			if (candidate == nullptr)
++				continue;
++
++			WCHAR candidate_path[32768] = L"";
++			DWORD candidate_path_size = static_cast<DWORD>(sizeof(candidate_path) / sizeof(candidate_path[0]));
++			if (!QueryFullProcessImageNameW(candidate, 0, candidate_path, &candidate_path_size))
++				continue;
++
++			if (!path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment))
++			{
++				ignored_process_ids.insert(process.th32ProcessID);
++				continue;
++			}
++
++			pid = process.th32ProcessID;
++			image_path.assign(candidate_path, candidate_path_size);
++			break;
++		}
++
++		if (pid == 0)
++			Sleep(1); // Sleep a bit to not overburden the CPU
++	}
++
++	return ERROR_SUCCESS;
++}
++
+ #if RESHADE_LOADING_THREAD_FUNC
+ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ {
+@@ -124,23 +235,49 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ 
+ int wmain(int argc, wchar_t *argv[])
+ {
+-	const bool exact_pid_requested = argc >= 3 && wcscmp(argv[2], L"--pid") == 0;
++	const bool path_watcher_requested = argc >= 2 && wcscmp(argv[1], L"--path-contains") == 0;
++	bool use_path_watcher = argc >= 3 && path_watcher_requested && argv[2][0] != L'\0';
++	std::vector<std::wstring> excluded_process_names;
++	if (use_path_watcher)
++	{
++		for (int argument = 3; argument < argc; argument += 2)
++		{
++			if (argument + 1 >= argc ||
++				wcscmp(argv[argument], L"--exclude-name") != 0 ||
++				argv[argument + 1][0] == L'\0' ||
++				wcschr(argv[argument + 1], L'\\') != nullptr ||
++				wcschr(argv[argument + 1], L'/') != nullptr)
++			{
++				use_path_watcher = false;
++				break;
++			}
++
++			excluded_process_names.emplace_back(argv[argument + 1]);
++		}
++	}
++	const bool exact_pid_requested = !path_watcher_requested && argc >= 3 && wcscmp(argv[2], L"--pid") == 0;
+ 	const bool use_exact_pid = argc == 4 && exact_pid_requested;
+-	if (argc != 2 && !use_exact_pid)
++	if ((argc != 2 && !use_exact_pid && !use_path_watcher) ||
++		(path_watcher_requested && !use_path_watcher))
+ 	{
+-		wprintf(L"usage: %s <exe name> [--pid <uint32>]\n", argv[0]);
+-		if (exact_pid_requested)
++		wprintf(L"usage: %s <exe name> [--pid <uint32>] | --path-contains <fragment> [--exclude-name <exe basename>]...\n", argv[0]);
++		if (exact_pid_requested || path_watcher_requested)
+ 			print_injection_not_started();
+-		return exact_pid_requested ? ERROR_INVALID_PARAMETER : 0;
++		return exact_pid_requested || path_watcher_requested ? ERROR_INVALID_PARAMETER : 0;
+ 	}
+ 
+-	const wchar_t *name = wcsrchr(argv[1], L'\\');
+-	if (name)
+-		name++; // Path separator in the argument, skip to the file name part
+-	else
+-		name = argv[1]; // No path separator in the argument, this is a file name
++	const wchar_t *name = nullptr;
++	if (!use_path_watcher)
++	{
++		name = wcsrchr(argv[1], L'\\');
++		if (name)
++			name++; // Path separator in the argument, skip to the file name part
++		else
++			name = argv[1]; // No path separator in the argument, this is a file name
++	}
+ 
+ 	DWORD pid = 0;
++	std::wstring matched_image_path;
+ 	if (use_exact_pid)
+ 	{
+ 		if (!parse_process_id(argv[3], pid))
+@@ -150,7 +287,7 @@ int wmain(int argc, wchar_t *argv[])
+ 			return ERROR_INVALID_PARAMETER;
+ 		}
+ 	}
+-	else
++	else if (!use_path_watcher)
+ 	{
+ 		wprintf(L"Waiting for a '%s' process to spawn ...\n", name);
+ 
+@@ -172,8 +309,20 @@ int wmain(int argc, wchar_t *argv[])
+ 			Sleep(1); // Sleep a bit to not overburden the CPU
+ 		}
+ 	}
++	else if (const DWORD error = wait_for_path_match(argv[2], excluded_process_names, pid, matched_image_path); error != ERROR_SUCCESS)
++	{
++		wprintf(L"Failed to monitor process creation for path matches!\n");
++		print_injection_not_started();
++		return error;
++	}
+ 
+-	if (!use_exact_pid)
++	if (use_path_watcher)
++	{
++		wprintf(L"Matched executable path: %s\n", matched_image_path.c_str());
++		wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
++		fflush(stdout);
++	}
++	else if (!use_exact_pid)
+ 		wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
+ 
+ 	// Open target application process
+@@ -182,7 +331,7 @@ int wmain(int argc, wchar_t *argv[])
+ 	{
+ 		const DWORD error = GetLastError();
+ 		wprintf(L"\nFailed to open target application process!\n");
+-		if (use_exact_pid)
++		if (use_exact_pid || use_path_watcher)
+ 			print_injection_not_started();
+ 		return error;
+ 	}
+@@ -221,7 +370,7 @@ int wmain(int argc, wchar_t *argv[])
+ #endif
+ 	{
+ 		wprintf(L"\nProcess architecture does not match injection tool! Cannot continue.\n");
+-		if (use_exact_pid)
++		if (use_exact_pid || use_path_watcher)
+ 			print_injection_not_started();
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
+ 	}
+@@ -242,7 +391,7 @@ int wmain(int argc, wchar_t *argv[])
+ 	if (GetFileAttributesW(arg.load_path) == INVALID_FILE_ATTRIBUTES)
+ 	{
+ 		wprintf(L"\nFailed to find ReShade at \"%s\"!\n", arg.load_path);
+-		if (use_exact_pid)
++		if (use_exact_pid || use_path_watcher)
+ 			print_injection_not_started();
+ 		return ERROR_FILE_NOT_FOUND;
+ 	}
+

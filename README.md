@@ -64,17 +64,39 @@ Start the Electron client with:
 npm run dev
 ```
 
-This demo command starts a client-only process watcher. Every newly created
-process whose normalized executable path contains `/steamapps/` is attached by
-its exact PID, so launching a Steam game is enough; the manual target controls
-are disabled while the watcher is active. ReShade selects D3D11 or D3D12 inside
-each process, so application code does not choose a graphics payload. Press
-**Ctrl+I** while a game is focused to toggle interception.
+This demo command starts prearming the SDK's native injector for the next new
+process whose normalized executable path contains `/steamapps/`. Start the demo
+first, let its overlay session and injector come up, and then launch the game.
+The native watcher—not the later WMI notification—selects and injects the new
+process. After an authenticated target connects, the client prearms a fresh
+watcher for the next sequential Steam launch. ReShade selects D3D11 or D3D12
+inside each process, so application code does not choose a graphics payload.
+Press **Ctrl+I** while a game is focused to toggle interception.
 
-The watcher is demo convenience, not part of the SDK. It detects ordinary
-unsuspended processes shortly after creation, so a particularly fast target can
-still create its graphics device before injection. The controlled acceptance
-launchers remain the deterministic way to test injection-before-graphics.
+The normal demo starts with one compact in-game information dock. It shows the
+shortcut, attachment, interception, and frame-rate state without opening all of
+the test windows at once. Enabling interception expands that same dock into a
+clickable menu for opening the input playground, diagnostics strip, transparent
+popup, and video surface. Releasing interception collapses it again.
+
+The client retains its WMI watcher only for demo status and lifecycle evidence;
+its roughly one-second notification delay no longer starts injection. The
+prearmed native path is still an observer of an ordinary unsuspended process,
+not a `CREATE_SUSPENDED` launcher, so the controlled acceptance launchers remain
+the deterministic injection-before-graphics proof.
+
+The current demo acceptance covers sequential launch, close, and relaunch. A
+native-ready signal and the watcher gap for overlapping/multi-process launches
+are tracked in `doc/todo.md` rather than treated as POC blockers.
+
+The same prearmed path target is available through the SDK:
+
+```ts
+await launcher.attach(session, { pathContains: '\\steamapps\\' });
+```
+
+It ignores processes that were already alive when armed, selects a newly
+created matching executable, and reports the selected PID and full path.
 
 The SDK also accepts an exact PID:
 
@@ -85,10 +107,11 @@ await launcher.attach(session, {
 });
 ```
 
-Use this immediately after a watcher observes process creation and before the
-target creates its graphics device and swap chain. It is not post-render
-attachment. In a controlled probe, injecting after rendering had started loaded
-`ReShade64.dll` but did not adopt the existing device or swap chain.
+Use exact PID targeting for a process that your own launcher created suspended,
+or only when the caller can otherwise prove graphics initialization has not
+started. It is not post-render attachment. In a controlled probe, injecting
+after rendering had started loaded `ReShade64.dll` but did not adopt the
+existing device or swap chain.
 
 ## Acceptance launchers
 

@@ -5,6 +5,7 @@ import {
   ForkedProcessWatcher,
   isSteamAppsProcessPath,
   resolveNodeExecutable,
+  STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAMES,
   SteamGameAutoAttacher,
   stripAutomaticTargeting,
 } from '../src/main/electron/steam-game-auto-attacher.ts';
@@ -113,7 +114,7 @@ test('automatic targeting options are removed from per-PID launcher configs', ()
   assert.equal(stripped.runsRootDirectory, source.runsRootDirectory);
 });
 
-test('one launcher is attached per unique concurrent Steam PID', async () => {
+test('native path watchers rearm across sequential Steam process launches', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
   const launchers = [];
@@ -129,34 +130,59 @@ test('one launcher is attached per unique concurrent Steam PID', async () => {
   });
 
   autoAttacher.start();
+  await flushMicrotasks();
+  assert.equal(launchers.length, 1);
+  assert.deepEqual(launchers[0].target, {
+    pathContains: '\\steamapps\\',
+    excludedProcessNames: STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAMES,
+  });
+
   watcher.ready();
   watcher.create(
     processInfo(1001, 'D:\\SteamLibrary\\steamapps\\common\\One\\one.exe'),
   );
-  watcher.create(processInfo(1002, 'E:/Games/SteamApps/common/Two/two.exe'));
-  watcher.create(processInfo(1002, 'E:/Games/SteamApps/common/Two/two.exe'));
   watcher.create(processInfo(1003, 'C:\\Windows\\System32\\notepad.exe'));
   await flushMicrotasks();
 
-  assert.equal(launchers.length, 2);
+  assert.equal(launchers.length, 1, 'WMI must not start late injectors');
   assert.deepEqual(
-    launchers.map((launcher) => launcher.target),
-    [
-      { processName: 'one.exe', pid: 1001 },
-      { processName: 'two.exe', pid: 1002 },
-    ],
+    autoAttacher.targets.map(({ pid, phase }) => ({ pid, phase })),
+    [{ pid: 1001, phase: 'attaching' }],
   );
+
+  launchers[0].connect(
+    1001,
+    'D:\\SteamLibrary\\steamapps\\common\\One\\one.exe',
+  );
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2, 'the next path watcher rearms immediately');
+  assert.deepEqual(launchers[1].target, {
+    pathContains: '\\steamapps\\',
+    excludedProcessNames: STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAMES,
+  });
+  assert.deepEqual(
+    autoAttacher.targets.map(({ pid, phase }) => ({ pid, phase })),
+    [{ pid: 1001, phase: 'connected' }],
+  );
+
+  watcher.create(processInfo(1002, 'E:/Games/SteamApps/common/Two/two.exe'));
+  watcher.create(processInfo(1002, 'E:/Games/SteamApps/common/Two/two.exe'));
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2, 'WMI must remain status-only');
   assert.deepEqual(
     autoAttacher.targets.map(({ pid, phase }) => ({ pid, phase })),
     [
-      { pid: 1001, phase: 'attaching' },
+      { pid: 1001, phase: 'connected' },
       { pid: 1002, phase: 'attaching' },
     ],
   );
 
-  launchers[0].connect(1001);
-  launchers[1].connect(1002);
+  launchers[1].connect(
+    1002,
+    'E:\\Games\\SteamApps\\common\\Two\\two.exe',
+  );
   await flushMicrotasks();
+  assert.equal(launchers.length, 3);
   assert.deepEqual(
     autoAttacher.targets.map(({ pid, phase }) => ({ pid, phase })),
     [
@@ -179,9 +205,111 @@ test('one launcher is attached per unique concurrent Steam PID', async () => {
 
   await autoAttacher.dispose();
   assert.equal(watcher.stopped, true);
+  assert.equal(launchers[2].disposed, true);
 });
 
-test('a failed live PID is not retried until its deletion is observed', async () => {
+test('WMI observations ignore excluded Steam helper names case-insensitively', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+  });
+
+  autoAttacher.start();
+  await flushMicrotasks();
+  watcher.create(
+    processInfo(
+      1101,
+      'D:\\SteamLibrary\\steamapps\\common\\One\\unitycrashhandler.EXE',
+    ),
+  );
+  watcher.create(
+    processInfo(
+      1102,
+      'D:\\SteamLibrary\\steamapps\\common\\One\\UNITYCRASHHANDLER32.exe',
+    ),
+  );
+  watcher.create(
+    processInfo(
+      1103,
+      'D:\\SteamLibrary\\steamapps\\common\\One\\UnityCrashHandler64.ExE',
+    ),
+  );
+  watcher.create(
+    processInfo(1104, 'D:\\SteamLibrary\\steamapps\\common\\One\\one.exe'),
+  );
+
+  assert.equal(launchers.length, 1);
+  assert.deepEqual(
+    autoAttacher.targets.map(({ pid, processName }) => ({ pid, processName })),
+    [{ pid: 1104, processName: 'one.exe' }],
+  );
+
+  await autoAttacher.dispose();
+});
+
+test('native prearming continues when WMI watcher setup throws', async (t) => {
+  const scenarios = [
+    {
+      name: 'watcher factory throws',
+      watcherFactory: () => {
+        throw new Error('watcher construction failed');
+      },
+      expectedError: 'watcher construction failed',
+    },
+    {
+      name: 'watcher start throws',
+      watcherFactory: () => ({
+        start() {
+          throw new Error('watcher startup failed');
+        },
+        stop() {
+          return Promise.resolve();
+        },
+      }),
+      expectedError: 'watcher startup failed',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const launchers = [];
+      const autoAttacher = new SteamGameAutoAttacher({
+        session: new FakeOverlaySession(),
+        reshadeConfig: createConfig(),
+        watcherFactory: scenario.watcherFactory,
+        launcherFactory: (config) => {
+          const launcher = new FakeLauncher(config);
+          launchers.push(launcher);
+          return launcher;
+        },
+      });
+
+      autoAttacher.start();
+      await flushMicrotasks();
+
+      assert.equal(autoAttacher.watcherStatus, 'failed');
+      assert.equal(autoAttacher.watcherError, scenario.expectedError);
+      assert.equal(launchers.length, 1);
+      assert.deepEqual(launchers[0].target, {
+        pathContains: '\\steamapps\\',
+        excludedProcessNames: STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAMES,
+      });
+
+      await autoAttacher.dispose();
+    });
+  }
+});
+
+test('a failed prearm is replaced without asking WMI to inject a live PID', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
   const launchers = [];
@@ -204,15 +332,17 @@ test('a failed live PID is not retried until its deletion is observed', async ()
   watcher.create(info);
   await flushMicrotasks();
   launchers[0].fail(new Error('injection refused'));
-  await flushMicrotasks();
-  assert.equal(autoAttacher.targets[0].phase, 'failed');
-  assert.equal(autoAttacher.targets[0].error, 'injection refused');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(launchers[0].disposed, true);
+  assert.equal(launchers.length, 2);
+  assert.equal(autoAttacher.targets[0].phase, 'attaching');
+  assert.equal(autoAttacher.targets[0].error, null);
 
   watcher.create(info);
-  assert.equal(launchers.length, 1);
+  assert.equal(launchers.length, 2);
 
   watcher.delete(info);
-  assert.equal(launchers[0].disposed, true);
+  assert.deepEqual(autoAttacher.targets, []);
   watcher.create(info);
   assert.equal(launchers.length, 2);
 
@@ -340,9 +470,16 @@ class FakeLauncher {
     return this.promise;
   }
 
-  connect(pid) {
+  connect(
+    pid,
+    selectedPath = `C:\\SteamLibrary\\steamapps\\common\\Game\\game.exe`,
+  ) {
     this.state = 'connected';
-    this.resolve({ pid });
+    this.resolve({
+      pid,
+      processName: selectedPath.split(/[\\/]/).at(-1),
+      selectedPath,
+    });
   }
 
   fail(error) {

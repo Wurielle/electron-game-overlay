@@ -15,7 +15,8 @@ TypeScript SDK, and stages the
 patched Windows x64 ReShade runtime, injector, build stamp, Electron add-on, and
 configuration under `dist/runtime/win32-x64/reshade`. Consumers call
 `parseReShadeLaunchConfig()`, create `ReShadeOverlayLauncher`, then arm an
-executable process name with `launcher.attach(session, target)`. Each request
+executable process name or path fragment with `launcher.attach(session,
+target)`. Each request
 copies the immutable SDK assets into a writable isolated run directory. The SDK
 waits for transport discovery, executes the injector without a shell, and
 parses the injector-selected PID, then resolves only after an add-on with that
@@ -34,6 +35,23 @@ const launcher = config ? new ReShadeOverlayLauncher(config) : null;
 session.start();
 await launcher?.attach(session, { processName: 'game.exe' });
 ```
+
+For launchers that need to prearm before they know an executable basename, use
+a path target. The native injector snapshots and ignores processes that already
+exist, emits a flushed armed marker, then selects the first newly created
+process whose normalized full path contains the fragment. `attach()` returns
+that process's basename, full `selectedPath`, and authenticated PID:
+
+```ts
+await launcher?.attach(session, {
+  pathContains: '\\steamapps\\',
+  excludedProcessNames: ['UnityCrashHandler64.exe'],
+});
+```
+
+`excludedProcessNames` is optional and prevents known non-rendering helpers from
+consuming a one-shot arm. Path matching and exclusions are case-insensitive;
+each exclusion must be a valid executable basename.
 
 Process watchers can target the exact process they just observed. Supplying a
 PID invokes the pinned injector as `inject.exe game.exe --pid 1234`, verifies
@@ -79,15 +97,15 @@ event source and is intentionally one-shot. It stays latched after proof (or an
 expired proof window) rather than risking a second injector against a live
 target. Applications that need restart/reinjection must use `attach()`.
 
-For name-only selection, arm the launcher before starting the target process.
-A process watcher may instead call `attach()` with the exact PID immediately
-after process creation; do so before the game initializes its graphics device.
-Attachment after a game is already rendering and other games are not yet
-compatibility claims. The accepted real-game production-client proof uses
-`{ processName: 'Gun Frog.exe' }`. The runtime directory can be overridden
-explicitly for development tests; otherwise it resolves relative to the built
-SDK. The legacy `findWindows()` and `session.attachToProcess()` methods still
-throw.
+For name-only or path selection, arm the launcher before starting the target
+process. A process watcher may instead call `attach()` with the exact PID
+immediately after process creation, but that reactive route must still beat
+graphics initialization. Attachment after a game is already rendering is not
+supported. The accepted real-game production-client proof uses
+`{ processName: 'Gun Frog.exe' }`; the Steam demo additionally exercises the
+prearmed path target. The runtime directory can be overridden explicitly for
+development tests; otherwise it resolves relative to the built SDK. The legacy
+`findWindows()` and `session.attachToProcess()` methods still throw.
 
 The controlled production client/SDK D3D12 gate is available through:
 

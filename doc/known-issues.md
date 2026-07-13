@@ -27,6 +27,27 @@ device/swap-chain creation. Deterministic `CREATE_SUSPENDED` D3D11/D3D12 gates
 passed that ordering on July 13, 2026. Arbitrary unsuspended watcher timing and
 games beyond Gun Frog remain unverified.
 
+The normal `npm run dev` Steam-path flow now has a real Gun Frog acceptance as
+well. The previous reactive WMI path could report successful injection after
+Gun Frog had already created its primary DXGI swap chain, leaving no overlay to
+render. The replacement native watcher was armed before launch, ignored
+`UnityCrashHandler*.exe`, and selected the absolute `Gun Frog.exe` path. It
+attached to PIDs 22640 and 8732 across close/relaunch with the same Electron
+client. Both runs logged `CreateSwapChainForHwnd`, authenticated the transport,
+and rendered their first transported scenes. Visual inspection confirmed the
+compact information dock, the expanded Ctrl+I launcher, and the full main
+Electron test window in the game.
+
+That result covers sequential launch/relaunch after the watcher is genuinely
+running. The current `STEAM_GAME_AUTO_ATTACH_ARMING` log is a request marker,
+not a native-ready acknowledgement: session readiness, runtime staging, and
+injector spawn still follow it. The one-shot watcher also rearms only after the
+selected process authenticates, so another matching process launched during
+that interval may be present in the next baseline and be skipped. A surfaced
+native-ready handshake and continuous or duplicate-safe selection stream remain
+hardening work before claiming overlapping or general multi-process Steam game
+support.
+
 New runs use `build/electron-game-overlay-runtime`. All dated
 `build/reshade-imgui-overlay/...` paths in this document are historical
 pre-promotion evidence and are intentionally retained only as records.

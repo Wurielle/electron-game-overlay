@@ -39,6 +39,10 @@ const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>
   `Waiting for a '${processName}' process to spawn ...\n` +
   `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n`;
 const injectorSuccess = injectorSuccessFor(4242);
+const pathInjectorSuccessFor = (pid, executablePath) =>
+  'ReShade path watcher armed.\n' +
+  `Matched executable path: ${executablePath}\n` +
+  `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n`;
 const temporaryDirectories = new Set();
 
 test.afterEach(() => {
@@ -116,6 +120,44 @@ test('startup parsing validates a co-located runtime without a graphics backend'
       workingDirectory: runDirectory,
     },
   );
+  assert.deepEqual(
+    buildReShadeInvocation(
+      { pathContains: '\\steamapps\\' },
+      runDirectory,
+    ),
+    {
+      executable: path.join(runDirectory, 'inject.exe'),
+      arguments: ['--path-contains', '\\steamapps\\'],
+      targetLabel: 'path-contains:\\steamapps\\',
+      workingDirectory: runDirectory,
+    },
+  );
+  assert.deepEqual(
+    buildReShadeInvocation(
+      {
+        pathContains: '\\steamapps\\',
+        excludedProcessNames: [
+          'UnityCrashHandler64.exe',
+          'UnityCrashHandler.exe',
+        ],
+      },
+      runDirectory,
+    ),
+    {
+      executable: path.join(runDirectory, 'inject.exe'),
+      arguments: [
+        '--path-contains',
+        '\\steamapps\\',
+        '--exclude-name',
+        'UnityCrashHandler64.exe',
+        '--exclude-name',
+        'UnityCrashHandler.exe',
+      ],
+      targetLabel:
+        'path-contains:\\steamapps\\:exclude:unitycrashhandler.exe,unitycrashhandler64.exe',
+      workingDirectory: runDirectory,
+    },
+  );
 });
 
 test('startup and target validation reject incomplete or unsafe inputs', () => {
@@ -184,6 +226,28 @@ test('startup and target validation reject incomplete or unsafe inputs', () => {
       /target PID.*positive uint32 integer/,
     );
   }
+
+  for (const pathContains of ['', 'steamapps', ' \\steamapps\\', 'x\0y']) {
+    assert.throws(
+      () =>
+        buildReShadeInvocation(
+          { pathContains },
+          path.join(fixture.runsRootDirectory, 'run'),
+        ),
+      /target path fragment/,
+    );
+  }
+  assert.throws(
+    () =>
+      buildReShadeInvocation(
+        {
+          pathContains: '\\steamapps\\',
+          excludedProcessNames: ['helper.exe', 'HELPER.EXE'],
+        },
+        path.join(fixture.runsRootDirectory, 'run'),
+      ),
+    /exclusions.*duplicate/,
+  );
 
   assert.throws(
     () =>
@@ -450,6 +514,152 @@ test('launch copies the exact runtime, uses one process argument, and preserves 
   } finally {
     launcher.dispose();
     console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('path watcher is prearmed without an injector timeout and pins the selected Steam process', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const target = {
+    pathContains: '\\steamapps\\',
+    excludedProcessNames: ['UnityCrashHandler64.exe'],
+  };
+  const selectedPath =
+    'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe';
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  console.log = () => undefined;
+  console.warn = () => undefined;
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, target);
+    await waitFor(() => execution.calls.length === 1);
+    assert.deepEqual(execution.calls[0].arguments, [
+      '--path-contains',
+      '\\steamapps\\',
+      '--exclude-name',
+      'UnityCrashHandler64.exe',
+    ]);
+    assert.equal(execution.calls[0].options.timeout, 0);
+    assert.match(
+      path.basename(execution.calls[0].options.cwd),
+      /^path-watch-/,
+    );
+
+    sessionHarness.emitNative('game.process', {
+      pid: 9300,
+      path: 'C:\\games\\unrelated.exe',
+    });
+    sessionHarness.emitNative('game.process', {
+      pid: 9302,
+      path:
+        'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\UnityCrashHandler64.exe',
+    });
+    sessionHarness.emitNative('game.process', {
+      pid: 9301,
+      path: selectedPath.toUpperCase(),
+    });
+    assert.equal((await settleWithin(attachment, 20)).status, 'timeout');
+
+    execution.calls[0].callback(
+      null,
+      pathInjectorSuccessFor(9301, selectedPath),
+      '',
+    );
+    const result = await attachment;
+    assert.equal(result.pid, 9301);
+    assert.equal(result.injectorTargetPid, 9301);
+    assert.equal(result.processName, 'Gun Frog.exe');
+    assert.equal(result.selectedPath, selectedPath);
+    assert.equal(
+      result.targetLabel,
+      'path-contains:\\steamapps\\:exclude:unitycrashhandler64.exe',
+    );
+    assert.equal(launcher.state, 'connected');
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 9301,
+      path: selectedPath,
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    console.warn = originalWarn;
+    execution.restore();
+  }
+});
+
+test('path watcher pre-mutation proof is retry-safe', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const target = { pathContains: '\\steamapps\\' };
+    const failed = launcher.launch(target);
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('selected process was unsupported'), { code: 1 }),
+      'ReShade path watcher armed.\nReShade injection not started.\n',
+      '',
+    );
+    await assert.rejects(failed, /selected process was unsupported/);
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    execution.restore();
+  }
+});
+
+test('successful low-level path launch opens a PID-pinned bounded proof window', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const selectedPath =
+    'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe';
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const proofTimerHandle = Object.freeze({ pathProofTimer: true });
+  let proofTimerCallback;
+  global.setTimeout = (callback, delay, ...args) => {
+    if (delay === 10_000 && proofTimerCallback === undefined) {
+      proofTimerCallback = () => callback(...args);
+      return proofTimerHandle;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (handle !== proofTimerHandle) {
+      originalClearTimeout(handle);
+    }
+  };
+
+  try {
+    const request = launcher.launch({ pathContains: '\\steamapps\\' });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      null,
+      pathInjectorSuccessFor(9401, selectedPath),
+      '',
+    );
+    const result = await request;
+
+    assert.equal(result.injectorTargetPid, 9401);
+    assert.equal(typeof proofTimerCallback, 'function');
+    assert.equal(launcher.acceptTargetConnection(9402), false);
+    assert.equal(launcher.acceptTargetConnection(9401), true);
+    assert.equal(launcher.state, 'connected');
+  } finally {
+    launcher.dispose();
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
     execution.restore();
   }
 });

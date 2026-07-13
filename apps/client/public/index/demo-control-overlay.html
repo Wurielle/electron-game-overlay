@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Electron overlay controls</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        font-synthesis: none;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+
+      body {
+        padding: 8px;
+        color: #f7fbff;
+        user-select: none;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .hud {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        padding: 13px 14px 12px;
+        overflow: hidden;
+        border: 1px solid rgba(142, 213, 255, 0.3);
+        border-radius: 14px;
+        background:
+          radial-gradient(
+            circle at 92% 4%,
+            rgba(50, 198, 255, 0.16),
+            transparent 34%
+          ),
+          linear-gradient(145deg, rgba(12, 22, 34, 0.97), rgba(6, 12, 21, 0.95));
+        box-shadow:
+          0 14px 36px rgba(0, 0, 0, 0.46),
+          inset 0 1px rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(14px);
+      }
+
+      .hud::before {
+        position: absolute;
+        top: 0;
+        right: 18px;
+        left: 18px;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(116, 220, 255, 0.65),
+          transparent
+        );
+        content: '';
+      }
+
+      .topline {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .brand {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 9px;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        flex: 0 0 auto;
+        place-items: center;
+        border: 1px solid rgba(103, 216, 255, 0.44);
+        border-radius: 8px;
+        background: rgba(24, 155, 210, 0.14);
+        color: #83e0ff;
+        box-shadow: inset 0 0 14px rgba(48, 185, 242, 0.08);
+      }
+
+      .brand-mark svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .brand-copy {
+        min-width: 0;
+      }
+
+      .brand-title {
+        overflow: hidden;
+        color: #ffffff;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        line-height: 16px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .brand-subtitle {
+        color: #8191a5;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.13em;
+        line-height: 11px;
+        text-transform: uppercase;
+      }
+
+      .shortcut {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 6px;
+        color: #9dafc3;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      kbd {
+        min-width: 48px;
+        padding: 4px 7px;
+        border: 1px solid rgba(141, 183, 211, 0.32);
+        border-bottom-color: rgba(141, 183, 211, 0.5);
+        border-radius: 6px;
+        background: rgba(155, 196, 222, 0.09);
+        color: #dff5ff;
+        font:
+          700 10px/12px ui-monospace,
+          'Cascadia Code',
+          Consolas,
+          monospace;
+        text-align: center;
+        text-transform: none;
+      }
+
+      .input-row {
+        display: flex;
+        margin-top: 11px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .input-state {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .state-dot {
+        width: 8px;
+        height: 8px;
+        flex: 0 0 auto;
+        border: 2px solid rgba(153, 170, 190, 0.35);
+        border-radius: 50%;
+        background: #68778a;
+        box-shadow: 0 0 0 3px rgba(104, 119, 138, 0.08);
+      }
+
+      .state-copy {
+        min-width: 0;
+      }
+
+      .state-label {
+        color: #e8f1fa;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 13px;
+        text-transform: capitalize;
+      }
+
+      .state-detail {
+        overflow: hidden;
+        color: #7f90a4;
+        font-size: 9px;
+        line-height: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      body[data-input-state='interactive'] .state-dot {
+        border-color: rgba(72, 255, 190, 0.5);
+        background: #4af2b4;
+        box-shadow:
+          0 0 0 3px rgba(74, 242, 180, 0.1),
+          0 0 11px #35c992;
+      }
+
+      body[data-input-state='arming'] .state-dot,
+      body[data-input-state='releasing'] .state-dot {
+        border-color: rgba(255, 205, 92, 0.5);
+        background: #ffd05c;
+        box-shadow:
+          0 0 0 3px rgba(255, 208, 92, 0.1),
+          0 0 10px #d39a25;
+        animation: pulse 1s ease-in-out infinite alternate;
+      }
+
+      @keyframes pulse {
+        to {
+          opacity: 0.52;
+        }
+      }
+
+      .fps {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: baseline;
+        gap: 4px;
+        color: #6f8196;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      #demo-fps {
+        color: #d9e7f3;
+        font:
+          700 12px/14px ui-monospace,
+          'Cascadia Code',
+          Consolas,
+          monospace;
+        letter-spacing: 0;
+      }
+
+      .target-row {
+        display: flex;
+        min-width: 0;
+        margin-top: 10px;
+        padding-top: 9px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border-top: 1px solid rgba(155, 190, 214, 0.1);
+      }
+
+      .target {
+        min-width: 0;
+        overflow: hidden;
+        color: #a8b8c9;
+        font-size: 10px;
+        line-height: 13px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .target strong {
+        color: #dbe9f5;
+        font-weight: 600;
+      }
+
+      .watcher-badge {
+        display: none;
+        flex: 0 0 auto;
+        padding: 2px 6px;
+        border: 1px solid rgba(81, 224, 173, 0.2);
+        border-radius: 999px;
+        background: rgba(62, 209, 158, 0.07);
+        color: #6fd9b2;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        line-height: 11px;
+        text-transform: uppercase;
+      }
+
+      .watcher-badge.visible {
+        display: block;
+      }
+
+      .watcher-badge[data-status='failed'] {
+        border-color: rgba(255, 116, 116, 0.24);
+        background: rgba(255, 98, 98, 0.08);
+        color: #ff9797;
+      }
+
+      .hint {
+        margin-top: 7px;
+        overflow: hidden;
+        color: #74869a;
+        font-size: 9px;
+        line-height: 12px;
+        text-align: center;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .launcher {
+        display: none;
+        margin-top: 11px;
+        padding-top: 11px;
+        border-top: 1px solid rgba(155, 190, 214, 0.12);
+      }
+
+      body.expanded .launcher {
+        display: block;
+      }
+
+      .launcher-heading {
+        display: flex;
+        margin-bottom: 9px;
+        align-items: baseline;
+        justify-content: space-between;
+      }
+
+      .launcher-title {
+        color: #edf7ff;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .launcher-note {
+        color: #718399;
+        font-size: 8px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .launcher-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .launcher-button {
+        position: relative;
+        min-width: 0;
+        height: 54px;
+        padding: 8px 10px;
+        border: 1px solid rgba(139, 185, 213, 0.2);
+        border-radius: 9px;
+        outline: none;
+        background: rgba(111, 156, 184, 0.07);
+        color: #d9e9f5;
+        cursor: pointer;
+        text-align: left;
+        transition:
+          border-color 100ms ease,
+          background 100ms ease,
+          transform 100ms ease;
+      }
+
+      .launcher-button:hover:not(:disabled),
+      .launcher-button:focus-visible:not(:disabled) {
+        border-color: rgba(92, 211, 255, 0.55);
+        background: rgba(65, 185, 231, 0.15);
+      }
+
+      .launcher-button:active:not(:disabled) {
+        transform: translateY(1px);
+      }
+
+      .launcher-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.36;
+      }
+
+      .launcher-button.active {
+        border-color: rgba(73, 241, 179, 0.42);
+        background: rgba(54, 211, 154, 0.12);
+      }
+
+      .launcher-button.active::after {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #54e8b2;
+        box-shadow: 0 0 7px rgba(84, 232, 178, 0.75);
+        content: '';
+      }
+
+      .button-title {
+        display: block;
+        overflow: hidden;
+        padding-right: 9px;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 14px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .button-detail {
+        display: block;
+        overflow: hidden;
+        margin-top: 2px;
+        color: #7e92a6;
+        font-size: 8px;
+        line-height: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .release-button {
+        width: 100%;
+        height: 38px;
+        margin-top: 9px;
+        border: 1px solid rgba(255, 166, 101, 0.3);
+        border-radius: 9px;
+        outline: none;
+        background: rgba(255, 126, 61, 0.08);
+        color: #ffc4a2;
+        cursor: pointer;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .release-button:hover:not(:disabled),
+      .release-button:focus-visible:not(:disabled) {
+        border-color: rgba(255, 174, 116, 0.58);
+        background: rgba(255, 126, 61, 0.15);
+      }
+
+      .release-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.4;
+      }
+
+      .action-message {
+        min-height: 12px;
+        margin-top: 7px;
+        overflow: hidden;
+        color: #74869a;
+        font-size: 8px;
+        line-height: 12px;
+        text-align: center;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .action-message.error {
+        color: #ff9b9b;
+      }
+    </style>
+  </head>
+  <body data-input-state="passthrough">
+    <main class="hud" aria-live="polite">
+      <div class="topline">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <rect
+                x="3"
+                y="4"
+                width="18"
+                height="16"
+                rx="3"
+                stroke="currentColor"
+                stroke-width="1.7"
+              />
+              <path
+                d="M8 9h8M8 13h5"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+              />
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <div class="brand-title">Electron Overlay</div>
+            <div class="brand-subtitle">Demo control</div>
+          </div>
+        </div>
+        <div class="shortcut">
+          <span>Menu</span>
+          <kbd id="demo-shortcut">Ctrl+I</kbd>
+        </div>
+      </div>
+
+      <div class="input-row">
+        <div class="input-state">
+          <span class="state-dot" aria-hidden="true"></span>
+          <div class="state-copy">
+            <div id="demo-input-state" class="state-label">Passthrough</div>
+            <div id="demo-input-detail" class="state-detail">
+              Game receives input
+            </div>
+          </div>
+        </div>
+        <div class="fps"><span id="demo-fps">--</span><span>FPS</span></div>
+      </div>
+
+      <div class="target-row">
+        <div id="demo-target" class="target">
+          <strong>Target:</strong> waiting
+        </div>
+        <span id="demo-watcher" class="watcher-badge">Watcher</span>
+      </div>
+
+      <div id="demo-hint" class="hint">
+        Press Ctrl+I to capture input and open controls
+      </div>
+
+      <section class="launcher" aria-label="Demo window launcher">
+        <div class="launcher-heading">
+          <span class="launcher-title">Test windows</span>
+          <span class="launcher-note">Input captured</span>
+        </div>
+        <div class="launcher-grid">
+          <button id="demo-open-main" class="launcher-button" type="button">
+            <span class="button-title">Main window</span>
+            <span class="button-detail">Form and drag tests</span>
+          </button>
+          <button id="demo-open-status" class="launcher-button" type="button">
+            <span class="button-title">Status window</span>
+            <span class="button-detail">Compact diagnostics</span>
+          </button>
+          <button id="demo-open-popup" class="launcher-button" type="button">
+            <span class="button-title">Popup window</span>
+            <span class="button-detail">Spawn another surface</span>
+          </button>
+          <button id="demo-open-video" class="launcher-button" type="button">
+            <span class="button-title">Video window</span>
+            <span class="button-detail">Media playback test</span>
+          </button>
+        </div>
+        <button id="demo-release-input" class="release-button" type="button">
+          Release input to game · Ctrl+I
+        </button>
+        <div id="demo-action-message" class="action-message">
+          Choose a surface to open inside the game
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const { ipcRenderer } = window.require('electron');
+
+      const windowNames = {
+        main: 'example-main-overlay',
+        status: 'example-status-overlay',
+        video: 'example-video-overlay',
+      };
+
+      const elements = {
+        shortcut: document.getElementById('demo-shortcut'),
+        inputState: document.getElementById('demo-input-state'),
+        inputDetail: document.getElementById('demo-input-detail'),
+        target: document.getElementById('demo-target'),
+        watcher: document.getElementById('demo-watcher'),
+        hint: document.getElementById('demo-hint'),
+        fps: document.getElementById('demo-fps'),
+        main: document.getElementById('demo-open-main'),
+        status: document.getElementById('demo-open-status'),
+        popup: document.getElementById('demo-open-popup'),
+        video: document.getElementById('demo-open-video'),
+        release: document.getElementById('demo-release-input'),
+        actionMessage: document.getElementById('demo-action-message'),
+      };
+
+      let state = {
+        inputInterceptRequested: false,
+        inputInterceptEffective: false,
+        steamAutoAttach: null,
+        attachment: {
+          phase: 'idle',
+          processName: null,
+          pid: null,
+          error: null,
+        },
+        windows: {},
+        presentation: null,
+      };
+
+      ipcRenderer.on('overlay:state-changed', (_event, nextState) => {
+        updateState(nextState);
+      });
+
+      ipcRenderer.on('fps', (_event, fps) => {
+        const numericFps = Number(fps);
+        elements.fps.textContent = Number.isFinite(numericFps)
+          ? String(Math.max(0, Math.round(numericFps)))
+          : '--';
+      });
+
+      elements.main.addEventListener('click', () => {
+        void toggleWindow(windowNames.main);
+      });
+
+      elements.status.addEventListener('click', () => {
+        void toggleWindow(windowNames.status);
+      });
+
+      elements.video.addEventListener('click', () => {
+        void toggleWindow(windowNames.video);
+      });
+
+      elements.popup.addEventListener('click', () => {
+        void invokeAction('overlay:create-popup');
+      });
+
+      elements.release.addEventListener('click', () => {
+        void invokeAction('overlay:set-input-intercept', false);
+      });
+
+      void invokeAction('overlay:get-state');
+
+      async function toggleWindow(name) {
+        await invokeAction(
+          'overlay:set-window-visible',
+          name,
+          !Boolean(state.windows && state.windows[name]),
+        );
+      }
+
+      async function invokeAction(channel, ...args) {
+        try {
+          const nextState = await ipcRenderer.invoke(channel, ...args);
+          elements.actionMessage.classList.remove('error');
+          if (nextState && typeof nextState === 'object') {
+            updateState(nextState);
+          }
+        } catch (error) {
+          elements.actionMessage.classList.add('error');
+          elements.actionMessage.textContent = getErrorMessage(error);
+        }
+      }
+
+      function updateState(nextState) {
+        if (!nextState || typeof nextState !== 'object') {
+          return;
+        }
+        state = nextState;
+        render();
+      }
+
+      function render() {
+        const inputState = getInputState();
+        const expanded = Boolean(
+          state.inputInterceptRequested || state.presentation?.menuExpanded,
+        );
+        const shortcut = state.presentation?.shortcut || 'Ctrl+I';
+
+        document.body.classList.toggle('expanded', expanded);
+        document.body.dataset.inputState = inputState.name;
+        elements.shortcut.textContent = shortcut;
+        elements.inputState.textContent = inputState.label;
+        elements.inputDetail.textContent = inputState.detail;
+        elements.hint.textContent = expanded
+          ? state.inputInterceptEffective
+            ? 'Select a test window or press the shortcut to return input'
+            : 'Waiting for the injected overlay to capture input…'
+          : `Press ${shortcut} to capture input and open controls`;
+
+        renderTarget();
+
+        const launcherDisabled = !state.inputInterceptEffective;
+        for (const button of [
+          elements.main,
+          elements.status,
+          elements.popup,
+          elements.video,
+        ]) {
+          button.disabled = launcherDisabled;
+        }
+        elements.release.disabled = !(
+          state.inputInterceptRequested || state.inputInterceptEffective
+        );
+
+        renderWindowButton(elements.main, windowNames.main, 'Main window');
+        renderWindowButton(
+          elements.status,
+          windowNames.status,
+          'Status window',
+        );
+        renderWindowButton(elements.video, windowNames.video, 'Video window');
+
+        if (!elements.actionMessage.classList.contains('error')) {
+          elements.actionMessage.textContent = state.inputInterceptEffective
+            ? `Choose a surface to open · release with ${shortcut}`
+            : 'Launcher unlocks when input capture is active';
+        }
+      }
+
+      function getInputState() {
+        if (state.inputInterceptRequested) {
+          return state.inputInterceptEffective
+            ? {
+                name: 'interactive',
+                label: 'Interactive',
+                detail: 'Overlay receives input',
+              }
+            : {
+                name: 'arming',
+                label: 'Arming',
+                detail: 'Requesting input capture',
+              };
+        }
+        return state.inputInterceptEffective
+          ? {
+              name: 'releasing',
+              label: 'Releasing',
+              detail: 'Returning input to game',
+            }
+          : {
+              name: 'passthrough',
+              label: 'Passthrough',
+              detail: 'Game receives input',
+            };
+      }
+
+      function renderTarget() {
+        const autoAttach = state.steamAutoAttach;
+        elements.watcher.classList.toggle('visible', Boolean(autoAttach));
+
+        if (autoAttach) {
+          elements.watcher.dataset.status = autoAttach.watcherStatus;
+          elements.watcher.textContent =
+            autoAttach.watcherStatus === 'running'
+              ? 'Steam watch'
+              : autoAttach.watcherStatus;
+
+          const connectedTarget = autoAttach.targets?.find(
+            (target) => target.phase === 'connected',
+          );
+          const pendingTarget = autoAttach.targets?.find(
+            (target) => target.phase === 'attaching',
+          );
+          const target = connectedTarget || pendingTarget;
+          if (target) {
+            elements.target.innerHTML = `<strong>${escapeHtml(target.processName)}</strong> · PID ${target.pid}`;
+            return;
+          }
+          if (autoAttach.watcherError) {
+            elements.target.innerHTML =
+              '<strong>Watcher error</strong> · check client log';
+            return;
+          }
+          elements.target.innerHTML =
+            autoAttach.watcherStatus === 'running'
+              ? '<strong>Target:</strong> launch a Steam game'
+              : '<strong>Target:</strong> watcher starting';
+          return;
+        }
+
+        elements.watcher.dataset.status = 'disabled';
+        const attachment = state.attachment || {};
+        if (attachment.phase === 'connected') {
+          elements.target.innerHTML = `<strong>${escapeHtml(attachment.processName || 'Connected')}</strong>${attachment.pid ? ` · PID ${attachment.pid}` : ''}`;
+        } else if (attachment.phase === 'attaching') {
+          elements.target.innerHTML = `<strong>Connecting:</strong> ${escapeHtml(attachment.processName || 'target')}`;
+        } else if (attachment.error) {
+          elements.target.innerHTML =
+            '<strong>Target error</strong> · check client log';
+        } else {
+          elements.target.innerHTML =
+            '<strong>Target:</strong> waiting for game';
+        }
+      }
+
+      function renderWindowButton(button, name, label) {
+        const visible = Boolean(state.windows && state.windows[name]);
+        button.classList.toggle('active', visible);
+        button.setAttribute('aria-pressed', String(visible));
+        button.querySelector('.button-title').textContent =
+          `${visible ? 'Hide' : 'Open'} ${label.toLowerCase()}`;
+      }
+
+      function escapeHtml(value) {
+        const span = document.createElement('span');
+        span.textContent = String(value);
+        return span.innerHTML;
+      }
+
+      function getErrorMessage(error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    </script>
+  </body>
+</html>

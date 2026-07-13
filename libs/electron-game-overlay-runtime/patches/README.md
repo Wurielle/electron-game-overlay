@@ -1,8 +1,7 @@
 # Pinned ReShade source patches
 
 These patches apply only to the ReShade 6.7.3 commit pinned by this production
-runtime and are
-applied in order.
+runtime and are applied as an ordered stack.
 
 ## `reshade-input-observer.patch`
 
@@ -54,10 +53,22 @@ pointer ID, target, type, and Ctrl/Shift state in the queued copy. Touch and pen
 remain unblocked/unconverted. Secondary/X buttons, double-click semantics, and
 pointer wheel normalization remain explicit runtime hardening.
 
+## `reshade-injector-path-watcher.patch`
+
+Adds a one-shot `inject.exe --path-contains <fragment>` prelaunch watcher that
+snapshots and ignores processes already present when armed, then polls new
+processes every millisecond and resolves their absolute executable paths. Path
+matching is case-insensitive and treats forward and backward slashes equally.
+Repeatable `--exclude-name <exe basename>` arguments skip helper processes such
+as Unity crash handlers before selection. The watcher flushes a stable armed
+line immediately and reports the matched absolute path before the existing
+matching-PID line. Failures that are still safe to retry emit the existing
+`ReShade injection not started.` marker.
+
 CMake applies the ordered patch stack idempotently to ignored fetched source,
-including migrating the prior three-patch stack without resetting it, and then
+including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact eight-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all four patch
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all five patch
 hashes, the full-add-on configuration, and runtime/injector hashes before
 accepting its cache.

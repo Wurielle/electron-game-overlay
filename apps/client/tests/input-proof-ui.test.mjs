@@ -68,8 +68,9 @@ test('the Gun Frog client proof publishes four aligned Electron controls and rea
     'example-main-overlay.html',
   );
 
-  assert.match(windowSource, /gunFrogInputProof \? 64 : 1/);
-  assert.match(windowSource, /gunFrogInputProof \? 270 : 1/);
+  assert.match(windowSource, /gunFrogInputProof[\s\S]{0,40}?\? 64/);
+  assert.match(windowSource, /gunFrogInputProof[\s\S]{0,40}?\? 270/);
+  assert.match(windowSource, /demoPresentation[\s\S]{0,40}?\? 440/);
   assert.match(windowSource, /HUDHOOK_GUN_FROG_BUTTONS_READY/);
   assert.match(appEntry, /HUDHOOK_CLIENT_GUN_FROG_PROOF_READY/);
   assert.match(appEntry, /HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK/);
@@ -181,11 +182,17 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
 });
 
-test('the demo auto-attaches every launched Steam application PID', () => {
+test('the demo prearms native Steam-path injection before WMI lifecycle events', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
   const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
   const renderer = readClientFile('src', 'renderer', 'main.ts');
   const watcher = readClientFile('process-watcher', 'index.cjs');
+  const autoAttacher = readClientFile(
+    'src',
+    'main',
+    'electron',
+    'steam-game-auto-attacher.ts',
+  );
 
   assert.match(devLaunch, /--steam-auto-attach/);
   assert.match(appEntry, /new SteamGameAutoAttacher/);
@@ -205,6 +212,89 @@ test('the demo auto-attaches every launched Steam application PID', () => {
   assert.match(watcher, /import\('wql-process-monitor'\)/);
   assert.match(watcher, /process\.once\('disconnect'/);
   assert.match(watcher, /closeEventSink/);
+  assert.match(autoAttacher, /STEAM_APPS_PATH_FRAGMENT = ['"]\\\\steamapps\\\\/);
+  assert.match(autoAttacher, /UnityCrashHandler64\.exe/);
+  assert.match(autoAttacher, /this\.armNextSteamProcess\(\)/);
+  assert.match(
+    autoAttacher,
+    /launcher\.attach[\s\S]{0,180}?pathContains: STEAM_APPS_PATH_FRAGMENT/,
+  );
+  assert.doesNotMatch(
+    autoAttacher,
+    /launcher\.attach[\s\S]{0,120}?processName,[\s\S]{0,80}?pid: info\.pid/,
+  );
+});
+
+test('the normal demo presents an always-visible Ctrl+I dock and an interception menu', () => {
+  const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
+  const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
+  const windowNames = readClientFile(
+    'src',
+    'main',
+    'electron',
+    'window-names.ts',
+  );
+  const windowFactories = readClientFile(
+    'src',
+    'main',
+    'electron',
+    'example-overlay-windows.ts',
+  );
+  const controlOverlay = readClientFile(
+    'public',
+    'index',
+    'demo-control-overlay.html',
+  );
+
+  assert.match(devLaunch, /--demo-presentation/);
+  assert.match(windowNames, /demoControlOverlay = ["']demo-control-overlay/);
+  assert.match(windowFactories, /createDemoControlOverlayWindow/);
+  assert.match(windowFactories, /demo-control-overlay\.html/);
+  assert.match(appEntry, /DEMO_PRESENTATION_FLAG/);
+  assert.match(
+    appEntry,
+    /process\.argv\.includes\(DEMO_PRESENTATION_FLAG\)[\s\S]{0,100}!this\.gunFrogInputProof/,
+  );
+  assert.match(
+    appEntry,
+    /this\.inputInterceptRequested[\s\S]{0,100}DEMO_CONTROL_OVERLAY_EXPANDED_SIZE[\s\S]{0,100}DEMO_CONTROL_OVERLAY_COMPACT_SIZE/,
+  );
+  assert.match(appEntry, /this\.syncDemoControlOverlay\(\)/);
+  assert.match(appEntry, /for \(const window of this\.windows\.values\(\)\)/);
+  assert.match(appEntry, /presentation: this\.demoPresentationEnabled/);
+  assert.match(appEntry, /ipcMain\.handle\('overlay:create-popup'/);
+  assert.match(appEntry, /event === 'game\.window\.focused'/);
+  assert.match(appEntry, /this\.keepDemoControlOverlayOnTop\(payload\)/);
+  assert.match(
+    appEntry,
+    /current\.hide\(\);[\s\S]{0,80}?current\.show\(\);[\s\S]{0,100}?webContents\.invalidate\(\)/,
+  );
+  const sessionStartup = sourceSection(
+    appEntry,
+    'private startOverlaySession',
+    'private async attachOverlayToProcess',
+  );
+  assert.match(sessionStartup, /if \(this\.demoPresentationEnabled\)/);
+  assert.match(sessionStartup, /this\.syncDemoControlOverlay\(\)/);
+  assert.match(sessionStartup, /AppWindows\.exampleMainOverlay/);
+  assert.match(sessionStartup, /AppWindows\.exampleStatusOverlay/);
+
+  for (const id of [
+    'demo-open-main',
+    'demo-open-status',
+    'demo-open-popup',
+    'demo-open-video',
+    'demo-release-input',
+  ]) {
+    assert.match(controlOverlay, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(controlOverlay, /overlay:get-state/);
+  assert.match(controlOverlay, /overlay:state-changed/);
+  assert.match(controlOverlay, /overlay:set-window-visible/);
+  assert.match(controlOverlay, /overlay:create-popup/);
+  assert.match(controlOverlay, /overlay:set-input-intercept/);
+  assert.match(controlOverlay, /inputInterceptEffective/);
+  assert.match(controlOverlay, /Ctrl\+I/);
 });
 
 function sourceSection(source, startMarker, endMarker) {

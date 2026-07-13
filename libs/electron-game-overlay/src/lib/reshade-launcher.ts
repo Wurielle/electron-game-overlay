@@ -27,8 +27,10 @@ const INJECTOR_SUCCESS_MARKER = 'Injecting ReShade ... Succeeded!';
 const INJECTOR_NOT_STARTED_MARKER = 'ReShade injection not started.';
 const INJECTOR_TARGET_PID_PATTERN =
   /^Found a matching process with PID ([1-9][0-9]*)!/m;
+const INJECTOR_TARGET_PATH_PATTERN = /^Matched executable path: (.+)$/m;
 const REQUEST_TIMEOUT_MS = 120_000;
 const TARGET_PROOF_TIMEOUT_MS = 120_000;
+const PATH_TARGET_PROOF_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
 export const RESHADE_CLIENT_RUNTIME_STAGED_MARKER =
@@ -52,10 +54,17 @@ const RUNTIME_ARTIFACTS = Object.freeze([
   CONFIG_FILE_NAME,
 ] as const);
 
-export type ReShadeTarget = Readonly<{
+export type ReShadeProcessTarget = Readonly<{
   processName: string;
   pid?: number;
 }>;
+
+export type ReShadePathTarget = Readonly<{
+  pathContains: string;
+  excludedProcessNames?: readonly string[];
+}>;
+
+export type ReShadeTarget = ReShadeProcessTarget | ReShadePathTarget;
 
 export type ReShadeLaunchConfig = Readonly<{
   runtimeDirectory: string;
@@ -76,15 +85,14 @@ export type ReShadeLaunchConfigOptions = Readonly<{
 
 export type ReShadeInvocation = Readonly<{
   executable: string;
-  arguments:
-    | readonly [processName: string]
-    | readonly [processName: string, pidOption: '--pid', pid: string];
+  arguments: readonly string[];
   targetLabel: string;
   workingDirectory: string;
 }>;
 
 export type ReShadeLaunchResult = Readonly<{
   processName: string;
+  selectedPath?: string;
   targetLabel: string;
   injectorTargetPid: number;
   runDirectory: string;
@@ -260,8 +268,16 @@ export function buildReShadeInvocation(
     throw new Error('the ReShade run directory must be absolute');
   }
 
-  const arguments_ =
-    target.pid === undefined
+  const arguments_ = isPathTarget(target)
+    ? [
+        '--path-contains',
+        target.pathContains,
+        ...(target.excludedProcessNames ?? []).flatMap((processName) => [
+          '--exclude-name',
+          processName,
+        ]),
+      ]
+    : target.pid === undefined
       ? ([target.processName] as const)
       : ([target.processName, '--pid', String(target.pid)] as const);
 
@@ -460,10 +476,12 @@ export class ReShadeOverlayLauncher {
     this.attachmentState = 'attaching';
     this.attachmentTargetLabel = targetLabel;
     this.attachmentExpectedTargetPid = expectedTargetPid;
-    this.awaitingTargetProof = true;
-    this.targetProofTimer = setTimeout(() => {
-      this.closeTargetProofWindow();
-    }, TARGET_PROOF_TIMEOUT_MS);
+    this.awaitingTargetProof = !isPathTarget(target);
+    if (this.awaitingTargetProof) {
+      this.targetProofTimer = setTimeout(() => {
+        this.closeTargetProofWindow();
+      }, TARGET_PROOF_TIMEOUT_MS);
+    }
     this.activeTargetLabel = targetLabel;
 
     const launchGeneration = ++this.launchGeneration;
@@ -472,10 +490,27 @@ export class ReShadeOverlayLauncher {
       targetLabel,
       expectedTargetPid,
       launchGeneration,
-    ).catch((error) => {
-      this.applyFailureState(targetLabel, error);
-      throw error;
-    });
+    )
+      .then((result) => {
+        if (
+          isPathTarget(target) &&
+          this.activeAttach === null &&
+          !this.disposed &&
+          this.attachmentState === 'attaching' &&
+          this.attachmentTargetLabel === targetLabel
+        ) {
+          this.attachmentExpectedTargetPid = result.injectorTargetPid;
+          this.awaitingTargetProof = true;
+          this.targetProofTimer = setTimeout(() => {
+            this.closeTargetProofWindow();
+          }, PATH_TARGET_PROOF_TIMEOUT_MS);
+        }
+        return result;
+      })
+      .catch((error) => {
+        this.applyFailureState(targetLabel, error);
+        throw error;
+      });
     this.activeRequest = request;
     const clearActiveRequest = () => {
       if (this.activeRequest === request) {
@@ -540,6 +575,28 @@ export class ReShadeOverlayLauncher {
         clearTimeout(proofTimer);
         proofTimer = undefined;
       }
+    };
+    const startProofTimer = () => {
+      if (proofSettled || proofTimer) {
+        return;
+      }
+      const proofTimeoutMs = isPathTarget(target)
+        ? PATH_TARGET_PROOF_TIMEOUT_MS
+        : TARGET_PROOF_TIMEOUT_MS;
+      proofTimer = setTimeout(() => {
+        if (proofSettled) {
+          return;
+        }
+        proofSettled = true;
+        removeListeners();
+        this.blockTargetState(targetLabel);
+        rejectConnectionProof(
+          new ReShadeOperationError(
+            `the ReShade target did not connect within ${proofTimeoutMs}ms`,
+            'indeterminate',
+          ),
+        );
+      }, proofTimeoutMs);
     };
     let listenersRemoved = false;
     const removeListeners = () => {
@@ -617,10 +674,10 @@ export class ReShadeOverlayLauncher {
         }
         if (
           !recognizedCandidatePids.has(connection.pid) &&
-          !targetPathMatchesProcessName(connection.path, target.processName)
+          !targetPathMatches(connection.path, target)
         ) {
           console.warn(
-            `Ignored ReShade target connection from unexpected path=${JSON.stringify(connection.path)}; expected basename=${JSON.stringify(target.processName)}`,
+            `Ignored ReShade target connection from unexpected path=${JSON.stringify(connection.path)}; expected ${targetPathExpectation(target)}`,
           );
           return;
         }
@@ -725,27 +782,17 @@ export class ReShadeOverlayLauncher {
         );
       }
     });
-    if (!proofSettled) {
-      proofTimer = setTimeout(() => {
-        if (proofSettled) {
-          return;
-        }
-        proofSettled = true;
-        removeListeners();
-        this.blockTargetState(targetLabel);
-        rejectConnectionProof(
-          new ReShadeOperationError(
-            `the ReShade target did not connect within ${TARGET_PROOF_TIMEOUT_MS}ms`,
-            'indeterminate',
-          ),
-        );
-      }, TARGET_PROOF_TIMEOUT_MS);
+    if (!isPathTarget(target)) {
+      startProofTimer();
     }
 
     let launch: Promise<ReShadeLaunchResult> | undefined;
     try {
       launch = this.launch(target).then((result) => {
         injectorTargetPid = result.injectorTargetPid;
+        if (isPathTarget(target)) {
+          startProofTimer();
+        }
         tryAcceptCandidate();
         return result;
       });
@@ -784,14 +831,15 @@ export class ReShadeOverlayLauncher {
     expectedTargetPid: number | undefined,
     launchGeneration: number,
   ): Promise<ReShadeLaunchResult> {
-    const staged = await this.stageRuntime(target.processName);
+    const targetDescription = targetDescriptionFor(target);
+    const staged = await this.stageRuntime(targetStageName(target));
     this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     this.latestRunDirectory = staged.runDirectory;
     const invocation = buildReShadeInvocation(target, staged.runDirectory);
     const invocationArguments = [...invocation.arguments];
     this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     console.log(
-      `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target=${JSON.stringify(target.processName)} arguments=${JSON.stringify(invocationArguments)}`,
+      `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target=${JSON.stringify(targetDescription)} arguments=${JSON.stringify(invocationArguments)}`,
     );
 
     return new Promise<ReShadeLaunchResult>((resolve, reject) => {
@@ -804,7 +852,7 @@ export class ReShadeOverlayLauncher {
           encoding: 'utf8',
           maxBuffer: MAX_OUTPUT_BYTES,
           shell: false,
-          timeout: REQUEST_TIMEOUT_MS,
+          timeout: isPathTarget(target) ? 0 : REQUEST_TIMEOUT_MS,
           windowsHide: true,
         },
         (error, stdout, stderr) => {
@@ -812,10 +860,9 @@ export class ReShadeOverlayLauncher {
             this.activeChild = null;
           }
           void this.finishInjector(
-            target.processName,
+            target,
             targetLabel,
             expectedTargetPid,
-            target.pid !== undefined,
             staged,
             error,
             stdout,
@@ -869,19 +916,23 @@ export class ReShadeOverlayLauncher {
   }
 
   private async finishInjector(
-    processName: string,
+    target: ReShadeTarget,
     targetLabel: string,
     expectedTargetPid: number | undefined,
-    exactPidMode: boolean,
     staged: StagedRuntime,
     error: Error | null,
     stdout: string,
     stderr: string,
     didSpawn: boolean,
   ): Promise<ReShadeLaunchResult> {
+    const targetDescription = targetDescriptionFor(target);
+    const retrySafeBeforeMutation =
+      isPathTarget(target) || target.pid !== undefined;
     const hasSuccessMarker = stdout.includes(INJECTOR_SUCCESS_MARKER);
     const hasNotStartedProof =
-      exactPidMode && !hasSuccessMarker && injectorDidNotStart(stdout);
+      retrySafeBeforeMutation &&
+      !hasSuccessMarker &&
+      injectorDidNotStart(stdout);
     try {
       await Promise.all([
         writeFile(staged.injectorStdoutPath, stdout, 'utf8'),
@@ -890,7 +941,7 @@ export class ReShadeOverlayLauncher {
     } catch (evidenceError) {
       const detail = `ReShade injector completed but its evidence logs could not be preserved: ${formatUnknownError(evidenceError)}`;
       console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
       throw new ReShadeOperationError(
         detail,
@@ -905,7 +956,7 @@ export class ReShadeOverlayLauncher {
       const detail =
         'the ReShade launcher was disposed before injector completion';
       console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
       throw new ReShadeOperationError(detail, 'indeterminate');
     }
@@ -913,7 +964,7 @@ export class ReShadeOverlayLauncher {
     if (error) {
       const detail = formatLaunchError(error, stdout, stderr);
       console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
       throw new ReShadeOperationError(
         detail,
@@ -925,7 +976,7 @@ export class ReShadeOverlayLauncher {
     if (!hasSuccessMarker) {
       const detail = `ReShade injector stdout did not contain ${JSON.stringify(INJECTOR_SUCCESS_MARKER)}`;
       console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
       throw new ReShadeOperationError(
         detail,
@@ -936,7 +987,7 @@ export class ReShadeOverlayLauncher {
       const detail =
         'ReShade injector reported success without a confirmed child-process spawn';
       console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
       throw new ReShadeOperationError(detail, 'indeterminate');
     }
@@ -948,7 +999,7 @@ export class ReShadeOverlayLauncher {
       const detail =
         parseError instanceof Error ? parseError.message : String(parseError);
       console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
       throw new ReShadeOperationError(detail, 'indeterminate');
     }
@@ -958,16 +1009,42 @@ export class ReShadeOverlayLauncher {
     ) {
       const detail = `ReShade injector selected pid=${injectorTargetPid}; expected pid=${expectedTargetPid}`;
       console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(processName)} detail=${JSON.stringify(detail)}`,
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
       throw new ReShadeOperationError(detail, 'indeterminate');
     }
 
+    let selectedPath: string | undefined;
+    let processName: string;
+    if (isPathTarget(target)) {
+      try {
+        selectedPath = parseInjectorTargetPath(stdout);
+      } catch (parseError) {
+        const detail =
+          parseError instanceof Error ? parseError.message : String(parseError);
+        console.error(
+          `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
+        );
+        throw new ReShadeOperationError(detail, 'indeterminate');
+      }
+      if (!targetPathMatches(selectedPath, target)) {
+        const detail = `ReShade injector selected unexpected path=${JSON.stringify(selectedPath)}; expected ${targetPathExpectation(target)}`;
+        console.error(
+          `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
+        );
+        throw new ReShadeOperationError(detail, 'indeterminate');
+      }
+      processName = path.win32.basename(selectedPath);
+    } else {
+      processName = target.processName;
+    }
+
     console.log(
-      `${RESHADE_CLIENT_INJECTOR_RETURNED_MARKER} target=${JSON.stringify(processName)}`,
+      `${RESHADE_CLIENT_INJECTOR_RETURNED_MARKER} target=${JSON.stringify(targetDescription)}`,
     );
     return Object.freeze({
       processName,
+      ...(selectedPath === undefined ? {} : { selectedPath }),
       targetLabel,
       injectorTargetPid,
       runDirectory: staged.runDirectory,
@@ -1069,6 +1146,15 @@ export class ReShadeOverlayLauncher {
 
 function targetLabelFor(target: ReShadeTarget): string {
   validateTarget(target);
+  if (isPathTarget(target)) {
+    const exclusions = normalizedExcludedProcessNames(target);
+    return [
+      `path-contains:${normalizePathForMatch(target.pathContains)}`,
+      ...(exclusions.length === 0
+        ? []
+        : [`exclude:${exclusions.join(',')}`]),
+    ].join(':');
+  }
   return target.pid === undefined
     ? `process:${target.processName}`
     : `process:${target.processName}:pid:${target.pid}`;
@@ -1086,6 +1172,14 @@ function effectiveExpectedTargetPid(
     throw new Error(
       'the configured ReShade expected target PID must be a positive uint32 integer',
     );
+  }
+  if (isPathTarget(target)) {
+    if (configuredExpectedTargetPid !== undefined) {
+      throw new Error(
+        'a ReShade path watcher cannot use a configured expected target PID',
+      );
+    }
+    return undefined;
   }
   if (
     target.pid !== undefined &&
@@ -1108,6 +1202,17 @@ function parseInjectorTargetPid(stdout: string): number {
     );
   }
   return pid;
+}
+
+function parseInjectorTargetPath(stdout: string): string {
+  const match = INJECTOR_TARGET_PATH_PATTERN.exec(stdout);
+  const selectedPath = match?.[1]?.trim();
+  if (!selectedPath || !path.win32.isAbsolute(selectedPath)) {
+    throw new Error(
+      'ReShade injector stdout did not contain a valid matched executable path',
+    );
+  }
+  return selectedPath;
 }
 
 function injectorDidNotStart(stdout: string): boolean {
@@ -1135,13 +1240,54 @@ function readTargetConnection(
   return Object.freeze({ pid: candidate.pid as number, path: candidate.path });
 }
 
-function targetPathMatchesProcessName(
+function targetPathMatches(
   targetPath: string,
-  processName: string,
+  target: ReShadeTarget,
 ): boolean {
+  if (isPathTarget(target)) {
+    const normalizedName = path.win32.basename(targetPath).toLowerCase();
+    return (
+      normalizePathForMatch(targetPath).includes(
+        normalizePathForMatch(target.pathContains),
+      ) && !normalizedExcludedProcessNames(target).includes(normalizedName)
+    );
+  }
   return (
-    path.win32.basename(targetPath).toLowerCase() === processName.toLowerCase()
+    path.win32.basename(targetPath).toLowerCase() ===
+    target.processName.toLowerCase()
   );
+}
+
+function targetPathExpectation(target: ReShadeTarget): string {
+  return isPathTarget(target)
+    ? `path fragment=${JSON.stringify(target.pathContains)} excluding=${JSON.stringify(target.excludedProcessNames ?? [])}`
+    : `basename=${JSON.stringify(target.processName)}`;
+}
+
+function targetDescriptionFor(target: ReShadeTarget): string {
+  return isPathTarget(target)
+    ? `path contains ${target.pathContains}${
+        target.excludedProcessNames?.length
+          ? ` excluding ${target.excludedProcessNames.join(', ')}`
+          : ''
+      }`
+    : target.processName;
+}
+
+function targetStageName(target: ReShadeTarget): string {
+  return isPathTarget(target) ? 'path-watch' : target.processName;
+}
+
+function normalizePathForMatch(value: string): string {
+  return value.replace(/\//g, '\\').toLowerCase();
+}
+
+function normalizedExcludedProcessNames(
+  target: ReShadePathTarget,
+): readonly string[] {
+  return (target.excludedProcessNames ?? [])
+    .map((processName) => processName.toLowerCase())
+    .sort();
 }
 
 function readOptionalOption(argv: readonly string[], name: string) {
@@ -1227,10 +1373,38 @@ function validateProcessName(processName: string): void {
 }
 
 function validateTarget(target: ReShadeTarget): void {
+  if (isPathTarget(target)) {
+    if (
+      target.pathContains.length === 0 ||
+      target.pathContains !== target.pathContains.trim() ||
+      target.pathContains.includes('\0') ||
+      !/[\\/]/.test(target.pathContains)
+    ) {
+      throw new Error(
+        'the ReShade target path fragment must contain a path separator and no surrounding whitespace',
+      );
+    }
+    const normalizedExclusions = new Set<string>();
+    for (const processName of target.excludedProcessNames ?? []) {
+      validateProcessName(processName);
+      const normalizedName = processName.toLowerCase();
+      if (normalizedExclusions.has(normalizedName)) {
+        throw new Error(
+          'the ReShade target path exclusions must not contain duplicate process names',
+        );
+      }
+      normalizedExclusions.add(normalizedName);
+    }
+    return;
+  }
   validateProcessName(target.processName);
   if (target.pid !== undefined && !isValidProcessPid(target.pid)) {
     throw new Error('the ReShade target PID must be a positive uint32 integer');
   }
+}
+
+function isPathTarget(target: ReShadeTarget): target is ReShadePathTarget {
+  return 'pathContains' in target;
 }
 
 function isValidProcessPid(pid: unknown): pid is number {

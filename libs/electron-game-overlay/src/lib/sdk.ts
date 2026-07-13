@@ -21,6 +21,8 @@ export type {
   ReShadeLaunchConfig,
   ReShadeLaunchConfigOptions,
   ReShadeLaunchResult,
+  ReShadePathTarget,
+  ReShadeProcessTarget,
   ReShadeTarget,
 } from './reshade-launcher.js';
 export type {

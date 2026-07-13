@@ -78,7 +78,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies four tracked
+downloads both into the ignored build directory, then applies five tracked
 patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -93,6 +93,10 @@ patches to the pinned ReShade revision:
 - `reshade-injector-exact-pid.patch` adds strict `--pid <uint32>` targeting,
   verifies the opened process image basename before remote mutation, and emits a
   stable safe-retry marker when no remote injection thread was created.
+- `reshade-injector-path-watcher.patch` adds a one-shot prelaunch watcher for
+  normalized, case-insensitive executable-path fragments. It ignores processes
+  already present when armed and accepts repeatable executable-basename
+  exclusions for helper processes before selecting a target.
 
 Use the runtime built by this repository with the Electron add-on; the stock
 API-18 ReShade 6.7.3 runtime is ABI-incompatible.
@@ -109,7 +113,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-6 build stamp, the four patch
+The launchers validate the cache against a schema-7 build stamp, the five patch
 SHA-256 hashes, the pinned commit, exact normalized contents of all eight patched
 source files, the full-add-on configuration, and the runtime/injector SHA-256
 hashes. CMake performs the same commit, eight-path, and normalized-content check

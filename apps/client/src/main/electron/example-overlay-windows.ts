@@ -19,6 +19,7 @@ export type OverlayWindowContext = {
   getMainWindow: () => Electron.BrowserWindow | null;
   isQuitting: () => boolean;
   gunFrogInputProof: boolean;
+  demoPresentation: boolean;
   onGunFrogButtonsReady: () => void;
 };
 
@@ -31,6 +32,16 @@ type InputProofRect = {
   width: number;
   height: number;
 };
+
+export const DEMO_CONTROL_OVERLAY_COMPACT_SIZE = Object.freeze({
+  width: 320,
+  height: 170,
+});
+
+export const DEMO_CONTROL_OVERLAY_EXPANDED_SIZE = Object.freeze({
+  width: 390,
+  height: 390,
+});
 
 function logInputProofTarget(
   window: Electron.BrowserWindow,
@@ -160,10 +171,42 @@ function enableStatusInputProof(window: Electron.BrowserWindow) {
   });
 }
 
+export function createDemoControlOverlayWindow(context: OverlayWindowContext) {
+  const name = AppWindows.demoControlOverlay;
+  const window = context.createWindow(name, {
+    x: 24,
+    y: 24,
+    ...DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
+    frame: false,
+    show: false,
+    transparent: true,
+    resizable: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      offscreen: true,
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+
+  window.loadURL(
+    global.CONFIG.resolveRendererUrl('index/demo-control-overlay.html'),
+  );
+
+  const overlayWindow = context.attachElectronOverlayWindow(window, {
+    name,
+    dragBorder: 8,
+    captionHeight: 54,
+    transparent: true,
+  });
+  overlayWindow.show();
+  return overlayWindow;
+}
+
 export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
   const options: Electron.BrowserWindowConstructorOptions = {
-    x: context.gunFrogInputProof ? 64 : 1,
-    y: context.gunFrogInputProof ? 270 : 1,
+    x: context.gunFrogInputProof ? 64 : context.demoPresentation ? 440 : 1,
+    y: context.gunFrogInputProof ? 270 : context.demoPresentation ? 24 : 1,
     height: 360,
     width: 640,
     frame: false,
@@ -217,8 +260,8 @@ export function createExampleStatusOverlayWindow(
   context: OverlayWindowContext,
 ) {
   const options: Electron.BrowserWindowConstructorOptions = {
-    x: context.gunFrogInputProof ? 800 : 100,
-    y: context.gunFrogInputProof ? 100 : 200,
+    x: context.gunFrogInputProof ? 800 : context.demoPresentation ? 440 : 100,
+    y: context.gunFrogInputProof ? 100 : context.demoPresentation ? 400 : 200,
     height: 50,
     width: 200,
     frame: false,
@@ -251,8 +294,8 @@ export function createExampleStatusOverlayWindow(
 
 export function createExamplePopupOverlayWindow(context: OverlayWindowContext) {
   const options: Electron.BrowserWindowConstructorOptions = {
-    x: context.gunFrogInputProof ? 800 : 0,
-    y: 200,
+    x: context.gunFrogInputProof ? 800 : context.demoPresentation ? 440 : 0,
+    y: context.demoPresentation ? 480 : 200,
     height: 220,
     width: 320,
     resizable: false,
@@ -293,8 +336,8 @@ export function createExampleVideoOverlayWindow(context: OverlayWindowContext) {
     show: false,
     transparent: true,
     resizable: false,
-    x: 0,
-    y: 0,
+    x: context.demoPresentation ? 780 : 0,
+    y: context.demoPresentation ? 400 : 0,
     webPreferences: {
       offscreen: true,
       nodeIntegration: true,

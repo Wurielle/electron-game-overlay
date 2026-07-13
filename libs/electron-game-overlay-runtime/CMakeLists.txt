@@ -29,6 +29,7 @@ set(RESHAPE_SOURCE_PATCHES
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-base-path.patch"
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-pointer-input-block.patch"
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-exact-pid.patch"
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher.patch"
 )
 set(RESHAPE_EXPECTED_PATCHED_FILES
     "include/reshade.hpp"
@@ -48,7 +49,7 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
     "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
-    "tools/injector.cpp=C1518DC282BDCAAB0D5F7ECA7AC9AA6042F3D9FB2AD545DE9FDD42F7DABAB5E8"
+    "tools/injector.cpp=853B5BBEC22968A695E658F392C36C080AE8217FEB5261C86555CFDD23977D26"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
@@ -210,11 +211,39 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply four narrow pinned seams: the passive copied-input observer, an injector
+# Apply five narrow pinned seams: the passive copied-input observer, an injector
 # base-path override, coverage for Windows' second mouse projection through
-# WM_POINTER, and exact-PID injector targeting. The exact-PID patch is last so
-# its reverse check can migrate fetched trees that contain the prior three-patch
-# stack without resetting or replacing those ignored source trees.
+# WM_POINTER, exact-PID targeting, and a one-shot prearmed path watcher. The
+# watcher patch is terminal so existing exact-PID trees can be migrated without
+# resetting or replacing those ignored source trees.
+list(GET RESHAPE_SOURCE_PATCHES 4 RESHAPE_PATH_WATCHER_PATCH)
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_PATH_WATCHER_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+
+if(RESHAPE_PATH_WATCHER_PATCH_APPLIED EQUAL 0)
+    list(GET RESHAPE_SOURCE_PATCHES 2 RESHAPE_POINTER_INPUT_PATCH)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_POINTER_INPUT_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_POINTER_INPUT_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(NOT RESHAPE_POINTER_INPUT_PATCH_APPLIED EQUAL 0)
+        message(FATAL_ERROR
+            "The terminal path-watcher patch is present without the pinned input patch."
+        )
+    endif()
+else()
+# Migrate the previous exact-PID/base-path states before applying the new
+# terminal watcher patch.
 list(GET RESHAPE_SOURCE_PATCHES 3 RESHAPE_EXACT_PID_PATCH)
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
@@ -339,6 +368,49 @@ foreach(RESHAPE_SOURCE_PATCH IN LISTS RESHAPE_SOURCE_PATCHES)
         endif()
     endif()
 endforeach()
+endif()
+endif()
+
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_PATH_WATCHER_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_PATH_WATCHER_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_PATH_WATCHER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_PATH_WATCHER_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_PATH_WATCHER_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned path-watcher patch cannot migrate the exact-PID ReShade patch stack.\n"
+            "${RESHAPE_PATH_WATCHER_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_PATH_WATCHER_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_PATH_WATCHER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_PATH_WATCHER_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to migrate the ReShade patch stack with path-watcher support.\n"
+            "${RESHAPE_PATH_WATCHER_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_PATH_WATCHER_PATCH_APPLY_ERROR}"
+        )
+    endif()
 endif()
 endif()
 

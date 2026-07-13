@@ -10,6 +10,17 @@ import {
 } from 'electron-game-overlay';
 
 export const STEAM_APPS_PROCESS_PATTERN = '**/steamapps/**';
+export const STEAM_APPS_PATH_FRAGMENT = '\\steamapps\\';
+export const STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAMES = Object.freeze([
+  'UnityCrashHandler.exe',
+  'UnityCrashHandler32.exe',
+  'UnityCrashHandler64.exe',
+]);
+const STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAME_SET = new Set(
+  STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAMES.map((processName) =>
+    processName.toLowerCase(),
+  ),
+);
 
 export type ProcessInfo = Readonly<{
   process: string;
@@ -233,7 +244,7 @@ type SteamGameAutoAttacherOptions = Readonly<{
 }>;
 
 type TargetEntry = {
-  launcher: ReShadeLauncherForSteamTarget;
+  launcher: ReShadeLauncherForSteamTarget | null;
   state: SteamGameTargetState;
 };
 
@@ -244,6 +255,8 @@ export class SteamGameAutoAttacher {
   >();
   private readonly targetEntries = new Map<number, TargetEntry>();
   private watcher: ProcessWatcher | null = null;
+  private armedLauncher: ReShadeLauncherForSteamTarget | null = null;
+  private rearmTimer: ReturnType<typeof setTimeout> | null = null;
   private removeSessionListener: (() => void) | null = null;
   private watcherStatusValue: ProcessWatcherStatus = 'stopped';
   private watcherErrorValue: string | null = null;
@@ -322,6 +335,7 @@ export class SteamGameAutoAttacher {
     } catch (error) {
       this.handleWatcherStatus('failed', getErrorMessage(error));
     }
+    this.armNextSteamProcess();
   }
 
   public async dispose(): Promise<void> {
@@ -337,8 +351,15 @@ export class SteamGameAutoAttacher {
     this.watcher = null;
     const watcherStop = watcher?.stop() ?? Promise.resolve();
 
+    if (this.rearmTimer) {
+      clearTimeout(this.rearmTimer);
+      this.rearmTimer = null;
+    }
+    this.armedLauncher?.dispose();
+    this.armedLauncher = null;
+
     for (const entry of this.targetEntries.values()) {
-      entry.launcher.dispose();
+      entry.launcher?.dispose();
     }
     this.targetEntries.clear();
     this.watcherStatusValue = 'stopped';
@@ -356,10 +377,10 @@ export class SteamGameAutoAttacher {
       this.removeTarget(event.payload.pid);
       return;
     }
-    this.attachTarget(event.payload);
+    this.observeTarget(event.payload);
   }
 
-  private attachTarget(info: ProcessInfo): void {
+  private observeTarget(info: ProcessInfo): void {
     if (
       !isValidPid(info.pid) ||
       this.targetEntries.has(info.pid) ||
@@ -368,16 +389,16 @@ export class SteamGameAutoAttacher {
       return;
     }
     const processName = path.win32.basename(info.filepath);
-    if (!processName.toLowerCase().endsWith('.exe')) {
+    const normalizedProcessName = processName.toLowerCase();
+    if (
+      !normalizedProcessName.endsWith('.exe') ||
+      STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAME_SET.has(normalizedProcessName)
+    ) {
       return;
     }
 
-    const launcherFactory =
-      this.options.launcherFactory ??
-      ((config: ReShadeLaunchConfig) => new ReShadeOverlayLauncher(config));
-    const launcher = launcherFactory(this.launchConfig);
     const entry: TargetEntry = {
-      launcher,
+      launcher: null,
       state: Object.freeze({
         pid: info.pid,
         processName,
@@ -391,46 +412,105 @@ export class SteamGameAutoAttacher {
       `STEAM_GAME_AUTO_ATTACH_DETECTED pid=${info.pid} path=${JSON.stringify(info.filepath)}`,
     );
     this.publishState();
+  }
+
+  private armNextSteamProcess(): void {
+    if (
+      this.disposed ||
+      !this.started ||
+      this.armedLauncher ||
+      this.rearmTimer
+    ) {
+      return;
+    }
+
+    const launcherFactory =
+      this.options.launcherFactory ??
+      ((config: ReShadeLaunchConfig) => new ReShadeOverlayLauncher(config));
+    let launcher: ReShadeLauncherForSteamTarget;
+    try {
+      launcher = launcherFactory(this.launchConfig);
+    } catch (error) {
+      this.scheduleRearm(getErrorMessage(error));
+      return;
+    }
+    this.armedLauncher = launcher;
+    console.log(
+      `STEAM_GAME_AUTO_ATTACH_ARMING pathContains=${JSON.stringify(STEAM_APPS_PATH_FRAGMENT)}`,
+    );
 
     void Promise.resolve()
       .then(() =>
         launcher.attach(this.options.session, {
-          processName,
-          pid: info.pid,
+          pathContains: STEAM_APPS_PATH_FRAGMENT,
+          excludedProcessNames: STEAM_AUTO_ATTACH_EXCLUDED_PROCESS_NAMES,
         }),
       )
       .then((result) => {
-        if (this.targetEntries.get(info.pid) !== entry || this.disposed) {
+        if (this.armedLauncher !== launcher || this.disposed) {
+          launcher.dispose();
           return;
         }
+        this.armedLauncher = null;
+        const filepath = result.selectedPath ?? '';
+        const processName =
+          result.processName || path.win32.basename(filepath) || 'unknown.exe';
+        const existingEntry = this.targetEntries.get(result.pid);
+        const entry: TargetEntry = existingEntry ?? {
+          launcher: null,
+          state: Object.freeze({
+            pid: result.pid,
+            processName,
+            filepath,
+            phase: 'attaching',
+            error: null,
+          }),
+        };
+        if (entry.launcher && entry.launcher !== launcher) {
+          entry.launcher.dispose();
+        }
+        entry.launcher = launcher;
         entry.state = Object.freeze({
           ...entry.state,
           pid: result.pid,
+          processName,
+          filepath: filepath || entry.state.filepath,
           phase: 'connected',
           error: null,
         });
+        this.targetEntries.set(result.pid, entry);
         console.log(
           `STEAM_GAME_AUTO_ATTACH_CONNECTED pid=${result.pid} processName=${JSON.stringify(processName)}`,
         );
         this.publishState();
+        this.armNextSteamProcess();
       })
       .catch((error) => {
-        if (this.targetEntries.get(info.pid) !== entry || this.disposed) {
+        if (this.armedLauncher !== launcher || this.disposed) {
           return;
         }
+        this.armedLauncher = null;
+        launcher.dispose();
         const message = getErrorMessage(error);
-        entry.state = Object.freeze({
-          ...entry.state,
-          phase: 'failed',
-          error: message,
-        });
         console.error(
-          `STEAM_GAME_AUTO_ATTACH_FAILED pid=${info.pid} processName=${JSON.stringify(processName)} detail=${JSON.stringify(message)}`,
+          `STEAM_GAME_AUTO_ATTACH_ARM_FAILED detail=${JSON.stringify(message)}`,
         );
-        // Keep the PID registered until deletion. Even a definitely-safe
-        // injector failure should not become a hot retry loop for a live game.
-        this.publishState();
+        this.scheduleRearm(message);
       });
+  }
+
+  private scheduleRearm(error: string): void {
+    if (this.disposed || !this.started || this.rearmTimer) {
+      return;
+    }
+    console.error(
+      `STEAM_GAME_AUTO_ATTACH_REARM_PENDING detail=${JSON.stringify(error)}`,
+    );
+    this.rearmTimer = setTimeout(() => {
+      this.rearmTimer = null;
+      this.armNextSteamProcess();
+    }, 250);
+    this.rearmTimer.unref?.();
   }
 
   private removeTarget(pid: number): void {
@@ -439,7 +519,7 @@ export class SteamGameAutoAttacher {
       return;
     }
     this.targetEntries.delete(pid);
-    entry.launcher.dispose();
+    entry.launcher?.dispose();
     console.log(`STEAM_GAME_AUTO_ATTACH_RELEASED pid=${pid}`);
     this.publishState();
   }

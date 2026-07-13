@@ -1,5 +1,6 @@
 const GUN_FROG_DEV_MODE = 'gun-frog';
 const STEAM_AUTO_ATTACH_FLAG = '--steam-auto-attach';
+const DEMO_PRESENTATION_FLAG = '--demo-presentation';
 
 export function buildElectronDevArguments(
   workspaceRoot: string,
@@ -14,7 +15,7 @@ export function buildElectronDevArguments(
       '--gun-frog-input-proof',
     );
   } else {
-    arguments_.push(STEAM_AUTO_ATTACH_FLAG);
+    arguments_.push(STEAM_AUTO_ATTACH_FLAG, DEMO_PRESENTATION_FLAG);
   }
 
   return arguments_;

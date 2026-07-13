@@ -5,6 +5,11 @@ type DemoState = {
   inputInterceptRequested: boolean;
   inputInterceptEffective: boolean;
   runtime: 'reshade' | null;
+  presentation: null | {
+    enabled: true;
+    shortcut: string;
+    menuExpanded: boolean;
+  };
   steamAutoAttach: null | {
     enabled: true;
     pattern: '**/steamapps/**';
@@ -42,6 +47,7 @@ let state: DemoState = {
   inputInterceptRequested: false,
   inputInterceptEffective: false,
   runtime: null,
+  presentation: null,
   steamAutoAttach: null,
   attachment: {
     phase: 'idle',

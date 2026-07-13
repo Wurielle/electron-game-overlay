@@ -37,25 +37,69 @@ API inside the target, so there is no D3D11/D3D12 client option:
 npm run dev
 ```
 
-The normal development command enables this client's demo-only Steam process
-watcher. Launch a game normally through Steam; when a newly created process has
-a normalized executable path containing `/steamapps/` (case-insensitive), the
-client gives that exact PID its own SDK launcher. Multiple matching processes
-can be tracked concurrently while sharing the same overlay session. The UI
-shows watcher and target status and disables manual injection controls while
-automatic mode is active.
+The normal development command starts prearming one native SDK injector for the
+next new process whose normalized executable path contains `/steamapps/`
+(case-insensitive). Start the demo first, let its session/injector come up, then
+launch a game normally through Steam. The native watcher selects it directly,
+reports its exact PID/path, and the client rearms a fresh watcher after the
+authenticated target connects. The WMI child remains active for demo status and
+process-deletion evidence, but it does not initiate injection. The UI shows
+watcher and target status and disables manual injection controls while automatic
+mode is active.
 
-The watcher runs in a forked Node child because its WMI/COM event sink is not
-compatible with Electron main's existing COM initialization. Detection usually
-arrives about a second after process creation. Processes whose executable paths
-cannot be read, including some elevated targets, are ignored, and an
-unsuspended target can still initialize graphics before injection. This is a
-demo convenience rather than a new SDK responsibility or a guarantee of
-general late attachment.
+Inside the game, the normal demo initially registers one compact control dock.
+It remains visible with the **Ctrl+I** shortcut, target/watcher state, effective
+input state, and FPS. Press **Ctrl+I** to request interception and expand the
+dock into a clickable launcher for four representative Electron surfaces:
 
-The accepted Gun Frog flow remains the separate `npm run dev:gun-frog`
-process-name arm-before-launch mode. Controlled launchers and clients started
-without `--steam-auto-attach` retain the manual executable/PID controls.
+- a resizable input playground;
+- a compact FPS/input diagnostic strip;
+- independent transparent popup windows;
+- a singleton video surface.
+
+Launcher buttons remain disabled until the injected runtime acknowledges that
+input interception is effective, so test windows cannot be launched before
+overlay input ownership is confirmed. Press **Ctrl+I** again, or use **Release
+input**, to collapse the menu and return input to the game. The presentation
+dock is enabled by
+`--demo-presentation`, which `npm run dev` supplies automatically.
+
+The status watcher runs in a forked Node child because its WMI/COM event sink is
+not compatible with Electron main's existing COM initialization. Its detection
+usually arrives about a second after process creation, but that delay is no
+longer part of injection: the SDK stages a native `--path-contains` watcher
+before any game starts. That watcher snapshots and ignores already-running
+processes, polls for a new matching executable, and performs the existing
+ReShade load immediately inside the watcher process. It is still observing an
+ordinary unsuspended launch rather than owning `CREATE_SUSPENDED`, so this does
+not claim deterministic support for every arbitrarily fast target.
+
+Unity's `UnityCrashHandler*.exe` helpers are excluded from the demo arm. They
+live beside Unity games under `steamapps` but do not own the game's graphics
+swap chain; selecting one would consume the one-shot arm before the real game
+executable appears.
+
+Sequential Gun Frog launch, close, and relaunch passed this path with one
+Electron client. The current `STEAM_GAME_AUTO_ATTACH_ARMING` line is still a
+request marker rather than a native-ready acknowledgement, and overlapping or
+multi-process launches can fall into the one-shot rearm interval. Those are
+tracked hardening items rather than claims made by this demo.
+
+The separate `npm run dev:gun-frog` process-name gate remains the exact
+two-window acceptance scene. Controlled launchers and clients started without
+`--steam-auto-attach` retain the manual executable/PID controls. The controlled
+`--start-overlay-session` and Gun Frog acceptance paths do not enable the
+presentation dock.
+
+The public SDK path used by normal development is:
+
+```ts
+await launcher.attach(session, { pathContains: '\\steamapps\\' });
+```
+
+It resolves with the selected PID, process basename, and full executable path
+only after the injector reports success and that same process authenticates to
+the overlay transport.
 
 The demo uses the public SDK's optional exact-PID target. A process watcher can
 supply `{ processName, pid }` immediately after it observes the new process. The
@@ -69,14 +113,12 @@ override; invalid or incomplete runtime assets fail instead of falling back.
 
 The status moves from `idle` to `attaching` and then to `connected` only after
 the SDK has correlated the injector-selected PID with its authenticated
-transport. When that exact target exits, the client returns to `idle`, clears
-the stale effective-interception acknowledgement, and enables **Arm, then
-launch** for the restarted process. The Electron client does not need to be
-restarted. A transient transport loss clears the effective acknowledgement but
-keeps Inject disabled until the same PID reconnects or the OS confirms that the
-target exited. If an injector may have run but its result cannot be proven, the
-client displays the error and remains latched; restart the client before
-retrying rather than risk injecting a live target twice.
+transport. Automatic mode keeps a separate native watcher armed for the next
+new Steam process, so closing and relaunching a game does not require restarting
+Electron. In manual mode, terminal target exit returns the launcher to `idle`
+and re-enables **Arm, then launch**. A transient transport loss clears the
+effective input acknowledgement while retaining the connected PID identity
+until it reauthenticates or the OS confirms exit.
 
 The client contains no injector or native payload. Its Steam watcher and
 per-process coordinator are demo-only orchestration around the public SDK.
@@ -86,11 +128,11 @@ foreground focus. Electron owns this accelerator as a global shortcut; it is
 not also registered as a payload hotkey, so one keypress produces one toggle.
 The frontend button reflects changes made through either path.
 
-`ExampleMainOverlay` automatically pins a visible text field at `(24, 112)` and
-shows its latest DOM event in the lower-right diagnostic strip. The status
-overlay has a smaller equivalent strip. These controls are demo diagnostics:
-they make hover, click, focus, typing, and wheel receipt unambiguous during a
-real-game run.
+When opened from the presentation menu, `ExampleMainOverlay` pins a visible
+text field at `(24, 112)` and shows its latest DOM event in the lower-right
+diagnostic strip. The compact status overlay has a smaller equivalent strip.
+These controls make hover, click, focus, typing, and wheel receipt unambiguous
+during a real-game run.
 
 The dedicated controlled D3D12 integration gate builds and drives this real
 client through the public SDK:

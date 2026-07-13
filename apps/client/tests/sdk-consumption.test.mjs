@@ -25,6 +25,12 @@ test('the built demo consumes the SDK instead of bundling a client launcher', ()
     existsSync(path.join(clientRoot, 'dist', 'process-watcher', 'index.cjs')),
     true,
   );
+  assert.equal(
+    existsSync(
+      path.join(clientRoot, 'dist', 'index', 'demo-control-overlay.html'),
+    ),
+    true,
+  );
 });
 
 test('the built demo gives Ctrl+I to one global shortcut owner', () => {
@@ -65,6 +71,7 @@ test('dev launch enables ReShade without selecting a graphics backend', () => {
     '--no-sandbox',
     '--reshade-overlay',
     '--steam-auto-attach',
+    '--demo-presentation',
   ]);
   assert.deepEqual(buildElectronDevArguments('C:\\repo', 'gun-frog'), [
     'C:\\repo',
