@@ -182,7 +182,7 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
 });
 
-test('the demo prearms native Steam-path injection before WMI lifecycle events', () => {
+test('the demo injects every detected Steam executable by exact PID', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
   const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
   const renderer = readClientFile('src', 'renderer', 'main.ts');
@@ -214,18 +214,14 @@ test('the demo prearms native Steam-path injection before WMI lifecycle events',
   assert.match(watcher, /closeEventSink/);
   assert.match(
     autoAttacher,
-    /STEAM_APPS_PATH_FRAGMENT = ['"]\\\\steamapps\\\\/,
+    /launcher\.attach[\s\S]{0,120}?processName,[\s\S]{0,40}?pid/,
   );
-  assert.match(autoAttacher, /UnityCrashHandler64\.exe/);
-  assert.match(autoAttacher, /this\.armNextSteamProcess\(\)/);
-  assert.match(
-    autoAttacher,
-    /launcher\.attach[\s\S]{0,180}?pathContains: STEAM_APPS_PATH_FRAGMENT/,
-  );
+  assert.doesNotMatch(autoAttacher, /STEAM_AUTO_ATTACH_EXCLUDED/);
   assert.doesNotMatch(
     autoAttacher,
-    /launcher\.attach[\s\S]{0,120}?processName,[\s\S]{0,80}?pid: info\.pid/,
+    /launcher\.attach[\s\S]{0,180}?pathContains:/,
   );
+  assert.doesNotMatch(watcher, /bin:\s*\{\s*filter:/);
 });
 
 test('the normal demo presents an always-visible Ctrl+I dock and an interception menu', () => {

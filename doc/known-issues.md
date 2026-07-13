@@ -24,19 +24,17 @@ same-Electron-client restart/reinjection cycle. The public SDK additionally
 accepts an optional exact PID, and the Electron demo exposes the same field, for
 a watcher that injects immediately after the process exists and before graphics
 device/swap-chain creation. Deterministic `CREATE_SUSPENDED` D3D11/D3D12 gates
-passed that ordering on July 13, 2026. Arbitrary unsuspended watcher timing and
-games beyond Gun Frog remain unverified.
+passed that ordering on July 13, 2026. The normal client later passed LORT's
+Unreal launcher/renderer chain, but arbitrary unsuspended watcher timing remains
+unverified.
 
-The normal `npm run dev` Steam-path flow now has a real Gun Frog acceptance as
-well. The previous reactive WMI path could report successful injection after
-Gun Frog had already created its primary DXGI swap chain, leaving no overlay to
-render. The replacement native watcher was armed before launch, ignored
-`UnityCrashHandler*.exe`, and selected the absolute `Gun Frog.exe` path. It
-attached to PIDs 22640 and 8732 across close/relaunch with the same Electron
-client. Both runs logged `CreateSwapChainForHwnd`, authenticated the transport,
-and rendered their first transported scenes. Visual inspection confirmed the
-compact information dock, the expanded Ctrl+I launcher, and the full main
-Electron test window in the game.
+The normal `npm run dev` Steam-path flow first gained real Gun Frog acceptance
+through a one-shot native path watcher. That historical implementation was
+later replaced because selecting the first matching executable cannot cover
+launcher/child process chains. The current demo starts one independent exact-PID
+SDK injection for every WMI-detected `.exe` under `steamapps`, with no helper or
+plausibility exclusions. Every attempt receives an isolated staged runtime and
+one candidate cannot consume or serialize later candidates.
 
 That initial success still missed a Windows PID-reuse defect. The watcher kept
 its startup baseline as bare numeric PIDs, so a later process that reused any
@@ -53,15 +51,18 @@ intercept menu and clicking `Open status window` rendered that Electron surface
 inside Gun Frog while input was captured; closing the game left another watcher
 armed for the next launch.
 
-Those results cover sequential launch/relaunch after the watcher is genuinely
-running. The current `STEAM_GAME_AUTO_ATTACH_ARMING` log is a request marker,
-not a native-ready acknowledgement: session readiness, runtime staging, and
-injector spawn still follow it. The one-shot watcher also rearms only after the
-selected process authenticates, so another matching process launched during
-that interval may be present in the next baseline and be skipped. A surfaced
-native-ready handshake and continuous or duplicate-safe selection stream remain
-hardening work before claiming overlapping or general multi-process Steam game
-support.
+On July 13, 2026, the inject-all flow attempted both LORT's root
+`LortGame.exe` bootstrap and its
+`BW\Binaries\Win64\LortGame-Win64-Shipping.exe` renderer. The bootstrap did not
+initialize a graphics runtime or add-on; the Shipping process independently
+initialized D3D12, loaded the API-19 Electron add-on, authenticated, published
+live FPS, toggled interception, and accepted an overlay button click. This
+closes executable selection for overlapping and multi-process launches. It does
+not close timing: WMI notification, runtime staging, and exact-PID injector spawn
+all happen after process creation, so a sufficiently fast renderer can still
+create its swap chain before injection. Continuous native multi-process
+observation remains optional hardening if that timing becomes a supported
+requirement.
 
 New runs use `build/electron-game-overlay-runtime`. All dated
 `build/reshade-imgui-overlay/...` paths in this document are historical

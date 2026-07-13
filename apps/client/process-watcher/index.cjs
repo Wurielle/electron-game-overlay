@@ -1,4 +1,3 @@
-const IGNORED_PROCESS_NAMES = ['cmd.exe', 'tlist.exe', 'conhost.exe'];
 const KEEP_ALIVE_INTERVAL_MS = 60 * 60 * 1000;
 const SHUTDOWN_TIMEOUT_MS = 2_000;
 
@@ -72,7 +71,6 @@ void import('wql-process-monitor')
     const monitor = await wql.subscribe({
       creation: true,
       deletion: true,
-      bin: { filter: IGNORED_PROCESS_NAMES },
     });
 
     monitor.on('creation', (info) => {

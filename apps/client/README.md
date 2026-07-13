@@ -37,15 +37,15 @@ API inside the target, so there is no D3D11/D3D12 client option:
 npm run dev
 ```
 
-The normal development command starts prearming one native SDK injector for the
-next new process whose normalized executable path contains `/steamapps/`
-(case-insensitive). Start the demo first, let its session/injector come up, then
-launch a game normally through Steam. The native watcher selects it directly,
-reports its exact PID/path, and the client rearms a fresh watcher after the
-authenticated target connects. The WMI child remains active for demo status and
-process-deletion evidence, but it does not initiate injection. The UI shows
-watcher and target status and disables manual injection controls while automatic
-mode is active.
+The normal development command starts a process-creation watcher. Start the demo
+first, let its session and watcher come up, then launch a game normally through
+Steam. Every detected executable whose normalized path contains `/steamapps/`
+(case-insensitive) receives its own exact-PID SDK injection attempt. Attempts run
+independently and concurrently: launchers, render processes, helpers, and
+redistributables are not classified or excluded. A process that initializes the
+overlay authenticates normally; one that does not initialize graphics cannot
+consume or prevent later attempts. The UI shows watcher and per-PID target status
+and disables manual injection controls while automatic mode is active.
 
 Inside the game, the normal demo initially registers one compact control dock.
 It remains visible with the **Ctrl+I** shortcut, target/watcher state, effective
@@ -73,25 +73,14 @@ modes keep their fixed proof geometry and do not enable this presentation-only
 layout.
 
 The status watcher runs in a forked Node child because its WMI/COM event sink is
-not compatible with Electron main's existing COM initialization. Its detection
-usually arrives about a second after process creation, but that delay is no
-longer part of injection: the SDK stages a native `--path-contains` watcher
-before any game starts. That watcher snapshots and ignores already-running
-processes, polls for a new matching executable, and performs the existing
-ReShade load immediately inside the watcher process. It is still observing an
-ordinary unsuspended launch rather than owning `CREATE_SUSPENDED`, so this does
-not claim deterministic support for every arbitrarily fast target.
-
-Unity's `UnityCrashHandler*.exe` helpers are excluded from the demo arm. They
-live beside Unity games under `steamapps` but do not own the game's graphics
-swap chain; selecting one would consume the one-shot arm before the real game
-executable appears.
-
-Sequential Gun Frog launch, close, and relaunch passed this path with one
-Electron client. The current `STEAM_GAME_AUTO_ATTACH_ARMING` line is still a
-request marker rather than a native-ready acknowledgement, and overlapping or
-multi-process launches can fall into the one-shot rearm interval. Those are
-tracked hardening items rather than claims made by this demo.
+not compatible with Electron main's existing COM initialization. Each creation
+event starts a separate SDK launcher with `{ processName, pid }`; each launcher
+stages an isolated runtime/config/log directory. Duplicate creation events for a
+live PID are ignored, and process deletion releases that PID so a later reused
+PID can be attempted again. The watcher deliberately has no executable-name
+filter. Its notification and staging latency are part of injection timing, so
+this remains an ordinary unsuspended observer and cannot guarantee attachment
+before every arbitrarily fast graphics initialization.
 
 The separate `npm run dev:gun-frog` process-name gate remains the exact
 two-window acceptance scene. Controlled launchers and clients started without
@@ -99,15 +88,19 @@ two-window acceptance scene. Controlled launchers and clients started without
 `--start-overlay-session` and Gun Frog acceptance paths do not enable the
 presentation dock.
 
-The public SDK path used by normal development is:
+The public SDK path used for each process detected by normal development is:
 
 ```ts
-await launcher.attach(session, { pathContains: '\\steamapps\\' });
+await launcher.attach(session, {
+  processName: detectedProcess.processName,
+  pid: detectedProcess.pid,
+});
 ```
 
-It resolves with the selected PID, process basename, and full executable path
-only after the injector reports success and that same process authenticates to
-the overlay transport.
+It resolves only after the injector reports success and that same PID
+authenticates to the overlay transport. Automatic mode creates a distinct
+launcher for every detected Steam-path executable rather than sharing a
+one-shot path target.
 
 The demo uses the public SDK's optional exact-PID target. A process watcher can
 supply `{ processName, pid }` immediately after it observes the new process. The
@@ -119,14 +112,15 @@ game is already rendering is not a supported late-attachment workflow.
 `--reshade-runtime-dir=<absolute-path>` remains a strict development/test
 override; invalid or incomplete runtime assets fail instead of falling back.
 
-The status moves from `idle` to `attaching` and then to `connected` only after
-the SDK has correlated the injector-selected PID with its authenticated
-transport. Automatic mode keeps a separate native watcher armed for the next
-new Steam process, so closing and relaunching a game does not require restarting
-Electron. In manual mode, terminal target exit returns the launcher to `idle`
-and re-enables **Arm, then launch**. A transient transport loss clears the
-effective input acknowledgement while retaining the connected PID identity
-until it reauthenticates or the OS confirms exit.
+The status moves from `attaching` to `connected` only after the SDK has
+correlated the requested exact PID with its authenticated transport. A failed or
+non-rendering process remains isolated from every other process attempt. If its
+runtime authenticates later, the shared session promotes that existing PID to
+connected without reinjecting it. Closing and relaunching a game does not
+require restarting Electron. In manual mode, terminal target exit returns the
+launcher to `idle` and re-enables **Arm, then launch**. A transient transport
+loss clears the effective input acknowledgement while retaining the connected
+PID identity until it reauthenticates or the OS confirms exit.
 
 The client contains no injector or native payload. Its Steam watcher and
 per-process coordinator are demo-only orchestration around the public SDK.

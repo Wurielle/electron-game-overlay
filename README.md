@@ -64,12 +64,13 @@ Start the Electron client with:
 npm run dev
 ```
 
-This demo command starts prearming the SDK's native injector for the next new
-process whose normalized executable path contains `/steamapps/`. Start the demo
-first, let its overlay session and injector come up, and then launch the game.
-The native watcher—not the later WMI notification—selects and injects the new
-process. After an authenticated target connects, the client prearms a fresh
-watcher for the next sequential Steam launch. ReShade selects D3D11 or D3D12
+This demo command watches process creation and starts an independent exact-PID
+SDK injection for every detected executable whose normalized path contains
+`/steamapps/`. Start the demo first, let its overlay session and watcher come
+up, and then launch the game. The client does not guess which executable owns
+rendering: bootstrap launchers, child renderers, helpers, and redistributables
+all receive one attempt. Whatever process initializes the overlay authenticates
+and renders without blocking later candidates. ReShade selects D3D11 or D3D12
 inside each process, so application code does not choose a graphics payload.
 Press **Ctrl+I** while a game is focused to toggle interception.
 
@@ -93,24 +94,25 @@ session.on('fps', ({ pid, fps }) => console.log(pid, fps));
 overlayWindow.followTarget({ area: 'render' });
 ```
 
-The client retains its WMI watcher only for demo status and lifecycle evidence;
-its roughly one-second notification delay no longer starts injection. The
-prearmed native path is still an observer of an ordinary unsuspended process,
-not a `CREATE_SUSPENDED` launcher, so the controlled acceptance launchers remain
-the deterministic injection-before-graphics proof.
+The demo's WMI watcher supplies each exact PID and executable basename. Its
+notification plus runtime-staging latency is part of the injection path, so the
+demo remains an observer of an ordinary unsuspended process rather than a
+`CREATE_SUSPENDED` launcher. Independent launchers remove the one-shot gap for
+overlapping and launcher/child process chains, but the controlled acceptance
+launchers remain the deterministic injection-before-graphics proof.
 
-The current demo acceptance covers sequential launch, close, and relaunch. A
-native-ready signal and the watcher gap for overlapping/multi-process launches
-are tracked in `doc/todo.md` rather than treated as POC blockers.
-
-The same prearmed path target is available through the SDK:
+The demo uses the SDK's exact-PID target:
 
 ```ts
-await launcher.attach(session, { pathContains: '\\steamapps\\' });
+await launcher.attach(session, {
+  processName: detectedProcess.processName,
+  pid: detectedProcess.pid,
+});
 ```
 
-It ignores processes that were already alive when armed, selects a newly
-created matching executable, and reports the selected PID and full path.
+Each detected PID receives a separate launcher, staged runtime, proof window,
+and cleanup lifecycle. The SDK's one-shot `pathContains` target remains
+available separately, but the demo does not use it for multi-process games.
 
 The SDK also accepts an exact PID:
 
