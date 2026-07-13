@@ -77,10 +77,20 @@ The same retained handles avoid reopening every ignored process on each poll.
 This patch remains separate so build trees containing the original watcher
 migrate forward without resetting the pinned ReShade checkout.
 
+## `reshade-suppress-splash.patch`
+
+Suppresses ReShade's branded startup window while leaving its full Dear ImGui
+and add-on overlay pipeline enabled. The Electron compositor owns user-facing
+startup presentation, so the five-second `ReShade ... UNOFFICIAL` message is
+not drawn over the game. A non-branded progress spinner remains available for
+later explicit full effect reloads. The runtime remains identified as a
+modified ReShade build in DLL metadata, exports, logs, and its About page; this
+patch does not claim official upstream signing.
+
 CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
-validates the pinned commit, exact eight-file change set, and normalized SHA-256
+validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all six patch
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all seven patch
 hashes, the full-add-on configuration, and runtime/injector hashes before
 accepting its cache.

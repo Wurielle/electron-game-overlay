@@ -102,6 +102,10 @@ patches to the pinned ReShade revision:
   removed promptly, so Windows PID reuse cannot make a newly launched game look
   like an old process that should be ignored. The watcher polls every 50 ms and
   does not reopen every baseline process on each pass.
+- `reshade-suppress-splash.patch` suppresses ReShade's branded startup window
+  because the embedding application owns startup UI. It leaves the full GUI
+  pipeline, add-on callbacks, version metadata, `UNOFFICIAL` build identity,
+  and the non-branded spinner for later explicit effect reloads intact.
 
 Use the runtime built by this repository with the Electron add-on; the stock
 API-18 ReShade 6.7.3 runtime is ABI-incompatible.
@@ -118,10 +122,10 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-8 build stamp, the six patch
-SHA-256 hashes, the pinned commit, exact normalized contents of all eight patched
+The launchers validate the cache against a schema-9 build stamp, the seven patch
+SHA-256 hashes, the pinned commit, exact normalized contents of all nine patched
 source files, the full-add-on configuration, and the runtime/injector SHA-256
-hashes. CMake performs the same commit, eight-path, and normalized-content check
+hashes. CMake performs the same commit, nine-path, and normalized-content check
 independently for every fetched source tree before generating native targets.
 Extra edits inside an expected fetched-source file invalidate the build.
 

@@ -34,6 +34,9 @@ set(RESHAPE_SOURCE_PATCHES
 set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher-process-identity.patch"
 )
+set(RESHAPE_SUPPRESS_SPLASH_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-suppress-splash.patch"
+)
 set(RESHAPE_EXPECTED_PATCHED_FILES
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -42,6 +45,7 @@ set(RESHAPE_EXPECTED_PATCHED_FILES
     "source/addon_manager.hpp"
     "source/input.cpp"
     "source/input.hpp"
+    "source/runtime_gui.cpp"
     "tools/injector.cpp"
 )
 set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
@@ -52,11 +56,13 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
     "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
+    "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
     "tools/injector.cpp=4EFC2A96B4D6CDF5BF5C7994A4C8151188C599C99CC755801EC47F568D3F04D6"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+    "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -129,7 +135,7 @@ function(verify_reshade_patched_source source_dir)
         RESHAPE_ACTUAL_FILES_TEXT)
     if(NOT RESHAPE_ACTUAL_FILES_TEXT STREQUAL RESHAPE_EXPECTED_FILES_TEXT)
         message(FATAL_ERROR
-            "The fetched ReShade tree does not contain exactly the eight "
+            "The fetched ReShade tree does not contain exactly the nine "
             "pinned modified files.\n"
             "Expected:\n${RESHAPE_EXPECTED_FILES_TEXT}\n"
             "Actual:\n${RESHAPE_ACTUAL_FILES_TEXT}"
@@ -215,11 +221,12 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply six narrow pinned seams: the passive copied-input observer, an injector
+# Apply seven narrow pinned seams: the passive copied-input observer, an injector
 # base-path override, coverage for Windows' second mouse projection through
-# WM_POINTER, exact-PID targeting, and a one-shot prearmed path watcher. The
-# watcher patches are terminal so existing exact-PID and original watcher trees
-# can migrate without resetting or replacing those ignored source trees.
+# WM_POINTER, exact-PID targeting, a one-shot prearmed path watcher, and startup
+# splash suppression. The watcher patches are terminal so existing exact-PID
+# and original watcher trees can migrate without resetting or replacing those
+# ignored source trees.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
         "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
@@ -471,6 +478,50 @@ if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
             "Unable to migrate the ReShade path watcher to process identities.\n"
             "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY_OUTPUT}"
             "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# The product renders its own startup/status UI. Keep ReShade's full GUI and
+# add-on callback path enabled, but suppress only its built-in splash window.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_SUPPRESS_SPLASH_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_SUPPRESS_SPLASH_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned ReShade splash-suppression patch cannot migrate the patch stack.\n"
+            "${RESHAPE_SUPPRESS_SPLASH_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_SUPPRESS_SPLASH_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to suppress the pinned ReShade splash window.\n"
+            "${RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY_ERROR}"
         )
     endif()
 endif()
