@@ -20,8 +20,12 @@
 > public SDK now pass that exact Gun Frog boundary through the ReShade launcher
 > on the process-name, arm-before-launch path. The same production path also
 > passed two fresh controlled D3D12 multi-window/lifecycle cycles and a
-> same-Electron-client target restart/reinjection cycle. Late injection,
-> arbitrary fast-start targets, and other games remain unverified.
+> same-Electron-client target restart/reinjection cycle. The SDK and demo now
+> accept an optional exact PID for immediate near-process-creation injection;
+> deterministic suspended D3D11/D3D12 gates passed through the production client
+> and public SDK on July 13, 2026.
+> Post-render injection is unsupported, arbitrary watcher latency and other games
+> remain unverified, and publishing is deferred.
 > The hudhook implementation remains the verified Electron compositor and routing
 > reference, not the selected injected host.
 
@@ -247,7 +251,15 @@ The native overlay runtime still needs a process-entry strategy, graphics hook s
   - Use graphics/runtime-specific extension points where available, such as Vulkan layers or OpenXR layers.
   - This can be cleaner for specific ecosystems, but does not cover every graphics API with one implementation.
 
-The completed ReShade POC uses a scoped proxy runtime for early process entry. The next hudhook POC deliberately uses late injection so it does not claim a local proxy filename that may already belong to a user's ReShade installation. Keep the launcher/injector path as the preferred product direction unless testing demonstrates a target that requires earlier process entry.
+The initial controlled ReShade baseline used a scoped proxy runtime for early
+process entry. The production SDK now uses the pinned injector: name-only targets
+are armed before launch, while an optional exact PID lets a process watcher call
+immediately after the process exists. That call still has to complete before the
+target creates its graphics device and swap chain. The deterministic D3D11/D3D12
+process-start gates enforce this ordering with `CREATE_SUSPENDED`; both passed
+through the real frontend and SDK. A separate plus-three-second probe loaded the
+DLL into already-rendering targets but did not adopt their existing devices or
+swap chains, so it is not a supported late-injection path.
 
 ### Graphics hook targets
 
@@ -364,6 +376,8 @@ multi-window compositor milestones are complete:
 - the built production client and public SDK ReShade launcher passed the same exact Gun Frog gate on PID 11104: positive interception acknowledgement, one click on each aligned Electron control while the menu stayed alive, Ctrl+I negative acknowledgement, and the identical Quit position closing the game; the dedicated runner emitted `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`;
 - the production client/public SDK also passed two isolated controlled D3D12 cycles on PIDs 17248 and 13528: both Electron windows accepted input, caption drag remained interactive at the moved coordinates, the foreground game oracle froze while intercepted, release restored legacy/raw/primary-pointer input and confinement, released Escape closed each target, and a clean fresh relaunch completed; the runner emitted `D3D12_REAL_CLIENT_SDK_GATE_PASS`;
 - the reusable `attach(session, target)` lifecycle then kept Electron PID 17756 alive across controlled target PIDs 19764 and 17940, pinned each injector-selected PID, kept the injection latch across transient transport loss, returned to `idle` after each OS-confirmed target exit, staged distinct runtime directories, and passed the second D3D12 scene/input cycle; the frontend-driven runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`;
+- `attach(session, { processName, pid })` now exposes exact-PID selection through the public SDK, and the Electron demo exposes the same optional field; deterministic suspended process-start gates passed D3D11 on PID 7428 at 72.393 ms and D3D12 on PID 21508 at 84.061 ms from process creation to frontend click. Both proved exact injector arguments and pre-`ResumeThread` ReShade loading, then passed transport, API, two-window scene, input, exit-0, frontend-idle, and no-leftover checks after resume;
+- the plus-three-second post-render probe loaded `ReShade64.dll` into both controlled backends without adopting the existing device/swap chain or initializing the runtime, add-on, or Electron scene, so that timing is unsupported;
 - upstream hudhook 0.9.1 independently hooks the controlled D3D11 host and owns the ImGui lifecycle;
 - the public Electron SDK publishes a 640 x 360 offscreen window from both a focused lifecycle producer and the real built client through the authenticated loopback transport;
 - a worker in the hudhook payload consumes direct BGRA frame packets, converts premultiplied BGRA to straight RGBA, and atomically publishes one immutable back-to-front scene with matching router state;
@@ -583,9 +597,12 @@ The native implementation behind that window/session/input API uses ImGui
 internally. The active ReShade implementation keeps the public
 session/window/input surface and replaces the hudhook launcher and runtime
 assets. Generic `findWindows()` and `attachToProcess()` are retained only for
-source compatibility and currently throw explicitly. The accepted target
-boundary is process-name arming before launch; late injection and broader game
-compatibility remain future work.
+source compatibility and currently throw explicitly. Name-only selection remains
+the accepted arm-before-launch boundary. Optional exact-PID selection is for a
+watcher that calls immediately after process creation and before graphics-device
+and swap-chain creation; its deterministic suspended D3D11/D3D12 gates passed.
+It is not an existing-device/swap-chain late-attachment API, and those suspended
+runs do not establish arbitrary unsuspended watcher latency.
 
 ## Open questions
 
@@ -651,7 +668,9 @@ the production SDK/client ReShade path passes the same Gun Frog gate and two
 fresh controlled D3D12 lifecycle/multi-window cycles, plus a same-client target
 restart/reinjection cycle, when armed by process name before launch.
 Target-HWND/client-origin ownership, mixed monitors, multiple
-targets, texture retirement, broader game/API coverage, late injection,
-arbitrary fast-start target timing, graceful disable/unload, and installer/proxy
-conflicts remain post-POC hardening. Competitive or anti-cheat-protected targets, anti-cheat
+targets, texture retirement, broader game/API coverage, exact process-creation
+identity across PID reuse, arbitrary watcher latency, graceful disable/unload,
+and installer/proxy conflicts remain post-POC hardening. Post-render injection
+is unsupported unless existing-device/swap-chain adoption is added. Package
+publishing is deferred. Competitive or anti-cheat-protected targets, anti-cheat
 bypass work, and VR remain outside the unsigned full-add-on POC.

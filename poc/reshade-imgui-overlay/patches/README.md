@@ -25,8 +25,17 @@ Sets `RESHADE_BASE_PATH_OVERRIDE` inside the target to the injector directory, s
 configuration, add-ons, and logs stay in an isolated stage instead of the game
 directory. It also removes the upstream 50 ms post-discovery delay: the Gun Frog
 Unity swap chain was created inside that delay, before the runtime could attach.
-The injector is still a POC prelaunch basename watcher; PID-correlated production
-attachment remains separate work.
+
+## `reshade-injector-exact-pid.patch`
+
+The original `inject.exe <exe name>` prelaunch watcher remains available. An
+exact-target form, `inject.exe <exe name> --pid <uint32>`, instead opens and holds
+only that PID, then verifies the opened process image's actual basename before
+performing any remote write or creating a remote thread. Strict decimal parsing
+rejects zero, signs, whitespace, overflow, and trailing characters. Exact-PID
+failures that occur before a remote thread is created print the stable
+`ReShade injection not started.` line; its absence is deliberately not evidence
+that injection succeeded.
 
 ## `reshade-pointer-input-block.patch`
 
@@ -44,9 +53,10 @@ pointer ID, target, type, and Ctrl/Shift state in the queued copy. Touch and pen
 remain unblocked/unconverted. Secondary/X buttons, double-click semantics, and
 pointer wheel normalization remain explicit post-POC hardening.
 
-CMake applies the ordered patch stack idempotently to ignored fetched source and
-then validates the pinned commit, exact eight-file change set, and normalized
-SHA-256 content for every patched file in each build tree before declaring native
-targets. `scripts/build-runtime.ps1` additionally validates all three patch
+CMake applies the ordered patch stack idempotently to ignored fetched source,
+including migrating the prior three-patch stack without resetting it, and then
+validates the pinned commit, exact eight-file change set, and normalized SHA-256
+content for every patched file in each build tree before declaring native
+targets. `scripts/build-runtime.ps1` additionally validates all four patch
 hashes, the full-add-on configuration, and runtime/injector hashes before
 accepting its cache.

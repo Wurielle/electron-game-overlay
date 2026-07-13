@@ -329,8 +329,10 @@ class Application {
 
     ipcMain.handle('overlay:start', () => this.startOverlaySession());
 
-    ipcMain.handle('overlay:inject', async (event, processName: string) =>
-      this.attachOverlayToProcess(processName),
+    ipcMain.handle(
+      'overlay:inject',
+      async (event, processName: string, pid?: number) =>
+        this.attachOverlayToProcess(processName, pid),
     );
 
     ipcMain.handle(
@@ -392,7 +394,7 @@ class Application {
     return this.getDemoState();
   }
 
-  private async attachOverlayToProcess(processName: string) {
+  private async attachOverlayToProcess(processName: string, pid?: number) {
     if (!this.reshadeLauncher) {
       throw new Error(
         'ReShade injection is not configured; restart the client with the explicit ReShade startup options',
@@ -403,10 +405,11 @@ class Application {
     if (!normalizedProcessName) {
       throw new Error('Enter a game executable name before injecting');
     }
+    const normalizedPid = normalizeOptionalTargetPid(pid);
     if (this.reshadeAttachment.phase !== 'idle') {
       throw new Error(
         this.reshadeAttachment.phase === 'attaching'
-          ? `ReShade is already attaching to ${this.reshadeAttachment.processName}`
+          ? `ReShade is already attaching to ${this.reshadeAttachment.processName}${this.reshadeAttachment.pid ? ` (PID ${this.reshadeAttachment.pid})` : ''}`
           : `ReShade is already connected to ${this.reshadeAttachment.processName} (PID ${this.reshadeAttachment.pid})`,
       );
     }
@@ -415,13 +418,14 @@ class Application {
     this.setReShadeAttachmentState({
       phase: 'attaching',
       processName: normalizedProcessName,
-      pid: null,
+      pid: normalizedPid ?? null,
       error: null,
     });
     try {
       this.startOverlaySession();
       const result = await this.requestReShadeInjection({
         processName: normalizedProcessName,
+        ...(normalizedPid === undefined ? {} : { pid: normalizedPid }),
       });
       if (this.isCurrentReShadeAttachment(attempt, 'attaching')) {
         this.setReShadeAttachmentState({
@@ -443,7 +447,7 @@ class Application {
             // Keep the client non-idle until the launcher proves retry safety.
             phase: retryIsSafe ? 'idle' : 'attaching',
             processName: normalizedProcessName,
-            pid: null,
+            pid: normalizedPid ?? null,
             error: attachmentError,
           },
           retryIsSafe ? 'attach-failed' : 'attach-indeterminate',
@@ -779,6 +783,22 @@ class Application {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeOptionalTargetPid(pid: unknown): number | undefined {
+  if (pid === undefined || pid === null) {
+    return undefined;
+  }
+  if (
+    !Number.isSafeInteger(pid) ||
+    (pid as number) <= 0 ||
+    (pid as number) > 0xffffffff
+  ) {
+    throw new RangeError(
+      'Target PID must be an integer between 1 and 4294967295',
+    );
+  }
+  return pid as number;
 }
 
 export { Application };

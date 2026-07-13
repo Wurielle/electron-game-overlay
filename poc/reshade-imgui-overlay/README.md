@@ -60,7 +60,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies three tracked
+downloads both into the ignored build directory, then applies four tracked
 patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -72,6 +72,9 @@ patches to the pinned ReShade revision:
   `WM_POINTER` messages as blockable input and updates ReShade's managed cursor,
   five-button, and vertical-wheel state before suppression. Touch, pen,
   non-client pointer activation, and title-bar handling remain outside the seam.
+- `reshade-injector-exact-pid.patch` adds strict `--pid <uint32>` targeting,
+  verifies the opened process image basename before remote mutation, and emits a
+  stable safe-retry marker when no remote injection thread was created.
 
 Use the runtime built by this repository with the Electron add-on; the stock
 API-18 ReShade 6.7.3 runtime is ABI-incompatible.
@@ -84,7 +87,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\poc\reshade-imgui-overlay\scripts\build-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-5 build stamp, the three patch
+The launchers validate the cache against a schema-6 build stamp, the four patch
 SHA-256 hashes, the pinned commit, exact normalized contents of all eight patched
 source files, the full-add-on configuration, and the runtime/injector SHA-256
 hashes. CMake performs the same commit, eight-path, and normalized-content check
@@ -281,6 +284,49 @@ the game-side interception oracle. Evidence is under
 `build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`, whose
 `result.txt` contains `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`.
 
+## Run the exact-PID process-start gates
+
+Use the dedicated production-client wrappers for the near-process-creation
+ordering:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+```
+
+The public SDK accepts `attach(session, { processName, pid })`, and the Electron
+demo exposes the optional PID beside the process basename. Each gate creates its
+controlled target with Windows `CREATE_SUSPENDED`, captures that exact PID,
+enters both values in the real frontend, completes injection, and only then
+resumes the primary thread. This proves the intended ordering for a watcher that
+calls immediately after the process exists and before graphics-device/swap-chain
+creation.
+
+Both gates passed on July 13, 2026:
+
+- D3D11 selected target PID 7428 and reached the frontend injection click 72.393
+  ms after process creation. The runner emitted
+  `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is under
+  `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`.
+- D3D12 selected target PID 21508 and reached the click in 84.061 ms. The runner
+  emitted `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is
+  under
+  `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
+
+Both runs proved the exact injector argument vector and that `ReShade64.dll` was
+loaded before `ResumeThread`. After resume, authenticated transport, the expected
+graphics API, two Electron windows, and input acceptance passed. Each target
+exited with code 0, the frontend returned to `idle`, and the target/client/
+injector no-leftover check passed. This deterministic suspended ordering does not
+establish an arbitrary latency budget for an unsuspended watcher.
+
+This is not post-render attachment. A separate probe waited three seconds after
+the controlled D3D11 and D3D12 targets began rendering. The injector returned
+success and `ReShade64.dll` loaded, but the pinned runtime did not redirect the
+active graphics API, adopt the existing device or swap chain, load the add-on,
+or render the Electron scene. That route is unsupported. Probe evidence is under
+`build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
+
 ## Run the real client/SDK Gun Frog gate
 
 Use the dedicated production-client acceptance wrapper:
@@ -375,18 +421,21 @@ closed the host-switch milestone for this accepted target path.
   captured Ctrl/Shift state); touch and pen remain unconverted and fail open to
   the target;
 - multiple-swap-chain/render-queue ownership and safe texture retirement;
-- graceful client disable/unload, late injection, arbitrary fast-start target
-  timing, additional games, or broader graphics/presentation compatibility;
-- caller-selected PID targeting when multiple same-basename processes exist
-  (the SDK pins the injector-selected PID, but the frontend still arms by
-  executable basename);
+- graceful client disable/unload, post-render injection or existing-device/
+  swap-chain adoption, arbitrary watcher latency, additional games, or broader
+  graphics/presentation compatibility;
+- process identity beyond exact PID plus verified executable basename, including
+  stale watcher events that can encounter PID reuse;
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
 The focused POC now includes the production client/SDK Gun Frog gate, the
 two-cycle fresh-client D3D12 gate, and same-client target restart/reinjection.
-Raw normalization, graceful disable/unload, late or caller-selected-PID
-attachment, arbitrary fast-start targets, other games and APIs, and
-multiple-swap-chain hardening stay outside that accepted boundary. ReShade
-replaces the injected host, graphics lifecycle, ImGui ownership, and game-side
-input blocking rather than the Electron SDK contract.
+Exact-PID near-process-creation support is implemented and has dedicated
+suspended D3D11/D3D12 gates with passing acceptance. Raw normalization,
+graceful disable/unload, post-render attachment, arbitrary watcher latency,
+stronger process-creation identity, other games and APIs, and multiple-swap-chain
+hardening stay outside the accepted boundary. Package publishing is deferred
+while repository-local SDK/client testing continues. ReShade replaces the
+injected host, graphics lifecycle, ImGui ownership, and game-side input blocking
+rather than the Electron SDK contract.

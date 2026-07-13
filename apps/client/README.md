@@ -32,9 +32,18 @@ API inside the target, so there is no D3D11/D3D12 client option:
 npm run dev
 ```
 
-Enter an executable basename such as `game.exe`, click **Arm, then launch**, and
-only then launch the game. The accepted Gun Frog path is process-name
-arm-before-launch; late injection into an already running game is not claimed.
+Enter an executable basename such as `game.exe`. For the accepted name-only
+flow, leave **Exact PID (optional)** empty, click **Inject / arm**, and only then
+launch the game. The accepted Gun Frog path remains process-name
+arm-before-launch.
+
+The demo also exposes the public SDK's optional exact-PID target. A process
+watcher can supply `{ processName, pid }` immediately after it observes the new
+process. The PID must be a positive uint32, the process must already exist, and
+the injector verifies that the opened process image has the requested basename
+before any remote mutation. This path is intended to run before the target
+creates its graphics device and swap chain; manually finding and entering a PID
+after a game is already rendering is not a supported late-attachment workflow.
 `--reshade-runtime-dir=<absolute-path>` remains a strict development/test
 override; invalid or incomplete runtime assets fail instead of falling back.
 
@@ -93,6 +102,37 @@ interception/release, and no-leftover-process checks passed. Its marker is
 `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`; evidence is under
 `build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
 
+The exact-PID process-start gates are available separately for both controlled
+backends:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+```
+
+They create the target with Windows `CREATE_SUSPENDED`, enter its basename and
+exact PID in the real Electron frontend, click **Inject / arm**, and resume the
+primary thread only after injection completes. This deterministically tests the
+required process-exists-before-injection and injection-before-graphics ordering.
+
+Both gates passed on July 13, 2026:
+
+- D3D11 targeted PID 7428. The process-create-to-frontend-click interval was
+  72.393 ms, and the runner emitted
+  `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Evidence is under
+  `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`.
+- D3D12 targeted PID 21508. The process-create-to-frontend-click interval was
+  84.061 ms, and the runner emitted
+  `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Evidence is under
+  `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
+
+Both runs proved the exact injector arguments and that ReShade loaded before
+`ResumeThread`. After resume, transport connection, graphics-API detection, the
+two-window scene, and input acceptance passed. Each target exited with code 0,
+the frontend returned to `idle`, and no target, client, or injector process was
+left behind. This does not prove how much delay an unsuspended external watcher
+can tolerate.
+
 For the accepted real-game proof, close Gun Frog first and run:
 
 ```powershell
@@ -111,5 +151,10 @@ repository acceptance wrapper automates build/startup and validates the logs:
 
 That real-game client/SDK gate passed on July 13, 2026. The controlled D3D12
 result above proves the prearmed SDK path and backend selection for the
-cooperating host, not late injection, arbitrary fast-start targets, or
-compatibility with other games.
+cooperating host, not post-render injection, arbitrary fast-start targets, or
+compatibility with other games. In a separate controlled probe, injection three
+seconds after D3D11/D3D12 rendering began loaded `ReShade64.dll` but did not
+adopt the existing device or swap chain, initialize the runtime/add-on, or render
+the Electron scene. That route is unsupported. PID reuse and stronger process
+creation identity, arbitrary watcher latency, and package publishing remain
+deferred; the repository-built client and SDK are the current local test path.

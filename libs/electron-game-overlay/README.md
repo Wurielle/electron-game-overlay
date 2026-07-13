@@ -29,6 +29,25 @@ session.start();
 await launcher?.attach(session, { processName: 'game.exe' });
 ```
 
+Process watchers can target the exact process they just observed. Supplying a
+PID invokes the pinned injector as `inject.exe game.exe --pid 1234`, verifies
+both the PID and executable basename, and uses that PID for injector stdout,
+transport connection, reauthentication, and terminal-exit correlation:
+
+```ts
+await launcher?.attach(session, {
+  processName: detectedProcess.name,
+  pid: detectedProcess.pid,
+});
+```
+
+`pid` is optional for backward compatibility and must be a positive uint32
+integer when supplied. The PID is part of the target identity, so requests for
+two same-name processes with different PIDs are distinct. A startup
+`--reshade-expected-target-pid` remains supported; if both sources are present,
+they must match or the SDK rejects the request before staging or spawning an
+injector.
+
 `attach()` is reusable. Its public state is `idle`, `attaching`, `connected`, or
 `blocked`. A socket close first emits `game.process.transport-lost`; that is not
 proof that the target exited, so the injection latch remains active while a
@@ -40,6 +59,9 @@ directory. Client-originated lifecycle events are rejected by the authenticated
 transport.
 
 Failures known to occur before the injector process spawns return to `idle`.
+The exact-PID injector also emits a stable no-injection proof when it fails
+before creating a remote thread; that proven outcome returns to `idle` even
+though the injector child itself spawned.
 Once an injector may have run, an unprovable outcome is deliberately
 `blocked` until the launcher is disposed; retrying could otherwise inject a
 second runtime into a live target. An OS-confirmed exit of the selected PID is
@@ -51,12 +73,15 @@ event source and is intentionally one-shot. It stays latched after proof (or an
 expired proof window) rather than risking a second injector against a live
 target. Applications that need restart/reinjection must use `attach()`.
 
-Arm the launcher before starting the target process. The accepted real-game
-production-client proof uses `{ processName: 'Gun Frog.exe' }`; late attachment
-to an already running game and other games are not yet compatibility claims. The
-runtime directory can be overridden explicitly for development tests; otherwise
-it resolves relative to the built SDK. The legacy `findWindows()` and
-`session.attachToProcess()` methods still throw.
+For name-only selection, arm the launcher before starting the target process.
+A process watcher may instead call `attach()` with the exact PID immediately
+after process creation; do so before the game initializes its graphics device.
+Attachment after a game is already rendering and other games are not yet
+compatibility claims. The accepted real-game production-client proof uses
+`{ processName: 'Gun Frog.exe' }`. The runtime directory can be overridden
+explicitly for development tests; otherwise it resolves relative to the built
+SDK. The legacy `findWindows()` and `session.attachToProcess()` methods still
+throw.
 
 The controlled production client/SDK D3D12 gate is available through:
 

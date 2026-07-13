@@ -114,6 +114,12 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
     appEntry,
     /pid: result\.pid,[\s\S]{0,160}?this\.markGunFrogTargetConnected\(\)/,
   );
+  assert.match(appEntry, /attachOverlayToProcess\(processName, pid\)/);
+  assert.match(appEntry, /normalizeOptionalTargetPid\(pid\)/);
+  assert.match(
+    appEntry,
+    /processName: normalizedProcessName,[\s\S]{0,100}?pid: normalizedPid/,
+  );
   assert.match(appEntry, /\+\+this\.reshadeAttachmentAttempt/);
   assert.match(appEntry, /this\.inputInterceptEffective = false/);
   assert.match(appEntry, /attachment: this\.reshadeAttachment/);
@@ -154,6 +160,14 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
   assert.match(renderer, /Ready to inject again/);
   assert.match(clientPage, /data-attachment-phase="idle"/);
+  assert.match(clientPage, /id="process-pid"/);
+  assert.match(clientPage, /max="4294967295"/);
+  assert.match(
+    renderer,
+    /ipcRenderer\.invoke\('overlay:inject', processName, pid\)/,
+  );
+  assert.match(renderer, /Number\.isSafeInteger\(pid\)/);
+  assert.match(renderer, /Injecting ReShade into/);
 
   const statusRenderer = sourceSection(
     renderer,

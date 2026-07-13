@@ -71,6 +71,10 @@ $PlatformRuntimeDirectory = Join-Path $RuntimeRoot "win32-x64"
 $ReShadeRuntimeDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $LegacyHudhookInjector = Join-Path $PlatformRuntimeDirectory "hudhook_overlay_injector.exe"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
+$ObserverPatch = Join-Path $ReShadePocRoot "patches\reshade-input-observer.patch"
+$InjectorBasePathPatch = Join-Path $ReShadePocRoot "patches\reshade-injector-base-path.patch"
+$PointerInputPatch = Join-Path $ReShadePocRoot "patches\reshade-pointer-input-block.patch"
+$InjectorExactPidPatch = Join-Path $ReShadePocRoot "patches\reshade-injector-exact-pid.patch"
 
 if (-not (Test-Path -LiteralPath $LibraryEntry -PathType Leaf)) {
     throw "Build the electron-game-overlay TypeScript library before staging ReShade: $LibraryEntry"
@@ -161,8 +165,16 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampSource"
 }
-if ($BuildStamp.schemaVersion -ne 5 -or
+if ($BuildStamp.schemaVersion -ne 6 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
+    $BuildStamp.observerPatchSha256 -ne
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $ObserverPatch).Hash -or
+    $BuildStamp.injectorBasePathPatchSha256 -ne
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorBasePathPatch).Hash -or
+    $BuildStamp.pointerInputPatchSha256 -ne
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $PointerInputPatch).Hash -or
+    $BuildStamp.injectorExactPidPatchSha256 -ne
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExactPidPatch).Hash -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne "64-bit" -or
     $BuildStamp.addonLevel -ne 2) {

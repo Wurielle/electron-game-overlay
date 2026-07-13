@@ -73,6 +73,10 @@
         padding: 0 10px;
       }
 
+      #process-pid {
+        max-width: 124px;
+      }
+
       button {
         cursor: pointer;
         padding: 0 12px;
@@ -125,7 +129,17 @@
               id="process-name"
               placeholder="Game executable name (for example, Gun Frog.exe)"
             />
-            <button id="inject">Arm, then launch</button>
+          </div>
+          <div class="row">
+            <input
+              id="process-pid"
+              type="number"
+              min="1"
+              max="4294967295"
+              step="1"
+              placeholder="Exact PID (optional)"
+            />
+            <button id="inject">Inject / arm</button>
           </div>
         </div>
 

@@ -20,8 +20,12 @@ counters to stay frozen too. Gun Frog passed its initial corrected gate on July
 Electron client and public SDK now use the ReShade launcher for the accepted
 process-name, arm-before-launch Gun Frog path. The same production path also
 passed two fresh controlled D3D12 lifecycle/multi-window cycles and a separate
-same-Electron-client restart/reinjection cycle. Late injection, arbitrary
-fast-start target timing, and games beyond Gun Frog remain unverified.
+same-Electron-client restart/reinjection cycle. The public SDK additionally
+accepts an optional exact PID, and the Electron demo exposes the same field, for
+a watcher that injects immediately after the process exists and before graphics
+device/swap-chain creation. Deterministic `CREATE_SUSPENDED` D3D11/D3D12 gates
+passed that ordering on July 13, 2026. Arbitrary unsuspended watcher timing and
+games beyond Gun Frog remain unverified.
 
 The first injected Gun Frog run is a recorded failed gate, not acceptance:
 Electron received and rendered a full click while the same physical click also
@@ -92,6 +96,34 @@ spawned remain `blocked` until launcher disposal when no target PID exit can be
 proven. The runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`;
 evidence is retained under
 `build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
+
+The exact-PID process-start gates passed through the real frontend and public
+SDK. D3D11 targeted PID 7428, reached the frontend click 72.393 ms after process
+creation, and emitted
+`D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is under
+`build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`.
+D3D12 targeted PID 21508 at 84.061 ms and emitted
+`D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is under
+`build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
+Both proved the exact injector arguments and ReShade loading before
+`ResumeThread`. Transport, API selection, two Electron windows, and input passed
+after resume; both targets exited 0, both frontends returned to `idle`, and no
+test process remained.
+
+Exact PID narrows selection but does not make post-render injection work. In a
+controlled probe, the injector ran three seconds after D3D11 and D3D12 targets
+were already rendering. It returned success and `ReShade64.dll` was present in
+each process, but there were no graphics-API redirect, runtime-initialization,
+add-on-load, or first-scene markers. The pinned runtime did not adopt the
+existing device or swap chain, so this route is unsupported. Evidence is under
+`build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
+
+The exact-PID path currently identifies a target by PID plus verified executable
+basename. Process creation time or an equivalent identity token is not yet
+carried end to end, so PID reuse after a stale watcher event remains a hardening
+item. The suspended gates also establish ordering, not an arbitrary safe delay
+for a normal running process. Package publishing is intentionally deferred while
+the repository-built client and SDK remain under local acceptance testing.
 
 The accepted Gun Frog shutdown emitted a non-fatal ReShade warning about an
 inconsistent `ID3D11Device3` reference count. There was no crash,

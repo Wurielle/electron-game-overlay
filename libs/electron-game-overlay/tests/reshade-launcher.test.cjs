@@ -104,6 +104,18 @@ test('startup parsing validates a co-located runtime without a graphics backend'
       workingDirectory: runDirectory,
     },
   );
+  assert.deepEqual(
+    buildReShadeInvocation(
+      { processName: 'Gun Frog.exe', pid: 4242 },
+      runDirectory,
+    ),
+    {
+      executable: path.join(runDirectory, 'inject.exe'),
+      arguments: ['Gun Frog.exe', '--pid', '4242'],
+      targetLabel: 'process:Gun Frog.exe:pid:4242',
+      workingDirectory: runDirectory,
+    },
+  );
 });
 
 test('startup and target validation reject incomplete or unsafe inputs', () => {
@@ -162,6 +174,26 @@ test('startup and target validation reject incomplete or unsafe inputs', () => {
     );
   }
 
+  for (const pid of [0, -1, 1.5, 0x1_0000_0000, NaN, Infinity, '42']) {
+    assert.throws(
+      () =>
+        buildReShadeInvocation(
+          { processName: 'game.exe', pid },
+          path.join(fixture.runsRootDirectory, 'run'),
+        ),
+      /target PID.*positive uint32 integer/,
+    );
+  }
+
+  assert.throws(
+    () =>
+      parseReShadeLaunchConfig(
+        [...valid, '--reshade-expected-target-pid=4294967296'],
+        { runsRootDirectory: fixture.runsRootDirectory },
+      ),
+    /expected-target-pid.*positive uint32 integer/,
+  );
+
   unlinkSync(path.join(fixture.runtimeDirectory, 'ReShade.ini'));
   assert.throws(
     () =>
@@ -170,6 +202,164 @@ test('startup and target validation reject incomplete or unsafe inputs', () => {
       }),
     /ReShade configuration is unavailable/,
   );
+});
+
+test('exact-PID targets are identity-distinct and compatible with a matching configured PID', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(
+    createConfig(fixture, { expectedTargetPid: 4242 }),
+  );
+
+  try {
+    assert.throws(
+      () => launcher.launch({ processName: 'game.exe', pid: 4243 }),
+      /pid=4243 conflicts with configured expected target pid=4242/,
+    );
+    assert.throws(
+      () =>
+        launcher.attach(createSessionHarness().session, {
+          processName: 'game.exe',
+          pid: 4243,
+        }),
+      /pid=4243 conflicts with configured expected target pid=4242/,
+    );
+    assert.equal(launcher.state, 'idle');
+    assert.equal(launcher.runDirectory, null);
+    assert.equal(execution.calls.length, 0);
+
+    const request = launcher.launch({ processName: 'game.exe', pid: 4242 });
+    assert.equal(
+      launcher.launch({ processName: 'game.exe', pid: 4242 }),
+      request,
+      'the same name/PID identity should share its active launch request',
+    );
+    assert.throws(
+      () => launcher.launch({ processName: 'game.exe', pid: 4241 }),
+      /conflicts with configured expected target pid=4242/,
+    );
+    await waitFor(() => execution.calls.length === 1);
+    assert.deepEqual(execution.calls[0].arguments, [
+      'game.exe',
+      '--pid',
+      '4242',
+    ]);
+    execution.calls[0].callback(null, injectorSuccessFor(4242, 'game.exe'), '');
+    const result = await request;
+    assert.equal(result.targetLabel, 'process:game.exe:pid:4242');
+    assert.equal(result.injectorTargetPid, 4242);
+    assert.equal(launcher.acceptTargetConnection(4241), false);
+    assert.equal(launcher.acceptTargetConnection(4242), true);
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+test('exact-PID stdout mismatch remains indeterminate and blocks retry', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const request = launcher.launch({ processName: 'game.exe', pid: 5001 });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, injectorSuccessFor(5002, 'game.exe'), '');
+    await assert.rejects(request, /selected pid=5002; expected pid=5001/);
+    assert.equal(launcher.state, 'blocked');
+    await assert.rejects(
+      launcher.launch({ processName: 'game.exe', pid: 5001 }),
+      /outcome is indeterminate/,
+    );
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    execution.restore();
+  }
+});
+
+test('exact-PID pre-injection failure proof returns to idle after the child spawned', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.error = () => undefined;
+  console.log = () => undefined;
+
+  try {
+    const target = { processName: 'game.exe', pid: 6001 };
+    const failed = launcher.launch(target);
+    await waitFor(() => execution.calls.length === 1);
+    const failure = Object.assign(new Error('exact target validation failed'), {
+      code: 1,
+    });
+    execution.calls[0].callback(
+      failure,
+      'Exact PID target was not usable.\r\nReShade injection not started.\r\n',
+      '',
+    );
+    await assert.rejects(failed, /exact target validation failed/);
+    assert.equal(launcher.state, 'idle');
+
+    const retry = launcher.launch(target);
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, injectorSuccessFor(6001, 'game.exe'), '');
+    await retry;
+    assert.equal(launcher.acceptTargetConnection(6001), true);
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('pre-injection proof cannot make legacy or contradictory output retry-safe', async (t) => {
+  const scenarios = [
+    {
+      name: 'name-only invocation',
+      target: { processName: 'game.exe' },
+      stdout: 'ReShade injection not started.\n',
+    },
+    {
+      name: 'exact-PID output that also reports injection success',
+      target: { processName: 'game.exe', pid: 6002 },
+      stdout:
+        injectorSuccessFor(6002, 'game.exe') +
+        'ReShade injection not started.\n',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fixture = createRuntime();
+      const execution = stubExecFile();
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      const originalError = console.error;
+      const originalLog = console.log;
+      console.error = () => undefined;
+      console.log = () => undefined;
+      try {
+        const request = launcher.launch(scenario.target);
+        await waitFor(() => execution.calls.length === 1);
+        execution.calls[0].callback(
+          Object.assign(new Error('ambiguous injector failure'), { code: 1 }),
+          scenario.stdout,
+          '',
+        );
+        await assert.rejects(request, /ambiguous injector failure/);
+        assert.equal(launcher.state, 'blocked');
+      } finally {
+        launcher.dispose();
+        console.error = originalError;
+        console.log = originalLog;
+        execution.restore();
+      }
+    });
+  }
 });
 
 test('launch copies the exact runtime, uses one process argument, and preserves logs', async () => {
@@ -236,7 +426,7 @@ test('launch copies the exact runtime, uses one process argument, and preserves 
     );
     assert.ok(
       markers.includes(
-        `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target="Gun Frog.exe"`,
+        `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target="Gun Frog.exe" arguments=["Gun Frog.exe"]`,
       ),
     );
     assert.ok(
@@ -627,6 +817,130 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
     assert.ok(
       markers.includes(`${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=4242`),
     );
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('attach correlates exact-PID candidates, identity, reauthentication, and terminal exit', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const target = { processName: 'game.exe', pid: 7301 };
+    const attachment = launcher.attach(sessionHarness.session, target);
+    assert.equal(launcher.attach(sessionHarness.session, target), attachment);
+    await assert.rejects(
+      launcher.attach(sessionHarness.session, {
+        processName: 'game.exe',
+        pid: 7302,
+      }),
+      /different ReShade attachment is already active/,
+    );
+    await waitFor(() => execution.calls.length === 1);
+    assert.deepEqual(execution.calls[0].arguments, [
+      'game.exe',
+      '--pid',
+      '7301',
+    ]);
+
+    sessionHarness.emitNative('game.process', {
+      pid: 7302,
+      path: 'C:\\games\\game.exe',
+    });
+    execution.calls[0].callback(null, injectorSuccessFor(7301, 'game.exe'), '');
+    assert.equal((await settleWithin(attachment, 20)).status, 'timeout');
+
+    sessionHarness.emitNative('game.process', {
+      pid: 7301,
+      path: 'C:\\games\\GAME.EXE',
+    });
+    const result = await attachment;
+    assert.equal(result.pid, 7301);
+    assert.equal(result.injectorTargetPid, 7301);
+    assert.equal(result.targetLabel, 'process:game.exe:pid:7301');
+    assert.equal(launcher.state, 'connected');
+
+    sessionHarness.emitNative('game.process.transport-lost', {
+      pid: 7301,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal(launcher.state, 'connected');
+    sessionHarness.emitNative('game.process', {
+      pid: 7301,
+      path: 'D:\\reauthenticated\\renamed-image.bin',
+    });
+    assert.equal(launcher.state, 'connected');
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 7302,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal(launcher.state, 'connected');
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 7301,
+      path: 'unrelated-path-after-exact-pid-proof',
+    });
+    assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('exact-PID terminal exit before injector proof is a definite-safe retry boundary', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const target = { processName: 'game.exe', pid: 7401 };
+    const attachment = launcher.attach(sessionHarness.session, target);
+    await waitFor(() => execution.calls.length === 1);
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 7402,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal((await settleWithin(attachment, 20)).status, 'timeout');
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid: 7401,
+      path: 'C:\\games\\game.exe',
+    });
+    const outcomeBeforeInjectorReturn = await settleWithin(attachment, 20);
+    assert.equal(
+      outcomeBeforeInjectorReturn.status,
+      'timeout',
+      'the attachment must await the in-flight injector before exposing retry safety',
+    );
+    execution.calls[0].callback(
+      Object.assign(new Error('injector target exited'), { code: 1 }),
+      'ReShade injection not started.\n',
+      '',
+    );
+    await assert.rejects(attachment, /pid=7401 disconnected/);
+    assert.equal(launcher.state, 'idle');
+
+    const retry = launcher.attach(sessionHarness.session, target);
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, injectorSuccessFor(7401, 'game.exe'), '');
+    sessionHarness.emitNative('game.process', {
+      pid: 7401,
+      path: 'C:\\games\\game.exe',
+    });
+    assert.equal((await retry).pid, 7401);
   } finally {
     launcher.dispose();
     console.log = originalLog;

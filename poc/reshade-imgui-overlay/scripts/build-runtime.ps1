@@ -21,6 +21,9 @@ $InjectorBasePathPatchHash =
 $PointerInputPatch = Join-Path $PocRoot "patches\reshade-pointer-input-block.patch"
 $PointerInputPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $PointerInputPatch).Hash
+$InjectorExactPidPatch = Join-Path $PocRoot "patches\reshade-injector-exact-pid.patch"
+$InjectorExactPidPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExactPidPatch).Hash
 $ExpectedPatchedFiles = @(
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -39,7 +42,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/addon_manager.hpp" = "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
     "source/input.cpp" = "4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp" = "C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
-    "tools/injector.cpp" = "EBD824F04F88A2E27754C0D1F5AB8A34919B73FA9D0F1743E4D95FFE9AD9097C"
+    "tools/injector.cpp" = "C1518DC282BDCAAB0D5F7ECA7AC9AA6042F3D9FB2AD545DE9FDD42F7DABAB5E8"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -60,10 +63,14 @@ function Test-ReShadePatchedSourceState {
         return $false
     }
 
-    # The pointer patch layers over the observer's input.cpp hunk, so the two
-    # cannot both be reverse-checked independently in the final tree. Its exact
-    # content hashes below prove the complete ordered stack instead.
-    foreach ($Patch in @($InjectorBasePathPatch, $PointerInputPatch)) {
+    # The pointer patch layers over the observer and the exact-PID patch layers
+    # over the base-path patch, so each pair cannot be reverse-checked
+    # independently in the final tree. The terminal patches plus exact content
+    # hashes below prove the complete ordered stack instead.
+    foreach ($Patch in @(
+        $PointerInputPatch,
+        $InjectorExactPidPatch
+    )) {
         & git.exe -C $ReShadeSource apply --reverse --check $Patch 2>$null
         if ($LASTEXITCODE -ne 0) {
             return $false
@@ -120,11 +127,12 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 5 -and
+        return $Stamp.schemaVersion -eq 6 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
             $Stamp.pointerInputPatchSha256 -eq $PointerInputPatchHash -and
+            $Stamp.injectorExactPidPatchSha256 -eq $InjectorExactPidPatchHash -and
             $Stamp.configuration -eq "Release" -and
             $Stamp.platform -eq "64-bit" -and
             $Stamp.addonLevel -eq 2 -and
@@ -234,11 +242,12 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 5
+    schemaVersion = 6
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
     pointerInputPatchSha256 = $PointerInputPatchHash
+    injectorExactPidPatchSha256 = $InjectorExactPidPatchHash
     configuration = "Release"
     platform = "64-bit"
     addonLevel = 2

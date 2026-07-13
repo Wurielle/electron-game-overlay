@@ -28,6 +28,21 @@ scene/input boundary with a fresh injector-selected PID and isolated runtime on
 each cycle. The active client host switch and focused POC finish line are
 complete for those bounded, arm-before-launch paths.
 
+The public SDK now also accepts an optional exact PID through
+`attach(session, { processName, pid })`, and the Electron demo exposes the same
+optional PID beside the executable basename. This path is for a process watcher
+that calls the SDK immediately after the process exists and before the target
+creates its graphics device and swap chain. Dedicated deterministic D3D11 and
+D3D12 launchers hold the target at `CREATE_SUSPENDED`, inject through the real
+frontend, and resume only after exact-PID injection finishes. Both gates passed
+on July 13, 2026. D3D11 selected PID 7428 and reached the frontend click 72.393
+ms after process creation; D3D12 selected PID 21508 and reached it in 84.061 ms.
+In each run the injector received the exact-PID arguments and ReShade loaded
+before `ResumeThread`; transport, graphics-API detection, the two-window scene,
+and input passed after resume. Both targets exited with code 0, the frontend
+returned to `idle`, and no test process remained. This deterministic ordering
+does not establish an arbitrary unsuspended watcher-latency budget.
+
 The change in direction follows real-client testing against Gun Frog. The
 hudhook path successfully proved Electron OSR transport, ordered multi-window
 composition, focus, capture, and input return, but the game still observed mouse
@@ -80,6 +95,8 @@ Developer PowerShell, and launch one named test case:
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-electron-scene.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-electron-scene.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-client-sdk.ps1
 ```
@@ -97,6 +114,17 @@ through the frontend. For a hands-on dev run, use
 yourself. Neither gate is evidence for late injection or arbitrary games. The
 [ReShade POC README](poc/reshade-imgui-overlay/README.md) contains the complete
 safety boundary, prerequisites, evidence markers, and retained limitations.
+
+The exact-PID process-start launchers above cover a different ordering: the
+process already exists, but its primary thread has not been resumed and graphics
+initialization has not begun. Accepted evidence is under
+`build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`
+and `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
+A separate controlled probe that waited three seconds after D3D11/D3D12
+rendering had started did load `ReShade64.dll`, but it did not adopt the existing
+device or swap chain and never initialized the runtime, add-on, or Electron
+scene. Post-render injection is therefore unsupported rather than implied by the
+new PID option.
 
 ## game overlay solution
 
@@ -128,8 +156,10 @@ matrix.
 ReShade runtime, injector, add-on, configuration, and build stamp under
 `libs/electron-game-overlay/dist/runtime/win32-x64/reshade`, then builds the demo
 client against that SDK. The active launcher takes an executable process name
-and lets ReShade select the graphics API; application code no longer chooses a
-D3D11/D3D12 payload. Retained hudhook artifacts and launchers remain historical
+and an optional exact PID, and lets ReShade select the graphics API; application
+code no longer chooses a D3D11/D3D12 payload. PID reuse/process-creation identity
+beyond PID plus basename, arbitrary watcher latency, and package publishing are
+deferred hardening. Retained hudhook artifacts and launchers remain historical
 test support, not the normal client path.
 
 The original `libs/node-game-overlay` and `libs/native-game-overlay` trees remain

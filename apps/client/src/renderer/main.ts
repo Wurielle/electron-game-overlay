@@ -58,6 +58,9 @@ const videoOverlayButton = document.getElementById(
 const processNameInput = document.getElementById(
   'process-name',
 ) as HTMLInputElement;
+const processPidInput = document.getElementById(
+  'process-pid',
+) as HTMLInputElement;
 const statusElement = document.getElementById('status') as HTMLDivElement;
 const imageElem = document.getElementById('image') as HTMLImageElement;
 
@@ -82,10 +85,21 @@ injectButton.addEventListener('click', async () => {
   if (!processName) {
     return;
   }
+  const pidText = processPidInput.value.trim();
+  const pid = pidText ? Number(pidText) : undefined;
+  if (
+    pid !== undefined &&
+    (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff)
+  ) {
+    statusElement.classList.add('error');
+    statusElement.textContent =
+      'Target PID must be an integer between 1 and 4294967295';
+    return;
+  }
 
   injectButton.disabled = true;
   try {
-    await updateState(ipcRenderer.invoke('overlay:inject', processName));
+    await updateState(ipcRenderer.invoke('overlay:inject', processName, pid));
   } catch (error) {
     if (!state.attachment.error) {
       statusElement.classList.add('error');
@@ -222,7 +236,9 @@ function renderAttachmentStatus() {
   }
 
   if (state.attachment.phase === 'attaching') {
-    statusElement.textContent = `Arming ReShade for ${state.attachment.processName}. Launch the game now...`;
+    statusElement.textContent = state.attachment.pid
+      ? `Injecting ReShade into ${state.attachment.processName} (PID ${state.attachment.pid})...`
+      : `Arming ReShade for ${state.attachment.processName}. Launch the game now...`;
     return;
   }
 
