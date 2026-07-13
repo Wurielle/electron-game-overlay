@@ -27,6 +27,8 @@ test('the real client arms and forwards the main overlay input proof', () => {
   assert.match(windowSource, /once\(['"]did-finish-load['"]/);
   assert.match(windowSource, /proof\.enable\(\)/);
   assert.match(windowSource, /HUDHOOK_CLIENT_INPUT_PROOF_ARMED/);
+  assert.match(windowSource, /OVERLAY_CLIENT_INPUT_TARGET/);
+  assert.match(windowSource, /role:\s*['"]main['"]/);
   assert.match(windowSource, /startsWith\(HUDHOOK_CLIENT_INPUT_MARKER\)/);
   assert.match(mainOverlay, /HUDHOOK_CLIENT_INPUT_PROOF_READY/);
   assert.match(mainOverlay, /HUDHOOK_CLIENT_INPUT_DIAGNOSTIC/);
@@ -46,7 +48,9 @@ test('the status overlay exposes and forwards visible input diagnostics', () => 
   );
 
   assert.match(windowSource, /forwardHudhookInputDiagnostics\(window\)/);
+  assert.match(windowSource, /enableStatusInputProof\(window\)/);
   assert.match(statusOverlay, /id="hudhook-status-input-diagnostic"/);
+  assert.match(statusOverlay, /id="hudhook-status-input-target"/);
   assert.match(statusOverlay, /HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC/);
 });
 

@@ -1,0 +1,4 @@
+$ErrorActionPreference = "Stop"
+
+& (Join-Path $PSScriptRoot "..\run-client-sdk-input-gate.ps1") -Backend d3d12
+exit $LASTEXITCODE

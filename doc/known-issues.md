@@ -18,8 +18,9 @@ now enables Windows mouse-in-pointer and requires `WM_POINTER` update/down/up
 counters to stay frozen too. Gun Frog passed its initial corrected gate on July
 12 and an exact four-button menu/release gate on July 13, 2026. The production
 Electron client and public SDK now use the ReShade launcher for the accepted
-process-name, arm-before-launch Gun Frog path. Late injection and other games
-remain unverified.
+process-name, arm-before-launch Gun Frog path. The same production path also
+passed two fresh controlled D3D12 lifecycle/multi-window cycles. Late injection,
+arbitrary fast-start target timing, and games beyond Gun Frog remain unverified.
 
 The first injected Gun Frog run is a recorded failed gate, not acceptance:
 Electron received and rendered a full click while the same physical click also
@@ -59,6 +60,24 @@ Quit position closed the game. The runner emitted
 `build/reshade-imgui-overlay/client-Gun-Frog-20260713-005018` and
 `%TEMP%/electron-game-overlay/reshade-runs/Gun-Frog.exe-yE20tq`. The persisted
 client-run `result.txt` contains the same pass marker.
+
+The controlled production client/SDK D3D12 gate passed twice through
+`poc/reshade-imgui-overlay/scripts/test-cases/d3d12-client-sdk.ps1` against PIDs
+17248 and 13528. Both Electron windows accepted text and focus, the main caption
+moved and remained clickable at its new coordinates, the target stayed
+foreground, and its complete input title remained byte-identical during
+interception. After release, legacy down/up, raw input, and primary `PT_MOUSE`
+pointer counters advanced, cursor confinement returned, and released Escape
+closed each target normally. The runner force-cleaned the isolated Electron tree
+between attempts, used two distinct ReShade run directories, left no test
+processes, and emitted `D3D12_REAL_CLIENT_SDK_GATE_PASS`. Evidence is retained
+under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`.
+
+That controlled host uses a test-only injection-wait marker before its unusually
+fast D3D12 initialization. It validates the prearmed SDK launcher and automatic
+ReShade D3D12 selection for a cooperating target, not general injection timing.
+Forced client cleanup plus a fresh launch is accepted here; graceful client
+disable/unload remains open.
 
 The accepted Gun Frog shutdown emitted a non-fatal ReShade warning about an
 inconsistent `ID3D11Device3` reference count. There was no crash,
@@ -116,7 +135,7 @@ chains, and raw-only input/text therefore remain explicit post-POC hardening.
   - Root cause: Electron 16's offscreen `WebContents.focus()` path is a no-op and its OSR view reports itself unfocused. Calling it before `webContents.sendInputEvent(...)` did not focus Chromium's render widget.
   - Resolution: `OverlaySession` now calls `BrowserWindow.focusOnWebView()` immediately before every forwarded packet. This is the Electron 16 OSR-specific page-focus path and does not activate the hidden native window or take foreground ownership from the game.
 - [ ] Overlay compatibility is not universal across all games.
-  - Legacy source / likely cause: the original native protocol only reports graphics hook details for `d3d9` and `dxgi` in `libs/node-game-overlay/src/message/gmessage.hpp`. That covers D3D9 and DXGI-backed DirectX versions, but does not prove support for every graphics API or presentation path a game can use, such as Vulkan, OpenGL, D3D12-specific paths, unusual swap-chain modes, exclusive fullscreen behavior, multiple swap chains, protected/anti-cheat processes, elevated integrity processes, or game-specific render timing. Steam Overlay can appear universal because Steam owns the launcher/runtime integration, has broad backend support, and can carry a large compatibility database and per-game handling over time.
+  - Legacy source / likely cause: the original native protocol only reports graphics hook details for `d3d9` and `dxgi` in `libs/node-game-overlay/src/message/gmessage.hpp`. The selected ReShade path now proves controlled D3D11 and D3D12, but that does not establish every graphics API, presentation path, or launch timing a game can use, such as Vulkan, OpenGL, unusual swap-chain modes, exclusive fullscreen behavior, multiple swap chains, protected/anti-cheat processes, elevated integrity processes, or arbitrary fast-start D3D12 games. Steam Overlay can appear universal because Steam owns the launcher/runtime integration, has broad backend support, and can carry a large compatibility database and per-game handling over time.
   - Current direction: let ReShade own the maintained graphics/input host rather than expanding private hudhook detours. Expose runtime and hook status through the SDK, fail clearly for unsupported or partially hooked targets, and add backends/presentation modes only with explicit acceptance evidence. Keep the compatibility matrix described above.
 
 #### Origin overlay and Steam overlay

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cwchar>
+#include <string>
 
 #include "input_oracle.hpp"
 
@@ -18,6 +19,7 @@ using Microsoft::WRL::ComPtr;
 
 constexpr wchar_t kWindowClassName[] = L"AlternativeImguiOverlayPocD3D12Host";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D12 overlay test host";
+constexpr wchar_t kInjectedRuntimeWaitMarker[] = L"reshade-injection-wait.enabled";
 constexpr UINT kFrameCount = 2;
 constexpr DXGI_FORMAT kSwapChainFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -78,6 +80,44 @@ bool enable_per_monitor_v2_awareness()
         L"running as Per-Monitor-V2.";
     OutputDebugStringW(message);
     MessageBoxW(nullptr, message, kWindowTitle, MB_OK | MB_ICONERROR);
+    return false;
+}
+
+bool wait_for_prearmed_injected_runtime()
+{
+    wchar_t module_path[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH)
+        return false;
+
+    std::wstring marker(module_path, length);
+    const std::size_t separator = marker.find_last_of(L"\\/");
+    if (separator == std::wstring::npos)
+        return false;
+    marker.resize(separator + 1);
+    marker += kInjectedRuntimeWaitMarker;
+    if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return true;
+
+    const ULONGLONG deadline = GetTickCount64() + 15'000;
+    while (GetTickCount64() < deadline)
+    {
+        if (GetModuleHandleW(L"ReShade64.dll") != nullptr)
+        {
+            // LoadLibrary has published the module, but ReShade still needs a
+            // short bounded window to finish installing its graphics hooks
+            // before this deliberately fast controlled host creates D3D12.
+            Sleep(750);
+            return true;
+        }
+        Sleep(10);
+    }
+
+    MessageBoxW(
+        nullptr,
+        L"The controlled host timed out waiting for the pre-armed ReShade runtime.",
+        kWindowTitle,
+        MB_OK | MB_ICONERROR);
     return false;
 }
 
@@ -475,6 +515,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 {
     if (!enable_per_monitor_v2_awareness())
+        return 1;
+    if (!wait_for_prearmed_injected_runtime())
         return 1;
 
     WNDCLASSEXW window_class = {};

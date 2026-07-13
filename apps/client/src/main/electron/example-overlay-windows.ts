@@ -1,4 +1,5 @@
 import { getRandomInt } from '../utils/utils';
+import { screen } from 'electron';
 import type {
   AttachElectronOverlayWindowOptions,
   ElectronOverlayWindow,
@@ -22,6 +23,44 @@ export type OverlayWindowContext = {
 };
 
 const HUDHOOK_CLIENT_INPUT_MARKER = 'HUDHOOK_CLIENT_';
+const OVERLAY_CLIENT_INPUT_TARGET_MARKER = 'OVERLAY_CLIENT_INPUT_TARGET';
+
+type InputProofRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+function logInputProofTarget(
+  window: Electron.BrowserWindow,
+  role: 'main' | 'status',
+  name: string,
+  target: InputProofRect,
+) {
+  const values = [target.x, target.y, target.width, target.height];
+  if (
+    values.some((value) => !Number.isFinite(value)) ||
+    target.width <= 0 ||
+    target.height <= 0
+  ) {
+    throw new Error(
+      `Invalid ${role}/${name} input proof rectangle: ${JSON.stringify(target)}`,
+    );
+  }
+
+  const bounds = window.getContentBounds();
+  const scaleFactor = screen.getDisplayMatching(bounds).scaleFactor;
+  console.log(
+    `${OVERLAY_CLIENT_INPUT_TARGET_MARKER} ` +
+      `role=${role} name=${name} ` +
+      `targetX=${target.x} targetY=${target.y} ` +
+      `targetWidth=${target.width} targetHeight=${target.height} ` +
+      `windowX=${bounds.x} windowY=${bounds.y} ` +
+      `windowWidth=${bounds.width} windowHeight=${bounds.height} ` +
+      `scale=${scaleFactor}`,
+  );
+}
 
 function forwardHudhookInputDiagnostics(window: Electron.BrowserWindow) {
   window.webContents.on('console-message', (_event, _level, message) => {
@@ -64,6 +103,7 @@ function enableHudhookInputProof(
         console.log(
           `HUDHOOK_CLIENT_INPUT_PROOF_ARMED rect=${JSON.stringify(inputTarget)}`,
         );
+        logInputProofTarget(window, 'main', 'text', inputTarget);
         if (!gunFrogInputProof) {
           return;
         }
@@ -89,6 +129,33 @@ function enableHudhookInputProof(
       })
       .catch((error) => {
         console.warn('HUDHOOK_CLIENT_INPUT_PROOF_FAILED', error);
+      });
+  });
+}
+
+function enableStatusInputProof(window: Electron.BrowserWindow) {
+  window.webContents.once('did-finish-load', () => {
+    void window.webContents
+      .executeJavaScript(
+        `(() => {
+        const target = document.getElementById("hudhook-status-input-target");
+        if (!(target instanceof HTMLInputElement)) {
+          throw new Error("status input proof target is unavailable");
+        }
+        const rect = target.getBoundingClientRect();
+        return {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        };
+      })()`,
+      )
+      .then((target) => {
+        logInputProofTarget(window, 'status', 'text', target);
+      })
+      .catch((error) => {
+        console.warn('OVERLAY_CLIENT_INPUT_TARGET_FAILED role=status', error);
       });
   });
 }
@@ -169,6 +236,7 @@ export function createExampleStatusOverlayWindow(
   const name = AppWindows.exampleStatusOverlay;
   const window = context.createWindow(name, options);
   forwardHudhookInputDiagnostics(window);
+  enableStatusInputProof(window);
   window.loadURL(
     global.CONFIG.resolveRendererUrl('index/example-status-overlay.html'),
   );

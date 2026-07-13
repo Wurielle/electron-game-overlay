@@ -6,9 +6,9 @@
 
 ## ReShade + ImGui host migration
 
-The active native-host direction is the
+The active native host is the
 [ReShade + ImGui POC](poc/reshade-imgui-overlay/README.md). ReShade 6.7.3 full
-add-on support is being evaluated as the maintained process-entry, graphics,
+add-on support is the selected POC process-entry, graphics,
 swap-chain, ImGui, and game-input layer. On July 12, 2026, the controlled D3D11
 and D3D12 input gates passed hands-on acceptance: native ImGui remained
 interactive, the independent game-side message/raw/polling counters stayed
@@ -19,8 +19,11 @@ four-control menu proof: Electron alone received clicks aligned over Continue,
 New Game, Settings, and Quit while the game stayed on its menu and remained
 alive; after Electron acknowledged release, the same Quit position closed the
 game normally. The built production client and SDK ReShade launcher then passed
-the same four-control gate against Gun Frog on July 13; the active client host
-switch is complete for that accepted process-name, arm-before-launch path.
+the same four-control gate against Gun Frog on July 13. That production path
+also passed two fresh controlled D3D12 client/host cycles with both Electron
+windows, interception, text, caption dragging, release, normal target exit, and
+isolated relaunch. The active client host switch and focused POC finish line are
+complete for those bounded, arm-before-launch paths.
 
 The change in direction follows real-client testing against Gun Frog. The
 hudhook path successfully proved Electron OSR transport, ordered multi-window
@@ -43,9 +46,9 @@ The first Steam-like input acceptance gate is intentionally behavioral:
 - game cursor confinement/recentering no longer prevents overlay interaction;
 - release, focus loss, transport failure, or shutdown restores safe game input.
 
-The controlled D3D11/D3D12, standalone Gun Frog, and real client/SDK Gun Frog
-portions of that gate are complete. The unsigned ReShade full add-on runtime is
-limited to controlled or permitted
+The controlled D3D11/D3D12, controlled production-client D3D12, standalone Gun
+Frog, and real client/SDK Gun Frog portions of that gate are complete. The
+unsigned ReShade full add-on runtime is limited to controlled or permitted
 offline/single-player targets. Competitive and anti-cheat-protected software,
 anti-cheat bypasses, and VR are outside this POC.
 
@@ -72,16 +75,19 @@ Developer PowerShell, and launch one named test case:
 ```powershell
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d11-electron-scene.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-electron-scene.ps1
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-electron-scene.ps1
 .\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-client-sdk.ps1
 ```
 
-The preferred Gun Frog gate is `gun-frog-client-sdk.ps1`: it builds and launches
-the real client, arms the SDK ReShade launcher for `Gun Frog.exe` before Steam
-starts the game, and validates the four Electron menu clicks plus the Ctrl+I
-release acknowledgement. For a hands-on dev run, use `npm run dev:gun-frog`,
-wait for the injector to arm, then launch Gun Frog yourself. This is not evidence
-for late injection or arbitrary games. The
+The deterministic production integration gate is `d3d12-client-sdk.ps1`: it
+drives the real client and public SDK through two isolated controlled D3D12
+cycles and emits `D3D12_REAL_CLIENT_SDK_GATE_PASS`. The preferred real-game gate
+is `gun-frog-client-sdk.ps1`: it arms the SDK ReShade launcher for `Gun Frog.exe`
+before Steam starts the game and validates the four Electron menu clicks plus
+the Ctrl+I release acknowledgement. For a hands-on dev run, use
+`npm run dev:gun-frog`, wait for the injector to arm, then launch Gun Frog
+yourself. Neither gate is evidence for late injection or arbitrary games. The
 [ReShade POC README](poc/reshade-imgui-overlay/README.md) contains the complete
 safety boundary, prerequisites, evidence markers, and retained limitations.
 

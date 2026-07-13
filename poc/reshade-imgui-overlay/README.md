@@ -217,6 +217,46 @@ after using it, restart the case to intercept again. Producer evidence is writte
 evidence. The parameterized `scripts/run-electron-scene.ps1` remains available
 for automation and supports `-NoLaunch`.
 
+## Run the production client/SDK D3D12 gate
+
+Use the dedicated controlled production-client wrapper:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
+```
+
+It builds the real client, public SDK runtime, add-on, injector, and controlled
+D3D12 host. For each of two attempts it starts a fresh client with isolated user
+data, arms the SDK launcher by executable basename, starts the host, and verifies
+the exact connected PID and path. The runner requires a D3D12 command queue, the
+transported two-window scene, and a positive interception acknowledgement before
+driving the status and main text fields. It also sends intercepted Escape, drags
+the main caption, clicks the field at its moved coordinates, and requires the
+target to remain foreground with its complete title oracle byte-identical.
+
+After the negative interception acknowledgement, a released click must advance
+the host's legacy down/up, raw-input, and primary `PT_MOUSE` pointer counters and
+restore cursor confinement. Released Escape must then close the host normally.
+The runner force-cleans only that attempt's isolated Electron process tree,
+requires no host/client/injector leftovers, relaunches with a distinct ReShade
+run directory, and emits `D3D12_REAL_CLIENT_SDK_GATE_PASS` only after both cycles
+pass.
+
+The gate passed on July 13, 2026 against target PIDs 17248 and 13528. Evidence is
+preserved under
+`build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`; its root
+`result.txt` contains `D3D12_REAL_CLIENT_SDK_GATE_PASS`, while the two attempt
+directories retain client logs, exact ReShade run-directory records, and
+per-attempt pass markers.
+
+The copied host has a test-only `reshade-injection-wait.enabled` marker. It gives
+the prearmed injector a bounded opportunity to load ReShade and install its
+graphics hooks before this deliberately fast controlled host creates D3D12. This
+proves the production client/public SDK path and ReShade's D3D12 selection for a
+cooperating target; it does not prove late injection or arbitrary fast-start
+D3D12 game timing. Client cleanup in this gate is forced teardown followed by a
+fresh launch, not graceful runtime disable/unload.
+
 ## Run the real client/SDK Gun Frog gate
 
 Use the dedicated production-client acceptance wrapper:
@@ -311,15 +351,17 @@ closed the host-switch milestone for this accepted target path.
   captured Ctrl/Shift state); touch and pen remain unconverted and fail open to
   the target;
 - multiple-swap-chain/render-queue ownership and safe texture retirement;
-- late injection, other games, or the remaining broader real-client lifecycle
-  matrix;
+- graceful client disable/unload, late injection, arbitrary fast-start target
+  timing, additional games, or broader graphics/presentation compatibility;
 - a PID-correlated production attach flow (the acceptance runner uses a bounded
   prelaunch basename watcher and isolated base path);
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
-The focused POC now includes the production client/SDK Gun Frog gate. Raw
-normalization, the remaining real-client lifecycle/backend matrix, other games,
-and multiple-swap-chain hardening stay outside that accepted boundary. ReShade
-replaces the injected host, graphics lifecycle, ImGui ownership, and game-side
-input blocking rather than the Electron SDK contract.
+The focused POC now includes the production client/SDK Gun Frog gate and the
+two-cycle controlled production-client D3D12 gate. Raw normalization, graceful
+disable/unload, late/PID-correlated attachment, arbitrary fast-start targets,
+other games and APIs, and multiple-swap-chain hardening stay outside that
+accepted boundary. ReShade replaces the injected host, graphics lifecycle,
+ImGui ownership, and game-side input blocking rather than the Electron SDK
+contract.

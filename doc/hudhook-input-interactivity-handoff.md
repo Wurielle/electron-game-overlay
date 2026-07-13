@@ -26,9 +26,10 @@
 > complete release acknowledgement, the same underlying Quit position closed
 > the game. The production client and SDK subsequently passed that exact Gun
 > Frog boundary through the ReShade launcher on the process-name,
-> arm-before-launch path. Raw-input normalization, late injection, other games,
-> and broader lifecycle coverage remain hardening; the ReShade POC README is
-> authoritative.
+> arm-before-launch path. The production path also passed two isolated
+> controlled D3D12 multi-window/lifecycle cycles. Raw-input normalization,
+> graceful disable/unload, late injection, arbitrary fast-start targets, and
+> other games remain hardening; the ReShade POC README is authoritative.
 > The authenticated Node/Rust transport, wire/frame
 > validation, ordered scene/router, Electron input translation and
 > `focusOnWebView()` behavior, multi-window/z-order/capture rules, and DPI/raster
@@ -84,7 +85,8 @@ target, and Ctrl/Shift state are captured synchronously, but down/up state is
 interpreted only after the single consumer sorts the global observer sequence.
 The July 12 Gun Frog rerun then passed the same route and the inverse release
 check, closing the standalone real-game gate. The production client/SDK gate
-subsequently passed on July 13 through the ReShade launcher.
+subsequently passed on July 13 through the ReShade launcher, followed by two
+passing controlled D3D12 production-client cycles.
 
 ## July 13 exact Gun Frog menu acceptance
 
@@ -117,6 +119,26 @@ Evidence is retained under
 client-run `result.txt` contains the same pass marker. This acceptance
 is limited to the verified process-name, arm-before-launch path; it does not
 establish late injection or compatibility with other games.
+
+## July 13 controlled D3D12 production client/SDK acceptance
+
+`poc/reshade-imgui-overlay/scripts/test-cases/d3d12-client-sdk.ps1` drove the
+built production client and public SDK through two isolated attempts against
+target PIDs 17248 and 13528. Both transported Electron windows accepted focus
+and text; the main caption moved, and its field remained clickable at the moved
+coordinates. The controlled target stayed foreground and its complete input
+oracle remained byte-identical throughout interception. Release restored legacy
+down/up, raw input, primary `PT_MOUSE` pointer input, and cursor confinement;
+released Escape closed each target normally.
+
+The runner force-cleaned each isolated Electron process tree, required no
+host/client/injector leftovers, and relaunched with a distinct ReShade run
+directory. It emitted `D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is retained
+under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`. The
+controlled host's test-only injection-wait marker gives the prearmed injector
+time to hook before deliberately fast D3D12 initialization. This is not evidence
+for arbitrary fast-start games, late attachment, or graceful client
+disable/unload.
 
 ReShade's managed ImGui state samples button and key state once per `Present`.
 The accepted human-duration controls are therefore not evidence about edges that

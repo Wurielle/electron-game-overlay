@@ -14,7 +14,10 @@ counters together. The July 12 Gun Frog rerun passed the same boundary, and the
 July 13 exact four-button menu proof confirmed it across Continue, New Game,
 Settings, and Quit plus the inverse released Quit action. The SDK/client host
 migration then passed the same Gun Frog gate through the built production client
-and SDK ReShade launcher on July 13.
+and SDK ReShade launcher on July 13. The same production path subsequently
+passed two isolated controlled D3D12 cycles with both Electron windows,
+interception/release, caption dragging, normal target exit, cleanup, and fresh
+relaunch.
 
 ### POC finish line
 
@@ -40,13 +43,15 @@ and SDK ReShade launcher on July 13.
 - [x] Replace the active client's hudhook launcher/runtime selection with the ReShade host boundary and pass the real client/SDK Gun Frog input gate.
   - The production client now arms by executable process name before launch, lets ReShade select the graphics API, and keeps the public session/window/input surface plus Electron-owned Ctrl+I toggle stable.
   - `gun-frog-client-sdk.ps1` passed against PID 11104: all four aligned Electron controls stayed inside the overlay, Ctrl+I produced the negative acknowledgement, the identical released Quit position closed the game, and the runner persisted `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS` in the client-run `result.txt`.
-- [ ] Run the remaining real-client lifecycle, multi-window, D3D12, and additional permitted-game acceptance matrix; do not infer late-injection or other-game support from Gun Frog.
+- [x] Pass the controlled production-client lifecycle, multi-window, and D3D12 gate twice with a fresh relaunch.
+  - `d3d12-client-sdk.ps1` passed against PIDs 17248 and 13528 with distinct isolated ReShade runs. Both Electron windows accepted input, the foreground target oracle froze during interception, caption drag was verified behaviorally, release restored legacy/raw/primary-pointer input and confinement, released Escape closed each host, and no test process remained. Evidence under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630` contains `D3D12_REAL_CLIENT_SDK_GATE_PASS`.
 
 ### Post-POC compatibility and hardening
 
 - [ ] Add supported-runtime installation, existing ReShade/proxy conflict detection, typed diagnostics, and clean disable/unload behavior.
 - [ ] Investigate the non-fatal ReShade `ID3D11Device3` reference-count warning emitted during the accepted Gun Frog shutdown as part of resource retirement/unload hardening.
-- [ ] Replace the POC injector's prelaunch basename watcher with a PID-correlated production attach boundary and preserve the isolated base-path behavior.
+- [ ] Replace the POC injector's prelaunch basename watcher with a PID-correlated production attach boundary, preserve the isolated base-path behavior, and prove late attachment separately.
+- [ ] Expand real-client compatibility through additional permitted games; do not infer other-game support from the accepted Gun Frog path or controlled hosts.
 - [ ] Add target-HWND display/client-origin ownership, real mixed-monitor acceptance, safe texture retirement, and multiple-target routing.
 - [ ] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including buffered-record target ownership and raw-only text policy.
 - [ ] Extend the accepted `WM_POINTER` translation beyond primary mouse move/left click to secondary/X buttons, double-click semantics, pointer wheel, and explicit touch/pen policy, with duplicate-projection tests.
@@ -76,12 +81,8 @@ they are not the active production-host roadmap.
 - [ ] Prove or reject the bounded polling adapter against Gun Frog and a second real title.
   - Keep DirectInput, other Unity Input System device APIs, XInput, and GameInput as distinct compatibility adapters; do not mark them covered by the User32/raw-buffer proof.
   - If either title requires one of those broader paths, record the counter evidence and evaluate a ReShade add-on host rather than growing an open-ended local hook matrix.
-- [ ] Add SDK-owned graphics-backend auto-detection for target attachment.
-  - Desired behavior: applications use `backend: "auto"` by default instead of selecting D3D11 or D3D12 for each game/client launch.
-  - Resolve the backend after selecting the target process, using loaded graphics modules and bounded startup observation rather than client-specific game lists.
-  - If D3D11 and D3D12 are both present or detection remains inconclusive, return a typed diagnostic and allow an explicit backend override.
-  - Keep detection and payload selection in `electron-game-overlay`; the demo client should only display the selected backend or ambiguity.
-  - Do not inject both backend payloads as a fallback, because duplicate payload connections/hooks would make session ownership ambiguous.
+- [x] Remove manual graphics-backend selection from the active client path.
+  - The selected ReShade host identifies the target graphics API; applications arm one process name and no longer choose a D3D11 or D3D12 payload. The former hudhook auto-detection task is retained only as historical context and will not be implemented in the inactive path.
 
 ## API modernization
 

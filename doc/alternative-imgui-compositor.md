@@ -18,8 +18,9 @@
 > all four stayed in Electron while the game remained on its menu, and the same
 > Quit position closed the game only after release. The production client and
 > public SDK now pass that exact Gun Frog boundary through the ReShade launcher
-> on the process-name, arm-before-launch path. Late injection and other games
-> remain unverified.
+> on the process-name, arm-before-launch path. The same production path also
+> passed two fresh controlled D3D12 multi-window/lifecycle cycles. Late
+> injection, arbitrary fast-start targets, and other games remain unverified.
 > The hudhook implementation remains the verified Electron compositor and routing
 > reference, not the selected injected host.
 
@@ -360,6 +361,7 @@ multi-window compositor milestones are complete:
 - a mouse-in-pointer oracle reproduced Gun Frog's second-input-path failure; the pinned runtime now blocks `PT_MOUSE` client `WM_POINTER`, updates native ImGui state, and translates primary move/left-click once on Electron's ordered consumer, with every legacy/raw/polling/pointer counter frozen on both backends;
 - the Gun Frog rerun clicked an Electron control directly above Unity's `Continue` button without activating the game, then passed text, front/back raising, and caption dragging; the strengthened four-button run delivered unique Continue/New Game/Settings/Quit markers only to Electron while the game stayed alive on its menu, then emitted the full release lifecycle and let the same underlying Quit position close the game;
 - the built production client and public SDK ReShade launcher passed the same exact Gun Frog gate on PID 11104: positive interception acknowledgement, one click on each aligned Electron control while the menu stayed alive, Ctrl+I negative acknowledgement, and the identical Quit position closing the game; the dedicated runner emitted `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`;
+- the production client/public SDK also passed two isolated controlled D3D12 cycles on PIDs 17248 and 13528: both Electron windows accepted input, caption drag remained interactive at the moved coordinates, the foreground game oracle froze while intercepted, release restored legacy/raw/primary-pointer input and confinement, released Escape closed each target, and a clean fresh relaunch completed; the runner emitted `D3D12_REAL_CLIENT_SDK_GATE_PASS`;
 - upstream hudhook 0.9.1 independently hooks the controlled D3D11 host and owns the ImGui lifecycle;
 - the public Electron SDK publishes a 640 x 360 offscreen window from both a focused lifecycle producer and the real built client through the authenticated loopback transport;
 - a worker in the hudhook payload consumes direct BGRA frame packets, converts premultiplied BGRA to straight RGBA, and atomically publishes one immutable back-to-front scene with matching router state;
@@ -391,7 +393,10 @@ The controlled D3D11 and D3D12 graphics paths, real-client integration, project-
 
 ## Research checklist for search agent
 
-The initial ReShade baseline and upstream-hudhook runtime decision are complete for controlled D3D11. Keep this checklist for allowed-application compatibility, transport evolution, input forwarding, DPI behavior, and backend expansion.
+The ReShade baseline and superseded upstream-hudhook runtime decision are
+complete for controlled D3D11/D3D12, including the bounded production-client
+D3D12 gate. Keep this checklist for allowed-application compatibility, transport
+evolution, input forwarding, DPI behavior, and backend expansion.
 
 ### Dear ImGui as injected game overlay
 
@@ -582,10 +587,12 @@ compatibility remain future work.
 
 ## Open questions
 
+Resolved: the production client does not select D3D11 or D3D12. It arms one
+target process name and ReShade selects the target graphics API.
+
 - Should ImGui be only a compositor, or should it also provide first-class native debug/settings panels?
 - Should Electron window textures be updated every frame or only when Electron emits a dirty frame?
 - Should frame buffers be compressed, shared memory backed, or sent as raw buffers at first?
-- Should the production payload select D3D11/D3D12 automatically or should the launcher select a backend-specific payload?
 - How should native diagnostics be surfaced before IPC is connected?
 - How much of the current native compositor can be replaced incrementally?
 
@@ -638,9 +645,10 @@ interception must leave the overlay fully interactive, release game cursor
 confinement/recentering, and prevent the game from observing the same input;
 release/focus loss/transport failure/shutdown must restore normal game input.
 That behavior is now proven on the controlled D3D11 and D3D12 hosts and Gun Frog;
-the production SDK/client ReShade path passes the same Gun Frog gate when armed
-by process name before launch. Target-HWND/client-origin ownership, mixed
-monitors, multiple targets, texture retirement, broader game/API coverage, late
-injection, and installer/proxy conflicts remain post-POC hardening. Competitive
-or anti-cheat-protected targets, anti-cheat
+the production SDK/client ReShade path passes the same Gun Frog gate and two
+fresh controlled D3D12 lifecycle/multi-window cycles when armed by process name
+before launch. Target-HWND/client-origin ownership, mixed monitors, multiple
+targets, texture retirement, broader game/API coverage, late injection,
+arbitrary fast-start target timing, graceful disable/unload, and installer/proxy
+conflicts remain post-POC hardening. Competitive or anti-cheat-protected targets, anti-cheat
 bypass work, and VR remain outside the unsigned full-add-on POC.

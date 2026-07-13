@@ -52,6 +52,22 @@ overlay has a smaller equivalent strip. These controls are demo diagnostics:
 they make hover, click, focus, typing, and wheel receipt unambiguous during a
 real-game run.
 
+The dedicated controlled D3D12 integration gate builds and drives this real
+client through the public SDK:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
+```
+
+It exercises both Electron windows, keeps the controlled target in the
+foreground, freezes the game-side oracle during interception, drags and then
+re-clicks the moved main window, releases input, proves legacy/raw/primary
+pointer input and cursor confinement resume, and closes the target with released
+Escape. It force-cleans only the isolated client process tree and repeats the
+entire run with fresh client data and a distinct ReShade directory. The two-cycle
+gate passed on July 13, 2026 with `D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is
+under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`.
+
 For the accepted real-game proof, close Gun Frog first and run:
 
 ```powershell
@@ -68,5 +84,7 @@ repository acceptance wrapper automates build/startup and validates the logs:
 .\poc\reshade-imgui-overlay\scripts\test-cases\gun-frog-client-sdk.ps1
 ```
 
-That real client/SDK gate passed on July 13, 2026. It does not establish late
-injection or compatibility with other games.
+That real-game client/SDK gate passed on July 13, 2026. The controlled D3D12
+result above proves the prearmed SDK path and backend selection for the
+cooperating host, not late injection, arbitrary fast-start targets, or
+compatibility with other games.

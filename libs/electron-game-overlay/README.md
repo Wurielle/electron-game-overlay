@@ -28,12 +28,32 @@ session.start();
 await launcher?.attach(session, { processName: 'game.exe' });
 ```
 
-Arm the launcher before starting the target process. The accepted production
-client proof uses `{ processName: 'Gun Frog.exe' }`; late attachment to an
-already running game and other games are not yet compatibility claims. The
-runtime directory can be overridden explicitly for development tests;
-otherwise it resolves relative to the built SDK. The legacy `findWindows()` and
+Arm the launcher before starting the target process. The accepted real-game
+production-client proof uses `{ processName: 'Gun Frog.exe' }`; late attachment
+to an already running game and other games are not yet compatibility claims. The
+runtime directory can be overridden explicitly for development tests; otherwise
+it resolves relative to the built SDK. The legacy `findWindows()` and
 `session.attachToProcess()` methods still throw.
+
+The controlled production client/SDK D3D12 gate is available through:
+
+```powershell
+.\poc\reshade-imgui-overlay\scripts\test-cases\d3d12-client-sdk.ps1
+```
+
+It passed twice on July 13, 2026, using two isolated client-data and ReShade run
+directories. Both real Electron windows accepted focus, text, and caption-drag
+interaction while the target stayed foreground and its input oracle stayed
+frozen. Release restored legacy, raw, and primary mouse-pointer input plus cursor
+confinement; released Escape closed each target normally. The runner emitted
+`D3D12_REAL_CLIENT_SDK_GATE_PASS`; evidence is retained under
+`build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`.
+
+The controlled host cooperates with the prearmed launcher before its deliberately
+fast graphics initialization. This proves SDK-owned launch and ReShade's D3D12
+selection for that host, not arbitrary fast-start target timing. Each client is
+force-cleaned after target exit before a fresh client relaunch; graceful client
+disable/unload remains separate lifecycle hardening.
 
 The real production client/SDK gate passed against Gun Frog on July 13, 2026
 through `poc/reshade-imgui-overlay/scripts/test-cases/gun-frog-client-sdk.ps1`.

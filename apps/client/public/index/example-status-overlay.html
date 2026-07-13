@@ -1,100 +1,108 @@
 <html>
-
-<head>
+  <head>
     <style>
-        body {
-            overflow: hidden;
-            background-color: rgba(67, 138, 138, 0.25);
-            margin: 0px;
-            height: 50px;
-            width: 200px;
-        }
-        .caption {
-            height: 50px;
-            width: 200px;
-            background-color: rgba(255, 138, 138, 0.25);
-        }
-        #hudhook-status-input-diagnostic {
-            position: fixed;
-            right: 2px;
-            bottom: 0;
-            max-width: 194px;
-            padding: 0 2px;
-            overflow: hidden;
-            color: #d6f8ff;
-            background: rgba(0, 0, 0, 0.78);
-            font: 8px/9px monospace;
-            pointer-events: none;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
+      body {
+        overflow: hidden;
+        background-color: rgba(67, 138, 138, 0.25);
+        margin: 0px;
+        height: 50px;
+        width: 200px;
+      }
+      .caption {
+        height: 50px;
+        width: 200px;
+        background-color: rgba(255, 138, 138, 0.25);
+      }
+      #hudhook-status-input-diagnostic {
+        position: fixed;
+        right: 2px;
+        bottom: 0;
+        max-width: 194px;
+        padding: 0 2px;
+        overflow: hidden;
+        color: #d6f8ff;
+        background: rgba(0, 0, 0, 0.78);
+        font: 8px/9px monospace;
+        pointer-events: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
     </style>
     <title>Example Status Overlay</title>
-</head>
+  </head>
 
-<body>
+  <body>
     <div>
-        <div class="caption">
-            <button id='button'>intercept</button>
-            <label id="label">hello</label><br>
-            <input type="text"/>
-            <div id="hudhook-status-input-diagnostic">Status input: waiting</div>
-        </div>
+      <div class="caption">
+        <button id="button">intercept</button>
+        <label id="label">hello</label><br />
+        <input id="hudhook-status-input-target" type="text" />
+        <div id="hudhook-status-input-diagnostic">Status input: waiting</div>
+      </div>
     </div>
     <script>
-        const label = document.getElementById('label')
-        const {
-            ipcRenderer, remote
-        } = window.require('electron')
-        ipcRenderer.on("fps", (event, fps) => {
-            label.innerText = `fps: ${fps}`
-        })
+      const label = document.getElementById('label');
+      const { ipcRenderer, remote } = window.require('electron');
+      ipcRenderer.on('fps', (event, fps) => {
+        label.innerText = `fps: ${fps}`;
+      });
 
-        const button = document.getElementById('button')
-        button.addEventListener('click', () => {
-            ipcRenderer.send('startIntercept')
-        })
+      const button = document.getElementById('button');
+      button.addEventListener('click', () => {
+        ipcRenderer.send('startIntercept');
+      });
 
-        const inputDiagnostic = document.getElementById('hudhook-status-input-diagnostic')
-        const diagnosticEvents = [
-            'mouseover',
-            'mousedown',
-            'mouseup',
-            'click',
-            'focusin',
-            'input',
-            'keydown',
-            'wheel'
-        ]
-        const diagnosticTarget = event => {
-            const target = event.target
-            if (!(target instanceof Element)) {
-                return 'unknown'
-            }
-            return target.id || target.tagName.toLowerCase()
+      const inputDiagnostic = document.getElementById(
+        'hudhook-status-input-diagnostic',
+      );
+      const diagnosticEvents = [
+        'mouseover',
+        'mousedown',
+        'mouseup',
+        'click',
+        'focusin',
+        'input',
+        'keydown',
+        'wheel',
+      ];
+      const diagnosticTarget = (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return 'unknown';
         }
-        const showInputDiagnostic = (event, log) => {
-            const point = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
-                ? ` @ ${Math.round(event.clientX)},${Math.round(event.clientY)}`
-                : ''
-            const value = event.type === 'input' && event.target instanceof HTMLInputElement
-                ? ` value=${JSON.stringify(event.target.value)}`
-                : ''
-            const message = `${event.type} target=${diagnosticTarget(event)}${point}${value}`
-            inputDiagnostic.textContent = `Status input: ${message}`
-            if (log) {
-                console.log(`HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC ${message}`)
-            }
+        return target.id || target.tagName.toLowerCase();
+      };
+      const showInputDiagnostic = (event, log) => {
+        const point =
+          Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+            ? ` @ ${Math.round(event.clientX)},${Math.round(event.clientY)}`
+            : '';
+        const value =
+          event.type === 'input' && event.target instanceof HTMLInputElement
+            ? ` value=${JSON.stringify(event.target.value)}`
+            : '';
+        const message = `${event.type} target=${diagnosticTarget(event)}${point}${value}`;
+        inputDiagnostic.textContent = `Status input: ${message}`;
+        if (log) {
+          console.log(`HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC ${message}`);
         }
-        document.addEventListener('mousemove', event => {
-            showInputDiagnostic(event, false)
-        }, true)
-        diagnosticEvents.forEach(type => {
-            document.addEventListener(type, event => {
-                showInputDiagnostic(event, true)
-            }, true)
-        })
+      };
+      document.addEventListener(
+        'mousemove',
+        (event) => {
+          showInputDiagnostic(event, false);
+        },
+        true,
+      );
+      diagnosticEvents.forEach((type) => {
+        document.addEventListener(
+          type,
+          (event) => {
+            showInputDiagnostic(event, true);
+          },
+          true,
+        );
+      });
     </script>
-</body>
-
+  </body>
 </html>
