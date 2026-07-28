@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME } from './overlay-loopback-transport.js';
 import type { OverlaySession } from './overlay-session.js';
 
 const RESHADE_OPT_IN_FLAG = '--reshade-overlay';
@@ -47,6 +48,8 @@ export const RESHADE_CLIENT_TARGET_CONNECTED_MARKER =
   'RESHADE_CLIENT_TARGET_CONNECTED';
 export const RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER =
   'RESHADE_CLIENT_TARGET_DISCONNECTED';
+export const RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED_MARKER =
+  'RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED';
 
 const RUNTIME_ARTIFACTS = Object.freeze([
   INJECTOR_FILE_NAME,
@@ -139,6 +142,17 @@ type ReShadeTargetConnection = Readonly<{
   pid: number;
   path: string;
 }>;
+
+type ReShadeAttachmentSession = Pick<
+  OverlaySession,
+  'on' | 'onClose' | 'whenReady'
+> &
+  Partial<Pick<OverlaySession, 'authorizeTarget'>>;
+
+type TargetRendezvousAuthorizer = (
+  runDirectory: string,
+  pid: number,
+) => Promise<() => void>;
 
 type ConnectedTarget = ReShadeTargetConnection &
   Readonly<{
@@ -309,6 +323,7 @@ export class ReShadeOverlayLauncher {
   private targetProofTimer: ReturnType<typeof setTimeout> | null = null;
   private latestRunDirectory: string | null = null;
   private preparedRuntime: Promise<StagedRuntime> | null = null;
+  private releaseTargetAuthorization: (() => void) | null = null;
   private launchGeneration = 0;
   private disposed = false;
 
@@ -377,18 +392,18 @@ export class ReShadeOverlayLauncher {
    * requires the injected add-on to authenticate back to this producer.
    */
   public attach(
-    session: Pick<OverlaySession, 'on' | 'onClose' | 'whenReady'>,
+    session: ReShadeAttachmentSession,
     target: ReShadeTarget,
   ): Promise<ReShadeAttachResult> {
     if (this.disposed) {
       return Promise.reject(new Error('the ReShade launcher is disposed'));
     }
 
-    const targetLabel = targetLabelFor(target);
-    const expectedTargetPid = effectiveExpectedTargetPid(
+    const [attachmentTarget, expectedTargetPid] = snapshotTarget(
       target,
       this.config.expectedTargetPid,
     );
+    const targetLabel = targetLabelFor(attachmentTarget);
     if (this.activeAttach) {
       if (this.activeAttach.targetLabel === targetLabel) {
         return this.activeAttach.promise;
@@ -419,6 +434,9 @@ export class ReShadeOverlayLauncher {
       );
     }
 
+    this.attachmentState = 'attaching';
+    this.attachmentTargetLabel = targetLabel;
+    this.attachmentExpectedTargetPid = expectedTargetPid;
     let cancelled = false;
     let cancelAttach: (error: Error) => void = () => undefined;
     const cancellation = new Promise<never>((resolve, reject) => {
@@ -432,10 +450,18 @@ export class ReShadeOverlayLauncher {
     });
     const promise = this.performAttach(
       session,
-      target,
+      attachmentTarget,
       expectedTargetPid,
       cancellation,
-    );
+    ).catch((error) => {
+      if (
+        this.attachmentState === 'attaching' &&
+        this.attachmentTargetLabel === targetLabel
+      ) {
+        this.applyFailureState(targetLabel, error);
+      }
+      throw error;
+    });
     const activeAttach = {
       targetLabel,
       promise,
@@ -459,16 +485,34 @@ export class ReShadeOverlayLauncher {
    * Prefer {@link attach} for reusable process lifecycle management.
    */
   public launch(target: ReShadeTarget): Promise<ReShadeLaunchResult> {
+    return this.requestLaunch(target);
+  }
+
+  private requestLaunch(
+    target: ReShadeTarget,
+    authorizeTarget?: TargetRendezvousAuthorizer,
+    attachmentOwner = false,
+  ): Promise<ReShadeLaunchResult> {
     if (this.disposed) {
       return Promise.reject(new Error('the ReShade launcher is disposed'));
     }
 
-    const targetLabel = targetLabelFor(target);
-    const expectedTargetPid = effectiveExpectedTargetPid(
+    const [launchTarget, expectedTargetPid] = snapshotTarget(
       target,
       this.config.expectedTargetPid,
     );
+    const targetLabel = targetLabelFor(launchTarget);
+    if (!attachmentOwner && this.activeAttach) {
+      return Promise.reject(
+        new Error('a ReShade attachment is already active'),
+      );
+    }
     if (this.activeRequest) {
+      if (attachmentOwner) {
+        return Promise.reject(
+          new Error('the active ReShade attachment already owns a launch'),
+        );
+      }
       if (this.activeTargetLabel === targetLabel) {
         return this.activeRequest;
       }
@@ -492,7 +536,12 @@ export class ReShadeOverlayLauncher {
         ),
       );
     }
-    if (this.attachmentState === 'attaching') {
+    if (
+      this.attachmentState === 'attaching' &&
+      (!attachmentOwner ||
+        this.activeAttach?.targetLabel !== targetLabel ||
+        this.attachmentTargetLabel !== targetLabel)
+    ) {
       return Promise.reject(
         new Error('a ReShade injection is already awaiting target connection'),
       );
@@ -501,7 +550,7 @@ export class ReShadeOverlayLauncher {
     this.attachmentState = 'attaching';
     this.attachmentTargetLabel = targetLabel;
     this.attachmentExpectedTargetPid = expectedTargetPid;
-    this.awaitingTargetProof = !isPathTarget(target);
+    this.awaitingTargetProof = !isPathTarget(launchTarget);
     if (this.awaitingTargetProof) {
       this.targetProofTimer = setTimeout(() => {
         this.closeTargetProofWindow();
@@ -511,14 +560,15 @@ export class ReShadeOverlayLauncher {
 
     const launchGeneration = ++this.launchGeneration;
     const request = this.performLaunch(
-      target,
+      launchTarget,
       targetLabel,
       expectedTargetPid,
       launchGeneration,
+      authorizeTarget,
     )
       .then((result) => {
         if (
-          isPathTarget(target) &&
+          isPathTarget(launchTarget) &&
           this.activeAttach === null &&
           !this.disposed &&
           this.attachmentState === 'attaching' &&
@@ -577,10 +627,11 @@ export class ReShadeOverlayLauncher {
         });
     }
     this.invalidateActiveLaunch();
+    this.clearTargetAuthorization();
   }
 
   private async performAttach(
-    session: Pick<OverlaySession, 'on' | 'onClose' | 'whenReady'>,
+    session: ReShadeAttachmentSession,
     target: ReShadeTarget,
     expectedTargetPid: number | undefined,
     cancellation: Promise<never>,
@@ -712,20 +763,17 @@ export class ReShadeOverlayLauncher {
           return;
         }
         if (
+          expectedTargetPid !== undefined &&
+          connection.pid !== expectedTargetPid
+        ) {
+          return;
+        }
+        if (
           !recognizedCandidatePids.has(connection.pid) &&
           !targetPathMatches(connection.path, target)
         ) {
           console.warn(
             `Ignored ReShade target connection from unexpected path=${JSON.stringify(connection.path)}; expected ${targetPathExpectation(target)}`,
-          );
-          return;
-        }
-        if (
-          expectedTargetPid !== undefined &&
-          connection.pid !== expectedTargetPid
-        ) {
-          console.warn(
-            `Ignored ReShade target connection from unexpected pid=${connection.pid}; expected pid=${expectedTargetPid}`,
           );
           return;
         }
@@ -825,9 +873,23 @@ export class ReShadeOverlayLauncher {
       startProofTimer();
     }
 
+    const authorizeTarget = session.authorizeTarget;
+    const targetRendezvousAuthorizer: TargetRendezvousAuthorizer | undefined =
+      authorizeTarget
+        ? (runDirectory, pid) =>
+            authorizeTarget.call(
+              session,
+              pid,
+              path.join(runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME),
+            )
+        : undefined;
     let launch: Promise<ReShadeLaunchResult> | undefined;
     try {
-      launch = this.launch(target).then((result) => {
+      launch = this.requestLaunch(
+        target,
+        targetRendezvousAuthorizer,
+        true,
+      ).then((result) => {
         injectorTargetPid = result.injectorTargetPid;
         if (isPathTarget(target)) {
           startProofTimer();
@@ -869,15 +931,38 @@ export class ReShadeOverlayLauncher {
     targetLabel: string,
     expectedTargetPid: number | undefined,
     launchGeneration: number,
+    authorizeTarget?: TargetRendezvousAuthorizer,
   ): Promise<ReShadeLaunchResult> {
     const targetDescription = targetDescriptionFor(target);
     const preparedRuntime = this.preparedRuntime;
     this.preparedRuntime = null;
     const staged = await (preparedRuntime ??
       this.stageRuntime(targetStageName(target)));
+    let newTargetAuthorization: (() => void) | undefined;
     try {
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+      if (expectedTargetPid !== undefined && authorizeTarget) {
+        newTargetAuthorization = await authorizeTarget(
+          staged.runDirectory,
+          expectedTargetPid,
+        );
+        this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+        if (this.releaseTargetAuthorization) {
+          throw new Error('a ReShade target rendezvous is already authorized');
+        }
+        this.releaseTargetAuthorization = newTargetAuthorization;
+        newTargetAuthorization = undefined;
+        console.log(
+          `${RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED_MARKER} pid=${expectedTargetPid} path=${JSON.stringify(
+            path.join(
+              staged.runDirectory,
+              OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME,
+            ),
+          )}`,
+        );
+      }
     } catch (error) {
+      newTargetAuthorization?.();
       await removeStagedRuntime(staged).catch(() => undefined);
       throw error;
     }
@@ -1165,6 +1250,13 @@ export class ReShadeOverlayLauncher {
     this.attachmentTargetLabel = null;
     this.attachmentExpectedTargetPid = undefined;
     this.closeTargetProofWindow();
+    this.clearTargetAuthorization();
+  }
+
+  private clearTargetAuthorization(): void {
+    const release = this.releaseTargetAuthorization;
+    this.releaseTargetAuthorization = null;
+    release?.();
   }
 
   private closeTargetProofWindow(): void {
@@ -1280,6 +1372,38 @@ function effectiveExpectedTargetPid(
     );
   }
   return target.pid ?? configuredExpectedTargetPid;
+}
+
+function snapshotTarget(
+  target: ReShadeTarget,
+  configuredExpectedTargetPid: number | undefined,
+): readonly [ReShadeTarget, number | undefined] {
+  const expectedTargetPid = effectiveExpectedTargetPid(
+    target,
+    configuredExpectedTargetPid,
+  );
+  if (isPathTarget(target)) {
+    return [
+      Object.freeze({
+        pathContains: target.pathContains,
+        ...(target.excludedProcessNames === undefined
+          ? {}
+          : {
+              excludedProcessNames: Object.freeze([
+                ...target.excludedProcessNames,
+              ]),
+            }),
+      }),
+      undefined,
+    ];
+  }
+  return [
+    Object.freeze({
+      processName: target.processName,
+      ...(expectedTargetPid === undefined ? {} : { pid: expectedTargetPid }),
+    }),
+    expectedTargetPid,
+  ];
 }
 
 function parseInjectorTargetPid(stdout: string): number {

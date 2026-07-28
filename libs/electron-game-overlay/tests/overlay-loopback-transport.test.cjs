@@ -9,6 +9,7 @@ const {
   BackpressurePacketQueue,
   OverlayLoopbackTransport,
   MAX_JSON_BODY_BYTES,
+  OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
   encodeFrameTransportPacket,
   encodeJsonTransportPacket,
 } = require('../dist/lib/overlay-loopback-transport.js');
@@ -370,6 +371,205 @@ test('invalid authentication is closed without receiving a snapshot', async (t) 
     }),
   );
   await closed;
+});
+
+test('run-local credentials isolate simultaneous exact-PID targets', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-target-auth-test-'),
+  );
+  const tokens = ['10'.repeat(32), '20'.repeat(32), '30'.repeat(32)];
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: () => {
+      const token = tokens.shift();
+      assert.ok(token, 'test token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  const sockets = [];
+  const events = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const globalRecord = await transport.whenReady();
+  const firstPath = path.join(
+    tempDirectory,
+    'first-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const secondPath = path.join(
+    tempDirectory,
+    'second-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const firstRouteIntentPath = path.join(
+    path.dirname(firstPath),
+    OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  );
+  const secondRouteIntentPath = path.join(
+    path.dirname(secondPath),
+    OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  );
+  const [releaseFirst, releaseSecond] = await Promise.all([
+    transport.authorizeTarget(4101, firstPath),
+    transport.authorizeTarget(4102, secondPath),
+  ]);
+  const firstRecord = JSON.parse(await readFile(firstPath, 'utf8'));
+  const secondRecord = JSON.parse(await readFile(secondPath, 'utf8'));
+
+  assert.equal(firstRecord.targetPid, 4101);
+  assert.equal(secondRecord.targetPid, 4102);
+  assert.equal(firstRecord.port, globalRecord.port);
+  assert.equal(secondRecord.port, globalRecord.port);
+  assert.notEqual(firstRecord.token, secondRecord.token);
+  assert.notEqual(firstRecord.token, globalRecord.token);
+  assert.deepEqual(
+    JSON.parse(await readFile(firstRouteIntentPath, 'utf8')),
+    firstRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondRouteIntentPath, 'utf8')),
+    secondRecord,
+  );
+  await assert.rejects(
+    transport.authorizeTarget(4103, firstPath),
+    /already authorized for PID 4101/,
+  );
+
+  const wrongSocket = await connect(globalRecord.port);
+  sockets.push(wrongSocket);
+  const wrongBytes = [];
+  wrongSocket.on('data', (chunk) => wrongBytes.push(chunk));
+  const wrongClosed = new Promise((resolve) =>
+    wrongSocket.once('close', resolve),
+  );
+  wrongSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: firstRecord.token,
+      pid: 4102,
+      path: 'C:\\games\\wrong-target.exe',
+    }),
+  );
+  await wrongClosed;
+  assert.equal(Buffer.concat(wrongBytes).length, 0);
+  assert.equal(events.length, 0);
+
+  const globalTokenSocket = await connect(globalRecord.port);
+  sockets.push(globalTokenSocket);
+  const globalTokenBytes = [];
+  globalTokenSocket.on('data', (chunk) => globalTokenBytes.push(chunk));
+  const globalTokenClosed = new Promise((resolve) =>
+    globalTokenSocket.once('close', resolve),
+  );
+  globalTokenSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: globalRecord.token,
+      pid: 4101,
+      path: 'C:\\games\\global-token-bypass.exe',
+    }),
+  );
+  await globalTokenClosed;
+  assert.equal(Buffer.concat(globalTokenBytes).length, 0);
+  assert.equal(events.length, 0);
+
+  const authenticate = async (record, pid, executablePath) => {
+    const socket = await connect(globalRecord.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: record.token,
+        pid,
+        path: executablePath,
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+
+  const [firstSocket, secondSocket] = await Promise.all([
+    authenticate(firstRecord, 4101, 'C:\\games\\first.exe'),
+    authenticate(secondRecord, 4102, 'C:\\games\\second.exe'),
+  ]);
+  await waitFor(
+    () => events.filter(({ event }) => event === 'game.process').length === 2,
+  );
+  assert.deepEqual(
+    events
+      .filter(({ event }) => event === 'game.process')
+      .map(({ payload }) => payload.pid)
+      .sort(),
+    [4101, 4102],
+  );
+
+  const firstSocketClosed = new Promise((resolve) =>
+    firstSocket.once('close', resolve),
+  );
+  firstSocket.destroy();
+  await firstSocketClosed;
+  await waitFor(() =>
+    events.some(
+      ({ event, payload }) =>
+        event === 'game.process.transport-lost' && payload.pid === 4101,
+    ),
+  );
+  assert.deepEqual(JSON.parse(await readFile(firstPath, 'utf8')), firstRecord);
+  const reauthenticatedFirstSocket = await authenticate(
+    firstRecord,
+    4101,
+    'C:\\games\\first-reconnected.exe',
+  );
+  await waitFor(
+    () => events.filter(({ event }) => event === 'game.process').length === 3,
+  );
+
+  const reauthenticatedFirstClosed = new Promise((resolve) =>
+    reauthenticatedFirstSocket.once('close', resolve),
+  );
+  releaseFirst();
+  await reauthenticatedFirstClosed;
+  await assert.rejects(
+    readFile(firstPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(firstRouteIntentPath, 'utf8')),
+    firstRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondPath, 'utf8')),
+    secondRecord,
+  );
+
+  const secondSocketClosed = new Promise((resolve) =>
+    secondSocket.once('close', resolve),
+  );
+  releaseSecond();
+  await secondSocketClosed;
+  await assert.rejects(
+    readFile(secondPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondRouteIntentPath, 'utf8')),
+    secondRecord,
+  );
 });
 
 test('authenticated surface and FPS telemetry is validated with an authoritative PID', async (t) => {

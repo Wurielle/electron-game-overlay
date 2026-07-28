@@ -1,5 +1,6 @@
 import { OverlayLoopbackTransport } from './overlay-loopback-transport.js';
 import type { NativeInputMessage } from './input-translation.js';
+import type { Disposable } from './types.js';
 
 export interface NativeHotkey {
   name: string;
@@ -73,6 +74,7 @@ export type NativeOverlayCommand =
 export interface NativeOverlay {
   start(): void;
   whenReady(): Promise<unknown>;
+  authorizeTarget?(pid: number, discoveryPath: string): Promise<Disposable>;
   stop(): void;
   setEventCallback(callback: (event: string, ...args: any[]) => void): void;
   setHotkeys(hotkeys: NativeHotkey[]): void;

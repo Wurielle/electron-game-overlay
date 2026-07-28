@@ -10,7 +10,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
@@ -61,6 +61,9 @@ const NETWORK_INBOUND_CAPACITY: usize = 8;
 const TRANSPORT_VERSION: u32 = 1;
 const DISCOVERY_DIRECTORY: &str = "electron-game-overlay";
 const DISCOVERY_FILE: &str = "electron-overlay-transport-v1.json";
+const TARGET_ROUTE_FILE: &str = "electron-overlay-transport-v1.targeted";
+const RESHADE_BASE_PATH_OVERRIDE_ENV: &str = "RESHADE_BASE_PATH_OVERRIDE";
+const MAX_DISCOVERY_BYTES: usize = 64 * 1024;
 const BYTES_PER_PIXEL: usize = 4;
 
 type PublishedScene = Arc<RwLock<Arc<ElectronScene>>>;
@@ -867,12 +870,14 @@ enum NetworkInbound {
     Closed { generation: u64, reason: String },
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct DiscoveryDocument {
     version: u32,
     pid: u32,
     port: u16,
     token: String,
+    #[serde(rename = "targetPid")]
+    target_pid: Option<u32>,
 }
 
 struct BridgeThreadState {
@@ -881,6 +886,10 @@ struct BridgeThreadState {
     inbound_tx: mpsc::SyncSender<NetworkInbound>,
     inbound_rx: mpsc::Receiver<NetworkInbound>,
     connection_generation: u64,
+    discovery_path: PathBuf,
+    legacy_discovery_path: Option<PathBuf>,
+    target_route_path: Option<PathBuf>,
+    routed_discovery_pinned: bool,
     scene: PublishedScene,
     input_router: SharedInputRouter,
     outbound: SharedOutboundQueue,
@@ -910,12 +919,17 @@ impl BridgeThreadState {
         drag: SharedDragState,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
+        let (discovery_path, legacy_discovery_path, target_route_path) = discovery_paths();
         Self {
             hwnd,
             transport: None,
             inbound_tx,
             inbound_rx,
             connection_generation: 0,
+            discovery_path,
+            legacy_discovery_path,
+            target_route_path,
+            routed_discovery_pinned: false,
             scene,
             input_router,
             outbound,
@@ -939,13 +953,19 @@ impl BridgeThreadState {
             return;
         }
 
-        let discovery = match read_discovery_document() {
-            Ok(discovery) => discovery,
-            Err(error) => {
-                debug!(%error, "Electron overlay transport discovery is not ready");
-                return;
-            }
-        };
+        let (discovery, selected_discovery_path, requires_target_binding) =
+            match select_discovery_document(
+                &self.discovery_path,
+                self.legacy_discovery_path.as_deref(),
+                self.target_route_path.as_deref(),
+                &mut self.routed_discovery_pinned,
+            ) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    debug!(%error, "Electron overlay transport discovery is not ready");
+                    return;
+                }
+            };
         let current_pid = GetCurrentProcessId();
         if discovery.version != TRANSPORT_VERSION {
             debug!(
@@ -957,8 +977,17 @@ impl BridgeThreadState {
             );
             return;
         }
-        if discovery.token.is_empty() || discovery.port == 0 {
+        if !is_valid_token(&discovery.token) || discovery.port == 0 {
             debug!("Ignoring incomplete Electron overlay transport discovery document");
+            return;
+        }
+        if !discovery_target_matches(discovery.target_pid, current_pid, requires_target_binding) {
+            warn!(
+                expected_target_pid = ?discovery.target_pid,
+                actual_target_pid = current_pid,
+                discovery_path = %selected_discovery_path.display(),
+                "Ignoring Electron overlay transport discovery for another target process"
+            );
             return;
         }
 
@@ -1011,6 +1040,7 @@ impl BridgeThreadState {
             host_port = discovery.port,
             producer_pid = discovery.pid,
             target_pid = current_pid,
+            discovery_path = %selected_discovery_path.display(),
             "Electron frame bridge connected to overlay transport"
         );
         let _ = PostMessageW(
@@ -2181,16 +2211,110 @@ fn graphics_api_name(graphics_api: u32) -> &'static str {
     }
 }
 
-fn discovery_path() -> PathBuf {
-    std::env::temp_dir()
-        .join(DISCOVERY_DIRECTORY)
-        .join(DISCOVERY_FILE)
+fn discovery_paths() -> (PathBuf, Option<PathBuf>, Option<PathBuf>) {
+    discovery_paths_from(
+        std::env::var_os(RESHADE_BASE_PATH_OVERRIDE_ENV),
+        std::env::temp_dir(),
+    )
 }
 
-fn read_discovery_document() -> Result<DiscoveryDocument, DiscoveryError> {
-    let path = discovery_path();
-    let bytes = fs::read(&path).map_err(|source| DiscoveryError::Read { path, source })?;
+fn discovery_paths_from(
+    reshade_base_path: Option<std::ffi::OsString>,
+    temp_directory: PathBuf,
+) -> (PathBuf, Option<PathBuf>, Option<PathBuf>) {
+    let legacy_path = temp_directory
+        .join(DISCOVERY_DIRECTORY)
+        .join(DISCOVERY_FILE);
+    match reshade_base_path {
+        Some(base_path) => {
+            let base_path = PathBuf::from(base_path);
+            (
+                base_path.join(DISCOVERY_FILE),
+                Some(legacy_path),
+                Some(base_path.join(TARGET_ROUTE_FILE)),
+            )
+        }
+        None => (legacy_path, None, None),
+    }
+}
+
+fn select_discovery_document(
+    preferred_path: &Path,
+    legacy_path: Option<&Path>,
+    target_route_path: Option<&Path>,
+    routed_discovery_pinned: &mut bool,
+) -> Result<(DiscoveryDocument, PathBuf, bool), DiscoveryError> {
+    if !*routed_discovery_pinned {
+        if let Some(target_route_path) = target_route_path {
+            match fs::metadata(target_route_path) {
+                Ok(_) => *routed_discovery_pinned = true,
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    *routed_discovery_pinned = true;
+                    return Err(DiscoveryError::Read {
+                        path: target_route_path.to_owned(),
+                        source,
+                    });
+                }
+            }
+        }
+    }
+
+    match read_discovery_document(preferred_path) {
+        Ok(discovery) => {
+            let requires_target_binding = legacy_path.is_some();
+            if requires_target_binding {
+                *routed_discovery_pinned = true;
+            }
+            Ok((
+                discovery,
+                preferred_path.to_owned(),
+                requires_target_binding,
+            ))
+        }
+        Err(error)
+            if !*routed_discovery_pinned && error.is_not_found() && legacy_path.is_some() =>
+        {
+            let legacy_path = legacy_path.unwrap();
+            read_discovery_document(legacy_path)
+                .map(|discovery| (discovery, legacy_path.to_owned(), false))
+        }
+        Err(error) => {
+            if legacy_path.is_some() && !error.is_not_found() {
+                *routed_discovery_pinned = true;
+            }
+            Err(error)
+        }
+    }
+}
+
+fn read_discovery_document(path: &Path) -> Result<DiscoveryDocument, DiscoveryError> {
+    let bytes = fs::read(path).map_err(|source| DiscoveryError::Read {
+        path: path.to_owned(),
+        source,
+    })?;
+    if bytes.len() > MAX_DISCOVERY_BYTES {
+        return Err(DiscoveryError::TooLarge {
+            path: path.to_owned(),
+            bytes: bytes.len(),
+        });
+    }
     serde_json::from_slice(&bytes).map_err(DiscoveryError::Json)
+}
+
+fn is_valid_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn discovery_target_matches(
+    target_pid: Option<u32>,
+    current_pid: u32,
+    requires_target_binding: bool,
+) -> bool {
+    match target_pid {
+        Some(target_pid) => target_pid == current_pid,
+        None => !requires_target_binding,
+    }
 }
 
 fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
@@ -2380,7 +2504,17 @@ fn publish_inbound(
 #[derive(Debug)]
 enum DiscoveryError {
     Read { path: PathBuf, source: io::Error },
+    TooLarge { path: PathBuf, bytes: usize },
     Json(serde_json::Error),
+}
+
+impl DiscoveryError {
+    fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Read { source, .. } if source.kind() == io::ErrorKind::NotFound
+        )
+    }
 }
 
 impl fmt::Display for DiscoveryError {
@@ -2389,6 +2523,11 @@ impl fmt::Display for DiscoveryError {
             Self::Read { path, source } => {
                 write!(formatter, "cannot read {}: {source}", path.display())
             }
+            Self::TooLarge { path, bytes } => write!(
+                formatter,
+                "discovery document {} is {bytes} bytes, exceeding {MAX_DISCOVERY_BYTES}",
+                path.display()
+            ),
             Self::Json(error) => write!(formatter, "invalid discovery JSON: {error}"),
         }
     }
@@ -2418,6 +2557,198 @@ fn wide_string(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_local_discovery_is_pinned_when_reshade_supplies_a_base_path() {
+        let run_directory = PathBuf::from(r"C:\overlay-runs\game-unique");
+        let temp_directory = PathBuf::from(r"C:\temp");
+
+        let legacy_path = temp_directory
+            .join(DISCOVERY_DIRECTORY)
+            .join(DISCOVERY_FILE);
+        assert_eq!(
+            discovery_paths_from(
+                Some(run_directory.clone().into_os_string()),
+                temp_directory.clone(),
+            ),
+            (
+                run_directory.join(DISCOVERY_FILE),
+                Some(legacy_path.clone()),
+                Some(run_directory.join(TARGET_ROUTE_FILE)),
+            ),
+        );
+        assert_eq!(
+            discovery_paths_from(None, temp_directory),
+            (legacy_path, None, None),
+        );
+    }
+
+    fn unique_discovery_test_directory(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "electron-overlay-discovery-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn discovery_test_document(version: u32, target_pid: Option<u32>) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "version": version,
+            "pid": 123,
+            "port": 456,
+            "token": "ab".repeat(32),
+            "targetPid": target_pid,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn missing_run_local_discovery_uses_legacy_only_before_a_route_is_pinned() {
+        let root = unique_discovery_test_directory("fallback");
+        let run_directory = root.join("run");
+        let preferred_path = run_directory.join(DISCOVERY_FILE);
+        let target_route_path = run_directory.join(TARGET_ROUTE_FILE);
+        let legacy_path = root.join("global").join(DISCOVERY_FILE);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, discovery_test_document(1, None)).unwrap();
+
+        let mut pinned = false;
+        let (_, selected_path, requires_target_binding) = select_discovery_document(
+            &preferred_path,
+            Some(&legacy_path),
+            Some(&target_route_path),
+            &mut pinned,
+        )
+        .unwrap();
+        assert_eq!(selected_path, legacy_path);
+        assert!(!requires_target_binding);
+        assert!(!pinned);
+
+        fs::create_dir_all(&run_directory).unwrap();
+        fs::write(&target_route_path, b"target route required").unwrap();
+        let error = select_discovery_document(
+            &preferred_path,
+            Some(&legacy_path),
+            Some(&target_route_path),
+            &mut pinned,
+        )
+        .unwrap_err();
+        assert!(error.is_not_found());
+        assert!(pinned);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_or_observed_run_local_discovery_never_falls_back_on_reconnect() {
+        let root = unique_discovery_test_directory("fail-closed");
+        let legacy_path = root.join("global").join(DISCOVERY_FILE);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, discovery_test_document(1, None)).unwrap();
+
+        let cases = [
+            ("malformed", b"{".to_vec()),
+            ("oversized", vec![b'x'; MAX_DISCOVERY_BYTES + 1]),
+            ("wrong-version", discovery_test_document(2, Some(789))),
+            ("missing-target", discovery_test_document(1, None)),
+            ("wrong-target", discovery_test_document(1, Some(123))),
+            ("valid-target", discovery_test_document(1, Some(789))),
+        ];
+
+        for (name, contents) in cases {
+            let run_directory = root.join(name);
+            let preferred_path = run_directory.join(DISCOVERY_FILE);
+            let target_route_path = run_directory.join(TARGET_ROUTE_FILE);
+            fs::create_dir_all(&run_directory).unwrap();
+            fs::write(&preferred_path, contents).unwrap();
+            let mut pinned = false;
+
+            let selected = select_discovery_document(
+                &preferred_path,
+                Some(&legacy_path),
+                Some(&target_route_path),
+                &mut pinned,
+            );
+            assert!(pinned, "{name} did not pin the run-local route");
+            match name {
+                "malformed" | "oversized" => assert!(selected.is_err()),
+                "wrong-version" => {
+                    let (document, selected_path, requires_target_binding) = selected.unwrap();
+                    assert_eq!(selected_path, preferred_path);
+                    assert!(requires_target_binding);
+                    assert_ne!(document.version, TRANSPORT_VERSION);
+                }
+                "missing-target" | "wrong-target" => {
+                    let (document, selected_path, requires_target_binding) = selected.unwrap();
+                    assert_eq!(selected_path, preferred_path);
+                    assert!(requires_target_binding);
+                    assert!(!discovery_target_matches(
+                        document.target_pid,
+                        789,
+                        requires_target_binding,
+                    ));
+                }
+                "valid-target" => {
+                    let (document, selected_path, requires_target_binding) = selected.unwrap();
+                    assert_eq!(selected_path, preferred_path);
+                    assert!(requires_target_binding);
+                    assert!(discovery_target_matches(
+                        document.target_pid,
+                        789,
+                        requires_target_binding,
+                    ));
+                }
+                _ => unreachable!(),
+            }
+
+            fs::remove_file(&preferred_path).unwrap();
+            let reconnect = select_discovery_document(
+                &preferred_path,
+                Some(&legacy_path),
+                Some(&target_route_path),
+                &mut pinned,
+            );
+            assert!(
+                reconnect.as_ref().is_err_and(DiscoveryError::is_not_found),
+                "{name} fell back to global discovery after route pinning"
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_credentials_require_exact_tokens_and_preserve_target_binding() {
+        assert!(is_valid_token(&"ab".repeat(32)));
+        assert!(!is_valid_token(&"ab".repeat(31)));
+        assert!(!is_valid_token(&"zz".repeat(32)));
+        assert!(discovery_target_matches(Some(789), 789, true));
+        assert!(!discovery_target_matches(Some(123), 789, true));
+        assert!(!discovery_target_matches(None, 789, true));
+        assert!(discovery_target_matches(None, 789, false));
+
+        let targeted: DiscoveryDocument = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "pid": 123,
+            "port": 456,
+            "token": "cd".repeat(32),
+            "targetPid": 789,
+        }))
+        .unwrap();
+        assert_eq!(targeted.target_pid, Some(789));
+
+        let legacy: DiscoveryDocument = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "pid": 123,
+            "port": 456,
+            "token": "ef".repeat(32),
+        }))
+        .unwrap();
+        assert_eq!(legacy.target_pid, None);
+    }
 
     fn drag_intent(sequence: u64) -> DragMoveIntent {
         DragMoveIntent {

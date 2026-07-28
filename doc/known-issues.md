@@ -220,7 +220,9 @@ not supported by the current production runtime:
   a lower-integrity client;
 - x86 targets and VR runtimes (`reshade_overlay` is not invoked for VR);
 - Vulkan, OpenGL, D3D9, unusual/exclusive presentation paths, multiple swap
-  chains, and multiple simultaneous targets until each has an explicit test;
+  chains, and simultaneous rendered targets beyond the completed same-listener
+  credential-isolation and fail-closed route-selection tests until each has
+  explicit graphics acceptance;
 - coexistence with an existing ReShade installation or another proxy DLL until
   conflict detection and a supported installation strategy are implemented;
 - real physical/VM mixed-scale target-follow acceptance, safe texture

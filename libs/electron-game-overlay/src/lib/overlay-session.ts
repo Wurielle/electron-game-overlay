@@ -45,6 +45,7 @@ import type {
   OverlaySessionEventMap,
   OverlaySessionEventName,
   OverlayTargetSurface,
+  Disposable,
   Rect,
 } from './types.js';
 
@@ -77,6 +78,7 @@ export class OverlaySession {
   >();
   private readonly quitHandlers = new Set<() => void>();
   private readonly closeHandlers = new Set<() => void>();
+  private readonly targetAuthorizationReleases = new Set<Disposable>();
   private screenEventsBound = false;
   private started = false;
   private quitting = false;
@@ -159,6 +161,63 @@ export class OverlaySession {
     return this.overlay.whenReady().then(() => undefined);
   }
 
+  /**
+   * Publishes a target-specific transport credential before exact-PID
+   * injection. Backends without targeted rendezvous retain their existing
+   * global discovery behavior.
+   */
+  public async authorizeTarget(
+    pid: number,
+    discoveryPath: string,
+  ): Promise<Disposable> {
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
+      throw new RangeError(
+        'the overlay target PID must be a positive uint32 integer',
+      );
+    }
+    if (this.closed) {
+      throw new Error('the overlay session is closed');
+    }
+    if (typeof discoveryPath !== 'string' || discoveryPath.length === 0) {
+      throw new TypeError(
+        'the overlay target discovery path must be a non-empty string',
+      );
+    }
+
+    this.ensureStarted();
+    await this.overlay.whenReady();
+    if (this.closed) {
+      throw new Error('the overlay session is closed');
+    }
+
+    const backendRelease = await this.overlay.authorizeTarget?.(
+      pid,
+      discoveryPath,
+    );
+    if (!backendRelease) {
+      if (this.closed) {
+        throw new Error('the overlay session is closed');
+      }
+      return () => undefined;
+    }
+    if (this.closed) {
+      backendRelease();
+      throw new Error('the overlay session is closed');
+    }
+
+    let released = false;
+    const release = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.targetAuthorizationReleases.delete(release);
+      backendRelease();
+    };
+    this.targetAuthorizationReleases.add(release);
+    return release;
+  }
+
   public close() {
     if (this.closed) {
       return;
@@ -183,6 +242,16 @@ export class OverlaySession {
       clearTimeout(retry);
     }
     this.ambiguousCaptureRetryTasks.clear();
+
+    for (const release of Array.from(this.targetAuthorizationReleases)) {
+      try {
+        release();
+      } catch (error) {
+        console.error(
+          `Unable to release an overlay target authorization: ${String(error)}`,
+        );
+      }
+    }
 
     if (this.started) {
       this.overlay.stop();

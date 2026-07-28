@@ -4,6 +4,16 @@ const test = require('node:test');
 const { OverlaySession } = require('../dist/lib/overlay-session.js');
 const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
 
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
+
 const display = {
   id: 1,
   scaleFactor: 1,
@@ -270,6 +280,127 @@ test('surface removal honors revisions and causes the default selector to fall b
     session.targets.list().at(-1),
     session.targets.get(4321, '0x1234'),
   );
+});
+
+test('exact-target authorization delegates after readiness and has a legacy no-op fallback', async () => {
+  const calls = [];
+  const overlay = {
+    start: () => calls.push('start'),
+    stop() {},
+    setEventCallback() {},
+    whenReady: async () => calls.push('ready'),
+    authorizeTarget: async (pid, discoveryPath) => {
+      calls.push(['authorize', pid, discoveryPath]);
+      return () => calls.push('release');
+    },
+  };
+  const session = new OverlaySession(overlay);
+  session.electronScreen = {
+    on() {},
+    removeListener() {},
+  };
+
+  const release = await session.authorizeTarget(
+    4321,
+    'C:\\overlay-runs\\target\\electron-overlay-transport-v1.json',
+  );
+  assert.deepEqual(calls, [
+    'start',
+    'ready',
+    [
+      'authorize',
+      4321,
+      'C:\\overlay-runs\\target\\electron-overlay-transport-v1.json',
+    ],
+  ]);
+  release();
+  assert.equal(calls.at(-1), 'release');
+
+  const legacySession = new OverlaySession({
+    start() {},
+    stop() {},
+    setEventCallback() {},
+    whenReady: () => Promise.resolve(),
+  });
+  legacySession.electronScreen = session.electronScreen;
+  const legacyRelease = await legacySession.authorizeTarget(
+    4322,
+    'C:\\overlay-runs\\legacy\\electron-overlay-transport-v1.json',
+  );
+  assert.equal(typeof legacyRelease, 'function');
+  legacyRelease();
+});
+
+test('session close revokes active and late target authorizations', async () => {
+  const activeCalls = [];
+  const activeSession = new OverlaySession({
+    start() {},
+    stop() {},
+    setEventCallback() {},
+    whenReady: () => Promise.resolve(),
+    authorizeTarget: async () => () => activeCalls.push('release'),
+  });
+  activeSession.electronScreen = {
+    on() {},
+    removeListener() {},
+  };
+  const activeRelease = await activeSession.authorizeTarget(
+    5001,
+    'C:\\overlay-runs\\active\\electron-overlay-transport-v1.json',
+  );
+  activeSession.close();
+  activeRelease();
+  assert.deepEqual(activeCalls, ['release']);
+
+  const readiness = deferred();
+  let readinessAuthorizationCalled = false;
+  const readinessSession = new OverlaySession({
+    start() {},
+    stop() {},
+    setEventCallback() {},
+    whenReady: () => readiness.promise,
+    authorizeTarget: async () => {
+      readinessAuthorizationCalled = true;
+      return () => undefined;
+    },
+  });
+  readinessSession.electronScreen = activeSession.electronScreen;
+  const readinessAuthorization = readinessSession.authorizeTarget(
+    5002,
+    'C:\\overlay-runs\\readiness\\electron-overlay-transport-v1.json',
+  );
+  readinessSession.close();
+  readiness.resolve();
+  await assert.rejects(readinessAuthorization, /session is closed/);
+  assert.equal(readinessAuthorizationCalled, false);
+
+  const backend = deferred();
+  let backendAuthorizationCalled = false;
+  let lateReleaseCount = 0;
+  const backendSession = new OverlaySession({
+    start() {},
+    stop() {},
+    setEventCallback() {},
+    whenReady: () => Promise.resolve(),
+    authorizeTarget: async () => {
+      backendAuthorizationCalled = true;
+      return backend.promise;
+    },
+  });
+  backendSession.electronScreen = activeSession.electronScreen;
+  const backendAuthorization = backendSession.authorizeTarget(
+    5003,
+    'C:\\overlay-runs\\backend\\electron-overlay-transport-v1.json',
+  );
+  while (!backendAuthorizationCalled) {
+    await Promise.resolve();
+  }
+  backendSession.close();
+  backend.resolve(() => {
+    ++lateReleaseCount;
+  });
+  await assert.rejects(backendAuthorization, /session is closed/);
+  assert.equal(lateReleaseCount, 1);
 });
 
 test('target following moves the backing window in DIP but commits local physical bounds only with matching pixels', () => {

@@ -3,7 +3,7 @@ import { readFileSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   InputEventTranslator,
   type NativeInputMessage,
@@ -23,6 +23,10 @@ import {
 } from './target-surface.js';
 
 export const OVERLAY_TRANSPORT_PROTOCOL_VERSION = 1;
+export const OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME =
+  'electron-overlay-transport-v1.json';
+export const OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME =
+  'electron-overlay-transport-v1.targeted';
 export const MAX_JSON_BODY_BYTES = 1024 * 1024;
 export const MAX_FRAME_BODY_BYTES = 256 * 1024 * 1024;
 
@@ -34,12 +38,14 @@ const LOOPBACK_HOST = '127.0.0.1';
 const DEFAULT_PROCESS_EXIT_POLL_INTERVAL_MS = 250;
 const MIN_PROCESS_EXIT_POLL_INTERVAL_MS = 1;
 const MAX_PROCESS_EXIT_POLL_INTERVAL_MS = 60_000;
+const MAX_TOKEN_ALLOCATION_ATTEMPTS = 16;
 
 export interface OverlayDiscoveryRecord {
   version: 1;
   pid: number;
   port: number;
   token: string;
+  targetPid?: number;
 }
 
 export interface OverlayLoopbackTransportOptions {
@@ -169,6 +175,7 @@ interface ClientState {
   authenticated: boolean;
   pid?: number;
   path?: string;
+  targetAuthorization?: TargetAuthorization;
   inputTranslator?: InputEventTranslator;
 }
 
@@ -176,6 +183,16 @@ interface ProcessExitWatch {
   pid: number;
   path: string;
   timer?: ReturnType<typeof setTimeout>;
+}
+
+interface TargetAuthorization {
+  pid: number;
+  discoveryPath: string;
+  discoveryPathKey: string;
+  routeIntentPath: string;
+  record: OverlayDiscoveryRecord;
+  references: number;
+  generation: number;
 }
 
 function defaultIsProcessAlive(pid: number): boolean {
@@ -196,7 +213,7 @@ export function defaultOverlayDiscoveryPath(): string {
   return join(
     tmpdir(),
     'electron-game-overlay',
-    'electron-overlay-transport-v1.json',
+    OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME,
   );
 }
 
@@ -270,6 +287,14 @@ function isValidToken(token: string): boolean {
   return /^[a-fA-F0-9]{64}$/.test(token);
 }
 
+function assertProcessPid(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
+    throw new RangeError(
+      'Overlay target PID must be a positive uint32 integer',
+    );
+  }
+}
+
 function tokensEqual(actual: string, expected: string): boolean {
   if (!isValidToken(actual) || !isValidToken(expected)) {
     return false;
@@ -319,6 +344,19 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private readonly tokenFactory: () => string;
   private readonly isProcessAlive: (pid: number) => boolean;
   private readonly processExitPollIntervalMs: number;
+  private readonly issuedTokens = new Set<string>();
+  private readonly targetAuthorizationsByPid = new Map<
+    number,
+    TargetAuthorization
+  >();
+  private readonly targetAuthorizationsByDiscoveryPath = new Map<
+    string,
+    TargetAuthorization
+  >();
+  private readonly pendingTargetAuthorizationsByPid = new Map<
+    number,
+    Promise<TargetAuthorization>
+  >();
   private readonly clients = new Set<ClientState>();
   private readonly activeClientsByPid = new Map<number, ClientState>();
   private readonly processExitWatchesByPid = new Map<
@@ -370,12 +408,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return;
     }
 
-    const token = this.tokenFactory();
-    if (!isValidToken(token)) {
-      throw new Error(
-        'Overlay transport token must be exactly 32 bytes of hex',
-      );
-    }
+    const token = this.allocateToken();
 
     const generation = ++this.generation;
     const server = createServer((socket) => this.acceptClient(socket));
@@ -392,6 +425,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
           this.token = undefined;
           this.readyPromise = undefined;
           this.rejectReady = undefined;
+          this.issuedTokens.delete(token.toLowerCase());
           reject(error);
         };
 
@@ -420,14 +454,114 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     return this.readyPromise;
   }
 
+  public async authorizeTarget(
+    pid: number,
+    discoveryPath: string,
+  ): Promise<() => void> {
+    assertProcessPid(pid);
+    if (typeof discoveryPath !== 'string' || !isAbsolute(discoveryPath)) {
+      throw new TypeError('Overlay target discovery path must be absolute');
+    }
+    const resolvedDiscoveryPath = resolve(discoveryPath);
+    if (
+      basename(resolvedDiscoveryPath).toLowerCase() !==
+      OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME.toLowerCase()
+    ) {
+      throw new Error(
+        `Overlay target discovery path must end with ${OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME}`,
+      );
+    }
+    const discoveryPathKey = resolvedDiscoveryPath.toLowerCase();
+    if (discoveryPathKey === resolve(this.discoveryPath).toLowerCase()) {
+      throw new Error(
+        'Overlay target discovery path must not replace global discovery',
+      );
+    }
+    const readyRecord = await this.whenReady();
+    const generation = this.generation;
+    if (
+      !this.server ||
+      this.discoveryRecord !== readyRecord ||
+      generation === 0
+    ) {
+      throw new Error('Overlay transport stopped before target authorization');
+    }
+
+    const pathAuthorization =
+      this.targetAuthorizationsByDiscoveryPath.get(discoveryPathKey);
+    if (pathAuthorization && pathAuthorization.pid !== pid) {
+      throw new Error(
+        `Overlay target discovery path is already authorized for PID ${pathAuthorization.pid}`,
+      );
+    }
+
+    let authorization: TargetAuthorization;
+    let pending = this.pendingTargetAuthorizationsByPid.get(pid);
+    if (pending) {
+      authorization = await pending;
+    } else {
+      const existing = this.targetAuthorizationsByPid.get(pid);
+      if (existing) {
+        authorization = existing;
+      } else {
+        pending = this.createTargetAuthorization(
+          pid,
+          resolvedDiscoveryPath,
+          discoveryPathKey,
+          readyRecord,
+          generation,
+        );
+        this.pendingTargetAuthorizationsByPid.set(pid, pending);
+        const clearPending = () => {
+          if (this.pendingTargetAuthorizationsByPid.get(pid) === pending) {
+            this.pendingTargetAuthorizationsByPid.delete(pid);
+          }
+        };
+        pending.then(clearPending, clearPending);
+        authorization = await pending;
+      }
+    }
+    if (
+      resolve(authorization.discoveryPath).toLowerCase() !==
+      resolvedDiscoveryPath.toLowerCase()
+    ) {
+      throw new Error(
+        `Overlay target PID ${pid} is already authorized through another discovery path`,
+      );
+    }
+    if (
+      authorization.generation !== this.generation ||
+      this.targetAuthorizationsByPid.get(pid) !== authorization
+    ) {
+      throw new Error('Overlay transport stopped before target authorization');
+    }
+
+    ++authorization.references;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.releaseTargetAuthorization(authorization);
+    };
+  }
+
   public stop(): void {
     const priorRecord = this.discoveryRecord;
+    const priorTargetAuthorizations = Array.from(
+      this.targetAuthorizationsByPid.values(),
+    );
     ++this.generation;
     this.rejectReady?.(new Error('Overlay transport stopped before startup'));
     this.rejectReady = undefined;
     this.readyPromise = undefined;
     this.discoveryRecord = undefined;
     this.token = undefined;
+    this.targetAuthorizationsByPid.clear();
+    this.targetAuthorizationsByDiscoveryPath.clear();
+    this.pendingTargetAuthorizationsByPid.clear();
+    this.issuedTokens.clear();
 
     const server = this.server;
     this.server = undefined;
@@ -462,7 +596,19 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.fallbackInputTranslator.reset();
 
     if (priorRecord) {
-      this.removeDiscoveryIfOwnedSync(priorRecord);
+      this.removeDiscoveryIfOwnedSync(this.discoveryPath, priorRecord);
+    }
+    for (const authorization of priorTargetAuthorizations) {
+      this.removeDiscoveryIfOwnedSync(
+        authorization.discoveryPath,
+        authorization.record,
+      );
+      if (authorization.references === 0) {
+        this.removeDiscoveryIfOwnedSync(
+          authorization.routeIntentPath,
+          authorization.record,
+        );
+      }
     }
   }
 
@@ -651,6 +797,145 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     return this.fallbackInputTranslator.translate(event);
   }
 
+  private allocateToken(): string {
+    for (let attempt = 0; attempt < MAX_TOKEN_ALLOCATION_ATTEMPTS; ++attempt) {
+      const token = this.tokenFactory();
+      if (!isValidToken(token)) {
+        throw new Error(
+          'Overlay transport token must be exactly 32 bytes of hex',
+        );
+      }
+      const normalizedToken = token.toLowerCase();
+      if (this.issuedTokens.has(normalizedToken)) {
+        continue;
+      }
+      this.issuedTokens.add(normalizedToken);
+      return token;
+    }
+    throw new Error('Overlay transport could not allocate a unique token');
+  }
+
+  private async createTargetAuthorization(
+    pid: number,
+    discoveryPath: string,
+    discoveryPathKey: string,
+    readyRecord: OverlayDiscoveryRecord,
+    generation: number,
+  ): Promise<TargetAuthorization> {
+    const pathAuthorization =
+      this.targetAuthorizationsByDiscoveryPath.get(discoveryPathKey);
+    if (pathAuthorization && pathAuthorization.pid !== pid) {
+      throw new Error(
+        `Overlay target discovery path is already authorized for PID ${pathAuthorization.pid}`,
+      );
+    }
+    const token = this.allocateToken();
+    const record: OverlayDiscoveryRecord = {
+      ...readyRecord,
+      token,
+      targetPid: pid,
+    };
+    const authorization: TargetAuthorization = {
+      pid,
+      discoveryPath,
+      discoveryPathKey,
+      routeIntentPath: join(
+        dirname(discoveryPath),
+        OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+      ),
+      record,
+      references: 0,
+      generation,
+    };
+    this.targetAuthorizationsByPid.set(pid, authorization);
+    this.targetAuthorizationsByDiscoveryPath.set(
+      discoveryPathKey,
+      authorization,
+    );
+
+    try {
+      await this.publishDiscovery(authorization.routeIntentPath, record);
+      await this.publishDiscovery(discoveryPath, record);
+    } catch (error) {
+      if (this.targetAuthorizationsByPid.get(pid) === authorization) {
+        this.targetAuthorizationsByPid.delete(pid);
+      }
+      if (
+        this.targetAuthorizationsByDiscoveryPath.get(discoveryPathKey) ===
+        authorization
+      ) {
+        this.targetAuthorizationsByDiscoveryPath.delete(discoveryPathKey);
+      }
+      await this.removeDiscoveryIfOwned(discoveryPath, record);
+      await this.removeDiscoveryIfOwned(authorization.routeIntentPath, record);
+      throw error;
+    }
+    if (
+      generation !== this.generation ||
+      this.discoveryRecord !== readyRecord ||
+      !this.server
+    ) {
+      if (this.targetAuthorizationsByPid.get(pid) === authorization) {
+        this.targetAuthorizationsByPid.delete(pid);
+      }
+      if (
+        this.targetAuthorizationsByDiscoveryPath.get(discoveryPathKey) ===
+        authorization
+      ) {
+        this.targetAuthorizationsByDiscoveryPath.delete(discoveryPathKey);
+      }
+      await this.removeDiscoveryIfOwned(discoveryPath, record);
+      await this.removeDiscoveryIfOwned(authorization.routeIntentPath, record);
+      throw new Error('Overlay transport stopped before target authorization');
+    }
+    const existingClient = this.activeClientsByPid.get(pid);
+    if (existingClient) {
+      existingClient.authenticated = false;
+      existingClient.inputTranslator?.reset();
+      this.activeClientsByPid.delete(pid);
+      if (
+        this.inputTranslatorsByPid.get(pid) === existingClient.inputTranslator
+      ) {
+        this.inputTranslatorsByPid.delete(pid);
+      }
+      existingClient.socket.destroy();
+    }
+    return authorization;
+  }
+
+  private releaseTargetAuthorization(authorization: TargetAuthorization): void {
+    if (
+      this.targetAuthorizationsByPid.get(authorization.pid) !== authorization
+    ) {
+      return;
+    }
+    if (authorization.references > 0) {
+      --authorization.references;
+    }
+    if (authorization.references !== 0) {
+      return;
+    }
+
+    this.targetAuthorizationsByPid.delete(authorization.pid);
+    if (
+      this.targetAuthorizationsByDiscoveryPath.get(
+        authorization.discoveryPathKey,
+      ) === authorization
+    ) {
+      this.targetAuthorizationsByDiscoveryPath.delete(
+        authorization.discoveryPathKey,
+      );
+    }
+    this.removeDiscoveryIfOwnedSync(
+      authorization.discoveryPath,
+      authorization.record,
+    );
+    const activeClient = this.activeClientsByPid.get(authorization.pid);
+    if (activeClient?.targetAuthorization === authorization) {
+      activeClient.socket.destroy();
+    }
+  }
+
   private async finishStart(
     server: Server,
     token: string,
@@ -673,9 +958,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     };
 
     try {
-      await this.publishDiscovery(record);
+      await this.publishDiscovery(this.discoveryPath, record);
       if (this.generation !== generation || this.server !== server) {
-        await this.removeDiscoveryIfOwned(record);
+        await this.removeDiscoveryIfOwned(this.discoveryPath, record);
         return;
       }
       this.discoveryRecord = record;
@@ -690,17 +975,18 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   }
 
   private async publishDiscovery(
+    discoveryPath: string,
     record: OverlayDiscoveryRecord,
   ): Promise<void> {
-    await mkdir(dirname(this.discoveryPath), { recursive: true });
-    const temporaryPath = `${this.discoveryPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+    await mkdir(dirname(discoveryPath), { recursive: true });
+    const temporaryPath = `${discoveryPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
     try {
       await writeFile(temporaryPath, JSON.stringify(record), {
         encoding: 'utf8',
         flag: 'wx',
         mode: 0o600,
       });
-      await rename(temporaryPath, this.discoveryPath);
+      await rename(temporaryPath, discoveryPath);
     } catch (error) {
       await unlink(temporaryPath).catch(() => undefined);
       throw error;
@@ -708,10 +994,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   }
 
   private async removeDiscoveryIfOwned(
+    discoveryPath: string,
     record: OverlayDiscoveryRecord,
   ): Promise<void> {
     try {
-      const contents = await readFile(this.discoveryPath, 'utf8');
+      const contents = await readFile(discoveryPath, 'utf8');
       const current: unknown = JSON.parse(contents);
       if (
         isJsonObject(current) &&
@@ -719,16 +1006,19 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         current.port === record.port &&
         current.token === record.token
       ) {
-        await unlink(this.discoveryPath);
+        await unlink(discoveryPath);
       }
     } catch {
       // The discovery file may already have been removed or replaced.
     }
   }
 
-  private removeDiscoveryIfOwnedSync(record: OverlayDiscoveryRecord): void {
+  private removeDiscoveryIfOwnedSync(
+    discoveryPath: string,
+    record: OverlayDiscoveryRecord,
+  ): void {
     try {
-      const contents = readFileSync(this.discoveryPath, 'utf8');
+      const contents = readFileSync(discoveryPath, 'utf8');
       const current: unknown = JSON.parse(contents);
       if (
         isJsonObject(current) &&
@@ -736,7 +1026,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         current.port === record.port &&
         current.token === record.token
       ) {
-        unlinkSync(this.discoveryPath);
+        unlinkSync(discoveryPath);
       }
     } catch {
       // The discovery file may already have been removed or replaced.
@@ -890,14 +1180,19 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       hello.type !== 'game.process' ||
       hello.protocolVersion !== OVERLAY_TRANSPORT_PROTOCOL_VERSION ||
       typeof hello.token !== 'string' ||
-      !this.token ||
-      !tokensEqual(hello.token, this.token) ||
       typeof hello.pid !== 'number' ||
       !Number.isInteger(hello.pid) ||
       hello.pid <= 0 ||
       hello.pid > 0xffffffff ||
       typeof hello.path !== 'string'
     ) {
+      return false;
+    }
+    const targetAuthorization = this.targetAuthorizationsByPid.get(hello.pid);
+    const tokenMatches = targetAuthorization
+      ? tokensEqual(hello.token, targetAuthorization.record.token)
+      : this.token !== undefined && tokensEqual(hello.token, this.token);
+    if (!tokenMatches) {
       return false;
     }
 
@@ -916,6 +1211,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     client.authenticated = true;
     client.pid = hello.pid;
     client.path = hello.path;
+    client.targetAuthorization = targetAuthorization;
     client.inputTranslator = inputTranslator;
     this.activeClientsByPid.set(hello.pid, client);
     this.inputTranslatorsByPid.set(hello.pid, inputTranslator);

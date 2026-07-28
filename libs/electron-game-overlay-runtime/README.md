@@ -26,6 +26,24 @@ pointer metadata at the callback and, only after global sequence ordering on the
 single consumer, turns primary move/left-click records into the same Electron
 legacy route.
 
+Exact-PID SDK attachment also uses ReShade's injected base-path override as a
+run-local rendezvous boundary. Each consumed staged runtime receives a unique
+producer token bound to its expected PID before injection. The producer writes
+`electron-overlay-transport-v1.targeted` first, then the adjacent discovery
+record. The injected client treats that marker as persistent route intent: a
+missing, invalid, or revoked local credential fails closed instead of falling
+back to the global producer.
+
+The launcher retains the authorization while the target remains live. A
+confirmed terminal exit, launcher disposal, or session shutdown removes the
+credential record but leaves the marker for a payload that may initialize late;
+removing the staged run directory removes both. Rust unit coverage exercises legacy
+fallback before route intent, fail-closed marker and invalid-local selection,
+and reconnect selection after local credential deletion. End-to-end scoped
+socket-loss acceptance remains follow-up coverage. This is not a hostile
+same-user security boundary because peer processes with the user's file access
+can inspect or replace discovery files.
+
 The controlled hosts are intentionally plain and owned by this repository. Use
 them before trying any external application.
 

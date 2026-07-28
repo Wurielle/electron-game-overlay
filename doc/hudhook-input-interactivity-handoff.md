@@ -368,11 +368,18 @@ in its first `game.process` packet. Node rejects malformed, wrong-version, or
 wrong-token first packets before publishing a snapshot.
 
 The discovery PID identifies the producer that owns the rendezvous document; it
-is not the target selector. The SDK launcher correlates the
-authenticated hello's target PID against its expected PID at the application
-event layer. One well-known discovery document and one active producer are an
-intentional POC constraint; per-target rendezvous belongs to production-launcher
-hardening.
+is not the target selector. The original POC correlates the authenticated
+hello's target PID against its expected PID at the application event layer. Its
+one well-known discovery document and one active producer remain an intentional
+POC constraint. The promoted production SDK now publishes a unique run-local
+credential bound to each exact target PID and rejects mismatches before sending
+the scene. It publishes `electron-overlay-transport-v1.targeted` first and
+retains that marker after credential revocation, preventing a payload that
+initializes late from falling back globally. Low-level and historical POC
+launchers without route intent retain the global fallback.
+Configured exact PIDs are materialized into `--pid` injector invocations before
+staging, `attach()` reserves launcher ownership while readiness is pending, and
+session closure revokes both active and late-completing target authorizations.
 
 Both directions use one incremental framing contract:
 
@@ -645,10 +652,13 @@ through the Windows MSVC developer shell.
 - A failed texture upload is retried only when Electron publishes a newer frame.
 - The runner's `Start-Process -ArgumentList` path is not robust to repository paths
   containing spaces.
-- The POC exposes one well-known discovery document, so only one producer session
-  may run at a time. The random token prevents accidental/stale clients from joining
-  that session, but same-user discovery-file access and per-target rendezvous remain
-  production threat-model and launcher work.
+- The POC exposes one well-known discovery document, so only one producer
+  session may run at a time. The promoted exact-PID SDK path instead places a
+  persistent route-intent marker and unique PID-bound credential beside each
+  staged runtime, preventing normal run-metadata collisions and late global
+  fallback after credential revocation. Staged-run cleanup removes the marker.
+  This is not a hostile same-user security boundary; explicit discovery-file
+  access and threat-model hardening remain future work.
 - The forced scale proofs are uniform. Per-window desired/active transitions and
   a PMv2-aware controlled HWND are implemented, but this machine exposes only a
   single 100% virtual display. Real target-display ownership, game-client origin

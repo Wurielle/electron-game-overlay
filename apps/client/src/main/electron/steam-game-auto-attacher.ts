@@ -213,7 +213,8 @@ export type SteamGameAutoAttachState = Readonly<{
 type OverlaySessionForAttachment = Pick<
   OverlaySession,
   'on' | 'onClose' | 'whenReady'
->;
+> &
+  Partial<Pick<OverlaySession, 'authorizeTarget'>>;
 
 export type ReShadeLauncherForSteamTarget = Readonly<{
   prepare(): Promise<void>;

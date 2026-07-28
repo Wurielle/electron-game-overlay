@@ -67,6 +67,37 @@ await launcher?.attach(session, {
 });
 ```
 
+An `expectedTargetPid` supplied by startup configuration is snapshotted into
+the same exact-PID target before any asynchronous staging, so it also reaches
+the injector as `--pid` rather than remaining a name-only post-check.
+`attach()` reserves its launcher synchronously while session readiness is
+pending; a concurrent low-level `launch()` cannot bypass target authorization.
+
+For exact-PID `attach()`, the SDK publishes a unique authenticated discovery
+record inside that launcher's isolated ReShade run directory before spawning
+the injector. Before that credential, it publishes the persistent
+`electron-overlay-transport-v1.targeted` route-intent marker beside the record.
+The record is bound to the expected PID, and the loopback host rejects a
+token/PID mismatch before sending any Electron window state. The injected
+runtime prefers this run-local route and pins the selected path for subsequent
+reconnect attempts.
+
+Revoking the authorization removes the credential record but deliberately
+retains the route-intent marker. A payload that initializes late therefore
+fails closed instead of attaching through the global fallback after its
+target-specific credential has expired. The marker is removed when the staged
+run directory itself is cleaned up. Under normal operation, distinct exact-PID
+runs no longer collide through the shared well-known rendezvous metadata. This
+is not a hostile same-user security boundary: another process running with the
+user's file access can inspect or replace discovery files. The legacy
+well-known discovery record remains as a compatibility fallback only when
+neither a run-local record nor its route-intent marker exists, including the
+lower-level `launch()` API and controlled test producers.
+
+Target authorization leases belong to their `OverlaySession`. Closing the
+session revokes active leases, and an authorization that finishes after close
+is immediately released instead of escaping from a closed session.
+
 Latency-sensitive watchers may stage the next isolated runtime before process
 detection. `prepare()` performs no injection, concurrent calls coalesce, and
 the next `attach()` or `launch()` consumes that prepared directory:
@@ -297,8 +328,10 @@ Ordinary `setBounds()` placement remains Electron DIP and is converted to
 game-local physical composition coordinates. A followed window is different:
 the SDK owns its hidden desktop placement from the target HWND/client telemetry
 and publishes a local `(0, 0)` surface. The retained target model is keyed by
-PID and surface ID, but the production rendezvous still supports one active
-producer/target connection at a time. Multiple simultaneous targets, real
-physical/VM mixed-scale acceptance, unusual exclusive-fullscreen paths, and
-Electron 42 OSR behavior remain follow-up work rather than current compatibility
-claims.
+PID and surface ID. One loopback listener accepts multiple independently
+authenticated exact-PID targets, while the application session intentionally
+publishes the same overlay scene to each connected target. Independent
+simultaneous `OverlaySession` instances in one Electron process, multiple swap
+chains, real physical/VM mixed-scale acceptance, unusual exclusive-fullscreen
+paths, and Electron 42 OSR behavior remain follow-up work rather than current
+compatibility claims.

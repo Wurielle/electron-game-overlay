@@ -425,7 +425,7 @@ test('pre-injection proof cannot make legacy or contradictory output retry-safe'
   }
 });
 
-test('launch stages the exact runtime, uses one process argument, and preserves logs', async () => {
+test('launch stages the exact runtime, materializes configured PID, and preserves logs', async () => {
   const fixture = createRuntime();
   const config = createConfig(fixture, { expectedTargetPid: 4242 });
   const execution = stubExecFile();
@@ -448,7 +448,7 @@ test('launch stages the exact runtime, uses one process argument, and preserves 
     await waitFor(() => execution.calls.length === 1);
 
     const call = execution.calls[0];
-    assert.deepEqual(call.arguments, ['Gun Frog.exe']);
+    assert.deepEqual(call.arguments, ['Gun Frog.exe', '--pid', '4242']);
     assert.equal(call.options.cwd, path.dirname(call.executable));
     assert.equal(path.basename(call.executable), 'inject.exe');
     assert.equal(call.options.shell, false);
@@ -478,7 +478,7 @@ test('launch stages the exact runtime, uses one process argument, and preserves 
     call.callback(null, injectorSuccess, 'diagnostic stderr\n');
     const result = await request;
     assert.equal(result.processName, 'Gun Frog.exe');
-    assert.equal(result.targetLabel, 'process:Gun Frog.exe');
+    assert.equal(result.targetLabel, 'process:Gun Frog.exe:pid:4242');
     assert.equal(result.injectorTargetPid, 4242);
     assert.equal(result.runDirectory, runDirectory);
     assert.equal(launcher.runDirectory, runDirectory);
@@ -498,7 +498,7 @@ test('launch stages the exact runtime, uses one process argument, and preserves 
     );
     assert.ok(
       markers.includes(
-        `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target="Gun Frog.exe" arguments=["Gun Frog.exe"]`,
+        `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target="Gun Frog.exe" arguments=["Gun Frog.exe","--pid","4242"]`,
       ),
     );
     assert.ok(
@@ -1021,6 +1021,7 @@ test('session loss after successful injection proof blocks retries', async () =>
   try {
     const attachment = launcher.attach(sessionHarness.session, {
       processName: 'game.exe',
+      pid: 9101,
     });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(null, injectorSuccessFor(9101, 'game.exe'), '');
@@ -1032,14 +1033,50 @@ test('session loss after successful injection proof blocks retries', async () =>
     sessionHarness.close();
     await assert.rejects(attachment, /session closed before.*target connected/);
     assert.equal(launcher.state, 'blocked');
+    assert.equal(sessionHarness.targetAuthorizations.length, 1);
+    assert.equal(sessionHarness.targetAuthorizations[0].releaseCount, 0);
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);
     await assert.rejects(
       launcher.attach(createSessionHarness().session, {
         processName: 'game.exe',
+        pid: 9101,
       }),
       /outcome is indeterminate/,
     );
+    launcher.dispose();
+    assert.equal(sessionHarness.targetAuthorizations[0].releaseCount, 1);
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('target authorization failure prevents injection and removes the staged run', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness(Promise.resolve(), async () => {
+    throw new Error('synthetic target authorization failure');
+  });
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    await assert.rejects(
+      launcher.attach(sessionHarness.session, {
+        processName: 'game.exe',
+        pid: 9150,
+      }),
+      /synthetic target authorization failure/,
+    );
+    assert.equal(execution.calls.length, 0);
+    assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.nativeHandlerCount, 0);
+    assert.equal(sessionHarness.closeHandlerCount, 0);
+    assert.equal(sessionHarness.targetAuthorizations.length, 1);
+    assert.deepEqual(await fsPromises.readdir(fixture.runsRootDirectory), []);
   } finally {
     launcher.dispose();
     console.log = originalLog;
@@ -1114,6 +1151,11 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
       processName: 'Gun Frog.exe',
     });
     assert.equal(sharedAttachment, attachment);
+    assert.equal(launcher.state, 'attaching');
+    await assert.rejects(
+      launcher.launch({ processName: 'Gun Frog.exe' }),
+      /attachment is already active/,
+    );
     await flushMicrotasks();
     assert.equal(execution.calls.length, 0);
 
@@ -1144,7 +1186,7 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
     ]);
     assert.deepEqual(firstResult, secondResult);
     assert.equal(firstResult.pid, 4242);
-    assert.equal(firstResult.targetLabel, 'process:Gun Frog.exe');
+    assert.equal(firstResult.targetLabel, 'process:Gun Frog.exe:pid:4242');
     assert.ok(existsSync(firstResult.runDirectory));
     assert.ok(
       markers.includes(`${RESHADE_CLIENT_TARGET_CONNECTED_MARKER} pid=4242`),
@@ -1217,6 +1259,16 @@ test('attach correlates exact-PID candidates, identity, reauthentication, and te
       /different ReShade attachment is already active/,
     );
     await waitFor(() => execution.calls.length === 1);
+    assert.equal(sessionHarness.targetAuthorizations.length, 1);
+    assert.equal(sessionHarness.targetAuthorizations[0].pid, 7301);
+    assert.equal(
+      sessionHarness.targetAuthorizations[0].discoveryPath,
+      path.join(
+        execution.calls[0].options.cwd,
+        'electron-overlay-transport-v1.json',
+      ),
+    );
+    assert.equal(sessionHarness.targetAuthorizations[0].releaseCount, 0);
     assert.deepEqual(execution.calls[0].arguments, [
       'game.exe',
       '--pid',
@@ -1245,6 +1297,7 @@ test('attach correlates exact-PID candidates, identity, reauthentication, and te
       path: 'C:\\games\\game.exe',
     });
     assert.equal(launcher.state, 'connected');
+    assert.equal(sessionHarness.targetAuthorizations[0].releaseCount, 0);
     sessionHarness.emitNative('game.process', {
       pid: 7301,
       path: 'D:\\reauthenticated\\renamed-image.bin',
@@ -1261,6 +1314,7 @@ test('attach correlates exact-PID candidates, identity, reauthentication, and te
       path: 'unrelated-path-after-exact-pid-proof',
     });
     assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.targetAuthorizations[0].releaseCount, 1);
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);
   } finally {
@@ -1806,9 +1860,13 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function createSessionHarness(ready = Promise.resolve()) {
+function createSessionHarness(
+  ready = Promise.resolve(),
+  authorizeTargetOverride,
+) {
   const nativeHandlers = new Set();
   const closeHandlers = new Set();
+  const targetAuthorizations = [];
   let closed = false;
 
   return {
@@ -1818,6 +1876,24 @@ function createSessionHarness(ready = Promise.resolve()) {
           return Promise.reject(new Error('the overlay session is closed'));
         }
         return ready;
+      },
+      async authorizeTarget(pid, discoveryPath) {
+        if (closed) {
+          throw new Error('the overlay session is closed');
+        }
+        const authorization = {
+          pid,
+          discoveryPath,
+          releaseCount: 0,
+        };
+        targetAuthorizations.push(authorization);
+        const releaseOverride = authorizeTargetOverride
+          ? await authorizeTargetOverride(authorization)
+          : undefined;
+        return () => {
+          ++authorization.releaseCount;
+          releaseOverride?.();
+        };
       },
       on(event, handler) {
         assert.equal(event, 'nativeEvent');
@@ -1852,6 +1928,9 @@ function createSessionHarness(ready = Promise.resolve()) {
     },
     get closeHandlerCount() {
       return closeHandlers.size;
+    },
+    get targetAuthorizations() {
+      return targetAuthorizations;
     },
   };
 }
