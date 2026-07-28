@@ -78,7 +78,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies six tracked
+downloads both into the ignored build directory, then applies nine production
 patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -102,6 +102,17 @@ patches to the pinned ReShade revision:
   removed promptly, so Windows PID reuse cannot make a newly launched game look
   like an old process that should be ignored. The watcher polls every 50 ms and
   does not reopen every baseline process on each pass.
+- `reshade-injector-persistent-path-observer.patch` adds a parent-scoped,
+  non-injecting observer that reports every executable path match through a
+  strict UTF-8 creation/deletion protocol while remaining armed. It samples one
+  compact PID array every 5 ms with `EnumProcesses` and queries executable paths
+  only until each process is resolved. This
+  replaced the original full Toolhelp snapshot and all-process handle scan,
+  which consumed about 25% of one CPU core in a local idle measurement.
+- `reshade-injector-resilient-path-observer.patch` retains a lightweight handle
+  for every queryable process identity without polling those handles, preventing
+  PID reuse between enumeration passes. Temporarily inaccessible paths remain
+  unresolved and retry with bounded backoff until the exact process exits.
 - `reshade-suppress-splash.patch` suppresses ReShade's branded startup window
   because the embedding application owns startup UI. It leaves the full GUI
   pipeline, add-on callbacks, version metadata, `UNOFFICIAL` build identity,
@@ -122,8 +133,9 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-9 build stamp, the seven patch
-SHA-256 hashes, the pinned commit, exact normalized contents of all nine patched
+The launchers validate the cache against a schema-13 build stamp, the nine
+production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
+all nine patched
 source files, the full-add-on configuration, and the runtime/injector SHA-256
 hashes. CMake performs the same commit, nine-path, and normalized-content check
 independently for every fetched source tree before generating native targets.
@@ -457,16 +469,25 @@ closed the host-switch milestone for this accepted target path.
   the target;
 - multiple-swap-chain/render-queue ownership and safe texture retirement;
 - graceful client disable/unload, post-render injection or existing-device/
-  swap-chain adoption, arbitrary watcher latency, additional games, or broader
-  graphics/presentation compatibility;
+  swap-chain adoption, deterministic pre-entry injection, additional games, or
+  broader graphics/presentation compatibility;
 - end-to-end process identity beyond exact PID plus verified executable
-  basename for exact-PID requests and WMI lifecycle correlation; the prearmed
-  path-watcher baseline itself now retains handles for exact process objects;
+  basename for exact-PID requests and fallback-WMI lifecycle correlation; the
+  prearmed path-watcher baseline itself now retains handles for exact process
+  objects;
 - anti-cheat compatibility;
 - VR rendering (`reshade_overlay` is not called for VR runtimes).
 
 The promoted runtime includes the production client/SDK Gun Frog gate, the
-two-cycle fresh-client D3D12 gate, and same-client target restart/reinjection.
+two-cycle fresh-client D3D12 gate, and same-client target
+restart/reinjection. An initial PEAK D3D12 fast-start run rendered the overlay,
+but the observer used in that run was retired after a thermal report exposed
+its excessive full-system polling. A short July 28, 2026 rerun with the bounded
+PID observer injected before D3D12 loaded, rendered the Electron dock, captured
+Ctrl+I, and accepted the status-window click. The observer measured 0.6% of one
+CPU core before launch and rounded to 0% during the in-game sample. A readable
+temperature sensor was unavailable, so that run establishes functional and
+process-resource acceptance rather than a thermal soak.
 Exact-PID near-process-creation support is implemented and has dedicated
 suspended D3D11/D3D12 gates with passing acceptance. Raw normalization,
 graceful disable/unload, post-render attachment, arbitrary watcher latency,

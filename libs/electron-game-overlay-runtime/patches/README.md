@@ -77,6 +77,38 @@ The same retained handles avoid reopening every ignored process on each poll.
 This patch remains separate so build trees containing the original watcher
 migrate forward without resetting the pinned ReShade checkout.
 
+## `reshade-injector-persistent-path-observer.patch`
+
+Adds a non-injecting `inject.exe --observe-path-contains <fragment>
+--parent-pid <uint32>` mode for the demo's fast process-creation path. It emits
+an explicit UTF-8 ready record, then reports every matching executable's
+creation and deletion as a PID plus absolute path while retaining process
+handles to distinguish PID reuse. Each 5 ms pass uses `EnumProcesses` to obtain
+one compact PID array. It resolves paths only for newly observed PIDs, retries
+briefly when a just-created process is not queryable yet, and performs handle
+waits only for matching Steam-path processes. It remains armed while exact-PID
+injections run in parallel and exits with its supervising process. It does not
+classify or exclude executable names.
+
+## `reshade-injector-resilient-path-observer.patch`
+
+Layers durable process identities and bounded path-query retry over the
+persistent observer. It retains one lightweight handle for every process it can
+open, which prevents Windows from reusing that PID until an enumeration pass
+observes deletion and releases the handle. Resolved nonmatching processes are
+not queried again. Temporarily inaccessible processes retry with bounded
+backoff until they exit, and the observer never polls all retained handles.
+
+## Migration-only observer patches
+
+`reshade-injector-legacy-snapshot-observer.patch` and
+`reshade-injector-low-latency-observer.patch` describe the retired observer
+stack. That implementation walked a full Toolhelp snapshot and every retained
+process handle at 5 ms intervals. CMake uses these two files only to remove that
+stack from an existing ignored fetched tree before applying the bounded
+observer above; neither is part of the production patch identity or build
+stamp.
+
 ## `reshade-suppress-splash.patch`
 
 Suppresses ReShade's branded startup window while leaving its full Dear ImGui
@@ -91,6 +123,6 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all seven patch
-hashes, the full-add-on configuration, and runtime/injector hashes before
-accepting its cache.
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all nine
+production-patch hashes, the full-add-on configuration, and runtime/injector
+hashes before accepting its cache.

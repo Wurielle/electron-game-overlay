@@ -34,6 +34,18 @@ set(RESHAPE_SOURCE_PATCHES
 set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher-process-identity.patch"
 )
+set(RESHAPE_PROCESS_OBSERVER_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-persistent-path-observer.patch"
+)
+set(RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-resilient-path-observer.patch"
+)
+set(RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-legacy-snapshot-observer.patch"
+)
+set(RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-low-latency-observer.patch"
+)
 set(RESHAPE_SUPPRESS_SPLASH_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-suppress-splash.patch"
 )
@@ -57,11 +69,15 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp=4EFC2A96B4D6CDF5BF5C7994A4C8151188C599C99CC755801EC47F568D3F04D6"
+    "tools/injector.cpp=F5BD67F1998FF94B75E94B79C0977C929AB23E8F791911D1F1DB597F8D7B60FB"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+    "${RESHAPE_PROCESS_OBSERVER_PATCH}"
+    "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
+    "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
+    "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
     "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
 )
 
@@ -221,20 +237,46 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply seven narrow pinned seams: the passive copied-input observer, an injector
+# Apply nine narrow pinned seams: the passive copied-input observer, an injector
 # base-path override, coverage for Windows' second mouse projection through
-# WM_POINTER, exact-PID targeting, a one-shot prearmed path watcher, and startup
-# splash suppression. The watcher patches are terminal so existing exact-PID
-# and original watcher trees can migrate without resetting or replacing those
-# ignored source trees.
+# WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
+# observation, and startup splash suppression. The watcher patches are terminal
+# so existing exact-PID and original watcher trees can migrate without replacing
+# those ignored source trees.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
-        "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+        "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-    RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
+    RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED
     OUTPUT_QUIET
     ERROR_QUIET
 )
+if(RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
+    set(RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED 0)
+else()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_PROCESS_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+endif()
+if(RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
+    # The persistent observer adds headers next to the identity patch's include
+    # hunk, so that lower patch is no longer independently reverse-applicable.
+    set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED 0)
+else()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+endif()
 if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
 list(GET RESHAPE_SOURCE_PATCHES 4 RESHAPE_PATH_WATCHER_PATCH)
 execute_process(
@@ -440,14 +482,18 @@ endif()
 # watcher so existing ignored build trees migrate without resetting fetched
 # source. It retains handles for startup-baseline processes, so exited process
 # objects are distinguishable from later processes even if Windows reuses a PID.
-execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
-        "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
-    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-    RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
-    OUTPUT_QUIET
-    ERROR_QUIET
-)
+if(RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
+    set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED 0)
+else()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+endif()
 if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" apply --check
@@ -481,6 +527,237 @@ if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
         )
     endif()
 endif()
+
+# The persistent observer reports every path match to its supervising client
+# without performing injection itself. The current implementation uses one
+# compact EnumProcesses PID snapshot per cadence, resolves each executable path
+# once, and retries temporarily inaccessible paths with bounded backoff. Migrate
+# the previous full-Toolhelp snapshot observer in place before applying it.
+set(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED FALSE)
+set(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED FALSE)
+set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE FALSE)
+macro(restore_reshade_legacy_process_observer)
+    if(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+                "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_RESTORE
+            OUTPUT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_RESTORE_OUTPUT
+            ERROR_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_RESTORE_ERROR
+        )
+        if(NOT RESHAPE_LEGACY_PROCESS_OBSERVER_RESTORE EQUAL 0)
+            message(FATAL_ERROR
+                "Observer migration failed and the legacy full-snapshot observer could not be restored.\n"
+                "${RESHAPE_LEGACY_PROCESS_OBSERVER_RESTORE_OUTPUT}"
+                "${RESHAPE_LEGACY_PROCESS_OBSERVER_RESTORE_ERROR}"
+            )
+        endif()
+        set(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED FALSE)
+    endif()
+
+    if(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+                "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_RESTORE
+            OUTPUT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_RESTORE_OUTPUT
+            ERROR_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_RESTORE_ERROR
+        )
+        if(NOT RESHAPE_LEGACY_OBSERVER_CADENCE_RESTORE EQUAL 0)
+            message(FATAL_ERROR
+                "Observer migration failed and the legacy 5 ms cadence could not be restored.\n"
+                "${RESHAPE_LEGACY_OBSERVER_CADENCE_RESTORE_OUTPUT}"
+                "${RESHAPE_LEGACY_OBSERVER_CADENCE_RESTORE_ERROR}"
+            )
+        endif()
+        set(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED FALSE)
+    endif()
+endmacro()
+
+macro(rollback_reshade_resilient_observer_migration)
+    if(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --reverse
+                "${RESHAPE_PROCESS_OBSERVER_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_ROLLBACK
+            OUTPUT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_ROLLBACK_OUTPUT
+            ERROR_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_ROLLBACK_ERROR
+        )
+        if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_ROLLBACK EQUAL 0)
+            message(FATAL_ERROR
+                "Resilient observer migration failed and the newly applied persistent observer could not be removed.\n"
+                "${RESHAPE_PROCESS_OBSERVER_PATCH_ROLLBACK_OUTPUT}"
+                "${RESHAPE_PROCESS_OBSERVER_PATCH_ROLLBACK_ERROR}"
+            )
+        endif()
+        set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE FALSE)
+    endif()
+    restore_reshade_legacy_process_observer()
+endmacro()
+
+if(RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
+    set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED 0)
+else()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_PROCESS_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+endif()
+if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(RESHAPE_LEGACY_OBSERVER_CADENCE_APPLIED EQUAL 0)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --reverse
+                "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSE
+            OUTPUT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSE_OUTPUT
+            ERROR_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSE_ERROR
+        )
+        if(NOT RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSE EQUAL 0)
+            message(FATAL_ERROR
+                "Unable to remove the legacy 5 ms observer overlay.\n"
+                "${RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSE_OUTPUT}"
+                "${RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSE_ERROR}"
+            )
+        endif()
+        set(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED TRUE)
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(RESHAPE_LEGACY_PROCESS_OBSERVER_APPLIED EQUAL 0)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --reverse
+                "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSE
+            OUTPUT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSE_OUTPUT
+            ERROR_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSE_ERROR
+        )
+        if(NOT RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSE EQUAL 0)
+            restore_reshade_legacy_process_observer()
+            message(FATAL_ERROR
+                "Unable to remove the legacy full-snapshot process observer.\n"
+                "${RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSE_OUTPUT}"
+                "${RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSE_ERROR}"
+            )
+        endif()
+        set(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED TRUE)
+    elseif(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED)
+        restore_reshade_legacy_process_observer()
+        message(FATAL_ERROR
+            "The legacy observer cadence was present without the pinned "
+            "legacy full-snapshot observer."
+        )
+    endif()
+endif()
+
+if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_PROCESS_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_CHECK EQUAL 0)
+        restore_reshade_legacy_process_observer()
+        message(FATAL_ERROR
+            "Pinned persistent process-observer patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_PROCESS_OBSERVER_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_PROCESS_OBSERVER_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_PROCESS_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLY EQUAL 0)
+        restore_reshade_legacy_process_observer()
+        message(FATAL_ERROR
+            "Unable to add persistent process observation to the ReShade injector.\n"
+            "${RESHAPE_PROCESS_OBSERVER_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_PROCESS_OBSERVER_PATCH_APPLY_ERROR}"
+        )
+    endif()
+    set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE TRUE)
+endif()
+
+# Layer resilient identity retention and retry backoff over both freshly applied
+# and previously fetched persistent-observer trees.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_CHECK EQUAL 0)
+        rollback_reshade_resilient_observer_migration()
+        message(FATAL_ERROR
+            "Pinned resilient process-observer patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLY EQUAL 0)
+        rollback_reshade_resilient_observer_migration()
+        message(FATAL_ERROR
+            "Unable to harden persistent ReShade process observation.\n"
+            "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE FALSE)
+set(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED FALSE)
+set(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED FALSE)
 
 # The product renders its own startup/status UI. Keep ReShade's full GUI and
 # add-on callback path enabled, but suppress only its built-in splash window.

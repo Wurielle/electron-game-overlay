@@ -210,6 +210,11 @@ test('the demo injects every detected Steam executable by exact PID', () => {
   assert.match(renderer, /steamAutoAttachEnabled/);
   assert.match(renderer, /Launch a Steam game to inject automatically/);
   assert.match(watcher, /import\('wql-process-monitor'\)/);
+  assert.match(watcher, /--observe-path-contains/);
+  assert.match(watcher, /EGO_PROCESS_OBSERVER_READY/);
+  assert.match(watcher, /EGO_PROCESS_CREATE/);
+  assert.match(watcher, /EGO_PROCESS_DELETE/);
+  assert.match(watcher, /spawn\(/);
   assert.match(watcher, /process\.once\('disconnect'/);
   assert.match(watcher, /closeEventSink/);
   assert.match(

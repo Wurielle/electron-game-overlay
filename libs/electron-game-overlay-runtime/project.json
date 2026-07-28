@@ -47,7 +47,11 @@
       "inputs": ["default", "^default"],
       "options": {
         "cwd": "libs/electron-game-overlay-runtime",
-        "command": "ctest.exe --preset electron-overlay-transport"
+        "commands": [
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-process-observer-gate.ps1",
+          "ctest.exe --preset electron-overlay-transport"
+        ],
+        "parallel": false
       }
     }
   }

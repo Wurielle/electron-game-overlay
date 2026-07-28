@@ -32,9 +32,12 @@ The normal `npm run dev` Steam-path flow first gained real Gun Frog acceptance
 through a one-shot native path watcher. That historical implementation was
 later replaced because selecting the first matching executable cannot cover
 launcher/child process chains. The current demo starts one independent exact-PID
-SDK injection for every WMI-detected `.exe` under `steamapps`, with no helper or
-plausibility exclusions. Every attempt receives an isolated staged runtime and
-one candidate cannot consume or serialize later candidates.
+SDK injection for every native-observer-detected `.exe` under `steamapps`, with
+no helper or plausibility exclusions. WMI starts only if that native observer
+fails. Observation starts before four isolated launchers are prepared
+concurrently. Detected targets wait in order for prepared slots, successful
+consumption starts an immediate refill, and preparation failures retry with
+bounded backoff. Each active attempt still owns its own runtime.
 
 That initial success still missed a Windows PID-reuse defect. The watcher kept
 its startup baseline as bare numeric PIDs, so a later process that reused any
@@ -58,11 +61,21 @@ initialize a graphics runtime or add-on; the Shipping process independently
 initialized D3D12, loaded the API-19 Electron add-on, authenticated, published
 live FPS, toggled interception, and accepted an overlay button click. This
 closes executable selection for overlapping and multi-process launches. It does
-not close timing: WMI notification, runtime staging, and exact-PID injector spawn
-all happen after process creation, so a sufficiently fast renderer can still
-create its swap chain before injection. Continuous native multi-process
-observation remains optional hardening if that timing becomes a supported
-requirement.
+not close timing: native notification and exact-PID injector spawn still happen
+after process creation, so a sufficiently fast renderer can create its swap
+chain before injection. The first native implementation scanned the full
+process table every 5 ms and was retired after a PEAK thermal report. Its
+replacement samples a compact PID array, queries paths only until they resolve,
+and retains stable identities without polling process handles. Temporarily
+inaccessible paths retry with bounded backoff instead of being abandoned. It
+passed the tightened idle resource gate at 1.5% of one CPU core in a focused
+run and 1.0% in the consolidated gate. A short July 28 PEAK rerun with the
+bounded observer injected before D3D12 loaded, rendered the dock, captured
+Ctrl+I, and accepted the status-window click. The observer measured 0.6% of one
+core before launch and rounded to 0% in the in-game sample. PEAK's own reported
+rate reached 374-396 FPS during its splash before settling near 94 FPS on the
+menu. No readable temperature sensor was available, so this closes functional
+PEAK acceptance for the bounded observer but is not a thermal soak.
 
 New runs use `build/electron-game-overlay-runtime`. All dated
 `build/reshade-imgui-overlay/...` paths in this document are historical
@@ -167,18 +180,19 @@ existing device or swap chain, so this route is unsupported. Evidence is under
 
 The native path watcher's ignore-baseline now retains exact process handles,
 closing the sequential relaunch defect above. Exact-PID requests and the demo's
-WMI lifecycle correlation still identify targets by PID plus verified executable
-basename; a creation token is not yet carried end to end. Delayed WMI events
-across PID reuse therefore remain a lifecycle-hardening item. The suspended
+native lifecycle correlation still identify targets by PID plus verified
+executable basename; a creation token is not yet carried end to end. Delayed
+fallback WMI events across PID reuse therefore remain a lifecycle-hardening item. The suspended
 gates also establish ordering, not an arbitrary safe delay for a normal running
 process. Package publishing is intentionally deferred while the repository-built
 client and SDK remain under local acceptance testing.
 
 The accepted Gun Frog shutdown emitted a non-fatal ReShade warning about an
-inconsistent `ID3D11Device3` reference count. There was no crash,
-target-directory log, input ordering fault, or router reset. Treat the warning
-as recorded resource-retirement/unload hardening rather than an input-gate
-failure.
+inconsistent `ID3D11Device3` reference count. The short PEAK rerun likewise
+reported inconsistent D3D12 command-queue/device reference counts during normal
+shutdown. Neither run crashed or invalidated its input proof. Treat these
+warnings as recorded resource-retirement/unload hardening rather than
+input-gate failures.
 
 The runtime now publishes target HWND, render/client/window geometry, DPI,
 monitor bounds, graphics API, state, and real injected FPS to the SDK. The

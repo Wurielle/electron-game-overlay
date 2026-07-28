@@ -6,8 +6,10 @@ const {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } = require('node:fs');
@@ -121,10 +123,7 @@ test('startup parsing validates a co-located runtime without a graphics backend'
     },
   );
   assert.deepEqual(
-    buildReShadeInvocation(
-      { pathContains: '\\steamapps\\' },
-      runDirectory,
-    ),
+    buildReShadeInvocation({ pathContains: '\\steamapps\\' }, runDirectory),
     {
       executable: path.join(runDirectory, 'inject.exe'),
       arguments: ['--path-contains', '\\steamapps\\'],
@@ -426,7 +425,7 @@ test('pre-injection proof cannot make legacy or contradictory output retry-safe'
   }
 });
 
-test('launch copies the exact runtime, uses one process argument, and preserves logs', async () => {
+test('launch stages the exact runtime, uses one process argument, and preserves logs', async () => {
   const fixture = createRuntime();
   const config = createConfig(fixture, { expectedTargetPid: 4242 });
   const execution = stubExecFile();
@@ -465,6 +464,15 @@ test('launch copies the exact runtime, uses one process argument, and preserves 
         readFileSync(path.join(runDirectory, artifact), 'utf8'),
         `fixture:${artifact}`,
       );
+      const sourceStats = statSync(
+        path.join(fixture.runtimeDirectory, artifact),
+      );
+      const stagedStats = statSync(path.join(runDirectory, artifact));
+      if (artifact === 'ReShade.ini' || artifact === 'ReShade64.dll') {
+        assert.notEqual(stagedStats.ino, sourceStats.ino);
+      } else {
+        assert.equal(stagedStats.ino, sourceStats.ino);
+      }
     }
 
     call.callback(null, injectorSuccess, 'diagnostic stderr\n');
@@ -518,6 +526,165 @@ test('launch copies the exact runtime, uses one process argument, and preserves 
   }
 });
 
+test('prepare stages once without injection and the next launch consumes that exact runtime', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const staging = delayRuntimeStaging(fixture.runsRootDirectory);
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const firstPreparation = launcher.prepare();
+    const secondPreparation = launcher.prepare();
+    await staging.entered;
+    assert.equal(execution.calls.length, 0);
+
+    staging.release();
+    await Promise.all([firstPreparation, secondPreparation]);
+    assert.equal(execution.calls.length, 0);
+
+    const preparedDirectories = await fsPromises.readdir(
+      fixture.runsRootDirectory,
+    );
+    assert.equal(preparedDirectories.length, 1);
+    assert.match(preparedDirectories[0], /^prepared-/);
+    const preparedDirectory = path.join(
+      fixture.runsRootDirectory,
+      preparedDirectories[0],
+    );
+
+    const request = launcher.launch({
+      processName: 'Gun Frog.exe',
+      pid: 4242,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    assert.equal(execution.calls[0].options.cwd, preparedDirectory);
+    assert.equal(
+      execution.calls[0].executable,
+      path.join(preparedDirectory, 'inject.exe'),
+    );
+
+    execution.calls[0].callback(null, injectorSuccess, '');
+    const result = await request;
+    assert.equal(result.runDirectory, preparedDirectory);
+  } finally {
+    staging.release();
+    staging.restore();
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('dispose removes successful and in-flight unused prepared runtimes', async (t) => {
+  await t.test('successful preparation', async () => {
+    const fixture = createRuntime();
+    const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+    const originalLog = console.log;
+    console.log = () => undefined;
+
+    try {
+      await launcher.prepare();
+      const preparedDirectories = await fsPromises.readdir(
+        fixture.runsRootDirectory,
+      );
+      assert.equal(preparedDirectories.length, 1);
+      const preparedDirectory = path.join(
+        fixture.runsRootDirectory,
+        preparedDirectories[0],
+      );
+
+      launcher.dispose();
+      await waitFor(() => !existsSync(preparedDirectory));
+    } finally {
+      launcher.dispose();
+      console.log = originalLog;
+    }
+  });
+
+  await t.test('in-flight preparation', async () => {
+    const fixture = createRuntime();
+    const staging = delayRuntimeStaging(fixture.runsRootDirectory);
+    const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+    const originalLog = console.log;
+    console.log = () => undefined;
+
+    try {
+      const preparation = launcher.prepare();
+      await staging.entered;
+      launcher.dispose();
+      staging.release();
+      await preparation;
+      await staging.finished;
+      await waitFor(() => readdirSync(fixture.runsRootDirectory).length === 0);
+    } finally {
+      staging.release();
+      staging.restore();
+      launcher.dispose();
+      console.log = originalLog;
+    }
+  });
+});
+
+test('a failed preparation waits for sibling staging before cleanup and can be retried', async () => {
+  const fixture = createRuntime();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalCopyFile = fsPromises.copyFile;
+  const originalLink = fsPromises.link;
+  const originalLog = console.log;
+  const siblingCopyEntered = deferred();
+  const releaseSiblingCopy = deferred();
+  console.log = () => undefined;
+  fsPromises.copyFile = async (sourcePath, destinationPath) => {
+    const fileName = path.basename(destinationPath);
+    if (fileName === 'ReShade.ini') {
+      throw new Error('synthetic staging failure');
+    }
+    if (fileName === 'ReShade64.dll') {
+      siblingCopyEntered.resolve();
+      await releaseSiblingCopy.promise;
+    }
+    return originalCopyFile(sourcePath, destinationPath);
+  };
+  fsPromises.link = async (sourcePath, destinationPath) => {
+    return originalLink(sourcePath, destinationPath);
+  };
+
+  try {
+    const preparation = launcher.prepare();
+    await siblingCopyEntered.promise;
+    assert.equal(
+      (await settleWithin(preparation, 20)).status,
+      'timeout',
+      'cleanup must wait until every parallel staging operation has settled',
+    );
+
+    releaseSiblingCopy.resolve();
+    await assert.rejects(preparation, /synthetic staging failure/);
+    assert.deepEqual(
+      await fsPromises.readdir(fixture.runsRootDirectory),
+      [],
+      'the partially staged runtime should be removed',
+    );
+
+    fsPromises.copyFile = originalCopyFile;
+    fsPromises.link = originalLink;
+    await launcher.prepare();
+    const preparedDirectories = await fsPromises.readdir(
+      fixture.runsRootDirectory,
+    );
+    assert.equal(preparedDirectories.length, 1);
+    assert.match(preparedDirectories[0], /^prepared-/);
+  } finally {
+    releaseSiblingCopy.resolve();
+    fsPromises.copyFile = originalCopyFile;
+    fsPromises.link = originalLink;
+    launcher.dispose();
+    console.log = originalLog;
+  }
+});
+
 test('path watcher is prearmed without an injector timeout and pins the selected Steam process', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
@@ -544,10 +711,7 @@ test('path watcher is prearmed without an injector timeout and pins the selected
       'UnityCrashHandler64.exe',
     ]);
     assert.equal(execution.calls[0].options.timeout, 0);
-    assert.match(
-      path.basename(execution.calls[0].options.cwd),
-      /^path-watch-/,
-    );
+    assert.match(path.basename(execution.calls[0].options.cwd), /^path-watch-/);
 
     sessionHarness.emitNative('game.process', {
       pid: 9300,
@@ -555,8 +719,7 @@ test('path watcher is prearmed without an injector timeout and pins the selected
     });
     sessionHarness.emitNative('game.process', {
       pid: 9302,
-      path:
-        'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\UnityCrashHandler64.exe',
+      path: 'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\UnityCrashHandler64.exe',
     });
     sessionHarness.emitNative('game.process', {
       pid: 9301,
@@ -1581,6 +1744,7 @@ function stubExecFile({ autoSpawn = true } = {}) {
 function delayRuntimeStaging(runsRootDirectory) {
   const originalMkdir = fsPromises.mkdir;
   const originalCopyFile = fsPromises.copyFile;
+  const originalLink = fsPromises.link;
   const entered = deferred();
   const release = deferred();
   const finished = deferred();
@@ -1597,8 +1761,7 @@ function delayRuntimeStaging(runsRootDirectory) {
     }
     return originalMkdir(directoryPath, options);
   };
-  fsPromises.copyFile = async (sourcePath, destinationPath) => {
-    const result = await originalCopyFile(sourcePath, destinationPath);
+  const recordStagedArtifact = (destinationPath) => {
     if (
       path
         .resolve(destinationPath)
@@ -1609,6 +1772,15 @@ function delayRuntimeStaging(runsRootDirectory) {
         finished.resolve();
       }
     }
+  };
+  fsPromises.copyFile = async (sourcePath, destinationPath) => {
+    const result = await originalCopyFile(sourcePath, destinationPath);
+    recordStagedArtifact(destinationPath);
+    return result;
+  };
+  fsPromises.link = async (sourcePath, destinationPath) => {
+    const result = await originalLink(sourcePath, destinationPath);
+    recordStagedArtifact(destinationPath);
     return result;
   };
 
@@ -1619,6 +1791,7 @@ function delayRuntimeStaging(runsRootDirectory) {
     restore() {
       fsPromises.mkdir = originalMkdir;
       fsPromises.copyFile = originalCopyFile;
+      fsPromises.link = originalLink;
     },
   };
 }

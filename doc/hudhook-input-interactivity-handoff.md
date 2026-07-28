@@ -28,8 +28,17 @@
 > Frog boundary through the ReShade launcher on the process-name,
 > arm-before-launch path. The production path also passed two isolated
 > controlled D3D12 multi-window/lifecycle cycles. Raw-input normalization,
-> graceful disable/unload, late injection, arbitrary fast-start targets, and
-> other games remain hardening; the
+> graceful disable/unload, post-render injection, deterministic pre-entry
+> guarantees, and other games remain hardening. A July 13 follow-up replaced
+> the demo's one-second WMI creation path with a persistent native observer and
+> isolated exact-PID launchers. A preliminary PEAK run initialized through the
+> intercepted D3D12 path and rendered the Electron menu, but the original 5 ms
+> full-system scanner was retired after a thermal report. Its replacement polls
+> one compact PID array at the same detection bound. A short July 28 PEAK rerun
+> measured it at 0.6% of one CPU core before launch, injected before D3D12
+> loaded, rendered the dock, captured Ctrl+I, and accepted the status-window
+> click. No readable temperature sensor was available, so this was not a
+> thermal soak; the
 > [production runtime README](../libs/electron-game-overlay-runtime/README.md)
 > is authoritative.
 > The authenticated Node/Rust transport, wire/frame

@@ -47,6 +47,7 @@ export class ForkedProcessWatcher implements ProcessWatcher {
 
   constructor(
     private readonly entryPath: string,
+    private readonly nativeObserverPath: string,
     private readonly forkProcess: ForkProcess = fork,
     private readonly nodeExecutable?: string,
   ) {}
@@ -58,12 +59,15 @@ export class ForkedProcessWatcher implements ProcessWatcher {
     if (!path.isAbsolute(this.entryPath)) {
       throw new Error('the process watcher entry path must be absolute');
     }
+    if (!path.isAbsolute(this.nativeObserverPath)) {
+      throw new Error('the native process observer path must be absolute');
+    }
 
     this.stopping = false;
     handlers.onStatus('starting');
     const childEnvironment = { ...process.env };
     delete childEnvironment.ELECTRON_RUN_AS_NODE;
-    const child = this.forkProcess(this.entryPath, [], {
+    const child = this.forkProcess(this.entryPath, [this.nativeObserverPath], {
       env: childEnvironment,
       execPath: resolveNodeExecutable(this.nodeExecutable),
       serialization: 'json',
@@ -212,6 +216,7 @@ type OverlaySessionForAttachment = Pick<
 >;
 
 export type ReShadeLauncherForSteamTarget = Readonly<{
+  prepare(): Promise<void>;
   attach(
     session: OverlaySessionForAttachment,
     target: ReShadeTarget,
@@ -230,6 +235,9 @@ type SteamGameAutoAttacherOptions = Readonly<{
   reshadeConfig: ReShadeLaunchConfig;
   watcherFactory: ProcessWatcherFactory;
   launcherFactory?: ReShadeLauncherFactory;
+  preparedLauncherPoolSize?: number;
+  preparedLauncherRetryBaseDelayMs?: number;
+  preparedLauncherRetryMaxDelayMs?: number;
 }>;
 
 type TargetEntry = {
@@ -237,12 +245,26 @@ type TargetEntry = {
   state: SteamGameTargetState;
 };
 
+const PREPARED_LAUNCHER_POOL_SIZE = 4;
+const PREPARED_LAUNCHER_RETRY_BASE_DELAY_MS = 100;
+const PREPARED_LAUNCHER_RETRY_MAX_DELAY_MS = 2_000;
+
 export class SteamGameAutoAttacher {
   private readonly launchConfig: ReShadeLaunchConfig;
+  private readonly preparedLauncherPoolSize: number;
+  private readonly preparedLauncherRetryBaseDelayMs: number;
+  private readonly preparedLauncherRetryMaxDelayMs: number;
   private readonly stateHandlers = new Set<
     (state: SteamGameAutoAttachState) => void
   >();
   private readonly targetEntries = new Map<number, TargetEntry>();
+  private readonly pendingTargetEntries: TargetEntry[] = [];
+  private readonly preparedLaunchers: ReShadeLauncherForSteamTarget[] = [];
+  private readonly preparingLaunchers =
+    new Set<ReShadeLauncherForSteamTarget>();
+  private preparedLauncherRetryTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  private preparedLauncherFailureCount = 0;
   private watcher: ProcessWatcher | null = null;
   private removeSessionListener: (() => void) | null = null;
   private watcherStatusValue: ProcessWatcherStatus = 'stopped';
@@ -252,6 +274,41 @@ export class SteamGameAutoAttacher {
 
   constructor(private readonly options: SteamGameAutoAttacherOptions) {
     this.launchConfig = stripAutomaticTargeting(options.reshadeConfig);
+    this.preparedLauncherPoolSize =
+      options.preparedLauncherPoolSize ??
+      (options.launcherFactory ? 0 : PREPARED_LAUNCHER_POOL_SIZE);
+    this.preparedLauncherRetryBaseDelayMs =
+      options.preparedLauncherRetryBaseDelayMs ??
+      PREPARED_LAUNCHER_RETRY_BASE_DELAY_MS;
+    this.preparedLauncherRetryMaxDelayMs =
+      options.preparedLauncherRetryMaxDelayMs ??
+      PREPARED_LAUNCHER_RETRY_MAX_DELAY_MS;
+    if (
+      !Number.isSafeInteger(this.preparedLauncherPoolSize) ||
+      this.preparedLauncherPoolSize < 0 ||
+      this.preparedLauncherPoolSize > 32
+    ) {
+      throw new Error(
+        'the prepared ReShade launcher pool size must be an integer between 0 and 32',
+      );
+    }
+    if (
+      !Number.isSafeInteger(this.preparedLauncherRetryBaseDelayMs) ||
+      this.preparedLauncherRetryBaseDelayMs <= 0
+    ) {
+      throw new Error(
+        'the prepared ReShade launcher retry base delay must be a positive integer',
+      );
+    }
+    if (
+      !Number.isSafeInteger(this.preparedLauncherRetryMaxDelayMs) ||
+      this.preparedLauncherRetryMaxDelayMs <
+        this.preparedLauncherRetryBaseDelayMs
+    ) {
+      throw new Error(
+        'the prepared ReShade launcher retry maximum delay must be an integer greater than or equal to its base delay',
+      );
+    }
   }
 
   public get state(): SteamGameAutoAttachState {
@@ -321,16 +378,10 @@ export class SteamGameAutoAttacher {
     );
     this.publishState();
 
-    try {
-      const watcher = this.options.watcherFactory();
-      this.watcher = watcher;
-      watcher.start({
-        onEvent: (event) => this.handleProcessEvent(event),
-        onStatus: (status, error) => this.handleWatcherStatus(status, error),
-      });
-    } catch (error) {
-      this.handleWatcherStatus('failed', getErrorMessage(error));
-    }
+    // Observation must be live before staging starts. Creation events that
+    // arrive during prewarming stay queued until a prepared launcher is ready.
+    this.startWatcher();
+    this.fillPreparedLauncherPool();
   }
 
   public async dispose(): Promise<void> {
@@ -345,10 +396,23 @@ export class SteamGameAutoAttacher {
     const watcher = this.watcher;
     this.watcher = null;
     const watcherStop = watcher?.stop() ?? Promise.resolve();
+    if (this.preparedLauncherRetryTimer) {
+      clearTimeout(this.preparedLauncherRetryTimer);
+      this.preparedLauncherRetryTimer = null;
+    }
 
     for (const entry of this.targetEntries.values()) {
       entry.launcher?.dispose();
     }
+    for (const launcher of this.preparedLaunchers) {
+      launcher.dispose();
+    }
+    this.preparedLaunchers.length = 0;
+    for (const launcher of this.preparingLaunchers) {
+      launcher.dispose();
+    }
+    this.preparingLaunchers.clear();
+    this.pendingTargetEntries.length = 0;
     this.targetEntries.clear();
     this.watcherStatusValue = 'stopped';
     this.watcherErrorValue = null;
@@ -392,24 +456,18 @@ export class SteamGameAutoAttacher {
       }),
     };
     this.targetEntries.set(info.pid, entry);
+    this.pendingTargetEntries.push(entry);
     console.log(
       `STEAM_GAME_AUTO_ATTACH_DETECTED pid=${info.pid} path=${JSON.stringify(info.filepath)}`,
     );
     this.publishState();
-    this.attachTarget(entry);
+    this.drainPendingTargets();
   }
 
-  private attachTarget(entry: TargetEntry): void {
-    const launcherFactory =
-      this.options.launcherFactory ??
-      ((config: ReShadeLaunchConfig) => new ReShadeOverlayLauncher(config));
-    let launcher: ReShadeLauncherForSteamTarget;
-    try {
-      launcher = launcherFactory(this.launchConfig);
-    } catch (error) {
-      this.failTarget(entry, getErrorMessage(error));
-      return;
-    }
+  private attachTarget(
+    entry: TargetEntry,
+    launcher: ReShadeLauncherForSteamTarget,
+  ): void {
     entry.launcher = launcher;
     const { pid, processName } = entry.state;
     console.log(
@@ -448,6 +506,156 @@ export class SteamGameAutoAttacher {
         entry.launcher = null;
         this.failTarget(entry, getErrorMessage(error));
       });
+  }
+
+  private createLauncher(): ReShadeLauncherForSteamTarget {
+    const launcherFactory =
+      this.options.launcherFactory ??
+      ((config: ReShadeLaunchConfig) => new ReShadeOverlayLauncher(config));
+    return launcherFactory(this.launchConfig);
+  }
+
+  private drainPendingTargets(): void {
+    if (this.disposed || !this.started) {
+      return;
+    }
+    while (this.pendingTargetEntries.length > 0) {
+      const entry = this.pendingTargetEntries[0];
+      const { pid } = entry.state;
+      if (
+        this.targetEntries.get(pid) !== entry ||
+        entry.launcher ||
+        entry.state.phase !== 'attaching'
+      ) {
+        this.pendingTargetEntries.shift();
+        continue;
+      }
+
+      let launcher: ReShadeLauncherForSteamTarget;
+      if (this.preparedLauncherPoolSize === 0) {
+        try {
+          launcher = this.createLauncher();
+        } catch (error) {
+          this.pendingTargetEntries.shift();
+          this.failTarget(entry, getErrorMessage(error));
+          continue;
+        }
+      } else {
+        const preparedLauncher = this.preparedLaunchers.shift();
+        if (!preparedLauncher) {
+          break;
+        }
+        launcher = preparedLauncher;
+      }
+
+      this.pendingTargetEntries.shift();
+      this.attachTarget(entry, launcher);
+    }
+    this.fillPreparedLauncherPool();
+  }
+
+  private startWatcher(): void {
+    if (this.disposed || !this.started || this.watcher) {
+      return;
+    }
+    try {
+      const watcher = this.options.watcherFactory();
+      this.watcher = watcher;
+      watcher.start({
+        onEvent: (event) => this.handleProcessEvent(event),
+        onStatus: (status, error) => this.handleWatcherStatus(status, error),
+      });
+    } catch (error) {
+      this.handleWatcherStatus('failed', getErrorMessage(error));
+    }
+  }
+
+  private fillPreparedLauncherPool(): void {
+    if (this.disposed || this.preparedLauncherPoolSize === 0) {
+      return;
+    }
+    const missing =
+      this.preparedLauncherPoolSize -
+      this.preparedLaunchers.length -
+      this.preparingLaunchers.size;
+    if (missing <= 0) {
+      return;
+    }
+    for (let index = 0; index < missing; index += 1) {
+      void this.prepareLauncher();
+    }
+  }
+
+  private async prepareLauncher(): Promise<void> {
+    let launcher: ReShadeLauncherForSteamTarget;
+    try {
+      launcher = this.createLauncher();
+    } catch (error) {
+      if (!this.disposed) {
+        console.error(
+          `STEAM_GAME_RUNTIME_PREPARE_FAILED detail=${JSON.stringify(getErrorMessage(error))}`,
+        );
+        this.recordPreparedLauncherFailure();
+      }
+      return;
+    }
+    this.preparingLaunchers.add(launcher);
+    let prepared = false;
+    try {
+      await launcher.prepare();
+      if (this.disposed) {
+        launcher.dispose();
+      } else {
+        this.preparedLaunchers.push(launcher);
+        prepared = true;
+      }
+    } catch (error) {
+      launcher.dispose();
+      if (!this.disposed) {
+        console.error(
+          `STEAM_GAME_RUNTIME_PREPARE_FAILED detail=${JSON.stringify(getErrorMessage(error))}`,
+        );
+        this.recordPreparedLauncherFailure();
+      }
+    } finally {
+      this.preparingLaunchers.delete(launcher);
+      if (prepared && !this.disposed) {
+        this.preparedLauncherFailureCount = 0;
+        if (this.preparedLauncherRetryTimer) {
+          clearTimeout(this.preparedLauncherRetryTimer);
+          this.preparedLauncherRetryTimer = null;
+        }
+        this.drainPendingTargets();
+      }
+    }
+  }
+
+  private recordPreparedLauncherFailure(): void {
+    this.preparedLauncherFailureCount += 1;
+    this.schedulePreparedLauncherPoolRetry();
+  }
+
+  private schedulePreparedLauncherPoolRetry(): void {
+    if (
+      this.disposed ||
+      this.preparedLauncherPoolSize === 0 ||
+      this.preparedLauncherRetryTimer
+    ) {
+      return;
+    }
+    const exponent = Math.min(
+      Math.max(this.preparedLauncherFailureCount - 1, 0),
+      30,
+    );
+    const delayMs = Math.min(
+      this.preparedLauncherRetryMaxDelayMs,
+      this.preparedLauncherRetryBaseDelayMs * 2 ** exponent,
+    );
+    this.preparedLauncherRetryTimer = setTimeout(() => {
+      this.preparedLauncherRetryTimer = null;
+      this.fillPreparedLauncherPool();
+    }, delayMs);
+    this.preparedLauncherRetryTimer.unref();
   }
 
   private connectTarget(
@@ -501,6 +709,10 @@ export class SteamGameAutoAttacher {
       return;
     }
     this.targetEntries.delete(pid);
+    const pendingIndex = this.pendingTargetEntries.indexOf(entry);
+    if (pendingIndex >= 0) {
+      this.pendingTargetEntries.splice(pendingIndex, 1);
+    }
     entry.launcher?.dispose();
     console.log(`STEAM_GAME_AUTO_ATTACH_RELEASED pid=${pid}`);
     this.publishState();

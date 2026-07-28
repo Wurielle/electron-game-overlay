@@ -24,9 +24,14 @@
 > same-Electron-client target restart/reinjection cycle. The SDK and demo now
 > accept an optional exact PID for immediate near-process-creation injection;
 > deterministic suspended D3D11/D3D12 gates passed through the production client
-> and public SDK on July 13, 2026.
-> Post-render injection is unsupported, arbitrary watcher latency and other games
-> remain unverified, and publishing is deferred.
+> and public SDK on July 13, 2026. A preliminary persistent-observer run rendered
+> the Electron menu in PEAK, but that observer was retired after a thermal
+> regression. The bounded replacement passed a short July 28 PEAK rerun:
+> injection preceded D3D12 loading, Ctrl+I captured input, and the
+> status-window click rendered its Electron surface. A readable temperature
+> sensor was unavailable, so this was not a thermal soak.
+> Post-render injection is unsupported, deterministic pre-entry coverage and
+> broader games remain unverified, and publishing is deferred.
 > The hudhook implementation remains the verified Electron compositor and routing
 > reference, not the selected injected host.
 
@@ -671,6 +676,11 @@ That behavior is now proven on the controlled D3D11 and D3D12 hosts and Gun Frog
 the production SDK/client ReShade path passes the same Gun Frog gate and two
 fresh controlled D3D12 lifecycle/multi-window cycles, plus a same-client target
 restart/reinjection cycle, when armed by process name before launch.
+The preliminary persistent-observer run also rendered in PEAK, but it used a
+retired full-system polling loop. The bounded replacement passed both its idle
+resource gate and a short PEAK render/input rerun on July 28, 2026; the observer
+used 0.6% of one CPU core before launch and rounded to 0% in the in-game sample.
+That run had no readable temperature sensor and is not a thermal soak.
 Target-HWND/client-origin ownership, mixed monitors, multiple
 targets, texture retirement, broader game/API coverage, exact process-creation
 identity across PID reuse, arbitrary watcher latency, graceful disable/unload,

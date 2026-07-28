@@ -126,7 +126,10 @@ class Application {
             session: this.overlaySession,
             reshadeConfig,
             watcherFactory: () =>
-              new ForkedProcessWatcher(resolveProcessWatcherEntry()),
+              new ForkedProcessWatcher(
+                resolveProcessWatcherEntry(),
+                reshadeConfig.injectorPath,
+              ),
           })
         : null;
     if (steamAutoAttachRequested && !reshadeConfig) {

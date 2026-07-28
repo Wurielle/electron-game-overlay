@@ -2,9 +2,11 @@ import { execFile, type ChildProcess } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import {
   copyFile,
+  link,
   mkdir,
   mkdtemp,
   realpath,
+  rm,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -107,6 +109,7 @@ export type ReShadeAttachResult = ReShadeLaunchResult &
   }>;
 
 type StagedRuntime = Readonly<{
+  runsRootDirectory: string;
   runDirectory: string;
   injectorPath: string;
   injectorStdoutPath: string;
@@ -305,6 +308,7 @@ export class ReShadeOverlayLauncher {
   private awaitingTargetProof = false;
   private targetProofTimer: ReturnType<typeof setTimeout> | null = null;
   private latestRunDirectory: string | null = null;
+  private preparedRuntime: Promise<StagedRuntime> | null = null;
   private launchGeneration = 0;
   private disposed = false;
 
@@ -320,6 +324,27 @@ export class ReShadeOverlayLauncher {
 
   public get runDirectory(): string | null {
     return this.latestRunDirectory;
+  }
+
+  /**
+   * Stages an isolated runtime before a target is detected. The next launch
+   * consumes it, keeping filesystem work out of latency-sensitive process
+   * startup without changing the exact-PID injection contract.
+   */
+  public prepare(): Promise<void> {
+    if (this.disposed) {
+      return Promise.reject(new Error('the ReShade launcher is disposed'));
+    }
+    if (!this.preparedRuntime) {
+      const prepared = this.stageRuntime('prepared');
+      this.preparedRuntime = prepared;
+      void prepared.catch(() => {
+        if (this.preparedRuntime === prepared) {
+          this.preparedRuntime = null;
+        }
+      });
+    }
+    return this.preparedRuntime.then(() => undefined);
   }
 
   /**
@@ -536,6 +561,20 @@ export class ReShadeOverlayLauncher {
       this.resetTargetState(this.attachmentTargetLabel);
     } else {
       this.closeTargetProofWindow();
+    }
+    const preparedRuntime = this.preparedRuntime;
+    this.preparedRuntime = null;
+    if (preparedRuntime) {
+      void preparedRuntime
+        .then(
+          (staged) => removeStagedRuntime(staged),
+          () => undefined,
+        )
+        .catch((error) => {
+          console.error(
+            `Unable to remove an unused prepared ReShade runtime: ${formatUnknownError(error)}`,
+          );
+        });
     }
     this.invalidateActiveLaunch();
   }
@@ -832,8 +871,16 @@ export class ReShadeOverlayLauncher {
     launchGeneration: number,
   ): Promise<ReShadeLaunchResult> {
     const targetDescription = targetDescriptionFor(target);
-    const staged = await this.stageRuntime(targetStageName(target));
-    this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+    const preparedRuntime = this.preparedRuntime;
+    this.preparedRuntime = null;
+    const staged = await (preparedRuntime ??
+      this.stageRuntime(targetStageName(target)));
+    try {
+      this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+    } catch (error) {
+      await removeStagedRuntime(staged).catch(() => undefined);
+      throw error;
+    }
     this.latestRunDirectory = staged.runDirectory;
     const invocation = buildReShadeInvocation(target, staged.runDirectory);
     const invocationArguments = [...invocation.arguments];
@@ -887,32 +934,48 @@ export class ReShadeOverlayLauncher {
     );
     assertDirectChild(runsRootDirectory, runDirectory, 'ReShade run directory');
 
-    const sourceByName = new Map<string, string>([
-      [INJECTOR_FILE_NAME, this.config.injectorPath],
-      [RUNTIME_FILE_NAME, this.config.runtimePath],
-      [BUILD_STAMP_FILE_NAME, this.config.buildStampPath],
-      [ADDON_FILE_NAME, this.config.addonPath],
-      [CONFIG_FILE_NAME, this.config.configPath],
-    ]);
-    await Promise.all(
-      RUNTIME_ARTIFACTS.map((fileName) =>
-        copyFile(
-          sourceByName.get(fileName)!,
-          path.join(runDirectory, fileName),
+    try {
+      const sourceByName = new Map<string, string>([
+        [INJECTOR_FILE_NAME, this.config.injectorPath],
+        [RUNTIME_FILE_NAME, this.config.runtimePath],
+        [BUILD_STAMP_FILE_NAME, this.config.buildStampPath],
+        [ADDON_FILE_NAME, this.config.addonPath],
+        [CONFIG_FILE_NAME, this.config.configPath],
+      ]);
+      const stagingResults = await Promise.allSettled(
+        RUNTIME_ARTIFACTS.map((fileName) =>
+          stageRuntimeArtifact(
+            sourceByName.get(fileName)!,
+            path.join(runDirectory, fileName),
+            fileName === CONFIG_FILE_NAME || fileName === RUNTIME_FILE_NAME,
+          ),
         ),
-      ),
-    );
+      );
+      const failedStaging = stagingResults.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
+      if (failedStaging) {
+        throw failedStaging.reason;
+      }
 
-    console.log(
-      `${RESHADE_CLIENT_RUNTIME_STAGED_MARKER} directory=${JSON.stringify(runDirectory)}`,
-    );
-    return Object.freeze({
-      runDirectory,
-      injectorPath: path.join(runDirectory, INJECTOR_FILE_NAME),
-      injectorStdoutPath: path.join(runDirectory, INJECTOR_STDOUT_FILE_NAME),
-      injectorStderrPath: path.join(runDirectory, INJECTOR_STDERR_FILE_NAME),
-      reshadeLogPath: path.join(runDirectory, RESHADE_LOG_FILE_NAME),
-    });
+      console.log(
+        `${RESHADE_CLIENT_RUNTIME_STAGED_MARKER} directory=${JSON.stringify(runDirectory)}`,
+      );
+      return Object.freeze({
+        runsRootDirectory,
+        runDirectory,
+        injectorPath: path.join(runDirectory, INJECTOR_FILE_NAME),
+        injectorStdoutPath: path.join(runDirectory, INJECTOR_STDOUT_FILE_NAME),
+        injectorStderrPath: path.join(runDirectory, INJECTOR_STDERR_FILE_NAME),
+        reshadeLogPath: path.join(runDirectory, RESHADE_LOG_FILE_NAME),
+      });
+    } catch (error) {
+      await rm(runDirectory, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+      throw error;
+    }
   }
 
   private async finishInjector(
@@ -1144,15 +1207,41 @@ export class ReShadeOverlayLauncher {
   }
 }
 
+async function stageRuntimeArtifact(
+  sourcePath: string,
+  destinationPath: string,
+  requiresPrivateCopy: boolean,
+): Promise<void> {
+  // ReShade.ini is mutable, while the injector adjusts the runtime DLL's ACL.
+  // Both therefore need a private file record for every isolated run.
+  if (!requiresPrivateCopy) {
+    try {
+      await link(sourcePath, destinationPath);
+      return;
+    } catch {
+      // Cross-volume and filesystems without hard-link support retain the
+      // portable copy behavior. Each run still owns its directory and logs.
+    }
+  }
+  await copyFile(sourcePath, destinationPath);
+}
+
+async function removeStagedRuntime(staged: StagedRuntime): Promise<void> {
+  assertDirectChild(
+    staged.runsRootDirectory,
+    staged.runDirectory,
+    'ReShade run directory',
+  );
+  await rm(staged.runDirectory, { recursive: true, force: true });
+}
+
 function targetLabelFor(target: ReShadeTarget): string {
   validateTarget(target);
   if (isPathTarget(target)) {
     const exclusions = normalizedExcludedProcessNames(target);
     return [
       `path-contains:${normalizePathForMatch(target.pathContains)}`,
-      ...(exclusions.length === 0
-        ? []
-        : [`exclude:${exclusions.join(',')}`]),
+      ...(exclusions.length === 0 ? [] : [`exclude:${exclusions.join(',')}`]),
     ].join(':');
   }
   return target.pid === undefined
@@ -1240,10 +1329,7 @@ function readTargetConnection(
   return Object.freeze({ pid: candidate.pid as number, path: candidate.path });
 }
 
-function targetPathMatches(
-  targetPath: string,
-  target: ReShadeTarget,
-): boolean {
+function targetPathMatches(targetPath: string, target: ReShadeTarget): boolean {
   if (isPathTarget(target)) {
     const normalizedName = path.win32.basename(targetPath).toLowerCase();
     return (

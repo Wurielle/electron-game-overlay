@@ -68,6 +68,26 @@ $AddonOutputDirectory = Join-Path $ProductionBuildRoot "RelWithDebInfo"
 $BuildReShadeScript = Join-Path $PSScriptRoot "build-reshade-runtime.ps1"
 $DistributionDirectory = Join-Path $RuntimeRoot "dist\win32-x64"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
+$ExpectedPatchProvenance = [ordered]@{
+    observerPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-input-observer.patch"
+    injectorBasePathPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-base-path.patch"
+    pointerInputPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-pointer-input-block.patch"
+    injectorExactPidPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-exact-pid.patch"
+    injectorPathWatcherPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-path-watcher.patch"
+    injectorPathWatcherIdentityPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-path-watcher-process-identity.patch"
+    injectorProcessObserverPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-persistent-path-observer.patch"
+    injectorResilientProcessObserverPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-resilient-path-observer.patch"
+    suppressSplashPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-suppress-splash.patch"
+}
 
 $CMake = Resolve-Executable "cmake.exe"
 if ($ForceReShade) {
@@ -141,12 +161,18 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 9 -or
+if ($BuildStamp.schemaVersion -ne 13 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne "64-bit" -or
     $BuildStamp.addonLevel -ne 2) {
     throw "The pinned ReShade runtime build stamp has unexpected provenance: $BuildStampPath"
+}
+foreach ($PatchEntry in $ExpectedPatchProvenance.GetEnumerator()) {
+    Assert-Sha256Equal `
+        -Expected (Get-FileHash -Algorithm SHA256 -LiteralPath $PatchEntry.Value).Hash `
+        -Actual ([string]$BuildStamp.($PatchEntry.Key)) `
+        -Label "ReShade $($PatchEntry.Key) provenance"
 }
 Assert-Sha256Equal `
     -Expected ([string]$BuildStamp.runtimeSha256) `

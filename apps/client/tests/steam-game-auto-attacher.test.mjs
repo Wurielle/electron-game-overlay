@@ -50,6 +50,7 @@ test('forked watcher uses real Node and preserves a detailed startup failure', (
   const statuses = [];
   const watcher = new ForkedProcessWatcher(
     'C:\\client\\process-watcher\\index.cjs',
+    'C:\\runtime\\inject.exe',
     (...args) => {
       calls.push(args);
       return child;
@@ -63,6 +64,7 @@ test('forked watcher uses real Node and preserves a detailed startup failure', (
   });
 
   assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0][1], ['C:\\runtime\\inject.exe']);
   assert.equal(calls[0][2].execPath, 'C:\\Program Files\\nodejs\\node.exe');
   assert.equal(Object.hasOwn(calls[0][2].env, 'ELECTRON_RUN_AS_NODE'), false);
 
@@ -111,6 +113,209 @@ test('automatic targeting options are removed from per-PID launcher configs', ()
   assert.equal(Object.hasOwn(stripped, 'expectedTargetPid'), false);
   assert.equal(stripped.runtimeDirectory, source.runtimeDirectory);
   assert.equal(stripped.runsRootDirectory, source.runsRootDirectory);
+});
+
+test('the watcher starts before prewarm and queued targets consume immediately replenished slots', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const initialPreparations = [createDeferred(), createDeferred()];
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const index = launchers.length;
+      const launcher = new FakeLauncher(
+        config,
+        [],
+        index < initialPreparations.length
+          ? () => initialPreparations[index].promise
+          : undefined,
+      );
+      launchers.push(launcher);
+      return launcher;
+    },
+    preparedLauncherPoolSize: 2,
+  });
+
+  autoAttacher.start();
+  assert.equal(launchers.length, 2);
+  assert.notEqual(
+    watcher.handlers,
+    null,
+    'native observation must not wait for every runtime copy to finish',
+  );
+  assert.equal(autoAttacher.watcherStatus, 'starting');
+
+  watcher.create(
+    processInfo(
+      9010,
+      'D:\\SteamLibrary\\steamapps\\common\\Prepared\\first.exe',
+    ),
+  );
+  watcher.create(
+    processInfo(
+      9011,
+      'D:\\SteamLibrary\\steamapps\\common\\Prepared\\second.exe',
+    ),
+  );
+  await flushMicrotasks();
+  assert.equal(launchers[0].target, null);
+  assert.equal(launchers[1].target, null);
+
+  initialPreparations[0].resolve();
+  await flushMicrotasks();
+  await flushMicrotasks();
+  assert.deepEqual(launchers[0].target, {
+    processName: 'first.exe',
+    pid: 9010,
+  });
+  assert.equal(
+    launchers.length,
+    4,
+    'each consumed slot should begin one bounded replacement immediately',
+  );
+  assert.deepEqual(launchers[2].target, {
+    processName: 'second.exe',
+    pid: 9011,
+  });
+  assert.equal(launchers[1].target, null);
+  assert.equal(launchers[3].prepared, true);
+  assert.equal(launchers[3].target, null);
+
+  initialPreparations[1].resolve();
+  await flushMicrotasks();
+  await autoAttacher.dispose();
+});
+
+test('failed pool preparation backs off without delaying watcher startup or exceeding the pool bound', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config, [], () =>
+        Promise.reject(new Error('runtime staging failed')),
+      );
+      launchers.push(launcher);
+      return launcher;
+    },
+    preparedLauncherPoolSize: 2,
+    preparedLauncherRetryBaseDelayMs: 50,
+    preparedLauncherRetryMaxDelayMs: 200,
+  });
+
+  autoAttacher.start();
+  await flushMicrotasks();
+
+  assert.notEqual(
+    watcher.handlers,
+    null,
+    'a failed pool member must not prevent the watcher from starting',
+  );
+  assert.equal(launchers.length, 2);
+  assert.equal(launchers[0].disposed, true);
+  assert.equal(launchers[1].disposed, true);
+  assert.equal(launchers[0].prepared, false);
+
+  t.mock.timers.tick(49);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+  t.mock.timers.tick(1);
+  await flushMicrotasks();
+  assert.equal(
+    launchers.length,
+    4,
+    'one retry pass should remain bounded by the configured pool size',
+  );
+
+  t.mock.timers.tick(199);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 4);
+  t.mock.timers.tick(1);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 6);
+
+  await autoAttacher.dispose();
+});
+
+test('dispose releases both unused and still-preparing pool launchers', async () => {
+  const watcher = new FakeProcessWatcher();
+  const pendingPreparation = createDeferred();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session: new FakeOverlaySession(),
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const index = launchers.length;
+      const launcher = new FakeLauncher(
+        config,
+        [],
+        index === 1 ? () => pendingPreparation.promise : undefined,
+      );
+      launchers.push(launcher);
+      return launcher;
+    },
+    preparedLauncherPoolSize: 2,
+  });
+
+  autoAttacher.start();
+  await flushMicrotasks();
+  assert.equal(launchers[0].prepared, true);
+  assert.equal(launchers[1].prepared, false);
+  assert.notEqual(watcher.handlers, null);
+
+  await autoAttacher.dispose();
+  assert.equal(launchers[0].disposed, true);
+  assert.equal(launchers[1].disposed, true);
+  assert.equal(watcher.stopped, true);
+  assert.equal(autoAttacher.watcherStatus, 'stopped');
+
+  pendingPreparation.resolve();
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+});
+
+test('a process deleted while queued is never attached after preparation finishes', async () => {
+  const watcher = new FakeProcessWatcher();
+  const pendingPreparation = createDeferred();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session: new FakeOverlaySession(),
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(
+        config,
+        [],
+        () => pendingPreparation.promise,
+      );
+      launchers.push(launcher);
+      return launcher;
+    },
+    preparedLauncherPoolSize: 1,
+  });
+  const info = processInfo(
+    9030,
+    'D:\\SteamLibrary\\steamapps\\common\\Gone\\gone.exe',
+  );
+
+  autoAttacher.start();
+  watcher.create(info);
+  watcher.delete(info);
+  pendingPreparation.resolve();
+  await flushMicrotasks();
+
+  assert.equal(launchers.length, 1);
+  assert.equal(launchers[0].target, null);
+  assert.deepEqual(autoAttacher.targets, []);
+  await autoAttacher.dispose();
 });
 
 test('every detected Steam executable starts an independent exact-PID injection', async () => {
@@ -499,14 +704,26 @@ class FakeLauncher {
   state = 'idle';
   target = null;
   disposed = false;
+  prepareCalls = 0;
+  prepared = false;
 
-  constructor(config, order = []) {
+  constructor(config, order = [], prepareOperation = undefined) {
     this.config = config;
     this.order = order;
+    this.prepareOperation = prepareOperation ?? (() => Promise.resolve());
     this.promise = new Promise((resolve, reject) => {
       this.resolve = resolve;
       this.reject = reject;
     });
+  }
+
+  prepare() {
+    this.prepareCalls += 1;
+    return Promise.resolve()
+      .then(() => this.prepareOperation())
+      .then(() => {
+        this.prepared = true;
+      });
   }
 
   attach(session, target) {
@@ -562,8 +779,18 @@ function processInfo(pid, filepath) {
   };
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function flushMicrotasks() {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve();
+  }
 }

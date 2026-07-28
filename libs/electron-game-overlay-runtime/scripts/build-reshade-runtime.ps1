@@ -31,6 +31,14 @@ $InjectorPathWatcherIdentityPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-path-watcher-process-identity.patch"
 $InjectorPathWatcherIdentityPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorPathWatcherIdentityPatch).Hash
+$InjectorProcessObserverPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-persistent-path-observer.patch"
+$InjectorProcessObserverPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorProcessObserverPatch).Hash
+$InjectorResilientProcessObserverPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-resilient-path-observer.patch"
+$InjectorResilientProcessObserverPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorResilientProcessObserverPatch).Hash
 $SuppressSplashPatch = Join-Path $RuntimeRoot "patches\reshade-suppress-splash.patch"
 $SuppressSplashPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $SuppressSplashPatch).Hash
@@ -54,7 +62,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/input.cpp" = "4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp" = "C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "4EFC2A96B4D6CDF5BF5C7994A4C8151188C599C99CC755801EC47F568D3F04D6"
+    "tools/injector.cpp" = "F5BD67F1998FF94B75E94B79C0977C929AB23E8F791911D1F1DB597F8D7B60FB"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -70,22 +78,37 @@ function Get-NormalizedTextSha256([string]$Path) {
     }
 }
 
+function Test-GitPatchApplied([string]$Patch) {
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # A failed reverse check is expected on a clean or superseded cache.
+        # Windows PowerShell otherwise promotes git's redirected stderr to a
+        # terminating NativeCommandError while the script is in Stop mode.
+        $ErrorActionPreference = "Continue"
+        & git.exe -C $ReShadeSource apply --reverse --check $Patch 2>$null
+        return $LASTEXITCODE -eq 0
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+}
+
 function Test-ReShadePatchedSourceState {
     if (-not (Test-Path -LiteralPath $ReShadeSource -PathType Container)) {
         return $false
     }
 
-    # The pointer patch layers over the observer, while the path-watcher patch
-    # layers over the exact-PID and base-path patches. Those stacks cannot be
-    # reverse-checked independently in the final tree. The terminal patches
-    # plus exact content hashes below prove the complete ordered stack instead.
+    # The pointer patch layers over the input observer, while the persistent
+    # process observer layers over the path-watcher identity, exact-PID, and
+    # base-path patches. Those stacks cannot all be reverse-checked independently
+    # in the final tree. The terminal patches plus exact content hashes below
+    # prove the complete ordered stack instead.
     foreach ($Patch in @(
         $PointerInputPatch,
-        $InjectorPathWatcherIdentityPatch,
+        $InjectorResilientProcessObserverPatch,
         $SuppressSplashPatch
     )) {
-        & git.exe -C $ReShadeSource apply --reverse --check $Patch 2>$null
-        if ($LASTEXITCODE -ne 0) {
+        if (-not (Test-GitPatchApplied $Patch)) {
             return $false
         }
     }
@@ -140,7 +163,7 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 9 -and
+        return $Stamp.schemaVersion -eq 13 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -148,6 +171,8 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorExactPidPatchSha256 -eq $InjectorExactPidPatchHash -and
             $Stamp.injectorPathWatcherPatchSha256 -eq $InjectorPathWatcherPatchHash -and
             $Stamp.injectorPathWatcherIdentityPatchSha256 -eq $InjectorPathWatcherIdentityPatchHash -and
+            $Stamp.injectorProcessObserverPatchSha256 -eq $InjectorProcessObserverPatchHash -and
+            $Stamp.injectorResilientProcessObserverPatchSha256 -eq $InjectorResilientProcessObserverPatchHash -and
             $Stamp.suppressSplashPatchSha256 -eq $SuppressSplashPatchHash -and
             $Stamp.configuration -eq "Release" -and
             $Stamp.platform -eq "64-bit" -and
@@ -258,7 +283,7 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 9
+    schemaVersion = 13
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -266,6 +291,8 @@ $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
     injectorExactPidPatchSha256 = $InjectorExactPidPatchHash
     injectorPathWatcherPatchSha256 = $InjectorPathWatcherPatchHash
     injectorPathWatcherIdentityPatchSha256 = $InjectorPathWatcherIdentityPatchHash
+    injectorProcessObserverPatchSha256 = $InjectorProcessObserverPatchHash
+    injectorResilientProcessObserverPatchSha256 = $InjectorResilientProcessObserverPatchHash
     suppressSplashPatchSha256 = $SuppressSplashPatchHash
     configuration = "Release"
     platform = "64-bit"

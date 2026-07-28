@@ -72,15 +72,42 @@ in-game compositor keeps local `(0, 0)` coordinates. Controlled acceptance
 modes keep their fixed proof geometry and do not enable this presentation-only
 layout.
 
-The status watcher runs in a forked Node child because its WMI/COM event sink is
-not compatible with Electron main's existing COM initialization. Each creation
-event starts a separate SDK launcher with `{ processName, pid }`; each launcher
-stages an isolated runtime/config/log directory. Duplicate creation events for a
-live PID are ignored, and process deletion releases that PID so a later reused
-PID can be attempted again. The watcher deliberately has no executable-name
-filter. Its notification and staging latency are part of injection timing, so
-this remains an ordinary unsuspended observer and cannot guarantee attachment
-before every arbitrarily fast graphics initialization.
+The status watcher runs in a forked Node child. That child prearms the runtime's
+parent-scoped native path observer for fast creation and deletion events, with
+the slower WMI/COM monitor started only if the native observer fails. The
+native path takes one compact PID snapshot every 5 ms and queries executable
+paths only for new PIDs; it no longer walks a full Toolhelp snapshot and every
+process handle on every pass.
+
+The watcher starts before the demo concurrently prepares four separate SDK
+launchers and their isolated runtime/config/log directories. Creation events
+that arrive during preparation wait in order for prepared slots; detected
+targets never trigger reactive runtime staging in this default pool mode. Each
+successful consumption starts replacement preparation immediately. A failed
+preparation emits `STEAM_GAME_RUNTIME_PREPARE_FAILED` and retries with bounded
+backoff while queued targets remain recorded. Non-mutating artifacts are
+hard-linked into the directory when the filesystem permits, with portable
+copying as fallback. `ReShade64.dll` and `ReShade.ini` remain private copies
+because the injector adjusts the DLL ACL and ReShade may update its
+configuration. Disposing unused prepared launchers removes their directories.
+Duplicate native/WMI creation events for a live PID are ignored, and process
+deletion releases that PID so a later reused PID can be attempted again. The
+watcher deliberately has no executable-name filter. This is still an ordinary
+unsuspended user-mode observer and cannot provide a universal pre-entry timing
+guarantee.
+
+An initial PEAK run caught its Unity 6 D3D12 initialization and rendered the
+interactive Electron menu, but it used the retired full-system 5 ms observer; a
+later thermal report exposed that observer's unacceptable sustained polling.
+On July 28, 2026, a short rerun with the bounded observer injected PEAK PID
+11920 before `d3d12.dll` loaded, initialized the transport, rendered the dock,
+captured Ctrl+I, and accepted the `Open status window` click. The observer used
+0.6% of one CPU core before launch and rounded to 0% during the in-game sample,
+versus roughly 25-34% for the retired scanner. No readable temperature sensor
+was available, so this is a functional/resource acceptance run rather than a
+thermal soak. PEAK itself rendered its splash at roughly 374-396 FPS before
+settling near 94 FPS on the menu; the demo and observer do not impose that game
+frame rate.
 
 The separate `npm run dev:gun-frog` process-name gate remains the exact
 two-window acceptance scene. Controlled launchers and clients started without
@@ -221,10 +248,12 @@ repository acceptance wrapper automates build/startup and validates the logs:
 
 That real-game client/SDK gate passed on July 13, 2026. The controlled D3D12
 result above proves the prearmed SDK path and backend selection for the
-cooperating host, not post-render injection, arbitrary fast-start targets, or
-compatibility with other games. In a separate controlled probe, injection three
+cooperating host. The bounded observer also passed the short PEAK D3D12
+render/input run described above; that does not prove universal pre-entry timing
+or broad game compatibility. In a separate controlled probe, injection three
 seconds after D3D11/D3D12 rendering began loaded `ReShade64.dll` but did not
-adopt the existing device or swap chain, initialize the runtime/add-on, or render
-the Electron scene. That route is unsupported. PID reuse and stronger process
-creation identity, arbitrary watcher latency, and package publishing remain
-deferred; the repository-built client and SDK are the current local test path.
+adopt the existing device or swap chain, initialize the runtime/add-on, or
+render the Electron scene. That route is unsupported. PID reuse and stronger
+process creation identity, arbitrary watcher latency, and package publishing
+remain deferred; the repository-built client and SDK are the current local test
+path.

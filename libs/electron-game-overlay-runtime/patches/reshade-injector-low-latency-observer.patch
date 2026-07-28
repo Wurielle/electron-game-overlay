@@ -1,0 +1,12 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -322,7 +322,7 @@ static DWORD observe_path_matches(const wchar_t *fragment, DWORD parent_pid)
+ 				return ERROR_WRITE_FAULT;
+ 		}
+ 
+-		Sleep(25);
++		Sleep(5);
+ 	}
+ 
+ 	return ERROR_SUCCESS;

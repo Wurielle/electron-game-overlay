@@ -94,12 +94,17 @@ session.on('fps', ({ pid, fps }) => console.log(pid, fps));
 overlayWindow.followTarget({ area: 'render' });
 ```
 
-The demo's WMI watcher supplies each exact PID and executable basename. Its
-notification plus runtime-staging latency is part of the injection path, so the
-demo remains an observer of an ordinary unsuspended process rather than a
-`CREATE_SUSPENDED` launcher. Independent launchers remove the one-shot gap for
-overlapping and launcher/child process chains, but the controlled acceptance
-launchers remain the deterministic injection-before-graphics proof.
+The demo's native Steam-path observer supplies each exact PID and executable
+basename; WMI is started only if that observer fails. Observation starts before
+the demo concurrently prepares a pool of four isolated SDK launchers. Creation
+events wait in order for prepared slots, and every successful consumption starts
+replacement preparation immediately. Preparation failures use bounded retry
+backoff instead of moving runtime staging onto a detected target's hot path.
+Native notification and injector startup still happen after ordinary
+unsuspended process creation, rather than through a `CREATE_SUSPENDED` launcher.
+Independent launchers remove the one-shot gap for overlapping and
+launcher/child process chains, but the controlled acceptance launchers remain
+the deterministic injection-before-graphics proof.
 
 The demo uses the SDK's exact-PID target:
 

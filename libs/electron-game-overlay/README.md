@@ -16,8 +16,10 @@ patched Windows x64 ReShade runtime, injector, build stamp, Electron add-on, and
 configuration under `dist/runtime/win32-x64/reshade`. Consumers call
 `parseReShadeLaunchConfig()`, create `ReShadeOverlayLauncher`, then arm an
 executable process name or path fragment with `launcher.attach(session,
-target)`. Each request
-copies the immutable SDK assets into a writable isolated run directory. The SDK
+target)`. Each request stages a writable isolated run directory. Immutable
+artifacts are hard-linked when the source and run root share a filesystem, with
+copying as a portable fallback; `ReShade64.dll` and mutable `ReShade.ini` always
+receive private file records. The SDK
 waits for transport discovery, executes the injector without a shell, and
 parses the injector-selected PID, then resolves only after an add-on with that
 PID and the expected executable basename authenticates back to the session.
@@ -65,6 +67,22 @@ await launcher?.attach(session, {
 });
 ```
 
+Latency-sensitive watchers may stage the next isolated runtime before process
+detection. `prepare()` performs no injection, concurrent calls coalesce, and
+the next `attach()` or `launch()` consumes that prepared directory:
+
+```ts
+await launcher?.prepare();
+await launcher?.attach(session, {
+  processName: detectedProcess.name,
+  pid: detectedProcess.pid,
+});
+```
+
+Disposing an unconsumed prepared launcher removes its directory, including when
+preparation is still in flight. Consumed run directories retain their evidence
+logs.
+
 `pid` is optional for backward compatibility and must be a positive uint32
 integer when supplied. The PID is part of the target identity, so requests for
 two same-name processes with different PIDs are distinct. A startup
@@ -102,8 +120,9 @@ process. A process watcher may instead call `attach()` with the exact PID
 immediately after process creation, but that reactive route must still beat
 graphics initialization. Attachment after a game is already rendering is not
 supported. The accepted real-game production-client proof uses
-`{ processName: 'Gun Frog.exe' }`; the Steam demo additionally exercises the
-prearmed path target. The runtime directory can be overridden explicitly for
+`{ processName: 'Gun Frog.exe' }`; the Steam demo prepares isolated launchers
+and gives every detected Steam-path executable its own exact-PID target. The
+runtime directory can be overridden explicitly for
 development tests; otherwise it resolves relative to the built SDK. The legacy
 `findWindows()` and `session.attachToProcess()` methods still throw.
 

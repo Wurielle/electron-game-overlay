@@ -1,0 +1,114 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 6541ab3..21dcba2 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -262,7 +262,8 @@ struct observed_process_state
+ 	scoped_handle process;
+ 	std::wstring matched_path;
+ 	unsigned int query_attempts = 0;
+-	bool inspected = false;
++	ULONGLONG next_query_tick = 0;
++	bool path_resolved = false;
+ };
+ 
+ static DWORD enumerate_process_ids(std::vector<DWORD> &process_ids)
+@@ -287,37 +288,60 @@ static DWORD enumerate_process_ids(std::vector<DWORD> &process_ids)
+ 	}
+ }
+ 
++static ULONGLONG process_path_query_retry_delay(unsigned int query_attempts)
++{
++	const unsigned int retry_exponent = query_attempts > 8 ? 7 : query_attempts - 1;
++	const ULONGLONG retry_delay = 5ull << retry_exponent;
++	return retry_delay < 1000 ? retry_delay : 1000;
++}
++
++static bool has_process_identity(const observed_process_state &state)
++{
++	return state.process.handle != nullptr && state.process.handle != INVALID_HANDLE_VALUE;
++}
++
+ static DWORD inspect_process_path(
+ 	DWORD pid,
+ 	const std::wstring &normalized_fragment,
+-	observed_process_state &state)
++	ULONGLONG current_tick,
++	observed_process_state &state)
+ {
+-	constexpr unsigned int max_query_attempts = 8;
+ 	++state.query_attempts;
+ 
+-	scoped_handle candidate = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
++	scoped_handle candidate = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+ 	if (candidate == nullptr)
+ 	{
+-		if (GetLastError() == ERROR_ACCESS_DENIED || state.query_attempts >= max_query_attempts)
+-			state.inspected = true;
++		// A synchronization-only handle is enough to keep this exact process
++		// object (and therefore its PID) alive while path access is unavailable.
++		// Continue retrying path resolution with bounded backoff until it exits.
++		if (!has_process_identity(state))
++			state.process.handle = OpenProcess(SYNCHRONIZE, FALSE, pid);
++		state.next_query_tick = current_tick + process_path_query_retry_delay(state.query_attempts);
+ 		return ERROR_SUCCESS;
+ 	}
+ 
++	HANDLE query_process = candidate;
++	if (!has_process_identity(state))
++	{
++		// Any retained process handle prevents Windows from reusing the PID
++		// before a later enumeration observes the process object's deletion.
++		state.process.handle = candidate.handle;
++		candidate.handle = nullptr;
++		query_process = state.process;
++	}
++
+ 	WCHAR candidate_path[32768] = L"";
+ 	DWORD candidate_path_size = static_cast<DWORD>(sizeof(candidate_path) / sizeof(candidate_path[0]));
+-	if (!QueryFullProcessImageNameW(candidate, 0, candidate_path, &candidate_path_size))
++	if (!QueryFullProcessImageNameW(query_process, 0, candidate_path, &candidate_path_size))
+ 	{
+-		if (state.query_attempts >= max_query_attempts)
+-			state.inspected = true;
++		state.next_query_tick = current_tick + process_path_query_retry_delay(state.query_attempts);
+ 		return ERROR_SUCCESS;
+ 	}
+ 
+-	state.inspected = true;
++	state.path_resolved = true;
+ 	if (!path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment))
+ 		return ERROR_SUCCESS;
+ 
+-	state.process.handle = candidate.handle;
+-	candidate.handle = nullptr;
+ 	state.matched_path.assign(candidate_path, candidate_path_size);
+ 
+ 	std::wstring event = L"EGO_PROCESS_CREATE\t";
+@@ -337,11 +361,10 @@ static DWORD scan_path_matches(
+ 		return error;
+ 
+ 	const std::unordered_set<DWORD> current_process_ids(process_ids.begin(), process_ids.end());
++	const ULONGLONG current_tick = GetTickCount64();
+ 	for (auto observed = observed_processes.begin(); observed != observed_processes.end();)
+ 	{
+-		bool process_ended = current_process_ids.find(observed->first) == current_process_ids.end();
+-		if (!process_ended && !observed->second.matched_path.empty())
+-			process_ended = WaitForSingleObject(observed->second.process, 0) != WAIT_TIMEOUT;
++		const bool process_ended = current_process_ids.find(observed->first) == current_process_ids.end();
+ 
+ 		if (!process_ended)
+ 		{
+@@ -366,9 +389,11 @@ static DWORD scan_path_matches(
+ 	for (const DWORD pid : process_ids)
+ 	{
+ 		auto observed = observed_processes.try_emplace(pid).first;
+-		if (!observed->second.inspected)
++		if (!observed->second.path_resolved &&
++			(current_tick >= observed->second.next_query_tick))
+ 		{
+-			const DWORD error = inspect_process_path(pid, normalized_fragment, observed->second);
++			const DWORD error = inspect_process_path(
++				pid, normalized_fragment, current_tick, observed->second);
+ 			if (error != ERROR_SUCCESS)
+ 				return error;
+ 		}
