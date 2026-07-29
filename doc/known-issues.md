@@ -29,12 +29,20 @@ Unreal launcher/renderer chain, but arbitrary unsuspended watcher timing remains
 unverified.
 
 The normal `npm run dev` Steam-path flow first gained real Gun Frog acceptance
-through a one-shot native path watcher. That historical implementation was
-later replaced because selecting the first matching executable cannot cover
-launcher/child process chains. The current demo starts one independent exact-PID
-SDK injection for every native-observer-detected `.exe` under `steamapps`, with
-no helper or plausibility exclusions. WMI starts only if that native observer
-fails. Observation starts before four isolated launchers are prepared
+through a one-shot native path watcher, then temporarily moved to exact-PID-only
+attempts so launcher/child process chains could not be consumed by one early
+selection. A later Gun Frog run proved that spawning an exact injector only
+after the creation event can still miss a fast primary swap chain. The current
+hybrid keeps one broad native path watcher prearmed for `\\steamapps\\` with zero
+executable exclusions, while the continuous observer still starts one
+independent exact-PID SDK injection for every detected `.exe` under
+`steamapps`. WMI starts only if that continuous observer fails.
+
+The two lanes may select the same PID, so a native per-PID claim serializes them
+before target mutation. A path winner is adopted by the coordinator and its
+exact-PID loser is disposed; an exact-PID winner makes the path attempt yield
+safely. The broad watcher is rearmed after selection and target exit.
+Observation starts before four isolated exact-PID launchers are prepared
 concurrently. Detected targets wait in order for prepared slots, successful
 consumption starts an immediate refill, and preparation failures retry with
 bounded backoff. Each active attempt still owns its own runtime.
@@ -53,6 +61,16 @@ second run Ctrl+I opened the
 intercept menu and clicking `Open status window` rendered that Electron surface
 inside Gun Frog while input was captured; closing the game left another watcher
 armed for the next launch.
+
+The hybrid coordinator passed a new same-client acceptance on July 29, 2026.
+One Electron process stayed alive across Gun Frog PIDs 20856 and 13068; both
+targets visibly rendered the D3D11 overlay at 60 FPS. Ctrl+I received positive
+and negative interception acknowledgements, clicking `Open status window` was
+captured without changing the game menu, and the normal Quit click closed the
+game after interception was released. The path watcher was available for the
+next launch after each selection/exit. After observer-readiness and path-first
+ordering hardening, one client repeated visible 60 FPS attachment, exact-PID
+attempts, normal exit, and rearm for PIDs 11856 and 16892 with no leftovers.
 
 On July 13, 2026, the inject-all flow attempted both LORT's root
 `LortGame.exe` bootstrap and its

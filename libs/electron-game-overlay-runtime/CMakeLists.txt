@@ -43,6 +43,9 @@ set(RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH
 set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-conflict-preflight.patch"
 )
+set(RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-per-pid-claim.patch"
+)
 set(RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-legacy-snapshot-observer.patch"
 )
@@ -72,7 +75,7 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp=66B9011794805E2EB5771B7F6FFCED5AB170A3F099FDAA4B0164EDC16E7B8F37"
+    "tools/injector.cpp=90517727A8B376D4F73DA688ABAC89AECF1082CB603E2B2E8F39C386AFD62D06"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
@@ -80,6 +83,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
+    "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
     "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
     "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
@@ -241,13 +245,13 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply ten narrow pinned seams: the passive copied-input observer, an injector
+# Apply eleven narrow pinned seams: the passive copied-input observer, an injector
 # base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
-# observation, loaded-ReShade conflict preflight, and startup splash
-# suppression. The watcher patches are terminal so existing exact-PID and
-# original watcher trees can migrate without replacing those ignored source
-# trees.
+# observation, loaded-ReShade conflict preflight, per-PID injection ownership,
+# and startup splash suppression. The watcher patches are terminal so existing
+# exact-PID and original watcher trees can migrate without replacing those
+# ignored source trees.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
         "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
@@ -765,17 +769,30 @@ set(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED FALSE)
 set(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED FALSE)
 
 # Reject an already-loaded ReShade instance before allocating or writing target
-# memory. This terminal injector patch identifies ReShade by the same exact
-# exported symbol as the runtime's duplicate-instance guard, never by proxy
-# filenames or adjacent game-directory files.
+# memory. This patch identifies ReShade by the same exact exported symbol as the
+# runtime's duplicate-instance guard, never by proxy filenames or adjacent
+# game-directory files. The per-PID claim layers directly over it, so treat that
+# terminal patch as proof that this lower patch is already present.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
-        "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
+        "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-    RESULT_VARIABLE RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED
+    RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
     OUTPUT_QUIET
     ERROR_QUIET
 )
+if(RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED EQUAL 0)
+    set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED 0)
+else()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+endif()
 if(NOT RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" apply --check
@@ -807,6 +824,52 @@ if(NOT RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED EQUAL 0)
             "Unable to add loaded-ReShade conflict preflight to the injector.\n"
             "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLY_OUTPUT}"
             "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# Serialize injectors targeting the same selected PID before either can inspect
+# or mutate that process. This deliberately layers after conflict preflight so
+# existing fetched source trees can migrate by applying one terminal patch.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned ReShade injector per-PID claim patch cannot migrate "
+            "the patch stack.\n"
+            "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to serialize ReShade injection per target PID.\n"
+            "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLY_ERROR}"
         )
     endif()
 endif()

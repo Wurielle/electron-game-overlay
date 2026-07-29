@@ -116,6 +116,245 @@ test('automatic targeting options are removed from per-PID launcher configs', ()
   assert.equal(stripped.runsRootDirectory, source.runsRootDirectory);
 });
 
+test('the prearmed Steam path lane has no exclusions while every observed executable keeps an exact attempt', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+    prearmedPathInjection: true,
+    preparedLauncherPoolSize: 0,
+  });
+  const processes = [
+    processInfo(
+      8801,
+      'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe',
+    ),
+    processInfo(
+      8802,
+      'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\UnityCrashHandler64.exe',
+    ),
+    processInfo(
+      8803,
+      'D:\\SteamLibrary\\steamapps\\common\\Steamworks Shared\\_CommonRedist\\VC_redist.x64.exe',
+    ),
+  ];
+
+  autoAttacher.start();
+  watcher.ready();
+  await flushMicrotasks();
+  assert.equal(launchers.length, 1);
+  assert.deepEqual(launchers[0].target, {
+    pathContains: '\\steamapps\\',
+  });
+
+  for (const info of processes) {
+    watcher.create(info);
+  }
+  await flushMicrotasks();
+  assert.equal(launchers.length, 4);
+  assert.deepEqual(
+    launchers.slice(1).map(({ target }) => target),
+    processes.map(({ pid, process }) => ({ processName: process, pid })),
+  );
+
+  launchers[0].connect(processes[0].pid, processes[0].filepath);
+  await flushMicrotasks();
+  assert.equal(
+    launchers[1].disposed,
+    true,
+    'the exact loser must be released when the prearmed path wins',
+  );
+  assert.deepEqual(
+    autoAttacher.targets.map(({ pid, phase }) => ({ pid, phase })),
+    [
+      { pid: 8801, phase: 'connected' },
+      { pid: 8802, phase: 'attaching' },
+      { pid: 8803, phase: 'attaching' },
+    ],
+  );
+  assert.equal(launchers.length, 5);
+  assert.deepEqual(launchers[4].target, {
+    pathContains: '\\steamapps\\',
+  });
+
+  await autoAttacher.dispose();
+});
+
+test('an exact-PID winner keeps the target connected when the prearmed attempt loses its native claim', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+    prearmedPathInjection: true,
+    preparedLauncherPoolSize: 0,
+  });
+  const info = processInfo(
+    8811,
+    'D:\\SteamLibrary\\steamapps\\common\\Race\\race.exe',
+  );
+
+  autoAttacher.start();
+  watcher.ready();
+  watcher.create(info);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+
+  launchers[1].connect(info.pid, info.filepath);
+  await flushMicrotasks();
+  launchers[0].fail(
+    new ReShadeOperationError({
+      stage: 'target-preflight',
+      code: 'target-injection-already-claimed',
+      retrySafety: 'definite-safe',
+      message: 'another injector owns the target claim',
+      targetLabel: 'path:\\steamapps\\',
+      pid: info.pid,
+    }),
+  );
+  await flushMicrotasks();
+
+  assert.deepEqual(autoAttacher.targets, [
+    {
+      pid: info.pid,
+      processName: 'race.exe',
+      filepath: info.filepath,
+      phase: 'connected',
+      error: null,
+      diagnostic: null,
+    },
+  ]);
+  assert.equal(launchers[0].disposed, true);
+  assert.equal(launchers[1].disposed, false);
+  assert.equal(launchers.length, 3);
+  assert.deepEqual(launchers[2].target, {
+    pathContains: '\\steamapps\\',
+  });
+
+  await autoAttacher.dispose();
+});
+
+test('a path-first target still receives its independent exact-PID attempt when observation arrives', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+    prearmedPathInjection: true,
+    preparedLauncherPoolSize: 0,
+  });
+  const info = processInfo(
+    8821,
+    'D:\\SteamLibrary\\steamapps\\common\\Path First\\path-first.exe',
+  );
+
+  autoAttacher.start();
+  watcher.ready();
+  await flushMicrotasks();
+  launchers[0].connect(info.pid, info.filepath);
+  await flushMicrotasks();
+  assert.equal(autoAttacher.targets[0].phase, 'connected');
+  assert.deepEqual(launchers[1].target, {
+    pathContains: '\\steamapps\\',
+  });
+
+  watcher.create(info);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 3);
+  assert.deepEqual(launchers[2].target, {
+    processName: 'path-first.exe',
+    pid: info.pid,
+  });
+
+  launchers[2].fail(
+    new ReShadeOperationError({
+      stage: 'target-preflight',
+      code: 'target-runtime-conflict',
+      retrySafety: 'definite-safe',
+      message: 'the prearmed lane already initialized the runtime',
+      targetLabel: 'process:path-first.exe:pid:8821',
+      pid: info.pid,
+    }),
+  );
+  await flushMicrotasks();
+  assert.equal(autoAttacher.targets[0].phase, 'connected');
+
+  await autoAttacher.dispose();
+});
+
+test('an exact claim loser cannot stay attaching if its prearmed owner later fails', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+    prearmedPathInjection: true,
+    preparedLauncherPoolSize: 0,
+  });
+  const info = processInfo(
+    8831,
+    'D:\\SteamLibrary\\steamapps\\common\\Claim Failure\\claim-failure.exe',
+  );
+
+  autoAttacher.start();
+  watcher.ready();
+  watcher.create(info);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+
+  launchers[1].fail(
+    new ReShadeOperationError({
+      stage: 'target-preflight',
+      code: 'target-injection-already-claimed',
+      retrySafety: 'definite-safe',
+      message: 'the prearmed lane owns the process claim',
+      targetLabel: 'process:claim-failure.exe:pid:8831',
+      pid: info.pid,
+    }),
+  );
+  await flushMicrotasks();
+  assert.equal(autoAttacher.targets[0].phase, 'failed');
+
+  launchers[0].fail(new Error('the path injector failed after selection'));
+  await flushMicrotasks();
+  assert.equal(
+    autoAttacher.targets[0].phase,
+    'failed',
+    'the coordinated target must not remain permanently attaching',
+  );
+
+  await autoAttacher.dispose();
+});
+
 test('the watcher starts before prewarm and queued targets consume immediately replenished slots', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
@@ -504,6 +743,7 @@ test('no injection starts when the process watcher cannot start', async (t) => {
           launchers.push(launcher);
           return launcher;
         },
+        prearmedPathInjection: true,
       });
 
       autoAttacher.start();
@@ -516,6 +756,35 @@ test('no injection starts when the process watcher cannot start', async (t) => {
       await autoAttacher.dispose();
     });
   }
+});
+
+test('no prearmed injection starts before asynchronous watcher readiness', async () => {
+  const watcher = new FakeProcessWatcher();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session: new FakeOverlaySession(),
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+    prearmedPathInjection: true,
+    preparedLauncherPoolSize: 0,
+  });
+
+  autoAttacher.start();
+  await flushMicrotasks();
+  assert.equal(autoAttacher.watcherStatus, 'starting');
+  assert.equal(launchers.length, 0);
+
+  watcher.fail('native observer failed before ready');
+  await flushMicrotasks();
+  assert.equal(autoAttacher.watcherStatus, 'failed');
+  assert.equal(launchers.length, 0);
+
+  await autoAttacher.dispose();
 });
 
 test('a failed PID is not retried until deletion proves a new process lifetime', async () => {
@@ -660,6 +929,10 @@ class FakeProcessWatcher {
 
   ready() {
     this.handlers?.onStatus('running');
+  }
+
+  fail(error) {
+    this.handlers?.onStatus('failed', error);
   }
 
   create(payload) {

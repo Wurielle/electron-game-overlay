@@ -138,6 +138,8 @@ export type ReShadeDiagnosticStage =
 
 export type ReShadeDiagnosticCode =
   | 'runtime-staging-failed'
+  | 'target-injection-already-claimed'
+  | 'target-injection-claim-failed'
   | 'target-runtime-conflict'
   | 'target-module-inspection-failed'
   | 'injector-start-failed'
@@ -202,7 +204,11 @@ export function isReShadeOperationError(
 type InjectorPreflightDiagnostic = Readonly<{
   schemaVersion: 1;
   stage: 'target-preflight';
-  code: 'target-runtime-conflict' | 'target-module-inspection-failed';
+  code:
+    | 'target-injection-already-claimed'
+    | 'target-injection-claim-failed'
+    | 'target-runtime-conflict'
+    | 'target-module-inspection-failed';
   pid: number;
   injectionStarted: false;
   modulePath?: string;
@@ -751,6 +757,7 @@ export class ReShadeOverlayLauncher {
         proofSettled = true;
         removeListeners();
         this.blockTargetState(targetLabel);
+        const diagnosticPid = injectorTargetPid ?? expectedTargetPid;
         rejectConnectionProof(
           new ReShadeOperationError({
             message: `the ReShade target did not connect within ${proofTimeoutMs}ms`,
@@ -758,9 +765,7 @@ export class ReShadeOverlayLauncher {
             stage: 'runtime-initialization',
             retrySafety: 'indeterminate',
             targetLabel,
-            ...(expectedTargetPid === undefined
-              ? {}
-              : { pid: expectedTargetPid }),
+            ...(diagnosticPid === undefined ? {} : { pid: diagnosticPid }),
             ...(this.latestRunDirectory === null
               ? {}
               : {
@@ -1295,18 +1300,29 @@ export class ReShadeOverlayLauncher {
         });
       }
 
-      const detail =
-        diagnostic.code === 'target-runtime-conflict'
-          ? `target pid=${diagnostic.pid} already has a loaded ReShade runtime${
-              diagnostic.modulePath
-                ? ` at ${JSON.stringify(diagnostic.modulePath)}`
-                : ''
-            }`
-          : `loaded-module inspection failed for target pid=${diagnostic.pid}${
-              diagnostic.windowsErrorCode === undefined
-                ? ''
-                : ` with Windows error ${diagnostic.windowsErrorCode}`
-            }`;
+      const windowsErrorDetail =
+        diagnostic.windowsErrorCode === undefined
+          ? ''
+          : ` with Windows error ${diagnostic.windowsErrorCode}`;
+      let detail: string;
+      switch (diagnostic.code) {
+        case 'target-injection-already-claimed':
+          detail = `target pid=${diagnostic.pid} is already claimed by another ReShade injector${windowsErrorDetail}`;
+          break;
+        case 'target-injection-claim-failed':
+          detail = `unable to establish exclusive ReShade injection ownership for target pid=${diagnostic.pid}${windowsErrorDetail}`;
+          break;
+        case 'target-runtime-conflict':
+          detail = `target pid=${diagnostic.pid} already has a loaded ReShade runtime${
+            diagnostic.modulePath
+              ? ` at ${JSON.stringify(diagnostic.modulePath)}`
+              : ''
+          }`;
+          break;
+        case 'target-module-inspection-failed':
+          detail = `loaded-module inspection failed for target pid=${diagnostic.pid}${windowsErrorDetail}`;
+          break;
+      }
       console.error(
         `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
@@ -1786,7 +1802,9 @@ function parseInjectorPreflightDiagnostic(
   if (
     candidate.schemaVersion !== 1 ||
     candidate.stage !== 'target-preflight' ||
-    (code !== 'target-runtime-conflict' &&
+    (code !== 'target-injection-already-claimed' &&
+      code !== 'target-injection-claim-failed' &&
+      code !== 'target-runtime-conflict' &&
       code !== 'target-module-inspection-failed') ||
     !isValidProcessPid(candidate.pid) ||
     candidate.injectionStarted !== false ||

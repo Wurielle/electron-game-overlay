@@ -392,6 +392,25 @@ test('exact-PID pre-injection failure proof returns to idle after the child spaw
 test('structured target preflight failures expose stable diagnostics and remain retry-safe', async (t) => {
   const scenarios = [
     {
+      code: 'target-injection-already-claimed',
+      native: {
+        code: 'target-injection-already-claimed',
+        pid: 6101,
+        windowsErrorCode: 170,
+      },
+      message: /already claimed by another ReShade injector.*Windows error 170/,
+    },
+    {
+      code: 'target-injection-claim-failed',
+      native: {
+        code: 'target-injection-claim-failed',
+        pid: 6101,
+        windowsErrorCode: 5,
+      },
+      message:
+        /unable to establish exclusive ReShade injection ownership.*Windows error 5/,
+    },
+    {
       code: 'target-runtime-conflict',
       native: {
         code: 'target-runtime-conflict',
@@ -994,6 +1013,60 @@ test('successful low-level path launch opens a PID-pinned bounded proof window',
     assert.equal(launcher.acceptTargetConnection(9402), false);
     assert.equal(launcher.acceptTargetConnection(9401), true);
     assert.equal(launcher.state, 'connected');
+  } finally {
+    launcher.dispose();
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+    execution.restore();
+  }
+});
+
+test('path-target connection timeout reports the selected injector PID', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const selectedPath =
+    'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe';
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const proofTimerHandle = Object.freeze({ pathProofTimer: true });
+  let proofTimerCallback;
+  global.setTimeout = (callback, delay, ...args) => {
+    if (delay === 10_000 && proofTimerCallback === undefined) {
+      proofTimerCallback = () => callback(...args);
+      return proofTimerHandle;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (handle !== proofTimerHandle) {
+      originalClearTimeout(handle);
+    }
+  };
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      pathContains: '\\steamapps\\',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      null,
+      pathInjectorSuccessFor(9403, selectedPath),
+      '',
+    );
+    await waitFor(() => typeof proofTimerCallback === 'function');
+    proofTimerCallback();
+
+    await assert.rejects(attachment, (error) => {
+      assert.ok(isReShadeOperationError(error));
+      assert.equal(error.code, 'runtime-initialization-timeout');
+      assert.equal(error.stage, 'runtime-initialization');
+      assert.equal(error.retrySafety, 'indeterminate');
+      assert.equal(error.diagnostic.pid, 9403);
+      return true;
+    });
+    assert.equal(launcher.state, 'blocked');
   } finally {
     launcher.dispose();
     global.setTimeout = originalSetTimeout;

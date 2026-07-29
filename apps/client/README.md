@@ -37,15 +37,18 @@ API inside the target, so there is no D3D11/D3D12 client option:
 npm run dev
 ```
 
-The normal development command starts a process-creation watcher. Start the demo
-first, let its session and watcher come up, then launch a game normally through
-Steam. Every detected executable whose normalized path contains `/steamapps/`
-(case-insensitive) receives its own exact-PID SDK injection attempt. Attempts run
-independently and concurrently: launchers, render processes, helpers, and
-redistributables are not classified or excluded. A process that initializes the
-overlay authenticates normally; one that does not initialize graphics cannot
-consume or prevent later attempts. The UI shows watcher and per-PID target status
-and disables manual injection controls while automatic mode is active.
+The normal development command starts a hybrid Steam auto-attach coordinator.
+Start the demo first, let its session and watcher come up, then launch a game
+normally through Steam. One broad native path watcher is already armed for
+`\\steamapps\\` before the game starts, providing the earliest practical
+injection lane with zero executable exclusions. In parallel, every detected
+executable whose normalized path contains `/steamapps/` (case-insensitive)
+receives its own exact-PID SDK injection attempt. Attempts run independently and
+concurrently: launchers, render processes, helpers, and redistributables are not
+classified or excluded. A process that initializes the overlay authenticates
+normally; one that does not initialize graphics cannot consume or prevent later
+attempts. The UI shows watcher and per-PID target status and disables manual
+injection controls while automatic mode is active.
 
 Inside the game, the normal demo initially registers one compact control dock.
 It remains visible with the **Ctrl+I** shortcut, target/watcher state, effective
@@ -72,29 +75,36 @@ in-game compositor keeps local `(0, 0)` coordinates. Controlled acceptance
 modes keep their fixed proof geometry and do not enable this presentation-only
 layout.
 
-The status watcher runs in a forked Node child. That child prearms the runtime's
-parent-scoped native path observer for fast creation and deletion events, with
-the slower WMI/COM monitor started only if the native observer fails. The
-native path takes one compact PID snapshot every 5 ms and queries executable
+The status watcher runs in a forked Node child. That child starts the runtime's
+parent-scoped continuous native observer for fast creation and deletion events,
+with the slower WMI/COM monitor started only if the native observer fails. The
+native observer takes one compact PID snapshot every 5 ms and queries executable
 paths only for new PIDs; it no longer walks a full Toolhelp snapshot and every
 process handle on every pass.
 
-The watcher starts before the demo concurrently prepares four separate SDK
-launchers and their isolated runtime/config/log directories. Creation events
-that arrive during preparation wait in order for prepared slots; detected
-targets never trigger reactive runtime staging in this default pool mode. Each
-successful consumption starts replacement preparation immediately. A failed
-preparation emits `STEAM_GAME_RUNTIME_PREPARE_FAILED` and retries with bounded
-backoff while queued targets remain recorded. Non-mutating artifacts are
-hard-linked into the directory when the filesystem permits, with portable
-copying as fallback. `ReShade64.dll` and `ReShade.ini` remain private copies
-because the injector adjusts the DLL ACL and ReShade may update its
-configuration. Disposing unused prepared launchers removes their directories.
-Duplicate native/WMI creation events for a live PID are ignored, and process
-deletion releases that PID so a later reused PID can be attempted again. The
-watcher deliberately has no executable-name filter. This is still an ordinary
-unsuspended user-mode observer and cannot provide a universal pre-entry timing
-guarantee.
+The continuous observer starts first, followed by the broad prearmed path
+launcher and then four concurrently prepared exact-PID launchers with isolated
+runtime/config/log directories. Creation events that arrive during preparation
+wait in order for prepared slots; detected targets never trigger reactive
+runtime staging in this default pool mode. Each successful consumption starts
+replacement preparation immediately. A failed preparation emits
+`STEAM_GAME_RUNTIME_PREPARE_FAILED` and retries with bounded backoff while
+queued targets remain recorded. Non-mutating artifacts are hard-linked into the
+directory when the filesystem permits, with portable copying as fallback.
+`ReShade64.dll` and `ReShade.ini` remain private copies because the injector
+adjusts the DLL ACL and ReShade may update its configuration. Disposing unused
+prepared launchers removes their directories.
+
+The prearmed and exact-PID lanes may select the same process. A native per-PID
+claim serializes that overlap before target mutation. When the path lane wins,
+the coordinator adopts its selected target and disposes the exact-PID loser;
+when the exact lane wins, the path attempt yields without injecting. The broad
+watcher is rearmed after each selection and after target exit. Duplicate
+native/WMI creation events for a live PID are ignored, and process deletion
+releases that PID so a later reused PID can be attempted again. Neither lane has
+an executable-name filter or helper exclusion. This is still ordinary
+unsuspended user-mode observation and cannot provide a universal pre-entry
+timing guarantee.
 
 An initial PEAK run caught its Unity 6 D3D12 initialization and rendered the
 interactive Electron menu, but it used the retired full-system 5 ms observer; a
@@ -115,19 +125,24 @@ two-window acceptance scene. Controlled launchers and clients started without
 `--start-overlay-session` and Gun Frog acceptance paths do not enable the
 presentation dock.
 
-The public SDK path used for each process detected by normal development is:
+The normal demo combines these public SDK paths:
 
 ```ts
-await launcher.attach(session, {
+await prearmedLauncher.attach(session, {
+  pathContains: '\\steamapps\\',
+});
+
+await exactLauncher.attach(session, {
   processName: detectedProcess.processName,
   pid: detectedProcess.pid,
 });
 ```
 
-It resolves only after the injector reports success and that same PID
-authenticates to the overlay transport. Automatic mode creates a distinct
-launcher for every detected Steam-path executable rather than sharing a
-one-shot path target.
+An attachment resolves only after the injector reports success and that same
+PID authenticates to the overlay transport. The broad prearmed launcher is the
+early-injection lane; it does not replace the distinct exact-PID launcher
+created for every detected Steam-path executable. The native per-PID claim makes
+their overlap deterministic and non-mutating for the losing attempt.
 
 The demo uses the public SDK's optional exact-PID target. A process watcher can
 supply `{ processName, pid }` immediately after it observes the new process. The
@@ -148,6 +163,16 @@ require restarting Electron. In manual mode, terminal target exit returns the
 launcher to `idle` and re-enables **Arm, then launch**. A transient transport
 loss clears the effective input acknowledgement while retaining the connected
 PID identity until it reauthenticates or the OS confirms exit.
+
+On July 29, 2026, the normal hybrid flow kept one Electron client alive across
+Gun Frog PIDs 20856 and 13068. Both launches visibly rendered the D3D11 overlay
+at 60 FPS. Ctrl+I produced positive and negative interception
+acknowledgements; clicking `Open status window` was captured by the overlay
+without changing the game menu, and the same position reached the game's normal
+Quit action only after release. Each game closed normally while Electron stayed
+alive for the next launch. After the final observer-readiness and path-first
+ordering hardening, one client repeated visible 60 FPS attachment, exact-PID
+attempts, normal exit, and rearm for PIDs 11856 and 16892 with no leftovers.
 
 The client contains no injector or native payload. Its Steam watcher and
 per-process coordinator are demo-only orchestration around the public SDK.

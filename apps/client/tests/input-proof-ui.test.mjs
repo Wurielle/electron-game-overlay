@@ -185,7 +185,7 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
 });
 
-test('the demo injects every detected Steam executable by exact PID', () => {
+test('the demo prearms Steam injection and still attempts every detected executable by exact PID', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
   const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
   const renderer = readClientFile('src', 'renderer', 'main.ts');
@@ -225,12 +225,13 @@ test('the demo injects every detected Steam executable by exact PID', () => {
     /launcher\.attach[\s\S]{0,120}?processName,[\s\S]{0,40}?pid/,
   );
   assert.doesNotMatch(autoAttacher, /STEAM_AUTO_ATTACH_EXCLUDED/);
+  assert.match(
+    autoAttacher,
+    /pathContains:\s*STEAM_APPS_PATH_FRAGMENT/,
+  );
+  assert.doesNotMatch(autoAttacher, /excludedProcessNames/);
   assert.match(autoAttacher, /isReShadeOperationError\(error\)/);
   assert.match(autoAttacher, /diagnostic: ReShadeDiagnostic \| null/);
-  assert.doesNotMatch(
-    autoAttacher,
-    /launcher\.attach[\s\S]{0,180}?pathContains:/,
-  );
   assert.doesNotMatch(watcher, /bin:\s*\{\s*filter:/);
 });
 

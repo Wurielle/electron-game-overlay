@@ -200,11 +200,17 @@ process. A process watcher may instead call `attach()` with the exact PID
 immediately after process creation, but that reactive route must still beat
 graphics initialization. Attachment after a game is already rendering is not
 supported. The accepted real-game production-client proof uses
-`{ processName: 'Gun Frog.exe' }`; the Steam demo prepares isolated launchers
-and gives every detected Steam-path executable its own exact-PID target. The
-runtime directory can be overridden explicitly for
-development tests; otherwise it resolves relative to the built SDK. The legacy
-`findWindows()` and `session.attachToProcess()` methods still throw.
+`{ processName: 'Gun Frog.exe' }`. The Steam demo uses a hybrid coordinator: one
+broad path launcher is prearmed for `\\steamapps\\` with zero executable
+exclusions, while the continuous process observer still gives every detected
+Steam-path executable its own exact-PID launcher. A native per-PID claim
+serializes overlap before target mutation. If the path launcher wins, the
+coordinator adopts that target and disposes the exact-PID loser; if an exact
+launcher wins, the path attempt yields safely. The broad watcher is rearmed
+after selection and target exit. The runtime directory can be overridden
+explicitly for development tests; otherwise it resolves relative to the built
+SDK. The legacy `findWindows()` and `session.attachToProcess()` methods still
+throw.
 
 The controlled production client/SDK D3D12 gate is available through:
 
@@ -249,6 +255,14 @@ through
 The four aligned Electron controls stayed isolated from Unity while interception
 was acknowledged; Ctrl+I produced the negative acknowledgement and the same
 underlying Quit position then closed the game.
+
+The normal hybrid Steam flow passed a same-client Gun Frog launch/relaunch on
+July 29, 2026. Electron stayed alive while PIDs 20856 and 13068 each rendered
+the visible D3D11 overlay at 60 FPS. Ctrl+I received both positive and negative
+interception acknowledgements, an overlay `Open status window` click left the
+game menu unchanged, and the released normal Quit click closed the game. A
+post-hardening rerun repeated visible 60 FPS attachment, exact-PID attempts,
+normal exit, and rearm for PIDs 11856 and 16892 with no leftovers.
 
 ## Target telemetry and target-follow windows
 
