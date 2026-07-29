@@ -9,21 +9,28 @@ export {
   RESHADE_CLIENT_TARGET_CONNECTED_MARKER,
   RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER,
   RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED_MARKER,
+  ReShadeOperationError,
   ReShadeOverlayLauncher,
   buildReShadeInvocation,
   defaultReShadeRunsRootDirectory,
   defaultReShadeRuntimeDirectory,
+  isReShadeOperationError,
   parseReShadeLaunchConfig,
 } from './reshade-launcher.js';
 export type {
   ReShadeAttachResult,
   ReShadeAttachmentState,
+  ReShadeDiagnostic,
+  ReShadeDiagnosticCode,
+  ReShadeDiagnosticEvidence,
+  ReShadeDiagnosticStage,
   ReShadeInvocation,
   ReShadeLaunchConfig,
   ReShadeLaunchConfigOptions,
   ReShadeLaunchResult,
   ReShadePathTarget,
   ReShadeProcessTarget,
+  ReShadeRetrySafety,
   ReShadeTarget,
 } from './reshade-launcher.js';
 export type {

@@ -96,7 +96,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies nine production
+downloads both into the ignored build directory, then applies ten production
 patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -131,6 +131,13 @@ patches to the pinned ReShade revision:
   for every queryable process identity without polling those handles, preventing
   PID reuse between enumeration passes. Temporarily inaccessible paths remain
   unresolved and retry with bounded backoff until the exact process exits.
+- `reshade-injector-conflict-preflight.patch` inspects bounded remote PE export
+  tables before any target allocation, write, or remote thread. A loaded module
+  exporting exact `ReShadeVersion` is rejected using the same identity as
+  ReShade's duplicate-instance guard; proxy filenames and unloaded files beside
+  the game are not guessed. Failures emit a versioned one-line
+  `ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC` JSON record and retain the legacy
+  no-injection marker.
 - `reshade-suppress-splash.patch` suppresses ReShade's branded startup window
   because the embedding application owns startup UI. It leaves the full GUI
   pipeline, add-on callbacks, version metadata, `UNOFFICIAL` build identity,
@@ -151,7 +158,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-13 build stamp, the nine
+The launchers validate the cache against a schema-14 build stamp, the ten
 production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
 all nine patched
 source files, the full-add-on configuration, and the runtime/injector SHA-256

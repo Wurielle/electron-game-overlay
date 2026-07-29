@@ -13,3 +13,22 @@ test('the built SDK does not retain removed hudhook implementation modules', () 
     [],
   );
 });
+
+test('the package root exports the typed ReShade diagnostic contract', () => {
+  const sdk = require('../dist/index.js');
+  const error = new sdk.ReShadeOperationError({
+    message: 'synthetic conflict',
+    code: 'target-runtime-conflict',
+    stage: 'target-preflight',
+    retrySafety: 'definite-safe',
+    targetLabel: 'process:game.exe:pid:42',
+    pid: 42,
+  });
+
+  assert.equal(typeof sdk.isReShadeOperationError, 'function');
+  assert.equal(sdk.isReShadeOperationError(error), true);
+  assert.equal(error.code, 'target-runtime-conflict');
+  assert.equal(error.diagnostic.schemaVersion, 1);
+  assert.equal(error.diagnostic.source, 'electron-game-overlay');
+  assert.equal(Object.isFrozen(error.diagnostic), true);
+});

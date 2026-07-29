@@ -38,7 +38,13 @@
 > measured it at 0.6% of one CPU core before launch, injected before D3D12
 > loaded, rendered the dock, captured Ctrl+I, and accepted the status-window
 > click. No readable temperature sensor was available, so this was not a
-> thermal soak; the
+> thermal soak. A later production-launcher hardening slice added typed,
+> structured-clone-safe `ReShadeOperationError` diagnostics and a pre-mutation
+> exact-PID loaded-module check. The check rejects only a loaded module whose PE
+> exports contain the exact `ReShadeVersion` symbol, and fails closed if module
+> inspection cannot complete; filenames and adjacent proxy-like files are not
+> treated as proof. ReShade/proxy coexistence, broader all-layer diagnostics,
+> and clean unload remain deferred. The
 > [production runtime README](../libs/electron-game-overlay-runtime/README.md)
 > is authoritative.
 > The authenticated Node/Rust transport, wire/frame

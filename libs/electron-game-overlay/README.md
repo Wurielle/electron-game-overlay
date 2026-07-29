@@ -141,6 +141,55 @@ second runtime into a live target. An OS-confirmed exit of the selected PID is
 the other safe re-arm boundary when that PID authenticated and is observable by
 the transport.
 
+Launcher failures expose a typed, structured diagnostic instead of requiring
+applications to parse human-readable injector output:
+
+```ts
+import {
+  isReShadeOperationError,
+  type ReShadeDiagnostic,
+} from 'electron-game-overlay';
+
+try {
+  await launcher.attach(session, {
+    processName: detectedProcess.name,
+    pid: detectedProcess.pid,
+  });
+} catch (error) {
+  if (!isReShadeOperationError(error)) {
+    throw error;
+  }
+
+  console.error(error.code, error.stage, error.retrySafety);
+  const diagnostic: ReShadeDiagnostic = error.diagnostic;
+  console.error(diagnostic.message, diagnostic.evidence);
+}
+```
+
+`ReShadeOperationError`, `ReShadeDiagnostic`, `ReShadeDiagnosticStage`,
+`ReShadeDiagnosticCode`, and `ReShadeRetrySafety` are public SDK contracts.
+`error.diagnostic` is a frozen, structured-clone-safe schema-versioned record;
+the error also exposes its `code`, `stage`, and `retrySafety` directly.
+Use `isReShadeOperationError()` for narrowing. A `definite-safe` failure is
+known to precede target mutation and returns the launcher to `idle`;
+`indeterminate` retains the existing fail-closed `blocked` behavior. When a run
+was staged, the diagnostic may include the run directory and injector stdout,
+stderr, and ReShade log paths.
+
+Exact-PID injection performs a bounded module preflight before allocating or
+writing target memory. An already-loaded module is considered a proven ReShade
+conflict only when its PE export table contains the exact `ReShadeVersion`
+export. That case fails with `target-runtime-conflict`. If the target module
+list or a candidate export table cannot be inspected safely, injection fails
+closed with `target-module-inspection-failed`. Both outcomes carry the
+injector's no-injection proof and are retry-safe.
+
+The preflight deliberately does not reject a process because a module has a
+familiar filename or because `dxgi.dll`, `dinput8.dll`, `ReShade.ini`, or other
+proxy-like files exist beside the executable. Those are not reliable proof of
+what code is loaded. Coexistence with another ReShade/proxy runtime and clean
+runtime disable/unload remain unsupported.
+
 The lower-level `launch()` / `acceptTargetConnection()` pair has no session
 event source and is intentionally one-shot. It stays latched after proof (or an
 expired proof window) rather than risking a second injector against a live

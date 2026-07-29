@@ -99,6 +99,24 @@ observes deletion and releases the handle. Resolved nonmatching processes are
 not queried again. Temporarily inaccessible processes retry with bounded
 backoff until they exit, and the observer never polls all retained handles.
 
+## `reshade-injector-conflict-preflight.patch`
+
+Adds a bounded target-module inspection after identity and architecture
+validation but before `VirtualAllocEx`, `WriteProcessMemory`, or
+`CreateRemoteThread`. It parses each loaded image module's remote PE export
+table and rejects an exact `ReShadeVersion` export, matching ReShade's own
+duplicate-instance guard without guessing from DLL names or files beside the
+game. The complete module snapshot and export scan retries transient loader-list
+or remote-read races four times, caps the module and export tables, and
+otherwise fails closed before mutation.
+
+Failures emit `ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ` followed by one-line
+JSON schema version 1. The `target-preflight` record uses
+`target-runtime-conflict` or `target-module-inspection-failed`, includes the
+selected PID and `injectionStarted:false`, and carries the module path or Win32
+error when available. The legacy `ReShade injection not started.` line remains
+present for conservative older launchers.
+
 ## Migration-only observer patches
 
 `reshade-injector-legacy-snapshot-observer.patch` and
@@ -123,6 +141,6 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all nine
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all ten
 production-patch hashes, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache.

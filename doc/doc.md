@@ -159,6 +159,50 @@ the launcher returns to `idle` and the same session can attach a restarted
 target. A `blocked` launcher must be disposed before retrying so a live target
 cannot accidentally receive a second runtime.
 
+## Handle typed attachment diagnostics
+
+Launcher failures can be narrowed without parsing console output:
+
+```ts
+import {
+  isReShadeOperationError,
+  type ReShadeDiagnostic,
+} from 'electron-game-overlay';
+
+try {
+  await launcher.attach(session, {
+    processName: detectedProcess.name,
+    pid: detectedProcess.pid,
+  });
+} catch (error) {
+  if (!isReShadeOperationError(error)) {
+    throw error;
+  }
+
+  console.error(error.code, error.stage, error.retrySafety);
+  const diagnostic: ReShadeDiagnostic = error.diagnostic;
+  console.error(diagnostic.message, diagnostic.evidence);
+}
+```
+
+The public diagnostic surface consists of `ReShadeDiagnostic`,
+`ReShadeDiagnosticStage`, `ReShadeDiagnosticCode`, `ReShadeRetrySafety`,
+`ReShadeOperationError`, and `isReShadeOperationError()`.
+`error.diagnostic` is frozen, schema-versioned, and structured-clone-safe.
+`definite-safe` means the failure is proven to precede target mutation and the
+launcher can return to `idle`; an `indeterminate` failure keeps it `blocked`.
+Staged-run failures can include paths to the injector stdout/stderr and
+`ReShade.log` evidence.
+
+For an exact PID, the injector inspects loaded modules before remote allocation
+or thread creation. It reports `target-runtime-conflict` only for a loaded
+module whose PE export table contains the exact `ReShadeVersion` export. If
+module enumeration or export inspection cannot complete safely, it fails closed
+as `target-module-inspection-failed`. Filenames and on-disk proxy-like files are
+not used as conflict proof, so coexistence with another ReShade or proxy runtime
+is still unsupported rather than silently claimed. Clean disable/unload also
+remains future work.
+
 ## Input and lifecycle
 
 Request and release interception through the session:

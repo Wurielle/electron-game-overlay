@@ -76,7 +76,24 @@ acceptance evidence and are intentionally preserved as records.
 
 ### Runtime compatibility and hardening
 
-- [ ] Add supported-runtime installation, existing ReShade/proxy conflict detection, typed diagnostics, and clean disable/unload behavior.
+- [x] Add exact-PID loaded-ReShade conflict preflight and typed launcher diagnostics.
+  - Before target mutation, the injector performs bounded module enumeration
+    and PE export inspection. Only an already-loaded module exporting the exact
+    `ReShadeVersion` symbol is a proof-grade conflict; it is rejected as
+    `target-runtime-conflict`. Inspection that cannot complete safely fails
+    closed as `target-module-inspection-failed`.
+  - The SDK exports `ReShadeDiagnostic`, `ReShadeDiagnosticStage`,
+    `ReShadeDiagnosticCode`, `ReShadeRetrySafety`, `ReShadeOperationError`, and
+    `isReShadeOperationError()`. The frozen structured-clone-safe diagnostic
+    preserves stage, code, retry safety, target context, applicable Win32
+    status, and staged-run evidence paths. Proven pre-mutation outcomes return
+    to `idle`; indeterminate post-mutation outcomes remain `blocked`.
+  - Module filenames and on-disk proxy-like files are not used as conflict
+    proof. This intentionally avoids false-positive, executable-specific
+    heuristics.
+- [ ] Define a supported installation/coexistence strategy for targets already
+      using ReShade or another proxy runtime.
+- [ ] Add clean runtime disable/unload behavior.
 - [ ] Investigate the non-fatal ReShade reference-count warnings emitted during accepted shutdowns: `ID3D11Device3` in Gun Frog and D3D12 command-queue/device objects in PEAK. Keep this under resource retirement/unload hardening.
 - [ ] Carry process creation identity end to end through exact-PID requests and WMI lifecycle correlation.
   - The native Steam-path watcher's ignore-baseline now retains handles for exact process objects, so sequential launch/relaunch cannot skip a new process solely because Windows reused a baseline PID. Exact-PID selection and fallback-WMI create/delete correlation still use PID plus executable basename and need an equivalent creation nonce before stale lifecycle events are considered fully hardened.
@@ -146,6 +163,13 @@ they are not the active production-host roadmap.
 
 ## Diagnostics and logging
 
+- [x] Add bounded typed diagnostics for the SDK launcher/injector attachment
+      boundary.
+  - Injector preflight, injector execution/result validation, runtime connection
+    timeout, and lifecycle cancellation/disconnect failures now carry stable
+    `ReShadeDiagnosticCode`, `ReShadeDiagnosticStage`, and
+    `ReShadeRetrySafety` values. Staged failures retain applicable evidence
+    paths.
 - [ ] Improve error logging and diagnostics across every overlay layer.
   - Current issue: failures can happen in multiple places: Electron SDK code,
     runtime staging, injector launch, DLL injection, authenticated transport,
@@ -153,6 +177,9 @@ they are not the active production-host roadmap.
     rendering. Today those failures are hard to distinguish, which makes
     agent-driven debugging and user support slow.
   - Desired direction: make every layer report structured diagnostics with enough context to identify where the failure occurred and what the next action should be.
+  - The completed launcher/injector slice above does not yet add diagnostic
+    events for transport packet handling, window/frame publication, graphics
+    resource creation, input forwarding, or other injected-runtime internals.
   - Suggested logging layers:
     - `electron-game-overlay`: typed events such as `session.on("diagnostic", ...)`, attach results, window registration state, frame send failures, focus/input forwarding failures.
     - `electron-overlay-transport`: rendezvous, authentication, producer/target

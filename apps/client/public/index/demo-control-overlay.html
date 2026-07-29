@@ -591,6 +591,7 @@
           processName: null,
           pid: null,
           error: null,
+          diagnostic: null,
         },
         targetSurface: null,
         windows: {},
@@ -762,6 +763,13 @@
               '<strong>Watcher error</strong> · check client log';
             return;
           }
+          const failedDiagnostic = autoAttach.targets?.find(
+            ({ phase, diagnostic }) => phase === 'failed' && diagnostic,
+          )?.diagnostic;
+          if (failedDiagnostic) {
+            elements.target.innerHTML = `<strong>Target error</strong> · ${escapeHtml(formatDiagnosticTag(failedDiagnostic))}`;
+            return;
+          }
           elements.target.innerHTML =
             autoAttach.watcherStatus === 'running'
               ? '<strong>Target:</strong> launch a Steam game'
@@ -776,8 +784,10 @@
         } else if (attachment.phase === 'attaching') {
           elements.target.innerHTML = `<strong>Connecting:</strong> ${escapeHtml(attachment.processName || 'target')}`;
         } else if (attachment.error) {
-          elements.target.innerHTML =
-            '<strong>Target error</strong> · check client log';
+          const diagnosticTag = formatDiagnosticTag(attachment.diagnostic);
+          elements.target.innerHTML = diagnosticTag
+            ? `<strong>Target error</strong> · ${escapeHtml(diagnosticTag)}`
+            : '<strong>Target error</strong> · check client log';
         } else {
           elements.target.innerHTML =
             '<strong>Target:</strong> waiting for game';
@@ -819,6 +829,12 @@
 
       function getErrorMessage(error) {
         return error instanceof Error ? error.message : String(error);
+      }
+
+      function formatDiagnosticTag(diagnostic) {
+        return diagnostic?.stage && diagnostic?.code
+          ? `${diagnostic.stage}/${diagnostic.code}`
+          : '';
       }
     </script>
   </body>

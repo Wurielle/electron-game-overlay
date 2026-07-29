@@ -109,6 +109,8 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   assert.doesNotMatch(appEntry, /basename\(payload\.path\)/);
   assert.match(appEntry, /this\.reshadeLauncher\.state === 'idle'/);
   assert.match(appEntry, /'attach-indeterminate'/);
+  assert.match(appEntry, /isReShadeOperationError\(error\)/);
+  assert.match(appEntry, /diagnostic: getReShadeDiagnostic\(error\)/);
   assert.match(appEntry, /this\.reshadeAttachment\.phase !== 'connected'/);
   assert.match(appEntry, /this\.reshadeAttachment\.pid !== disconnectedPid/);
   assert.match(
@@ -169,6 +171,7 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
   assert.match(renderer, /Number\.isSafeInteger\(pid\)/);
   assert.match(renderer, /Injecting ReShade into/);
+  assert.match(renderer, /diagnostic\.stage.*diagnostic\.code/);
 
   const statusRenderer = sourceSection(
     renderer,
@@ -222,6 +225,8 @@ test('the demo injects every detected Steam executable by exact PID', () => {
     /launcher\.attach[\s\S]{0,120}?processName,[\s\S]{0,40}?pid/,
   );
   assert.doesNotMatch(autoAttacher, /STEAM_AUTO_ATTACH_EXCLUDED/);
+  assert.match(autoAttacher, /isReShadeOperationError\(error\)/);
+  assert.match(autoAttacher, /diagnostic: ReShadeDiagnostic \| null/);
   assert.doesNotMatch(
     autoAttacher,
     /launcher\.attach[\s\S]{0,180}?pathContains:/,
@@ -305,6 +310,8 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(controlOverlay, /overlay:create-popup/);
   assert.match(controlOverlay, /overlay:set-input-intercept/);
   assert.match(controlOverlay, /inputInterceptEffective/);
+  assert.match(controlOverlay, /formatDiagnosticTag/);
+  assert.match(controlOverlay, /diagnostic\?\.stage/);
   assert.match(controlOverlay, /state\.targetSurface/);
   assert.match(controlOverlay, /surface\.graphicsApi/);
   assert.match(controlOverlay, /surface\?\.renderSize\?\.width/);

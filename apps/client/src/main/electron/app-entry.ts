@@ -19,10 +19,12 @@ import {
 import type { OverlayWindowContext } from './example-overlay-windows';
 import {
   ElectronGameOverlay,
+  isReShadeOperationError,
   ReShadeOverlayLauncher,
   type ElectronOverlayWindow,
   type OverlayHotkey,
   type OverlaySession,
+  type ReShadeDiagnostic,
   type ReShadeLaunchConfig,
   type ReShadeTarget,
 } from 'electron-game-overlay';
@@ -54,6 +56,7 @@ type ReShadeAttachmentState = Readonly<{
   processName: string | null;
   pid: number | null;
   error: string | null;
+  diagnostic: ReShadeDiagnostic | null;
 }>;
 
 const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
@@ -85,6 +88,7 @@ class Application {
     processName: null,
     pid: null,
     error: null,
+    diagnostic: null,
   };
   private reshadeAttachmentAttempt = 0;
   private readonly gunFrogInputProof: boolean;
@@ -495,6 +499,7 @@ class Application {
       processName: normalizedProcessName,
       pid: normalizedPid ?? null,
       error: null,
+      diagnostic: null,
     });
     try {
       this.startOverlaySession();
@@ -508,6 +513,7 @@ class Application {
           processName: normalizedProcessName,
           pid: result.pid,
           error: null,
+          diagnostic: null,
         });
         this.markGunFrogTargetConnected();
       }
@@ -524,6 +530,7 @@ class Application {
             processName: normalizedProcessName,
             pid: normalizedPid ?? null,
             error: attachmentError,
+            diagnostic: getReShadeDiagnostic(error),
           },
           retryIsSafe ? 'attach-failed' : 'attach-indeterminate',
         );
@@ -924,6 +931,7 @@ class Application {
         processName,
         pid: disconnectedPid,
         error: null,
+        diagnostic: null,
       },
       'target-disconnected',
     );
@@ -943,8 +951,12 @@ class Application {
     reason?: 'attach-failed' | 'attach-indeterminate' | 'target-disconnected',
   ) {
     this.reshadeAttachment = state;
+    const diagnostic =
+      state.diagnostic === null
+        ? ''
+        : ` code=${state.diagnostic.code} stage=${state.diagnostic.stage}`;
     console.log(
-      `${RESHADE_ATTACHMENT_STATE_MARKER} phase=${state.phase} processName=${JSON.stringify(state.processName)} pid=${state.pid ?? 'none'}${reason ? ` reason=${reason}` : ''}`,
+      `${RESHADE_ATTACHMENT_STATE_MARKER} phase=${state.phase} processName=${JSON.stringify(state.processName)} pid=${state.pid ?? 'none'}${reason ? ` reason=${reason}` : ''}${diagnostic}`,
     );
     this.publishDemoState();
   }
@@ -981,6 +993,10 @@ class Application {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getReShadeDiagnostic(error: unknown): ReShadeDiagnostic | null {
+  return isReShadeOperationError(error) ? error.diagnostic : null;
 }
 
 function getNativeEventPid(payload: any): number | null {

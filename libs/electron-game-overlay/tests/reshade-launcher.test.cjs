@@ -23,10 +23,12 @@ const {
   RESHADE_CLIENT_RUNTIME_STAGED_MARKER,
   RESHADE_CLIENT_TARGET_CONNECTED_MARKER,
   RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER,
+  ReShadeOperationError,
   ReShadeOverlayLauncher,
   buildReShadeInvocation,
   defaultReShadeRunsRootDirectory,
   defaultReShadeRuntimeDirectory,
+  isReShadeOperationError,
   parseReShadeLaunchConfig,
 } = require('../dist/lib/reshade-launcher.js');
 
@@ -45,6 +47,13 @@ const pathInjectorSuccessFor = (pid, executablePath) =>
   'ReShade path watcher armed.\n' +
   `Matched executable path: ${executablePath}\n` +
   `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n`;
+const injectorPreflightDiagnostic = (diagnostic) =>
+  `ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ${JSON.stringify({
+    schemaVersion: 1,
+    stage: 'target-preflight',
+    injectionStarted: false,
+    ...diagnostic,
+  })}\n`;
 const temporaryDirectories = new Set();
 
 test.afterEach(() => {
@@ -380,6 +389,165 @@ test('exact-PID pre-injection failure proof returns to idle after the child spaw
   }
 });
 
+test('structured target preflight failures expose stable diagnostics and remain retry-safe', async (t) => {
+  const scenarios = [
+    {
+      code: 'target-runtime-conflict',
+      native: {
+        code: 'target-runtime-conflict',
+        pid: 6101,
+        modulePath: 'C:\\Jeux\\測試\\renamed-wrapper.dll',
+        windowsErrorCode: 183,
+      },
+      message: /already has a loaded ReShade runtime/,
+    },
+    {
+      code: 'target-module-inspection-failed',
+      native: {
+        code: 'target-module-inspection-failed',
+        pid: 6101,
+        windowsErrorCode: 5,
+      },
+      message: /module inspection failed.*Windows error 5/,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.code, async () => {
+      const fixture = createRuntime();
+      const execution = stubExecFile();
+      const sessionHarness = createSessionHarness();
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      const originalError = console.error;
+      const originalLog = console.log;
+      console.error = () => undefined;
+      console.log = () => undefined;
+
+      try {
+        const target = { processName: 'game.exe', pid: 6101 };
+        const attachment = launcher.attach(sessionHarness.session, target);
+        await waitFor(() => execution.calls.length === 1);
+        const runDirectory = execution.calls[0].options.cwd;
+        execution.calls[0].callback(
+          Object.assign(new Error('injector preflight rejected the target'), {
+            code: scenario.native.windowsErrorCode,
+          }),
+          `Found a matching process with PID 6101! Injecting ReShade ... \n` +
+            injectorPreflightDiagnostic(scenario.native) +
+            'ReShade injection not started.\n',
+          '',
+        );
+
+        await assert.rejects(attachment, (error) => {
+          assert.ok(error instanceof ReShadeOperationError);
+          assert.equal(isReShadeOperationError(error), true);
+          assert.match(error.message, scenario.message);
+          assert.equal(error.code, scenario.code);
+          assert.equal(error.stage, 'target-preflight');
+          assert.equal(error.retrySafety, 'definite-safe');
+          assert.equal(error.diagnostic.code, scenario.code);
+          assert.equal(error.diagnostic.pid, 6101);
+          assert.equal(error.diagnostic.modulePath, scenario.native.modulePath);
+          assert.equal(
+            error.diagnostic.windowsErrorCode,
+            scenario.native.windowsErrorCode,
+          );
+          assert.equal(error.diagnostic.evidence.runDirectory, runDirectory);
+          assert.equal(
+            error.diagnostic.evidence.injectorStdoutPath,
+            path.join(runDirectory, 'inject.stdout.log'),
+          );
+          assert.equal(Object.isFrozen(error.diagnostic), true);
+          assert.equal(Object.isFrozen(error.diagnostic.evidence), true);
+          return true;
+        });
+        assert.equal(launcher.state, 'idle');
+        assert.equal(sessionHarness.targetAuthorizations.length, 1);
+        assert.equal(
+          sessionHarness.targetAuthorizations[0].releaseCount,
+          1,
+          'a definite preflight rejection must release exact-PID rendezvous authorization',
+        );
+
+        const retry = launcher.launch(target);
+        await waitFor(() => execution.calls.length === 2);
+        execution.calls[1].callback(
+          null,
+          injectorSuccessFor(6101, 'game.exe'),
+          '',
+        );
+        await retry;
+        assert.equal(launcher.acceptTargetConnection(6101), true);
+      } finally {
+        launcher.dispose();
+        console.error = originalError;
+        console.log = originalLog;
+        execution.restore();
+      }
+    });
+  }
+});
+
+test('malformed or contradictory injector diagnostic records cannot claim safe preflight', async (t) => {
+  const cases = [
+    {
+      name: 'malformed JSON',
+      stdout:
+        'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {not-json}\n' +
+        'ReShade injection not started.\n',
+      retrySafety: 'definite-safe',
+      state: 'idle',
+    },
+    {
+      name: 'diagnostic contradicted by success',
+      stdout:
+        injectorSuccessFor(6201, 'game.exe') +
+        injectorPreflightDiagnostic({
+          code: 'target-runtime-conflict',
+          pid: 6201,
+          modulePath: 'C:\\game\\dxgi.dll',
+        }) +
+        'ReShade injection not started.\n',
+      retrySafety: 'indeterminate',
+      state: 'blocked',
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const fixture = createRuntime();
+      const execution = stubExecFile();
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      const originalError = console.error;
+      console.error = () => undefined;
+      try {
+        const request = launcher.launch({
+          processName: 'game.exe',
+          pid: 6201,
+        });
+        await waitFor(() => execution.calls.length === 1);
+        execution.calls[0].callback(
+          Object.assign(new Error('diagnostic protocol failure'), { code: 1 }),
+          scenario.stdout,
+          '',
+        );
+        await assert.rejects(request, (error) => {
+          assert.ok(isReShadeOperationError(error));
+          assert.equal(error.code, 'injector-result-invalid');
+          assert.equal(error.stage, 'injector');
+          assert.equal(error.retrySafety, scenario.retrySafety);
+          return true;
+        });
+        assert.equal(launcher.state, scenario.state);
+      } finally {
+        launcher.dispose();
+        console.error = originalError;
+        execution.restore();
+      }
+    });
+  }
+});
+
 test('pre-injection proof cannot make legacy or contradictory output retry-safe', async (t) => {
   const scenarios = [
     {
@@ -661,7 +829,14 @@ test('a failed preparation waits for sibling staging before cleanup and can be r
     );
 
     releaseSiblingCopy.resolve();
-    await assert.rejects(preparation, /synthetic staging failure/);
+    await assert.rejects(preparation, (error) => {
+      assert.ok(isReShadeOperationError(error));
+      assert.match(error.message, /synthetic staging failure/);
+      assert.equal(error.code, 'runtime-staging-failed');
+      assert.equal(error.stage, 'runtime-staging');
+      assert.equal(error.retrySafety, 'definite-safe');
+      return true;
+    });
     assert.deepEqual(
       await fsPromises.readdir(fixture.runsRootDirectory),
       [],
@@ -1115,7 +1290,18 @@ test('connection-proof timeout after successful injection blocks retries', async
     await waitFor(() => proofTimers.length === 2);
     proofTimers[0].callback();
 
-    await assert.rejects(attachment, /did not connect within/);
+    await assert.rejects(attachment, (error) => {
+      assert.ok(isReShadeOperationError(error));
+      assert.match(error.message, /did not connect within/);
+      assert.equal(error.code, 'runtime-initialization-timeout');
+      assert.equal(error.stage, 'runtime-initialization');
+      assert.equal(error.retrySafety, 'indeterminate');
+      assert.equal(
+        error.diagnostic.evidence.runDirectory,
+        launcher.runDirectory,
+      );
+      return true;
+    });
     assert.equal(launcher.state, 'blocked');
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);
@@ -1573,7 +1759,14 @@ test('a failed attachment returns to idle and can be retried without leaked list
       code: 'ENOENT',
     });
     execution.calls[0].callback(spawnError, '', 'failure\n');
-    await assert.rejects(failedAttachment, /injector did not spawn/);
+    await assert.rejects(failedAttachment, (error) => {
+      assert.ok(isReShadeOperationError(error));
+      assert.match(error.message, /injector did not spawn/);
+      assert.equal(error.code, 'injector-start-failed');
+      assert.equal(error.stage, 'injector');
+      assert.equal(error.retrySafety, 'definite-safe');
+      return true;
+    });
     assert.equal(launcher.state, 'idle');
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);

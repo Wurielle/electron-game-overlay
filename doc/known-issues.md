@@ -223,11 +223,27 @@ not supported by the current production runtime:
   chains, and simultaneous rendered targets beyond the completed same-listener
   credential-isolation and fail-closed route-selection tests until each has
   explicit graphics acceptance;
-- coexistence with an existing ReShade installation or another proxy DLL until
-  conflict detection and a supported installation strategy are implemented;
+- coexistence with an existing ReShade installation or another proxy DLL;
+  exact-PID preflight now rejects a proven already-loaded ReShade runtime, but
+  coexistence and a supported shared-runtime installation strategy are not
+  implemented;
 - real physical/VM mixed-scale target-follow acceptance, safe texture
   retirement, or broader gamepad/DirectInput/XInput/GameInput handling until
   their recorded acceptance work is complete.
+
+Before exact-PID injection mutates the target, it performs bounded loaded-module
+inspection. A module is treated as a proven ReShade conflict only when its PE
+export table contains the exact `ReShadeVersion` export; the SDK reports the
+typed `target-runtime-conflict` diagnostic and returns the launcher to `idle`.
+If module enumeration or a candidate export table cannot be inspected safely,
+the injector fails closed with `target-module-inspection-failed`. Both failures
+include the stable no-injection proof and are `definite-safe`.
+
+Module basenames and files beside the game executable are deliberately not
+conflict evidence. A file named `dxgi.dll`, `dinput8.dll`, `ReShade.ini`, or
+similarly does not prove which code is loaded and therefore is not an automatic
+block condition. This avoids executable-specific filename heuristics while
+leaving actual multi-runtime coexistence explicitly unsupported.
 
 Unsupported or untested must produce a clear diagnostic rather than silently
 claiming compatibility. Maintain a matrix per target with architecture,

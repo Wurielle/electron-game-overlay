@@ -1,10 +1,12 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import {
+  isReShadeOperationError,
   ReShadeOverlayLauncher,
   type OverlaySession,
   type ReShadeAttachResult,
   type ReShadeAttachmentState,
+  type ReShadeDiagnostic,
   type ReShadeLaunchConfig,
   type ReShadeTarget,
 } from 'electron-game-overlay';
@@ -200,6 +202,7 @@ export type SteamGameTargetState = Readonly<{
   filepath: string;
   phase: SteamGameTargetPhase;
   error: string | null;
+  diagnostic: ReShadeDiagnostic | null;
 }>;
 
 export type SteamGameAutoAttachState = Readonly<{
@@ -454,6 +457,7 @@ export class SteamGameAutoAttacher {
         filepath: info.filepath,
         phase: 'attaching',
         error: null,
+        diagnostic: null,
       }),
     };
     this.targetEntries.set(info.pid, entry);
@@ -505,7 +509,7 @@ export class SteamGameAutoAttacher {
         }
         launcher.dispose();
         entry.launcher = null;
-        this.failTarget(entry, getErrorMessage(error));
+        this.failTarget(entry, error);
       });
   }
 
@@ -538,7 +542,7 @@ export class SteamGameAutoAttacher {
           launcher = this.createLauncher();
         } catch (error) {
           this.pendingTargetEntries.shift();
-          this.failTarget(entry, getErrorMessage(error));
+          this.failTarget(entry, error);
           continue;
         }
       } else {
@@ -679,6 +683,7 @@ export class SteamGameAutoAttacher {
       filepath: filepath || entry.state.filepath,
       phase: 'connected',
       error: null,
+      diagnostic: null,
     });
     if (!wasConnected) {
       console.log(
@@ -688,18 +693,23 @@ export class SteamGameAutoAttacher {
     this.publishState();
   }
 
-  private failTarget(entry: TargetEntry, error: string): void {
+  private failTarget(entry: TargetEntry, failure: unknown): void {
     const { pid } = entry.state;
     if (this.disposed || this.targetEntries.get(pid) !== entry) {
       return;
     }
+    const error = getErrorMessage(failure);
+    const diagnostic = getReShadeDiagnostic(failure);
     entry.state = Object.freeze({
       ...entry.state,
       phase: 'failed',
       error,
+      diagnostic,
     });
     console.error(
-      `STEAM_GAME_AUTO_ATTACH_FAILED pid=${pid} detail=${JSON.stringify(error)}`,
+      `STEAM_GAME_AUTO_ATTACH_FAILED pid=${pid} detail=${JSON.stringify(error)}${
+        diagnostic ? ` code=${diagnostic.code} stage=${diagnostic.stage}` : ''
+      }`,
     );
     this.publishState();
   }
@@ -810,4 +820,8 @@ function normalizeExecutableCandidate(value: unknown): string | null {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getReShadeDiagnostic(error: unknown): ReShadeDiagnostic | null {
+  return isReShadeOperationError(error) ? error.diagnostic : null;
 }

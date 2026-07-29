@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
+import { ReShadeOperationError } from 'electron-game-overlay';
 import {
   ForkedProcessWatcher,
   isSteamAppsProcessPath,
@@ -545,6 +546,7 @@ test('a failed PID is not retried until deletion proves a new process lifetime',
   assert.equal(launchers.length, 1);
   assert.equal(autoAttacher.targets[0].phase, 'failed');
   assert.equal(autoAttacher.targets[0].error, 'injection refused');
+  assert.equal(autoAttacher.targets[0].diagnostic, null);
 
   watcher.create(info);
   assert.equal(launchers.length, 1);
@@ -582,9 +584,21 @@ test('a late overlay handshake promotes an already attempted PID', async () => {
   autoAttacher.start();
   watcher.create(processInfo(2501, filepath));
   await flushMicrotasks();
-  launchers[0].fail(new Error('graphics initialization proof timed out'));
+  const initializationFailure = new ReShadeOperationError({
+    stage: 'runtime-initialization',
+    code: 'runtime-initialization-timeout',
+    retrySafety: 'indeterminate',
+    message: 'graphics initialization proof timed out',
+    targetLabel: 'process:slow-game.exe:pid:2501',
+    pid: 2501,
+  });
+  launchers[0].fail(initializationFailure);
   await flushMicrotasks();
   assert.equal(autoAttacher.targets[0].phase, 'failed');
+  assert.equal(
+    autoAttacher.targets[0].diagnostic,
+    initializationFailure.diagnostic,
+  );
 
   session.emitNative('game.process', { pid: 2501, path: filepath });
   await flushMicrotasks();
@@ -595,6 +609,7 @@ test('a late overlay handshake promotes an already attempted PID', async () => {
     filepath,
     phase: 'connected',
     error: null,
+    diagnostic: null,
   });
 
   await autoAttacher.dispose();

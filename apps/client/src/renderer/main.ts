@@ -1,4 +1,5 @@
 import { ipcRenderer, IpcRendererEvent } from 'electron';
+import type { ReShadeDiagnostic } from 'electron-game-overlay';
 
 type DemoState = {
   overlayStarted: boolean;
@@ -21,6 +22,7 @@ type DemoState = {
       filepath: string;
       phase: 'attaching' | 'connected' | 'failed';
       error: string | null;
+      diagnostic: ReShadeDiagnostic | null;
     }>;
   };
   attachment: {
@@ -28,6 +30,7 @@ type DemoState = {
     processName: string | null;
     pid: number | null;
     error: string | null;
+    diagnostic: ReShadeDiagnostic | null;
   };
   windows: Record<string, boolean>;
 };
@@ -54,6 +57,7 @@ let state: DemoState = {
     processName: null,
     pid: null,
     error: null,
+    diagnostic: null,
   },
   windows: {},
 };
@@ -283,14 +287,21 @@ function renderAttachmentStatus() {
     const failed = steamAutoAttach.targets.filter(
       ({ phase }) => phase === 'failed',
     ).length;
+    const failedDiagnostic = steamAutoAttach.targets.find(
+      ({ phase, diagnostic }) => phase === 'failed' && diagnostic !== null,
+    )?.diagnostic;
+    const diagnosticTag = formatDiagnosticTag(failedDiagnostic);
     statusElement.textContent = steamAutoAttach.targets.length
-      ? `Watching ${steamAutoAttach.pattern} · ${connected} connected · ${attaching} attaching · ${failed} failed`
+      ? `Watching ${steamAutoAttach.pattern} · ${connected} connected · ${attaching} attaching · ${failed} failed${diagnosticTag ? ` · ${diagnosticTag}` : ''}`
       : `Watching ${steamAutoAttach.pattern}. Launch a Steam game to inject automatically.`;
     return;
   }
 
   if (state.attachment.error) {
-    statusElement.textContent = state.attachment.error;
+    const diagnosticTag = formatDiagnosticTag(state.attachment.diagnostic);
+    statusElement.textContent = diagnosticTag
+      ? `${diagnosticTag}: ${state.attachment.error}`
+      : state.attachment.error;
     return;
   }
 
@@ -316,6 +327,12 @@ function renderAttachmentStatus() {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatDiagnosticTag(
+  diagnostic: ReShadeDiagnostic | null | undefined,
+): string {
+  return diagnostic ? `${diagnostic.stage}/${diagnostic.code}` : '';
 }
 
 function renderOverlayButton(
