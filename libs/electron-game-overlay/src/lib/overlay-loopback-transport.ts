@@ -12,6 +12,7 @@ import {
 import {
   normalizeOverlayDiagnosticErrorCode,
   parseOverlayDiagnostic,
+  parseOverlayRuntimeDiagnosticPacket,
   type OverlayPacketRejectionReason,
 } from './diagnostic.js';
 import type {
@@ -190,6 +191,7 @@ interface ClientState {
   path?: string;
   targetAuthorization?: TargetAuthorization;
   inputTranslator?: InputEventTranslator;
+  diagnosticRates: Map<OverlayDiagnosticCode, DiagnosticRateState>;
   packetRejectionDiagnosed?: boolean;
   socketErrorDiagnosed?: boolean;
 }
@@ -1124,6 +1126,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       writer: new BackpressurePacketQueue(socket),
       receiveBuffer: Buffer.alloc(0),
       authenticated: false,
+      diagnosticRates: new Map(),
     };
     this.clients.add(client);
     socket.on('data', (chunk: Buffer) => this.receiveClientData(client, chunk));
@@ -1159,6 +1162,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         this.activeClientsByPid.delete(client.pid);
       }
       client.writer.clear();
+      client.diagnosticRates.clear();
       this.clients.delete(client);
       if (isAuthoritativeClient && client.pid !== undefined) {
         const targetPath = client.path ?? '';
@@ -1284,6 +1288,23 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       this.emitEvent(eventName, { ...fps });
       return true;
     }
+    if (eventName === 'game.diagnostic') {
+      const diagnostic =
+        client.pid === undefined
+          ? null
+          : parseOverlayRuntimeDiagnosticPacket(parsed, client.pid);
+      if (!diagnostic) {
+        return this.rejectAuthenticatedPacket(
+          client,
+          'invalid-runtime-diagnostic',
+          eventName,
+        );
+      }
+      if (this.takeDiagnosticRate(client.diagnosticRates, diagnostic.code)) {
+        this.queueDiagnostic(diagnostic);
+      }
+      return true;
+    }
     if (
       (eventName === 'game.window.focused' && parsed.focusWindowId === 0) ||
       (eventName === 'game.input.intercept' && parsed.intercepting === false)
@@ -1400,20 +1421,6 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     pid?: number;
     context?: Readonly<Record<string, OverlayDiagnosticContextValue>>;
   }): void {
-    const now = Date.now();
-    let rate = this.diagnosticRates.get(diagnostic.code);
-    if (
-      !rate ||
-      now - rate.windowStartedAt >= DIAGNOSTIC_RATE_WINDOW_MS ||
-      now < rate.windowStartedAt
-    ) {
-      rate = { windowStartedAt: now, count: 0 };
-      this.diagnosticRates.set(diagnostic.code, rate);
-    }
-    if (rate.count >= MAX_DIAGNOSTICS_PER_CODE) {
-      return;
-    }
-
     const canonical = parseOverlayDiagnostic({
       schemaVersion: 1,
       source: 'electron-overlay-transport',
@@ -1422,16 +1429,42 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     if (!canonical) {
       return;
     }
+    if (!this.takeDiagnosticRate(this.diagnosticRates, canonical.code)) {
+      return;
+    }
+    this.queueDiagnostic(canonical);
+  }
 
+  private takeDiagnosticRate(
+    rates: Map<OverlayDiagnosticCode, DiagnosticRateState>,
+    code: OverlayDiagnosticCode,
+  ): boolean {
+    const now = Date.now();
+    let rate = rates.get(code);
+    if (
+      !rate ||
+      now - rate.windowStartedAt >= DIAGNOSTIC_RATE_WINDOW_MS ||
+      now < rate.windowStartedAt
+    ) {
+      rate = { windowStartedAt: now, count: 0 };
+      rates.set(code, rate);
+    }
+    if (rate.count >= MAX_DIAGNOSTICS_PER_CODE) {
+      return false;
+    }
     rate.count += 1;
+    return true;
+  }
+
+  private queueDiagnostic(diagnostic: OverlayDiagnostic): void {
     if (this.diagnosticCallback) {
-      this.deliverDiagnostic(canonical);
+      this.deliverDiagnostic(diagnostic);
       return;
     }
     if (this.pendingDiagnostics.length >= MAX_PENDING_DIAGNOSTICS) {
       this.pendingDiagnostics.shift();
     }
-    this.pendingDiagnostics.push(canonical);
+    this.pendingDiagnostics.push(diagnostic);
   }
 
   private deliverDiagnostic(diagnostic: OverlayDiagnostic): void {

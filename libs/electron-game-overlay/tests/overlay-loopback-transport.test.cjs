@@ -57,6 +57,14 @@ const targetSurfaceMessage = (overrides = {}) => ({
   ...overrides,
 });
 
+const runtimeDiagnosticMessage = (overrides = {}) => ({
+  type: 'game.diagnostic',
+  schemaVersion: 1,
+  source: 'electron-game-overlay-runtime',
+  code: 'runtime-ready',
+  ...overrides,
+});
+
 const connect = (port) =>
   new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
@@ -703,6 +711,248 @@ test('authenticated surface and FPS telemetry is validated with an authoritative
         },
       },
     ],
+  );
+});
+
+test('authenticated runtime diagnostics are canonical, PID-authoritative, and not native events', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-runtime-diagnostic-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const events = [];
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\runtime-diagnostic.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+  socket.write(
+    encodeJsonTransportPacket(
+      runtimeDiagnosticMessage({
+        code: 'runtime-frame-upload-failed',
+        context: { errorCode: -6 },
+      }),
+    ),
+  );
+  await waitFor(() =>
+    diagnostics.some(({ code }) => code === 'runtime-frame-upload-failed'),
+  );
+
+  assert.deepEqual(
+    diagnostics.filter(({ code }) => code === 'runtime-frame-upload-failed'),
+    [
+      {
+        schemaVersion: 1,
+        source: 'electron-game-overlay-runtime',
+        severity: 'error',
+        code: 'runtime-frame-upload-failed',
+        message:
+          'The injected overlay runtime could not upload a transported Electron frame.',
+        pid: 4321,
+        context: { errorCode: -6 },
+      },
+    ],
+  );
+  assert.equal(
+    events.some(({ event }) => event === 'game.diagnostic'),
+    false,
+  );
+});
+
+test('invalid runtime diagnostic envelopes fail closed with an authoritative rejection', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-runtime-diagnostic-rejection-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const diagnostics = [];
+  const sockets = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const invalidPackets = [
+    runtimeDiagnosticMessage({ source: 'electron-overlay-transport' }),
+    runtimeDiagnosticMessage({ code: 'runtime-unknown' }),
+    runtimeDiagnosticMessage({ context: {} }),
+    runtimeDiagnosticMessage({ context: { errorCode: -8 } }),
+    runtimeDiagnosticMessage({ pid: 9999 }),
+    runtimeDiagnosticMessage({ severity: 'error' }),
+    runtimeDiagnosticMessage({ message: 'producer-owned message' }),
+  ];
+
+  for (const [index, packet] of invalidPackets.entries()) {
+    const socket = await connect(record.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    const pid = 5100 + index;
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid,
+        path: `C:\\games\\invalid-runtime-diagnostic-${index}.exe`,
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+    const rejectionCount = diagnostics.filter(
+      ({ code }) => code === 'target-packet-rejected',
+    ).length;
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    socket.write(encodeJsonTransportPacket(packet));
+    await closed;
+    await waitFor(
+      () =>
+        diagnostics.filter(({ code }) => code === 'target-packet-rejected')
+          .length ===
+        rejectionCount + 1,
+    );
+
+    assert.deepEqual(
+      diagnostics
+        .filter(({ code }) => code === 'target-packet-rejected')
+        .at(-1),
+      {
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        severity: 'warning',
+        code: 'target-packet-rejected',
+        message:
+          'The overlay transport rejected a packet from an authenticated target.',
+        pid,
+        context: {
+          reason: 'invalid-runtime-diagnostic',
+          eventType: 'game.diagnostic',
+        },
+      },
+    );
+  }
+
+  assert.equal(
+    diagnostics.some(
+      ({ source }) => source === 'electron-game-overlay-runtime',
+    ),
+    false,
+  );
+});
+
+test('runtime diagnostic rate limiting is isolated to each authenticated client', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-runtime-diagnostic-rate-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const diagnostics = [];
+  const sockets = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const authenticate = async (pid) => {
+    const socket = await connect(record.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid,
+        path: `C:\\games\\runtime-diagnostic-rate-${pid}.exe`,
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+  const publishBurst = (socket) => {
+    for (let index = 0; index < 12; index += 1) {
+      socket.write(
+        encodeJsonTransportPacket(
+          runtimeDiagnosticMessage({
+            code: 'runtime-input-router-reset',
+          }),
+        ),
+      );
+    }
+  };
+
+  const first = await authenticate(5201);
+  publishBurst(first);
+  await waitFor(
+    () =>
+      diagnostics.filter(
+        ({ code, pid }) =>
+          code === 'runtime-input-router-reset' && pid === 5201,
+      ).length === 8,
+  );
+
+  const second = await authenticate(5202);
+  publishBurst(second);
+  await waitFor(
+    () =>
+      diagnostics.filter(
+        ({ code, pid }) =>
+          code === 'runtime-input-router-reset' && pid === 5202,
+      ).length === 8,
+  );
+
+  assert.equal(
+    diagnostics.filter(({ code }) => code === 'runtime-input-router-reset')
+      .length,
+    16,
   );
 });
 

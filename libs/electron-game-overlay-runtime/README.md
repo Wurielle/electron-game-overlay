@@ -278,11 +278,21 @@ Pop-Location
 ```
 
 The ABI smoke validates layout, version rejection, immutable scene ownership,
-input-state metadata, and create/acquire/release/destroy linkage. The generated
-`electron_game_overlay.addon64` has completed controlled D3D11 and D3D12
-live-producer runs: it connected the existing authenticated Node transport,
-uploaded two overlapping real Electron OSR windows, rendered the transported
-scene, and returned the interception acknowledgement. ReShade-owned exact
+input-state metadata, the fixed runtime-diagnostic record, and
+create/acquire/release/destroy linkage. Runtime diagnostics use a dedicated
+bounded queue of 32 records and carry no free-form text, paths, handles, or
+producer-supplied PID. The add-on reports transport, swap-chain, and first-scene
+milestones plus guarded scene/frame/upload/input failures. It never publishes
+from `DllMain` or the input producer callback; input observations are emitted
+only by the ordered render-thread consumer. Failure codes have a native
+7.5-second per-code cooldown before the additional Node-side rate limit. Before
+the authenticated transport exists, early registration or transport-creation
+failures remain available only in `ReShade.log`.
+
+The generated `electron_game_overlay.addon64` has completed controlled D3D11
+and D3D12 live-producer runs: it connected the existing authenticated Node
+transport, uploaded two overlapping real Electron OSR windows, rendered the
+transported scene, and returned the interception acknowledgement. ReShade-owned exact
 legacy mouse/keyboard records, plus the primary `PT_MOUSE` `WM_POINTER` stream
 normalized on the ordered single consumer, then drove click-to-front, text
 focus/input, and caption dragging while every host mouse, keyboard, raw, pointer,

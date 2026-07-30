@@ -15,6 +15,11 @@ static_assert(std::is_standard_layout_v<ego_input_state_v1>);
 static_assert(sizeof(ego_input_state_v1) == 64);
 static_assert(offsetof(ego_input_state_v1, window_count) == 24);
 static_assert(offsetof(ego_input_state_v1, captured_window_id) == 56);
+static_assert(EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION == 1);
+static_assert(std::is_standard_layout_v<ego_runtime_diagnostic_v1>);
+static_assert(sizeof(ego_runtime_diagnostic_v1) == 16);
+static_assert(offsetof(ego_runtime_diagnostic_v1, code) == 8);
+static_assert(offsetof(ego_runtime_diagnostic_v1, error_code) == 12);
 
 namespace
 {
@@ -77,6 +82,40 @@ int main()
         std::fputs("ego_transport_create did not return a usable transport\n", stderr);
         if (transport != nullptr)
             ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+
+    ego_runtime_diagnostic_v1 diagnostic{};
+    diagnostic.struct_size = sizeof(diagnostic);
+    diagnostic.abi_version = EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION;
+    diagnostic.code = EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY;
+    if (!expect_status(
+            "ego_transport_publish_diagnostic",
+            ego_transport_publish_diagnostic(transport, &diagnostic),
+            EGO_STATUS_OK))
+    {
+        ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+
+    diagnostic.code = EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED;
+    diagnostic.error_code = EGO_STATUS_INTERNAL_ERROR;
+    if (!expect_status(
+            "ego_transport_publish_diagnostic with an EGO status",
+            ego_transport_publish_diagnostic(transport, &diagnostic),
+            EGO_STATUS_OK))
+    {
+        ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+
+    diagnostic.code = UINT32_MAX;
+    if (!expect_status(
+            "ego_transport_publish_diagnostic with an unknown code",
+            ego_transport_publish_diagnostic(transport, &diagnostic),
+            EGO_STATUS_INVALID_ARGUMENT))
+    {
+        ego_transport_destroy(transport);
         return EXIT_FAILURE;
     }
 

@@ -46,7 +46,15 @@ export type OverlayDiagnosticCode =
   | 'target-authenticated'
   | 'target-packet-rejected'
   | 'target-socket-error'
-  | 'target-process-inspection-failed';
+  | 'target-process-inspection-failed'
+  | 'runtime-ready'
+  | 'runtime-swapchain-ready'
+  | 'runtime-scene-query-failed'
+  | 'runtime-scene-rendering-started'
+  | 'runtime-frame-rejected'
+  | 'runtime-frame-upload-failed'
+  | 'runtime-input-router-reset'
+  | 'runtime-input-routing-failed';
 
 export type OverlayDiagnosticContextValue = string | number | boolean | null;
 
@@ -54,8 +62,7 @@ export type OverlayDiagnosticContextValue = string | number | boolean | null;
  * An immutable asynchronous observation from a running overlay session.
  *
  * Attachment failures remain `ReShadeDiagnostic`. Current codes cover the
- * loopback transport; the same bounded contract is intended for later runtime,
- * graphics, window, and input observations.
+ * loopback transport and authenticated injected-runtime observations.
  */
 export type OverlayDiagnostic = Readonly<{
   schemaVersion: 1;

@@ -1032,6 +1032,24 @@ try {
         -Marker "rendered its first transported multi-window scene (2 window(s))." `
         -Deadline $AttachDeadline `
         -HostProcess $HostProcess
+    $RuntimeReadyDiagnostic = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern "(?m)^OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay-runtime severity=info code=runtime-ready pid=$HostPid(?: .*)?\r?`$" `
+        -AfterIndex $Connected.Index `
+        -Deadline $AttachDeadline
+    $SwapchainReadyDiagnostic = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern "(?m)^OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay-runtime severity=info code=runtime-swapchain-ready pid=$HostPid(?: .*)?\r?`$" `
+        -AfterIndex $Connected.Index `
+        -Deadline $AttachDeadline
+    $SceneRenderingDiagnostic = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern "(?m)^OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay-runtime severity=info code=runtime-scene-rendering-started pid=$HostPid(?: .*)?\r?`$" `
+        -AfterIndex $Connected.Index `
+        -Deadline $AttachDeadline
 
     $InputProof = Test-OverlayInputAndRelease `
         -TargetWindow $HostWindow `
@@ -1081,6 +1099,13 @@ try {
         -CaseSensitive:$false
     if ($Fault) {
         throw "The ReShade log reported an input/router fault: $($Fault.Line -join ' | ')"
+    }
+    $RuntimeDiagnosticFault = Select-String `
+        -LiteralPath $ClientStdout `
+        -Pattern "OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay-runtime severity=(warning|error) code=runtime-" `
+        -CaseSensitive
+    if ($RuntimeDiagnosticFault) {
+        throw "The injected runtime reported a warning/error diagnostic: $($RuntimeDiagnosticFault.Line -join ' | ')"
     }
     $TargetDirectoryLog = Join-Path $TargetDirectory "ReShade.log"
     if (-not $ExistingCompatibleRuntime -and
@@ -1144,6 +1169,12 @@ try {
         GraphicsApiProof = [pscustomobject]@{
             Expected = $BackendLabel
             ReShadeLogMarker = $ApiEvidenceMarker
+        }
+        RuntimeDiagnosticProof = [pscustomobject]@{
+            RuntimeReadyMarkerIndex = $RuntimeReadyDiagnostic.Index
+            SwapchainReadyMarkerIndex = $SwapchainReadyDiagnostic.Index
+            SceneRenderingStartedMarkerIndex =
+                $SceneRenderingDiagnostic.Index
         }
         SceneWindowCount = 2
         InputProof = $InputProof

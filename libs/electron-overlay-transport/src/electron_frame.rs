@@ -31,10 +31,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::electron_input::{
     AtomicInterceptionState, DragMoveIntent, InputCaption, InputPoint, InputRect, InputRouter,
-    InputRouterState, InputWindow, OutboundMessage, OutboundQueue, TargetSurface,
-    GRAPHICS_API_D3D10, GRAPHICS_API_D3D11, GRAPHICS_API_D3D12, GRAPHICS_API_D3D9,
-    GRAPHICS_API_OPENGL, GRAPHICS_API_VULKAN, TARGET_SURFACE_FOCUSED, TARGET_SURFACE_FULLSCREEN,
-    TARGET_SURFACE_MINIMIZED, TARGET_SURFACE_VISIBLE,
+    InputRouterState, InputWindow, OutboundMessage, OutboundQueue, RuntimeDiagnostic,
+    RuntimeDiagnosticCode, TargetSurface, GRAPHICS_API_D3D10, GRAPHICS_API_D3D11,
+    GRAPHICS_API_D3D12, GRAPHICS_API_D3D9, GRAPHICS_API_OPENGL, GRAPHICS_API_VULKAN,
+    TARGET_SURFACE_FOCUSED, TARGET_SURFACE_FULLSCREEN, TARGET_SURFACE_MINIMIZED,
+    TARGET_SURFACE_VISIBLE,
 };
 use crate::electron_wire::{encode_json, WireDecoder, WireFrame, WirePacket};
 
@@ -62,8 +63,7 @@ const TRANSPORT_VERSION: u32 = 1;
 const DISCOVERY_DIRECTORY: &str = "electron-game-overlay";
 const DISCOVERY_FILE: &str = "electron-overlay-transport-v1.json";
 const TARGET_ROUTE_FILE: &str = "electron-overlay-transport-v1.targeted";
-const ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV: &str =
-    "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY";
+const ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV: &str = "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY";
 const RESHADE_BASE_PATH_OVERRIDE_ENV: &str = "RESHADE_BASE_PATH_OVERRIDE";
 const MAX_DISCOVERY_BYTES: usize = 64 * 1024;
 const BYTES_PER_PIXEL: usize = 4;
@@ -502,6 +502,14 @@ impl ElectronFrameBridge {
     /// FPS. Adjacent samples are coalesced to the most recent value.
     pub fn publish_fps(&self, fps_milli: u32) {
         self.publish_outbound(OutboundMessage::GraphicsFps { fps_milli });
+    }
+
+    /// Queues one fixed-schema diagnostic from the injected runtime.
+    ///
+    /// Diagnostics are copied into a bounded, lossy lane and never perform a
+    /// synchronous cross-process send on the caller's thread.
+    pub fn publish_diagnostic(&self, diagnostic: RuntimeDiagnostic) {
+        self.publish_outbound(OutboundMessage::Diagnostic(diagnostic));
     }
 
     /// Routes one message observed by the injected backend and wakes the
@@ -2194,6 +2202,40 @@ fn outbound_message_payload(message: &OutboundMessage) -> (&'static str, String)
             })
             .to_string(),
         ),
+        OutboundMessage::Diagnostic(diagnostic) => (
+            "game.diagnostic",
+            match diagnostic.error_code {
+                Some(error_code) => serde_json::json!({
+                    "type": "game.diagnostic",
+                    "schemaVersion": 1,
+                    "source": "electron-game-overlay-runtime",
+                    "code": runtime_diagnostic_code_name(diagnostic.code),
+                    "context": {
+                        "errorCode": error_code,
+                    },
+                }),
+                None => serde_json::json!({
+                    "type": "game.diagnostic",
+                    "schemaVersion": 1,
+                    "source": "electron-game-overlay-runtime",
+                    "code": runtime_diagnostic_code_name(diagnostic.code),
+                }),
+            }
+            .to_string(),
+        ),
+    }
+}
+
+fn runtime_diagnostic_code_name(code: RuntimeDiagnosticCode) -> &'static str {
+    match code {
+        RuntimeDiagnosticCode::RuntimeReady => "runtime-ready",
+        RuntimeDiagnosticCode::SwapchainReady => "runtime-swapchain-ready",
+        RuntimeDiagnosticCode::SceneQueryFailed => "runtime-scene-query-failed",
+        RuntimeDiagnosticCode::SceneRenderingStarted => "runtime-scene-rendering-started",
+        RuntimeDiagnosticCode::FrameRejected => "runtime-frame-rejected",
+        RuntimeDiagnosticCode::FrameUploadFailed => "runtime-frame-upload-failed",
+        RuntimeDiagnosticCode::InputRouterReset => "runtime-input-router-reset",
+        RuntimeDiagnosticCode::InputRoutingFailed => "runtime-input-routing-failed",
     }
 }
 
@@ -2965,6 +3007,10 @@ mod tests {
                 focus_window_id: 42,
             },
             OutboundMessage::InputIntercept { intercepting: true },
+            OutboundMessage::Diagnostic(RuntimeDiagnostic {
+                code: RuntimeDiagnosticCode::FrameUploadFailed,
+                error_code: Some(-1),
+            }),
         ]);
 
         state.disconnect();
@@ -3341,6 +3387,77 @@ mod tests {
                 "fps": 59.94,
             })
         );
+    }
+
+    #[test]
+    fn runtime_diagnostics_serialize_fixed_authenticated_schema_without_pid_or_message() {
+        let cases = [
+            (RuntimeDiagnosticCode::RuntimeReady, "runtime-ready", None),
+            (
+                RuntimeDiagnosticCode::SwapchainReady,
+                "runtime-swapchain-ready",
+                None,
+            ),
+            (
+                RuntimeDiagnosticCode::SceneQueryFailed,
+                "runtime-scene-query-failed",
+                Some(-1),
+            ),
+            (
+                RuntimeDiagnosticCode::SceneRenderingStarted,
+                "runtime-scene-rendering-started",
+                None,
+            ),
+            (
+                RuntimeDiagnosticCode::FrameRejected,
+                "runtime-frame-rejected",
+                Some(-2),
+            ),
+            (
+                RuntimeDiagnosticCode::FrameUploadFailed,
+                "runtime-frame-upload-failed",
+                Some(-3),
+            ),
+            (
+                RuntimeDiagnosticCode::InputRouterReset,
+                "runtime-input-router-reset",
+                None,
+            ),
+            (
+                RuntimeDiagnosticCode::InputRoutingFailed,
+                "runtime-input-routing-failed",
+                Some(-7),
+            ),
+        ];
+
+        for (code, expected_code, error_code) in cases {
+            let (message_type, json) =
+                outbound_message_payload(&OutboundMessage::Diagnostic(RuntimeDiagnostic {
+                    code,
+                    error_code,
+                }));
+            assert_eq!(message_type, "game.diagnostic");
+            let packet = encode_json(&json).unwrap();
+            let mut decoder = WireDecoder::default();
+            let packets = decoder.push(&packet).unwrap();
+            let WirePacket::Json(packet_json) = &packets[0] else {
+                panic!("expected JSON packet");
+            };
+            let value = serde_json::from_str::<serde_json::Value>(packet_json).unwrap();
+            assert_eq!(value["type"], "game.diagnostic");
+            assert_eq!(value["schemaVersion"], 1);
+            assert_eq!(value["source"], "electron-game-overlay-runtime");
+            assert_eq!(value["code"], expected_code);
+            assert!(value.get("pid").is_none());
+            assert!(value.get("severity").is_none());
+            assert!(value.get("message").is_none());
+            match error_code {
+                Some(error_code) => {
+                    assert_eq!(value["context"]["errorCode"], error_code);
+                }
+                None => assert!(value.get("context").is_none()),
+            }
+        }
     }
 
     #[test]

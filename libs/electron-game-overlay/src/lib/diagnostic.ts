@@ -13,7 +13,13 @@ type DiagnosticDefinition = Readonly<{
   severity: OverlayDiagnosticSeverity;
   message: string;
   pid: 'forbidden' | 'optional' | 'required';
-  context: 'none' | 'port' | 'error-code' | 'auth-scope' | 'packet-rejection';
+  context:
+    | 'none'
+    | 'port'
+    | 'error-code'
+    | 'ego-error-code'
+    | 'auth-scope'
+    | 'packet-rejection';
 }>;
 
 const DIAGNOSTIC_DEFINITIONS = {
@@ -90,7 +96,76 @@ const DIAGNOSTIC_DEFINITIONS = {
     pid: 'required',
     context: 'error-code',
   },
+  'runtime-ready': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'info',
+    message: 'The injected overlay runtime initialized successfully.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
+  'runtime-swapchain-ready': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'info',
+    message: 'The injected overlay runtime initialized a render swap chain.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
+  'runtime-scene-query-failed': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'error',
+    message:
+      'The injected overlay runtime could not query the transported scene.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
+  'runtime-scene-rendering-started': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'info',
+    message:
+      'The injected overlay runtime started rendering transported Electron content.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
+  'runtime-frame-rejected': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'warning',
+    message:
+      'The injected overlay runtime rejected a transported Electron frame.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
+  'runtime-frame-upload-failed': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'error',
+    message:
+      'The injected overlay runtime could not upload a transported Electron frame.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
+  'runtime-input-router-reset': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'warning',
+    message: 'The injected overlay runtime reset its input router.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
+  'runtime-input-routing-failed': {
+    source: 'electron-game-overlay-runtime',
+    severity: 'error',
+    message: 'The injected overlay runtime could not route overlay input.',
+    pid: 'required',
+    context: 'ego-error-code',
+  },
 } satisfies Record<OverlayDiagnosticCode, DiagnosticDefinition>;
+
+const EGO_ERROR_CODES = new Set([-1, -2, -3, -4, -5, -6, -7]);
+const RUNTIME_DIAGNOSTIC_PACKET_KEYS = new Set([
+  'type',
+  'schemaVersion',
+  'source',
+  'code',
+  'context',
+]);
 
 const SAFE_ERROR_CODES = new Set([
   'EACCES',
@@ -143,6 +218,7 @@ const PACKET_REJECTION_EVENT_BY_REASON = {
   'invalid-target-surface': 'game.target.surface',
   'invalid-target-surface-removal': 'game.target.surface.removed',
   'invalid-graphics-fps': 'game.graphics.fps',
+  'invalid-runtime-diagnostic': 'game.diagnostic',
 } as const;
 
 export type OverlayPacketRejectionReason =
@@ -190,6 +266,26 @@ export function parseOverlayDiagnostic(
     message: definition.message,
     ...(pid === undefined ? {} : { pid }),
     ...(context === undefined ? {} : { context }),
+  });
+}
+
+export function parseOverlayRuntimeDiagnosticPacket(
+  value: unknown,
+  authoritativePid: number,
+): OverlayDiagnostic | null {
+  if (
+    !isRecord(value) ||
+    Array.isArray(value) ||
+    value.type !== 'game.diagnostic' ||
+    value.source !== 'electron-game-overlay-runtime' ||
+    Object.keys(value).some((key) => !RUNTIME_DIAGNOSTIC_PACKET_KEYS.has(key))
+  ) {
+    return null;
+  }
+
+  return parseOverlayDiagnostic({
+    ...value,
+    pid: authoritativePid,
   });
 }
 
@@ -266,12 +362,18 @@ function parseDiagnosticContext(
     }
     return Object.freeze({ port: context.port as number });
   }
-  if (kind === 'error-code') {
+  if (kind === 'error-code' || kind === 'ego-error-code') {
     if (!hasOnlyContextKeys(context, ['errorCode'])) {
       return null;
     }
     if (context.errorCode === undefined) {
-      return undefined;
+      return kind === 'ego-error-code' ? null : undefined;
+    }
+    if (
+      kind === 'ego-error-code' &&
+      !EGO_ERROR_CODES.has(context.errorCode as number)
+    ) {
+      return null;
     }
     const errorCode = normalizeOverlayDiagnosticErrorCode(context.errorCode);
     return errorCode === undefined ? null : Object.freeze({ errorCode });

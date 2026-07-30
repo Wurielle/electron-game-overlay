@@ -14,10 +14,11 @@ use std::sync::Arc;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
 use crate::{
-    ElectronFrameBridge, ElectronScene, TargetSurface, GRAPHICS_API_D3D10, GRAPHICS_API_D3D11,
-    GRAPHICS_API_D3D12, GRAPHICS_API_D3D9, GRAPHICS_API_OPENGL, GRAPHICS_API_UNKNOWN,
-    GRAPHICS_API_VULKAN, TARGET_SURFACE_FOCUSED, TARGET_SURFACE_FULLSCREEN,
-    TARGET_SURFACE_MINIMIZED, TARGET_SURFACE_STATE_FLAGS, TARGET_SURFACE_VISIBLE,
+    ElectronFrameBridge, ElectronScene, RuntimeDiagnostic, RuntimeDiagnosticCode, TargetSurface,
+    GRAPHICS_API_D3D10, GRAPHICS_API_D3D11, GRAPHICS_API_D3D12, GRAPHICS_API_D3D9,
+    GRAPHICS_API_OPENGL, GRAPHICS_API_UNKNOWN, GRAPHICS_API_VULKAN, TARGET_SURFACE_FOCUSED,
+    TARGET_SURFACE_FULLSCREEN, TARGET_SURFACE_MINIMIZED, TARGET_SURFACE_STATE_FLAGS,
+    TARGET_SURFACE_VISIBLE,
 };
 
 pub const EGO_ABI_VERSION: u32 = 1;
@@ -30,6 +31,16 @@ pub const EGO_STATUS_INITIALIZATION_FAILED: i32 = -4;
 pub const EGO_STATUS_OUT_OF_RANGE: i32 = -5;
 pub const EGO_STATUS_INTERNAL_ERROR: i32 = -6;
 pub const EGO_STATUS_PANIC: i32 = -7;
+
+pub const EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION: u32 = 1;
+pub const EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY: u32 = 1;
+pub const EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY: u32 = 2;
+pub const EGO_RUNTIME_DIAGNOSTIC_SCENE_QUERY_FAILED: u32 = 3;
+pub const EGO_RUNTIME_DIAGNOSTIC_SCENE_RENDERING_STARTED: u32 = 4;
+pub const EGO_RUNTIME_DIAGNOSTIC_FRAME_REJECTED: u32 = 5;
+pub const EGO_RUNTIME_DIAGNOSTIC_FRAME_UPLOAD_FAILED: u32 = 6;
+pub const EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET: u32 = 7;
+pub const EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED: u32 = 8;
 
 pub const EGO_GRAPHICS_API_UNKNOWN: u32 = GRAPHICS_API_UNKNOWN;
 pub const EGO_GRAPHICS_API_D3D9: u32 = GRAPHICS_API_D3D9;
@@ -136,6 +147,15 @@ pub struct EgoTargetSurfaceV1 {
     pub work_width: u32,
     pub work_height: u32,
     pub state_flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EgoRuntimeDiagnosticV1 {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub code: u32,
+    pub error_code: i32,
 }
 
 #[derive(Debug)]
@@ -277,11 +297,15 @@ fn make_scene_snapshot(scene: Arc<ElectronScene>) -> FfiResult<EgoSceneSnapshot>
     Ok(EgoSceneSnapshot { scene, views })
 }
 
-unsafe fn validate_output_record<T>(struct_size: u32, abi_version: u32) -> FfiResult {
-    if abi_version != EGO_ABI_VERSION {
+unsafe fn validate_output_record<T>(
+    struct_size: u32,
+    abi_version: u32,
+    expected_abi_version: u32,
+) -> FfiResult {
+    if abi_version != expected_abi_version {
         return Err(FfiError::new(
             EGO_STATUS_ABI_MISMATCH,
-            format!("record ABI version {abi_version} does not match {EGO_ABI_VERSION}"),
+            format!("record ABI version {abi_version} does not match {expected_abi_version}"),
         ));
     }
     if usize::try_from(struct_size).unwrap_or(0) < std::mem::size_of::<T>() {
@@ -320,7 +344,11 @@ fn validate_target_surface_revision(revision: u64) -> FfiResult {
 
 fn validate_target_surface(surface: &EgoTargetSurfaceV1) -> FfiResult {
     unsafe {
-        validate_output_record::<EgoTargetSurfaceV1>(surface.struct_size, surface.abi_version)?;
+        validate_output_record::<EgoTargetSurfaceV1>(
+            surface.struct_size,
+            surface.abi_version,
+            EGO_ABI_VERSION,
+        )?;
     }
     if surface.surface_id == 0 {
         return Err(FfiError::new(
@@ -367,6 +395,53 @@ fn validate_target_surface(surface: &EgoTargetSurfaceV1) -> FfiResult {
         ));
     }
     Ok(())
+}
+
+fn validate_runtime_diagnostic(
+    diagnostic: &EgoRuntimeDiagnosticV1,
+) -> FfiResult<RuntimeDiagnostic> {
+    unsafe {
+        validate_output_record::<EgoRuntimeDiagnosticV1>(
+            diagnostic.struct_size,
+            diagnostic.abi_version,
+            EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION,
+        )?;
+    }
+    let code = match diagnostic.code {
+        EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY => RuntimeDiagnosticCode::RuntimeReady,
+        EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY => RuntimeDiagnosticCode::SwapchainReady,
+        EGO_RUNTIME_DIAGNOSTIC_SCENE_QUERY_FAILED => RuntimeDiagnosticCode::SceneQueryFailed,
+        EGO_RUNTIME_DIAGNOSTIC_SCENE_RENDERING_STARTED => {
+            RuntimeDiagnosticCode::SceneRenderingStarted
+        }
+        EGO_RUNTIME_DIAGNOSTIC_FRAME_REJECTED => RuntimeDiagnosticCode::FrameRejected,
+        EGO_RUNTIME_DIAGNOSTIC_FRAME_UPLOAD_FAILED => RuntimeDiagnosticCode::FrameUploadFailed,
+        EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET => RuntimeDiagnosticCode::InputRouterReset,
+        EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED => RuntimeDiagnosticCode::InputRoutingFailed,
+        code => {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                format!("runtime diagnostic code {code} is not supported"),
+            ));
+        }
+    };
+    let error_code = match diagnostic.error_code {
+        EGO_STATUS_OK => None,
+        EGO_STATUS_INVALID_ARGUMENT
+        | EGO_STATUS_ABI_MISMATCH
+        | EGO_STATUS_BUFFER_TOO_SMALL
+        | EGO_STATUS_INITIALIZATION_FAILED
+        | EGO_STATUS_OUT_OF_RANGE
+        | EGO_STATUS_INTERNAL_ERROR
+        | EGO_STATUS_PANIC => Some(diagnostic.error_code),
+        error_code => {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                format!("runtime diagnostic error code {error_code} is not a defined EGO status"),
+            ));
+        }
+    };
+    Ok(RuntimeDiagnostic { code, error_code })
 }
 
 impl From<EgoTargetSurfaceV1> for TargetSurface {
@@ -531,6 +606,7 @@ pub unsafe extern "C" fn ego_scene_snapshot_get_window(
         validate_output_record::<EgoWindowFrameV1>(
             inout_frame.struct_size,
             inout_frame.abi_version,
+            EGO_ABI_VERSION,
         )?;
         let index = usize::try_from(index).map_err(|_| {
             FfiError::new(
@@ -612,6 +688,7 @@ pub unsafe extern "C" fn ego_transport_get_input_state(
         validate_output_record::<EgoInputStateV1>(
             inout_state.struct_size,
             inout_state.abi_version,
+            EGO_ABI_VERSION,
         )?;
         let state = transport.bridge.input_state();
         let (has_topmost_window, topmost_window_id) = optional_id(state.topmost_window_id);
@@ -696,6 +773,29 @@ pub unsafe extern "C" fn ego_transport_publish_fps(
     ffi_call(|| {
         let transport = transport_ref(transport)?;
         transport.bridge.publish_fps(fps_milli);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live for the call. `diagnostic` must point to a
+/// readable record initialized with its size and diagnostic ABI version. The
+/// record is copied synchronously and no caller-owned pointer is retained.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_publish_diagnostic(
+    transport: *mut EgoTransport,
+    diagnostic: *const EgoRuntimeDiagnosticV1,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        let diagnostic = diagnostic.as_ref().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "runtime diagnostic pointer is null",
+            )
+        })?;
+        let diagnostic = validate_runtime_diagnostic(diagnostic)?;
+        transport.bridge.publish_diagnostic(diagnostic);
         Ok(())
     })
 }
@@ -826,11 +926,26 @@ mod tests {
         }
     }
 
+    fn valid_runtime_diagnostic() -> EgoRuntimeDiagnosticV1 {
+        EgoRuntimeDiagnosticV1 {
+            struct_size: std::mem::size_of::<EgoRuntimeDiagnosticV1>() as u32,
+            abi_version: EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION,
+            code: EGO_RUNTIME_DIAGNOSTIC_FRAME_UPLOAD_FAILED,
+            error_code: EGO_STATUS_INTERNAL_ERROR,
+        }
+    }
+
     #[test]
     fn abi_layouts_are_stable_on_x64() {
         assert_eq!(std::mem::size_of::<EgoWindowFrameV1>(), 96);
         assert_eq!(std::mem::size_of::<EgoInputStateV1>(), 64);
         assert_eq!(std::mem::size_of::<EgoTargetSurfaceV1>(), 128);
+        assert_eq!(std::mem::size_of::<EgoRuntimeDiagnosticV1>(), 16);
+        assert_eq!(std::mem::align_of::<EgoRuntimeDiagnosticV1>(), 4);
+        assert_eq!(std::mem::offset_of!(EgoRuntimeDiagnosticV1, struct_size), 0);
+        assert_eq!(std::mem::offset_of!(EgoRuntimeDiagnosticV1, abi_version), 4);
+        assert_eq!(std::mem::offset_of!(EgoRuntimeDiagnosticV1, code), 8);
+        assert_eq!(std::mem::offset_of!(EgoRuntimeDiagnosticV1, error_code), 12);
         assert_eq!(std::mem::align_of::<EgoTargetSurfaceV1>(), 8);
         assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, struct_size), 0);
         assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, abi_version), 4);
@@ -847,6 +962,9 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, state_flags), 124);
         assert_eq!(ego_abi_version(), EGO_ABI_VERSION);
+        assert_eq!(EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION, 1);
+        assert_eq!(EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY, 1);
+        assert_eq!(EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED, 8);
         assert_eq!(EGO_GRAPHICS_API_D3D9, 0x9000);
         assert_eq!(EGO_GRAPHICS_API_D3D10, 0xa000);
         assert_eq!(EGO_GRAPHICS_API_D3D11, 0xb000);
@@ -958,7 +1076,101 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_c_abi_smoke_publishes_updates_fps_and_removal() {
+    fn runtime_diagnostic_validation_rejects_bad_headers_unknown_codes_and_undefined_statuses() {
+        let expected_codes = [
+            (
+                EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY,
+                RuntimeDiagnosticCode::RuntimeReady,
+            ),
+            (
+                EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY,
+                RuntimeDiagnosticCode::SwapchainReady,
+            ),
+            (
+                EGO_RUNTIME_DIAGNOSTIC_SCENE_QUERY_FAILED,
+                RuntimeDiagnosticCode::SceneQueryFailed,
+            ),
+            (
+                EGO_RUNTIME_DIAGNOSTIC_SCENE_RENDERING_STARTED,
+                RuntimeDiagnosticCode::SceneRenderingStarted,
+            ),
+            (
+                EGO_RUNTIME_DIAGNOSTIC_FRAME_REJECTED,
+                RuntimeDiagnosticCode::FrameRejected,
+            ),
+            (
+                EGO_RUNTIME_DIAGNOSTIC_FRAME_UPLOAD_FAILED,
+                RuntimeDiagnosticCode::FrameUploadFailed,
+            ),
+            (
+                EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET,
+                RuntimeDiagnosticCode::InputRouterReset,
+            ),
+            (
+                EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED,
+                RuntimeDiagnosticCode::InputRoutingFailed,
+            ),
+        ];
+        for (raw, expected) in expected_codes {
+            let mut diagnostic = valid_runtime_diagnostic();
+            diagnostic.code = raw;
+            diagnostic.error_code = EGO_STATUS_OK;
+            assert_eq!(
+                validate_runtime_diagnostic(&diagnostic).unwrap(),
+                RuntimeDiagnostic {
+                    code: expected,
+                    error_code: None,
+                }
+            );
+        }
+
+        let mut diagnostic = valid_runtime_diagnostic();
+        diagnostic.struct_size -= 1;
+        assert_eq!(
+            validate_runtime_diagnostic(&diagnostic).unwrap_err().status,
+            EGO_STATUS_BUFFER_TOO_SMALL
+        );
+
+        diagnostic = valid_runtime_diagnostic();
+        diagnostic.abi_version += 1;
+        assert_eq!(
+            validate_runtime_diagnostic(&diagnostic).unwrap_err().status,
+            EGO_STATUS_ABI_MISMATCH
+        );
+
+        diagnostic = valid_runtime_diagnostic();
+        diagnostic.code = 0;
+        assert_eq!(
+            validate_runtime_diagnostic(&diagnostic).unwrap_err().status,
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        diagnostic.code = EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED + 1;
+        assert_eq!(
+            validate_runtime_diagnostic(&diagnostic).unwrap_err().status,
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+
+        for error_code in [1, i32::MIN, EGO_STATUS_PANIC - 1] {
+            diagnostic = valid_runtime_diagnostic();
+            diagnostic.error_code = error_code;
+            assert_eq!(
+                validate_runtime_diagnostic(&diagnostic).unwrap_err().status,
+                EGO_STATUS_INVALID_ARGUMENT
+            );
+        }
+
+        for error_code in EGO_STATUS_PANIC..=EGO_STATUS_INVALID_ARGUMENT {
+            diagnostic = valid_runtime_diagnostic();
+            diagnostic.error_code = error_code;
+            assert_eq!(
+                validate_runtime_diagnostic(&diagnostic).unwrap().error_code,
+                Some(error_code)
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_and_diagnostic_c_abi_smoke_publish_validated_updates() {
         let mut transport = ptr::null_mut();
         assert_eq!(
             unsafe { ego_transport_create(EGO_ABI_VERSION, &mut transport) },
@@ -974,6 +1186,25 @@ mod tests {
         assert_eq!(
             unsafe { ego_transport_publish_fps(transport, 59_940) },
             EGO_STATUS_OK
+        );
+        let diagnostic = valid_runtime_diagnostic();
+        assert_eq!(
+            unsafe { ego_transport_publish_diagnostic(ptr::null_mut(), &diagnostic) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { ego_transport_publish_diagnostic(transport, &diagnostic) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_publish_diagnostic(transport, ptr::null()) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        let mut invalid_diagnostic = diagnostic;
+        invalid_diagnostic.code = u32::MAX;
+        assert_eq!(
+            unsafe { ego_transport_publish_diagnostic(transport, &invalid_diagnostic) },
+            EGO_STATUS_INVALID_ARGUMENT
         );
         assert_eq!(
             unsafe { ego_transport_remove_target_surface(transport, surface.surface_id, 2) },

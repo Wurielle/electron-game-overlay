@@ -133,6 +133,10 @@ std::atomic_flag g_raw_deferred_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_route_error_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_target_surface_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_fps_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_diagnostic_publication_logged = ATOMIC_FLAG_INIT;
+constexpr std::uint64_t runtime_diagnostic_failure_interval_ms = 7500;
+std::array<std::atomic<std::uint64_t>, 9>
+    g_runtime_diagnostic_failure_publication_ticks = {};
 std::atomic<std::uint64_t> g_target_surface_revision_sequence = 0;
 std::uint64_t g_last_input_sequence = 0;
 bool g_has_last_input_sequence = false;
@@ -304,6 +308,7 @@ struct electron_texture
     std::uint32_t height = 0;
     std::uint64_t state_revision = 0;
     std::uint64_t sequence = 0;
+    bool upload_failure_reported = false;
 };
 
 struct __declspec(uuid("c170f82c-00e6-4447-89aa-ca7fbb6fc081")) device_data
@@ -324,7 +329,12 @@ struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
     bool has_target_surface = false;
     bool first_scene_logged = false;
     bool first_multiwindow_scene_logged = false;
-    ego_status last_error = EGO_STATUS_OK;
+    bool scene_query_failure_active = false;
+    bool frame_rejection_reported = false;
+    ego_status last_focus_error = EGO_STATUS_OK;
+    ego_status last_interception_error = EGO_STATUS_OK;
+    ego_status last_filter_error = EGO_STATUS_OK;
+    ego_status last_scene_query_error = EGO_STATUS_OK;
     ego_status last_target_surface_error = EGO_STATUS_OK;
     ego_status last_fps_error = EGO_STATUS_OK;
 };
@@ -363,6 +373,84 @@ void log_transport_error(const char *operation, ego_status status)
     reshade::log::message(reshade::log::level::error, message);
 }
 
+bool take_runtime_diagnostic_failure_publication(std::uint32_t code) noexcept
+{
+    switch (code)
+    {
+    case EGO_RUNTIME_DIAGNOSTIC_SCENE_QUERY_FAILED:
+    case EGO_RUNTIME_DIAGNOSTIC_FRAME_REJECTED:
+    case EGO_RUNTIME_DIAGNOSTIC_FRAME_UPLOAD_FAILED:
+    case EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET:
+    case EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED:
+        break;
+    default:
+        return true;
+    }
+
+    if (code >= g_runtime_diagnostic_failure_publication_ticks.size())
+        return false;
+
+    const std::uint64_t now = GetTickCount64();
+    auto &last_publication =
+        g_runtime_diagnostic_failure_publication_ticks[code];
+    std::uint64_t observed =
+        last_publication.load(std::memory_order_relaxed);
+    for (;;)
+    {
+        if (observed != 0 &&
+            now >= observed &&
+            now - observed < runtime_diagnostic_failure_interval_ms)
+        {
+            return false;
+        }
+        if (last_publication.compare_exchange_weak(
+                observed,
+                now,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed))
+        {
+            return true;
+        }
+    }
+}
+
+void publish_runtime_diagnostic(
+    ego_transport *transport,
+    std::uint32_t code,
+    ego_status error_code = EGO_STATUS_OK)
+{
+    if (transport == nullptr ||
+        !take_runtime_diagnostic_failure_publication(code))
+    {
+        return;
+    }
+
+    ego_runtime_diagnostic_v1 diagnostic = {};
+    diagnostic.struct_size =
+        static_cast<std::uint32_t>(sizeof(ego_runtime_diagnostic_v1));
+    diagnostic.abi_version = EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION;
+    diagnostic.code = code;
+    diagnostic.error_code = error_code;
+
+    const ego_status status =
+        ego_transport_publish_diagnostic(transport, &diagnostic);
+    if (status != EGO_STATUS_OK &&
+        !g_diagnostic_publication_logged.test_and_set(std::memory_order_relaxed))
+    {
+        log_transport_error("runtime diagnostic publication", status);
+    }
+}
+
+void publish_input_routing_failure(
+    ego_transport *transport,
+    ego_status error_code)
+{
+    publish_runtime_diagnostic(
+        transport,
+        EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED,
+        error_code);
+}
+
 ego_transport *retain_transport(HWND window)
 {
     const std::scoped_lock lock(g_transport_mutex);
@@ -378,6 +466,9 @@ ego_transport *retain_transport(HWND window)
         reshade::log::message(
             reshade::log::level::info,
             "Electron game overlay runtime initialized its transport and input router.");
+        publish_runtime_diagnostic(
+            g_transport,
+            EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY);
     }
 
     ++g_transport_references;
@@ -447,10 +538,10 @@ struct input_consumer_release
     }
 };
 
-void log_input_overflow_once(std::uint64_t dropped)
+bool log_input_overflow_once(std::uint64_t dropped)
 {
     if (g_overflow_logged.test_and_set(std::memory_order_relaxed))
-        return;
+        return false;
 
     char message[256] = {};
     sprintf_s(
@@ -459,6 +550,7 @@ void log_input_overflow_once(std::uint64_t dropped)
         "the Electron router was reset before input delivery resumed.",
         static_cast<unsigned long long>(dropped));
     reshade::log::message(reshade::log::level::warning, message);
+    return true;
 }
 
 void discard_queued_input()
@@ -482,6 +574,7 @@ bool reset_input_router(ego_transport *transport)
     if (blur_status != EGO_STATUS_OK)
     {
         log_transport_error("input-loss blur reset", blur_status);
+        publish_input_routing_failure(transport, blur_status);
         g_input_recovery_pending.store(true, std::memory_order_release);
         return false;
     }
@@ -492,6 +585,7 @@ bool reset_input_router(ego_transport *transport)
     if (focus_status != EGO_STATUS_OK)
     {
         log_transport_error("input-loss focus restore", focus_status);
+        publish_input_routing_failure(transport, focus_status);
         g_input_recovery_pending.store(true, std::memory_order_release);
         return false;
     }
@@ -510,8 +604,12 @@ bool recover_dropped_input(ego_transport *transport)
     if (!recovery_requested && dropped == 0)
         return true;
 
-    if (dropped != 0)
-        log_input_overflow_once(dropped);
+    if (dropped != 0 && log_input_overflow_once(dropped))
+    {
+        publish_runtime_diagnostic(
+            transport,
+            EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET);
+    }
     if (!reset_input_router(transport))
         return false;
 
@@ -587,6 +685,9 @@ void drain_input_messages(ego_transport *transport)
                 reshade::log::level::warning,
                 "Electron ReShade input records arrived out of global sequence; "
                 "the Electron router was reset before delivery resumed.");
+            publish_runtime_diagnostic(
+                transport,
+                EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET);
         }
         static_cast<void>(reset_input_router(transport));
         return;
@@ -634,6 +735,7 @@ void drain_input_messages(ego_transport *transport)
                 {
                     if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
                         log_transport_error("copied input delivery", status);
+                    publish_input_routing_failure(transport, status);
                     static_cast<void>(reset_input_router(transport));
                     return;
                 }
@@ -717,10 +819,26 @@ void destroy_texture(device *device, electron_texture &texture)
     texture = {};
 }
 
+void report_frame_upload_failure(
+    ego_transport *transport,
+    electron_texture &texture,
+    const char *message)
+{
+    if (texture.upload_failure_reported)
+        return;
+
+    texture.upload_failure_reported = true;
+    reshade::log::message(reshade::log::level::error, message);
+    publish_runtime_diagnostic(
+        transport,
+        EGO_RUNTIME_DIAGNOSTIC_FRAME_UPLOAD_FAILED);
+}
+
 bool create_texture(
     device *device,
     const ego_window_frame_v1 &frame,
-    electron_texture &texture)
+    electron_texture &texture,
+    ego_transport *transport)
 {
     subresource_data initial_data = {};
     initial_data.data = const_cast<std::uint8_t *>(frame.rgba);
@@ -743,8 +861,9 @@ bool create_texture(
             resource_usage::shader_resource,
             &texture.texture))
     {
-        reshade::log::message(
-            reshade::log::level::error,
+        report_frame_upload_failure(
+            transport,
+            texture,
             "Electron game overlay runtime could not create an Electron texture.");
         return false;
     }
@@ -757,8 +876,9 @@ bool create_texture(
     {
         device->destroy_resource(texture.texture);
         texture.texture = {};
-        reshade::log::message(
-            reshade::log::level::error,
+        report_frame_upload_failure(
+            transport,
+            texture,
             "Electron game overlay runtime could not create an Electron texture view.");
         return false;
     }
@@ -767,21 +887,35 @@ bool create_texture(
     texture.height = frame.raster_height;
     texture.state_revision = frame.state_revision;
     texture.sequence = frame.sequence;
+    texture.upload_failure_reported = false;
     return true;
 }
 
 bool update_texture(
     effect_runtime *runtime,
     const ego_window_frame_v1 &frame,
-    electron_texture &texture)
+    electron_texture &texture,
+    ego_transport *transport)
 {
     command_queue *const queue = runtime->get_command_queue();
     if (queue == nullptr)
+    {
+        report_frame_upload_failure(
+            transport,
+            texture,
+            "Electron game overlay runtime could not acquire the texture upload queue.");
         return false;
+    }
 
     command_list *command_list = queue->get_immediate_command_list();
     if (command_list == nullptr)
+    {
+        report_frame_upload_failure(
+            transport,
+            texture,
+            "Electron game overlay runtime could not acquire the pre-upload command list.");
         return false;
+    }
 
     subresource_data pixels = {};
     pixels.data = const_cast<std::uint8_t *>(frame.rgba);
@@ -798,7 +932,13 @@ bool update_texture(
 
     command_list = queue->get_immediate_command_list();
     if (command_list == nullptr)
+    {
+        report_frame_upload_failure(
+            transport,
+            texture,
+            "Electron game overlay runtime could not acquire the post-upload command list.");
         return false;
+    }
     command_list->barrier(
         texture.texture,
         resource_usage::copy_dest,
@@ -807,6 +947,7 @@ bool update_texture(
 
     texture.state_revision = frame.state_revision;
     texture.sequence = frame.sequence;
+    texture.upload_failure_reported = false;
     return true;
 }
 
@@ -1220,6 +1361,9 @@ void on_init_swapchain(swapchain *swapchain, bool resize)
     auto *const data = swapchain->create_private_data<swapchain_data>();
     data->window = static_cast<HWND>(swapchain->get_hwnd());
     data->transport = retain_transport(data->window);
+    publish_runtime_diagnostic(
+        data->transport,
+        EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY);
 }
 
 void on_destroy_swapchain(swapchain *swapchain, bool resize)
@@ -1246,22 +1390,32 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
     ego_status status = ego_transport_set_target_focused(
         data.transport,
         any_target_focused() ? 1U : 0U);
-    if (status != EGO_STATUS_OK && status != data.last_error)
+    if (status != EGO_STATUS_OK && status != data.last_focus_error)
     {
-        data.last_error = status;
+        data.last_focus_error = status;
         log_transport_error("focus publication", status);
+        publish_input_routing_failure(data.transport, status);
+    }
+    else if (status == EGO_STATUS_OK)
+    {
+        data.last_focus_error = EGO_STATUS_OK;
     }
 
     std::uint32_t desired = 0;
     status = ego_transport_desired_interception(data.transport, &desired);
     if (status != EGO_STATUS_OK)
     {
-        if (status != data.last_error)
+        if (status != data.last_interception_error)
         {
-            data.last_error = status;
+            data.last_interception_error = status;
             log_transport_error("interception query", status);
+            publish_input_routing_failure(data.transport, status);
         }
         desired = 0;
+    }
+    else
+    {
+        data.last_interception_error = EGO_STATUS_OK;
     }
 
     data.phase = next_phase(data.phase, desired != 0);
@@ -1277,14 +1431,15 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
         data.transport,
         routing_enabled ? 1U : 0U,
         acknowledge ? 1U : 0U);
-    if (status != EGO_STATUS_OK && status != data.last_error)
+    if (status != EGO_STATUS_OK && status != data.last_filter_error)
     {
-        data.last_error = status;
+        data.last_filter_error = status;
         log_transport_error("input filter publication", status);
+        publish_input_routing_failure(data.transport, status);
     }
     else if (status == EGO_STATUS_OK)
     {
-        data.last_error = EGO_STATUS_OK;
+        data.last_filter_error = EGO_STATUS_OK;
     }
 
     ImGuiIO &io = ImGui::GetIO();
@@ -1304,10 +1459,16 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
     ego_status status = ego_transport_acquire_scene(swapchain_state.transport, &snapshot);
     if (status != EGO_STATUS_OK || snapshot == nullptr)
     {
-        if (status != swapchain_state.last_error)
+        if (!swapchain_state.scene_query_failure_active ||
+            status != swapchain_state.last_scene_query_error)
         {
-            swapchain_state.last_error = status;
+            swapchain_state.scene_query_failure_active = true;
+            swapchain_state.last_scene_query_error = status;
             log_transport_error("scene acquisition", status);
+            publish_runtime_diagnostic(
+                swapchain_state.transport,
+                EGO_RUNTIME_DIAGNOSTIC_SCENE_QUERY_FAILED,
+                status);
         }
         return;
     }
@@ -1317,13 +1478,21 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
     if (status != EGO_STATUS_OK)
     {
         ego_scene_snapshot_release(snapshot);
-        if (status != swapchain_state.last_error)
+        if (!swapchain_state.scene_query_failure_active ||
+            status != swapchain_state.last_scene_query_error)
         {
-            swapchain_state.last_error = status;
+            swapchain_state.scene_query_failure_active = true;
+            swapchain_state.last_scene_query_error = status;
             log_transport_error("scene enumeration", status);
+            publish_runtime_diagnostic(
+                swapchain_state.transport,
+                EGO_RUNTIME_DIAGNOSTIC_SCENE_QUERY_FAILED,
+                status);
         }
         return;
     }
+    swapchain_state.scene_query_failure_active = false;
+    swapchain_state.last_scene_query_error = EGO_STATUS_OK;
 
     device *const device = runtime->get_device();
     auto *const data = device->get_private_data<device_data>();
@@ -1339,6 +1508,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
     const std::scoped_lock lock(data->mutex);
     ImDrawList *const draw_list = ImGui::GetBackgroundDrawList();
     std::uint64_t rendered_window_count = 0;
+    bool frame_rejected = false;
     for (std::uint64_t index = 0; index < window_count; ++index)
     {
         ego_window_frame_v1 frame = {};
@@ -1346,7 +1516,21 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
         frame.abi_version = EGO_ABI_VERSION;
         status = ego_scene_snapshot_get_window(snapshot, index, &frame);
         if (status != EGO_STATUS_OK || !valid_frame(frame))
+        {
+            frame_rejected = true;
+            if (!swapchain_state.frame_rejection_reported)
+            {
+                swapchain_state.frame_rejection_reported = true;
+                reshade::log::message(
+                    reshade::log::level::warning,
+                    "Electron game overlay runtime rejected an invalid transported frame.");
+                publish_runtime_diagnostic(
+                    swapchain_state.transport,
+                    EGO_RUNTIME_DIAGNOSTIC_FRAME_REJECTED,
+                    status);
+            }
             continue;
+        }
 
         active_windows.insert(frame.window_id);
         auto [entry, inserted] = data->textures.try_emplace(frame.window_id);
@@ -1361,16 +1545,21 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
                 runtime->get_command_queue()->wait_idle();
                 destroy_texture(device, texture);
             }
-            if (!create_texture(device, frame, texture))
+            if (!create_texture(
+                    device,
+                    frame,
+                    texture,
+                    swapchain_state.transport))
                 continue;
         }
         else if ((texture.state_revision != frame.state_revision ||
                   texture.sequence != frame.sequence) &&
-                 !update_texture(runtime, frame, texture))
+                 !update_texture(
+                     runtime,
+                     frame,
+                     texture,
+                     swapchain_state.transport))
         {
-            reshade::log::message(
-                reshade::log::level::error,
-                "Electron game overlay runtime could not update an Electron texture.");
             continue;
         }
 
@@ -1383,6 +1572,8 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
         draw_list->AddImage(texture.view.handle, top_left, bottom_right);
         ++rendered_window_count;
     }
+    if (!frame_rejected)
+        swapchain_state.frame_rejection_reported = false;
 
     bool removed_texture = false;
     for (auto iterator = data->textures.begin(); iterator != data->textures.end();)
@@ -1411,6 +1602,9 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
             "Electron game overlay runtime rendered its first transported scene (%llu window(s)).",
             static_cast<unsigned long long>(rendered_window_count));
         reshade::log::message(reshade::log::level::info, message);
+        publish_runtime_diagnostic(
+            swapchain_state.transport,
+            EGO_RUNTIME_DIAGNOSTIC_SCENE_RENDERING_STARTED);
     }
     if (rendered_window_count >= 2 && !swapchain_state.first_multiwindow_scene_logged)
     {

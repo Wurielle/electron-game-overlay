@@ -215,10 +215,16 @@ session.on('diagnostic', (diagnostic) => {
 `OverlayDiagnostic` is bounded, schema-versioned, and structured-clone-safe.
 Its context accepts at most eight primitive values. Transport diagnostics never
 include discovery credentials, raw packets, executable paths, stacks, or
-arbitrary remote error text. Each code is limited to eight observations per
-minute. This event does not replace `ReShadeOperationError`: attachment errors retain their
-retry-safety and evidence contract, while session diagnostics describe activity
-after the overlay transport starts.
+arbitrary remote error text. Authenticated injected runtimes can additionally
+report fixed `runtime-*` milestones and scene, frame-upload, or input failures.
+Those packets contain only an allowlisted code and optional EGO status; the
+Node transport supplies the authenticated PID and owns the public severity and
+message. Each code is limited to eight observations per minute, with runtime
+limits isolated per connected target. This event does not replace
+`ReShadeOperationError`: attachment errors retain their retry-safety and
+evidence contract, while session diagnostics describe activity after the
+overlay transport starts. Failures before the runtime can connect still appear
+only in its local `ReShade.log`.
 
 Exact-PID injection performs a bounded module preflight before allocating or
 writing target memory. A loaded module becomes a ReShade candidate only when

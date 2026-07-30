@@ -216,9 +216,16 @@ session.on('diagnostic', (diagnostic) => {
 authoritative and its context is limited to eight primitive values. The current
 loopback transport uses fixed redacted messages and excludes credentials, raw
 packets, executable paths, stacks, and arbitrary remote error text. Each
-transport diagnostic code is limited to eight observations per minute. These
-observations complement rather than replace the terminal
-`ReShadeOperationError` attachment contract.
+transport diagnostic code is limited to eight observations per minute.
+Authenticated injected-runtime records use the same public event and report a
+fixed `runtime-*` code plus, when applicable, one defined EGO error status. The
+Node boundary attaches the authenticated target PID and owns the severity and
+message; runtime limits are isolated per target. Runtime-ready, swap-chain,
+first-scene, scene-query, frame-validation/upload, input-reset, and
+input-routing observations are covered. Failures before authenticated IPC is
+available remain in the target's local `ReShade.log`. These observations
+complement rather than replace the terminal `ReShadeOperationError` attachment
+contract.
 
 For an exact PID, the injector inspects loaded modules before remote allocation
 or thread creation. Exact `ReShadeVersion` identifies a candidate, but reuse

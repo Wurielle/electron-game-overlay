@@ -31,6 +31,16 @@ typedef int32_t ego_status;
 #define EGO_STATUS_INTERNAL_ERROR (-INT32_C(6))
 #define EGO_STATUS_PANIC (-INT32_C(7))
 
+#define EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION UINT32_C(1)
+#define EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY UINT32_C(1)
+#define EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY UINT32_C(2)
+#define EGO_RUNTIME_DIAGNOSTIC_SCENE_QUERY_FAILED UINT32_C(3)
+#define EGO_RUNTIME_DIAGNOSTIC_SCENE_RENDERING_STARTED UINT32_C(4)
+#define EGO_RUNTIME_DIAGNOSTIC_FRAME_REJECTED UINT32_C(5)
+#define EGO_RUNTIME_DIAGNOSTIC_FRAME_UPLOAD_FAILED UINT32_C(6)
+#define EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET UINT32_C(7)
+#define EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED UINT32_C(8)
+
 #define EGO_GRAPHICS_API_UNKNOWN UINT32_C(0)
 #define EGO_GRAPHICS_API_D3D9 UINT32_C(0x9000)
 #define EGO_GRAPHICS_API_D3D10 UINT32_C(0xa000)
@@ -116,6 +126,13 @@ typedef struct ego_target_surface_v1 {
     uint32_t state_flags;
 } ego_target_surface_v1;
 
+typedef struct ego_runtime_diagnostic_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t code;
+    int32_t error_code;
+} ego_runtime_diagnostic_v1;
+
 uint32_t EGO_CALL ego_abi_version(void);
 
 ego_status EGO_CALL ego_transport_create(
@@ -159,6 +176,9 @@ ego_status EGO_CALL ego_transport_remove_target_surface(
 ego_status EGO_CALL ego_transport_publish_fps(
     ego_transport *transport,
     uint32_t fps_milli);
+ego_status EGO_CALL ego_transport_publish_diagnostic(
+    ego_transport *transport,
+    const ego_runtime_diagnostic_v1 *diagnostic);
 
 /* Observes/routes a copied message. The status is not an input-block decision. */
 ego_status EGO_CALL ego_transport_route_window_message(

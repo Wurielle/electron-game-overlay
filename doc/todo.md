@@ -228,6 +228,25 @@ they are not the active production-host roadmap.
     `injected-runtime` versus `existing-runtime`. Failure after claiming a
     compatible host gate is reported as the post-mutation
     `existing-runtime-addon-load-failed` runtime-initialization stage.
+- [x] Forward bounded authenticated diagnostics from the injected runtime.
+  - A versioned strings-free C ABI record now publishes eight fixed runtime,
+    swap-chain, first-scene, scene/frame/upload, and input observations through
+    a dedicated 32-record queue without dropping input, control, or telemetry.
+  - The Node boundary validates the exact packet, supplies the authenticated
+    PID, owns severity/message text, rate-limits each code per connected target,
+    and never forwards the packet through the generic native-event callback.
+    Invalid runtime records fail closed as `invalid-runtime-diagnostic`.
+  - Render/input failure publication has a native 7.5-second per-code cooldown
+    in addition to the Node rate limit, so alternating good/bad frames cannot
+    cross the C++/Rust IPC boundary at render rate. `DllMain`, the
+    allocation-free input producer, and failures before IPC connection retain
+    local-only `ReShade.log` coverage.
+  - The production client/SDK process-start gates observed authenticated
+    runtime-ready, swap-chain-ready, and first-scene diagnostics on D3D11 and
+    D3D12 and exited normally on July 30, 2026. Local evidence is under
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-111004`
+    and
+    `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-111018`.
 - [ ] Improve error logging and diagnostics across every overlay layer.
   - Current issue: failures can happen in multiple places: Electron SDK code,
     runtime staging, injector launch, DLL injection, authenticated transport,
@@ -235,11 +254,10 @@ they are not the active production-host roadmap.
     rendering. Today those failures are hard to distinguish, which makes
     agent-driven debugging and user support slow.
   - Desired direction: make every layer report structured diagnostics with enough context to identify where the failure occurred and what the next action should be.
-  - The completed launcher/injector slice above does not yet add diagnostic
-    events for window/frame publication, graphics resource creation, input
-    forwarding, or other injected-runtime internals. The Node transport now
-    diagnoses rejected authenticated packets, but native packet production and
-    rendering failures remain visible only through existing logs.
+  - The completed launcher/injector and injected-runtime slices above cover
+    attachment, authentication, render milestones, scene/frame upload, and
+    native input-routing failures. Producer-side Electron window/frame
+    publication failures and richer pre-IPC hook initialization remain.
   - The SDK now exposes a frozen `session.on("diagnostic")` contract. The Node
     loopback transport emits bounded, redacted startup/discovery,
     authorization/authentication, authenticated-packet, socket, and
@@ -247,7 +265,8 @@ they are not the active production-host roadmap.
     it, and shows warnings/errors in the always-visible control dock. Discovery
     credentials, raw packets, executable paths, stacks, and arbitrary error
     messages are excluded. Authenticated native `game.diagnostic` publication
-    and graphics/window/input codes remain a later vertical slice.
+    now covers the fixed injected-runtime codes; producer-side window/frame
+    publication diagnostics remain a later vertical slice.
   - Suggested logging layers:
     - `electron-game-overlay`: typed events such as `session.on("diagnostic", ...)`, attach results, window registration state, frame send failures, focus/input forwarding failures.
     - `electron-overlay-transport`: rendezvous, authentication, producer/target

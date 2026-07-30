@@ -316,6 +316,24 @@ pub struct TargetSurface {
     pub state_flags: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeDiagnosticCode {
+    RuntimeReady,
+    SwapchainReady,
+    SceneQueryFailed,
+    SceneRenderingStarted,
+    FrameRejected,
+    FrameUploadFailed,
+    InputRouterReset,
+    InputRoutingFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeDiagnostic {
+    pub code: RuntimeDiagnosticCode,
+    pub error_code: Option<i32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboundMessage {
     InputIntercept {
@@ -345,6 +363,7 @@ pub enum OutboundMessage {
     GraphicsFps {
         fps_milli: u32,
     },
+    Diagnostic(RuntimeDiagnostic),
 }
 
 impl OutboundMessage {
@@ -410,14 +429,22 @@ enum TelemetryKey {
     GraphicsFps,
 }
 
-/// FIFO outbound storage with lossless control/input ordering. Adjacent mouse
-/// moves may be replaced at the tail. Within a run containing only telemetry,
-/// each surface and the process FPS sample retain only their latest state and
-/// move to the tail on change; every intervening focus, button, key, character,
+const MAX_PENDING_DIAGNOSTICS: usize = 32;
+
+/// Outbound storage with lossless control/input ordering. Adjacent mouse moves
+/// may be replaced at the tail. Within a run containing only telemetry, each
+/// surface and the process FPS sample retain only their latest state and move
+/// to the tail on change; every intervening focus, button, key, character,
 /// wheel, release, or interception acknowledgement remains an ordering barrier.
+///
+/// Runtime diagnostics are observational and use a separate bounded FIFO lane.
+/// Exact duplicates coalesce to their latest observation, and overflow evicts
+/// only the oldest diagnostic. Normal packets always drain first, so diagnostic
+/// pressure cannot drop or reorder input, control, or telemetry.
 #[derive(Debug, Default)]
 pub struct OutboundQueue {
     messages: VecDeque<OutboundMessage>,
+    diagnostics: VecDeque<RuntimeDiagnostic>,
 }
 
 impl OutboundQueue {
@@ -426,6 +453,20 @@ impl OutboundQueue {
     }
 
     pub fn push(&mut self, message: OutboundMessage) {
+        if let OutboundMessage::Diagnostic(diagnostic) = message {
+            if let Some(index) = self
+                .diagnostics
+                .iter()
+                .position(|pending| *pending == diagnostic)
+            {
+                self.diagnostics.remove(index);
+            } else if self.diagnostics.len() >= MAX_PENDING_DIAGNOSTICS {
+                self.diagnostics.pop_front();
+            }
+            self.diagnostics.push_back(diagnostic);
+            return;
+        }
+
         if let Some(key) = message.telemetry_key() {
             let run_start = self
                 .messages
@@ -473,12 +514,23 @@ impl OutboundQueue {
     }
 
     pub fn pop_front(&mut self) -> Option<OutboundMessage> {
-        self.messages.pop_front()
+        self.messages.pop_front().or_else(|| {
+            self.diagnostics
+                .pop_front()
+                .map(OutboundMessage::Diagnostic)
+        })
     }
 
     /// Restores an unsent message ahead of later concurrently queued work.
     pub fn push_front(&mut self, message: OutboundMessage) {
-        self.messages.push_front(message);
+        if let OutboundMessage::Diagnostic(diagnostic) = message {
+            if self.diagnostics.len() >= MAX_PENDING_DIAGNOSTICS {
+                self.diagnostics.pop_back();
+            }
+            self.diagnostics.push_front(diagnostic);
+        } else {
+            self.messages.push_front(message);
+        }
     }
 
     /// Rebuilds connection-local surface telemetry from the retained current
@@ -502,16 +554,17 @@ impl OutboundQueue {
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.messages.len()
+        self.messages.len() + self.diagnostics.len()
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
+        self.messages.is_empty() && self.diagnostics.is_empty()
     }
 
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.diagnostics.clear();
     }
 }
 
@@ -2875,5 +2928,115 @@ mod tests {
         assert_eq!(queue.pop_front(), Some(input));
         assert_eq!(queue.pop_front(), Some(control));
         assert_eq!(queue.pop_front(), Some(fps));
+    }
+
+    #[test]
+    fn diagnostic_pressure_is_bounded_without_disturbing_normal_packet_order() {
+        let input = OutboundMessage::Input {
+            window_id: WINDOW_ID,
+            msg: WM_LBUTTONDOWN,
+            wparam: 0,
+            lparam: 7,
+        };
+        let control = OutboundMessage::InputIntercept { intercepting: true };
+        let telemetry = OutboundMessage::GraphicsFps { fps_milli: 60_000 };
+        let mut queue = OutboundQueue::new();
+        queue.extend([input.clone(), control.clone(), telemetry.clone()]);
+
+        let codes = [
+            RuntimeDiagnosticCode::RuntimeReady,
+            RuntimeDiagnosticCode::SwapchainReady,
+            RuntimeDiagnosticCode::SceneQueryFailed,
+            RuntimeDiagnosticCode::SceneRenderingStarted,
+            RuntimeDiagnosticCode::FrameRejected,
+            RuntimeDiagnosticCode::FrameUploadFailed,
+            RuntimeDiagnosticCode::InputRouterReset,
+            RuntimeDiagnosticCode::InputRoutingFailed,
+        ];
+        let mut published = Vec::new();
+        for cycle in 0..5 {
+            for (index, code) in codes.into_iter().enumerate() {
+                let diagnostic = RuntimeDiagnostic {
+                    code,
+                    error_code: Some(-1 - ((cycle * codes.len() + index) % 7) as i32),
+                };
+                published.push(diagnostic);
+                queue.push(OutboundMessage::Diagnostic(diagnostic));
+            }
+        }
+
+        assert_eq!(queue.len(), 3 + MAX_PENDING_DIAGNOSTICS);
+        assert_eq!(queue.pop_front(), Some(input));
+        assert_eq!(queue.pop_front(), Some(control));
+        assert_eq!(queue.pop_front(), Some(telemetry));
+        assert_eq!(
+            (0..MAX_PENDING_DIAGNOSTICS)
+                .map(|_| queue.pop_front())
+                .collect::<Vec<_>>(),
+            published[published.len() - MAX_PENDING_DIAGNOSTICS..]
+                .iter()
+                .copied()
+                .map(|diagnostic| Some(OutboundMessage::Diagnostic(diagnostic)))
+                .collect::<Vec<_>>()
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn exact_duplicate_diagnostics_coalesce_and_unsent_restore_stays_bounded() {
+        let duplicate = RuntimeDiagnostic {
+            code: RuntimeDiagnosticCode::FrameUploadFailed,
+            error_code: Some(-1),
+        };
+        let latest = RuntimeDiagnostic {
+            code: RuntimeDiagnosticCode::InputRoutingFailed,
+            error_code: Some(-7),
+        };
+        let mut queue = OutboundQueue::new();
+        queue.extend([
+            OutboundMessage::Diagnostic(duplicate),
+            OutboundMessage::Diagnostic(latest),
+            OutboundMessage::Diagnostic(duplicate),
+        ]);
+
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.pop_front(), Some(OutboundMessage::Diagnostic(latest)));
+
+        let codes = [
+            RuntimeDiagnosticCode::RuntimeReady,
+            RuntimeDiagnosticCode::SwapchainReady,
+            RuntimeDiagnosticCode::SceneQueryFailed,
+            RuntimeDiagnosticCode::SceneRenderingStarted,
+            RuntimeDiagnosticCode::FrameRejected,
+            RuntimeDiagnosticCode::FrameUploadFailed,
+            RuntimeDiagnosticCode::InputRouterReset,
+            RuntimeDiagnosticCode::InputRoutingFailed,
+        ];
+        for index in 0..MAX_PENDING_DIAGNOSTICS {
+            queue.push(OutboundMessage::Diagnostic(RuntimeDiagnostic {
+                code: codes[index % codes.len()],
+                error_code: Some(-1 - (index / codes.len()) as i32),
+            }));
+        }
+        queue.push_front(OutboundMessage::Diagnostic(latest));
+        assert!(queue.len() <= MAX_PENDING_DIAGNOSTICS);
+        assert_eq!(queue.pop_front(), Some(OutboundMessage::Diagnostic(latest)));
+    }
+
+    #[test]
+    fn clear_discards_both_normal_and_diagnostic_lanes() {
+        let mut queue = OutboundQueue::new();
+        queue.extend([
+            OutboundMessage::InputIntercept { intercepting: true },
+            OutboundMessage::Diagnostic(RuntimeDiagnostic {
+                code: RuntimeDiagnosticCode::RuntimeReady,
+                error_code: None,
+            }),
+        ]);
+
+        queue.clear();
+
+        assert!(queue.is_empty());
+        assert_eq!(queue.pop_front(), None);
     }
 }
