@@ -26,24 +26,18 @@ export type WindowScaleState = {
 };
 
 export type WindowGeometryOptions = {
-  resizable: boolean;
   dragBorder: number;
   captionHeight: number;
 };
 
 export type WindowGeometry = {
   rect: Rect;
-  maxWidth: number;
-  maxHeight: number;
-  minWidth: number;
-  minHeight: number;
   caption: {
     left: number;
     right: number;
     top: number;
     height: number;
   };
-  dragBorderWidth: number;
   scaleFactorMicros: number;
   rasterChanged?: boolean;
 };
@@ -260,25 +254,12 @@ export function getPhysicalWindowGeometry(
       ...rect,
       ...frameSize,
     },
-    maxWidth: options.resizable
-      ? dipExtentToPhysical(display.width, scaleFactor)
-      : frameSize.width,
-    maxHeight: options.resizable
-      ? dipExtentToPhysical(display.height, scaleFactor)
-      : frameSize.height,
-    minWidth: options.resizable
-      ? dipExtentToPhysical(100, scaleFactor)
-      : frameSize.width,
-    minHeight: options.resizable
-      ? dipExtentToPhysical(100, scaleFactor)
-      : frameSize.height,
     caption: {
       left: dipExtentToPhysical(options.dragBorder, scaleFactor),
       right: dipExtentToPhysical(options.dragBorder, scaleFactor),
       top: dipExtentToPhysical(options.dragBorder, scaleFactor),
       height: dipExtentToPhysical(options.captionHeight, scaleFactor),
     },
-    dragBorderWidth: dipExtentToPhysical(options.dragBorder, scaleFactor),
     scaleFactorMicros: scaleFactorToMicros(scaleFactor),
   };
 }
@@ -292,15 +273,10 @@ export function sameWindowGeometry(
     left.rect.y === right.rect.y &&
     left.rect.width === right.rect.width &&
     left.rect.height === right.rect.height &&
-    left.maxWidth === right.maxWidth &&
-    left.maxHeight === right.maxHeight &&
-    left.minWidth === right.minWidth &&
-    left.minHeight === right.minHeight &&
     left.caption.left === right.caption.left &&
     left.caption.right === right.caption.right &&
     left.caption.top === right.caption.top &&
     left.caption.height === right.caption.height &&
-    left.dragBorderWidth === right.dragBorderWidth &&
     left.scaleFactorMicros === right.scaleFactorMicros
   );
 }

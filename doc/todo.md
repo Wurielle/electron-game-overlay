@@ -231,9 +231,31 @@ they are not the active production-host roadmap.
     stages the runtime as a build dependency.
   - The superseded binary runtime and native Node add-on packages have been
     removed; they are not future modernization targets.
+- [x] Remove unused pre-release SDK compatibility surface and make instance
+      ownership explicit.
+  - The always-throwing `findWindows()` and `attachToProcess()` methods are no
+    longer public APIs; target selection belongs to `ReShadeOverlayLauncher`.
+  - Each `ElectronGameOverlay` owns an independent transport and allows one live
+    session. Closing it releases the slot for a new session on the same overlay
+    instance.
+  - Independent instances cannot overwrite the process-wide discovery record:
+    one transport owns the fixed endpoint until stop, and failed startups
+    release that ownership for retry.
+  - Created and attached Electron windows no longer focus on `ready-to-show`
+    unless the caller opts in with `focusOnReady: true`; the option defaults to
+    `false`.
 
 ## Diagnostics and logging
 
+- [x] Replace direct SDK launcher console markers with typed lifecycle events.
+  - `ReShadeOverlayLauncher.onEvent()` publishes immutable `runtime-staged`,
+    `target-rendezvous-authorized`, `injector-started`, `injector-returned`,
+    `injector-failed`, `target-connected`, and `target-disconnected` records.
+    Handler failures are isolated and the subscription returns an idempotent
+    unsubscribe function.
+  - The old SDK marker constants and direct lifecycle marker output are gone.
+    Stable markers retained by demos and test runners are client-owned
+    formatting over these events.
 - [x] Add bounded typed diagnostics for the SDK launcher/injector attachment
       boundary.
   - Injector preflight, injector execution/result validation, runtime connection

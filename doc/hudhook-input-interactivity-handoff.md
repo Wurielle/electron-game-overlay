@@ -326,16 +326,19 @@ The current tree proves all of the following on controlled Windows x64 targets:
 - the injected bridge connects to an ephemeral IPv4 loopback port, authenticates
   with a fresh session token, and receives raw BGRA frames without loading the
   legacy native renderer or Node native add-on;
-- `HUDHOOK_ELECTRON_WINDOW` is now an optional exact-name filter; when it is
-  unset, every announced window participates in the ordered compositor;
+- the promoted transport always accepts every announced window; the legacy
+  ambient `HUDHOOK_ELECTRON_WINDOW` name filter has been removed so shell state
+  cannot silently hide a valid scene;
 - premultiplied BGRA is converted to straight RGBA off the render thread;
 - ImGui composes per-window textures borderlessly at signed native bounds;
 - bounds changes reuse existing textures instead of reuploading unchanged pixels;
 - per-window close clears that surface and re-registration resumes it;
 - the lifecycle producer waits for the injected target's `game.process` event before
   starting move/close/re-register timers;
-- attached runners validate exact-PID markers and clean only their controlled process
-  trees.
+- attached runners validate client/test-owned exact-PID markers and clean only
+  their controlled process trees; SDK lifecycle observations come from typed
+  `ReShadeOverlayLauncher.onEvent()` events rather than direct SDK console
+  marker output.
 
 Primary implementation files:
 
@@ -440,6 +443,8 @@ launchers without route intent retain the global fallback.
 Configured exact PIDs are materialized into `--pid` injector invocations before
 staging, `attach()` reserves launcher ownership while readiness is pending, and
 session closure revokes both active and late-completing target authorizations.
+Each promoted `ElectronGameOverlay` instance admits one live session and can
+create a new one after that session closes.
 
 Both directions use one incremental framing contract:
 
@@ -514,13 +519,13 @@ asserts that each payload boundary marker precedes its acknowledgement log.
 Electron's public geometry is expressed in device-independent pixels (DIP),
 while the existing native boundary is physical pixels:
 
-- public `BrowserWindow` bounds, SDK caption height, drag border, and resize
-  constraints are DIP; registration and reconciliation use
+- public `BrowserWindow` bounds, SDK caption height, drag border, and local
+  resize constraints are DIP; registration and reconciliation use
   `BrowserWindow.getContentBounds()` rather than outer bounds so metadata matches
   the surface that emits OSR paints;
 - `OverlaySession` scales every rectangle component (`x`, `y`, `width`, and
-  `height`) plus constraints, caption margins/height, and drag-border width before
-  publishing metadata;
+  `height`) plus caption margins/height before publishing metadata; resize
+  constraints remain local to Electron;
 - `ElectronFrame.rect`, SDK wire metadata, Electron 16 OSR bitmap dimensions,
   game-client mouse coordinates, and the swap-chain/ImGui `display_size` are
   physical pixels;
@@ -530,8 +535,8 @@ while the existing native boundary is physical pixels:
   its accepted OSR frame;
 - a scale transition commits only when a paint is within one pixel per dimension
   of its nominal floor-scaled size; accepted bitmap dimensions become the
-  authoritative rect and fixed-window constraints, while old-size paints remain
-  on the active raster and unmatched/invalid paints are suppressed;
+  authoritative rect, while old-size paints remain on the active raster and
+  unmatched/invalid paints are suppressed;
 - if one bitmap fits both active and desired tolerances, the SDK rejects the
   ambiguous callback, waits for renderer DPR/viewport acknowledgement, and
   commits only a causally subsequent `capturePage()` cropped to the desired DIP
@@ -540,12 +545,12 @@ while the existing native boundary is physical pixels:
   rounds back to signed DIP with it before Electron receives it; legacy input
   without a tag uses the window's current active factor.
 
-`window.bounds` now carries the complete physical geometry during a transition:
-rect, resize constraints, caption margins/height, and drag-border width. The
-host updates the existing registration without reordering it. A committed
-raster change sets `rasterChanged: true`, causing the Rust bridge to clear the
-latest compositable raster until the next framebuffer instead of pairing old
-pixels with new geometry. The old GPU texture is not retired by this mechanism.
+`window.bounds` carries the physical rect, caption margins/height, scale
+identity, and optional raster-change state during a transition. The host
+updates the existing registration without reordering it. A committed raster
+change sets `rasterChanged: true`, causing the Rust bridge to clear the latest
+compositable raster until the next framebuffer instead of pairing old pixels
+with new geometry. The old GPU texture is not retired by this mechanism.
 
 Frames now travel directly as raw BGRA packet bodies rather than through named
 shared mappings. The Node encoder requires positive unsigned dimensions, checks
@@ -706,7 +711,8 @@ through the Windows MSVC developer shell.
   frame acknowledgement. Pathological alternating multi-window/control traffic is
   therefore still transport-hardening work.
 - DOM text focus depends on sending focus before mouse down and preserving FIFO order.
-- `command.cursor` is still ignored; cursor-shape feedback is a follow-up.
+- Cursor-shape feedback is not part of the current runtime contract; the dead
+  `command.cursor` compatibility publication has been removed.
 - Repeated bitmap dimension changes allocate new hudhook texture IDs and currently
   retain the old GPU resources for the renderer lifetime.
 - A failed texture upload is retried only when Electron publishes a newer frame.

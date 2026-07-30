@@ -17,9 +17,7 @@ import {
   type OverlayPacketRejectionReason,
 } from './diagnostic.js';
 import type {
-  NativeHotkey,
   NativeOverlay,
-  NativeOverlayCommand,
   NativeOverlayWindowDetails,
   NativeOverlayWindowGeometry,
 } from './native.js';
@@ -55,6 +53,13 @@ const MAX_PENDING_DIAGNOSTICS = 32;
 const MAX_DIAGNOSTICS_PER_CODE = 8;
 const DIAGNOSTIC_RATE_WINDOW_MS = 60_000;
 
+type DiscoveryEndpointReservation = Readonly<{
+  key: string;
+  token: symbol;
+}>;
+
+const discoveryEndpointReservations = new Map<string, symbol>();
+
 export interface OverlayDiscoveryRecord {
   version: 1;
   pid: number;
@@ -77,15 +82,8 @@ interface JsonObject {
 interface WindowMessage extends JsonObject {
   type: 'window';
   windowId: number;
-  nativeHandle: number;
   name: string;
   transparent: boolean;
-  resizable: boolean;
-  maxWidth: number;
-  maxHeight: number;
-  minWidth: number;
-  minHeight: number;
-  dragBorderWidth: number;
   rect: {
     x: number;
     y: number;
@@ -359,38 +357,17 @@ function tokensEqual(actual: string, expected: string): boolean {
   );
 }
 
-function cloneWindowMessage(message: WindowMessage): WindowMessage {
+function cloneWindowMetadata(message: WindowMessage): JsonObject {
   return {
-    ...message,
+    windowId: message.windowId,
+    name: message.name,
+    transparent: message.transparent,
     rect: { ...message.rect },
     ...(message.caption ? { caption: { ...message.caption } } : {}),
+    ...(message.scaleFactorMicros !== undefined
+      ? { scaleFactorMicros: message.scaleFactorMicros }
+      : {}),
   };
-}
-
-function serializeHotkey(hotkey: NativeHotkey): JsonObject {
-  return {
-    name: hotkey.name,
-    keyCode: hotkey.keyCode,
-    ctrl: hotkey.modifiers?.ctrl ?? false,
-    shift: hotkey.modifiers?.shift ?? false,
-    alt: hotkey.modifiers?.alt ?? false,
-    passthrough: hotkey.passthrough ?? false,
-  };
-}
-
-function fpsPositionNumber(
-  position: 'TopLeft' | 'TopRight' | 'BottomLeft' | 'BottomRight',
-): number {
-  switch (position) {
-    case 'TopLeft':
-      return 1;
-    case 'TopRight':
-      return 2;
-    case 'BottomLeft':
-      return 3;
-    case 'BottomRight':
-      return 4;
-  }
 }
 
 export class OverlayLoopbackTransport implements NativeOverlay {
@@ -435,15 +412,14 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private diagnosticCallback:
     | ((diagnostic: OverlayDiagnostic) => void)
     | undefined;
-  private hotkeys: NativeHotkey[] = [];
-  private showFps = false;
-  private fpsPosition = 1;
-  private latestCursor: string | undefined;
   private inputIntercept: boolean | undefined;
   private token: string | undefined;
   private discoveryRecord: OverlayDiscoveryRecord | undefined;
   private readyPromise: Promise<OverlayDiscoveryRecord> | undefined;
   private rejectReady: ((reason: Error) => void) | undefined;
+  private discoveryEndpointReservation:
+    | DiscoveryEndpointReservation
+    | undefined;
   private generation = 0;
 
   constructor(options: OverlayLoopbackTransportOptions = {}) {
@@ -470,33 +446,57 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return;
     }
 
-    this.diagnosticRates.clear();
-    const token = this.allocateToken();
+    const endpointReservation = this.reserveDiscoveryEndpoint();
+    let token: string | undefined;
+    try {
+      this.diagnosticRates.clear();
+      const allocatedToken = this.allocateToken();
+      token = allocatedToken;
 
-    const generation = ++this.generation;
-    const server = createServer((socket) => this.acceptClient(socket));
-    this.server = server;
-    this.token = token;
-    this.readyPromise = new Promise<OverlayDiscoveryRecord>(
-      (resolve, reject) => {
-        this.rejectReady = reject;
-        const handleStartupError = (error: Error) => {
-          if (this.generation !== generation) {
-            return;
-          }
-          this.publishDiagnostic({
-            code: 'transport-listener-failed',
-            context: errorCodeContext(error),
-          });
-          this.server = undefined;
-          this.token = undefined;
-          this.readyPromise = undefined;
-          this.rejectReady = undefined;
-          this.issuedTokens.delete(token.toLowerCase());
-          reject(error);
-        };
+      const generation = ++this.generation;
+      const server = createServer((socket) => this.acceptClient(socket));
+      this.server = server;
+      this.token = allocatedToken;
+      let resolveReady!: (record: OverlayDiscoveryRecord) => void;
+      let rejectReady!: (reason: Error) => void;
+      const readyPromise = new Promise<OverlayDiscoveryRecord>(
+        (resolve, reject) => {
+          resolveReady = resolve;
+          rejectReady = reject;
+        },
+      );
+      this.readyPromise = readyPromise;
+      this.rejectReady = rejectReady;
 
-        server.once('error', handleStartupError);
+      const handleStartupError = (error: Error) => {
+        if (
+          this.generation !== generation ||
+          this.server !== server ||
+          this.readyPromise !== readyPromise
+        ) {
+          return;
+        }
+        this.publishDiagnostic({
+          code: 'transport-listener-failed',
+          context: errorCodeContext(error),
+        });
+        server.off('error', handleStartupError);
+        try {
+          server.close();
+        } catch {
+          // A listener startup error can close the server before this callback.
+        }
+        this.server = undefined;
+        this.token = undefined;
+        this.readyPromise = undefined;
+        this.rejectReady = undefined;
+        this.issuedTokens.delete(allocatedToken.toLowerCase());
+        this.releaseDiscoveryEndpoint(endpointReservation);
+        rejectReady(error);
+      };
+
+      server.once('error', handleStartupError);
+      try {
         server.listen(0, LOOPBACK_HOST, () => {
           server.off('error', handleStartupError);
           server.on('error', (error) => {
@@ -509,11 +509,31 @@ export class OverlayLoopbackTransport implements NativeOverlay {
             }
           });
           server.unref();
-          void this.finishStart(server, token, generation, resolve, reject);
+          void this.finishStart(
+            server,
+            allocatedToken,
+            generation,
+            resolveReady,
+            rejectReady,
+          );
         });
-      },
-    );
-    void this.readyPromise.catch(() => undefined);
+      } catch (error) {
+        handleStartupError(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+      void readyPromise.catch(() => undefined);
+    } catch (error) {
+      if (this.server || this.readyPromise) {
+        this.stop();
+      } else {
+        if (token !== undefined) {
+          this.issuedTokens.delete(token.toLowerCase());
+        }
+        this.releaseDiscoveryEndpoint(endpointReservation);
+      }
+      throw error;
+    }
   }
 
   public whenReady(): Promise<OverlayDiscoveryRecord> {
@@ -657,10 +677,6 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.inputTranslatorsByPid.clear();
     this.windows.clear();
     this.latestFrames.clear();
-    this.hotkeys = [];
-    this.showFps = false;
-    this.fpsPosition = 1;
-    this.latestCursor = undefined;
     this.inputIntercept = undefined;
     this.pendingEvents.length = 0;
     this.pendingDiagnostics.length = 0;
@@ -668,6 +684,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.diagnosticCallback = undefined;
     this.diagnosticRates.clear();
     this.fallbackInputTranslator.reset();
+    this.releaseDiscoveryEndpoint();
 
     if (priorRecord) {
       this.removeDiscoveryIfOwnedSync(this.discoveryPath, priorRecord);
@@ -710,46 +727,15 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
   }
 
-  public setHotkeys(hotkeys: NativeHotkey[]): void {
-    this.hotkeys = hotkeys.map((hotkey) => ({
-      ...hotkey,
-      ...(hotkey.modifiers ? { modifiers: { ...hotkey.modifiers } } : {}),
-    }));
-    this.broadcastControl({
-      type: 'overlay.hotkey',
-      hotkeys: this.hotkeys.map(serializeHotkey),
-    });
-  }
-
-  public sendCommand(command: NativeOverlayCommand): void {
-    switch (command.command) {
-      case 'cursor':
-        this.latestCursor = command.cursor;
-        this.broadcastControl({
-          type: 'command.cursor',
-          cursor: command.cursor,
-        });
-        break;
-      case 'fps':
-        this.showFps = command.showfps;
-        this.fpsPosition = fpsPositionNumber(command.position);
-        this.broadcastControl({
-          type: 'command.fps',
-          showfps: command.showfps,
-          position: this.fpsPosition,
-        });
-        break;
-      case 'input.intercept':
-        this.inputIntercept = command.intercept;
-        if (!command.intercept) {
-          this.resetInputTranslators();
-        }
-        this.broadcastControl({
-          type: 'command.input.intercept',
-          intercept: command.intercept,
-        });
-        break;
+  public setInputIntercept(intercept: boolean): void {
+    this.inputIntercept = intercept;
+    if (!intercept) {
+      this.resetInputTranslators();
     }
+    this.broadcastControl({
+      type: 'command.input.intercept',
+      intercept,
+    });
   }
 
   public addWindow(
@@ -763,15 +749,8 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     const message: WindowMessage = {
       type: 'window',
       windowId,
-      nativeHandle: details.nativeHandle,
       name: details.name,
       transparent: details.transparent,
-      resizable: details.resizable,
-      maxWidth: details.maxWidth,
-      maxHeight: details.maxHeight,
-      minWidth: details.minWidth,
-      minHeight: details.minHeight,
-      dragBorderWidth: details.dragBorderWidth ?? 0,
       rect: { ...details.rect },
       ...(details.caption ? { caption: { ...details.caption } } : {}),
       ...(details.scaleFactorMicros !== undefined
@@ -808,17 +787,6 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       type: 'window.bounds',
       windowId,
       rect: { ...details.rect },
-      ...(details.maxWidth !== undefined ? { maxWidth: details.maxWidth } : {}),
-      ...(details.maxHeight !== undefined
-        ? { maxHeight: details.maxHeight }
-        : {}),
-      ...(details.minWidth !== undefined ? { minWidth: details.minWidth } : {}),
-      ...(details.minHeight !== undefined
-        ? { minHeight: details.minHeight }
-        : {}),
-      ...(details.dragBorderWidth !== undefined
-        ? { dragBorderWidth: details.dragBorderWidth }
-        : {}),
       ...(details.caption !== undefined
         ? { caption: { ...details.caption } }
         : {}),
@@ -834,21 +802,6 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     const window = this.windows.get(windowId);
     if (window) {
       window.rect = { ...details.rect };
-      if (details.maxWidth !== undefined) {
-        window.maxWidth = details.maxWidth;
-      }
-      if (details.maxHeight !== undefined) {
-        window.maxHeight = details.maxHeight;
-      }
-      if (details.minWidth !== undefined) {
-        window.minWidth = details.minWidth;
-      }
-      if (details.minHeight !== undefined) {
-        window.minHeight = details.minHeight;
-      }
-      if (details.dragBorderWidth !== undefined) {
-        window.dragBorderWidth = details.dragBorderWidth;
-      }
       if (details.caption !== undefined) {
         window.caption = { ...details.caption };
       }
@@ -909,6 +862,36 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return token;
     }
     throw new Error('Overlay transport could not allocate a unique token');
+  }
+
+  private reserveDiscoveryEndpoint(): DiscoveryEndpointReservation {
+    const key = resolve(this.discoveryPath).toLowerCase();
+    if (discoveryEndpointReservations.has(key)) {
+      throw new Error(
+        `Overlay transport discovery endpoint is already active: ${this.discoveryPath}`,
+      );
+    }
+
+    const reservation = Object.freeze({ key, token: Symbol(key) });
+    discoveryEndpointReservations.set(key, reservation.token);
+    this.discoveryEndpointReservation = reservation;
+    return reservation;
+  }
+
+  private releaseDiscoveryEndpoint(
+    reservation = this.discoveryEndpointReservation,
+  ): void {
+    if (!reservation) {
+      return;
+    }
+    if (
+      discoveryEndpointReservations.get(reservation.key) === reservation.token
+    ) {
+      discoveryEndpointReservations.delete(reservation.key);
+    }
+    if (this.discoveryEndpointReservation === reservation) {
+      this.discoveryEndpointReservation = undefined;
+    }
   }
 
   private async createTargetAuthorization(
@@ -1050,6 +1033,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     resolve: (record: OverlayDiscoveryRecord) => void,
     reject: (reason: Error) => void,
   ): Promise<void> {
+    if (this.generation !== generation || this.server !== server) {
+      return;
+    }
+
     const address = server.address();
     if (!address || typeof address === 'string') {
       reject(new Error('Overlay transport did not receive a TCP port'));
@@ -1416,24 +1403,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     client.writer.sendControl(
       encodeJsonTransportPacket({
         type: 'overlay.init',
-        processEnabled: true,
-        hotkeys: this.hotkeys.map(serializeHotkey),
-        windows: Array.from(this.windows.values(), cloneWindowMessage),
-        showfps: this.showFps,
-        fpsPosition: this.fpsPosition,
-        dragMode: 1,
+        windows: Array.from(this.windows.values(), cloneWindowMetadata),
       }),
     );
     for (const [windowId, frame] of this.latestFrames) {
       client.writer.sendFrame(windowId, frame);
-    }
-    if (this.latestCursor !== undefined) {
-      client.writer.sendControl(
-        encodeJsonTransportPacket({
-          type: 'command.cursor',
-          cursor: this.latestCursor,
-        }),
-      );
     }
     if (this.inputIntercept !== undefined) {
       client.writer.sendControl(

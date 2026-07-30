@@ -15,5 +15,4 @@ export type OverlayWindowBridge = {
     window: ElectronOverlayWindow,
     image: Electron.NativeImage,
   ) => void;
-  sendCursor: (type: string) => void;
 };

@@ -1,34 +1,5 @@
 export type Disposable = () => void;
 
-export type OverlayHotkey = {
-  name: string;
-  keyCode: number;
-  modifiers?: {
-    alt?: boolean;
-    ctrl?: boolean;
-    shift?: boolean;
-    meta?: boolean;
-  };
-  passthrough?: boolean;
-};
-
-export type OverlayProcessAttachResult = {
-  injectHelper: string;
-  injectDll: string;
-  injectSucceed: boolean;
-};
-
-export type OverlayProcessTarget = (
-  | {
-      title: string;
-    }
-  | {
-      pid: number;
-    }
-) & {
-  includeMinimized?: boolean;
-};
-
 export type OverlayDiagnosticSource =
   | 'electron-game-overlay'
   | 'electron-overlay-transport'
@@ -84,9 +55,6 @@ export type OverlayDiagnostic = Readonly<{
 export type OverlaySessionEventMap = {
   diagnostic: OverlayDiagnostic;
   fps: OverlayGraphicsFps;
-  hotkeyDown: {
-    name: string;
-  };
   nativeEvent: {
     event: string;
     payload: any;
@@ -181,6 +149,7 @@ export type ElectronOverlayWindowBaseOptions = {
   id?: string;
   name?: string;
   bounds?: Partial<Rect>;
+  focusOnReady?: boolean;
   dragBorder?: number;
   captionHeight?: number;
   transparent?: boolean;

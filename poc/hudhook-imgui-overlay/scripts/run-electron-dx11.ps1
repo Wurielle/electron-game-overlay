@@ -1275,17 +1275,8 @@ $ElectronProcessIds = @()
 $HostProcess = $null
 $RunVerified = $false
 $HostExitCode = 0
-$ElectronWindowFilterWasPresent = Test-Path Env:HUDHOOK_ELECTRON_WINDOW
-$ElectronWindowFilterOriginalValue = $env:HUDHOOK_ELECTRON_WINDOW
-$ElectronWindowFilterTemporarilyCleared = $false
 
 try {
-    if ($ClientMultiWindowMode -and $ElectronWindowFilterWasPresent) {
-        Remove-Item Env:HUDHOOK_ELECTRON_WINDOW
-        $ElectronWindowFilterTemporarilyCleared = $true
-        Write-Host "Temporarily cleared HUDHOOK_ELECTRON_WINDOW for the multi-window test."
-    }
-
     $UnexpectedHosts = Get-Process -Name $HostProcessName -ErrorAction SilentlyContinue
     $UnexpectedTitleHosts = @(Get-ExactTitleProcesses)
     if ($UnexpectedHosts -or $UnexpectedTitleHosts.Count -gt 0) {
@@ -3401,10 +3392,6 @@ try {
     }
 }
 finally {
-    if ($ElectronWindowFilterTemporarilyCleared) {
-        $env:HUDHOOK_ELECTRON_WINDOW = $ElectronWindowFilterOriginalValue
-    }
-
     $CleanupRequested = -not $RunVerified -or $Wait -or $InteractiveProofMode
     if ($CleanupRequested) {
         $ElectronProcessIds = @(

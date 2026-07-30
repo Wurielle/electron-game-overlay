@@ -28,8 +28,31 @@ test('the package declarations export the typed session diagnostic contract', ()
   assert.match(declarations, /OverlayDiagnosticSource,/);
 });
 
+test('the package surface omits removed pre-release compatibility APIs', () => {
+  const sdk = require('../dist/index.js');
+  const declarations = readFileSync(
+    path.resolve(__dirname, '..', 'dist', 'lib', 'sdk.d.ts'),
+    'utf8',
+  );
+
+  assert.equal('findWindows' in sdk.ElectronGameOverlay.prototype, false);
+  assert.equal('attachToProcess' in sdk.OverlaySession.prototype, false);
+  assert.equal('setHotkeys' in sdk.OverlaySession.prototype, false);
+  for (const removedType of [
+    'OverlayHotkey',
+    'OverlayProcessAttachResult',
+    'OverlayProcessTarget',
+  ]) {
+    assert.doesNotMatch(declarations, new RegExp(`\\b${removedType}\\b`));
+  }
+});
+
 test('the package root exports the typed ReShade diagnostic contract', () => {
   const sdk = require('../dist/index.js');
+  const declarations = readFileSync(
+    path.resolve(__dirname, '..', 'dist', 'lib', 'sdk.d.ts'),
+    'utf8',
+  );
   const error = new sdk.ReShadeOperationError({
     message: 'synthetic conflict',
     code: 'target-runtime-conflict',
@@ -45,4 +68,8 @@ test('the package root exports the typed ReShade diagnostic contract', () => {
   assert.equal(error.diagnostic.schemaVersion, 1);
   assert.equal(error.diagnostic.source, 'electron-game-overlay');
   assert.equal(Object.isFrozen(error.diagnostic), true);
+  assert.match(declarations, /ReShadeLauncherEvent,/);
+  assert.match(declarations, /ReShadeLauncherEventHandler,/);
+  assert.equal('RESHADE_CLIENT_INJECTOR_STARTED_MARKER' in sdk, false);
+  assert.equal('RESHADE_CLIENT_INJECTOR_FAILED_MARKER' in sdk, false);
 });

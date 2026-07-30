@@ -226,14 +226,10 @@ test('bounded Electron OSR rounding becomes authoritative geometry', () => {
   const geometry = getPhysicalWindowGeometry(
     roundedPaint.state.activeRasterBounds,
     roundedPaint.state.activeDisplay,
-    { resizable: false, dragBorder: 0, captionHeight: 0 },
+    { dragBorder: 0, captionHeight: 0 },
     roundedPaint.state.activeFrameSize,
   );
   assert.deepEqual(geometry.rect, { x: 15, y: 20, width: 400, height: 251 });
-  assert.equal(geometry.minWidth, 400);
-  assert.equal(geometry.maxWidth, 400);
-  assert.equal(geometry.minHeight, 251);
-  assert.equal(geometry.maxHeight, 251);
 
   const outsideTolerance = reconcileWindowFrame(initial, {
     width: 400,
@@ -291,19 +287,13 @@ test('full geometry includes scale identity and ignores transient raster flags',
   const activeDisplay = display(7, 1.5, 1280, 720);
   const rasterBounds = bounds(-12, 34, 640, 360);
   const geometry = getPhysicalWindowGeometry(rasterBounds, activeDisplay, {
-    resizable: true,
     dragBorder: 10,
     captionHeight: 40,
   });
 
   assert.deepEqual(geometry, {
     rect: bounds(-18, 51, 960, 540),
-    maxWidth: 1920,
-    maxHeight: 1080,
-    minWidth: 150,
-    minHeight: 150,
     caption: { left: 15, right: 15, top: 15, height: 60 },
-    dragBorderWidth: 15,
     scaleFactorMicros: 1_500_000,
   });
   assert.equal(

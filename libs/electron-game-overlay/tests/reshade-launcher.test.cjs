@@ -18,11 +18,6 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
-  RESHADE_CLIENT_INJECTOR_RETURNED_MARKER,
-  RESHADE_CLIENT_INJECTOR_STARTED_MARKER,
-  RESHADE_CLIENT_RUNTIME_STAGED_MARKER,
-  RESHADE_CLIENT_TARGET_CONNECTED_MARKER,
-  RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER,
   ReShadeOperationError,
   ReShadeOverlayLauncher,
   buildReShadeInvocation,
@@ -389,19 +384,76 @@ test('exact-PID targets are identity-distinct and compatible with a matching con
   }
 });
 
+test('launcher lifecycle subscriptions are optional, immutable, removable, and failure-isolated', async () => {
+  const fixture = createRuntime();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  const logs = [];
+  const observed = [];
+  const removed = [];
+  console.log = (...values) => logs.push(values);
+
+  const removeThrowingHandler = launcher.onEvent((event) => {
+    observed.push(event);
+    throw new Error('synthetic observer failure');
+  });
+  const removeBeforeEvent = launcher.onEvent((event) => removed.push(event));
+  removeBeforeEvent();
+  removeBeforeEvent();
+
+  try {
+    assert.throws(
+      () => launcher.onEvent(null),
+      /event handler must be a function/,
+    );
+    await launcher.prepare();
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].type, 'runtime-staged');
+    assert.equal(
+      path.dirname(observed[0].runDirectory),
+      fixture.runsRootDirectory,
+    );
+    assert.match(path.basename(observed[0].runDirectory), /^prepared-/);
+    assert.ok(Object.isFrozen(observed[0]));
+    assert.deepEqual(removed, []);
+    assert.deepEqual(logs, []);
+
+    removeThrowingHandler();
+    removeThrowingHandler();
+    launcher.dispose();
+    assert.equal(observed.length, 1);
+  } finally {
+    removeThrowingHandler();
+    launcher.dispose();
+    console.log = originalLog;
+  }
+});
+
 test('exact-PID stdout mismatch remains indeterminate and blocks retry', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
-  const originalError = console.error;
-  console.error = () => undefined;
+  const failures = [];
+  const unsubscribe = launcher.onEvent((event) => {
+    if (event.type === 'injector-failed') {
+      failures.push(event);
+      throw new Error('synthetic failure observer error');
+    }
+  });
 
   try {
     const request = launcher.launch({ processName: 'game.exe', pid: 5001 });
     await waitFor(() => execution.calls.length === 1);
     const runDirectory = execution.calls[0].options.cwd;
     execution.calls[0].callback(null, injectorSuccessFor(5002, 'game.exe'), '');
-    await assert.rejects(request, /selected pid=5002; expected pid=5001/);
+    let operationError;
+    await assert.rejects(request, (error) => {
+      operationError = error;
+      assert.match(error.message, /selected pid=5002; expected pid=5001/);
+      return true;
+    });
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].diagnostic, operationError.diagnostic);
     assert.equal(launcher.state, 'blocked');
     await flushMicrotasks();
     assert.equal(
@@ -414,8 +466,8 @@ test('exact-PID stdout mismatch remains indeterminate and blocks retry', async (
       /outcome is indeterminate/,
     );
   } finally {
+    unsubscribe();
     launcher.dispose();
-    console.error = originalError;
     execution.restore();
   }
 });
@@ -777,10 +829,9 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
   const fixture = createRuntime();
   const config = createConfig(fixture, { expectedTargetPid: 4242 });
   const execution = stubExecFile();
-  const originalLog = console.log;
-  const markers = [];
-  console.log = (message) => markers.push(String(message));
   const launcher = new ReShadeOverlayLauncher(config);
+  const events = [];
+  const unsubscribe = launcher.onEvent((event) => events.push(event));
 
   try {
     assert.equal(launcher.state, 'idle');
@@ -849,21 +900,31 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
       result.runtimeStartupPath,
       path.join(runDirectory, runtimeStartupFileName),
     );
-    assert.ok(
-      markers.some((line) =>
-        line.startsWith(`${RESHADE_CLIENT_RUNTIME_STAGED_MARKER} directory=`),
-      ),
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['runtime-staged', 'injector-started', 'injector-returned'],
     );
-    assert.ok(
-      markers.includes(
-        `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target="Gun Frog.exe" arguments=["Gun Frog.exe","--pid","4242"]`,
-      ),
-    );
-    assert.ok(
-      markers.includes(
-        `${RESHADE_CLIENT_INJECTOR_RETURNED_MARKER} target="Gun Frog.exe"`,
-      ),
-    );
+    assert.deepEqual(events[0], {
+      type: 'runtime-staged',
+      runDirectory,
+    });
+    assert.deepEqual(events[1], {
+      type: 'injector-started',
+      invocation: {
+        executable: call.executable,
+        arguments: ['Gun Frog.exe', '--pid', '4242'],
+        targetLabel: 'process:Gun Frog.exe:pid:4242',
+        workingDirectory: runDirectory,
+      },
+    });
+    assert.deepEqual(events[2], {
+      type: 'injector-returned',
+      result,
+    });
+    assert.ok(events.every(Object.isFrozen));
+    assert.ok(Object.isFrozen(events[1].invocation));
+    assert.ok(Object.isFrozen(events[1].invocation.arguments));
+    assert.ok(Object.isFrozen(events[2].result));
     assert.equal(launcher.acceptTargetConnection(4242), true);
     assert.equal(launcher.state, 'connected');
     assert.equal(launcher.acceptTargetConnection(4242), false);
@@ -878,8 +939,8 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
       /already connected/,
     );
   } finally {
+    unsubscribe();
     launcher.dispose();
-    console.log = originalLog;
     execution.restore();
   }
 });
@@ -1771,9 +1832,8 @@ test('session loss after successful injection proof blocks retries', async () =>
   const execution = stubExecFile();
   const sessionHarness = createSessionHarness();
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
-  const originalLog = console.log;
-  const markers = [];
-  console.log = (message) => markers.push(String(message));
+  const events = [];
+  const unsubscribe = launcher.onEvent((event) => events.push(event));
 
   try {
     const attachment = launcher.attach(sessionHarness.session, {
@@ -1783,9 +1843,7 @@ test('session loss after successful injection proof blocks retries', async () =>
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(null, injectorSuccessFor(9101, 'game.exe'), '');
     await waitFor(() =>
-      markers.includes(
-        `${RESHADE_CLIENT_INJECTOR_RETURNED_MARKER} target="game.exe"`,
-      ),
+      events.some((event) => event.type === 'injector-returned'),
     );
     sessionHarness.close();
     await assert.rejects(attachment, /session closed before.*target connected/);
@@ -1804,8 +1862,8 @@ test('session loss after successful injection proof blocks retries', async () =>
     launcher.dispose();
     assert.equal(sessionHarness.targetAuthorizations[0].releaseCount, 1);
   } finally {
+    unsubscribe();
     launcher.dispose();
-    console.log = originalLog;
     execution.restore();
   }
 });
@@ -2375,9 +2433,8 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
   const launcher = new ReShadeOverlayLauncher(
     createConfig(fixture, { expectedTargetPid: 4242 }),
   );
-  const originalLog = console.log;
-  const markers = [];
-  console.log = (message) => markers.push(String(message));
+  const events = [];
+  const unsubscribe = launcher.onEvent((event) => events.push(event));
 
   try {
     const attachment = launcher.attach(sessionHarness.session, {
@@ -2424,8 +2481,26 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
     assert.equal(firstResult.pid, 4242);
     assert.equal(firstResult.targetLabel, 'process:Gun Frog.exe:pid:4242');
     assert.ok(existsSync(firstResult.runDirectory));
-    assert.ok(
-      markers.includes(`${RESHADE_CLIENT_TARGET_CONNECTED_MARKER} pid=4242`),
+    assert.deepEqual(
+      events.find((event) => event.type === 'target-connected'),
+      {
+        type: 'target-connected',
+        targetLabel: 'process:Gun Frog.exe:pid:4242',
+        pid: 4242,
+        path: 'C:\\games\\GUN FROG.EXE',
+      },
+    );
+    assert.deepEqual(
+      events.find((event) => event.type === 'target-rendezvous-authorized'),
+      {
+        type: 'target-rendezvous-authorized',
+        targetLabel: 'process:Gun Frog.exe:pid:4242',
+        pid: 4242,
+        discoveryPath: path.join(
+          firstResult.runDirectory,
+          'electron-overlay-transport-v1.json',
+        ),
+      },
     );
     assert.equal(launcher.state, 'connected');
     assert.equal(sessionHarness.nativeHandlerCount, 1);
@@ -2465,12 +2540,18 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
     assert.equal(launcher.state, 'idle');
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);
-    assert.ok(
-      markers.includes(`${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=4242`),
+    assert.deepEqual(
+      events.find((event) => event.type === 'target-disconnected'),
+      {
+        type: 'target-disconnected',
+        targetLabel: 'process:Gun Frog.exe:pid:4242',
+        pid: 4242,
+        path: 'C:\\games\\GUN FROG.EXE',
+      },
     );
   } finally {
+    unsubscribe();
     launcher.dispose();
-    console.log = originalLog;
     execution.restore();
   }
 });
@@ -2937,9 +3018,8 @@ test('disposing a pending attachment kills the injector and rejects promptly', a
   const execution = stubExecFile();
   const sessionHarness = createSessionHarness();
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
-  const originalError = console.error;
-  const errors = [];
-  console.error = (message) => errors.push(String(message));
+  const events = [];
+  const unsubscribe = launcher.onEvent((event) => events.push(event));
 
   try {
     const attachment = launcher.attach(sessionHarness.session, {
@@ -2961,10 +3041,19 @@ test('disposing a pending attachment kills the injector and rejects promptly', a
     assert.equal(launcher.state, 'idle');
 
     call.callback(null, injectorSuccess, '');
-    await waitFor(() => errors.length === 1);
+    await waitFor(
+      () =>
+        events.filter((event) => event.type === 'injector-failed').length === 1,
+    );
+    const failure = events.find((event) => event.type === 'injector-failed');
+    assert.equal(failure.diagnostic.code, 'operation-cancelled');
+    assert.equal(failure.diagnostic.stage, 'lifecycle');
+    assert.equal(failure.diagnostic.retrySafety, 'indeterminate');
+    assert.ok(Object.isFrozen(failure));
+    assert.ok(Object.isFrozen(failure.diagnostic));
   } finally {
+    unsubscribe();
     launcher.dispose();
-    console.error = originalError;
     execution.restore();
   }
 });

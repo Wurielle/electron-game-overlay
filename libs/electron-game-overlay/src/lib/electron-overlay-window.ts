@@ -17,6 +17,7 @@ export class ElectronOverlayWindow {
 
   private registered = false;
   private destroyed = false;
+  private readonly focusOnReady: boolean;
   private readonly closeHandlers = new Set<() => void>();
 
   constructor(
@@ -32,6 +33,7 @@ export class ElectronOverlayWindow {
     this.dragBorder = options.dragBorder || 0;
     this.captionHeight = options.captionHeight || 0;
     this.transparent = options.transparent || false;
+    this.focusOnReady = options.focusOnReady ?? false;
 
     if (options.bounds) {
       this.setBounds(options.bounds);
@@ -148,7 +150,9 @@ export class ElectronOverlayWindow {
     );
 
     this.browserWindow.on('ready-to-show', () => {
-      this.focus();
+      if (this.focusOnReady) {
+        this.focus();
+      }
     });
 
     const syncWindowGeometry = () => {
@@ -165,10 +169,6 @@ export class ElectronOverlayWindow {
       this.destroyed = true;
       this.bridge.removeWindow(this);
       this.emitClose();
-    });
-
-    this.browserWindow.webContents.on('cursor-changed', (event, type) => {
-      this.bridge.sendCursor(type);
     });
   }
 

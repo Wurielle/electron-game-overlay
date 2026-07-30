@@ -23,7 +23,6 @@ import {
   ReShadeOverlayLauncher,
   type ElectronOverlayWindow,
   type OverlayDiagnostic,
-  type OverlayHotkey,
   type OverlaySession,
   type ReShadeDiagnostic,
   type ReShadeLaunchConfig,
@@ -37,10 +36,10 @@ import {
   ForkedProcessWatcher,
   SteamGameAutoAttacher,
 } from './steam-game-auto-attacher';
+import { logReShadeLauncherEvent } from './reshade-launcher-logging';
 import { TargetInputInterceptState } from './target-input-intercept-state';
 import { AppWindows } from './window-names';
 
-const SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY = 'app.showExampleVideoOverlay';
 const AUTO_START_OVERLAY_FLAG = '--start-overlay-session';
 const GUN_FROG_INPUT_PROOF_FLAG = '--gun-frog-input-proof';
 const STEAM_AUTO_ATTACH_FLAG = '--steam-auto-attach';
@@ -59,16 +58,6 @@ type ReShadeAttachmentState = Readonly<{
   error: string | null;
   diagnostic: ReShadeDiagnostic | null;
 }>;
-
-const EXAMPLE_OVERLAY_HOTKEYS: OverlayHotkey[] = [
-  // Ctrl+I belongs exclusively to Electron's globalShortcut. Registering it
-  // in the payload as well would make one physical keypress toggle twice.
-  {
-    name: SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY,
-    keyCode: 114,
-    modifiers: { ctrl: true },
-  },
-];
 
 class Application {
   private windows: Map<string, Electron.BrowserWindow>;
@@ -115,6 +104,7 @@ class Application {
     this.reshadeLauncher = reshadeConfig
       ? new ReShadeOverlayLauncher(reshadeConfig)
       : null;
+    this.reshadeLauncher?.onEvent(logReShadeLauncherEvent);
     const steamAutoAttachRequested = process.argv.includes(
       STEAM_AUTO_ATTACH_FLAG,
     );
@@ -131,6 +121,7 @@ class Application {
         ? new SteamGameAutoAttacher({
             session: this.overlaySession,
             reshadeConfig,
+            launcherEventHandler: logReShadeLauncherEvent,
             watcherFactory: () =>
               new ForkedProcessWatcher(
                 resolveProcessWatcherEntry(),
@@ -164,9 +155,6 @@ class Application {
     });
     this.overlaySession.on('targetSurfaceRemoved', () => {
       this.publishDemoState();
-    });
-    this.overlaySession.on('hotkeyDown', (payload) => {
-      this.handleOverlayHotkeyDown(payload.name);
     });
     this.overlaySession.on('nativeEvent', ({ event, payload }) => {
       this.handleOverlayNativeEvent(event, payload);
@@ -555,7 +543,6 @@ class Application {
     if (!this.overlayStarted) {
       console.log('starting overlay...');
       this.overlaySession.start();
-      this.overlaySession.setHotkeys(EXAMPLE_OVERLAY_HOTKEYS);
       this.overlayStarted = true;
     }
   }
@@ -751,12 +738,6 @@ class Application {
       console.log(marker, diagnostic.message, diagnostic.context ?? {});
     }
     this.publishDemoState();
-  }
-
-  private handleOverlayHotkeyDown(name: string) {
-    if (name === SHOW_EXAMPLE_VIDEO_OVERLAY_HOTKEY) {
-      this.showExampleVideoOverlay();
-    }
   }
 
   private getOverlayWindowContext(): OverlayWindowContext {
@@ -1011,10 +992,6 @@ class Application {
 
     this.gunFrogProofReadyLogged = true;
     console.log('HUDHOOK_CLIENT_GUN_FROG_PROOF_READY');
-  }
-
-  private showExampleVideoOverlay() {
-    this.setExampleOverlayWindowVisible(AppWindows.exampleVideoOverlay, true);
   }
 }
 

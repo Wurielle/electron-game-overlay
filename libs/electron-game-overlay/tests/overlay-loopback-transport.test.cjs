@@ -22,14 +22,7 @@ const TOKEN = 'ab'.repeat(32);
 const overlayWindow = (name, x = 0) => ({
   name,
   transparent: true,
-  resizable: true,
-  maxWidth: 1920,
-  maxHeight: 1080,
-  minWidth: 100,
-  minHeight: 100,
   rect: { x, y: 20, width: 2, height: 1 },
-  nativeHandle: 123,
-  dragBorderWidth: 8,
   caption: { left: 8, right: 8, top: 8, height: 32 },
   scaleFactorMicros: 1_250_000,
 });
@@ -226,13 +219,146 @@ test('window metadata rejects zero identifiers and scale factors at ingress', ()
   assert.equal(transport.windows.size, 0);
 });
 
-test('legacy process discovery and injection fail explicitly', () => {
-  const message = /unavailable in the overlay transport/;
-  const overlay = new ElectronGameOverlay();
-  assert.throws(() => overlay.findWindows(), message);
+test('each overlay owns its transport and permits only one live session', () => {
+  const firstOverlay = new ElectronGameOverlay();
+  const secondOverlay = new ElectronGameOverlay();
+  assert.notEqual(firstOverlay.nativeOverlay, secondOverlay.nativeOverlay);
+
+  const firstSession = firstOverlay.createSession();
   assert.throws(
-    () => new OverlaySession({}).attachToProcess({ pid: 4321 }),
-    message,
+    () => firstOverlay.createSession(),
+    /already has an active overlay session/,
+  );
+
+  firstSession.close();
+  const replacementSession = firstOverlay.createSession();
+  assert.notEqual(replacementSession, firstSession);
+  replacementSession.close();
+  firstOverlay.dispose();
+  secondOverlay.dispose();
+  assert.throws(
+    () => firstOverlay.createSession(),
+    /ElectronGameOverlay is disposed/,
+  );
+});
+
+test('the fixed discovery endpoint has one owner and transfers after stop', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-endpoint-owner-test-'),
+  );
+  const discoveryPath = path.join(tempDirectory, 'transport.json');
+  const first = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '11'.repeat(32),
+  });
+  const second = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '22'.repeat(32),
+  });
+  t.after(async () => {
+    first.stop();
+    second.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  first.start();
+  assert.throws(() => second.start(), /discovery endpoint is already active/);
+  const firstRecord = await first.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    firstRecord,
+  );
+
+  first.stop();
+  second.start();
+  const secondRecord = await second.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    secondRecord,
+  );
+
+  second.stop();
+  first.start();
+  const restartedFirstRecord = await first.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    restartedFirstRecord,
+  );
+});
+
+test('startup failures release fixed discovery endpoint ownership', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-endpoint-failure-test-'),
+  );
+  const discoveryPath = path.join(tempDirectory, 'transport.json');
+  const synchronousFailure = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => 'invalid-token',
+  });
+  const asynchronousFailure = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '33'.repeat(32),
+  });
+  const successor = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '44'.repeat(32),
+  });
+  asynchronousFailure.publishDiscovery = async () => {
+    throw new Error('synthetic discovery publication failure');
+  };
+  t.after(async () => {
+    synchronousFailure.stop();
+    asynchronousFailure.stop();
+    successor.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  assert.throws(
+    () => synchronousFailure.start(),
+    /token must be exactly 32 bytes of hex/,
+  );
+
+  asynchronousFailure.start();
+  await assert.rejects(
+    asynchronousFailure.whenReady(),
+    /synthetic discovery publication failure/,
+  );
+
+  successor.start();
+  const successorRecord = await successor.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    successorRecord,
+  );
+});
+
+test('an immediate stop releases ownership before the same transport restarts', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-endpoint-restart-test-'),
+  );
+  const discoveryPath = path.join(tempDirectory, 'transport.json');
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '55'.repeat(32),
+  });
+  t.after(async () => {
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.start();
+  const interruptedReadiness = transport.whenReady();
+  transport.stop();
+  await assert.rejects(
+    interruptedReadiness,
+    /transport stopped before startup/i,
+  );
+
+  transport.start();
+  const restartedRecord = await transport.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    restartedRecord,
   );
 });
 
@@ -331,17 +457,54 @@ test('one synchronous client write failure does not abort later clients', () => 
   transport.clients.add(client(healthyWriter));
 
   assert.doesNotThrow(() =>
-    transport.addWindow(9, overlayWindow('still-delivered')),
+    transport.addWindow(9, {
+      ...overlayWindow('still-delivered'),
+      nativeHandle: 123,
+      resizable: true,
+      maxWidth: 1920,
+      maxHeight: 1080,
+      minWidth: 100,
+      minHeight: 100,
+      dragBorderWidth: 8,
+    }),
   );
   assert.equal(writeErrors.length, 1);
   assert.equal(delivered.length, 1);
   const message = JSON.parse(delivered[0].subarray(5).toString('utf8'));
-  assert.equal(message.type, 'window');
-  assert.equal(message.windowId, 9);
-  assert.equal(message.name, 'still-delivered');
+  assert.deepEqual(message, {
+    type: 'window',
+    windowId: 9,
+    name: 'still-delivered',
+    transparent: true,
+    rect: { x: 0, y: 20, width: 2, height: 1 },
+    caption: { left: 8, right: 8, top: 8, height: 32 },
+    scaleFactorMicros: 1_250_000,
+  });
+
+  transport.sendWindowBounds(9, {
+    rect: { x: 10, y: 30, width: 4, height: 2 },
+    caption: { left: 4, right: 4, top: 4, height: 16 },
+    scaleFactorMicros: 1_500_000,
+    rasterChanged: false,
+    maxWidth: 2560,
+    maxHeight: 1440,
+    minWidth: 100,
+    minHeight: 100,
+    dragBorderWidth: 4,
+  });
+  assert.equal(writeErrors.length, 2);
+  assert.equal(delivered.length, 2);
+  assert.deepEqual(JSON.parse(delivered[1].subarray(5).toString('utf8')), {
+    type: 'window.bounds',
+    windowId: 9,
+    rect: { x: 10, y: 30, width: 4, height: 2 },
+    caption: { left: 4, right: 4, top: 4, height: 16 },
+    scaleFactorMicros: 1_500_000,
+    rasterChanged: false,
+  });
 });
 
-test('authenticated clients receive canonical snapshot before callback commands', async (t) => {
+test('authenticated clients receive a canonical snapshot and retained input state', async (t) => {
   const tempDirectory = await mkdtemp(
     path.join(os.tmpdir(), 'overlay-transport-test-'),
   );
@@ -363,14 +526,11 @@ test('authenticated clients receive canonical snapshot before callback commands'
   const latestPixels = Buffer.from([10, 20, 30, 40, 50, 60, 70, 80]);
   transport.sendFrameBuffer(1, Buffer.alloc(8, 1), 2, 1);
   transport.sendFrameBuffer(1, latestPixels, 2, 1);
-  transport.sendCommand({ command: 'input.intercept', intercept: true });
+  transport.setInputIntercept(true);
 
   const events = [];
   transport.setEventCallback((event, payload) => {
     events.push({ event, payload });
-    if (event === 'game.process') {
-      transport.sendCommand({ command: 'cursor', cursor: 'pointer' });
-    }
   });
   transport.start();
   const record = await transport.whenReady();
@@ -391,6 +551,7 @@ test('authenticated clients receive canonical snapshot before callback commands'
   socket.write(hello.subarray(3));
 
   const init = decodeJson(await reader.next());
+  assert.deepEqual(Object.keys(init).sort(), ['type', 'windows']);
   assert.equal(init.type, 'overlay.init');
   assert.deepEqual(
     init.windows.map((window) => [window.windowId, window.name]),
@@ -399,6 +560,14 @@ test('authenticated clients receive canonical snapshot before callback commands'
       [1, 'first-replaced'],
     ],
   );
+  assert.deepEqual(Object.keys(init.windows[0]).sort(), [
+    'caption',
+    'name',
+    'rect',
+    'scaleFactorMicros',
+    'transparent',
+    'windowId',
+  ]);
 
   const frame = await reader.next();
   assert.equal(frame.kind, 2);
@@ -409,10 +578,6 @@ test('authenticated clients receive canonical snapshot before callback commands'
   assert.deepEqual(decodeJson(await reader.next()), {
     type: 'command.input.intercept',
     intercept: true,
-  });
-  assert.deepEqual(decodeJson(await reader.next()), {
-    type: 'command.cursor',
-    cursor: 'pointer',
   });
 
   await waitFor(() => events.length === 1);

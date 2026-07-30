@@ -40,6 +40,18 @@ const result = await launcher?.attach(session, { processName: 'game.exe' });
 console.log(result?.runtimeMode, result?.hostRuntimePath);
 ```
 
+Each `ElectronGameOverlay` instance owns its transport and supports one live
+`OverlaySession`. Calling `createSession()` again while that session is open
+throws. After `session.close()`, the same overlay instance can create and start a
+new session; `overlay.dispose()` closes the active session, if any.
+Disposal is final; create a new `ElectronGameOverlay` instance to start again
+after disposal.
+
+Transports do not share callbacks, but the process-wide default discovery
+endpoint has one active owner. Starting a session on another overlay instance
+fails explicitly until the current owner stops, preventing either producer from
+silently becoming unreachable.
+
 The exported `ReShadeRuntimeMode` is either `injected-runtime` or
 `existing-runtime`. `ReShadeLaunchResult.runtimeMode` identifies which path
 succeeded; compatible reuse also returns `hostRuntimePath`. In injected mode,
@@ -161,6 +173,27 @@ second target mutation, inject another runtime, or repeat an existing-runtime
 add-on load against a live target. An OS-confirmed exit of the selected PID is
 the other safe re-arm boundary when that PID authenticated and is observable by
 the transport.
+
+Subscribe to launcher lifecycle events when an application needs progress
+telemetry:
+
+```ts
+const stopObservingLauncher = launcher.onEvent((event) => {
+  console.log('ReShade lifecycle', event.type);
+
+  if (event.type === 'injector-failed') {
+    console.error(event.diagnostic.code, event.diagnostic.message);
+  }
+});
+```
+
+The immutable event types are `runtime-staged`,
+`target-rendezvous-authorized`, `injector-started`, `injector-returned`,
+`injector-failed`, `target-connected`, and `target-disconnected`. Handler
+failures cannot change launcher state or operation results, and the returned
+function unsubscribes the handler. The launcher does not print or export
+SDK-owned lifecycle marker strings. A demo or test runner that needs stable
+console markers owns that formatting and can derive it from `onEvent()`.
 
 Launcher failures expose a typed, structured diagnostic instead of requiring
 applications to parse human-readable injector output:
@@ -322,8 +355,8 @@ after safe completion, confirmed target exit, or a definite-safe failure.
 Native claim loss is coordination, not runtime incompatibility; an
 indeterminate add-on-load outcome does not auto-rearm that lane. The runtime
 directory can be overridden explicitly for development tests; otherwise it
-resolves relative to the built SDK. The legacy `findWindows()` and
-`session.attachToProcess()` methods still throw.
+resolves relative to the built SDK. Applications select targets through
+`ReShadeOverlayLauncher`.
 
 The controlled production client/SDK D3D12 gate is available through:
 
@@ -425,6 +458,12 @@ window.followTarget({ pid: targetPid, surfaceId, area: 'client' });
 window.stopFollowingTarget();
 ```
 
+`focusOnReady` is opt-in and defaults to `false` for both
+`session.windows.create()` and `session.windows.attach()`. Set it to `true` only
+when the offscreen web view should receive Chromium focus on
+`ready-to-show`. Returned target input still focuses the selected web view
+immediately before dispatch.
+
 `render` sizes the OSR raster to the reported render surface; `client` uses the
 physical game-client dimensions. The SDK places the hidden backing
 `BrowserWindow` on the target display in Electron DIP while publishing
@@ -444,11 +483,13 @@ Electron coordinates. For registration and runtime reconciliation,
 bounds. That makes the geometry describe the content surface that produces OSR
 paints, including when a framed or attached producer has non-client chrome. The
 session converts the complete content rectangle (`x`, `y`, `width`, and
-`height`) and all related metadata to physical pixels before sending them
-through the SDK's authenticated loopback transport. Electron 16 offscreen paint
-bitmaps are physical-pixel buffers, so the wire rectangle and bitmap use the
-same coordinate space. The transport is implemented with Node's maintained core
-networking APIs and does not load a native Node add-on.
+`height`) plus caption hit regions to physical pixels before sending them
+through the SDK's authenticated loopback transport. Resize constraints remain
+local Electron behavior and are not part of the injected scene protocol.
+Electron 16 offscreen paint bitmaps are physical-pixel buffers, so the wire
+rectangle and bitmap use the same coordinate space. The transport is
+implemented with Node's maintained core networking APIs and does not load a
+native Node add-on.
 
 Input takes the reverse path. The injected compositor reports overlay-local
 physical pixels in `game.input` and tags each packet with the window scale that
@@ -482,11 +523,10 @@ Electron display add/remove/metrics events update the desired state and request
 an OSR repaint. A paint matches a raster when each dimension is within one pixel
 of the nominal floor-scaled size; Electron 16 can otherwise report, for example,
 `400 x 251` for `320 x 200` content at 1.25. The accepted bitmap dimensions—not
-the nominal dimensions—become the authoritative physical rectangle and, for a
-fixed-size window, its constraints. An old-size paint remains valid at the
-active scale, and a bitmap matching neither scale is suppressed. This prevents
-bounds, frame, and returned input from changing coordinate systems at different
-times.
+the nominal dimensions—become the authoritative physical rectangle. An old-size
+paint remains valid at the active scale, and a bitmap matching neither scale is
+suppressed. This prevents bounds, frame, and returned input from changing
+coordinate systems at different times.
 
 If one bitmap falls within both the active and desired size tolerances, size
 alone cannot identify the producer scale. The session rejects that ambiguous
@@ -496,11 +536,11 @@ content rectangle. The causally subsequent capture's actual dimensions commit
 the desired raster; a failed acknowledgement or capture is retried without
 publishing the ambiguous callback.
 
-The compatible `window.bounds` update now carries the complete physical
-geometry: rectangle, resize constraints, caption margins/height, and drag-border
-width. A raster-changing commit sends `rasterChanged: true` before its frame;
-the native compositor clears that window's latest compositable raster so old pixels are not
-drawn with new metadata, then republishes it when the matching framebuffer
+The `window.bounds` update carries the physical rectangle, caption
+margins/height, scale identity, and optional raster-change state. A
+raster-changing commit sends `rasterChanged: true` before its frame; the native
+compositor clears that window's latest compositable raster so old pixels are
+not drawn with new metadata, then republishes it when the matching framebuffer
 arrives. This suppresses stale display without retiring the cached GPU texture,
 which remains separate work.
 

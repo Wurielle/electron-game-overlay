@@ -23,31 +23,31 @@ The controlled D3D11 and D3D12 milestones and the focused real-client transport 
 
 Verified results:
 
--   the Windows x64 MSVC release payload and injector build from the locked Cargo workspace;
--   the clean controlled host contains no ReShade runtime, proxy, configuration, or add-on;
--   injection by exact window title reaches hudhook's D3D11 hooks;
--   the generated 128 x 128 RGBA texture uploads successfully;
--   the first ImGui frame renders at 1280 x 720;
--   a programmatic resize updates the ImGui display size to 884 x 561 without hanging the host;
--   the controlled host establishes Per-Monitor-V2 awareness before HWND creation, verifies the effective context, derives its initial outer size from the requested client size with `AdjustWindowRectExForDpi`, and applies the `WM_DPICHANGED` suggested rectangle;
--   the controlled host remains responsive and accepts a normal window close;
--   the diagnostic producer and repository's real built Electron client publish offscreen windows through the public `electron-game-overlay` session and authenticated Node/Rust loopback transport;
--   the real-client runner requires `ExampleMainOverlay` evidence while the default unfiltered bridge composes every announced client window in registration order;
--   the hudhook payload authenticates to the project-owned loopback endpoint, receives direct BGRA frames on a worker thread, converts Electron's premultiplied pixels to straight RGBA, atomically publishes an ordered scene/router snapshot, uploads per-window textures through hudhook, and composes them at native bounds;
--   a transparent window moves from `(64, 72)` to `(176, 128)`, disappears after the SDK's `window.close`, and resumes after the same `BrowserWindow` re-registers and publishes a replacement frame;
--   `OverlaySession.input.intercept()` drives hudhook's guarded Win32 input filter; while it blocks the controlled host, the payload front-to-back hit-tests and forwards left/right/middle mouse, vertical/horizontal wheel, keyboard, system-key, character, and focus packets to the hit/focused Electron window, and project-owned router state maintains a per-window multi-button capture owner;
--   the deterministic `-ClientInput` runner proves click/focus, typed text, vertical wheel, intercepted Escape, release acknowledgement, released Escape, and clean process exit;
--   router, bridge, and native-translator tests cover outside-bounds capture/release, outside-overlay swallowing, right/middle buttons, horizontal wheel, extended characters, synthetic cancellation/cleanup releases, guarded filter transitions, at-most-once input retry classification, and adjacent mouse-move coalescing;
--   `-ClientMultiWindow -DeviceScaleFactor 1.25 -Wait` proves two overlapping windows, registration order, a complete DIP-to-physical frame/metadata contract, physical-to-DIP input, caption dragging, an exposed BACK click-to-front transition without producer lifecycle traffic, topmost-only input, focused keyboard routing, out-of-bounds capture, re-registration, isolated hide/show, release, normal exit, and exact cleanup;
--   producer windows use content rather than outer bounds, independently track desired and active display scale, keep old-scale input coherent while a transition is pending, and commit full rect/caption/border/constraint metadata only with a matching OSR paint;
--   ambiguous scale transitions use renderer DPR/viewport acknowledgement plus a cropped `capturePage()` barrier, while per-packet scale tags keep already queued input on its routing-time scale and preserve an active-scale fallback for legacy packets;
--   raster-changing `window.bounds` updates suppress the stale compositable raster without changing stack order, while the framed transport validates dimensions and exact BGRA byte counts before accepting a replacement frame;
--   `-ClientMultiWindowManual -Wait` exposes the overlapping pages and their hide/show/raise controls for hands-on testing;
--   the integrated diagnostic, `-Client`, `-ClientWindow`, `-ClientInput`, and multi-window runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
--   at the time of the historical acceptance, a Windows x64 SDK build staged
-    the injector and D3D11/D3D12 payloads. The production SDK no longer stages
-    hudhook; current builds stage `electron_game_overlay.addon64` and its pinned
-    ReShade runtime instead.
+- the Windows x64 MSVC release payload and injector build from the locked Cargo workspace;
+- the clean controlled host contains no ReShade runtime, proxy, configuration, or add-on;
+- injection by exact window title reaches hudhook's D3D11 hooks;
+- the generated 128 x 128 RGBA texture uploads successfully;
+- the first ImGui frame renders at 1280 x 720;
+- a programmatic resize updates the ImGui display size to 884 x 561 without hanging the host;
+- the controlled host establishes Per-Monitor-V2 awareness before HWND creation, verifies the effective context, derives its initial outer size from the requested client size with `AdjustWindowRectExForDpi`, and applies the `WM_DPICHANGED` suggested rectangle;
+- the controlled host remains responsive and accepts a normal window close;
+- the diagnostic producer and repository's real built Electron client publish offscreen windows through the public `electron-game-overlay` session and authenticated Node/Rust loopback transport;
+- the real-client runner requires `ExampleMainOverlay` evidence while the default unfiltered bridge composes every announced client window in registration order;
+- the hudhook payload authenticates to the project-owned loopback endpoint, receives direct BGRA frames on a worker thread, converts Electron's premultiplied pixels to straight RGBA, atomically publishes an ordered scene/router snapshot, uploads per-window textures through hudhook, and composes them at native bounds;
+- a transparent window moves from `(64, 72)` to `(176, 128)`, disappears after the SDK's `window.close`, and resumes after the same `BrowserWindow` re-registers and publishes a replacement frame;
+- `OverlaySession.input.intercept()` drives hudhook's guarded Win32 input filter; while it blocks the controlled host, the payload front-to-back hit-tests and forwards left/right/middle mouse, vertical/horizontal wheel, keyboard, system-key, character, and focus packets to the hit/focused Electron window, and project-owned router state maintains a per-window multi-button capture owner;
+- the deterministic `-ClientInput` runner proves click/focus, typed text, vertical wheel, intercepted Escape, release acknowledgement, released Escape, and clean process exit;
+- router, bridge, and native-translator tests cover outside-bounds capture/release, outside-overlay swallowing, right/middle buttons, horizontal wheel, extended characters, synthetic cancellation/cleanup releases, guarded filter transitions, at-most-once input retry classification, and adjacent mouse-move coalescing;
+- `-ClientMultiWindow -DeviceScaleFactor 1.25 -Wait` proves two overlapping windows, registration order, a complete DIP-to-physical frame/metadata contract, physical-to-DIP input, caption dragging, an exposed BACK click-to-front transition without producer lifecycle traffic, topmost-only input, focused keyboard routing, out-of-bounds capture, re-registration, isolated hide/show, release, normal exit, and exact cleanup;
+- producer windows use content rather than outer bounds, independently track desired and active display scale, keep old-scale input coherent while a transition is pending, and commit rect/caption/scale metadata only with a matching OSR paint;
+- ambiguous scale transitions use renderer DPR/viewport acknowledgement plus a cropped `capturePage()` barrier, while per-packet scale tags keep already queued input on its routing-time scale and preserve an active-scale fallback for legacy packets;
+- raster-changing `window.bounds` updates suppress the stale compositable raster without changing stack order, while the framed transport validates dimensions and exact BGRA byte counts before accepting a replacement frame;
+- `-ClientMultiWindowManual -Wait` exposes the overlapping pages and their hide/show/raise controls for hands-on testing;
+- the integrated diagnostic, `-Client`, `-ClientWindow`, `-ClientInput`, and multi-window runners require the exact host PID's receipt, upload, composition, and applicable lifecycle/input markers and safely clean up their Electron process trees in attached runs.
+- at the time of the historical acceptance, a Windows x64 SDK build staged
+  the injector and D3D11/D3D12 payloads. The production SDK no longer stages
+  hudhook; current builds stage `electron_game_overlay.addon64` and its pinned
+  ReShade runtime instead.
 
 No hudhook fork was required. The allowed-application smoke tests remain separate compatibility work. ReShade coexistence is not a gate for this path; the earlier concern was about avoiding a proxy-name/runtime collision, which runtime hudhook injection already avoids.
 
@@ -63,14 +63,14 @@ Can a small, independently injected DLL use upstream hudhook to enter a D3D11 or
 
 The minimum useful answer is deliberately narrow:
 
--   inject a project-owned DLL into a controlled graphics host;
--   let unmodified hudhook own the graphics hooks and ImGui backend lifecycle;
--   draw an always-visible ImGui diagnostics panel;
--   upload and draw one generated RGBA texture;
--   replace it with an ordered scene of Electron offscreen surfaces and native window state carried by the project-owned loopback transport;
--   survive window and swap-chain resize;
--   report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
--   let the target close cleanly.
+- inject a project-owned DLL into a controlled graphics host;
+- let unmodified hudhook own the graphics hooks and ImGui backend lifecycle;
+- draw an always-visible ImGui diagnostics panel;
+- upload and draw one generated RGBA texture;
+- replace it with an ordered scene of Electron offscreen surfaces and native window state carried by the project-owned loopback transport;
+- survive window and swap-chain resize;
+- report enough diagnostics to distinguish injection, hook, initialization, and rendering failures;
+- let the target close cleanly.
 
 The D3D11 and controlled D3D12 seams and an interactive ordered multi-window Electron compositor are now proven, including uniformly forced scale regressions and the bounded producer-window/runtime transition foundation. Production-wide game compatibility, target-display/client-origin ownership, real mixed-monitor acceptance, resize-safe texture retirement, broader input APIs, and a production injector remain later work.
 
@@ -81,14 +81,14 @@ Use [hudhook 0.9.1](https://github.com/veeenu/hudhook/tree/0.9.1) as released fo
 This is intentionally different from the promoted
 [ReShade runtime](../libs/electron-game-overlay-runtime/README.md):
 
-| Concern | ReShade baseline | hudhook POC |
-| --- | --- | --- |
-| Process entry | ReShade proxy DLL | Project injector using hudhook's injector API |
-| Graphics hooks | ReShade runtime | Upstream hudhook |
-| ImGui lifecycle | ReShade-managed context | Upstream hudhook render loop |
-| Texture upload | ReShade resource API | hudhook `RenderContext` |
-| Runtime installation | ReShade files beside the host | One project DLL injected at runtime |
-| Initial backends | D3D11 baseline | D3D11, then D3D12 |
+| Concern              | ReShade baseline              | hudhook POC                                   |
+| -------------------- | ----------------------------- | --------------------------------------------- |
+| Process entry        | ReShade proxy DLL             | Project injector using hudhook's injector API |
+| Graphics hooks       | ReShade runtime               | Upstream hudhook                              |
+| ImGui lifecycle      | ReShade-managed context       | Upstream hudhook render loop                  |
+| Texture upload       | ReShade resource API          | hudhook `RenderContext`                       |
+| Runtime installation | ReShade files beside the host | One project DLL injected at runtime           |
+| Initial backends     | D3D11 baseline                | D3D11, then D3D12                             |
 
 The ReShade add-on, build instructions, and controlled D3D11 executable remain in the repository as a known-good reference. The hudhook isolation test must not load ReShade.
 
@@ -96,12 +96,12 @@ The ReShade add-on, build instructions, and controlled D3D11 executable remain i
 
 The public hudhook API already provides the pieces required by this experiment:
 
--   process lookup and DLL injection;
--   D3D11 and D3D12 hook implementations;
--   an `ImguiRenderLoop` application seam;
--   a `RenderContext` texture API;
--   Win32 input integration for native ImGui widgets;
--   hook shutdown and DLL ejection support.
+- process lookup and DLL injection;
+- D3D11 and D3D12 hook implementations;
+- an `ImguiRenderLoop` application seam;
+- a `RenderContext` texture API;
+- Win32 input integration for native ImGui widgets;
+- hook shutdown and DLL ejection support.
 
 Our overlay panel, injector command line, logging, generated test texture, and IPC integration all belong in project code. None of those required modifying hudhook.
 
@@ -111,41 +111,41 @@ Using two backend-specific DLLs is acceptable for the POC. Automatic graphics AP
 
 ### Included
 
--   Windows 10 or newer;
--   x64 injector, payload, and target;
--   backend-specific D3D11 and D3D12 payloads;
--   late injection by exact process name or window title;
--   one native ImGui diagnostics window;
--   one generated checkerboard or test-card texture;
--   one or more Electron offscreen windows from a controlled producer or the real built client;
--   transparent premultiplied-BGRA conversion and ordered native-bounds composition;
--   per-window move, close, re-register, append-top, and click-to-front lifecycle handling;
--   front-to-back alpha hit testing, focused-keyboard routing, regular Win32
-    left/right/middle mouse, vertical/horizontal-wheel, system-key, character,
-    focus, and global interception behavior, plus a project-owned per-window
-    multi-button pointer-capture owner;
--   atomic immutable scene/router publication and a GPU texture cache keyed by window ID;
--   authenticated loopback interoperability between the Node SDK and Rust payload, with direct framed BGRA delivery;
--   resize and clean target-exit tests;
--   latest-frame CPU copy/conversion away from the render thread.
--   independent desired/active display scale per producer window with matching-paint transition commit;
--   compatible full-geometry `window.bounds` updates without scene reordering and dimension/length-checked frame replacement;
--   PMv2-aware controlled D3D11 and D3D12 hosts with `WM_DPICHANGED` handling.
+- Windows 10 or newer;
+- x64 injector, payload, and target;
+- backend-specific D3D11 and D3D12 payloads;
+- late injection by exact process name or window title;
+- one native ImGui diagnostics window;
+- one generated checkerboard or test-card texture;
+- one or more Electron offscreen windows from a controlled producer or the real built client;
+- transparent premultiplied-BGRA conversion and ordered native-bounds composition;
+- per-window move, close, re-register, append-top, and click-to-front lifecycle handling;
+- front-to-back alpha hit testing, focused-keyboard routing, regular Win32
+  left/right/middle mouse, vertical/horizontal-wheel, system-key, character,
+  focus, and global interception behavior, plus a project-owned per-window
+  multi-button pointer-capture owner;
+- atomic immutable scene/router publication and a GPU texture cache keyed by window ID;
+- authenticated loopback interoperability between the Node SDK and Rust payload, with direct framed BGRA delivery;
+- resize and clean target-exit tests;
+- latest-frame CPU copy/conversion away from the render thread.
+- independent desired/active display scale per producer window with matching-paint transition commit;
+- physical rect/caption/scale `window.bounds` updates without scene reordering and dimension/length-checked frame replacement;
+- PMv2-aware controlled D3D11 and D3D12 hosts with `WM_DPICHANGED` handling.
 
 ### Not included yet
 
--   target-game HWND display ownership, physical client-origin mapping, backing `BrowserWindow` placement, and per-target geometry routing;
--   real mixed-scale physical/VM acceptance; the current validation machine exposes only one 100% virtual display, so forced 1/1.25/1.5/2 runs remain uniform regressions;
--   safe old-texture retirement; hudhook 0.9.1 has no texture-removal operation;
--   raw-input translation, DirectInput, XInput, GameInput, gamepads, and faithful
-    X1/X2 delivery through Electron 16;
--   automatic D3D11/D3D12 selection in one DLL;
--   x86 payloads;
--   D3D10, Vulkan, or OpenGL;
--   anti-cheat bypass or protected-process support;
--   proxy DLL installation beside a game;
--   a claim that every game or every third-party overlay combination is supported;
--   PID selection or a replacement for hudhook's injector implementation.
+- target-game HWND display ownership, physical client-origin mapping, backing `BrowserWindow` placement, and per-target geometry routing;
+- real mixed-scale physical/VM acceptance; the current validation machine exposes only one 100% virtual display, so forced 1/1.25/1.5/2 runs remain uniform regressions;
+- safe old-texture retirement; hudhook 0.9.1 has no texture-removal operation;
+- raw-input translation, DirectInput, XInput, GameInput, gamepads, and faithful
+  X1/X2 delivery through Electron 16;
+- automatic D3D11/D3D12 selection in one DLL;
+- x86 payloads;
+- D3D10, Vulkan, or OpenGL;
+- anti-cheat bypass or protected-process support;
+- proxy DLL installation beside a game;
+- a claim that every game or every third-party overlay combination is supported;
+- PID selection or a replacement for hudhook's injector implementation.
 
 The existing IPC schema has no persistent z-order field, so click-to-front state
 is local to the injected payload and reconnect restores `overlay.init`
@@ -156,12 +156,12 @@ can precede its matching GPU upload by one `Present`.
 
 Implementation should live under `poc/hudhook-imgui-overlay/` and produce:
 
--   `hudhook_imgui_overlay_dx11.dll`;
--   `hudhook_imgui_overlay_dx12.dll` in the D3D12 milestone;
--   `hudhook_overlay_injector.exe`;
--   a clean test-host directory containing only the controlled host and hudhook artifacts;
--   a log containing injector and payload lifecycle events;
--   a README with exact build, run, resize, eject, and troubleshooting instructions.
+- `hudhook_imgui_overlay_dx11.dll`;
+- `hudhook_imgui_overlay_dx12.dll` in the D3D12 milestone;
+- `hudhook_overlay_injector.exe`;
+- a clean test-host directory containing only the controlled host and hudhook artifacts;
+- a log containing injector and payload lifecycle events;
+- a README with exact build, run, resize, eject, and troubleshooting instructions.
 
 The POC may use a Cargo workspace with one shared overlay crate and small backend-specific `cdylib` entry points. Backend-specific entry points keep upstream hudhook usage straightforward and make test results unambiguous.
 
@@ -192,19 +192,19 @@ The project-owned D3D12 host mirrors that boundary with a BGRA8 flip-discard swa
 
 Implement a small `ImguiRenderLoop` that owns only POC state:
 
--   backend label;
--   rendered frame counter;
--   overlay visibility state;
--   generated texture handle;
--   last observed display dimensions.
+- backend label;
+- rendered frame counter;
+- overlay visibility state;
+- generated texture handle;
+- last observed display dimensions.
 
 The always-visible panel should show at least:
 
--   `hudhook + ImGui POC`;
--   D3D11 or D3D12;
--   current frame count;
--   current ImGui display dimensions;
--   whether the generated texture loaded.
+- `hudhook + ImGui POC`;
+- D3D11 or D3D12;
+- current frame count;
+- current ImGui display dimensions;
+- whether the generated texture loaded.
 
 Create the generated texture through hudhook's public `RenderContext` API. Drawing both widgets and an image tests the two capabilities needed by the later Electron compositor without introducing IPC yet.
 
@@ -235,14 +235,14 @@ No graphics-hook or injection implementation should be copied out of hudhook for
 
 The injector and payload should make these states distinguishable:
 
--   target not found;
--   hudhook's injection call completed or returned an error;
--   payload initialization began, proving that the DLL loaded;
--   hook installation and renderer messages captured from hudhook's tracing output;
--   first frame rendered;
--   texture creation succeeded or failed;
--   display dimensions changed after a resize;
--   target shutdown reached payload detach handling where observable.
+- target not found;
+- hudhook's injection call completed or returned an error;
+- payload initialization began, proving that the DLL loaded;
+- hook installation and renderer messages captured from hudhook's tracing output;
+- first frame rendered;
+- texture creation succeeded or failed;
+- display dimensions changed after a resize;
+- target shutdown reached payload detach handling where observable.
 
 Use a POC-specific tracing/logging configuration. Do not write `ReShade.log` or reuse ReShade configuration names. Internal hook and renderer failures that are not exposed to `ImguiRenderLoop` should be preserved through hudhook's tracing output rather than duplicated as panel state.
 
@@ -320,13 +320,12 @@ This milestone is complete for the selected Win32 window at the controlled 1:1 d
 6. Prove the result with:
 
    ```powershell
-   Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
    .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
    .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
    ```
 
 This milestone is complete. The deterministic proof also scales public DIP
-bounds, caption/border metadata, constraints, and Electron 16 OSR surfaces into
+bounds and caption/border hit regions alongside Electron 16 OSR surfaces into
 physical game pixels, then converts signed local input back to DIP. Hudhook's
 ImGui framebuffer scale is normalized to 1 because its display size is already
 the native swap-chain size. Registration/hide/show remains the only persistent
@@ -337,9 +336,9 @@ The successor runtime-scale foundation stores desired and active display state
 per producer window, using `BrowserWindow.getContentBounds()` rather than outer
 bounds to describe the OSR surface. Moves, resizes, and display events stage a
 transition; the old frame remains active until a matching OSR paint commits the
-full physical geometry. Paint sizes accept the nominal floor-scaled dimensions
-within one pixel per axis, and the accepted bitmap size becomes authoritative for
-the physical rect and fixed constraints. If one bitmap fits both active and
+physical rect, caption hit regions, and scale identity. Paint sizes accept the
+nominal floor-scaled dimensions within one pixel per axis, and the accepted
+bitmap size becomes authoritative for the physical rect. If one bitmap fits both active and
 desired tolerances, the SDK rejects that callback, waits for renderer DPR and
 viewport acknowledgement, then commits only a causally later `capturePage()`
 cropped to the desired DIP content rect. Routed input carries the active scale on
@@ -359,14 +358,14 @@ multi-target geometry still precede a real mixed-monitor claim. Forced
 
 The D3D11 milestone passes when all of the following are true:
 
--   the clean host directory contains no ReShade runtime or proxy;
--   hudhook's injection call completes and the payload produces its initialization evidence;
--   an always-visible ImGui panel appears without opening another overlay menu;
--   its frame counter advances continuously;
--   the generated texture is visible;
--   the overlay remains present after repeated resizes;
--   the host exits normally;
--   the run produces useful, consistent tracing/log output.
+- the clean host directory contains no ReShade runtime or proxy;
+- hudhook's injection call completes and the payload produces its initialization evidence;
+- an always-visible ImGui panel appears without opening another overlay menu;
+- its frame counter advances continuously;
+- the generated texture is visible;
+- the overlay remains present after repeated resizes;
+- the host exits normally;
+- the run produces useful, consistent tracing/log output.
 
 The D3D12 milestone uses the same criteria against the controlled D3D12 host.
 
@@ -395,11 +394,11 @@ Stay on the released upstream crate when project code can provide the missing be
 
 Consider a fork only after reproducing one of these blockers:
 
--   a required swap-chain, device, texture, input, or unload lifecycle is not exposed;
--   a supported target crashes or cannot initialize because of hudhook internals;
--   D3D12 command-queue or resize handling blocks the applications in scope;
--   required diagnostics or recovery cannot be added through public APIs;
--   the eventual single-payload backend dispatcher cannot be contributed upstream or composed around the library.
+- a required swap-chain, device, texture, input, or unload lifecycle is not exposed;
+- a supported target crashes or cannot initialize because of hudhook internals;
+- D3D12 command-queue or resize handling blocks the applications in scope;
+- required diagnostics or recovery cannot be added through public APIs;
+- the eventual single-payload backend dispatcher cannot be contributed upstream or composed around the library.
 
 Before forking:
 
@@ -414,10 +413,10 @@ If a fork becomes necessary, keep it narrow, preserve upstream history, document
 
 Planned prerequisites:
 
--   Windows 10 or newer;
--   Rust 1.85 or newer with the `x86_64-pc-windows-msvc` target;
--   Visual Studio 2022 C++ Build Tools and a Windows SDK;
--   a Visual Studio Developer PowerShell.
+- Windows 10 or newer;
+- Rust 1.85 or newer with the `x86_64-pc-windows-msvc` target;
+- Visual Studio 2022 C++ Build Tools and a Windows SDK;
+- a Visual Studio Developer PowerShell.
 
 The eventual POC README should provide a flow similar to:
 
@@ -436,18 +435,18 @@ These commands describe the desired operator experience; the implementation READ
 
 ## Safety and distribution
 
--   Use the controlled hosts or offline/single-player software the operator is allowed to modify.
--   Do not inject into competitive or anti-cheat-protected software.
--   Match target bitness and privilege level; detailed preflight validation can follow the first POC.
--   Keep the initial experiment x64-only.
--   Pin dependencies and retain notices required by hudhook and Dear ImGui's MIT licenses, imgui-rs's MIT OR Apache-2.0 license, and MinHook/HDE's 2-Clause BSD licenses.
--   Do not bundle or install ReShade as part of this POC.
+- Use the controlled hosts or offline/single-player software the operator is allowed to modify.
+- Do not inject into competitive or anti-cheat-protected software.
+- Match target bitness and privilege level; detailed preflight validation can follow the first POC.
+- Keep the initial experiment x64-only.
+- Pin dependencies and retain notices required by hudhook and Dear ImGui's MIT licenses, imgui-rs's MIT OR Apache-2.0 license, and MinHook/HDE's 2-Clause BSD licenses.
+- Do not bundle or install ReShade as part of this POC.
 
 ## Decision after the POC
 
--   Keep upstream hudhook as a pinned dependency while controlled and allowed application tests pass; the ordered multi-window Electron transport already composes around its public API.
--   If a small defect is found, prefer an upstream issue or contribution while keeping the POC on the nearest usable release.
--   If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
--   If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
+- Keep upstream hudhook as a pinned dependency while controlled and allowed application tests pass; the ordered multi-window Electron transport already composes around its public API.
+- If a small defect is found, prefer an upstream issue or contribution while keeping the POC on the nearest usable release.
+- If a required internal change cannot be accepted upstream in time, create a narrow project fork backed by the reproduced test.
+- If basic hooking, resize, or unload behavior is unreliable even in the controlled hosts, stop before integrating Electron and reassess the hook runtime.
 
 The focused POC is complete: the controlled D3D11/D3D12 graphics paths, real-client integration, project-owned Electron transport, regular Win32 input, ordered multi-window composition, uniform-scale regressions, and producer-window/runtime transition foundation are implemented and revalidated. Acceptance records are in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). Target-display/client-origin ownership, backing-window/per-target geometry, real mixed-scale hardware/VM acceptance, safe texture retirement, broader D3D12 compatibility coverage, a production injector, and related DPI edge cases remain explicit post-POC hardening. Allowed offline application smoke tests remain separate compatibility evidence.

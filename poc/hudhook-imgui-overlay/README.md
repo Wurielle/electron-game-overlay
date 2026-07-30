@@ -43,9 +43,10 @@ Premultiplied BGRA frames are converted to straight RGBA before publication.
 Electron's public window geometry remains in device-independent pixels (DIP).
 The SDK samples `BrowserWindow.getContentBounds()` rather than outer bounds, so
 the wire rectangle describes the OSR content surface even for a framed or
-attached producer. It scales that rectangle, resize constraints, caption, and
-drag border to physical pixels; Electron 16's OSR bitmap is already physical.
-Hudhook therefore composes and hit-tests in native game/swap-chain pixels. Each
+attached producer. It scales that rectangle and caption hit regions to physical
+pixels; resize constraints remain local to Electron, and Electron 16's OSR
+bitmap is already physical. Hudhook therefore composes and hit-tests in native
+game/swap-chain pixels. Each
 outbound `game.input` packet is tagged with the scale active when it was routed,
 and the SDK converts returned local physical coordinates with that packet tag so
 queued input survives a later scale commit. Untagged legacy packets fall back to
@@ -57,11 +58,11 @@ Scale is tracked independently for each producer window. A move, resize, or
 display-topology event changes its desired display scale and requests a repaint,
 but its active geometry and input conversion stay on the old scale until an OSR
 paint matches the desired physical dimensions. The matching paint commits the
-new full `window.bounds` geometry (rect, caption, drag border, and constraints)
-in place without changing scene order. Unmatched paint sizes are not published.
+new physical rect, caption hit regions, and scale identity in place without
+changing scene order. Unmatched paint sizes are not published.
 Paint dimensions are accepted within one pixel of the nominal floor-scaled size,
-and the actual accepted bitmap width/height become authoritative geometry (and
-fixed-window constraints), covering Electron 16 rounding such as `400 x 251` for
+and the actual accepted bitmap width/height become authoritative geometry,
+covering Electron 16 rounding such as `400 x 251` for
 `320 x 200` at 1.25. If a bitmap fits both the active and desired tolerances, the
 SDK rejects the ambiguous callback, waits for renderer DPR/viewport
 acknowledgement, and commits only a causally subsequent `capturePage()` cropped
@@ -78,9 +79,10 @@ length-prefixed wire format with checked dimensions, exact source byte counts,
 and explicit size limits. Controls remain FIFO barriers while adjacent unsent
 frames for the same window are replaced by the newest frame.
 
-`HUDHOOK_ELECTRON_WINDOW`, when set, is an optional exact-name filter. Without
-it, every announced window participates. The injected payload does not load the
-legacy native renderer.
+Every announced window participates. The legacy
+`HUDHOOK_ELECTRON_WINDOW` exact-name filter was removed from the shared
+transport so inherited shell state cannot silently hide valid windows. The
+injected payload does not load the legacy native renderer.
 
 ## Safety boundary
 
@@ -126,33 +128,31 @@ launcher whose name matches the scenario you want to inspect. The three
 client-bound entries are retained as discoverable archived files and exit with
 migration guidance:
 
-| Test case | Launcher |
-| --- | --- |
-| Hook and generated-texture smoke test | `dx11-hook-only.ps1` |
-| Electron SDK/transport diagnostic producer | `dx11-electron-diagnostic.ps1` |
-| Archived real client integration (not runnable) | `dx11-real-client.ps1` |
-| Archived real-game client input case (not runnable) | `dx11-real-game-input-manual.ps1` |
-| Window lifecycle regression | `dx11-window-lifecycle.ps1` |
-| Automated input regression | `dx11-input-automated.ps1` |
-| Hands-on input demo | `dx11-input-manual.ps1` |
-| Automated multi-window regression at 100% | `dx11-multiwindow-automated-100.ps1` |
-| Automated multi-window regression at 125% | `dx11-multiwindow-automated-125.ps1` |
-| Automated multi-window regression at 150% | `dx11-multiwindow-automated-150.ps1` |
-| Automated multi-window regression at 200% | `dx11-multiwindow-automated-200.ps1` |
-| Hands-on multi-window demo | `dx11-multiwindow-manual.ps1` |
-| D3D12 hook and generated-texture smoke test | `d3d12-hook-only.ps1` |
-| D3D12 Electron diagnostic | `d3d12-electron-diagnostic.ps1` |
-| Archived D3D12 real client integration (not runnable) | `d3d12-real-client.ps1` |
-| D3D12 lifecycle regression | `d3d12-window-lifecycle.ps1` |
-| D3D12 automated input regression | `d3d12-input-automated.ps1` |
-| D3D12 hands-on input demo | `d3d12-input-manual.ps1` |
-| D3D12 automated multi-window regression | `d3d12-multiwindow-automated-100.ps1` |
-| D3D12 hands-on multi-window demo | `d3d12-multiwindow-manual.ps1` |
+| Test case                                             | Launcher                              |
+| ----------------------------------------------------- | ------------------------------------- |
+| Hook and generated-texture smoke test                 | `dx11-hook-only.ps1`                  |
+| Electron SDK/transport diagnostic producer            | `dx11-electron-diagnostic.ps1`        |
+| Archived real client integration (not runnable)       | `dx11-real-client.ps1`                |
+| Archived real-game client input case (not runnable)   | `dx11-real-game-input-manual.ps1`     |
+| Window lifecycle regression                           | `dx11-window-lifecycle.ps1`           |
+| Automated input regression                            | `dx11-input-automated.ps1`            |
+| Hands-on input demo                                   | `dx11-input-manual.ps1`               |
+| Automated multi-window regression at 100%             | `dx11-multiwindow-automated-100.ps1`  |
+| Automated multi-window regression at 125%             | `dx11-multiwindow-automated-125.ps1`  |
+| Automated multi-window regression at 150%             | `dx11-multiwindow-automated-150.ps1`  |
+| Automated multi-window regression at 200%             | `dx11-multiwindow-automated-200.ps1`  |
+| Hands-on multi-window demo                            | `dx11-multiwindow-manual.ps1`         |
+| D3D12 hook and generated-texture smoke test           | `d3d12-hook-only.ps1`                 |
+| D3D12 Electron diagnostic                             | `d3d12-electron-diagnostic.ps1`       |
+| Archived D3D12 real client integration (not runnable) | `d3d12-real-client.ps1`               |
+| D3D12 lifecycle regression                            | `d3d12-window-lifecycle.ps1`          |
+| D3D12 automated input regression                      | `d3d12-input-automated.ps1`           |
+| D3D12 hands-on input demo                             | `d3d12-input-manual.ps1`              |
+| D3D12 automated multi-window regression               | `d3d12-multiwindow-automated-100.ps1` |
+| D3D12 hands-on multi-window demo                      | `d3d12-multiwindow-manual.ps1`        |
 
 The parameterized `scripts/run-electron-dx11.ps1` runner remains the underlying
-advanced/CI interface for custom combinations. Multi-window launchers
-temporarily clear `HUDHOOK_ELECTRON_WINDOW` and restore its original value when
-they finish.
+advanced/CI interface for custom combinations.
 
 ## Archived client-bound launchers
 
@@ -199,9 +199,9 @@ may race with each other.
 request completed; the exact-PID connection and payload log remain the evidence
 that the DLL actually loaded and rendered.
 
-Set `HUDHOOK_ELECTRON_WINDOW` before launching the runner to filter composition
-and routing to one exact announced window name. Without it, the payload composes
-all announced windows in registration order.
+The payload composes all announced windows in registration order. Window
+selection belongs to the Electron producer rather than ambient process
+environment.
 
 ## Run the lifecycle regression demo
 
@@ -576,8 +576,8 @@ The completed hudhook milestone proved:
   composition, deduplication, append-on-register,
   and click-to-front intent generations;
 - signed physical-pixel bounds, transparency, and premultiplied-BGRA correction;
-- DIP-to-physical conversion for complete rectangles, constraints, captions, and
-  drag borders, with signed physical-to-DIP conversion for returned input;
+- DIP-to-physical conversion for complete rectangles and caption hit regions,
+  with signed physical-to-DIP conversion for returned input;
 - content-surface tracking through `getContentBounds()`, per-window
   desired/active scale state, bitmap-authoritative one-pixel rounding tolerance,
   and renderer-acknowledged cropped-capture recovery for ambiguous transitions;

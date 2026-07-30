@@ -1,15 +1,11 @@
 import { BrowserWindow, screen } from 'electron';
 import { physicalInputToDip } from './coordinate-space.js';
-import { toNativeCursor } from './cursor.js';
 import {
   normalizeOverlayDiagnosticErrorCode,
   parseOverlayDiagnostic,
 } from './diagnostic.js';
 import { ElectronOverlayWindow } from './electron-overlay-window.js';
-import {
-  createProcessInjectionUnavailableError,
-  type NativeOverlay,
-} from './native.js';
+import { type NativeOverlay } from './native.js';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
 import {
   getTargetFollowPhysicalBounds,
@@ -44,9 +40,6 @@ import type {
   ElectronOverlayWindowOptions,
   OverlayDiagnostic,
   OverlayDiagnosticContextValue,
-  OverlayHotkey,
-  OverlayProcessAttachResult,
-  OverlayProcessTarget,
   OverlaySessionEventHandler,
   OverlaySessionEventMap,
   OverlaySessionEventName,
@@ -142,7 +135,6 @@ export class OverlaySession {
     followTarget: (window, options) => this.followWindowTarget(window, options),
     stopFollowingTarget: (window) => this.stopWindowFollowingTarget(window),
     sendFrame: (window, image) => this.sendFrame(window, image),
-    sendCursor: (type) => this.sendCursor(type),
   };
 
   private readonly handleDisplayAdded = () => {
@@ -350,11 +342,6 @@ export class OverlaySession {
     };
   }
 
-  public setHotkeys(hotkeys: OverlayHotkey[]) {
-    this.ensureStarted();
-    this.overlay.setHotkeys(hotkeys);
-  }
-
   public on<Event extends OverlaySessionEventName>(
     event: Event,
     handler: OverlaySessionEventHandler<Event>,
@@ -374,14 +361,6 @@ export class OverlaySession {
         handler as OverlaySessionEventHandler<OverlaySessionEventName>,
       );
     };
-  }
-
-  /** @deprecated Injected-runtime discovery and launch are application-owned. */
-  public attachToProcess(
-    target: OverlayProcessTarget,
-  ): OverlayProcessAttachResult | OverlayProcessAttachResult[] | null {
-    void target;
-    throw createProcessInjectionUnavailableError();
   }
 
   private createWindow(options: ElectronOverlayWindowOptions) {
@@ -493,10 +472,7 @@ export class OverlaySession {
 
   private setInputIntercept(intercept: boolean) {
     this.ensureStarted();
-    this.overlay.sendCommand({
-      command: 'input.intercept',
-      intercept,
-    });
+    this.overlay.setInputIntercept(intercept);
   }
 
   private registerWindow(window: ElectronOverlayWindow) {
@@ -512,8 +488,6 @@ export class OverlaySession {
       this.overlay.addWindow(browserWindow.id, {
         name: window.name,
         transparent: window.transparent,
-        resizable: browserWindow.isResizable(),
-        nativeHandle: browserWindow.getNativeWindowHandle().readUInt32LE(0),
         ...geometry,
       });
 
@@ -681,13 +655,6 @@ export class OverlaySession {
 
     this.unmatchedFrameDiagnostics.delete(window.nativeId);
     this.windowScaleStates.set(window.nativeId, reconciliation.state);
-    if (reconciliation.rasterChanged) {
-      console.log(
-        `Electron overlay raster committed for window ${window.nativeId}: ` +
-          `display ${reconciliation.state.activeDisplay.id}, ` +
-          `scale ${reconciliation.scaleFactor}, frame ${size.width}x${size.height}`,
-      );
-    }
 
     try {
       const published = this.overlay.sendFrameBuffer(
@@ -713,14 +680,6 @@ export class OverlaySession {
         height: size.height,
       });
     }
-  }
-
-  private sendCursor(type: string) {
-    this.ensureStarted();
-    this.overlay.sendCommand({
-      command: 'cursor',
-      cursor: toNativeCursor(type),
-    });
   }
 
   private forwardGameInput(payload: any) {
@@ -799,7 +758,6 @@ export class OverlaySession {
       let diagnosticFocusWindowId = this.windowsByNativeId.has(focusWindowId)
         ? focusWindowId
         : 0;
-      console.log('focusWindowId', focusWindowId);
 
       let browserWindows: Electron.BrowserWindow[] = [];
       try {
@@ -849,10 +807,6 @@ export class OverlaySession {
       if (fps) {
         this.emitEvent('fps', fps);
       }
-    } else if (event === 'game.hotkey.down') {
-      this.emitEvent('hotkeyDown', {
-        name: payload.name,
-      });
     }
 
     // Public observers run only after canonical state and layout have been
@@ -1086,7 +1040,6 @@ export class OverlaySession {
       state.activeRasterBounds,
       state.activeDisplay,
       {
-        resizable: window.browserWindow.isResizable(),
         dragBorder: window.dragBorder,
         captionHeight: window.captionHeight,
       },
@@ -1104,12 +1057,7 @@ export class OverlaySession {
         width: state.activeFrameSize.width,
         height: state.activeFrameSize.height,
       },
-      minWidth: state.activeFrameSize.width,
-      maxWidth: state.activeFrameSize.width,
-      minHeight: state.activeFrameSize.height,
-      maxHeight: state.activeFrameSize.height,
       caption: { left: 0, right: 0, top: 0, height: 0 },
-      dragBorderWidth: 0,
     };
   }
 

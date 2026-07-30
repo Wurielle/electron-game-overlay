@@ -377,7 +377,7 @@ Electron windows should not rely on ImGui widgets for input. For Electron-backed
 12. Prove the DIP-to-physical contract at uniformly forced Electron scales, add matching-paint per-window runtime transitions, then define target-display/client-origin ownership and run real mixed-monitor acceptance.
 13. Repeat the graphics, Electron input, and multi-window proof with hudhook's D3D12 backend and a controlled D3D12 host; defer resize-safe texture retirement to post-POC hardening.
 
-Steps 1 through 11 and the bounded producer-window portion of step 12 are complete for controlled D3D11, including transparent physical-bounds composition, ordered multi-window lifecycle, click-to-front routing, focused keyboard input, caption dragging, per-window pointer capture, content-surface rather than outer-window bounds, desired/active display state, and matching-paint scale commits. Accepted bitmaps are authoritative within a one-pixel floor-scaling tolerance; ambiguous transitions wait for renderer DPR/viewport acknowledgement and use a cropped `capturePage()` as the causal commit frame. Per-packet scale tags protect queued input while retaining an active-scale fallback. The window/session/input API remains intact; `window.bounds` gained compatible optional full-geometry and `rasterChanged` fields so the compositor can suppress stale pixels until the matching frame. The final transport uses checked length-delimited BGRA packets and reconnect snapshots. Legacy generic process discovery/injection methods now fail explicitly because the application owns hudhook payload launch and backend selection.
+Steps 1 through 11 and the bounded producer-window portion of step 12 are complete for controlled D3D11, including transparent physical-bounds composition, ordered multi-window lifecycle, click-to-front routing, focused keyboard input, caption dragging, per-window pointer capture, content-surface rather than outer-window bounds, desired/active display state, and matching-paint scale commits. Accepted bitmaps are authoritative within a one-pixel floor-scaling tolerance; ambiguous transitions wait for renderer DPR/viewport acknowledgement and use a cropped `capturePage()` as the causal commit frame. Per-packet scale tags protect queued input while retaining an active-scale fallback. The promoted window/session/input API preserves the higher-level model while removing obsolete pre-release compatibility members; `window.bounds` carries the physical rect, caption hit regions, scale identity, and optional `rasterChanged` barrier so the compositor can suppress stale pixels until the matching frame. The final transport uses checked length-delimited BGRA packets and reconnect snapshots. Process selection and attachment now belong to the backend-specific launcher rather than generic SDK discovery/injection methods.
 
 ## Risks and limitations
 
@@ -617,28 +617,34 @@ const session = overlay.createSession();
 // The application launches the selected native host for the target/runtime.
 session.start();
 
-const window = session.windows.addElectronWindow(browserWindow, {
-  x: 100,
-  y: 100,
-  width: 640,
-  height: 360,
+const window = session.windows.attach(browserWindow, {
+  bounds: {
+    x: 100,
+    y: 100,
+    width: 640,
+    height: 360,
+  },
 });
 
-await session.input.intercept();
+session.input.intercept();
 window.show();
 ```
 
 The native implementation behind that window/session/input API uses ImGui
 internally. The active ReShade implementation keeps the public
 session/window/input surface and replaces the hudhook launcher and runtime
-assets. Generic `findWindows()` and `attachToProcess()` are retained only for
-source compatibility and currently throw explicitly. Name-only selection remains
-the accepted arm-before-launch boundary. Optional exact-PID selection is for a
+assets. Each `ElectronGameOverlay` instance supports one live session and can
+create another after that session closes. `focusOnReady` is opt-in and defaults
+to `false` for both created and attached Electron windows. Name-only selection
+through `ReShadeOverlayLauncher` remains the accepted arm-before-launch
+boundary. Optional exact-PID selection is for a
 watcher that calls immediately after process creation and before graphics-device
-and swap-chain creation. The current D3D11/D3D12 gates launch normally and pause
-at a test-only pre-device startup marker after loader work; both passed on
-July 30, 2026. It is not an existing-device/swap-chain late-attachment API, and
-the controlled marker does not establish arbitrary external-watcher latency or
+and swap-chain creation. Launcher lifecycle progress is available through typed
+`ReShadeOverlayLauncher.onEvent()` events rather than direct SDK console marker
+output; stable markers described by the controlled demo and runners are
+client-owned. The current D3D11/D3D12 gates launch normally and pause at a
+test-only pre-device startup marker after loader work; both passed on July 30, 2026. It is not an existing-device/swap-chain late-attachment API, and the
+controlled marker does not establish arbitrary external-watcher latency or
 arbitrary-game timing.
 
 ## Open questions

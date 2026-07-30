@@ -61,11 +61,28 @@ const window = session.windows.create({
 window.show();
 ```
 
+An `ElectronGameOverlay` instance supports one live session. A second
+`createSession()` call throws until the current session closes. After
+`session.close()`, the same overlay can create and start a new session;
+`overlay.dispose()` closes whichever session is active and permanently disposes
+that overlay instance.
+
+Each overlay owns its callbacks and transport state. Because injected runtimes
+discover the default endpoint through one process-wide record, only one
+transport may be started on that endpoint at a time. A competing start fails
+explicitly and may retry after the current session stops.
+
 Use `session.windows.attach(existingBrowserWindow, options)` when the
 application already owns the producer. `show()`, `hide()`, `setBounds()`, and
 `destroy()` update the injected scene. Public bounds, caption dimensions, drag
-borders, and constraints are Electron device-independent pixels; the SDK
-converts them to the physical-pixel wire and composition space.
+borders, and constraints are Electron device-independent pixels. Electron
+enforces producer-window constraints locally; the SDK converts content bounds
+and caption hit regions to the physical-pixel wire and composition space.
+
+Window creation and attachment do not focus the offscreen web view on
+`ready-to-show` by default. Set `focusOnReady: true` in either options object to
+opt in. Returned target input still focuses the selected web view immediately
+before dispatch.
 
 ## Read target state and follow its surface
 
@@ -168,7 +185,27 @@ the launcher returns to `idle` and the same session can attach a restarted
 target. A `blocked` launcher must be disposed before retrying so a live target
 cannot accidentally receive a second target mutation or payload load.
 
-## Handle typed attachment diagnostics
+## Observe launcher lifecycle and handle typed attachment diagnostics
+
+Use `ReShadeOverlayLauncher.onEvent()` for lifecycle progress:
+
+```ts
+const unsubscribe = launcher.onEvent((event) => {
+  console.log('ReShade lifecycle', event.type);
+
+  if (event.type === 'injector-failed') {
+    console.error(event.diagnostic.code, event.diagnostic.message);
+  }
+});
+```
+
+The stream contains immutable `runtime-staged`,
+`target-rendezvous-authorized`, `injector-started`, `injector-returned`,
+`injector-failed`, `target-connected`, and `target-disconnected` events.
+Listener failures are isolated from launcher state and results, and the returned
+function unsubscribes the listener. The SDK does not write or export direct
+launcher lifecycle console markers. Applications, demos, and test runners own
+any stable marker text they choose to format from these events.
 
 Launcher failures can be narrowed without parsing console output:
 

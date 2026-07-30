@@ -8,6 +8,7 @@ import {
   type ReShadeAttachmentState,
   type ReShadeDiagnostic,
   type ReShadeLaunchConfig,
+  type ReShadeLauncherEventHandler,
   type ReShadeTarget,
 } from 'electron-game-overlay';
 
@@ -222,6 +223,7 @@ type OverlaySessionForAttachment = Pick<
 
 export type ReShadeLauncherForSteamTarget = Readonly<{
   prepare(): Promise<void>;
+  onEvent?(handler: ReShadeLauncherEventHandler): () => void;
   attach(
     session: OverlaySessionForAttachment,
     target: ReShadeTarget,
@@ -241,6 +243,7 @@ type SteamGameAutoAttacherOptions = Readonly<{
   reshadeConfig: ReShadeLaunchConfig;
   watcherFactory: ProcessWatcherFactory;
   launcherFactory?: ReShadeLauncherFactory;
+  launcherEventHandler?: ReShadeLauncherEventHandler;
   prearmedPathInjection?: boolean;
   preparedLauncherPoolSize?: number;
   preparedLauncherRetryBaseDelayMs?: number;
@@ -559,7 +562,11 @@ export class SteamGameAutoAttacher {
     const launcherFactory =
       this.options.launcherFactory ??
       ((config: ReShadeLaunchConfig) => new ReShadeOverlayLauncher(config));
-    return launcherFactory(this.launchConfig);
+    const launcher = launcherFactory(this.launchConfig);
+    if (this.options.launcherEventHandler && launcher.onEvent) {
+      launcher.onEvent(this.options.launcherEventHandler);
+    }
+    return launcher;
   }
 
   private armNextSteamProcess(): void {

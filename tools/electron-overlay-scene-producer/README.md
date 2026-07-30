@@ -60,13 +60,13 @@ outer frame. It maintains desired and active display scale independently per
 window. A move, resize, or display-metrics event requests repaint while the
 published scene remains coherent at the active scale.
 
-A matching OSR paint commits the new scale and complete physical geometry. An
-old-scale frame remains valid while the transition is pending; an unrelated
-size is suppressed. Electron can differ from nominal floor-scaled dimensions by
-one pixel, so the accepted bitmap dimensions become the authoritative physical
-rectangle and fixed-size constraints. Ambiguous paints are resolved with a
-renderer DPR/viewport acknowledgement followed by a cropped `capturePage()`
-barrier.
+A matching OSR paint commits the new physical rectangle, caption hit regions,
+and scale identity. An old-scale frame remains valid while the transition is
+pending; an unrelated size is suppressed. Electron can differ from nominal
+floor-scaled dimensions by one pixel, so the accepted bitmap dimensions become
+the authoritative physical rectangle. Resize constraints remain local to
+Electron. Ambiguous paints are resolved with a renderer DPR/viewport
+acknowledgement followed by a cropped `capturePage()` barrier.
 
 A raster-changing bounds update clears the latest compositable pixels until its
 matching frame arrives. That prevents old pixels from being drawn with new

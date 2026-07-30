@@ -1,38 +1,41 @@
-import {
-  createProcessInjectionUnavailableError,
-  loadNativeOverlay,
-  type NativeOverlay,
-  type NativeWindow,
-} from './native.js';
+import { createNativeOverlay, type NativeOverlay } from './native.js';
 import { OverlaySession } from './overlay-session.js';
 
 export class ElectronGameOverlay {
   private readonly nativeOverlay: NativeOverlay;
-  private readonly sessions = new Set<OverlaySession>();
+  private activeSession: OverlaySession | undefined;
+  private disposed = false;
 
   constructor() {
-    this.nativeOverlay = loadNativeOverlay();
+    this.nativeOverlay = createNativeOverlay();
   }
 
   public createSession() {
+    if (this.disposed) {
+      throw new Error('this ElectronGameOverlay is disposed');
+    }
+    if (this.activeSession) {
+      throw new Error(
+        'this ElectronGameOverlay already has an active overlay session',
+      );
+    }
+
     const session = new OverlaySession(this.nativeOverlay);
+    this.activeSession = session;
     session.onClose(() => {
-      this.sessions.delete(session);
+      if (this.activeSession === session) {
+        this.activeSession = undefined;
+      }
     });
-    this.sessions.add(session);
     return session;
   }
 
-  /** @deprecated Injected-runtime discovery and launch are application-owned. */
-  public findWindows(includeMinimized = false): NativeWindow[] {
-    void includeMinimized;
-    throw createProcessInjectionUnavailableError();
-  }
-
   public dispose() {
-    for (const session of Array.from(this.sessions)) {
-      session.close();
+    if (this.disposed) {
+      return;
     }
-    this.sessions.clear();
+    this.disposed = true;
+    this.activeSession?.close();
+    this.activeSession = undefined;
   }
 }

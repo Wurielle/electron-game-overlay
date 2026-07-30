@@ -2,13 +2,6 @@ export { ElectronGameOverlay } from './electron-game-overlay.js';
 export { ElectronOverlayWindow } from './electron-overlay-window.js';
 export { OverlaySession } from './overlay-session.js';
 export {
-  RESHADE_CLIENT_INJECTOR_FAILED_MARKER,
-  RESHADE_CLIENT_INJECTOR_RETURNED_MARKER,
-  RESHADE_CLIENT_INJECTOR_STARTED_MARKER,
-  RESHADE_CLIENT_RUNTIME_STAGED_MARKER,
-  RESHADE_CLIENT_TARGET_CONNECTED_MARKER,
-  RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER,
-  RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED_MARKER,
   ReShadeOperationError,
   ReShadeOverlayLauncher,
   buildReShadeInvocation,
@@ -28,6 +21,8 @@ export type {
   ReShadeLaunchConfig,
   ReShadeLaunchConfigOptions,
   ReShadeLaunchResult,
+  ReShadeLauncherEvent,
+  ReShadeLauncherEventHandler,
   ReShadePathTarget,
   ReShadeProcessTarget,
   ReShadeRetrySafety,
@@ -48,9 +43,6 @@ export type {
   OverlayDiagnosticSource,
   OverlayGraphicsApi,
   OverlayGraphicsFps,
-  OverlayHotkey,
-  OverlayProcessAttachResult,
-  OverlayProcessTarget,
   OverlaySessionEventHandler,
   OverlaySessionEventMap,
   OverlaySessionEventName,

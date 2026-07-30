@@ -43,13 +43,6 @@ use crate::electron_input::{
 };
 use crate::electron_wire::{encode_json, WireDecoder, WireFrame, WirePacket};
 
-/// Optional exact window-name filter. When absent, every announced Electron
-/// window participates in the scene.
-///
-/// The legacy environment variable name is part of the existing SDK contract
-/// and is retained while the injected rendering backend is replaced.
-pub const ELECTRON_WINDOW_NAME_ENV: &str = "HUDHOOK_ELECTRON_WINDOW";
-
 const WM_BRIDGE_SHUTDOWN: u32 = WM_APP + 0x310;
 const WM_BRIDGE_FLUSH_OUTBOUND: u32 = WM_BRIDGE_SHUTDOWN + 1;
 const WM_BRIDGE_RAISE_WINDOW: u32 = WM_BRIDGE_FLUSH_OUTBOUND + 1;
@@ -906,7 +899,6 @@ fn run_bridge_thread(
         drag,
         startup,
     ));
-    let window_name_filter = state.window_name_filter.clone();
     let state_ptr = Box::into_raw(state);
 
     unsafe {
@@ -924,10 +916,7 @@ fn run_bridge_thread(
         (*state_ptr).try_connect();
     }
 
-    info!(
-        target_window = window_name_filter.as_deref().unwrap_or("<all>"),
-        "Electron frame bridge state thread started"
-    );
+    info!("Electron frame bridge state thread started");
 
     if ready_tx.send(Ok(hwnd.0 as usize)).is_err() {
         unsafe {
@@ -1084,7 +1073,6 @@ struct BridgeThreadState {
     drag: SharedDragState,
     startup: RuntimeStartupPublisher,
     outbound_diagnostics: Arc<OutboundDiagnostics>,
-    window_name_filter: Option<String>,
     windows: Vec<RegisteredWindow>,
     state_revision: u64,
     sequence: u64,
@@ -1126,7 +1114,6 @@ impl BridgeThreadState {
             drag,
             startup,
             outbound_diagnostics: Arc::new(OutboundDiagnostics::default()),
-            window_name_filter: window_name_filter(),
             windows: Vec::new(),
             state_revision: 0,
             sequence: 0,
@@ -1452,11 +1439,7 @@ impl BridgeThreadState {
     }
 
     fn on_overlay_init(&mut self, message: OverlayInit) -> Result<(), TransportError> {
-        self.windows = normalize_registered_windows(
-            message.windows,
-            self.window_name_filter.as_deref(),
-            &mut self.placement_epoch,
-        );
+        self.windows = normalize_registered_windows(message.windows, &mut self.placement_epoch);
         self.closed_windows.clear();
         self.bump_state_revision();
         let input_windows = self.input_windows();
@@ -1475,22 +1458,6 @@ impl BridgeThreadState {
 
     fn on_window(&mut self, window: WindowMetadata) -> Result<(), TransportError> {
         let window_id = window.window_id;
-        if !window_matches_filter(&window, self.window_name_filter.as_deref()) {
-            if self
-                .windows
-                .iter()
-                .any(|existing| existing.window_id == window_id)
-            {
-                self.windows
-                    .retain(|existing| existing.window_id != window_id);
-                self.bump_state_revision();
-                self.update_input_router_and_publish_scene(|router| {
-                    router.remove_window(window_id)
-                });
-            }
-            return Ok(());
-        }
-
         let readded_closed = self
             .closed_windows
             .get(&window_id)
@@ -1937,16 +1904,6 @@ struct WindowBoundsMessage {
     window_id: u32,
     rect: ElectronWindowRect,
     #[serde(default)]
-    max_width: Option<u32>,
-    #[serde(default)]
-    max_height: Option<u32>,
-    #[serde(default)]
-    min_width: Option<u32>,
-    #[serde(default)]
-    min_height: Option<u32>,
-    #[serde(default)]
-    drag_border_width: Option<u32>,
-    #[serde(default)]
     caption: Option<WindowCaptionMetadata>,
     #[serde(default)]
     scale_factor_micros: Option<u32>,
@@ -2012,27 +1969,12 @@ fn build_input_windows(windows: &[RegisteredWindow]) -> Vec<InputWindow> {
         .collect()
 }
 
-fn window_name_filter() -> Option<String> {
-    std::env::var(ELECTRON_WINDOW_NAME_ENV)
-        .ok()
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-}
-
-fn window_matches_filter(window: &WindowMetadata, filter: Option<&str>) -> bool {
-    filter.is_none_or(|name| window.name == name)
-}
-
 fn normalize_registered_windows(
     windows: Vec<WindowMetadata>,
-    filter: Option<&str>,
     placement_epoch: &mut u64,
 ) -> Vec<RegisteredWindow> {
     let mut normalized = Vec::new();
     for window in windows {
-        if !window_matches_filter(&window, filter) {
-            continue;
-        }
         normalized.retain(|existing: &RegisteredWindow| existing.window_id != window.window_id);
         normalized.push(RegisteredWindow::from_metadata(
             window,
@@ -2067,11 +2009,6 @@ fn update_registered_window_bounds(
     let WindowBoundsMessage {
         window_id,
         rect,
-        max_width: _max_width,
-        max_height: _max_height,
-        min_width: _min_width,
-        min_height: _min_height,
-        drag_border_width: _drag_border_width,
         caption,
         scale_factor_micros,
         raster_changed,
@@ -3337,12 +3274,9 @@ mod tests {
         }
     }
 
-    fn normalize_test_windows(
-        windows: Vec<WindowMetadata>,
-        filter: Option<&str>,
-    ) -> Vec<RegisteredWindow> {
+    fn normalize_test_windows(windows: Vec<WindowMetadata>) -> Vec<RegisteredWindow> {
         let mut placement_epoch = 0;
-        normalize_registered_windows(windows, filter, &mut placement_epoch)
+        normalize_registered_windows(windows, &mut placement_epoch)
     }
 
     fn test_bridge_state() -> BridgeThreadState {
@@ -3916,15 +3850,12 @@ mod tests {
 
     #[test]
     fn overlay_init_preserves_back_to_front_order_and_last_duplicate_position() {
-        let windows = normalize_test_windows(
-            vec![
-                window_metadata(10, "Back", 10),
-                window_metadata(20, "Middle", 20),
-                window_metadata(10, "Back replacement", 99),
-                window_metadata(30, "Front", 30),
-            ],
-            None,
-        );
+        let windows = normalize_test_windows(vec![
+            window_metadata(10, "Back", 10),
+            window_metadata(20, "Middle", 20),
+            window_metadata(10, "Back replacement", 99),
+            window_metadata(30, "Front", 30),
+        ]);
 
         assert_eq!(
             windows
@@ -3940,33 +3871,29 @@ mod tests {
     }
 
     #[test]
-    fn explicit_window_name_is_an_exact_filter_and_absent_filter_keeps_all() {
-        let announced = || {
-            vec![
-                window_metadata(10, "ExampleMainOverlay", 10),
-                window_metadata(20, "ExampleStatusOverlay", 20),
-                window_metadata(30, "ExampleMainOverlay child", 30),
-            ]
-        };
+    fn overlay_init_keeps_all_announced_window_names() {
+        let windows = normalize_test_windows(vec![
+            window_metadata(10, "ExampleMainOverlay", 10),
+            window_metadata(20, "ExampleStatusOverlay", 20),
+            window_metadata(30, "ExampleMainOverlay child", 30),
+        ]);
 
-        let all = normalize_test_windows(announced(), None);
-        assert_eq!(all.len(), 3);
-
-        let filtered = normalize_test_windows(announced(), Some("ExampleMainOverlay"));
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].window_id, 10);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
     }
 
     #[test]
     fn streamed_registration_deduplicates_and_appends_the_window_on_top() {
-        let mut windows = normalize_test_windows(
-            vec![
-                window_metadata(10, "Back", 10),
-                window_metadata(20, "Middle", 20),
-                window_metadata(30, "Front", 30),
-            ],
-            None,
-        );
+        let mut windows = normalize_test_windows(vec![
+            window_metadata(10, "Back", 10),
+            window_metadata(20, "Middle", 20),
+            window_metadata(30, "Front", 30),
+        ]);
 
         assert!(register_window_on_top(
             &mut windows,
@@ -3987,13 +3914,10 @@ mod tests {
 
     #[test]
     fn bounds_update_changes_only_target_metadata_and_keeps_stack_position() {
-        let mut windows = normalize_test_windows(
-            vec![
-                window_metadata(10, "Back", 10),
-                window_metadata(20, "Front", 20),
-            ],
-            None,
-        );
+        let mut windows = normalize_test_windows(vec![
+            window_metadata(10, "Back", 10),
+            window_metadata(20, "Front", 20),
+        ]);
         let replacement_rect = ElectronWindowRect {
             x: -12,
             y: 34,
@@ -4007,11 +3931,6 @@ mod tests {
                 WindowBoundsMessage {
                     window_id: 10,
                     rect: replacement_rect,
-                    max_width: None,
-                    max_height: None,
-                    min_width: None,
-                    min_height: None,
-                    drag_border_width: None,
                     caption: None,
                     scale_factor_micros: None,
                     raster_changed: None,
@@ -4041,8 +3960,7 @@ mod tests {
             top: 10,
             height: 40,
         });
-        let mut windows =
-            normalize_test_windows(vec![back, window_metadata(20, "Front", 20)], None);
+        let mut windows = normalize_test_windows(vec![back, window_metadata(20, "Front", 20)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
             window_id: 10,
             name: "Back".to_owned(),
@@ -4059,11 +3977,6 @@ mod tests {
                 "type":"window.bounds",
                 "windowId":10,
                 "rect":{"x":15,"y":30,"width":960,"height":540},
-                "maxWidth":2880,
-                "maxHeight":1620,
-                "minWidth":150,
-                "minHeight":150,
-                "dragBorderWidth":15,
                 "caption":{"left":15,"right":15,"top":15,"height":60},
                 "scaleFactorMicros":1500000,
                 "rasterChanged":true
@@ -4071,11 +3984,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(message.max_width, Some(2880));
-        assert_eq!(message.max_height, Some(1620));
-        assert_eq!(message.min_width, Some(150));
-        assert_eq!(message.min_height, Some(150));
-        assert_eq!(message.drag_border_width, Some(15));
         assert_eq!(message.scale_factor_micros, Some(1_500_000));
         assert_eq!(message.raster_changed, Some(true));
         assert_eq!(
@@ -4163,8 +4071,7 @@ mod tests {
             top: 8,
             height: 44,
         });
-        let mut windows =
-            normalize_test_windows(vec![back, window_metadata(20, "Front", 20)], None);
+        let mut windows = normalize_test_windows(vec![back, window_metadata(20, "Front", 20)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
             window_id: 10,
             name: "Back".to_owned(),
@@ -4186,11 +4093,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(message.max_width, None);
-        assert_eq!(message.max_height, None);
-        assert_eq!(message.min_width, None);
-        assert_eq!(message.min_height, None);
-        assert_eq!(message.drag_border_width, None);
         assert_eq!(message.caption, None);
         assert_eq!(message.scale_factor_micros, None);
         assert_eq!(message.raster_changed, None);
@@ -4227,7 +4129,7 @@ mod tests {
 
     #[test]
     fn explicit_raster_unchanged_bounds_update_retains_latest_pixels() {
-        let mut windows = normalize_test_windows(vec![window_metadata(10, "Back", 10)], None);
+        let mut windows = normalize_test_windows(vec![window_metadata(10, "Back", 10)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
             window_id: 10,
             name: "Back".to_owned(),
@@ -4264,15 +4166,12 @@ mod tests {
     fn scene_snapshot_is_atomic_ordered_and_republishes_current_metadata() {
         let mut invalid = window_metadata(40, "Invalid", 40);
         invalid.rect.width = 0;
-        let mut windows = normalize_test_windows(
-            vec![
-                window_metadata(10, "Back", 10),
-                window_metadata(20, "Waiting", 20),
-                window_metadata(30, "Front", 30),
-                invalid,
-            ],
-            None,
-        );
+        let mut windows = normalize_test_windows(vec![
+            window_metadata(10, "Back", 10),
+            window_metadata(20, "Waiting", 20),
+            window_metadata(30, "Front", 30),
+            invalid,
+        ]);
         let back_pixels: Arc<[u8]> = vec![10, 20, 30, 255].into();
         let front_pixels: Arc<[u8]> = vec![40, 50, 60, 128].into();
         windows[0].latest = Some(Arc::new(ElectronFrame {

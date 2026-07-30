@@ -1,6 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const {
+  ElectronOverlayWindow,
+} = require('../dist/lib/electron-overlay-window.js');
 const { OverlaySession } = require('../dist/lib/overlay-session.js');
 const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
 
@@ -125,6 +128,37 @@ function forwardInput(session) {
   });
 }
 
+function createOverlayWindowFocusHarness(focusOnReady) {
+  const windowHandlers = new Map();
+  const focusCalls = [];
+  const browserWindow = {
+    id: 41,
+    webContents: {
+      on() {},
+    },
+    on(event, handler) {
+      windowHandlers.set(event, handler);
+    },
+    focusOnWebView() {
+      focusCalls.push('focus');
+    },
+  };
+  const bridge = {
+    registerWindow() {},
+    unregisterWindow() {},
+    removeWindow() {},
+    syncWindowGeometry() {},
+    followTarget() {},
+    stopFollowingTarget() {},
+    sendFrame() {},
+  };
+  const window = new ElectronOverlayWindow(bridge, {
+    existingWindow: browserWindow,
+    ...(focusOnReady === undefined ? {} : { focusOnReady }),
+  });
+  return { focusCalls, window, windowHandlers };
+}
+
 function createProducerPublicationHarness(overlayOverrides = {}) {
   const calls = [];
   let contentBounds = { ...bounds };
@@ -163,9 +197,7 @@ function createProducerPublicationHarness(overlayOverrides = {}) {
     browserWindow: {
       id: 7,
       isDestroyed: () => false,
-      isResizable: () => true,
       getContentBounds: () => ({ ...contentBounds }),
-      getNativeWindowHandle: () => Buffer.from([123, 0, 0, 0]),
       webContents: {
         invalidate() {},
         isDestroyed: () => false,
@@ -185,6 +217,16 @@ function createProducerPublicationHarness(overlayOverrides = {}) {
     window,
   };
 }
+
+test('does not focus a ready overlay window unless explicitly requested', () => {
+  const defaultHarness = createOverlayWindowFocusHarness();
+  defaultHarness.windowHandlers.get('ready-to-show')();
+  assert.deepEqual(defaultHarness.focusCalls, []);
+
+  const focusedHarness = createOverlayWindowFocusHarness(true);
+  focusedHarness.windowHandlers.get('ready-to-show')();
+  assert.deepEqual(focusedHarness.focusCalls, ['focus']);
+});
 
 test('focuses the target page immediately before input dispatch without native focus', () => {
   const harness = createHarness();
@@ -459,8 +501,8 @@ test('binds diagnostic observation before backend startup without re-entry', () 
         context: { port: 4242 },
       });
     },
-    setHotkeys() {
-      calls.push('set-hotkeys');
+    setInputIntercept(intercept) {
+      calls.push(`intercept-${intercept}`);
     },
     stop() {},
   };
@@ -472,7 +514,7 @@ test('binds diagnostic observation before backend startup without re-entry', () 
   const diagnostics = [];
   session.on('diagnostic', (diagnostic) => {
     diagnostics.push(diagnostic);
-    session.setHotkeys([]);
+    session.input.intercept();
   });
 
   session.start();
@@ -481,7 +523,7 @@ test('binds diagnostic observation before backend startup without re-entry', () 
     'event-callback',
     'diagnostic-callback',
     'start',
-    'set-hotkeys',
+    'intercept-true',
   ]);
   assert.equal(starts, 1);
   assert.equal(diagnostics[0].code, 'transport-ready');
@@ -780,13 +822,11 @@ test('target following moves the backing window in DIP but commits local physica
   const browserWindow = {
     id: 7,
     isDestroyed: () => false,
-    isResizable: () => true,
     getContentBounds: () => ({ ...contentBounds }),
     setContentBounds: (next) => {
       contentBounds = { ...next };
       setContentBoundsCalls.push({ ...next });
     },
-    getNativeWindowHandle: () => Buffer.from([123, 0, 0, 0]),
     webContents: {
       invalidate() {},
     },
@@ -837,11 +877,6 @@ test('target following moves the backing window in DIP but commits local physica
     top: 0,
     height: 0,
   });
-  assert.equal(boundsUpdates.at(-1).details.dragBorderWidth, 0);
-  assert.equal(boundsUpdates.at(-1).details.minWidth, 640);
-  assert.equal(boundsUpdates.at(-1).details.maxWidth, 640);
-  assert.equal(boundsUpdates.at(-1).details.minHeight, 360);
-  assert.equal(boundsUpdates.at(-1).details.maxHeight, 360);
   assert.equal(
     boundsUpdates.at(-1).details.rasterChanged,
     undefined,
@@ -856,12 +891,7 @@ test('target following moves the backing window in DIP but commits local physica
     id: 7,
     details: {
       rect: { x: 0, y: 0, width: 1920, height: 1080 },
-      maxWidth: 1920,
-      maxHeight: 1080,
-      minWidth: 1920,
-      minHeight: 1080,
       caption: { left: 0, right: 0, top: 0, height: 0 },
-      dragBorderWidth: 0,
       scaleFactorMicros: 1_500_000,
       rasterChanged: true,
     },

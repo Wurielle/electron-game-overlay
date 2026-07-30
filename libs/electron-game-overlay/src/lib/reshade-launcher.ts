@@ -82,23 +82,6 @@ const RUNTIME_STARTUP_RECORD_KEYS = Object.freeze([
   'code',
 ] as const);
 
-export const RESHADE_CLIENT_RUNTIME_STAGED_MARKER =
-  'RESHADE_CLIENT_RUNTIME_STAGED';
-export const RESHADE_CLIENT_INJECTOR_STARTED_MARKER =
-  'RESHADE_CLIENT_INJECTOR_STARTED';
-export const RESHADE_CLIENT_INJECTOR_RETURNED_MARKER =
-  'RESHADE_CLIENT_INJECTOR_RETURNED';
-export const RESHADE_CLIENT_INJECTOR_FAILED_MARKER =
-  'RESHADE_CLIENT_INJECTOR_FAILED';
-export const RESHADE_CLIENT_TARGET_CONNECTED_MARKER =
-  'RESHADE_CLIENT_TARGET_CONNECTED';
-export const RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER =
-  'RESHADE_CLIENT_TARGET_DISCONNECTED';
-export const RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED_MARKER =
-  'RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED';
-const RESHADE_CLIENT_RUN_RETENTION_PRUNED_MARKER =
-  'RESHADE_CLIENT_RUN_RETENTION_PRUNED';
-
 const RUNTIME_ARTIFACTS = Object.freeze([
   INJECTOR_FILE_NAME,
   RUNTIME_FILE_NAME,
@@ -281,6 +264,44 @@ export type ReShadeDiagnostic = Readonly<{
   runtimeStartupCode?: ReShadeRuntimeStartupCode;
   evidence?: ReShadeDiagnosticEvidence;
 }>;
+
+export type ReShadeLauncherEvent =
+  | Readonly<{
+      type: 'runtime-staged';
+      runDirectory: string;
+    }>
+  | Readonly<{
+      type: 'target-rendezvous-authorized';
+      targetLabel: string;
+      pid: number;
+      discoveryPath: string;
+    }>
+  | Readonly<{
+      type: 'injector-started';
+      invocation: ReShadeInvocation;
+    }>
+  | Readonly<{
+      type: 'injector-returned';
+      result: ReShadeLaunchResult;
+    }>
+  | Readonly<{
+      type: 'injector-failed';
+      diagnostic: ReShadeDiagnostic;
+    }>
+  | Readonly<{
+      type: 'target-connected';
+      targetLabel: string;
+      pid: number;
+      path: string;
+    }>
+  | Readonly<{
+      type: 'target-disconnected';
+      targetLabel: string;
+      pid: number;
+      path?: string;
+    }>;
+
+export type ReShadeLauncherEventHandler = (event: ReShadeLauncherEvent) => void;
 
 type ReShadeDiagnosticInput = Omit<
   ReShadeDiagnostic,
@@ -524,6 +545,7 @@ export function buildReShadeInvocation(
 }
 
 export class ReShadeOverlayLauncher {
+  private readonly eventHandlers = new Set<ReShadeLauncherEventHandler>();
   private activeChild: ChildProcess | null = null;
   private activeRequest: Promise<ReShadeLaunchResult> | null = null;
   private activeTargetLabel: string | null = null;
@@ -557,6 +579,27 @@ export class ReShadeOverlayLauncher {
 
   public get runDirectory(): string | null {
     return this.latestRunDirectory;
+  }
+
+  /**
+   * Subscribes to immutable launcher lifecycle events. Observer failures are
+   * isolated from attachment state and operation results.
+   */
+  public onEvent(handler: ReShadeLauncherEventHandler): () => void {
+    if (typeof handler !== 'function') {
+      throw new TypeError(
+        'the ReShade launcher event handler must be a function',
+      );
+    }
+    this.eventHandlers.add(handler);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) {
+        return;
+      }
+      subscribed = false;
+      this.eventHandlers.delete(handler);
+    };
   }
 
   /**
@@ -640,7 +683,13 @@ export class ReShadeOverlayLauncher {
         ? {}
         : { evidence: diagnosticEvidenceForStagedRuntime(current.staged) }),
     });
-    console.log(`${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=${pid}`);
+    this.emitEvent(
+      Object.freeze({
+        type: 'target-disconnected',
+        targetLabel,
+        pid,
+      }),
+    );
     this.activeAttach?.cancel(error);
     this.invalidateActiveLaunch();
     this.retireCurrentRuntime(targetLabel, current?.launchGeneration);
@@ -1041,8 +1090,13 @@ export class ReShadeOverlayLauncher {
         removeListeners,
       });
       this.connectedTarget = connectedTarget;
-      console.log(
-        `${RESHADE_CLIENT_TARGET_CONNECTED_MARKER} pid=${connection.pid}`,
+      this.emitEvent(
+        Object.freeze({
+          type: 'target-connected',
+          targetLabel,
+          pid: connection.pid,
+          path: connection.path,
+        }),
       );
       resolveConnectionProof(connection);
     };
@@ -1261,7 +1315,6 @@ export class ReShadeOverlayLauncher {
     launchGeneration: number,
     authorizeTarget?: TargetRendezvousAuthorizer,
   ): Promise<ReShadeLaunchResult> {
-    const targetDescription = targetDescriptionFor(target);
     const preparedRuntime = this.preparedRuntime;
     this.preparedRuntime = null;
     const staged = await (preparedRuntime ??
@@ -1280,13 +1333,16 @@ export class ReShadeOverlayLauncher {
         }
         this.releaseTargetAuthorization = newTargetAuthorization;
         newTargetAuthorization = undefined;
-        console.log(
-          `${RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED_MARKER} pid=${expectedTargetPid} path=${JSON.stringify(
-            path.join(
+        this.emitEvent(
+          Object.freeze({
+            type: 'target-rendezvous-authorized',
+            targetLabel,
+            pid: expectedTargetPid,
+            discoveryPath: path.join(
               staged.runDirectory,
               OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME,
             ),
-          )}`,
+          }),
         );
       }
     } catch (error) {
@@ -1309,8 +1365,11 @@ export class ReShadeOverlayLauncher {
       targetLabel,
       launchGeneration,
     });
-    console.log(
-      `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target=${JSON.stringify(targetDescription)} arguments=${JSON.stringify(invocationArguments)}`,
+    this.emitEvent(
+      Object.freeze({
+        type: 'injector-started',
+        invocation,
+      }),
     );
 
     return new Promise<ReShadeLaunchResult>((resolve, reject) => {
@@ -1405,8 +1464,11 @@ export class ReShadeOverlayLauncher {
       }
 
       scheduleRunRetentionSweepAfterCurrentTurn(runsRootDirectory);
-      console.log(
-        `${RESHADE_CLIENT_RUNTIME_STAGED_MARKER} directory=${JSON.stringify(createdRunDirectory)}`,
+      this.emitEvent(
+        Object.freeze({
+          type: 'runtime-staged',
+          runDirectory: createdRunDirectory,
+        }),
       );
       return Object.freeze({
         runId,
@@ -1455,7 +1517,6 @@ export class ReShadeOverlayLauncher {
     stderr: string,
     didSpawn: boolean,
   ): Promise<ReShadeLaunchResult> {
-    const targetDescription = targetDescriptionFor(target);
     const retrySafeBeforeMutation =
       isPathTarget(target) || target.pid !== undefined;
     const hasSuccessMarker = stdout.includes(INJECTOR_SUCCESS_MARKER);
@@ -1474,10 +1535,7 @@ export class ReShadeOverlayLauncher {
       ]);
     } catch (evidenceError) {
       const detail = `ReShade injector completed but its evidence logs could not be preserved: ${formatUnknownError(evidenceError)}`;
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: 'injector-evidence-write-failed',
         stage: 'injector',
@@ -1494,10 +1552,7 @@ export class ReShadeOverlayLauncher {
     if (this.disposed) {
       const detail =
         'the ReShade launcher was disposed before injector completion';
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: 'operation-cancelled',
         stage: 'lifecycle',
@@ -1511,10 +1566,7 @@ export class ReShadeOverlayLauncher {
     const parsedDiagnostic = parseInjectorDiagnostic(stdout);
     if (parsedDiagnostic.kind === 'invalid') {
       const detail = `ReShade injector diagnostic protocol was invalid: ${parsedDiagnostic.detail}`;
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: 'injector-result-invalid',
         stage: 'injector',
@@ -1542,10 +1594,7 @@ export class ReShadeOverlayLauncher {
       if (isContradictory) {
         const detail =
           'ReShade injector diagnostic contradicted its success, mutation-state, or exact-PID evidence';
-        console.error(
-          `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-        );
-        throw new ReShadeOperationError({
+        throw this.createInjectorFailure({
           message: detail,
           code: 'injector-result-invalid',
           stage: 'injector',
@@ -1607,10 +1656,7 @@ export class ReShadeOverlayLauncher {
           }${windowsErrorDetail}`;
           break;
       }
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: diagnostic.code,
         stage:
@@ -1635,10 +1681,7 @@ export class ReShadeOverlayLauncher {
 
     if (parsedResult.kind === 'invalid') {
       const detail = `ReShade injector result protocol was invalid: ${parsedResult.detail}`;
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: 'injector-result-invalid',
         stage: 'injector',
@@ -1653,10 +1696,7 @@ export class ReShadeOverlayLauncher {
       if (parsedResult.kind === 'valid') {
         const detail =
           'ReShade injector reported a structured success result while the injector process failed';
-        console.error(
-          `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-        );
-        throw new ReShadeOperationError({
+        throw this.createInjectorFailure({
           message: detail,
           code: 'injector-result-invalid',
           stage: 'injector',
@@ -1667,10 +1707,7 @@ export class ReShadeOverlayLauncher {
         });
       }
       const detail = formatLaunchError(error, stdout, stderr);
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: didSpawn ? 'injector-failed' : 'injector-start-failed',
         stage: 'injector',
@@ -1686,10 +1723,7 @@ export class ReShadeOverlayLauncher {
     }
     if (parsedResult.kind === 'none') {
       const detail = `ReShade injector stdout did not contain exactly one ${JSON.stringify(INJECTOR_RESULT_PREFIX.trim())} record`;
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: 'injector-result-invalid',
         stage: 'injector',
@@ -1702,10 +1736,7 @@ export class ReShadeOverlayLauncher {
     if (!didSpawn) {
       const detail =
         'ReShade injector reported a structured success result without a confirmed child-process spawn';
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: 'injector-result-invalid',
         stage: 'injector',
@@ -1723,10 +1754,7 @@ export class ReShadeOverlayLauncher {
       injectorTargetPid !== expectedTargetPid
     ) {
       const detail = `ReShade injector selected pid=${injectorTargetPid}; expected pid=${expectedTargetPid}`;
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
+      throw this.createInjectorFailure({
         message: detail,
         code: 'injector-result-invalid',
         stage: 'injector',
@@ -1745,10 +1773,7 @@ export class ReShadeOverlayLauncher {
       } catch (parseError) {
         const detail =
           parseError instanceof Error ? parseError.message : String(parseError);
-        console.error(
-          `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-        );
-        throw new ReShadeOperationError({
+        throw this.createInjectorFailure({
           message: detail,
           code: 'injector-result-invalid',
           stage: 'injector',
@@ -1760,10 +1785,7 @@ export class ReShadeOverlayLauncher {
       }
       if (!targetPathMatches(selectedPath, target)) {
         const detail = `ReShade injector selected unexpected path=${JSON.stringify(selectedPath)}; expected ${targetPathExpectation(target)}`;
-        console.error(
-          `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-        );
-        throw new ReShadeOperationError({
+        throw this.createInjectorFailure({
           message: detail,
           code: 'injector-result-invalid',
           stage: 'injector',
@@ -1778,10 +1800,7 @@ export class ReShadeOverlayLauncher {
       processName = target.processName;
     }
 
-    console.log(
-      `${RESHADE_CLIENT_INJECTOR_RETURNED_MARKER} target=${JSON.stringify(targetDescription)}`,
-    );
-    return Object.freeze({
+    const result: ReShadeLaunchResult = Object.freeze({
       processName,
       ...(selectedPath === undefined ? {} : { selectedPath }),
       targetLabel,
@@ -1799,14 +1818,26 @@ export class ReShadeOverlayLauncher {
           : staged.reshadeLogPath,
       runtimeStartupPath: staged.runtimeStartupPath,
     });
+    this.emitEvent(
+      Object.freeze({
+        type: 'injector-returned',
+        result,
+      }),
+    );
+    return result;
   }
 
   private disconnectConnectedTarget(target: ConnectedTarget): void {
     if (this.connectedTarget !== target) {
       return;
     }
-    console.log(
-      `${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=${target.pid}`,
+    this.emitEvent(
+      Object.freeze({
+        type: 'target-disconnected',
+        targetLabel: target.targetLabel,
+        pid: target.pid,
+        path: target.path,
+      }),
     );
     this.retireCurrentRuntime(target.targetLabel);
     this.resetTargetState(target.targetLabel);
@@ -1902,6 +1933,29 @@ export class ReShadeOverlayLauncher {
     if (this.targetProofTimer) {
       clearTimeout(this.targetProofTimer);
       this.targetProofTimer = null;
+    }
+  }
+
+  private createInjectorFailure(
+    input: ReShadeDiagnosticInput,
+  ): ReShadeOperationError {
+    const error = new ReShadeOperationError(input);
+    this.emitEvent(
+      Object.freeze({
+        type: 'injector-failed',
+        diagnostic: error.diagnostic,
+      }),
+    );
+    return error;
+  }
+
+  private emitEvent(event: ReShadeLauncherEvent): void {
+    for (const handler of [...this.eventHandlers]) {
+      try {
+        handler(event);
+      } catch {
+        // Lifecycle observation must not alter launcher state or error results.
+      }
     }
   }
 
@@ -2366,7 +2420,6 @@ async function pruneReclaimableRunDirectories(
       index >= RUN_RETENTION_MAX_DIRECTORIES,
   );
 
-  let removedCount = 0;
   for (const candidate of directoriesToRemove) {
     const quarantineDirectory = path.join(
       candidate.runsRootDirectory,
@@ -2422,18 +2475,11 @@ async function pruneReclaimableRunDirectories(
         );
         throw error;
       }
-      removedCount += 1;
     } catch (error) {
       console.warn(
         `Unable to remove completed ReShade run directory ${JSON.stringify(candidate.runDirectory)}: ${formatUnknownError(error)}`,
       );
     }
-  }
-
-  if (removedCount > 0) {
-    console.log(
-      `${RESHADE_CLIENT_RUN_RETENTION_PRUNED_MARKER} root=${JSON.stringify(runsRootDirectory)} count=${removedCount}`,
-    );
   }
 }
 
@@ -2961,16 +3007,6 @@ function targetPathExpectation(target: ReShadeTarget): string {
   return isPathTarget(target)
     ? `path fragment=${JSON.stringify(target.pathContains)} excluding=${JSON.stringify(target.excludedProcessNames ?? [])}`
     : `basename=${JSON.stringify(target.processName)}`;
-}
-
-function targetDescriptionFor(target: ReShadeTarget): string {
-  return isPathTarget(target)
-    ? `path contains ${target.pathContains}${
-        target.excludedProcessNames?.length
-          ? ` excluding ${target.excludedProcessNames.join(', ')}`
-          : ''
-      }`
-    : target.processName;
 }
 
 function targetStageName(target: ReShadeTarget): string {

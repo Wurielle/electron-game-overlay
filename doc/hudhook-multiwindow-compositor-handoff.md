@@ -12,7 +12,6 @@
 From a regular PowerShell at the repository root:
 
 ```powershell
-Remove-Item Env:HUDHOOK_ELECTRON_WINDOW -ErrorAction SilentlyContinue
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindow -DeviceScaleFactor 1.25 -Wait
 .\poc\hudhook-imgui-overlay\scripts\run-electron-dx11.ps1 -ClientMultiWindowManual -Wait
 ```
@@ -28,35 +27,35 @@ The milestone keeps the public Electron SDK unchanged. `window.bounds` has a
 backward-compatible optional geometry extension for runtime scale changes; the
 existing registration stream remains the stacking contract:
 
-| Event | Ordered scene behavior |
-| --- | --- |
-| `overlay.init` | Preserve the announced array as back-to-front order. |
-| `window` | Remove any duplicate ID, then append the registration on top. |
-| `window.bounds` | Update that ID in place without changing order. |
-| `window.framebuffer` | Copy and publish that window's mapping/frame. |
-| `window.close` | Remove only that ID and preserve all peers. |
-| First down that acquires capture | Focus before input; publish a generated click-to-front intent for the hit window. If that hit is already topmost, this first down still advances the generation so an older queued raise cannot overtake it. Additional button-downs remain with the capture owner and do not create another intent. |
-| First left down in the SDK caption | Focus/capture/raise as above, but consume the caption gesture and move the payload-local scene/router rect instead of forwarding DOM pointer packets. |
+| Event                              | Ordered scene behavior                                                                                                                                                                                                                                                                               |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `overlay.init`                     | Preserve the announced array as back-to-front order.                                                                                                                                                                                                                                                 |
+| `window`                           | Remove any duplicate ID, then append the registration on top.                                                                                                                                                                                                                                        |
+| `window.bounds`                    | Update that ID in place without changing order.                                                                                                                                                                                                                                                      |
+| `window.framebuffer`               | Copy and publish that window's mapping/frame.                                                                                                                                                                                                                                                        |
+| `window.close`                     | Remove only that ID and preserve all peers.                                                                                                                                                                                                                                                          |
+| First down that acquires capture   | Focus before input; publish a generated click-to-front intent for the hit window. If that hit is already topmost, this first down still advances the generation so an older queued raise cannot overtake it. Additional button-downs remain with the capture owner and do not create another intent. |
+| First left down in the SDK caption | Focus/capture/raise as above, but consume the caption gesture and move the payload-local scene/router rect instead of forwarding DOM pointer packets.                                                                                                                                                |
 
-`HUDHOOK_ELECTRON_WINDOW` is now only an optional exact-name filter. If it is
-unset or empty, every announced window participates; an unmatched explicit
-filter has no fallback.
+Every announced window participates. The former ambient
+`HUDHOOK_ELECTRON_WINDOW` exact-name filter was removed when the transport was
+promoted because inherited shell state could otherwise hide valid windows.
 
 The coordinate boundary remains explicit across the compatible geometry
 extension:
 
-| Boundary | Coordinate space |
-| --- | --- |
-| Public `BrowserWindow` bounds, SDK caption/drag border, resize constraints | Electron DIP |
-| SDK wire rectangle and metadata | Physical game/swap-chain pixels |
-| Electron 16 OSR bitmap | Physical pixels |
-| Hudhook composition, alpha hit testing, caption dragging | Physical game-client pixels |
-| Returned `game.input` | Overlay-local physical pixels, divided back to signed DIP by the SDK |
+| Boundary                                                                         | Coordinate space                                                     |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Public `BrowserWindow` bounds, SDK caption/drag border, local resize constraints | Electron DIP                                                         |
+| SDK wire rectangle, caption hit regions, and scale identity                      | Physical game/swap-chain pixels                                      |
+| Electron 16 OSR bitmap                                                           | Physical pixels                                                      |
+| Hudhook composition, alpha hit testing, caption dragging                         | Physical game-client pixels                                          |
+| Returned `game.input`                                                            | Overlay-local physical pixels, divided back to signed DIP by the SDK |
 
 The SDK reads `BrowserWindow.getContentBounds()`, not outer bounds, so its
 rectangle tracks the content surface that produces OSR bitmaps even when a
 producer has non-client chrome. It scales all four content-rectangle components
-and all dependent metadata. Each routed `game.input` packet carries the window's
+and the caption hit regions. Each routed `game.input` packet carries the window's
 active `scaleFactorMicros`; the SDK uses that per-packet tag so queued input
 cannot be reinterpreted after a scale transition. Legacy untagged packets remain
 supported by falling back to the receiving window's current active scale.
@@ -68,11 +67,11 @@ Scale state is independent per producer window. Electron move/resize and global
 display events refresh its desired display, request an OSR repaint when the scale
 changes, and leave published geometry and returned input on the active scale. A
 paint within one pixel per dimension of the desired nominal floor-scaled size
-commits the new scale and full `window.bounds` geometry; an old-size paint remains
-accepted at the old scale and an unrelated/invalid size is suppressed. The
-accepted bitmap dimensions become the authoritative rect width/height and, for a
-fixed window, min/max constraints. Rect, caption, drag border, and constraints
-update in place without reordering the window.
+commits the new scale, physical rect, caption hit regions, and scale identity;
+an old-size paint remains accepted at the old scale and an unrelated/invalid
+size is suppressed. The accepted bitmap dimensions become the authoritative
+rect width/height. The wire metadata updates in place without reordering the
+window; resize constraints remain local to Electron.
 
 If one bitmap falls within both active and desired tolerances, the SDK cannot
 classify a queued callback by size. It rejects that callback, waits for renderer
