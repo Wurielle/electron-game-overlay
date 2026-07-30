@@ -10,17 +10,21 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
+use windows::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor,
@@ -65,8 +69,160 @@ const DISCOVERY_FILE: &str = "electron-overlay-transport-v1.json";
 const TARGET_ROUTE_FILE: &str = "electron-overlay-transport-v1.targeted";
 const ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV: &str = "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY";
 const RESHADE_BASE_PATH_OVERRIDE_ENV: &str = "RESHADE_BASE_PATH_OVERRIDE";
+const RUNTIME_STARTUP_DIAGNOSTIC_FILE: &str = ".electron-game-overlay-runtime-startup.json";
+const RUNTIME_STARTUP_DIAGNOSTIC_SOURCE: &str = "electron-game-overlay-runtime";
+const RUNTIME_STARTUP_DIAGNOSTIC_SCHEMA_VERSION: u32 = 1;
+const MAX_RUNTIME_STARTUP_DIAGNOSTIC_BYTES: usize = 256;
 const MAX_DISCOVERY_BYTES: usize = 64 * 1024;
 const BYTES_PER_PIXEL: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RuntimeStartupCode {
+    BridgeThreadCreateFailed,
+    BridgeThreadStarted,
+    BridgeWindowCreateFailed,
+    BridgeWindowReady,
+    DiscoveryNotReady,
+    DiscoveryDocumentInvalid,
+    DiscoveryVersionMismatch,
+    DiscoveryTargetMismatch,
+    LoopbackConnectFailed,
+    LoopbackConfigurationFailed,
+    ProcessHelloBuildFailed,
+    NetworkWorkerStartFailed,
+    NetworkWorkerStarted,
+    NetworkConnectionLost,
+    BridgeMessagePumpFailed,
+}
+
+#[derive(Serialize)]
+struct RuntimeStartupRecord {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    source: &'static str,
+    pid: u32,
+    code: RuntimeStartupCode,
+}
+
+#[derive(Clone, Default)]
+struct RuntimeStartupPublisher {
+    state: Option<Arc<Mutex<RuntimeStartupPublisherState>>>,
+}
+
+struct RuntimeStartupPublisherState {
+    destination: PathBuf,
+    temporary: PathBuf,
+    pid: u32,
+    last_code: Option<RuntimeStartupCode>,
+}
+
+impl RuntimeStartupPublisher {
+    fn from_environment(pid: u32) -> Self {
+        let run_directory = runtime_startup_directory_from(
+            std::env::var_os(ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV),
+            std::env::var_os(RESHADE_BASE_PATH_OVERRIDE_ENV),
+        );
+        run_directory
+            .map(|directory| Self::for_directory(directory, pid))
+            .unwrap_or_default()
+    }
+
+    fn for_directory(directory: PathBuf, pid: u32) -> Self {
+        let destination = directory.join(RUNTIME_STARTUP_DIAGNOSTIC_FILE);
+        let temporary = directory.join(format!("{RUNTIME_STARTUP_DIAGNOSTIC_FILE}.{pid}.tmp"));
+        Self {
+            state: Some(Arc::new(Mutex::new(RuntimeStartupPublisherState {
+                destination,
+                temporary,
+                pid,
+                last_code: None,
+            }))),
+        }
+    }
+
+    fn publish(&self, code: RuntimeStartupCode) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.last_code == Some(code) {
+            return;
+        }
+
+        match write_runtime_startup_record(&state, code) {
+            Ok(()) => state.last_code = Some(code),
+            Err(error) => {
+                debug!(
+                    %error,
+                    "Cannot publish Electron overlay runtime startup diagnostic"
+                );
+            }
+        }
+    }
+}
+
+fn runtime_startup_directory_from(
+    run_directory: Option<std::ffi::OsString>,
+    reshade_base_path: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    run_directory
+        .or(reshade_base_path)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+fn write_runtime_startup_record(
+    state: &RuntimeStartupPublisherState,
+    code: RuntimeStartupCode,
+) -> io::Result<()> {
+    let record = RuntimeStartupRecord {
+        schema_version: RUNTIME_STARTUP_DIAGNOSTIC_SCHEMA_VERSION,
+        source: RUNTIME_STARTUP_DIAGNOSTIC_SOURCE,
+        pid: state.pid,
+        code,
+    };
+    let bytes = serde_json::to_vec(&record)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if bytes.len() > MAX_RUNTIME_STARTUP_DIAGNOSTIC_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "runtime startup diagnostic exceeded its fixed size bound",
+        ));
+    }
+
+    let mut temporary = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&state.temporary)?;
+    temporary.write_all(&bytes)?;
+    temporary.sync_all()?;
+    drop(temporary);
+    let temporary = wide_path(&state.temporary);
+    let destination = wide_path(&state.destination);
+    let replacement = unsafe {
+        MoveFileExW(
+            PCWSTR(temporary.as_ptr()),
+            PCWSTR(destination.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if let Err(error) = replacement {
+        let _ = fs::remove_file(&state.temporary);
+        return Err(io::Error::other(error));
+    }
+    Ok(())
+}
+
+fn wide_path(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
 
 type PublishedScene = Arc<RwLock<Arc<ElectronScene>>>;
 type SharedInputRouter = Arc<Mutex<InputRouter>>;
@@ -274,6 +430,7 @@ pub struct ElectronFrameBridge {
 impl ElectronFrameBridge {
     /// Starts the state and loopback transport worker.
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
+        let startup = RuntimeStartupPublisher::from_environment(unsafe { GetCurrentProcessId() });
         let scene = Arc::new(RwLock::new(Arc::new(ElectronScene::default())));
         let worker_scene = Arc::clone(&scene);
         let input_router = Arc::new(Mutex::new(InputRouter::new()));
@@ -293,6 +450,7 @@ impl ElectronFrameBridge {
         let drag = SharedDragState::default();
         let worker_drag = drag.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let worker_startup = startup.clone();
 
         let thread = thread::Builder::new()
             .name("electron-overlay-frame".to_owned())
@@ -306,9 +464,13 @@ impl ElectronFrameBridge {
                     worker_stack_generation,
                     worker_drag,
                     ready_tx,
+                    worker_startup,
                 )
             })
-            .map_err(ElectronFrameBridgeError::ThreadSpawn)?;
+            .map_err(|error| {
+                startup.publish(RuntimeStartupCode::BridgeThreadCreateFailed);
+                ElectronFrameBridgeError::ThreadSpawn(error)
+            })?;
 
         let window = match ready_rx.recv() {
             Ok(Ok(window)) => window,
@@ -700,7 +862,9 @@ fn run_bridge_thread(
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
+    startup: RuntimeStartupPublisher,
 ) {
+    startup.publish(RuntimeStartupCode::BridgeThreadStarted);
     let title = wide_string(&format!("electron-overlay-frame-{}", unsafe {
         GetCurrentProcessId()
     }));
@@ -723,6 +887,7 @@ fn run_bridge_thread(
     } {
         Ok(hwnd) => hwnd,
         Err(error) => {
+            startup.publish(RuntimeStartupCode::BridgeWindowCreateFailed);
             let _ = ready_tx.send(Err(format!(
                 "cannot create Electron frame state window: {error}"
             )));
@@ -739,6 +904,7 @@ fn run_bridge_thread(
         input_order,
         stack_generation,
         drag,
+        startup,
     ));
     let window_name_filter = state.window_name_filter.clone();
     let state_ptr = Box::into_raw(state);
@@ -752,6 +918,9 @@ fn run_bridge_thread(
         );
 
         SetTimer(Some(hwnd), CONNECT_TIMER_ID, CONNECT_RETRY_MILLIS, None);
+        (*state_ptr)
+            .startup
+            .publish(RuntimeStartupCode::BridgeWindowReady);
         (*state_ptr).try_connect();
     }
 
@@ -773,6 +942,11 @@ fn run_bridge_thread(
     loop {
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
         if result.0 == -1 {
+            unsafe {
+                (*state_ptr)
+                    .startup
+                    .publish(RuntimeStartupCode::BridgeMessagePumpFailed);
+            }
             warn!("Electron frame bridge message pump failed");
             break;
         }
@@ -873,6 +1047,7 @@ struct TcpTransport {
     commands: mpsc::SyncSender<Vec<u8>>,
     stop: Arc<AtomicBool>,
     thread: JoinHandle<()>,
+    authenticated: bool,
 }
 
 enum NetworkInbound {
@@ -907,6 +1082,7 @@ struct BridgeThreadState {
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
+    startup: RuntimeStartupPublisher,
     outbound_diagnostics: Arc<OutboundDiagnostics>,
     window_name_filter: Option<String>,
     windows: Vec<RegisteredWindow>,
@@ -927,6 +1103,7 @@ impl BridgeThreadState {
         input_order: SharedInputOrder,
         stack_generation: SharedStackGeneration,
         drag: SharedDragState,
+        startup: RuntimeStartupPublisher,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
         let (discovery_path, legacy_discovery_path, target_route_path) = discovery_paths();
@@ -947,6 +1124,7 @@ impl BridgeThreadState {
             input_order,
             stack_generation,
             drag,
+            startup,
             outbound_diagnostics: Arc::new(OutboundDiagnostics::default()),
             window_name_filter: window_name_filter(),
             windows: Vec::new(),
@@ -972,12 +1150,15 @@ impl BridgeThreadState {
             ) {
                 Ok(selection) => selection,
                 Err(error) => {
+                    self.startup.publish(discovery_failure_startup_code(&error));
                     debug!(%error, "Electron overlay transport discovery is not ready");
                     return;
                 }
             };
         let current_pid = GetCurrentProcessId();
         if discovery.version != TRANSPORT_VERSION {
+            self.startup
+                .publish(RuntimeStartupCode::DiscoveryVersionMismatch);
             debug!(
                 version = discovery.version,
                 expected_version = TRANSPORT_VERSION,
@@ -988,10 +1169,14 @@ impl BridgeThreadState {
             return;
         }
         if !is_valid_token(&discovery.token) || discovery.port == 0 {
+            self.startup
+                .publish(RuntimeStartupCode::DiscoveryDocumentInvalid);
             debug!("Ignoring incomplete Electron overlay transport discovery document");
             return;
         }
         if !discovery_target_matches(discovery.target_pid, current_pid, requires_target_binding) {
+            self.startup
+                .publish(RuntimeStartupCode::DiscoveryTargetMismatch);
             warn!(
                 expected_target_pid = ?discovery.target_pid,
                 actual_target_pid = current_pid,
@@ -1008,14 +1193,20 @@ impl BridgeThreadState {
         ) {
             Ok(stream) => stream,
             Err(error) => {
+                self.startup
+                    .publish(RuntimeStartupCode::LoopbackConnectFailed);
                 debug!(?address, %error, "Cannot connect to Electron overlay loopback transport yet");
                 return;
             }
         };
         if let Err(error) = stream.set_nodelay(true) {
+            self.startup
+                .publish(RuntimeStartupCode::LoopbackConfigurationFailed);
             debug!(%error, "Cannot disable Electron overlay transport Nagle buffering");
         }
         if let Err(error) = stream.set_nonblocking(true) {
+            self.startup
+                .publish(RuntimeStartupCode::LoopbackConfigurationFailed);
             warn!(%error, "Cannot configure Electron overlay transport as nonblocking");
             return;
         }
@@ -1023,6 +1214,8 @@ impl BridgeThreadState {
         let hello = match game_process_packet(&discovery.token) {
             Ok(packet) => packet,
             Err(error) => {
+                self.startup
+                    .publish(RuntimeStartupCode::ProcessHelloBuildFailed);
                 warn!(%error, "Cannot build Electron overlay transport process hello");
                 return;
             }
@@ -1038,12 +1231,16 @@ impl BridgeThreadState {
         ) {
             Ok(transport) => transport,
             Err(error) => {
+                self.startup
+                    .publish(RuntimeStartupCode::NetworkWorkerStartFailed);
                 warn!(%error, "Cannot start Electron overlay loopback transport worker");
                 return;
             }
         };
 
         self.transport = Some(transport);
+        self.startup
+            .publish(RuntimeStartupCode::NetworkWorkerStarted);
         self.replay_current_target_surfaces();
         let _ = KillTimer(Some(self.hwnd), CONNECT_TIMER_ID);
         info!(
@@ -1114,6 +1311,9 @@ impl BridgeThreadState {
                         .as_ref()
                         .is_some_and(|transport| transport.generation == generation) =>
                 {
+                    if let Some(transport) = self.transport.as_mut() {
+                        transport.authenticated = true;
+                    }
                     match packet {
                         WirePacket::Json(json) => self.dispatch_json(&json),
                         WirePacket::Frame(frame) => {
@@ -1129,6 +1329,13 @@ impl BridgeThreadState {
                         .as_ref()
                         .is_some_and(|transport| transport.generation == generation) =>
                 {
+                    if let Some(code) = pre_auth_connection_loss_code(
+                        self.transport
+                            .as_ref()
+                            .is_some_and(|transport| transport.authenticated),
+                    ) {
+                        self.startup.publish(code);
+                    }
                     warn!(%reason, "Electron overlay loopback transport disconnected");
                     self.disconnect();
                     let _ = KillTimer(Some(self.hwnd), OUTBOUND_RETRY_TIMER_ID);
@@ -2407,6 +2614,7 @@ fn start_network_worker(
         commands,
         stop,
         thread,
+        authenticated: false,
     })
 }
 
@@ -2562,6 +2770,18 @@ impl DiscoveryError {
     }
 }
 
+fn discovery_failure_startup_code(error: &DiscoveryError) -> RuntimeStartupCode {
+    if error.is_not_found() {
+        RuntimeStartupCode::DiscoveryNotReady
+    } else {
+        RuntimeStartupCode::DiscoveryDocumentInvalid
+    }
+}
+
+fn pre_auth_connection_loss_code(authenticated: bool) -> Option<RuntimeStartupCode> {
+    (!authenticated).then_some(RuntimeStartupCode::NetworkConnectionLost)
+}
+
 impl fmt::Display for DiscoveryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -2637,6 +2857,201 @@ mod tests {
             "electron-overlay-discovery-{name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn runtime_startup_codes_serialize_to_the_fixed_contract() {
+        let cases = [
+            (
+                RuntimeStartupCode::BridgeThreadCreateFailed,
+                "bridge-thread-create-failed",
+            ),
+            (
+                RuntimeStartupCode::BridgeThreadStarted,
+                "bridge-thread-started",
+            ),
+            (
+                RuntimeStartupCode::BridgeWindowCreateFailed,
+                "bridge-window-create-failed",
+            ),
+            (RuntimeStartupCode::BridgeWindowReady, "bridge-window-ready"),
+            (RuntimeStartupCode::DiscoveryNotReady, "discovery-not-ready"),
+            (
+                RuntimeStartupCode::DiscoveryDocumentInvalid,
+                "discovery-document-invalid",
+            ),
+            (
+                RuntimeStartupCode::DiscoveryVersionMismatch,
+                "discovery-version-mismatch",
+            ),
+            (
+                RuntimeStartupCode::DiscoveryTargetMismatch,
+                "discovery-target-mismatch",
+            ),
+            (
+                RuntimeStartupCode::LoopbackConnectFailed,
+                "loopback-connect-failed",
+            ),
+            (
+                RuntimeStartupCode::LoopbackConfigurationFailed,
+                "loopback-configuration-failed",
+            ),
+            (
+                RuntimeStartupCode::ProcessHelloBuildFailed,
+                "process-hello-build-failed",
+            ),
+            (
+                RuntimeStartupCode::NetworkWorkerStartFailed,
+                "network-worker-start-failed",
+            ),
+            (
+                RuntimeStartupCode::NetworkWorkerStarted,
+                "network-worker-started",
+            ),
+            (
+                RuntimeStartupCode::NetworkConnectionLost,
+                "network-connection-lost",
+            ),
+            (
+                RuntimeStartupCode::BridgeMessagePumpFailed,
+                "bridge-message-pump-failed",
+            ),
+        ];
+
+        for (code, expected) in cases {
+            assert_eq!(serde_json::to_value(code).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn runtime_startup_directory_requires_an_absolute_selected_environment_path() {
+        let run_directory = unique_discovery_test_directory("startup-path");
+        let base_directory = unique_discovery_test_directory("startup-base");
+
+        assert_eq!(
+            runtime_startup_directory_from(
+                Some(run_directory.clone().into_os_string()),
+                Some(base_directory.clone().into_os_string()),
+            ),
+            Some(run_directory),
+        );
+        assert_eq!(
+            runtime_startup_directory_from(None, Some(base_directory.clone().into_os_string()),),
+            Some(base_directory),
+        );
+        assert_eq!(
+            runtime_startup_directory_from(
+                Some(std::ffi::OsString::from("relative-run")),
+                Some(unique_discovery_test_directory("ignored-base").into_os_string(),),
+            ),
+            None,
+        );
+        assert_eq!(runtime_startup_directory_from(None, None), None);
+    }
+
+    #[test]
+    fn runtime_startup_record_is_bounded_atomic_and_deduplicated() {
+        let run_directory = unique_discovery_test_directory("startup-record");
+        fs::create_dir_all(&run_directory).unwrap();
+        let publisher = RuntimeStartupPublisher::for_directory(run_directory.clone(), 4242);
+        let destination = run_directory.join(RUNTIME_STARTUP_DIAGNOSTIC_FILE);
+        let temporary = run_directory.join(format!("{RUNTIME_STARTUP_DIAGNOSTIC_FILE}.4242.tmp"));
+
+        publisher.publish(RuntimeStartupCode::BridgeThreadStarted);
+        let first = fs::read(&destination).unwrap();
+        assert!(first.len() <= MAX_RUNTIME_STARTUP_DIAGNOSTIC_BYTES);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&first).unwrap(),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "source": "electron-game-overlay-runtime",
+                "pid": 4242,
+                "code": "bridge-thread-started",
+            }),
+        );
+        assert!(!temporary.exists());
+
+        fs::write(&destination, b"dedupe-sentinel").unwrap();
+        publisher
+            .clone()
+            .publish(RuntimeStartupCode::BridgeThreadStarted);
+        assert_eq!(fs::read(&destination).unwrap(), b"dedupe-sentinel");
+
+        publisher.publish(RuntimeStartupCode::BridgeWindowReady);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&destination).unwrap()).unwrap(),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "source": "electron-game-overlay-runtime",
+                "pid": 4242,
+                "code": "bridge-window-ready",
+            }),
+        );
+        assert!(!temporary.exists());
+
+        fs::remove_dir_all(run_directory).unwrap();
+    }
+
+    #[test]
+    fn failed_startup_write_retries_the_same_code() {
+        let run_directory = unique_discovery_test_directory("startup-retry");
+        let publisher = RuntimeStartupPublisher::for_directory(run_directory.clone(), 4243);
+        let destination = run_directory.join(RUNTIME_STARTUP_DIAGNOSTIC_FILE);
+
+        publisher.publish(RuntimeStartupCode::BridgeThreadStarted);
+        assert!(!destination.exists());
+
+        fs::create_dir_all(&run_directory).unwrap();
+        publisher.publish(RuntimeStartupCode::BridgeThreadStarted);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&destination).unwrap()).unwrap(),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "source": "electron-game-overlay-runtime",
+                "pid": 4243,
+                "code": "bridge-thread-started",
+            }),
+        );
+
+        fs::remove_dir_all(run_directory).unwrap();
+    }
+
+    #[test]
+    fn discovery_startup_failure_classification_is_strict_and_redacted() {
+        let missing = DiscoveryError::Read {
+            path: PathBuf::from(r"C:\private\missing.json"),
+            source: io::Error::from(io::ErrorKind::NotFound),
+        };
+        let unreadable = DiscoveryError::Read {
+            path: PathBuf::from(r"C:\private\unreadable.json"),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        let too_large = DiscoveryError::TooLarge {
+            path: PathBuf::from(r"C:\private\large.json"),
+            bytes: MAX_DISCOVERY_BYTES + 1,
+        };
+        let malformed =
+            DiscoveryError::Json(serde_json::from_slice::<DiscoveryDocument>(b"{").unwrap_err());
+
+        assert_eq!(
+            discovery_failure_startup_code(&missing),
+            RuntimeStartupCode::DiscoveryNotReady,
+        );
+        for error in [&unreadable, &too_large, &malformed] {
+            assert_eq!(
+                discovery_failure_startup_code(error),
+                RuntimeStartupCode::DiscoveryDocumentInvalid,
+            );
+        }
+    }
+
+    #[test]
+    fn connection_loss_is_reported_only_before_authenticated_inbound_data() {
+        assert_eq!(
+            pre_auth_connection_loss_code(false),
+            Some(RuntimeStartupCode::NetworkConnectionLost),
+        );
+        assert_eq!(pre_auth_connection_loss_code(true), None);
     }
 
     fn discovery_test_document(version: u32, target_pid: Option<u32>) -> Vec<u8> {
@@ -2940,6 +3355,7 @@ mod tests {
             Arc::new(Mutex::new(())),
             Arc::new(AtomicU64::new(0)),
             SharedDragState::default(),
+            RuntimeStartupPublisher::default(),
         )
     }
 

@@ -977,7 +977,11 @@ class Application {
     const diagnostic =
       state.diagnostic === null
         ? ''
-        : ` code=${state.diagnostic.code} stage=${state.diagnostic.stage}`;
+        : ` code=${state.diagnostic.code} stage=${state.diagnostic.stage}${
+            state.diagnostic.runtimeStartupCode === undefined
+              ? ''
+              : ` runtimeStartup=${state.diagnostic.runtimeStartupCode}`
+          }`;
     console.log(
       `${RESHADE_ATTACHMENT_STATE_MARKER} phase=${state.phase} processName=${JSON.stringify(state.processName)} pid=${state.pid ?? 'none'}${reason ? ` reason=${reason}` : ''}${diagnostic}`,
     );

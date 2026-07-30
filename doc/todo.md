@@ -288,6 +288,25 @@ they are not the active production-host roadmap.
     `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-120110`
     and
     `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-120149`.
+- [x] Preserve fixed run-local startup evidence before authenticated runtime
+      IPC exists.
+  - The Rust bridge atomically records only schema version, fixed source,
+    target PID, and an allowlisted startup code in each isolated SDK run. Codes
+    distinguish bridge creation, discovery readiness/validation, target
+    binding, loopback setup, network-worker startup, and pre-auth disconnect.
+  - Attachment timeout reads are bounded, require the exact schema and selected
+    PID, and produce only a code-owned `runtimeStartupCode` and message. The SDK
+    does not parse or forward arbitrary `ReShade.log` content.
+  - Controlled process-start gates require a matching
+    `network-worker-started` record for D3D11 and D3D12. Initialization before
+    the add-on reaches the Rust bridge remains local ReShade evidence.
+  - All four injected-runtime and compatible shared-runtime production
+    client/SDK gates passed that record requirement on July 30, 2026. Evidence
+    is under
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-131543`
+    and `client-sdk-d3d12-process-start-20260730-125958`, plus
+    `client-sdk-d3d11-shared-runtime-20260730-130358` and
+    `client-sdk-d3d12-shared-runtime-20260730-130412` in the same build root.
 - [ ] Improve error logging and diagnostics across every overlay layer.
   - Current issue: failures can happen in multiple places: Electron SDK code,
     runtime staging, injector launch, DLL injection, authenticated transport,
@@ -298,8 +317,9 @@ they are not the active production-host roadmap.
   - The completed launcher/injector, injected-runtime, and Electron-producer
     slices above cover attachment, authentication, render milestones,
     scene/frame upload, native input routing, producer registration/frame
-    publication, and contained Electron input-forwarding failures. Richer
-    pre-IPC hook initialization remains.
+    publication, contained Electron input-forwarding failures, and fixed
+    pre-auth transport-bridge startup evidence. Initialization before the
+    add-on reaches that bridge still needs richer structured coverage.
   - The SDK now exposes a frozen `session.on("diagnostic")` contract. The Node
     loopback transport emits bounded, redacted startup/discovery,
     authorization/authentication, authenticated-packet, socket, and

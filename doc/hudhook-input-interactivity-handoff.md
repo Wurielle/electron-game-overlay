@@ -52,7 +52,11 @@
 > asynchronous queue. Producer publication is transactional, and Electron input
 > forwarding exceptions no longer escape as target packet failures. The
 > production D3D11/D3D12 client gates require the producer registration and
-> first-frame milestones and passed on 2026-07-30. Ambiguous
+> first-frame milestones and passed on 2026-07-30. The transport bridge now
+> also leaves one strict run-local startup record before authenticated IPC, so
+> connection timeouts identify its last fixed discovery/target/loopback state
+> without parsing free-form ReShade logs. Initialization that never reaches the
+> bridge remains local evidence. Ambiguous
 > raster-recovery diagnostics, a globally bounded control/backpressure queue,
 > strict parsing for every input envelope, and stock/arbitrary modded-ReShade
 > compatibility remain deferred. Within the documented near-process-creation

@@ -6,6 +6,7 @@ import {
   link,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   realpath,
@@ -30,6 +31,7 @@ const CONFIG_FILE_NAME = 'ReShade.ini';
 const INJECTOR_STDOUT_FILE_NAME = 'inject.stdout.log';
 const INJECTOR_STDERR_FILE_NAME = 'inject.stderr.log';
 const RESHADE_LOG_FILE_NAME = 'ReShade.log';
+const RUNTIME_STARTUP_FILE_NAME = '.electron-game-overlay-runtime-startup.json';
 const INJECTOR_SUCCESS_MARKER = 'Injecting ReShade ... Succeeded!';
 const INJECTOR_NOT_STARTED_MARKER = 'ReShade injection not started.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
@@ -39,6 +41,8 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const TARGET_PROOF_TIMEOUT_MS = 120_000;
 const PATH_TARGET_PROOF_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+const MAX_RUNTIME_STARTUP_RECORD_BYTES = 256;
+const RUNTIME_STARTUP_OBSERVATION_TIMEOUT_MS = 250;
 const RUN_OWNERSHIP_MARKER_FILE_NAME = '.electron-game-overlay-run.json';
 const RUN_RECLAIMABLE_MARKER_FILE_NAME =
   '.electron-game-overlay-run-reclaimable.json';
@@ -48,6 +52,35 @@ const RUN_RECLAIMABLE_MARKER_KIND =
 const RUN_MARKER_SCHEMA_VERSION = 1;
 const RUN_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const RUN_RETENTION_MAX_DIRECTORIES = 64;
+
+const RUNTIME_STARTUP_RECORD_CODES = Object.freeze([
+  'bridge-thread-create-failed',
+  'bridge-thread-started',
+  'bridge-window-create-failed',
+  'bridge-window-ready',
+  'discovery-not-ready',
+  'discovery-document-invalid',
+  'discovery-version-mismatch',
+  'discovery-target-mismatch',
+  'loopback-connect-failed',
+  'loopback-configuration-failed',
+  'process-hello-build-failed',
+  'network-worker-start-failed',
+  'network-worker-started',
+  'network-connection-lost',
+  'bridge-message-pump-failed',
+] as const);
+
+type ReShadeRuntimeStartupRecordCode =
+  (typeof RUNTIME_STARTUP_RECORD_CODES)[number];
+
+const runtimeStartupRecordCodes = new Set<string>(RUNTIME_STARTUP_RECORD_CODES);
+const RUNTIME_STARTUP_RECORD_KEYS = Object.freeze([
+  'schemaVersion',
+  'source',
+  'pid',
+  'code',
+] as const);
 
 export const RESHADE_CLIENT_RUNTIME_STAGED_MARKER =
   'RESHADE_CLIENT_RUNTIME_STAGED';
@@ -112,6 +145,13 @@ export type ReShadeInvocation = Readonly<{
 
 export type ReShadeRuntimeMode = 'injected-runtime' | 'existing-runtime';
 
+export type ReShadeRuntimeStartupCode =
+  | ReShadeRuntimeStartupRecordCode
+  | 'not-observed'
+  | 'invalid-record'
+  | 'pid-mismatch'
+  | 'pid-unavailable';
+
 export type ReShadeLaunchResult = Readonly<{
   processName: string;
   selectedPath?: string;
@@ -123,6 +163,7 @@ export type ReShadeLaunchResult = Readonly<{
   injectorStdoutPath: string;
   injectorStderrPath: string;
   reshadeLogPath: string;
+  runtimeStartupPath?: string;
 }>;
 
 export type ReShadeAttachResult = ReShadeLaunchResult &
@@ -138,6 +179,7 @@ type StagedRuntime = Readonly<{
   injectorStdoutPath: string;
   injectorStderrPath: string;
   reshadeLogPath: string;
+  runtimeStartupPath: string;
 }>;
 
 type CurrentRuntime = Readonly<{
@@ -221,6 +263,7 @@ export type ReShadeDiagnosticEvidence = Readonly<{
   injectorStdoutPath: string;
   injectorStderrPath: string;
   reshadeLogPath: string;
+  runtimeStartupPath?: string;
 }>;
 
 export type ReShadeDiagnostic = Readonly<{
@@ -235,6 +278,7 @@ export type ReShadeDiagnostic = Readonly<{
   pid?: number;
   modulePath?: string;
   windowsErrorCode?: number;
+  runtimeStartupCode?: ReShadeRuntimeStartupCode;
   evidence?: ReShadeDiagnosticEvidence;
 }>;
 
@@ -865,6 +909,7 @@ export class ReShadeOverlayLauncher {
     let proofSettled = false;
     let attachmentCompleted = false;
     let injectorTargetPid: number | undefined;
+    let launchResultForProof: ReShadeLaunchResult | undefined;
     let resolveConnectionProof: (
       connection: ReShadeTargetConnection,
     ) => void = () => undefined;
@@ -891,30 +936,8 @@ export class ReShadeOverlayLauncher {
         ? PATH_TARGET_PROOF_TIMEOUT_MS
         : TARGET_PROOF_TIMEOUT_MS;
       proofTimer = setTimeout(() => {
-        if (proofSettled) {
-          return;
-        }
-        proofSettled = true;
-        removeListeners();
-        this.blockTargetState(targetLabel);
-        const diagnosticPid = injectorTargetPid ?? expectedTargetPid;
-        rejectConnectionProof(
-          new ReShadeOperationError({
-            message: `the ReShade target did not connect within ${proofTimeoutMs}ms`,
-            code: 'runtime-initialization-timeout',
-            stage: 'runtime-initialization',
-            retrySafety: 'indeterminate',
-            targetLabel,
-            ...(diagnosticPid === undefined ? {} : { pid: diagnosticPid }),
-            ...(this.latestRunDirectory === null
-              ? {}
-              : {
-                  evidence: diagnosticEvidenceForRunDirectory(
-                    this.latestRunDirectory,
-                  ),
-                }),
-          }),
-        );
+        proofTimer = undefined;
+        void reportProofTimeout(proofTimeoutMs);
       }, proofTimeoutMs);
     };
     let listenersRemoved = false;
@@ -928,6 +951,51 @@ export class ReShadeOverlayLauncher {
       removeCloseHandler?.();
       removeCloseHandler = undefined;
       clearProofTimer();
+    };
+    const reportProofTimeout = async (proofTimeoutMs: number) => {
+      if (proofSettled) {
+        return;
+      }
+      const currentRuntime = this.currentRuntime;
+      const initialEvidence =
+        launchResultForProof === undefined
+          ? currentRuntime?.targetLabel !== targetLabel
+            ? undefined
+            : diagnosticEvidenceForStagedRuntime(currentRuntime.staged)
+          : diagnosticEvidenceForLaunchResult(launchResultForProof);
+      const startupObservation = await readRuntimeStartupObservation(
+        initialEvidence?.runtimeStartupPath,
+      );
+      if (proofSettled) {
+        return;
+      }
+
+      const diagnosticPid = injectorTargetPid ?? expectedTargetPid;
+      const runtimeStartupCode = runtimeStartupCodeForObservation(
+        startupObservation,
+        diagnosticPid,
+      );
+      const evidence =
+        launchResultForProof === undefined
+          ? this.currentRuntime?.targetLabel === targetLabel
+            ? diagnosticEvidenceForStagedRuntime(this.currentRuntime.staged)
+            : initialEvidence
+          : diagnosticEvidenceForLaunchResult(launchResultForProof);
+      proofSettled = true;
+      removeListeners();
+      this.blockTargetState(targetLabel);
+      rejectConnectionProof(
+        new ReShadeOperationError({
+          message: `the ReShade target did not connect within ${proofTimeoutMs}ms; ${runtimeStartupDescription(runtimeStartupCode)}`,
+          code: 'runtime-initialization-timeout',
+          stage: 'runtime-initialization',
+          retrySafety: 'indeterminate',
+          targetLabel,
+          ...(diagnosticPid === undefined ? {} : { pid: diagnosticPid }),
+          runtimeStartupCode,
+          ...(evidence === undefined ? {} : { evidence }),
+        }),
+      );
     };
 
     const tryAcceptCandidate = () => {
@@ -1147,6 +1215,7 @@ export class ReShadeOverlayLauncher {
         targetRendezvousAuthorizer,
         true,
       ).then((result) => {
+        launchResultForProof = result;
         injectorTargetPid = result.injectorTargetPid;
         if (isPathTarget(target)) {
           startProofTimer();
@@ -1163,6 +1232,7 @@ export class ReShadeOverlayLauncher {
       attachmentCompleted = true;
       return Object.freeze({ ...launchResult, pid: connection.pid });
     } catch (error) {
+      proofSettled = true;
       this.invalidateActiveLaunch();
       if (launch && !this.disposed) {
         await launch.catch(() => undefined);
@@ -1170,6 +1240,7 @@ export class ReShadeOverlayLauncher {
       this.applyFailureState(targetLabel, error);
       throw error;
     } finally {
+      proofSettled = true;
       clearProofTimer();
       if (
         !attachmentCompleted ||
@@ -1351,6 +1422,10 @@ export class ReShadeOverlayLauncher {
           INJECTOR_STDERR_FILE_NAME,
         ),
         reshadeLogPath: path.join(createdRunDirectory, RESHADE_LOG_FILE_NAME),
+        runtimeStartupPath: path.join(
+          createdRunDirectory,
+          RUNTIME_STARTUP_FILE_NAME,
+        ),
       });
     } catch (error) {
       if (runDirectory !== undefined) {
@@ -1722,6 +1797,7 @@ export class ReShadeOverlayLauncher {
         injectorResult.runtimeMode === 'existing-runtime'
           ? hostRuntimeLogPath(injectorResult.runtimeModulePath)
           : staged.reshadeLogPath,
+      runtimeStartupPath: staged.runtimeStartupPath,
     });
   }
 
@@ -1887,6 +1963,7 @@ function diagnosticEvidenceForStagedRuntime(
     injectorStdoutPath: staged.injectorStdoutPath,
     injectorStderrPath: staged.injectorStderrPath,
     reshadeLogPath: staged.reshadeLogPath,
+    runtimeStartupPath: staged.runtimeStartupPath,
   });
 }
 
@@ -1925,15 +2002,212 @@ function hostRuntimeLogPath(runtimeModulePath: string): string {
   );
 }
 
-function diagnosticEvidenceForRunDirectory(
-  runDirectory: string,
+function diagnosticEvidenceForLaunchResult(
+  result: ReShadeLaunchResult,
 ): ReShadeDiagnosticEvidence {
   return Object.freeze({
-    runDirectory,
-    injectorStdoutPath: path.join(runDirectory, INJECTOR_STDOUT_FILE_NAME),
-    injectorStderrPath: path.join(runDirectory, INJECTOR_STDERR_FILE_NAME),
-    reshadeLogPath: path.join(runDirectory, RESHADE_LOG_FILE_NAME),
+    runDirectory: result.runDirectory,
+    injectorStdoutPath: result.injectorStdoutPath,
+    injectorStderrPath: result.injectorStderrPath,
+    reshadeLogPath: result.reshadeLogPath,
+    ...(result.runtimeStartupPath === undefined
+      ? {}
+      : { runtimeStartupPath: result.runtimeStartupPath }),
   });
+}
+
+type RuntimeStartupObservation =
+  | Readonly<{ kind: 'not-observed' }>
+  | Readonly<{ kind: 'invalid-record' }>
+  | Readonly<{
+      kind: 'record';
+      pid: number;
+      code: ReShadeRuntimeStartupRecordCode;
+    }>;
+
+async function readRuntimeStartupObservation(
+  startupPath: string | undefined,
+): Promise<RuntimeStartupObservation> {
+  if (startupPath === undefined) {
+    return Object.freeze({ kind: 'not-observed' });
+  }
+
+  let startupFile: Awaited<ReturnType<typeof open>> | undefined;
+  let closePromise: Promise<void> | undefined;
+  let observationTimedOut = false;
+  let observationTimer: ReturnType<typeof setTimeout> | undefined;
+  const invalidObservation = Object.freeze({
+    kind: 'invalid-record',
+  } as const);
+  const closeStartupFile = (): Promise<void> => {
+    const file = startupFile;
+    if (!file) {
+      return Promise.resolve();
+    }
+    closePromise ??= Promise.resolve()
+      .then(() => file.close())
+      .catch(() => undefined);
+    return closePromise;
+  };
+
+  const timeoutObservation = new Promise<RuntimeStartupObservation>(
+    (resolve) => {
+      observationTimer = setTimeout(() => {
+        observationTimedOut = true;
+        void closeStartupFile();
+        resolve(invalidObservation);
+      }, RUNTIME_STARTUP_OBSERVATION_TIMEOUT_MS);
+    },
+  );
+  const fileObservation = (async (): Promise<RuntimeStartupObservation> => {
+    try {
+      startupFile = await open(startupPath, 'r');
+      if (observationTimedOut) {
+        await closeStartupFile();
+        return invalidObservation;
+      }
+
+      try {
+        const bytes = Buffer.alloc(MAX_RUNTIME_STARTUP_RECORD_BYTES + 1);
+        const { bytesRead } = await startupFile.read(bytes, 0, bytes.length, 0);
+        if (bytesRead === 0 || bytesRead > MAX_RUNTIME_STARTUP_RECORD_BYTES) {
+          return invalidObservation;
+        }
+
+        const recordText = bytes.subarray(0, bytesRead).toString('utf8');
+        if (!hasCanonicalRuntimeStartupFields(recordText)) {
+          return invalidObservation;
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(recordText);
+        } catch {
+          return invalidObservation;
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return invalidObservation;
+        }
+
+        const candidate = parsed as Record<string, unknown>;
+        if (
+          !hasExactObjectKeys(candidate, RUNTIME_STARTUP_RECORD_KEYS) ||
+          candidate.schemaVersion !== 1 ||
+          candidate.source !== 'electron-game-overlay-runtime' ||
+          !isValidProcessPid(candidate.pid) ||
+          typeof candidate.code !== 'string' ||
+          !runtimeStartupRecordCodes.has(candidate.code)
+        ) {
+          return invalidObservation;
+        }
+
+        return Object.freeze({
+          kind: 'record',
+          pid: candidate.pid,
+          code: candidate.code as ReShadeRuntimeStartupRecordCode,
+        });
+      } catch {
+        return invalidObservation;
+      } finally {
+        await closeStartupFile();
+      }
+    } catch (error) {
+      if (observationTimedOut) {
+        return invalidObservation;
+      }
+      return Object.freeze({
+        kind: hasNodeErrorCode(error, 'ENOENT')
+          ? 'not-observed'
+          : 'invalid-record',
+      });
+    }
+  })();
+
+  try {
+    return await Promise.race([fileObservation, timeoutObservation]);
+  } finally {
+    if (observationTimer !== undefined) {
+      clearTimeout(observationTimer);
+    }
+  }
+}
+
+function hasCanonicalRuntimeStartupFields(recordText: string): boolean {
+  if (recordText.includes('\\')) {
+    return false;
+  }
+  return RUNTIME_STARTUP_RECORD_KEYS.every((key) => {
+    const matches = recordText.match(new RegExp(`"${key}"\\s*:`, 'g'));
+    return matches?.length === 1;
+  });
+}
+
+function runtimeStartupCodeForObservation(
+  observation: RuntimeStartupObservation,
+  expectedPid: number | undefined,
+): ReShadeRuntimeStartupCode {
+  if (observation.kind !== 'record') {
+    return observation.kind;
+  }
+  if (expectedPid === undefined) {
+    return 'pid-unavailable';
+  }
+  if (observation.pid !== expectedPid) {
+    return 'pid-mismatch';
+  }
+  return observation.code;
+}
+
+function runtimeStartupDescription(code: ReShadeRuntimeStartupCode): string {
+  switch (code) {
+    case 'bridge-thread-create-failed':
+      return 'the runtime could not create its bridge thread';
+    case 'bridge-thread-started':
+      return 'the runtime bridge thread started, but target authentication was not observed';
+    case 'bridge-window-create-failed':
+      return 'the runtime could not create its bridge window';
+    case 'bridge-window-ready':
+      return 'the runtime bridge window was ready, but target authentication was not observed';
+    case 'discovery-not-ready':
+      return 'the overlay transport discovery document was not ready';
+    case 'discovery-document-invalid':
+      return 'the overlay transport discovery document was invalid';
+    case 'discovery-version-mismatch':
+      return 'the overlay transport discovery version did not match';
+    case 'discovery-target-mismatch':
+      return 'the overlay transport discovery document did not authorize the selected target';
+    case 'loopback-connect-failed':
+      return 'the runtime could not connect to the overlay transport';
+    case 'loopback-configuration-failed':
+      return 'the runtime could not configure its overlay transport connection';
+    case 'process-hello-build-failed':
+      return 'the runtime could not build its authenticated process greeting';
+    case 'network-worker-start-failed':
+      return 'the runtime could not start its network worker';
+    case 'network-worker-started':
+      return 'the runtime network worker started, but target authentication was not observed';
+    case 'network-connection-lost':
+      return 'the runtime lost its overlay transport connection before target authentication';
+    case 'bridge-message-pump-failed':
+      return 'the runtime bridge message pump failed';
+    case 'not-observed':
+      return 'no runtime startup record was observed';
+    case 'invalid-record':
+      return 'the runtime startup record was invalid';
+    case 'pid-mismatch':
+      return 'the runtime startup record did not belong to the selected target PID';
+    case 'pid-unavailable':
+      return 'the selected target PID was unavailable for startup-record validation';
+  }
+}
+
+function hasNodeErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === code
+  );
 }
 
 async function stageRuntimeArtifact(

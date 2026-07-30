@@ -931,7 +931,13 @@ export class SteamGameAutoAttacher {
     });
     console.error(
       `STEAM_GAME_AUTO_ATTACH_FAILED pid=${pid} detail=${JSON.stringify(error)}${
-        diagnostic ? ` code=${diagnostic.code} stage=${diagnostic.stage}` : ''
+        diagnostic
+          ? ` code=${diagnostic.code} stage=${diagnostic.stage}${
+              diagnostic.runtimeStartupCode === undefined
+                ? ''
+                : ` runtimeStartup=${diagnostic.runtimeStartupCode}`
+            }`
+          : ''
       }`,
     );
     this.publishState();

@@ -45,6 +45,7 @@ $UserData = Join-Path $RunDirectory "user-data"
 $ClientStdout = Join-Path $RunDirectory "client.stdout.log"
 $ClientStderr = Join-Path $RunDirectory "client.stderr.log"
 $FrontendActions = Join-Path $RunDirectory "frontend-actions.jsonl"
+$RuntimeStartupFileName = ".electron-game-overlay-runtime-startup.json"
 $ResultMarker = if ($ExistingCompatibleRuntime) {
     "${BackendLabel}_REAL_CLIENT_SDK_SHARED_RUNTIME_GATE_PASS"
 }
@@ -103,6 +104,95 @@ function Wait-ForClientRegex {
     }
 
     throw "Timed out waiting for client pattern '$Pattern'. Inspect $Path."
+}
+
+function Wait-ForRuntimeStartupRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int]$ExpectedProcessId,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][DateTime]$Deadline
+    )
+
+    $AllowedCodes = @(
+        "bridge-thread-started",
+        "bridge-thread-create-failed",
+        "bridge-window-create-failed",
+        "bridge-window-ready",
+        "discovery-not-ready",
+        "discovery-document-invalid",
+        "discovery-version-mismatch",
+        "discovery-target-mismatch",
+        "loopback-connect-failed",
+        "loopback-configuration-failed",
+        "process-hello-build-failed",
+        "network-worker-start-failed",
+        "network-worker-started",
+        "network-connection-lost",
+        "bridge-message-pump-failed"
+    )
+    $LastCode = "not-observed"
+
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            $Bytes = [IO.File]::ReadAllBytes($Path)
+            if ($Bytes.Length -gt 256) {
+                throw "The runtime startup record exceeded its 256-byte protocol bound: $Path"
+            }
+            $RecordText = [Text.Encoding]::UTF8.GetString($Bytes)
+            if ($RecordText.Contains('\')) {
+                throw "The runtime startup record used a non-canonical JSON escape: $Path"
+            }
+            $Record = $RecordText | ConvertFrom-Json
+            $PropertyNames = @(
+                $Record.PSObject.Properties.Name |
+                    Sort-Object
+            )
+            if (($PropertyNames -join ",") -ne
+                "code,pid,schemaVersion,source") {
+                throw "The runtime startup record did not contain the exact fixed schema: $Path"
+            }
+            foreach ($PropertyName in @(
+                    "schemaVersion",
+                    "source",
+                    "pid",
+                    "code"
+                )) {
+                $PropertyPattern =
+                    '"' + [regex]::Escape($PropertyName) + '"\s*:'
+                if ([regex]::Matches(
+                        $RecordText,
+                        $PropertyPattern
+                    ).Count -ne 1) {
+                    throw "The runtime startup record repeated or omitted a fixed field: $Path"
+                }
+            }
+            if ($Record -isnot [pscustomobject] -or
+                $Record.schemaVersion -isnot [int] -or
+                $Record.schemaVersion -ne 1 -or
+                $Record.source -isnot [string] -or
+                $Record.source -cne "electron-game-overlay-runtime" -or
+                $Record.pid -isnot [int] -or
+                $Record.pid -ne $ExpectedProcessId -or
+                $Record.code -isnot [string] -or
+                $AllowedCodes -cnotcontains $Record.code) {
+                throw "The runtime startup record failed fixed field validation: $Path"
+            }
+
+            $LastCode = [string]$Record.code
+            if ($LastCode -eq "network-worker-started") {
+                return $Record
+            }
+        }
+
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw "The controlled host exited while waiting for runtime startup evidence (last code: $LastCode)."
+        }
+        Start-Sleep -Milliseconds 50
+    }
+
+    throw "Timed out waiting for the runtime network worker startup record (last code: $LastCode). Inspect $Path."
 }
 
 function Wait-ForDevToolsPage {
@@ -1060,6 +1150,13 @@ try {
         -Pattern "(?m)^OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay-runtime severity=info code=runtime-scene-rendering-started pid=$HostPid(?: .*)?\r?`$" `
         -AfterIndex $Connected.Index `
         -Deadline $AttachDeadline
+    $RuntimeStartupPath =
+        Join-Path $ReShadeRunDirectory $RuntimeStartupFileName
+    $RuntimeStartupRecord = Wait-ForRuntimeStartupRecord `
+        -Path $RuntimeStartupPath `
+        -ExpectedProcessId $HostPid `
+        -Process $HostProcess `
+        -Deadline $AttachDeadline
 
     $InputProof = Test-OverlayInputAndRelease `
         -TargetWindow $HostWindow `
@@ -1192,6 +1289,11 @@ try {
             SwapchainReadyMarkerIndex = $SwapchainReadyDiagnostic.Index
             SceneRenderingStartedMarkerIndex =
                 $SceneRenderingDiagnostic.Index
+        }
+        RuntimeStartupProof = [pscustomobject]@{
+            Path = $RuntimeStartupPath
+            ProcessId = [int]$RuntimeStartupRecord.pid
+            Code = [string]$RuntimeStartupRecord.code
         }
         ProducerDiagnosticProof = [pscustomobject]@{
             WindowRegisteredMarkerIndex =

@@ -42,6 +42,24 @@ const artifacts = [
 const runOwnershipMarkerFileName = '.electron-game-overlay-run.json';
 const runReclaimableMarkerFileName =
   '.electron-game-overlay-run-reclaimable.json';
+const runtimeStartupFileName = '.electron-game-overlay-runtime-startup.json';
+const runtimeStartupRecordCodes = [
+  'bridge-thread-create-failed',
+  'bridge-thread-started',
+  'bridge-window-create-failed',
+  'bridge-window-ready',
+  'discovery-not-ready',
+  'discovery-document-invalid',
+  'discovery-version-mismatch',
+  'discovery-target-mismatch',
+  'loopback-connect-failed',
+  'loopback-configuration-failed',
+  'process-hello-build-failed',
+  'network-worker-start-failed',
+  'network-worker-started',
+  'network-connection-lost',
+  'bridge-message-pump-failed',
+];
 const runRetentionMaxAgeMs = 7 * 24 * 60 * 60 * 1_000;
 let retainedRunSequence = 0;
 const injectorResult = (result) =>
@@ -88,6 +106,14 @@ const injectorPreflightDiagnostic = (diagnostic) =>
     stage: 'target-preflight',
     injectionStarted: false,
     ...diagnostic,
+  });
+const runtimeStartupRecord = (pid, code, additionalFields = {}) =>
+  JSON.stringify({
+    schemaVersion: 1,
+    source: 'electron-game-overlay-runtime',
+    pid,
+    code,
+    ...additionalFields,
   });
 const temporaryDirectories = new Set();
 
@@ -819,6 +845,10 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
       'diagnostic stderr\n',
     );
     assert.equal(result.reshadeLogPath, path.join(runDirectory, 'ReShade.log'));
+    assert.equal(
+      result.runtimeStartupPath,
+      path.join(runDirectory, runtimeStartupFileName),
+    );
     assert.ok(
       markers.some((line) =>
         line.startsWith(`${RESHADE_CLIENT_RUNTIME_STAGED_MARKER} directory=`),
@@ -885,6 +915,10 @@ test('attach reports a validated existing ReShade host runtime', async () => {
     assert.equal(result.runtimeMode, 'existing-runtime');
     assert.equal(result.hostRuntimePath, hostRuntimePath);
     assert.equal(result.reshadeLogPath, 'D:\\Games\\Gun Frog\\ReShade.log');
+    assert.equal(
+      result.runtimeStartupPath,
+      path.join(result.runDirectory, runtimeStartupFileName),
+    );
   } finally {
     launcher.dispose();
     console.log = originalLog;
@@ -1525,6 +1559,11 @@ test('path-target connection timeout reports the selected injector PID', async (
       assert.equal(error.stage, 'runtime-initialization');
       assert.equal(error.retrySafety, 'indeterminate');
       assert.equal(error.diagnostic.pid, 9403);
+      assert.equal(error.diagnostic.runtimeStartupCode, 'not-observed');
+      assert.equal(
+        error.diagnostic.evidence.runtimeStartupPath,
+        path.join(launcher.runDirectory, runtimeStartupFileName),
+      );
       return true;
     });
     assert.equal(launcher.state, 'blocked');
@@ -1839,9 +1878,14 @@ test('connection-proof timeout after successful injection blocks retries', async
       assert.equal(error.code, 'runtime-initialization-timeout');
       assert.equal(error.stage, 'runtime-initialization');
       assert.equal(error.retrySafety, 'indeterminate');
+      assert.equal(error.diagnostic.runtimeStartupCode, 'not-observed');
       assert.equal(
         error.diagnostic.evidence.runDirectory,
         launcher.runDirectory,
+      );
+      assert.equal(
+        error.diagnostic.evidence.runtimeStartupPath,
+        path.join(launcher.runDirectory, runtimeStartupFileName),
       );
       return true;
     });
@@ -1854,6 +1898,469 @@ test('connection-proof timeout after successful injection blocks retries', async
     );
   } finally {
     launcher.dispose();
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+    execution.restore();
+  }
+});
+
+test('connection timeout accepts every fixed runtime startup code', async (t) => {
+  for (const [index, code] of runtimeStartupRecordCodes.entries()) {
+    await t.test(code, async () => {
+      const pid = 9300 + index;
+      const { outcome, runDirectory } = await runRuntimeStartupTimeoutScenario({
+        pid,
+        record: runtimeStartupRecord(pid, code),
+      });
+
+      assert.equal(outcome.status, 'rejected');
+      const { error } = outcome;
+      assert.ok(isReShadeOperationError(error));
+      assert.equal(error.code, 'runtime-initialization-timeout');
+      assert.equal(error.stage, 'runtime-initialization');
+      assert.equal(error.retrySafety, 'indeterminate');
+      assert.equal(error.diagnostic.pid, pid);
+      assert.equal(error.diagnostic.runtimeStartupCode, code);
+      assert.match(error.message, /did not connect within 120000ms/);
+      assert.notEqual(
+        error.message,
+        `the ReShade target did not connect within 120000ms; ${code}`,
+      );
+      assert.equal(
+        error.diagnostic.evidence.runtimeStartupPath,
+        path.join(runDirectory, runtimeStartupFileName),
+      );
+    });
+  }
+});
+
+test('connection timeout keeps the selected existing-runtime evidence paths', async () => {
+  const pid = 9399;
+  const hostRuntimePath = 'D:\\Games\\Gun Frog\\dxgi.dll';
+  const { outcome, runDirectory } = await runRuntimeStartupTimeoutScenario({
+    pid,
+    record: runtimeStartupRecord(pid, 'network-worker-started'),
+    injectorStdout: existingRuntimeSuccessFor(pid, hostRuntimePath, 'game.exe'),
+  });
+
+  assert.equal(outcome.status, 'rejected');
+  const { error } = outcome;
+  assert.ok(isReShadeOperationError(error));
+  assert.equal(error.diagnostic.runtimeStartupCode, 'network-worker-started');
+  assert.equal(
+    error.diagnostic.evidence.reshadeLogPath,
+    'D:\\Games\\Gun Frog\\ReShade.log',
+  );
+  assert.equal(
+    error.diagnostic.evidence.runtimeStartupPath,
+    path.join(runDirectory, runtimeStartupFileName),
+  );
+});
+
+test('connection timeout rejects untrusted runtime startup records without exposing their contents', async (t) => {
+  const secret = 'SECRET_NATIVE_RECORD_TEXT';
+  const cases = [
+    {
+      name: 'missing record',
+      record: undefined,
+      expectedCode: 'not-observed',
+    },
+    {
+      name: 'malformed JSON',
+      record: `{"message":"${secret}"`,
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'oversized record',
+      record: `${secret}${'x'.repeat(257)}`,
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'non-object record',
+      record: JSON.stringify([1, 2, 3, secret]),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'extra field',
+      record: runtimeStartupRecord(9400, 'bridge-thread-started', {
+        message: secret,
+      }),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'duplicate fixed field',
+      record:
+        '{"schemaVersion":1,"source":"electron-game-overlay-runtime","pid":9400,"code":"bridge-thread-started","code":"bridge-window-ready"}',
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'escaped duplicate fixed field',
+      record: String.raw`{"schemaVersion":1,"source":"electron-game-overlay-runtime","pid":9400,"code":"bridge-thread-started","co\u0064e":"bridge-window-ready"}`,
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'wrong schema version',
+      record: JSON.stringify({
+        schemaVersion: 2,
+        source: 'electron-game-overlay-runtime',
+        pid: 9400,
+        code: 'bridge-thread-started',
+      }),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'wrong source',
+      record: JSON.stringify({
+        schemaVersion: 1,
+        source: secret,
+        pid: 9400,
+        code: 'bridge-thread-started',
+      }),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'unknown code',
+      record: runtimeStartupRecord(9400, secret),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'zero PID',
+      record: runtimeStartupRecord(0, 'bridge-thread-started'),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'non-integer PID',
+      record: runtimeStartupRecord(9400.5, 'bridge-thread-started'),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'PID above uint32',
+      record: runtimeStartupRecord(0x1_0000_0000, 'bridge-thread-started'),
+      expectedCode: 'invalid-record',
+    },
+    {
+      name: 'different valid PID',
+      record: runtimeStartupRecord(9401, 'bridge-thread-started'),
+      expectedCode: 'pid-mismatch',
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const { outcome } = await runRuntimeStartupTimeoutScenario({
+        pid: 9400,
+        record: testCase.record,
+      });
+
+      assert.equal(outcome.status, 'rejected');
+      const { error } = outcome;
+      assert.ok(isReShadeOperationError(error));
+      assert.equal(error.code, 'runtime-initialization-timeout');
+      assert.equal(error.diagnostic.runtimeStartupCode, testCase.expectedCode);
+      assert.equal(error.message.includes(secret), false);
+      assert.equal(JSON.stringify(error.diagnostic).includes(secret), false);
+    });
+  }
+});
+
+test('an authenticated target wins while timeout startup evidence is being read', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const originalOpen = fsPromises.open;
+  const proofTimers = [];
+  const startupReadEntered = deferred();
+  const releaseStartupRead = deferred();
+  const pid = 9500;
+  global.setTimeout = (callback, delay, ...args) => {
+    if (delay === 120_000) {
+      const handle = { callback: () => callback(...args) };
+      proofTimers.push(handle);
+      return handle;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (!proofTimers.includes(handle)) {
+      originalClearTimeout(handle);
+    }
+  };
+  fsPromises.open = async (filePath, ...args) => {
+    if (path.basename(filePath) === runtimeStartupFileName) {
+      startupReadEntered.resolve();
+      await releaseStartupRead.promise;
+    }
+    return originalOpen(filePath, ...args);
+  };
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+      pid,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    writeFileSync(
+      path.join(runDirectory, runtimeStartupFileName),
+      runtimeStartupRecord(pid, 'bridge-window-ready'),
+    );
+    execution.calls[0].callback(null, injectorSuccessFor(pid, 'game.exe'), '');
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, 'inject.stdout.log')),
+    );
+    await flushMicrotasks();
+
+    proofTimers[0].callback();
+    await startupReadEntered.promise;
+    sessionHarness.emitNative('game.process', {
+      pid,
+      path: 'C:\\games\\game.exe',
+    });
+    releaseStartupRead.resolve();
+
+    const result = await attachment;
+    assert.equal(result.pid, pid);
+    assert.equal(launcher.state, 'connected');
+    await flushMicrotasks();
+  } finally {
+    releaseStartupRead.resolve();
+    fsPromises.open = originalOpen;
+    launcher.dispose();
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+    execution.restore();
+  }
+});
+
+test('startup observation budget bounds stalled open and read operations and closes their handles', async (t) => {
+  for (const stalledOperation of ['open', 'read']) {
+    await t.test(stalledOperation, async () => {
+      const fixture = createRuntime();
+      const execution = stubExecFile();
+      const sessionHarness = createSessionHarness();
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      const originalSetTimeout = global.setTimeout;
+      const originalClearTimeout = global.clearTimeout;
+      const originalOpen = fsPromises.open;
+      const proofTimers = [];
+      const observationTimers = [];
+      const operationEntered = deferred();
+      const releaseOperation = deferred();
+      const pid = stalledOperation === 'open' ? 9510 : 9511;
+      const startupBytes = Buffer.from(
+        runtimeStartupRecord(pid, 'bridge-window-ready'),
+      );
+      let readCount = 0;
+      let closeCount = 0;
+      const fakeStartupFile = {
+        async read(buffer, offset) {
+          ++readCount;
+          if (stalledOperation === 'read') {
+            operationEntered.resolve();
+            await releaseOperation.promise;
+          }
+          startupBytes.copy(buffer, offset);
+          return { bytesRead: startupBytes.length, buffer };
+        },
+        async close() {
+          ++closeCount;
+        },
+      };
+      global.setTimeout = (callback, delay, ...args) => {
+        if (delay === 120_000) {
+          const handle = { callback: () => callback(...args) };
+          proofTimers.push(handle);
+          return handle;
+        }
+        if (delay === 250) {
+          const handle = { callback: () => callback(...args) };
+          observationTimers.push(handle);
+          return handle;
+        }
+        return originalSetTimeout(callback, delay, ...args);
+      };
+      global.clearTimeout = (handle) => {
+        if (
+          !proofTimers.includes(handle) &&
+          !observationTimers.includes(handle)
+        ) {
+          originalClearTimeout(handle);
+        }
+      };
+      fsPromises.open = async (filePath, ...args) => {
+        if (path.basename(filePath) !== runtimeStartupFileName) {
+          return originalOpen(filePath, ...args);
+        }
+        if (stalledOperation === 'open') {
+          operationEntered.resolve();
+          await releaseOperation.promise;
+        }
+        return fakeStartupFile;
+      };
+
+      try {
+        const attachment = launcher.attach(sessionHarness.session, {
+          processName: 'game.exe',
+          pid,
+        });
+        await waitFor(() => execution.calls.length === 1);
+        execution.calls[0].callback(
+          null,
+          injectorSuccessFor(pid, 'game.exe'),
+          '',
+        );
+        await waitFor(() =>
+          existsSync(
+            path.join(execution.calls[0].options.cwd, 'inject.stdout.log'),
+          ),
+        );
+        await flushMicrotasks();
+
+        proofTimers[0].callback();
+        await operationEntered.promise;
+        assert.equal(observationTimers.length, 1);
+        observationTimers[0].callback();
+
+        const outcome = await settleWithin(attachment, 100);
+        assert.equal(outcome.status, 'rejected');
+        assert.ok(isReShadeOperationError(outcome.error));
+        assert.equal(outcome.error.code, 'runtime-initialization-timeout');
+        assert.equal(
+          outcome.error.diagnostic.runtimeStartupCode,
+          'invalid-record',
+        );
+        assert.equal(launcher.state, 'blocked');
+
+        if (stalledOperation === 'read') {
+          await waitFor(() => closeCount === 1);
+        } else {
+          assert.equal(closeCount, 0);
+        }
+        releaseOperation.resolve();
+        await waitFor(() => closeCount === 1);
+        assert.equal(readCount, stalledOperation === 'read' ? 1 : 0);
+      } finally {
+        releaseOperation.resolve();
+        fsPromises.open = originalOpen;
+        launcher.dispose();
+        global.setTimeout = originalSetTimeout;
+        global.clearTimeout = originalClearTimeout;
+        execution.restore();
+      }
+    });
+  }
+});
+
+test('a stale timeout reader cannot block a same-target retry after a definite-safe injector failure', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const originalOpen = fsPromises.open;
+  const originalError = console.error;
+  const originalLog = console.log;
+  const proofTimers = [];
+  const observationTimers = [];
+  const startupReadEntered = deferred();
+  const releaseStartupRead = deferred();
+  const pid = 9520;
+  const startupBytes = Buffer.from(
+    runtimeStartupRecord(pid, 'bridge-window-ready'),
+  );
+  let closeCount = 0;
+  const fakeStartupFile = {
+    async read(buffer, offset) {
+      startupReadEntered.resolve();
+      await releaseStartupRead.promise;
+      startupBytes.copy(buffer, offset);
+      return { bytesRead: startupBytes.length, buffer };
+    },
+    async close() {
+      ++closeCount;
+    },
+  };
+  global.setTimeout = (callback, delay, ...args) => {
+    if (delay === 120_000) {
+      const handle = { callback: () => callback(...args) };
+      proofTimers.push(handle);
+      return handle;
+    }
+    if (delay === 250) {
+      const handle = { callback: () => callback(...args) };
+      observationTimers.push(handle);
+      return handle;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (!proofTimers.includes(handle) && !observationTimers.includes(handle)) {
+      originalClearTimeout(handle);
+    }
+  };
+  fsPromises.open = async (filePath, ...args) =>
+    path.basename(filePath) === runtimeStartupFileName
+      ? fakeStartupFile
+      : originalOpen(filePath, ...args);
+  console.error = () => undefined;
+  console.log = () => undefined;
+
+  try {
+    const firstAttachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+      pid,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    proofTimers[0].callback();
+    await startupReadEntered.promise;
+    assert.equal(observationTimers.length, 1);
+
+    execution.calls[0].callback(
+      new Error('synthetic pre-injection failure'),
+      'ReShade injection not started.\n',
+      '',
+    );
+    await assert.rejects(firstAttachment, (error) => {
+      assert.ok(isReShadeOperationError(error));
+      assert.equal(error.retrySafety, 'definite-safe');
+      return true;
+    });
+    assert.equal(launcher.state, 'idle');
+
+    const retry = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+      pid,
+    });
+    await waitFor(() => execution.calls.length === 2);
+    assert.equal(launcher.state, 'attaching');
+
+    releaseStartupRead.resolve();
+    await waitFor(() => closeCount === 1);
+    await flushMicrotasks();
+    assert.equal(
+      launcher.state,
+      'attaching',
+      'the retired attachment reporter must not block the retry',
+    );
+
+    execution.calls[1].callback(null, injectorSuccessFor(pid, 'game.exe'), '');
+    sessionHarness.emitNative('game.process', {
+      pid,
+      path: 'C:\\games\\game.exe',
+    });
+    const result = await retry;
+    assert.equal(result.pid, pid);
+    assert.equal(launcher.state, 'connected');
+  } finally {
+    releaseStartupRead.resolve();
+    fsPromises.open = originalOpen;
+    launcher.dispose();
+    console.error = originalError;
+    console.log = originalLog;
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
     execution.restore();
@@ -2521,6 +3028,64 @@ function createConfig(fixture, overrides = {}) {
   );
   assert.ok(config);
   return Object.freeze({ ...config, ...overrides });
+}
+
+async function runRuntimeStartupTimeoutScenario({
+  pid,
+  record,
+  injectorStdout = injectorSuccessFor(pid, 'game.exe'),
+}) {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const originalLog = console.log;
+  const proofTimers = [];
+  global.setTimeout = (callback, delay, ...args) => {
+    if (delay === 120_000) {
+      const handle = { callback: () => callback(...args) };
+      proofTimers.push(handle);
+      return handle;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (!proofTimers.includes(handle)) {
+      originalClearTimeout(handle);
+    }
+  };
+  console.log = () => undefined;
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+      pid,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    if (record !== undefined) {
+      writeFileSync(path.join(runDirectory, runtimeStartupFileName), record);
+    }
+    execution.calls[0].callback(null, injectorStdout, '');
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, 'inject.stdout.log')),
+    );
+    await flushMicrotasks();
+    proofTimers[0].callback();
+
+    const outcome = await settleWithin(attachment, 1_000);
+    assert.notEqual(outcome.status, 'timeout');
+    assert.equal(launcher.state, 'blocked');
+    return { outcome, runDirectory };
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+    execution.restore();
+  }
 }
 
 function stubExecFile({ autoSpawn = true } = {}) {

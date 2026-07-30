@@ -285,9 +285,19 @@ producer-supplied PID. The add-on reports transport, swap-chain, and first-scene
 milestones plus guarded scene/frame/upload/input failures. It never publishes
 from `DllMain` or the input producer callback; input observations are emitted
 only by the ordered render-thread consumer. Failure codes have a native
-7.5-second per-code cooldown before the additional Node-side rate limit. Before
-the authenticated transport exists, early registration or transport-creation
-failures remain available only in `ReShade.log`.
+7.5-second per-code cooldown before the additional Node-side rate limit.
+
+Before authenticated IPC exists, the Rust bridge atomically preserves its last
+fixed startup state in
+`.electron-game-overlay-runtime-startup.json` inside the isolated SDK run
+directory. The bounded record contains only schema version, fixed source, target
+PID, and an allowlisted code covering bridge creation, discovery validation,
+target binding, loopback setup, worker startup, or pre-authentication
+disconnect. The SDK validates that exact schema and PID when connection proof
+times out; it never parses or forwards free-form `ReShade.log` lines. Failures
+that occur before the add-on reaches the transport bridge, including add-on
+registration or graphics-hook initialization, still require the local
+`ReShade.log`.
 
 The generated `electron_game_overlay.addon64` has completed controlled D3D11
 and D3D12 live-producer runs: it connected the existing authenticated Node
@@ -407,6 +417,15 @@ Both current gates passed on July 30, 2026:
   `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-084815`.
 - D3D12 evidence is under
   `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-084831`.
+
+The fixed pre-authentication startup-record extension re-ran both gates later
+that day. D3D11 and D3D12 each preserved a matching target PID with final code
+`network-worker-started`; evidence is under
+`client-sdk-d3d11-process-start-20260730-131543` and
+`client-sdk-d3d12-process-start-20260730-125958` in the same build root. The
+different compatible-host environment handoff passed the same requirement under
+`client-sdk-d3d11-shared-runtime-20260730-130358` and
+`client-sdk-d3d12-shared-runtime-20260730-130412`.
 
 Each `result.txt` contains its
 `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS` or

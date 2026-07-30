@@ -196,7 +196,11 @@ known not to have loaded a runtime or add-on payload whose duplication would
 make retry unsafe, and returns the launcher to `idle`. It does not promise that
 no bounded remote coordination occurred. `indeterminate` retains the existing
 fail-closed `blocked` behavior. When a run was staged, the diagnostic may
-include the run directory and injector stdout, stderr, and ReShade log paths.
+include the run directory, injector stdout/stderr, ReShade log, and fixed
+runtime-startup record paths. If authenticated connection proof times out,
+`runtimeStartupCode` reports the last strictly validated bridge state (or a
+fixed missing/invalid/PID-mismatch classification) without exposing target
+output or parsing the ReShade log.
 
 Running sessions expose a separate immutable diagnostic event for asynchronous
 transport observations:

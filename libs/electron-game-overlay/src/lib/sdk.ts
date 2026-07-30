@@ -32,6 +32,7 @@ export type {
   ReShadeProcessTarget,
   ReShadeRetrySafety,
   ReShadeRuntimeMode,
+  ReShadeRuntimeStartupCode,
   ReShadeTarget,
 } from './reshade-launcher.js';
 export type {
