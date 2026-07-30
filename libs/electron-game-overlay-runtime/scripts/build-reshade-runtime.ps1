@@ -55,6 +55,18 @@ $InjectorExportReadBoundsPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-export-read-bounds.patch"
 $InjectorExportReadBoundsPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExportReadBoundsPatch).Hash
+$InjectorExistingInstallationPreflightPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-existing-installation-preflight.patch"
+$InjectorExistingInstallationPreflightPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExistingInstallationPreflightPatch).Hash
+$InjectorOfficialAddonHostPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-official-addon-host.patch"
+$InjectorOfficialAddonHostPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorOfficialAddonHostPatch).Hash
+$InjectorGlobalLayerPreflightPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-global-layer-preflight.patch"
+$InjectorGlobalLayerPreflightPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorGlobalLayerPreflightPatch).Hash
 $SharedRuntimeHardeningPatch =
     Join-Path $RuntimeRoot "patches\reshade-shared-runtime-hardening.patch"
 $SharedRuntimeHardeningPatchHash =
@@ -82,7 +94,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/input.cpp" = "4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp" = "C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "87D5C0A2DF3418C343AC2736CC537F50FD2804F4979046739D1D3C9D7072B037"
+    "tools/injector.cpp" = "2D14C5FBCB09C2E352345C3D1369F215197700A7C5F7331AC95E2FAE8A0D6E81"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -118,16 +130,13 @@ function Test-ReShadePatchedSourceState {
         return $false
     }
 
-    # The pointer patch layers over the input observer, while the persistent
-    # process observer layers over the path-watcher identity, exact-PID, and
-    # base-path patches. Those stacks cannot all be reverse-checked independently
-    # in the final tree. The terminal patches plus exact content hashes below
-    # prove the complete ordered stack instead.
+    # The global-layer preflight is terminal over the injector stack, so lower
+    # injector patches cannot all be reverse-checked independently in the final
+    # tree. This terminal patch plus exact content hashes below proves that
+    # complete ordered stack instead.
     foreach ($Patch in @(
         $PointerInputPatch,
-        $InjectorResilientProcessObserverPatch,
-        $InjectorExportReadBoundsPatch,
-        $SharedRuntimeHardeningPatch,
+        $InjectorGlobalLayerPreflightPatch,
         $SuppressSplashPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -185,7 +194,7 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 17 -and
+        return $Stamp.schemaVersion -eq 20 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -199,6 +208,9 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorPerPidClaimPatchSha256 -eq $InjectorPerPidClaimPatchHash -and
             $Stamp.sharedRuntimeHostPatchSha256 -eq $SharedRuntimeHostPatchHash -and
             $Stamp.injectorExportReadBoundsPatchSha256 -eq $InjectorExportReadBoundsPatchHash -and
+            $Stamp.injectorExistingInstallationPreflightPatchSha256 -eq $InjectorExistingInstallationPreflightPatchHash -and
+            $Stamp.injectorOfficialAddonHostPatchSha256 -eq $InjectorOfficialAddonHostPatchHash -and
+            $Stamp.injectorGlobalLayerPreflightPatchSha256 -eq $InjectorGlobalLayerPreflightPatchHash -and
             $Stamp.sharedRuntimeHardeningPatchSha256 -eq $SharedRuntimeHardeningPatchHash -and
             $Stamp.suppressSplashPatchSha256 -eq $SuppressSplashPatchHash -and
             $Stamp.configuration -eq "Release" -and
@@ -310,7 +322,7 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 17
+    schemaVersion = 20
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -324,6 +336,9 @@ $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
     injectorPerPidClaimPatchSha256 = $InjectorPerPidClaimPatchHash
     sharedRuntimeHostPatchSha256 = $SharedRuntimeHostPatchHash
     injectorExportReadBoundsPatchSha256 = $InjectorExportReadBoundsPatchHash
+    injectorExistingInstallationPreflightPatchSha256 = $InjectorExistingInstallationPreflightPatchHash
+    injectorOfficialAddonHostPatchSha256 = $InjectorOfficialAddonHostPatchHash
+    injectorGlobalLayerPreflightPatchSha256 = $InjectorGlobalLayerPreflightPatchHash
     sharedRuntimeHardeningPatchSha256 = $SharedRuntimeHardeningPatchHash
     suppressSplashPatchSha256 = $SuppressSplashPatchHash
     configuration = "Release"

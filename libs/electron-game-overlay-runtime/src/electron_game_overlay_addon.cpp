@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <CommCtrl.h>
 
 #include <electron_overlay_transport.h>
 #include <imgui.h>
@@ -10,15 +11,29 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
+#pragma comment(lib, "Comctl32.lib")
+
 namespace
 {
 using namespace reshade::api;
+
+// The add-on is compiled against public ReShade add-on API 18. The repository
+// runtime carries a private, capability-negotiated input event, but that
+// extension does not change any public effect_runtime vtable. Public hosts are
+// accepted by capability: registration and the exact ImGui function table must
+// both succeed. ReShade's exported product version is deliberately not pinned.
+constexpr std::uint32_t public_reshade_api_version = 18;
+
+HMODULE g_reshade_host_module = nullptr;
+HMODULE g_addon_module = nullptr;
+bool g_has_private_input_observer = false;
 
 constexpr std::size_t input_queue_capacity = 4096;
 static_assert((input_queue_capacity & (input_queue_capacity - 1)) == 0);
@@ -33,6 +48,7 @@ struct queued_input_message
     std::uint32_t pointer_id = 0;
     std::uint32_t pointer_type = PT_POINTER;
     std::uint32_t pointer_key_states = 0;
+    bool pointer_primary = false;
     bool pointer_metadata_valid = false;
 };
 static_assert(std::is_trivially_copyable_v<queued_input_message>);
@@ -191,11 +207,32 @@ void capture_pointer_metadata(queued_input_message &queued) noexcept
         static_cast<WPARAM>(queued.message.wparam));
     POINTER_INFO pointer_info = {};
     if (GetPointerInfo(pointer_id, &pointer_info) == FALSE)
+    {
+        // A pointer message can be synchronously forwarded or replayed after
+        // its system history has expired. Preserve an explicitly primary
+        // first-button mouse-style sequence from the immutable message flags;
+        // real touch/pen input still has authoritative GetPointerInfo metadata
+        // and is never reclassified by this fallback.
+        const WPARAM pointer_wparam =
+            static_cast<WPARAM>(queued.message.wparam);
+        if (!IS_POINTER_PRIMARY_WPARAM(pointer_wparam))
+            return;
+        queued.pointer_id = pointer_id;
+        queued.pointer_type = static_cast<std::uint32_t>(PT_MOUSE);
+        queued.pointer_key_states =
+            IS_POINTER_FIRSTBUTTON_WPARAM(pointer_wparam)
+            ? MK_LBUTTON
+            : 0;
+        queued.pointer_primary = true;
+        queued.pointer_metadata_valid = true;
         return;
+    }
 
     queued.pointer_id = pointer_id;
     queued.pointer_type = static_cast<std::uint32_t>(pointer_info.pointerType);
     queued.pointer_key_states = pointer_info.dwKeyStates;
+    queued.pointer_primary =
+        (pointer_info.pointerFlags & POINTER_FLAG_PRIMARY) != 0;
     queued.pointer_metadata_valid = true;
 }
 
@@ -210,8 +247,14 @@ bool translate_pointer_mouse_message(
 {
     if (!is_pointer_mouse_message(message.message))
         return true;
+    const bool is_mouse =
+        queued.pointer_type == static_cast<std::uint32_t>(PT_MOUSE);
+    const bool is_primary_contact =
+        (queued.pointer_type == static_cast<std::uint32_t>(PT_TOUCH) ||
+         queued.pointer_type == static_cast<std::uint32_t>(PT_PEN)) &&
+        queued.pointer_primary;
     if (!queued.pointer_metadata_valid ||
-        queued.pointer_type != static_cast<std::uint32_t>(PT_MOUSE))
+        (!is_mouse && !is_primary_contact))
     {
         return false;
     }
@@ -243,7 +286,8 @@ bool translate_pointer_mouse_message(
 
     case WM_POINTERDOWN:
         if (!client_point_valid ||
-            !IS_POINTER_FIRSTBUTTON_WPARAM(pointer_wparam))
+            (is_mouse &&
+             !IS_POINTER_FIRSTBUTTON_WPARAM(pointer_wparam)))
         {
             return false;
         }
@@ -300,6 +344,483 @@ enum class input_phase : std::uint8_t
     disarming,
 };
 
+constexpr std::size_t official_hook_owner_capacity = 32;
+constexpr std::size_t official_thread_hook_capacity = 16;
+constexpr std::uint32_t invalid_official_hook_slot =
+    std::numeric_limits<std::uint32_t>::max();
+
+struct official_hook_owner
+{
+    // 'root_window' is the publication field. The hook callback acquires it
+    // before reading the remaining immutable owner identity.
+    std::atomic<std::uintptr_t> root_window = 0;
+    std::atomic<std::uintptr_t> route_window = 0;
+    std::atomic<std::uint32_t> thread_id = 0;
+    std::atomic<std::uint64_t> primary_token = 0;
+    std::atomic<input_phase> phase = input_phase::disabled;
+    std::atomic<bool> hook_ready = false;
+    std::atomic<bool> subclass_ready = false;
+    std::uint32_t references = 0;
+    std::uint32_t thread_hook_slot = invalid_official_hook_slot;
+    std::atomic<DWORD> install_error = ERROR_SUCCESS;
+};
+
+struct official_thread_hook
+{
+    DWORD thread_id = 0;
+    HHOOK hook = nullptr;
+    std::uint32_t owner_references = 0;
+};
+
+std::mutex g_official_hook_mutex;
+std::array<official_hook_owner, official_hook_owner_capacity>
+    g_official_hook_owners = {};
+std::array<official_thread_hook, official_thread_hook_capacity>
+    g_official_thread_hooks = {};
+std::atomic<std::uint64_t> g_official_hook_token_sequence = 0;
+std::atomic<std::uint64_t> g_official_input_sequence = 0;
+std::atomic<std::uint32_t> g_official_pointer_message_mask = 0;
+std::atomic<std::uint32_t> g_official_hook_callbacks = 0;
+std::atomic<bool> g_official_hooks_shutting_down = false;
+std::atomic<bool> g_official_subclass_teardown_failed = false;
+std::atomic<UINT> g_official_control_message = 0;
+std::atomic_flag g_official_hook_error_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_official_pointer_sequence_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_official_hook_shutdown_timeout_logged = ATOMIC_FLAG_INIT;
+
+struct official_hook_callback_release
+{
+    ~official_hook_callback_release()
+    {
+        g_official_hook_callbacks.fetch_sub(1, std::memory_order_release);
+    }
+};
+
+bool is_official_keyboard_message(UINT message) noexcept
+{
+    return message >= WM_KEYFIRST && message <= WM_UNICHAR;
+}
+
+bool is_official_mouse_message(UINT message) noexcept
+{
+    return message >= WM_MOUSEFIRST && message <= WM_MOUSELAST;
+}
+
+bool is_official_pointer_message(UINT message) noexcept
+{
+    switch (message)
+    {
+    case WM_POINTERUPDATE:
+    case WM_POINTERDOWN:
+    case WM_POINTERUP:
+    case WM_POINTERENTER:
+    case WM_POINTERLEAVE:
+    case WM_POINTERWHEEL:
+    case WM_POINTERHWHEEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool is_official_overlay_input_message(UINT message) noexcept
+{
+    return message == WM_INPUT ||
+        is_official_keyboard_message(message) ||
+        is_official_mouse_message(message) ||
+        is_official_pointer_message(message);
+}
+
+official_hook_owner *find_official_hook_owner(
+    DWORD thread_id,
+    HWND message_window) noexcept
+{
+    if (message_window == nullptr)
+        return nullptr;
+
+    HWND const message_root = [&]() {
+        HWND const root = GetAncestor(message_window, GA_ROOT);
+        return root != nullptr ? root : message_window;
+    }();
+    HWND const foreground = GetForegroundWindow();
+    HWND const foreground_root = foreground != nullptr
+        ? ([&]() {
+              HWND const root = GetAncestor(foreground, GA_ROOT);
+              return root != nullptr ? root : foreground;
+          })()
+        : nullptr;
+    if (foreground_root == nullptr || foreground_root != message_root)
+        return nullptr;
+
+    for (official_hook_owner &owner : g_official_hook_owners)
+    {
+        const auto owner_root = reinterpret_cast<HWND>(
+            owner.root_window.load(std::memory_order_acquire));
+        if (owner_root == nullptr ||
+            owner_root != message_root ||
+            owner.thread_id.load(std::memory_order_relaxed) != thread_id ||
+            !owner.hook_ready.load(std::memory_order_acquire) ||
+            owner.phase.load(std::memory_order_acquire) == input_phase::disabled)
+        {
+            continue;
+        }
+        return &owner;
+    }
+    return nullptr;
+}
+
+void set_official_message_position(
+    input_message &message,
+    const MSG &details,
+    HWND route_window) noexcept
+{
+    POINT client_point = details.pt;
+    if (route_window != nullptr &&
+        ScreenToClient(route_window, &client_point) != FALSE)
+    {
+        message.client_x = client_point.x;
+        message.client_y = client_point.y;
+        message.flags |= static_cast<std::uint32_t>(
+            input_message_flags::client_point_valid);
+    }
+}
+
+void mark_official_pointer_message(UINT message) noexcept
+{
+    switch (message)
+    {
+    case WM_POINTERUPDATE:
+        g_official_pointer_message_mask.fetch_or(1U, std::memory_order_relaxed);
+        break;
+    case WM_POINTERDOWN:
+        g_official_pointer_message_mask.fetch_or(2U, std::memory_order_relaxed);
+        break;
+    case WM_POINTERUP:
+        g_official_pointer_message_mask.fetch_or(4U, std::memory_order_relaxed);
+        break;
+    default:
+        break;
+    }
+}
+
+void observe_official_window_message(
+    const MSG &details,
+    HWND route_window) noexcept
+{
+    input_message message = {};
+    message.source = input_message_source::window_message;
+    message.device_type =
+        is_official_mouse_message(details.message) ||
+            is_official_pointer_message(details.message)
+        ? input_device_type::mouse
+        : input_device_type::keyboard;
+    message.sequence =
+        g_official_input_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    message.target_window = route_window;
+    message.source_window = details.hwnd;
+    message.wparam = static_cast<std::uint64_t>(details.wParam);
+    message.lparam = static_cast<std::int64_t>(details.lParam);
+    message.flags =
+        static_cast<std::uint32_t>(input_message_flags::foreground);
+    message.message = details.message;
+    message.time = details.time;
+    set_official_message_position(message, details, route_window);
+    on_input_message(message);
+    mark_official_pointer_message(details.message);
+}
+
+void observe_official_raw_input(
+    const MSG &details,
+    HWND route_window) noexcept
+{
+    RAWINPUT raw = {};
+    UINT raw_size = sizeof(raw);
+    const UINT copied = GetRawInputData(
+        reinterpret_cast<HRAWINPUT>(details.lParam),
+        RID_INPUT,
+        &raw,
+        &raw_size,
+        sizeof(RAWINPUTHEADER));
+    if (copied == UINT_MAX ||
+        (raw.header.dwType != RIM_TYPEMOUSE &&
+         raw.header.dwType != RIM_TYPEKEYBOARD))
+    {
+        return;
+    }
+
+    input_message message = {};
+    message.source = input_message_source::raw_input;
+    message.device_type = raw.header.dwType == RIM_TYPEMOUSE
+        ? input_device_type::mouse
+        : input_device_type::keyboard;
+    message.sequence =
+        g_official_input_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    message.target_window = route_window;
+    message.source_window = details.hwnd;
+    message.device_handle =
+        reinterpret_cast<std::uintptr_t>(raw.header.hDevice);
+    message.wparam = static_cast<std::uint64_t>(raw.header.wParam);
+    message.flags =
+        static_cast<std::uint32_t>(input_message_flags::foreground);
+    message.message = details.message;
+    message.time = details.time;
+    set_official_message_position(message, details, route_window);
+
+    if (raw.header.dwType == RIM_TYPEMOUSE)
+    {
+        message.mouse.flags = raw.data.mouse.usFlags;
+        message.mouse.button_flags = raw.data.mouse.usButtonFlags;
+        message.mouse.button_data = raw.data.mouse.usButtonData;
+        message.mouse.raw_buttons = raw.data.mouse.ulRawButtons;
+        message.mouse.last_x = raw.data.mouse.lLastX;
+        message.mouse.last_y = raw.data.mouse.lLastY;
+        message.mouse.extra_information =
+            raw.data.mouse.ulExtraInformation;
+    }
+    else
+    {
+        message.keyboard.make_code = raw.data.keyboard.MakeCode;
+        message.keyboard.flags = raw.data.keyboard.Flags;
+        message.keyboard.virtual_key = raw.data.keyboard.VKey;
+        message.keyboard.message = raw.data.keyboard.Message;
+        message.keyboard.extra_information =
+            raw.data.keyboard.ExtraInformation;
+    }
+    on_input_message(message);
+}
+
+LRESULT CALLBACK official_get_message_hook(
+    int code,
+    WPARAM remove_mode,
+    LPARAM message_pointer) noexcept
+{
+    g_official_hook_callbacks.fetch_add(1, std::memory_order_acquire);
+    const official_hook_callback_release release_callback;
+
+    if (code < 0 ||
+        remove_mode != PM_REMOVE ||
+        message_pointer == 0 ||
+        g_official_hooks_shutting_down.load(std::memory_order_acquire))
+    {
+        return CallNextHookEx(nullptr, code, remove_mode, message_pointer);
+    }
+
+    auto *const details = reinterpret_cast<MSG *>(message_pointer);
+    if (!is_official_overlay_input_message(details->message))
+        return CallNextHookEx(nullptr, code, remove_mode, message_pointer);
+
+    official_hook_owner *const owner =
+        find_official_hook_owner(GetCurrentThreadId(), details->hwnd);
+    if (owner == nullptr)
+        return CallNextHookEx(nullptr, code, remove_mode, message_pointer);
+
+    // Mouse and pointer input are deliberately owned by the same-thread
+    // window subclass. Passing queued records through unchanged lets the
+    // system perform mouse-to-pointer promotion and gives a single blocker
+    // for queued and directly sent input. Keyboard/text/raw input remains
+    // owned here.
+    if (is_official_mouse_message(details->message) ||
+        is_official_pointer_message(details->message))
+        return CallNextHookEx(nullptr, code, remove_mode, message_pointer);
+
+    const input_phase phase = owner->phase.load(std::memory_order_acquire);
+    const bool route = phase == input_phase::enabled;
+    HWND const route_window = reinterpret_cast<HWND>(
+        owner->route_window.load(std::memory_order_relaxed));
+    if (route)
+    {
+        if (details->message == WM_INPUT)
+            observe_official_raw_input(*details, route_window);
+        else
+            observe_official_window_message(*details, route_window);
+
+        // The application would ordinarily translate these after GetMessage
+        // returns. Since it receives WM_NULL below, do that exactly once here
+        // so layout/dead-key/Unicode text messages remain in the same queue.
+        if (details->message == WM_KEYDOWN ||
+            details->message == WM_SYSKEYDOWN)
+        {
+            TranslateMessage(details);
+        }
+    }
+
+    // Mutate before continuing the chain. ReShade's own Get/PeekMessage
+    // detour and any later WH_GETMESSAGE observer therefore see WM_NULL too,
+    // preventing duplicate ImGui delivery while the game is intercepted.
+    details->message = WM_NULL;
+    details->wParam = 0;
+    details->lParam = 0;
+    return CallNextHookEx(nullptr, code, remove_mode, message_pointer);
+}
+
+constexpr WPARAM official_subclass_install =
+    static_cast<WPARAM>(0x45474F494E535441ULL);
+constexpr WPARAM official_subclass_remove =
+    static_cast<WPARAM>(0x45474F52454D4F56ULL);
+
+UINT_PTR official_subclass_id() noexcept
+{
+    return reinterpret_cast<UINT_PTR>(&g_official_hook_owners);
+}
+
+bool official_owner_filters_window(
+    const official_hook_owner &owner,
+    HWND message_window) noexcept
+{
+    if (message_window == nullptr ||
+        !owner.hook_ready.load(std::memory_order_acquire) ||
+        owner.phase.load(std::memory_order_acquire) == input_phase::disabled)
+    {
+        return false;
+    }
+
+    HWND const root = reinterpret_cast<HWND>(
+        owner.root_window.load(std::memory_order_acquire));
+    HWND const message_root = [&]() {
+        HWND const ancestor = GetAncestor(message_window, GA_ROOT);
+        return ancestor != nullptr ? ancestor : message_window;
+    }();
+    HWND const foreground = GetForegroundWindow();
+    HWND const foreground_root = foreground != nullptr
+        ? ([&]() {
+              HWND const ancestor = GetAncestor(foreground, GA_ROOT);
+              return ancestor != nullptr ? ancestor : foreground;
+          })()
+        : nullptr;
+    return root != nullptr &&
+        message_root == root &&
+        foreground_root == root;
+}
+
+LRESULT CALLBACK official_window_subclass(
+    HWND window,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR subclass_id,
+    DWORD_PTR reference_data) noexcept
+{
+    g_official_hook_callbacks.fetch_add(1, std::memory_order_acquire);
+    const official_hook_callback_release release_callback;
+
+    auto *const owner =
+        reinterpret_cast<official_hook_owner *>(reference_data);
+    const bool owner_valid =
+        owner >= g_official_hook_owners.data() &&
+        owner < g_official_hook_owners.data() +
+            g_official_hook_owners.size() &&
+        subclass_id == official_subclass_id();
+    const UINT control_message =
+        g_official_control_message.load(std::memory_order_acquire);
+
+    if (owner_valid &&
+        message == control_message &&
+        wparam == official_subclass_remove)
+    {
+        owner->hook_ready.store(false, std::memory_order_release);
+        owner->subclass_ready.store(false, std::memory_order_release);
+        RemoveWindowSubclass(
+            window,
+            official_window_subclass,
+            official_subclass_id());
+        return 0;
+    }
+    if (owner_valid &&
+        message == control_message &&
+        wparam == official_subclass_install)
+    {
+        return 0;
+    }
+
+    if (!owner_valid ||
+        g_official_hooks_shutting_down.load(std::memory_order_acquire) ||
+        !is_official_overlay_input_message(message) ||
+        !official_owner_filters_window(*owner, window))
+    {
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+
+    if (owner->phase.load(std::memory_order_acquire) ==
+        input_phase::enabled)
+    {
+        if (is_official_pointer_message(message))
+            mark_official_pointer_message(message);
+
+        MSG details = {};
+        details.hwnd = window;
+        details.message = message;
+        details.wParam = wparam;
+        details.lParam = lparam;
+        details.time = static_cast<DWORD>(GetMessageTime());
+        const DWORD position = GetMessagePos();
+        details.pt.x = static_cast<std::int16_t>(LOWORD(position));
+        details.pt.y = static_cast<std::int16_t>(HIWORD(position));
+        HWND const route_window = reinterpret_cast<HWND>(
+            owner->route_window.load(std::memory_order_relaxed));
+        if (message == WM_INPUT)
+            observe_official_raw_input(details, route_window);
+        else
+            observe_official_window_message(details, route_window);
+    }
+
+    // Mouse and pointer messages stay intact through WH_GETMESSAGE so Windows
+    // can perform mouse-to-pointer promotion before dispatch. Returning zero
+    // owns both queued and directly sent input before the game and before
+    // downstream subclasses.
+    return 0;
+}
+
+LRESULT CALLBACK official_subclass_setup_hook(
+    int code,
+    WPARAM,
+    LPARAM call_window_proc_pointer) noexcept
+{
+    if (code >= 0 && call_window_proc_pointer != 0)
+    {
+        const auto *const details =
+            reinterpret_cast<const CWPSTRUCT *>(call_window_proc_pointer);
+        const UINT control_message =
+            g_official_control_message.load(std::memory_order_acquire);
+        if (details->message == control_message &&
+            details->wParam == official_subclass_install &&
+            details->lParam >= 0 &&
+            static_cast<std::size_t>(details->lParam) <
+                g_official_hook_owners.size())
+        {
+            official_hook_owner &owner =
+                g_official_hook_owners[
+                    static_cast<std::size_t>(details->lParam)];
+            HWND const owner_root = reinterpret_cast<HWND>(
+                owner.root_window.load(std::memory_order_acquire));
+            if (owner_root == details->hwnd &&
+                owner.thread_id.load(std::memory_order_acquire) ==
+                    GetCurrentThreadId())
+            {
+                SetLastError(ERROR_SUCCESS);
+                const BOOL installed = SetWindowSubclass(
+                    details->hwnd,
+                    official_window_subclass,
+                    official_subclass_id(),
+                    reinterpret_cast<DWORD_PTR>(&owner));
+                DWORD error = installed != FALSE
+                    ? ERROR_SUCCESS
+                    : GetLastError();
+                if (installed == FALSE && error == ERROR_SUCCESS)
+                    error = ERROR_INVALID_HOOK_HANDLE;
+                owner.install_error.store(error, std::memory_order_release);
+                owner.subclass_ready.store(
+                    installed != FALSE,
+                    std::memory_order_release);
+            }
+        }
+    }
+    return CallNextHookEx(
+        nullptr,
+        code,
+        0,
+        call_window_proc_pointer);
+}
+
 struct electron_texture
 {
     resource texture = {};
@@ -337,6 +858,9 @@ struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
     ego_status last_scene_query_error = EGO_STATUS_OK;
     ego_status last_target_surface_error = EGO_STATUS_OK;
     ego_status last_fps_error = EGO_STATUS_OK;
+    std::uint64_t official_hook_token = 0;
+    std::uint32_t official_hook_slot = invalid_official_hook_slot;
+    bool official_hook_failure_reported = false;
 };
 
 std::mutex g_transport_mutex;
@@ -449,6 +973,546 @@ void publish_input_routing_failure(
         transport,
         EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED,
         error_code);
+}
+
+HWND official_root_window(HWND window) noexcept
+{
+    if (window == nullptr)
+        return nullptr;
+    HWND const root = GetAncestor(window, GA_ROOT);
+    return root != nullptr ? root : window;
+}
+
+bool retain_official_thread_hook(
+    DWORD thread_id,
+    std::uint32_t &slot_index,
+    DWORD &error) noexcept
+{
+    for (std::uint32_t index = 0;
+         index < g_official_thread_hooks.size();
+         ++index)
+    {
+        official_thread_hook &thread_hook = g_official_thread_hooks[index];
+        if (thread_hook.thread_id != thread_id || thread_hook.hook == nullptr)
+            continue;
+        ++thread_hook.owner_references;
+        slot_index = index;
+        error = ERROR_SUCCESS;
+        return true;
+    }
+
+    for (std::uint32_t index = 0;
+         index < g_official_thread_hooks.size();
+         ++index)
+    {
+        official_thread_hook &thread_hook = g_official_thread_hooks[index];
+        if (thread_hook.thread_id != 0 || thread_hook.hook != nullptr)
+            continue;
+
+        SetLastError(ERROR_SUCCESS);
+        HHOOK const hook = SetWindowsHookExW(
+            WH_GETMESSAGE,
+            official_get_message_hook,
+            g_addon_module,
+            thread_id);
+        if (hook == nullptr)
+        {
+            error = GetLastError();
+            if (error == ERROR_SUCCESS)
+                error = ERROR_HOOK_NEEDS_HMOD;
+            return false;
+        }
+
+        thread_hook.thread_id = thread_id;
+        thread_hook.hook = hook;
+        thread_hook.owner_references = 1;
+        slot_index = index;
+        error = ERROR_SUCCESS;
+        return true;
+    }
+
+    error = ERROR_TOO_MANY_TCBS;
+    return false;
+}
+
+void log_official_hook_failure(
+    HWND root,
+    DWORD thread_id,
+    DWORD error) noexcept
+{
+    if (g_official_hook_error_logged.test_and_set(std::memory_order_relaxed))
+        return;
+
+    char message[320] = {};
+    sprintf_s(
+        message,
+        "Electron game overlay could not install its official-ReShade "
+        "WH_GETMESSAGE input hook for root HWND %p on thread %lu "
+        "(Win32 error %lu). Interception remains inactive.",
+        root,
+        static_cast<unsigned long>(thread_id),
+        static_cast<unsigned long>(error));
+    reshade::log::message(reshade::log::level::error, message);
+}
+
+UINT ensure_official_control_message() noexcept
+{
+    UINT message =
+        g_official_control_message.load(std::memory_order_acquire);
+    if (message != 0)
+        return message;
+
+    message = RegisterWindowMessageW(
+        L"ElectronGameOverlay.OfficialReShade.InputHook.v1");
+    if (message != 0)
+        g_official_control_message.store(message, std::memory_order_release);
+    return message;
+}
+
+bool install_official_window_subclass(
+    official_hook_owner &owner,
+    std::uint32_t owner_index) noexcept
+{
+    HWND const root = reinterpret_cast<HWND>(
+        owner.root_window.load(std::memory_order_acquire));
+    const DWORD thread_id =
+        owner.thread_id.load(std::memory_order_acquire);
+    if (root == nullptr ||
+        thread_id == 0 ||
+        ensure_official_control_message() == 0)
+    {
+        owner.install_error.store(
+            ERROR_INVALID_WINDOW_HANDLE,
+            std::memory_order_release);
+        return false;
+    }
+
+    if (GetCurrentThreadId() == thread_id)
+    {
+        SetLastError(ERROR_SUCCESS);
+        const BOOL installed = SetWindowSubclass(
+            root,
+            official_window_subclass,
+            official_subclass_id(),
+            reinterpret_cast<DWORD_PTR>(&owner));
+        DWORD error = installed != FALSE
+            ? ERROR_SUCCESS
+            : GetLastError();
+        if (installed == FALSE && error == ERROR_SUCCESS)
+            error = ERROR_INVALID_HOOK_HANDLE;
+        owner.install_error.store(error, std::memory_order_release);
+        owner.subclass_ready.store(
+            installed != FALSE,
+            std::memory_order_release);
+        return installed != FALSE;
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    HHOOK const setup_hook = SetWindowsHookExW(
+        WH_CALLWNDPROC,
+        official_subclass_setup_hook,
+        g_addon_module,
+        thread_id);
+    if (setup_hook == nullptr)
+    {
+        DWORD error = GetLastError();
+        if (error == ERROR_SUCCESS)
+            error = ERROR_HOOK_NEEDS_HMOD;
+        owner.install_error.store(error, std::memory_order_release);
+        return false;
+    }
+
+    DWORD_PTR ignored_result = 0;
+    SetLastError(ERROR_SUCCESS);
+    const LRESULT sent = SendMessageTimeoutW(
+        root,
+        g_official_control_message.load(std::memory_order_acquire),
+        official_subclass_install,
+        static_cast<LPARAM>(owner_index),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        2000,
+        &ignored_result);
+    DWORD send_error = sent != 0 ? ERROR_SUCCESS : GetLastError();
+    if (send_error == ERROR_SUCCESS && sent == 0)
+        send_error = ERROR_TIMEOUT;
+    UnhookWindowsHookEx(setup_hook);
+
+    const bool installed =
+        owner.subclass_ready.load(std::memory_order_acquire);
+    if (!installed &&
+        owner.install_error.load(std::memory_order_acquire) == ERROR_SUCCESS)
+    {
+        owner.install_error.store(send_error, std::memory_order_release);
+    }
+    return installed;
+}
+
+bool remove_official_window_subclass(
+    official_hook_owner &owner) noexcept
+{
+    if (!owner.subclass_ready.load(std::memory_order_acquire))
+        return true;
+
+    owner.hook_ready.store(false, std::memory_order_release);
+    HWND const root = reinterpret_cast<HWND>(
+        owner.root_window.load(std::memory_order_acquire));
+    const DWORD thread_id =
+        owner.thread_id.load(std::memory_order_acquire);
+    if (root == nullptr || IsWindow(root) == FALSE)
+    {
+        owner.subclass_ready.store(false, std::memory_order_release);
+        return true;
+    }
+
+    if (GetCurrentThreadId() == thread_id)
+    {
+        const BOOL removed = RemoveWindowSubclass(
+            root,
+            official_window_subclass,
+            official_subclass_id());
+        if (removed != FALSE)
+            owner.subclass_ready.store(false, std::memory_order_release);
+        return removed != FALSE;
+    }
+
+    DWORD_PTR ignored_result = 0;
+    const LRESULT sent = SendMessageTimeoutW(
+        root,
+        g_official_control_message.load(std::memory_order_acquire),
+        official_subclass_remove,
+        0,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        2000,
+        &ignored_result);
+    return sent != 0 &&
+        !owner.subclass_ready.load(std::memory_order_acquire);
+}
+
+bool retain_official_hook_owner(swapchain_data &data) noexcept
+{
+    if (g_has_private_input_observer ||
+        data.window == nullptr ||
+        g_official_hooks_shutting_down.load(std::memory_order_acquire))
+    {
+        return g_has_private_input_observer;
+    }
+
+    HWND const root = official_root_window(data.window);
+    DWORD process_id = 0;
+    const DWORD thread_id =
+        root != nullptr
+        ? GetWindowThreadProcessId(root, &process_id)
+        : 0;
+    const std::uint64_t token =
+        g_official_hook_token_sequence.fetch_add(
+            1,
+            std::memory_order_relaxed) +
+        1;
+
+    const std::scoped_lock lock(g_official_hook_mutex);
+    for (std::uint32_t index = 0;
+         index < g_official_hook_owners.size();
+         ++index)
+    {
+        official_hook_owner &owner = g_official_hook_owners[index];
+        if (owner.references == 0 ||
+            reinterpret_cast<HWND>(
+                owner.root_window.load(std::memory_order_acquire)) != root)
+        {
+            continue;
+        }
+
+        ++owner.references;
+        data.official_hook_slot = index;
+        data.official_hook_token = token;
+        std::uint64_t expected_primary = 0;
+        owner.primary_token.compare_exchange_strong(
+            expected_primary,
+            token,
+            std::memory_order_release,
+            std::memory_order_relaxed);
+        return owner.hook_ready.load(std::memory_order_acquire);
+    }
+
+    DWORD install_error = ERROR_SUCCESS;
+    std::uint32_t thread_hook_slot = invalid_official_hook_slot;
+    bool const identity_valid =
+        root != nullptr &&
+        thread_id != 0 &&
+        process_id == GetCurrentProcessId();
+    const bool message_hook_ready =
+        identity_valid &&
+        retain_official_thread_hook(
+            thread_id,
+            thread_hook_slot,
+            install_error);
+    if (!identity_valid)
+        install_error = ERROR_INVALID_WINDOW_HANDLE;
+
+    for (std::uint32_t index = 0;
+         index < g_official_hook_owners.size();
+         ++index)
+    {
+        official_hook_owner &owner = g_official_hook_owners[index];
+        if (owner.references != 0 ||
+            owner.root_window.load(std::memory_order_acquire) != 0)
+        {
+            continue;
+        }
+
+        owner.references = 1;
+        owner.thread_hook_slot = thread_hook_slot;
+        owner.install_error.store(install_error, std::memory_order_relaxed);
+        owner.route_window.store(
+            reinterpret_cast<std::uintptr_t>(data.window),
+            std::memory_order_relaxed);
+        owner.thread_id.store(thread_id, std::memory_order_relaxed);
+        owner.primary_token.store(token, std::memory_order_relaxed);
+        owner.phase.store(input_phase::disabled, std::memory_order_relaxed);
+        owner.hook_ready.store(false, std::memory_order_relaxed);
+        owner.subclass_ready.store(false, std::memory_order_relaxed);
+        owner.root_window.store(
+            reinterpret_cast<std::uintptr_t>(root),
+            std::memory_order_release);
+        data.official_hook_slot = index;
+        data.official_hook_token = token;
+
+        const bool hook_ready =
+            message_hook_ready &&
+            install_official_window_subclass(owner, index);
+        owner.hook_ready.store(hook_ready, std::memory_order_release);
+        if (hook_ready)
+        {
+            char message[256] = {};
+            sprintf_s(
+                message,
+                "Electron game overlay installed its official-ReShade "
+                "WH_GETMESSAGE and window-subclass input hooks for root HWND "
+                "%p on thread %lu.",
+                root,
+                static_cast<unsigned long>(thread_id));
+            reshade::log::message(reshade::log::level::info, message);
+        }
+        else
+        {
+            log_official_hook_failure(
+                root,
+                thread_id,
+                owner.install_error.load(std::memory_order_acquire));
+        }
+        return hook_ready;
+    }
+
+    if (message_hook_ready &&
+        thread_hook_slot < g_official_thread_hooks.size())
+    {
+        official_thread_hook &thread_hook =
+            g_official_thread_hooks[thread_hook_slot];
+        if (thread_hook.owner_references > 0)
+            --thread_hook.owner_references;
+        if (thread_hook.owner_references == 0)
+        {
+            UnhookWindowsHookEx(thread_hook.hook);
+            thread_hook = {};
+        }
+    }
+    log_official_hook_failure(root, thread_id, ERROR_TOO_MANY_TCBS);
+    return false;
+}
+
+official_hook_owner *get_official_hook_owner(
+    const swapchain_data &data) noexcept
+{
+    if (data.official_hook_slot >= g_official_hook_owners.size() ||
+        data.official_hook_token == 0)
+    {
+        return nullptr;
+    }
+
+    official_hook_owner &owner =
+        g_official_hook_owners[data.official_hook_slot];
+    return owner.root_window.load(std::memory_order_acquire) != 0
+        ? &owner
+        : nullptr;
+}
+
+bool claim_official_input_owner(swapchain_data &data) noexcept
+{
+    official_hook_owner *const owner = get_official_hook_owner(data);
+    if (owner == nullptr ||
+        !owner->hook_ready.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+
+    std::uint64_t primary =
+        owner->primary_token.load(std::memory_order_acquire);
+    if (primary == 0)
+    {
+        owner->primary_token.compare_exchange_strong(
+            primary,
+            data.official_hook_token,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire);
+        primary = owner->primary_token.load(std::memory_order_acquire);
+    }
+    return primary == data.official_hook_token;
+}
+
+void publish_official_hook_phase(
+    const swapchain_data &data,
+    input_phase phase) noexcept
+{
+    official_hook_owner *const owner = get_official_hook_owner(data);
+    if (owner == nullptr ||
+        owner->primary_token.load(std::memory_order_acquire) !=
+            data.official_hook_token)
+    {
+        return;
+    }
+    owner->phase.store(phase, std::memory_order_release);
+}
+
+void release_official_hook_owner(swapchain_data &data) noexcept
+{
+    if (data.official_hook_slot >= g_official_hook_owners.size() ||
+        data.official_hook_token == 0)
+    {
+        data.official_hook_slot = invalid_official_hook_slot;
+        data.official_hook_token = 0;
+        return;
+    }
+
+    const std::scoped_lock lock(g_official_hook_mutex);
+    official_hook_owner &owner =
+        g_official_hook_owners[data.official_hook_slot];
+    if (owner.primary_token.load(std::memory_order_acquire) ==
+        data.official_hook_token)
+    {
+        owner.phase.store(input_phase::disabled, std::memory_order_release);
+        owner.primary_token.store(0, std::memory_order_release);
+    }
+
+    if (owner.references > 0)
+        --owner.references;
+    if (owner.references == 0)
+    {
+        owner.phase.store(input_phase::disabled, std::memory_order_release);
+        owner.hook_ready.store(false, std::memory_order_release);
+        const bool subclass_removed =
+            remove_official_window_subclass(owner);
+        if (!subclass_removed)
+        {
+            g_official_subclass_teardown_failed.store(
+                true,
+                std::memory_order_release);
+        }
+
+        if (owner.thread_hook_slot < g_official_thread_hooks.size())
+        {
+            official_thread_hook &thread_hook =
+                g_official_thread_hooks[owner.thread_hook_slot];
+            if (thread_hook.owner_references > 0)
+                --thread_hook.owner_references;
+            if (thread_hook.owner_references == 0)
+            {
+                if (thread_hook.hook != nullptr)
+                    UnhookWindowsHookEx(thread_hook.hook);
+                thread_hook = {};
+            }
+        }
+
+        if (subclass_removed)
+        {
+            owner.root_window.store(0, std::memory_order_release);
+            owner.route_window.store(0, std::memory_order_relaxed);
+            owner.thread_id.store(0, std::memory_order_relaxed);
+            owner.primary_token.store(0, std::memory_order_relaxed);
+            owner.subclass_ready.store(false, std::memory_order_relaxed);
+        }
+        owner.thread_hook_slot = invalid_official_hook_slot;
+        owner.install_error.store(ERROR_SUCCESS, std::memory_order_relaxed);
+    }
+
+    data.official_hook_slot = invalid_official_hook_slot;
+    data.official_hook_token = 0;
+}
+
+void shutdown_official_message_hooks(bool wait_for_callbacks) noexcept
+{
+    g_official_hooks_shutting_down.store(true, std::memory_order_release);
+
+    {
+        const std::scoped_lock lock(g_official_hook_mutex);
+        for (official_hook_owner &owner : g_official_hook_owners)
+        {
+            owner.phase.store(input_phase::disabled, std::memory_order_release);
+            owner.hook_ready.store(false, std::memory_order_release);
+            const bool subclass_removed =
+                remove_official_window_subclass(owner);
+            if (!subclass_removed)
+            {
+                g_official_subclass_teardown_failed.store(
+                    true,
+                    std::memory_order_release);
+            }
+            else
+            {
+                owner.root_window.store(0, std::memory_order_release);
+                owner.route_window.store(0, std::memory_order_relaxed);
+                owner.thread_id.store(0, std::memory_order_relaxed);
+                owner.primary_token.store(0, std::memory_order_relaxed);
+                owner.subclass_ready.store(false, std::memory_order_relaxed);
+            }
+            owner.references = 0;
+            owner.thread_hook_slot = invalid_official_hook_slot;
+            owner.install_error.store(
+                ERROR_SUCCESS,
+                std::memory_order_relaxed);
+        }
+        for (official_thread_hook &thread_hook : g_official_thread_hooks)
+        {
+            if (thread_hook.hook != nullptr)
+                UnhookWindowsHookEx(thread_hook.hook);
+            thread_hook = {};
+        }
+    }
+
+    if (!wait_for_callbacks)
+        return;
+
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    while (g_official_hook_callbacks.load(std::memory_order_acquire) != 0 &&
+           GetTickCount64() < deadline)
+    {
+        Sleep(1);
+    }
+    const bool callback_timeout =
+        g_official_hook_callbacks.load(std::memory_order_acquire) != 0;
+    const bool subclass_teardown_failed =
+        g_official_subclass_teardown_failed.load(std::memory_order_acquire);
+    if (!callback_timeout && !subclass_teardown_failed)
+        return;
+
+    if (!g_official_hook_shutdown_timeout_logged.test_and_set(
+            std::memory_order_relaxed))
+    {
+        reshade::log::message(
+            reshade::log::level::error,
+            callback_timeout
+                ? "Electron game overlay timed out waiting for an "
+                  "official-ReShade input callback during unload; pinning the "
+                  "add-on module to avoid executing an unloaded callback."
+                : "Electron game overlay could not remove an official-ReShade "
+                  "window subclass during unload; pinning the add-on module "
+                  "to avoid executing an unloaded callback.");
+    }
+    HMODULE pinned_module = nullptr;
+    GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(&g_addon_module),
+        &pinned_module);
 }
 
 ego_transport *retain_transport(HWND window)
@@ -1361,6 +2425,14 @@ void on_init_swapchain(swapchain *swapchain, bool resize)
     auto *const data = swapchain->create_private_data<swapchain_data>();
     data->window = static_cast<HWND>(swapchain->get_hwnd());
     data->transport = retain_transport(data->window);
+    if (!g_has_private_input_observer &&
+        !retain_official_hook_owner(*data))
+    {
+        data->official_hook_failure_reported = true;
+        publish_input_routing_failure(
+            data->transport,
+            EGO_STATUS_INITIALIZATION_FAILED);
+    }
     publish_runtime_diagnostic(
         data->transport,
         EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY);
@@ -1377,15 +2449,351 @@ void on_destroy_swapchain(swapchain *swapchain, bool resize)
 
     ego_transport *const transport = data->transport;
     const HWND window = data->window;
+    release_official_hook_owner(*data);
     remove_target_surface(*data);
     swapchain->destroy_private_data<swapchain_data>();
     release_transport(transport, window);
 }
 
+#if 0
+// Retained temporarily as compile-time-disabled reference for the API-18
+// frame-state adapter. Official hosts now use the message hook below instead:
+// frame polling cannot preserve a complete down/up between presentations.
+bool route_official_input_message(
+    swapchain_data &data,
+    std::uint32_t message,
+    std::uint64_t wparam,
+    std::int64_t lparam)
+{
+    const ego_status status = ego_transport_route_window_message(
+        data.transport,
+        reinterpret_cast<std::uintptr_t>(data.window),
+        message,
+        wparam,
+        lparam);
+    if (status == EGO_STATUS_OK)
+        return true;
+
+    if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
+        log_transport_error("official ReShade input delivery", status);
+    publish_input_routing_failure(data.transport, status);
+    static_cast<void>(reset_input_router(data.transport));
+    data.official_input = {};
+    return false;
+}
+
+std::uint32_t official_mouse_key_state(
+    const ImGuiIO &io,
+    const std::array<bool, 5> &mouse_down)
+{
+    std::uint32_t state = 0;
+    if (mouse_down[ImGuiMouseButton_Left])
+        state |= MK_LBUTTON;
+    if (mouse_down[ImGuiMouseButton_Right])
+        state |= MK_RBUTTON;
+    if (mouse_down[ImGuiMouseButton_Middle])
+        state |= MK_MBUTTON;
+    if (io.KeyCtrl)
+        state |= MK_CONTROL;
+    if (io.KeyShift)
+        state |= MK_SHIFT;
+    return state;
+}
+
+bool is_extended_virtual_key(std::uint32_t virtual_key)
+{
+    switch (virtual_key)
+    {
+    case VK_RCONTROL:
+    case VK_RMENU:
+    case VK_INSERT:
+    case VK_DELETE:
+    case VK_HOME:
+    case VK_END:
+    case VK_PRIOR:
+    case VK_NEXT:
+    case VK_LEFT:
+    case VK_UP:
+    case VK_RIGHT:
+    case VK_DOWN:
+    case VK_NUMLOCK:
+    case VK_DIVIDE:
+    case VK_SNAPSHOT:
+    case VK_LWIN:
+    case VK_RWIN:
+    case VK_APPS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::uint32_t official_keyboard_lparam(
+    std::uint32_t virtual_key,
+    bool down,
+    bool repeated,
+    bool system_key)
+{
+    const std::uint32_t scan_code =
+        MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC) & 0xFFU;
+    std::uint32_t lparam = 1U | (scan_code << 16U);
+    if (is_extended_virtual_key(virtual_key))
+        lparam |= 1U << 24U;
+    if (system_key)
+        lparam |= 1U << 29U;
+    if (repeated || !down)
+        lparam |= 1U << 30U;
+    if (!down)
+        lparam |= 1U << 31U;
+    return lparam;
+}
+
+void route_official_reshade_input(swapchain_data &data)
+{
+    if (g_has_private_input_observer || data.transport == nullptr)
+        return;
+
+    official_input_state &state = data.official_input;
+    const HWND foreground = GetForegroundWindow();
+    const HWND root = GetAncestor(data.window, GA_ROOT);
+    const bool target_focused =
+        foreground != nullptr &&
+        (foreground == data.window || (root != nullptr && foreground == root));
+    if (data.phase != input_phase::enabled || !target_focused)
+    {
+        state = {};
+        return;
+    }
+
+    ImGuiIO &io = ImGui::GetIO();
+    std::array<bool, 5> mouse_down = {};
+    for (std::size_t index = 0; index < mouse_down.size(); ++index)
+        mouse_down[index] = io.MouseDown[index];
+
+    if (ImGui::IsMousePosValid(&io.MousePos))
+    {
+        const auto clamp_coordinate = [](float value) {
+            return static_cast<std::int32_t>(std::clamp(
+                std::lround(static_cast<double>(value)),
+                static_cast<long>(std::numeric_limits<std::int16_t>::min()),
+                static_cast<long>(std::numeric_limits<std::int16_t>::max())));
+        };
+        const std::int32_t mouse_x = clamp_coordinate(io.MousePos.x);
+        const std::int32_t mouse_y = clamp_coordinate(io.MousePos.y);
+        if (!state.has_mouse_position ||
+            state.mouse_x != mouse_x ||
+            state.mouse_y != mouse_y)
+        {
+            if (!route_official_input_message(
+                    data,
+                    WM_MOUSEMOVE,
+                    official_mouse_key_state(io, mouse_down),
+                    encode_client_point(mouse_x, mouse_y)))
+            {
+                return;
+            }
+        }
+        state.mouse_x = mouse_x;
+        state.mouse_y = mouse_y;
+        state.has_mouse_position = true;
+    }
+
+    struct mouse_button_message
+    {
+        std::size_t index;
+        std::uint32_t down;
+        std::uint32_t up;
+    };
+    constexpr mouse_button_message mouse_button_messages[] = {
+        { ImGuiMouseButton_Left, WM_LBUTTONDOWN, WM_LBUTTONUP },
+        { ImGuiMouseButton_Right, WM_RBUTTONDOWN, WM_RBUTTONUP },
+        { ImGuiMouseButton_Middle, WM_MBUTTONDOWN, WM_MBUTTONUP },
+    };
+    if (state.has_mouse_position)
+    {
+        const std::int64_t point =
+            encode_client_point(state.mouse_x, state.mouse_y);
+        for (const mouse_button_message &mapping : mouse_button_messages)
+        {
+            const bool clicked = ImGui::IsMouseClicked(
+                static_cast<ImGuiMouseButton>(mapping.index),
+                false);
+            const bool released = ImGui::IsMouseReleased(
+                static_cast<ImGuiMouseButton>(mapping.index));
+            const bool changed =
+                mouse_down[mapping.index] != state.mouse_down[mapping.index];
+
+            if (clicked)
+            {
+                auto event_buttons = state.mouse_down;
+                event_buttons[mapping.index] = true;
+                if (!route_official_input_message(
+                        data,
+                        mapping.down,
+                        official_mouse_key_state(io, event_buttons),
+                        point))
+                {
+                    return;
+                }
+            }
+            if (released)
+            {
+                auto event_buttons = state.mouse_down;
+                event_buttons[mapping.index] = false;
+                if (!route_official_input_message(
+                        data,
+                        mapping.up,
+                        official_mouse_key_state(io, event_buttons),
+                        point))
+                {
+                    return;
+                }
+            }
+            if (!clicked && !released && changed)
+            {
+                if (!route_official_input_message(
+                        data,
+                        mouse_down[mapping.index] ? mapping.down : mapping.up,
+                        official_mouse_key_state(io, mouse_down),
+                        point))
+                {
+                    return;
+                }
+            }
+        }
+
+        POINT wheel_point = { state.mouse_x, state.mouse_y };
+        const bool has_wheel_screen_point =
+            ClientToScreen(data.window, &wheel_point) != FALSE;
+        const auto route_wheel = [&](std::uint32_t message, double units) {
+            if (units == 0.0)
+                return true;
+            if (!has_wheel_screen_point)
+                return false;
+            const long scaled = std::clamp(
+                std::lround(units * WHEEL_DELTA),
+                static_cast<long>(std::numeric_limits<std::int16_t>::min()),
+                static_cast<long>(std::numeric_limits<std::int16_t>::max()));
+            const std::uint32_t wparam =
+                official_mouse_key_state(io, mouse_down) |
+                (static_cast<std::uint32_t>(
+                     static_cast<std::uint16_t>(scaled)) << 16U);
+            return route_official_input_message(
+                data,
+                message,
+                wparam,
+                encode_client_point(
+                    std::clamp(
+                        wheel_point.x,
+                        static_cast<LONG>(
+                            std::numeric_limits<std::int16_t>::min()),
+                        static_cast<LONG>(
+                            std::numeric_limits<std::int16_t>::max())),
+                    std::clamp(
+                        wheel_point.y,
+                        static_cast<LONG>(
+                            std::numeric_limits<std::int16_t>::min()),
+                        static_cast<LONG>(
+                            std::numeric_limits<std::int16_t>::max()))));
+        };
+        if (!route_wheel(WM_MOUSEWHEEL, io.MouseWheel) ||
+            !route_wheel(WM_MOUSEHWHEEL, -static_cast<double>(io.MouseWheelH)))
+        {
+            return;
+        }
+    }
+
+    for (std::size_t index = 0; index < std::size(official_key_mappings); ++index)
+    {
+        const official_key_mapping &mapping = official_key_mappings[index];
+        const bool down = ImGui::IsKeyDown(mapping.key);
+        const bool changed = down != state.keys_down[index];
+        const bool pressed = ImGui::IsKeyPressed(mapping.key, false);
+        const bool released = ImGui::IsKeyReleased(mapping.key);
+        const bool repeated =
+            down &&
+            !pressed &&
+            !released &&
+            ImGui::IsKeyPressed(mapping.key, true);
+        if (!changed && !pressed && !released && !repeated)
+            continue;
+
+        const bool system_key =
+            io.KeyAlt ||
+            mapping.virtual_key == VK_LMENU ||
+            mapping.virtual_key == VK_RMENU;
+        const auto route_key = [&](bool event_down, bool event_repeated) {
+            return route_official_input_message(
+                data,
+                event_down
+                    ? (system_key ? WM_SYSKEYDOWN : WM_KEYDOWN)
+                    : (system_key ? WM_SYSKEYUP : WM_KEYUP),
+                mapping.virtual_key,
+                official_keyboard_lparam(
+                    mapping.virtual_key,
+                    event_down,
+                    event_repeated,
+                    system_key));
+        };
+        if (pressed && !route_key(true, false))
+        {
+            return;
+        }
+        if (released && !route_key(false, false))
+            return;
+        if (!pressed && !released && changed && !route_key(down, false))
+            return;
+        if (repeated && !route_key(true, true))
+            return;
+        state.keys_down[index] = down;
+    }
+
+    const std::uint32_t character_message = io.KeyAlt ? WM_SYSCHAR : WM_CHAR;
+    for (int index = 0; index < io.InputQueueCharacters.Size; ++index)
+    {
+        if (!route_official_input_message(
+                data,
+                character_message,
+                io.InputQueueCharacters[index],
+                1))
+        {
+            return;
+        }
+    }
+
+    state.mouse_down = mouse_down;
+}
+
+#endif
+
 void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
 {
     if (data.transport == nullptr)
         return;
+
+    if (!g_has_private_input_observer)
+    {
+        official_hook_owner *const owner = get_official_hook_owner(data);
+        if (owner == nullptr ||
+            !owner->hook_ready.load(std::memory_order_acquire))
+        {
+            data.phase = input_phase::disabled;
+            if (!data.official_hook_failure_reported)
+            {
+                data.official_hook_failure_reported = true;
+                publish_input_routing_failure(
+                    data.transport,
+                    EGO_STATUS_INITIALIZATION_FAILED);
+            }
+            static_cast<void>(ego_transport_apply_input_filter(
+                data.transport,
+                0,
+                0));
+            return;
+        }
+        if (!claim_official_input_owner(data))
+            return;
+    }
 
     ego_status status = ego_transport_set_target_focused(
         data.transport,
@@ -1419,6 +2827,8 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
     }
 
     data.phase = next_phase(data.phase, desired != 0);
+    if (!g_has_private_input_observer)
+        publish_official_hook_phase(data, data.phase);
     if (data.phase != input_phase::disabled)
         runtime->block_input_next_frame();
 
@@ -1448,6 +2858,23 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
         GetCursorInfo(&cursor_info) != FALSE &&
         (cursor_info.flags & CURSOR_SHOWING) != 0;
     io.MouseDrawCursor = routing_enabled && !native_cursor_visible;
+}
+
+void log_official_pointer_sequence()
+{
+    if (g_has_private_input_observer ||
+        (g_official_pointer_message_mask.load(std::memory_order_acquire) & 7U) !=
+            7U ||
+        g_official_pointer_sequence_logged.test_and_set(
+            std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    reshade::log::message(
+        reshade::log::level::info,
+        "Electron game overlay official-host message hook observed and "
+        "withheld a primary pointer update/down/up sequence.");
 }
 
 void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_state)
@@ -1628,38 +3055,115 @@ void on_reshade_overlay(effect_runtime *runtime)
     publish_render_fps(*data);
     update_input_ownership(runtime, *data);
     drain_input_messages(data->transport);
+    log_official_pointer_sequence();
     compose_electron_scene(runtime, *data);
+}
+
+bool register_compatible_addon(HMODULE module)
+{
+    reshade::internal::get_current_module_handle(module);
+    g_addon_module = module;
+    g_official_hooks_shutting_down.store(false, std::memory_order_release);
+    HMODULE const host = reshade::internal::get_reshade_module_handle();
+    if (host == nullptr)
+    {
+        g_addon_module = nullptr;
+        return false;
+    }
+    const auto register_addon = reinterpret_cast<bool (*)(void *, std::uint32_t)>(
+        GetProcAddress(host, "ReShadeRegisterAddon"));
+    const auto unregister_addon = reinterpret_cast<void (*)(void *)>(
+        GetProcAddress(host, "ReShadeUnregisterAddon"));
+    if (register_addon == nullptr ||
+        unregister_addon == nullptr ||
+        !register_addon(module, public_reshade_api_version))
+    {
+        g_addon_module = nullptr;
+        return false;
+    }
+
+    const auto get_imgui_table =
+        reinterpret_cast<const imgui_function_table *(*)(std::uint32_t)>(
+            GetProcAddress(host, "ReShadeGetImGuiFunctionTable"));
+    if (get_imgui_table == nullptr ||
+        !(imgui_function_table_instance() = get_imgui_table(IMGUI_VERSION_NUM)))
+    {
+        unregister_addon(module);
+        g_addon_module = nullptr;
+        return false;
+    }
+
+    const auto host_abi = reinterpret_cast<const unsigned int *>(
+        GetProcAddress(host, "ElectronGameOverlayReShadeHostAbi"));
+    const bool has_private_gate =
+        GetProcAddress(host, "ElectronGameOverlayReShadeAddonGate") != nullptr;
+    g_reshade_host_module = host;
+    g_has_private_input_observer =
+        host_abi != nullptr && *host_abi == 1 && has_private_gate;
+    return true;
+}
+
+void unregister_compatible_addon(HMODULE module)
+{
+    if (g_reshade_host_module != nullptr)
+    {
+        const auto unregister_addon = reinterpret_cast<void (*)(void *)>(
+            GetProcAddress(g_reshade_host_module, "ReShadeUnregisterAddon"));
+        if (unregister_addon != nullptr)
+            unregister_addon(module);
+    }
+    g_has_private_input_observer = false;
+    g_reshade_host_module = nullptr;
+    g_addon_module = nullptr;
+    imgui_function_table_instance() = nullptr;
 }
 } // namespace
 
 extern "C" __declspec(dllexport) const char *NAME = "Electron Game Overlay Runtime";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "Backend-neutral Electron OSR scenes rendered through ReShade.";
+extern "C" __declspec(dllexport) const unsigned int
+    ElectronGameOverlayReShadeAddonAbi = 1;
+#ifndef ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
+#error "ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID must be provided by the build."
+#endif
+extern "C" __declspec(dllexport) const char
+    ElectronGameOverlayReShadeAddonBuildId[] =
+        ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID;
+static_assert(
+    sizeof(ElectronGameOverlayReShadeAddonBuildId) == 33,
+    "The Electron Game Overlay add-on build ID must be 32 ASCII characters.");
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
+extern "C" __declspec(dllexport) void AddonUninit(HMODULE, HMODULE)
+{
+    shutdown_official_message_hooks(true);
+}
+
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
 {
     switch (reason)
     {
     case DLL_PROCESS_ATTACH:
-        if (!reshade::register_addon(module))
-        {
-            // ReShade's header helper registers the module before negotiating
-            // its exact ImGui table. Undo any partial registration when that
-            // second capability check rejects a shared runtime.
-            reshade::unregister_addon(module);
+        if (!register_compatible_addon(module))
             return FALSE;
-        }
 
         reshade::register_event<reshade::addon_event::init_device>(on_init_device);
         reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
         reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
         reshade::register_event<reshade::addon_event::reshade_overlay>(on_reshade_overlay);
-        reshade::register_event<reshade::addon_event::input_message>(on_input_message);
+        if (g_has_private_input_observer)
+            reshade::register_event<reshade::addon_event::input_message>(on_input_message);
         break;
 
     case DLL_PROCESS_DETACH:
-        reshade::unregister_addon(module);
+        if (reserved == nullptr)
+            shutdown_official_message_hooks(false);
+        else
+            g_official_hooks_shutting_down.store(
+                true,
+                std::memory_order_release);
+        unregister_compatible_addon(module);
         break;
     }
 

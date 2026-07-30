@@ -36,11 +36,12 @@ structured attachment/transport/runtime/producer diagnostics all have
 production-client evidence. Package publishing is intentionally excluded.
 
 Unchecked items below are post-POC compatibility or hardening work. They do not
-extend the current completion boundary by implication; stock/arbitrary existing
-ReShade integration, late post-swap-chain adoption, clean in-process unload,
-additional graphics/input APIs, multi-swap-chain policy, and physical
-mixed-monitor acceptance remain explicitly unsupported or deferred until chosen
-as a separate task.
+extend the current completion boundary by implication; broad real-game
+add-on/effect and proxy-chain coexistence beyond the controlled public-host
+fixtures, late post-swap-chain adoption, clean in-process unload, additional
+graphics/input APIs, multi-swap-chain policy, and physical mixed-monitor
+acceptance remain explicitly unsupported or deferred until chosen as a separate
+task.
 
 ### Completed promotion milestones
 
@@ -114,8 +115,10 @@ as a separate task.
     before losing its gate CAS, so `definite-safe` does not universally mean
     zero remote mutation.
   - Success requires exactly one structured injector result. It distinguishes
-    `injected-runtime` from `existing-runtime` and includes the compatible host
-    path for the latter. The SDK continues to parse legacy
+    `injected-runtime`, compatible-private `existing-runtime`, and verified
+    `official-addon`, including the host path for both existing-host modes and
+    the mapped add-on path/build identity for official mode. The SDK continues
+    to parse legacy
     `target-runtime-conflict` diagnostics but the current injector does not emit
     that generic outcome.
   - Module filenames and on-disk proxy-like files are not used as conflict
@@ -132,34 +135,59 @@ as a separate task.
     `existing-runtime`, no second loaded runtime, unchanged proxy/config hashes,
     no add-on copied into the target directory, and the full scene/input/release
     boundary.
-- [ ] Support games already modded with ReShade through a compatible
-      shared-runtime/add-on integration path.
-  - The controlled foundation does not support stock API-18 or differently
-    patched ReShade, missing private host exports, an already-active/closed host
-    gate, arbitrary real-game startup timing, or interactions with an existing
-    effect/add-on set. Prove those cases or produce clear fail-closed
-    diagnostics without modifying the installation.
-  - Use loaded-module capability inspection as the authoritative runtime
-    decision; proxy-like files beside the executable are only prelaunch
-    discovery hints. A validated official on-disk ReShade hint takes precedence
-    before launch: stage the official-ABI add-on and suppress project-runtime
-    injection for that launch, then validate the actual loaded host and its
-    capabilities. Only inject the project runtime when neither a loaded ReShade
-    nor a validated official prelaunch hint exists. Reuse a project-compatible
-    runtime while its private gate is open.
-  - Never silently replace an existing ReShade proxy, configuration, effects,
-    or add-ons. If an official host has already completed add-on initialization,
-    leave the current process untouched and prepare/report the integration for
-    its next launch unless ReShade gains a supported dynamic-registration
-    lifecycle.
-  - Pursue upstream support for both a passive post-suppression input event and
-    a race-free add-on registration capability. Until those exist, the official
-    build is a prelaunch/partial integration path; the project fork remains the
-    full Electron input-routing host. Add explicit host-version/capability
-    negotiation before considering the two paths interchangeable.
-  - Resolve host installation/base-path ownership. The current existing-mode
-    `reshadeLogPath` is inferred beside the host module, while ReShade
-    `[INSTALL] BasePath` may put the authoritative log elsewhere.
+- [x] Add fail-closed coexistence with detected target-local x64 ReShade hosts.
+  - The uniquely named `electron_game_overlay.addon64` must register through
+    public API 18 and obtain the exact Dear ImGui function table. It negotiates
+    the private input observer only with the repository-patched host. The
+    structured result requires the mapped add-on ABI and current build identity
+    before reporting `official-addon`; product version and runtime hash are not
+    allowlists.
+  - Exact target-process preflight resolves the ReShade base path, add-on
+    directory, and `DisabledAddons` state from that process and its
+    configuration. It never substitutes Electron's environment. A user-disabled
+    Electron add-on remains disabled.
+  - The existing ReShade runtime/proxy, INI, presets, effects, and foreign
+    add-ons are never rewritten. Every detected target-local x64 identity
+    suppresses fallback project-runtime injection; a host that cannot complete
+    API-18 registration and exact-ImGui-table negotiation fails closed.
+    Applicable configured Vulkan/OpenXR global layers are preserved and block
+    fallback injection. Clean targets still use the bundled, project-patched
+    ReShade 6.7.3 host.
+  - The staged `electron_game_overlay_reshade_manager.exe` is the only component
+    allowed to mutate the reserved add-on, ownership marker, transaction
+    journal, and verified temporary/backup names. It verifies and holds the
+    exact requested runtime across a crash-recoverable transaction for TOCTOU
+    protection. The runtime hash is provenance, not compatibility, and the
+    marker's ReShade hash is ignored for compatibility.
+  - Install/update requires a restart. If the current add-on generation is
+    mapped, maintenance is deferred until the exact target's exit is confirmed;
+    the running process is never patched in place.
+  - A ReShade upgrade or runtime-hash change does not automatically remove the
+    managed add-on. If the current add-on remains unloaded after one bounded
+    startup grace, the SDK reports host-incompatible without a restart loop or
+    fallback injection. Foreign, partial, and tampered reserved-name collisions
+    are preserved.
+  - `existing-reshade-addon-maintenance-deferred` identifies the cases with
+    queued exit-time install/update work. Restart-required, conflict,
+    host-incompatible, and preparation-failure outcomes do not retain a
+    maintenance job.
+  - The initial July 30, 2026 public-host gates used an exact official ReShade
+    6.7.3 fixture; that remains dated fixture evidence, not a compatibility
+    allowlist. The current upgrade gate changes only the supplied runtime's hash
+    and requires production auto-attach to connect in `official-addon` mode with
+    no deferred maintenance/removal and with the managed add-on, marker, and
+    installation retained. These controlled fixtures are not evidence of
+    arbitrary real-game effect/add-on coexistence.
+- [ ] Expand existing-ReShade coexistence evidence beyond controlled fixtures.
+  - Build a coexistence matrix for real games with existing presets, effects,
+    and foreign add-ons, including ordering, input ownership, shutdown, and
+    upgrade behavior. Do not infer these outcomes from the controlled fixture.
+  - Keep global Vulkan/OpenXR installation support as a separate follow-up.
+    Current applicable global layers are preservation-only blockers, not an
+    add-on installation or rendering path.
+  - Pursue upstream support for a passive post-suppression input event and a
+    race-free dynamic add-on registration lifecycle before treating official
+    and patched hosts as interchangeable.
 - [ ] Define a supported coexistence strategy for targets using another proxy
       runtime.
 - [ ] Add clean runtime disable/unload behavior.
@@ -264,8 +292,9 @@ they are not the active production-host roadmap.
     `ReShadeRetrySafety` values. Staged failures retain applicable evidence
     paths.
   - Success requires one strict structured injector result and exposes
-    `injected-runtime` versus `existing-runtime`. Failure after claiming a
-    compatible host gate is reported as the post-mutation
+    `injected-runtime`, compatible-private `existing-runtime`, or verified
+    `official-addon`. Failure after claiming a compatible private host gate is
+    reported as the post-mutation
     `existing-runtime-addon-load-failed` runtime-initialization stage.
 - [x] Forward bounded authenticated diagnostics from the injected runtime.
   - A versioned strings-free C ABI record now publishes eight fixed runtime,
@@ -375,9 +404,10 @@ they are not the active production-host roadmap.
     `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-134210`
     and
     `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-134224`.
-  - Stock/differently patched ReShade and arbitrary modded-game coexistence
-    remain the explicit compatibility task under “Runtime compatibility and
-    hardening”; producer diagnostics do not expand that support envelope.
+  - Modded-game effect/add-on and proxy-chain coexistence beyond the controlled
+    public-host fixtures remains explicit compatibility work under “Runtime
+    compatibility and hardening”; producer diagnostics do not expand that
+    support envelope.
   - Suggested logging layers:
     - `electron-game-overlay`: typed events such as `session.on("diagnostic", ...)`, attach results, window registration state, frame send failures, focus/input forwarding failures.
     - `electron-overlay-transport`: rendezvous, authentication, producer/target

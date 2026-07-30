@@ -666,8 +666,8 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
     stop() {},
     setEventCallback() {},
     whenReady: async () => calls.push('ready'),
-    authorizeTarget: async (pid, discoveryPath) => {
-      calls.push(['authorize', pid, discoveryPath]);
+    authorizeTarget: async (pid, discoveryPath, expectedExecutablePath) => {
+      calls.push(['authorize', pid, discoveryPath, expectedExecutablePath]);
       return () => calls.push('release');
     },
   };
@@ -680,6 +680,7 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
   const release = await session.authorizeTarget(
     4321,
     'C:\\overlay-runs\\target\\electron-overlay-transport-v1.json',
+    'C:\\games\\exact-target.exe',
   );
   assert.deepEqual(calls, [
     'start',
@@ -688,6 +689,7 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
       'authorize',
       4321,
       'C:\\overlay-runs\\target\\electron-overlay-transport-v1.json',
+      'C:\\games\\exact-target.exe',
     ],
   ]);
   release();

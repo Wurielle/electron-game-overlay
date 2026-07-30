@@ -45,8 +45,17 @@
 > private host ABI 1 and its add-on registration gate is still `OPEN`; the SDK
 > loads only its privately staged add-on and leaves the target proxy and
 > configuration untouched. Faithful D3D11/D3D12 target-local `dxgi.dll` gates
-> passed. Arbitrary stock, unknown, or already-active ReShade runtimes, other
-> proxies and clean unload remain deferred. Authenticated runtime diagnostics
+> passed. A separate existing-installation path now attempts every detected
+> target-local x64 ReShade identity without a version/hash allowlist. The add-on
+> must register through public API 18 and obtain its exact Dear ImGui function
+> table. It never rewrites the user's runtime, configuration, presets, effects,
+  > or foreign add-ons and never injects a fallback runtime alongside one. A
+  > current add-on that remains unloaded after one bounded startup grace is
+  > host-incompatible, and a ReShade upgrade does not automatically remove the
+  > managed add-on. Runtime hashes remain exact
+> request/TOCTOU/transaction provenance; the marker's ReShade hash is ignored
+> for compatibility. Broad real-game coexistence, other proxies, and clean
+> unload remain deferred. Authenticated runtime diagnostics
 > now cover fixed initialization/render/input observations, and the Electron SDK
 > emits six fixed producer window/frame/input records through a bounded
 > asynchronous queue. Producer publication is transactional, and Electron input
@@ -59,8 +68,9 @@
 > bridge remains local evidence. Authenticated `game.input` is now canonicalized
 > by an exact fail-closed schema before SDK forwarding, with socket-owned PID and
 > fixed redacted rejection evidence. Ambiguous raster-recovery diagnostics, a
-> globally bounded control/backpressure queue, and stock/arbitrary modded-ReShade
-> compatibility remain deferred. Within the documented near-process-creation
+> globally bounded control/backpressure queue, and other stock versions or
+> arbitrary modded-ReShade compatibility remain deferred. Within the documented
+> near-process-creation
 > D3D11/D3D12 boundary, the library POC is now ready for application testing;
 > the unchecked compatibility and hardening items are post-POC work. An existing
 > runtime may redirect logs with `[INSTALL] BasePath`, so a
@@ -125,14 +135,20 @@ external-watcher latency, arbitrary-game timing, or post-render adoption. The
 July 13 suspended-host results remain historical exact-PID injector plumbing
 evidence.
 
-This foundation does not claim compatibility with stock or unknown ReShade
-builds, a compatible runtime whose gate is already active/closed, or unrelated
-graphics proxies. Those combinations remain deferred. Host log evidence also
-has a known reporting limit: the current result infers `ReShade.log` beside the
-loaded host module, while an existing runtime's `[INSTALL] BasePath` can direct
-the real log elsewhere. The full-add-on runtime remains limited to controlled
-targets and offline/single-player applications the operator is allowed to
-modify; anti-cheat-protected targets and bypass work remain out of scope.
+The separate public-host boundary attempts every detected target-local x64
+ReShade identity and requires the current project add-on build to register
+through public API 18 and obtain the exact ImGui function table. The initial
+July 30 controlled fixture used the exact official ReShade 6.7.3 full x64
+binary; that is dated evidence, not a version/hash allowlist. A compatible
+private runtime whose gate is already active/closed, capability-incompatible
+public hosts, unrelated graphics proxies, and arbitrary real-game
+effect/add-on combinations remain deferred or fail closed. Host log evidence
+also has a known reporting limit: the current result infers `ReShade.log` beside
+the loaded host module, while an existing runtime's `[INSTALL] BasePath` can
+direct the real log elsewhere. The full-add-on runtime remains limited to
+controlled targets and offline/single-player applications the operator is
+allowed to modify; anti-cheat-protected targets and bypass work remain out of
+scope.
 
 ## July 12 ReShade controlled-gate update
 

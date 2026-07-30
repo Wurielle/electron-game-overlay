@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdtemp, readFile, rm } = require('node:fs/promises');
+const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,6 +10,7 @@ const {
   OverlayLoopbackTransport,
   MAX_JSON_BODY_BYTES,
   OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  defaultOverlayTargetDiscoveryPath,
   encodeFrameTransportPacket,
   encodeJsonTransportPacket,
 } = require('../dist/lib/overlay-loopback-transport.js');
@@ -18,6 +19,21 @@ const { OverlaySession } = require('../dist/lib/overlay-session.js');
 const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
 
 const TOKEN = 'ab'.repeat(32);
+
+test('the static target discovery path is deterministic per PID', () => {
+  assert.equal(
+    defaultOverlayTargetDiscoveryPath(0xfffffffe),
+    path.join(
+      os.tmpdir(),
+      'electron-game-overlay',
+      'electron-overlay-transport-v1.pid-4294967294.json',
+    ),
+  );
+  assert.throws(
+    () => defaultOverlayTargetDiscoveryPath(0),
+    /positive uint32 integer/,
+  );
+});
 
 const overlayWindow = (name, x = 0) => ({
   name,
@@ -872,11 +888,15 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
   });
   const sockets = [];
   const events = [];
+  const firstStaticDiscoveryPath = defaultOverlayTargetDiscoveryPath(4101);
+  const secondStaticDiscoveryPath = defaultOverlayTargetDiscoveryPath(4102);
   t.after(async () => {
     for (const socket of sockets) {
       socket.destroy();
     }
     transport.stop();
+    await rm(firstStaticDiscoveryPath, { force: true });
+    await rm(secondStaticDiscoveryPath, { force: true });
     await rm(tempDirectory, { recursive: true, force: true });
   });
 
@@ -909,6 +929,12 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
   ]);
   const firstRecord = JSON.parse(await readFile(firstPath, 'utf8'));
   const secondRecord = JSON.parse(await readFile(secondPath, 'utf8'));
+  const firstStaticRecord = JSON.parse(
+    await readFile(firstStaticDiscoveryPath, 'utf8'),
+  );
+  const secondStaticRecord = JSON.parse(
+    await readFile(secondStaticDiscoveryPath, 'utf8'),
+  );
 
   assert.equal(firstRecord.targetPid, 4101);
   assert.equal(secondRecord.targetPid, 4102);
@@ -916,6 +942,8 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
   assert.equal(secondRecord.port, globalRecord.port);
   assert.notEqual(firstRecord.token, secondRecord.token);
   assert.notEqual(firstRecord.token, globalRecord.token);
+  assert.deepEqual(firstStaticRecord, firstRecord);
+  assert.deepEqual(secondStaticRecord, secondRecord);
   assert.deepEqual(
     JSON.parse(await readFile(firstRouteIntentPath, 'utf8')),
     firstRecord,
@@ -1013,6 +1041,10 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
     ),
   );
   assert.deepEqual(JSON.parse(await readFile(firstPath, 'utf8')), firstRecord);
+  assert.deepEqual(
+    JSON.parse(await readFile(firstStaticDiscoveryPath, 'utf8')),
+    firstRecord,
+  );
   const reauthenticatedFirstSocket = await authenticate(
     firstRecord,
     4101,
@@ -1029,6 +1061,10 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
   await reauthenticatedFirstClosed;
   await assert.rejects(
     readFile(firstPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+  await assert.rejects(
+    readFile(firstStaticDiscoveryPath, 'utf8'),
     (error) => error.code === 'ENOENT',
   );
   assert.deepEqual(
@@ -1049,10 +1085,295 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
     readFile(secondPath, 'utf8'),
     (error) => error.code === 'ENOENT',
   );
+  await assert.rejects(
+    readFile(secondStaticDiscoveryPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
   assert.deepEqual(
     JSON.parse(await readFile(secondRouteIntentPath, 'utf8')),
     secondRecord,
   );
+});
+
+test('exact executable authorization rejects a reused PID before sending overlay state', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-target-path-auth-test-'),
+  );
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  const staticDiscoveryPath = defaultOverlayTargetDiscoveryPath(4201);
+  const tokens = ['40'.repeat(32), '41'.repeat(32)];
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: () => {
+      const token = tokens.shift();
+      assert.ok(token, 'test token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  const sockets = [];
+  const events = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(staticDiscoveryPath, { force: true });
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const globalRecord = await transport.whenReady();
+  const release = await transport.authorizeTarget(
+    4201,
+    discoveryPath,
+    'C:\\Games\\Expected.exe',
+  );
+  const targetRecord = JSON.parse(await readFile(discoveryPath, 'utf8'));
+
+  await assert.rejects(
+    transport.authorizeTarget(
+      4201,
+      discoveryPath,
+      'C:\\Games\\Replacement.exe',
+    ),
+    /already authorized for another executable path/,
+  );
+
+  const rejectedSocket = await connect(globalRecord.port);
+  sockets.push(rejectedSocket);
+  const rejectedBytes = [];
+  rejectedSocket.on('data', (chunk) => rejectedBytes.push(chunk));
+  const rejectedClosed = new Promise((resolve) =>
+    rejectedSocket.once('close', resolve),
+  );
+  rejectedSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: targetRecord.token,
+      pid: 4201,
+      path: 'C:\\Games\\Replacement.exe',
+    }),
+  );
+  await rejectedClosed;
+  assert.equal(
+    Buffer.concat(rejectedBytes).length,
+    0,
+    'a path-mismatched target must be rejected before overlay.init or retained state',
+  );
+  assert.equal(
+    events.some(({ event }) => event === 'game.process'),
+    false,
+  );
+
+  const acceptedSocket = await connect(globalRecord.port);
+  sockets.push(acceptedSocket);
+  const reader = createPacketReader(acceptedSocket);
+  acceptedSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: targetRecord.token,
+      pid: 4201,
+      path: '\\\\?\\c:\\games\\EXPECTED.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+  await waitFor(() =>
+    events.some(
+      ({ event, payload }) =>
+        event === 'game.process' &&
+        payload.pid === 4201 &&
+        payload.path === '\\\\?\\c:\\games\\EXPECTED.exe',
+    ),
+  );
+
+  release();
+});
+
+test('target discovery cleanup preserves replacements and stop removes owned mirrors', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-target-cleanup-test-'),
+  );
+  const tokens = ['40'.repeat(32), '50'.repeat(32), '60'.repeat(32)];
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: () => {
+      const token = tokens.shift();
+      assert.ok(token, 'test token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  const replacedPid = 0xfffffff0;
+  const stoppedPid = 0xfffffff1;
+  const replacedPath = path.join(
+    tempDirectory,
+    'replaced-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const stoppedPath = path.join(
+    tempDirectory,
+    'stopped-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const replacedStaticPath = defaultOverlayTargetDiscoveryPath(replacedPid);
+  const stoppedStaticPath = defaultOverlayTargetDiscoveryPath(stoppedPid);
+  t.after(async () => {
+    transport.stop();
+    await rm(replacedStaticPath, { force: true });
+    await rm(stoppedStaticPath, { force: true });
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.start();
+  await transport.whenReady();
+  const releaseReplaced = await transport.authorizeTarget(
+    replacedPid,
+    replacedPath,
+  );
+  const replacedRecord = JSON.parse(await readFile(replacedPath, 'utf8'));
+  const replacement = {
+    ...replacedRecord,
+    targetPid: replacedPid - 1,
+  };
+  await writeFile(replacedPath, JSON.stringify(replacement), 'utf8');
+  await writeFile(replacedStaticPath, JSON.stringify(replacement), 'utf8');
+
+  releaseReplaced();
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedPath, 'utf8')),
+    replacement,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedStaticPath, 'utf8')),
+    replacement,
+  );
+
+  const staleRelease = await transport.authorizeTarget(stoppedPid, stoppedPath);
+  const stoppedRecord = JSON.parse(await readFile(stoppedPath, 'utf8'));
+  assert.deepEqual(
+    JSON.parse(await readFile(stoppedStaticPath, 'utf8')),
+    stoppedRecord,
+  );
+
+  transport.stop();
+  await assert.rejects(
+    readFile(stoppedPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+  await assert.rejects(
+    readFile(stoppedStaticPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+  staleRelease();
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedPath, 'utf8')),
+    replacement,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedStaticPath, 'utf8')),
+    replacement,
+  );
+});
+
+test('stopping a pending target publication keeps its static endpoint reserved until cleanup', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-target-stop-race-test-'),
+  );
+  const globalPath = path.join(tempDirectory, 'global', 'transport.json');
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  const pid = 0xfffffff2;
+  const staticDiscoveryPath = defaultOverlayTargetDiscoveryPath(pid);
+  const firstTokens = ['70'.repeat(32), '71'.repeat(32)];
+  const secondTokens = ['80'.repeat(32), '81'.repeat(32)];
+  const first = new OverlayLoopbackTransport({
+    discoveryPath: globalPath,
+    tokenFactory: () => {
+      const token = firstTokens.shift();
+      assert.ok(token, 'first transport token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  const second = new OverlayLoopbackTransport({
+    discoveryPath: globalPath,
+    tokenFactory: () => {
+      const token = secondTokens.shift();
+      assert.ok(token, 'second transport token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  t.after(async () => {
+    first.stop();
+    second.stop();
+    await rm(staticDiscoveryPath, { force: true });
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  first.start();
+  await first.whenReady();
+  const publishDiscovery = first.publishDiscovery.bind(first);
+  let continueStaticPublication;
+  const staticPublicationMayContinue = new Promise((resolve) => {
+    continueStaticPublication = resolve;
+  });
+  let markStaticPublicationEntered;
+  const staticPublicationEntered = new Promise((resolve) => {
+    markStaticPublicationEntered = resolve;
+  });
+  first.publishDiscovery = async (candidatePath, record) => {
+    if (
+      path.resolve(candidatePath).toLowerCase() ===
+      path.resolve(staticDiscoveryPath).toLowerCase()
+    ) {
+      markStaticPublicationEntered();
+      await staticPublicationMayContinue;
+    }
+    await publishDiscovery(candidatePath, record);
+  };
+
+  const interruptedAuthorization = first.authorizeTarget(pid, discoveryPath);
+  await staticPublicationEntered;
+  first.stop();
+
+  second.start();
+  await second.whenReady();
+  await assert.rejects(
+    second.authorizeTarget(pid, discoveryPath),
+    /target discovery endpoint is already active/i,
+  );
+
+  continueStaticPublication();
+  await assert.rejects(
+    interruptedAuthorization,
+    /transport stopped before target authorization/i,
+  );
+  await assert.rejects(
+    readFile(staticDiscoveryPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+
+  const release = await second.authorizeTarget(pid, discoveryPath);
+  const record = JSON.parse(await readFile(discoveryPath, 'utf8'));
+  assert.deepEqual(
+    JSON.parse(await readFile(staticDiscoveryPath, 'utf8')),
+    record,
+  );
+  release();
 });
 
 test('authenticated surface and FPS telemetry is validated with an authoritative PID', async (t) => {

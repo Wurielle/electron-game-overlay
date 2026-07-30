@@ -59,9 +59,10 @@ const NETWORK_INBOUND_CAPACITY: usize = 8;
 const TRANSPORT_VERSION: u32 = 1;
 const DISCOVERY_DIRECTORY: &str = "electron-game-overlay";
 const DISCOVERY_FILE: &str = "electron-overlay-transport-v1.json";
+const TARGET_DISCOVERY_FILE_PREFIX: &str = "electron-overlay-transport-v1.pid-";
+const TARGET_DISCOVERY_FILE_SUFFIX: &str = ".json";
 const TARGET_ROUTE_FILE: &str = "electron-overlay-transport-v1.targeted";
 const ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV: &str = "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY";
-const RESHADE_BASE_PATH_OVERRIDE_ENV: &str = "RESHADE_BASE_PATH_OVERRIDE";
 const RUNTIME_STARTUP_DIAGNOSTIC_FILE: &str = ".electron-game-overlay-runtime-startup.json";
 const RUNTIME_STARTUP_DIAGNOSTIC_SOURCE: &str = "electron-game-overlay-runtime";
 const RUNTIME_STARTUP_DIAGNOSTIC_SCHEMA_VERSION: u32 = 1;
@@ -112,10 +113,9 @@ struct RuntimeStartupPublisherState {
 
 impl RuntimeStartupPublisher {
     fn from_environment(pid: u32) -> Self {
-        let run_directory = runtime_startup_directory_from(
-            std::env::var_os(ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV),
-            std::env::var_os(RESHADE_BASE_PATH_OVERRIDE_ENV),
-        );
+        let run_directory = runtime_startup_directory_from(std::env::var_os(
+            ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV,
+        ));
         run_directory
             .map(|directory| Self::for_directory(directory, pid))
             .unwrap_or_default()
@@ -157,12 +157,8 @@ impl RuntimeStartupPublisher {
     }
 }
 
-fn runtime_startup_directory_from(
-    run_directory: Option<std::ffi::OsString>,
-    reshade_base_path: Option<std::ffi::OsString>,
-) -> Option<PathBuf> {
+fn runtime_startup_directory_from(run_directory: Option<std::ffi::OsString>) -> Option<PathBuf> {
     run_directory
-        .or(reshade_base_path)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
 }
@@ -1062,6 +1058,7 @@ struct BridgeThreadState {
     connection_generation: u64,
     discovery_path: PathBuf,
     legacy_discovery_path: Option<PathBuf>,
+    legacy_discovery_requires_target_binding: bool,
     target_route_path: Option<PathBuf>,
     routed_discovery_pinned: bool,
     scene: PublishedScene,
@@ -1094,7 +1091,12 @@ impl BridgeThreadState {
         startup: RuntimeStartupPublisher,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
-        let (discovery_path, legacy_discovery_path, target_route_path) = discovery_paths();
+        let (
+            discovery_path,
+            legacy_discovery_path,
+            legacy_discovery_requires_target_binding,
+            target_route_path,
+        ) = discovery_paths();
         Self {
             hwnd,
             transport: None,
@@ -1103,6 +1105,7 @@ impl BridgeThreadState {
             connection_generation: 0,
             discovery_path,
             legacy_discovery_path,
+            legacy_discovery_requires_target_binding,
             target_route_path,
             routed_discovery_pinned: false,
             scene,
@@ -1132,6 +1135,7 @@ impl BridgeThreadState {
             match select_discovery_document(
                 &self.discovery_path,
                 self.legacy_discovery_path.as_deref(),
+                self.legacy_discovery_requires_target_binding,
                 self.target_route_path.as_deref(),
                 &mut self.routed_discovery_pinned,
             ) {
@@ -2399,18 +2403,25 @@ fn graphics_api_name(graphics_api: u32) -> &'static str {
     }
 }
 
-fn discovery_paths() -> (PathBuf, Option<PathBuf>, Option<PathBuf>) {
+fn discovery_paths() -> (PathBuf, Option<PathBuf>, bool, Option<PathBuf>) {
     discovery_paths_from(
-        std::env::var_os(ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV)
-            .or_else(|| std::env::var_os(RESHADE_BASE_PATH_OVERRIDE_ENV)),
+        std::env::var_os(ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV),
         std::env::temp_dir(),
+        std::process::id(),
     )
+}
+
+fn target_discovery_path(temp_directory: &Path, target_pid: u32) -> PathBuf {
+    temp_directory.join(DISCOVERY_DIRECTORY).join(format!(
+        "{TARGET_DISCOVERY_FILE_PREFIX}{target_pid}{TARGET_DISCOVERY_FILE_SUFFIX}"
+    ))
 }
 
 fn discovery_paths_from(
     reshade_base_path: Option<std::ffi::OsString>,
     temp_directory: PathBuf,
-) -> (PathBuf, Option<PathBuf>, Option<PathBuf>) {
+    target_pid: u32,
+) -> (PathBuf, Option<PathBuf>, bool, Option<PathBuf>) {
     let legacy_path = temp_directory
         .join(DISCOVERY_DIRECTORY)
         .join(DISCOVERY_FILE);
@@ -2420,16 +2431,23 @@ fn discovery_paths_from(
             (
                 base_path.join(DISCOVERY_FILE),
                 Some(legacy_path),
+                false,
                 Some(base_path.join(TARGET_ROUTE_FILE)),
             )
         }
-        None => (legacy_path, None, None),
+        None => (
+            target_discovery_path(&temp_directory, target_pid),
+            Some(legacy_path),
+            true,
+            None,
+        ),
     }
 }
 
 fn select_discovery_document(
     preferred_path: &Path,
     legacy_path: Option<&Path>,
+    legacy_requires_target_binding: bool,
     target_route_path: Option<&Path>,
     routed_discovery_pinned: &mut bool,
 ) -> Result<(DiscoveryDocument, PathBuf, bool), DiscoveryError> {
@@ -2465,8 +2483,13 @@ fn select_discovery_document(
             if !*routed_discovery_pinned && error.is_not_found() && legacy_path.is_some() =>
         {
             let legacy_path = legacy_path.unwrap();
-            read_discovery_document(legacy_path)
-                .map(|discovery| (discovery, legacy_path.to_owned(), false))
+            read_discovery_document(legacy_path).map(|discovery| {
+                (
+                    discovery,
+                    legacy_path.to_owned(),
+                    legacy_requires_target_binding,
+                )
+            })
         }
         Err(error) => {
             if legacy_path.is_some() && !error.is_not_found() {
@@ -2761,9 +2784,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_local_discovery_is_pinned_when_reshade_supplies_a_base_path() {
+    fn discovery_paths_preserve_run_pinning_and_add_static_per_pid_routing() {
         let run_directory = PathBuf::from(r"C:\overlay-runs\game-unique");
         let temp_directory = PathBuf::from(r"C:\temp");
+        let target_pid = 789;
 
         let legacy_path = temp_directory
             .join(DISCOVERY_DIRECTORY)
@@ -2772,16 +2796,29 @@ mod tests {
             discovery_paths_from(
                 Some(run_directory.clone().into_os_string()),
                 temp_directory.clone(),
+                target_pid,
             ),
             (
                 run_directory.join(DISCOVERY_FILE),
                 Some(legacy_path.clone()),
+                false,
                 Some(run_directory.join(TARGET_ROUTE_FILE)),
             ),
         );
         assert_eq!(
-            discovery_paths_from(None, temp_directory),
-            (legacy_path, None, None),
+            discovery_paths_from(None, temp_directory.clone(), target_pid),
+            (
+                target_discovery_path(&temp_directory, target_pid),
+                Some(legacy_path),
+                true,
+                None,
+            ),
+        );
+        assert_eq!(
+            target_discovery_path(&temp_directory, target_pid),
+            temp_directory
+                .join(DISCOVERY_DIRECTORY)
+                .join("electron-overlay-transport-v1.pid-789.json"),
         );
     }
 
@@ -2861,29 +2898,18 @@ mod tests {
     }
 
     #[test]
-    fn runtime_startup_directory_requires_an_absolute_selected_environment_path() {
+    fn runtime_startup_directory_requires_an_absolute_project_run_path() {
         let run_directory = unique_discovery_test_directory("startup-path");
-        let base_directory = unique_discovery_test_directory("startup-base");
 
         assert_eq!(
-            runtime_startup_directory_from(
-                Some(run_directory.clone().into_os_string()),
-                Some(base_directory.clone().into_os_string()),
-            ),
+            runtime_startup_directory_from(Some(run_directory.clone().into_os_string())),
             Some(run_directory),
         );
         assert_eq!(
-            runtime_startup_directory_from(None, Some(base_directory.clone().into_os_string()),),
-            Some(base_directory),
-        );
-        assert_eq!(
-            runtime_startup_directory_from(
-                Some(std::ffi::OsString::from("relative-run")),
-                Some(unique_discovery_test_directory("ignored-base").into_os_string(),),
-            ),
+            runtime_startup_directory_from(Some(std::ffi::OsString::from("relative-run"))),
             None,
         );
-        assert_eq!(runtime_startup_directory_from(None, None), None);
+        assert_eq!(runtime_startup_directory_from(None), None);
     }
 
     #[test]
@@ -3016,6 +3042,7 @@ mod tests {
         let (_, selected_path, requires_target_binding) = select_discovery_document(
             &preferred_path,
             Some(&legacy_path),
+            false,
             Some(&target_route_path),
             &mut pinned,
         )
@@ -3029,12 +3056,73 @@ mod tests {
         let error = select_discovery_document(
             &preferred_path,
             Some(&legacy_path),
+            false,
             Some(&target_route_path),
             &mut pinned,
         )
         .unwrap_err();
         assert!(error.is_not_found());
         assert!(pinned);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn static_per_pid_discovery_precedes_target_bound_global_fallback() {
+        let root = unique_discovery_test_directory("static-pid");
+        let preferred_path = target_discovery_path(&root, 789);
+        let legacy_path = root.join(DISCOVERY_DIRECTORY).join(DISCOVERY_FILE);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, discovery_test_document(1, None)).unwrap();
+
+        let mut pinned = false;
+        let (global, selected_path, requires_target_binding) =
+            select_discovery_document(&preferred_path, Some(&legacy_path), true, None, &mut pinned)
+                .unwrap();
+        assert_eq!(selected_path, legacy_path);
+        assert!(requires_target_binding);
+        assert!(!discovery_target_matches(
+            global.target_pid,
+            789,
+            requires_target_binding,
+        ));
+        assert!(!pinned);
+
+        fs::write(&legacy_path, discovery_test_document(1, Some(789))).unwrap();
+        let (global, selected_path, requires_target_binding) =
+            select_discovery_document(&preferred_path, Some(&legacy_path), true, None, &mut pinned)
+                .unwrap();
+        assert_eq!(selected_path, legacy_path);
+        assert!(discovery_target_matches(
+            global.target_pid,
+            789,
+            requires_target_binding,
+        ));
+        assert!(!pinned);
+
+        fs::write(&preferred_path, discovery_test_document(1, Some(789))).unwrap();
+        let (targeted, selected_path, requires_target_binding) =
+            select_discovery_document(&preferred_path, Some(&legacy_path), true, None, &mut pinned)
+                .unwrap();
+        assert_eq!(selected_path, preferred_path);
+        assert!(requires_target_binding);
+        assert!(discovery_target_matches(
+            targeted.target_pid,
+            789,
+            requires_target_binding,
+        ));
+        assert!(pinned);
+
+        fs::remove_file(&preferred_path).unwrap();
+        assert!(select_discovery_document(
+            &preferred_path,
+            Some(&legacy_path),
+            true,
+            None,
+            &mut pinned,
+        )
+        .as_ref()
+        .is_err_and(DiscoveryError::is_not_found));
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -3066,6 +3154,7 @@ mod tests {
             let selected = select_discovery_document(
                 &preferred_path,
                 Some(&legacy_path),
+                false,
                 Some(&target_route_path),
                 &mut pinned,
             );
@@ -3105,6 +3194,7 @@ mod tests {
             let reconnect = select_discovery_document(
                 &preferred_path,
                 Some(&legacy_path),
+                false,
                 Some(&target_route_path),
                 &mut pinned,
             );

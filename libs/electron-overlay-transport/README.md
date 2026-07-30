@@ -27,6 +27,12 @@ not a hostile same-user security boundary.
 
 Compatible-runtime reuse is deliberately restricted to an exact-PID
 repository-built host whose ABI-1 add-on-registration gate is still open. The
-SDK's strict injector result distinguishes `injected-runtime` from
-`existing-runtime`; stock, unknown, already-active, or indeterminate hosts are
-rejected rather than treated as transport fallback cases.
+SDK's strict injector result distinguishes that `existing-runtime` route from
+`injected-runtime`. A separate `official-addon` route attempts every detected
+target-local x64 ReShade identity without a version/hash allowlist. The loaded
+add-on must register with public API 18 and obtain its exact Dear ImGui function
+table, then uses a deterministic exact-PID temporary credential because an
+existing public add-on cannot inherit the run-directory environment. A current
+add-on that was not loaded is host-incompatible. Incompatible or indeterminate
+hosts fail closed and never become transport fallback cases; the route neither
+rewrites ReShade-owned files nor loads a fallback runtime alongside the host.

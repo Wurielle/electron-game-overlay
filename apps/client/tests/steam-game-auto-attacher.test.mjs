@@ -162,7 +162,11 @@ test('the prearmed Steam path lane has no exclusions while every observed execut
   assert.equal(launchers.length, 4);
   assert.deepEqual(
     launchers.slice(1).map(({ target }) => target),
-    processes.map(({ pid, process }) => ({ processName: process, pid })),
+    processes.map(({ pid, process, filepath }) => ({
+      processName: process,
+      pid,
+      executablePath: filepath,
+    })),
   );
 
   launchers[0].connect(processes[0].pid, processes[0].filepath);
@@ -286,6 +290,7 @@ test('a connected path-first target stays connected when its independent runtime
   assert.deepEqual(launchers[2].target, {
     processName: 'path-first.exe',
     pid: info.pid,
+    executablePath: info.filepath,
   });
 
   launchers[2].fail(
@@ -383,6 +388,159 @@ test('existing-runtime reuse failures remain visible with their SDK retry safety
       await autoAttacher.dispose();
     });
   }
+});
+
+test('deferred official add-on maintenance keeps the exact launcher until target exit', async (t) => {
+  for (const [index, code] of [
+    'existing-reshade-addon-maintenance-deferred',
+  ].entries()) {
+    await t.test(code, async () => {
+      const watcher = new FakeProcessWatcher();
+      const session = new FakeOverlaySession();
+      const launchers = [];
+      const autoAttacher = new SteamGameAutoAttacher({
+        session,
+        reshadeConfig: createConfig(),
+        watcherFactory: () => watcher,
+        launcherFactory: (config) => {
+          const launcher = new FakeLauncher(config);
+          launchers.push(launcher);
+          return launcher;
+        },
+        preparedLauncherPoolSize: 0,
+      });
+      const pid = 8845 + index;
+      const filepath = `D:\\SteamLibrary\\steamapps\\common\\Official Addon ${index}\\official-addon-${index}.exe`;
+
+      autoAttacher.start();
+      watcher.create(processInfo(pid, filepath));
+      await flushMicrotasks();
+
+      launchers[0].fail(
+        new ReShadeOperationError({
+          stage: 'target-preflight',
+          code,
+          retrySafety: 'definite-safe',
+          message: 'the managed add-on needs target-exit maintenance',
+          targetLabel: `process:official-addon-${index}.exe:pid:${pid}`,
+          pid,
+        }),
+      );
+      await flushMicrotasks();
+
+      assert.equal(launchers[0].disposed, false);
+      assert.deepEqual(launchers[0].exitConfirmations, []);
+      watcher.delete(processInfo(pid + 100, ''));
+      assert.equal(launchers[0].disposed, false);
+
+      watcher.delete(processInfo(pid, filepath));
+      assert.deepEqual(launchers[0].exitConfirmations, [
+        { pid, confirmed: false },
+      ]);
+      assert.equal(launchers[0].disposed, true);
+      assert.deepEqual(launchers[0].order.slice(-2), [
+        `launcher-confirm-exit:${pid}:false`,
+        'launcher-dispose',
+      ]);
+
+      await autoAttacher.dispose();
+    });
+  }
+});
+
+test('official add-on failures without deferred work dispose their launchers immediately', async (t) => {
+  for (const [index, code] of [
+    'existing-reshade-addon-preparation-failed',
+    'existing-reshade-addon-restart-required',
+    'existing-reshade-addon-conflict',
+    'existing-reshade-addon-host-incompatible',
+  ].entries()) {
+    await t.test(code, async () => {
+      const watcher = new FakeProcessWatcher();
+      const session = new FakeOverlaySession();
+      const launchers = [];
+      const autoAttacher = new SteamGameAutoAttacher({
+        session,
+        reshadeConfig: createConfig(),
+        watcherFactory: () => watcher,
+        launcherFactory: (config) => {
+          const launcher = new FakeLauncher(config);
+          launchers.push(launcher);
+          return launcher;
+        },
+        preparedLauncherPoolSize: 0,
+      });
+      const pid = 8860 + index;
+      const filepath = `D:\\SteamLibrary\\steamapps\\common\\Official Refusal ${index}\\official-refusal-${index}.exe`;
+
+      autoAttacher.start();
+      watcher.create(processInfo(pid, filepath));
+      await flushMicrotasks();
+      launchers[0].fail(
+        new ReShadeOperationError({
+          stage: 'target-preflight',
+          code,
+          retrySafety: 'definite-safe',
+          message: 'no target-exit maintenance was scheduled',
+          targetLabel: `process:official-refusal-${index}.exe:pid:${pid}`,
+          pid,
+        }),
+      );
+      await flushMicrotasks();
+
+      assert.equal(launchers[0].disposed, true);
+      assert.deepEqual(launchers[0].exitConfirmations, []);
+      await autoAttacher.dispose();
+    });
+  }
+});
+
+test('a prearmed maintenance failure also reaches its launcher at the observed process exit', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+    prearmedPathInjection: true,
+    preparedLauncherPoolSize: 0,
+  });
+  const pid = 8847;
+  const filepath =
+    'D:\\SteamLibrary\\steamapps\\common\\Official Path\\official-path.exe';
+
+  autoAttacher.start();
+  watcher.ready();
+  await flushMicrotasks();
+  launchers[0].fail(
+    new ReShadeOperationError({
+      stage: 'target-preflight',
+      code: 'existing-reshade-addon-maintenance-deferred',
+      retrySafety: 'definite-safe',
+      message: 'the mapped add-on could not be updated while loaded',
+      targetLabel: 'path:\\steamapps\\',
+      pid,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  assert.equal(launchers[0].disposed, false);
+  assert.equal(launchers.length, 2, 'the retry-safe path lane should rearm');
+  watcher.delete(processInfo(pid, filepath));
+  assert.deepEqual(launchers[0].exitConfirmations, [{ pid, confirmed: false }]);
+  assert.equal(launchers[0].disposed, true);
+  assert.deepEqual(launchers[0].order.slice(-2), [
+    `launcher-confirm-exit:${pid}:false`,
+    'launcher-dispose',
+  ]);
+
+  await autoAttacher.dispose();
 });
 
 test('the prearmed lane rearms only after a retry-safe failure or its blocked target exits', async (t) => {
@@ -518,7 +676,7 @@ test('a target exit observed before an indeterminate path result still releases 
   await autoAttacher.dispose();
 });
 
-test('an exact claim loser cannot stay attaching if its prearmed owner later fails', async () => {
+test('an exact startup-grace loser waits for its prearmed owner outcome', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
   const launchers = [];
@@ -548,15 +706,15 @@ test('an exact claim loser cannot stay attaching if its prearmed owner later fai
   launchers[1].fail(
     new ReShadeOperationError({
       stage: 'target-preflight',
-      code: 'target-injection-already-claimed',
+      code: 'official-addon-startup-grace-coordinated',
       retrySafety: 'definite-safe',
-      message: 'the prearmed lane owns the process claim',
+      message: 'the prearmed lane owns the startup grace',
       targetLabel: 'process:claim-failure.exe:pid:8831',
       pid: info.pid,
     }),
   );
   await flushMicrotasks();
-  assert.equal(autoAttacher.targets[0].phase, 'failed');
+  assert.equal(autoAttacher.targets[0].phase, 'attaching');
 
   launchers[0].fail(new Error('the path injector failed after selection'));
   await flushMicrotasks();
@@ -624,6 +782,7 @@ test('the watcher starts before prewarm and queued targets consume immediately r
   assert.deepEqual(launchers[0].target, {
     processName: 'first.exe',
     pid: 9010,
+    executablePath: 'D:\\SteamLibrary\\steamapps\\common\\Prepared\\first.exe',
   });
   assert.equal(
     launchers.length,
@@ -633,6 +792,7 @@ test('the watcher starts before prewarm and queued targets consume immediately r
   assert.deepEqual(launchers[2].target, {
     processName: 'second.exe',
     pid: 9011,
+    executablePath: 'D:\\SteamLibrary\\steamapps\\common\\Prepared\\second.exe',
   });
   assert.equal(launchers[1].target, null);
   assert.equal(launchers[3].prepared, true);
@@ -885,6 +1045,7 @@ test('every detected Steam executable starts an independent exact-PID injection'
   assert.deepEqual(launchers[0].target, {
     processName: 'one.exe',
     pid: 1001,
+    executablePath: 'D:\\SteamLibrary\\steamapps\\common\\One\\one.exe',
   });
   assert.deepEqual(
     autoAttacher.targets.map(({ pid, phase }) => ({ pid, phase })),
@@ -909,6 +1070,7 @@ test('every detected Steam executable starts an independent exact-PID injection'
   assert.deepEqual(launchers[1].target, {
     processName: 'two.exe',
     pid: 1002,
+    executablePath: 'E:/Games/SteamApps/common/Two/two.exe',
   });
   assert.deepEqual(
     autoAttacher.targets.map(({ pid, phase }) => ({ pid, phase })),
@@ -988,7 +1150,11 @@ test('launcher, renderer, helpers, and redistributables are all attempted', asyn
   assert.equal(launchers.length, processes.length);
   assert.deepEqual(
     launchers.map(({ target }) => target),
-    processes.map(({ pid, process }) => ({ processName: process, pid })),
+    processes.map(({ pid, process, filepath }) => ({
+      processName: process,
+      pid,
+      executablePath: filepath,
+    })),
   );
 
   launchers[0].fail(new Error('bootstrap did not initialize graphics'));
@@ -1125,6 +1291,7 @@ test('a failed PID is not retried until deletion proves a new process lifetime',
   assert.deepEqual(launchers[1].target, {
     processName: 'failed.exe',
     pid: 2001,
+    executablePath: info.filepath,
   });
 
   await autoAttacher.dispose();
@@ -1387,8 +1554,11 @@ function createConfig(overrides = {}) {
     runtimeDirectory: 'C:\\runtime',
     runsRootDirectory: 'C:\\runs',
     injectorPath: 'C:\\runtime\\inject.exe',
+    addonManagerPath: 'C:\\runtime\\electron_game_overlay_reshade_manager.exe',
     runtimePath: 'C:\\runtime\\ReShade64.dll',
     buildStampPath: 'C:\\runtime\\ReShade64.build.json',
+    packageBuildStampPath:
+      'C:\\runtime\\electron_game_overlay_runtime.build.json',
     addonPath: 'C:\\runtime\\electron_game_overlay.addon64',
     configPath: 'C:\\runtime\\ReShade.ini',
     ...overrides,

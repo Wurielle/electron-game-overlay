@@ -65,9 +65,15 @@ $NativeBuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime"
 $ProductionBuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime-production"
 $ReShadeOutputDirectory = Join-Path $NativeBuildRoot "_deps\reshade-src\bin\x64\Release"
 $AddonOutputDirectory = Join-Path $ProductionBuildRoot "RelWithDebInfo"
+$ManagerSourcePath = Join-Path $RuntimeRoot "src\electron_game_overlay_reshade_manager.cpp"
+$PackageBuildStampPath = Join-Path $ProductionBuildRoot "electron_game_overlay_runtime.build.json"
 $BuildReShadeScript = Join-Path $PSScriptRoot "build-reshade-runtime.ps1"
 $DistributionDirectory = Join-Path $RuntimeRoot "dist\win32-x64"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
+$ExpectedAddonBuildId = "202F40B8B4B04C519BF12F693BE2B94F"
+if ($ExpectedAddonBuildId -cnotmatch '^[0-9A-F]{32}$') {
+    throw "The configured Electron Game Overlay add-on build ID is invalid."
+}
 $ExpectedPatchProvenance = [ordered]@{
     observerPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-input-observer.patch"
@@ -93,6 +99,12 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-shared-runtime-host.patch"
     injectorExportReadBoundsPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-export-read-bounds.patch"
+    injectorExistingInstallationPreflightPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-existing-installation-preflight.patch"
+    injectorOfficialAddonHostPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-official-addon-host.patch"
+    injectorGlobalLayerPreflightPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-global-layer-preflight.patch"
     sharedRuntimeHardeningPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-shared-runtime-hardening.patch"
     suppressSplashPatchSha256 =
@@ -120,7 +132,8 @@ try {
     & $CMake `
         --build $ProductionBuildRoot `
         --config RelWithDebInfo `
-        --target electron_game_overlay electron_overlay_transport_abi_smoke `
+        --target electron_game_overlay electron_game_overlay_reshade_manager `
+            electron_overlay_transport_abi_smoke `
         --parallel
     if ($LASTEXITCODE -ne 0) {
         throw "Building the production overlay runtime failed with exit code $LASTEXITCODE."
@@ -148,6 +161,10 @@ $Artifacts = @(
         Name = "electron_game_overlay.addon64"
     },
     [pscustomobject]@{
+        Source = Join-Path $AddonOutputDirectory "electron_game_overlay_reshade_manager.exe"
+        Name = "electron_game_overlay_reshade_manager.exe"
+    },
+    [pscustomobject]@{
         Source = Join-Path $RuntimeRoot "config\ReShade.ini"
         Name = "ReShade.ini"
     }
@@ -171,7 +188,7 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 17 -or
+if ($BuildStamp.schemaVersion -ne 20 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne "64-bit" -or
@@ -192,6 +209,39 @@ Assert-Sha256Equal `
     -Expected ([string]$BuildStamp.injectorSha256) `
     -Actual $SourceHashes["inject.exe"] `
     -Label "ReShade injector provenance"
+
+if (-not (Test-Path -LiteralPath $ManagerSourcePath -PathType Leaf)) {
+    throw "The ReShade add-on manager source is missing: $ManagerSourcePath"
+}
+Assert-NotReparsePoint $ManagerSourcePath
+$PackageBuildStamp = [ordered]@{
+    schemaVersion = 2
+    kind = "electron-game-overlay-runtime-build"
+    platform = "win32-x64"
+    configuration = "RelWithDebInfo"
+    addonBuildId = $ExpectedAddonBuildId
+    managerProtocolSchemaVersion = 1
+    managerSourceSha256 = (
+        Get-FileHash -Algorithm SHA256 -LiteralPath $ManagerSourcePath
+    ).Hash
+    managerSha256 = $SourceHashes["electron_game_overlay_reshade_manager.exe"]
+    addonSha256 = $SourceHashes["electron_game_overlay.addon64"]
+    injectorSha256 = $SourceHashes["inject.exe"]
+    reshadeRuntimeSha256 = $SourceHashes["ReShade64.dll"]
+    reshadeConfigSha256 = $SourceHashes["ReShade.ini"]
+    reshadeBuildStampSha256 = $SourceHashes["ReShade64.build.json"]
+}
+$PackageBuildStamp |
+    ConvertTo-Json |
+    Set-Content -LiteralPath $PackageBuildStampPath -Encoding UTF8
+Assert-NotReparsePoint $PackageBuildStampPath
+$Artifacts += [pscustomobject]@{
+    Source = $PackageBuildStampPath
+    Name = "electron_game_overlay_runtime.build.json"
+}
+$SourceHashes["electron_game_overlay_runtime.build.json"] = (
+    Get-FileHash -Algorithm SHA256 -LiteralPath $PackageBuildStampPath
+).Hash
 
 $ResolvedRuntimeRoot = [IO.Path]::GetFullPath($RuntimeRoot)
 $ResolvedDistributionDirectory = [IO.Path]::GetFullPath($DistributionDirectory)

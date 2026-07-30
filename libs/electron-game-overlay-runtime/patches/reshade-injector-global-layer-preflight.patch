@@ -1,0 +1,2831 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index aac609b..7f79c89 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -5,13 +5,17 @@
+ 
+ #include <stdio.h>
+ #include <Windows.h>
++#include <winternl.h>
+ #include <sddl.h>
+ #include <AclAPI.h>
+ #include <Psapi.h>
+ #include <TlHelp32.h>
+ #include <algorithm>
++#include <climits>
++#include <cstddef>
+ #include <cstdint>
+ #include <cstring>
++#include <cwctype>
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -19,6 +23,7 @@
+ #include <vector>
+ 
+ #pragma comment(lib, "psapi.lib")
++#pragma comment(lib, "advapi32.lib")
+ 
+ #define RESHADE_LOADING_THREAD_FUNC 1
+ 
+@@ -77,6 +82,17 @@ struct scoped_find_handle
+ 	}
+ };
+ 
++struct scoped_registry_key
++{
++	HKEY key = nullptr;
++
++	~scoped_registry_key()
++	{
++		if (key != nullptr)
++			RegCloseKey(key);
++	}
++};
++
+ static void update_acl_for_uwp(LPWSTR path)
+ {
+ 	OSVERSIONINFOEX verinfo_windows7 = { sizeof(OSVERSIONINFOEX), 6, 1 };
+@@ -297,6 +313,7 @@ enum class target_preflight_result
+ 	clear,
+ 	reusable_runtime,
+ 	official_addon,
++	official_addon_pending,
+ 	runtime_incompatible,
+ 	runtime_reuse_too_late,
+ 	inspection_failed,
+@@ -306,6 +323,7 @@ struct reusable_runtime_info
+ {
+ 	std::wstring module_path;
+ 	std::wstring addon_module_path;
++	std::string addon_build_id;
+ 	uintptr_t addon_gate_address = 0;
+ 	unsigned int host_abi = 0;
+ 	unsigned int addon_abi = 0;
+@@ -392,7 +410,8 @@ static bool pe_rva_to_file_offset(
+ static module_export_inspection file_has_export(
+ 	const std::wstring &path,
+ 	const char *requested_export_name,
+-	DWORD &error)
++	DWORD &error,
++	WORD expected_machine = 0)
+ {
+ 	constexpr LONGLONG max_candidate_file_size = 512ll * 1024 * 1024;
+ 	constexpr LONG max_pe_header_offset = 1024 * 1024;
+@@ -498,6 +517,11 @@ static module_export_inspection file_has_export(
+ 	}
+ 	if (signature != IMAGE_NT_SIGNATURE)
+ 		return module_export_inspection::not_present;
++	if (expected_machine != 0 && file_header.Machine != expected_machine)
++	{
++		error = ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
++		return module_export_inspection::failed;
++	}
+ 	if (file_header.NumberOfSections == 0 ||
+ 		file_header.NumberOfSections > max_sections)
+ 	{
+@@ -746,8 +770,8 @@ static bool has_reshade_installation_candidate_extension(
+ 		 _wcsicmp(extension, L".asi") == 0);
+ }
+ 
+-static module_export_inspection inspect_target_directory_for_reshade(
+-	const std::wstring &target_image_path,
++static module_export_inspection inspect_directory_for_reshade(
++	const std::wstring &directory_path,
+ 	std::wstring &installation_path,
+ 	DWORD &error)
+ {
+@@ -757,15 +781,16 @@ static module_export_inspection inspect_target_directory_for_reshade(
+ 	installation_path.clear();
+ 	error = ERROR_SUCCESS;
+ 
+-	const size_t separator = target_image_path.find_last_of(L"\\/");
+-	if (separator == std::wstring::npos)
++	if (directory_path.empty())
+ 	{
+ 		error = ERROR_INVALID_NAME;
+ 		return module_export_inspection::failed;
+ 	}
+ 
+-	const std::wstring directory_prefix =
+-		target_image_path.substr(0, separator + 1);
++	std::wstring directory_prefix = directory_path;
++	if (directory_prefix.back() != L'\\' &&
++		directory_prefix.back() != L'/')
++		directory_prefix.push_back(L'\\');
+ 	if (directory_prefix.size() + 1 > max_win32_path_length)
+ 	{
+ 		error = ERROR_FILENAME_EXCED_RANGE;
+@@ -799,44 +824,1855 @@ static module_export_inspection inspect_target_directory_for_reshade(
+ 
+ 		if (++candidate_count > max_candidate_files)
+ 		{
+-			error = ERROR_BUFFER_OVERFLOW;
++			error = ERROR_BUFFER_OVERFLOW;
++			return module_export_inspection::failed;
++		}
++
++		const std::wstring candidate_path =
++			directory_prefix + find_data.cFileName;
++		if (candidate_path.size() > max_win32_path_length)
++		{
++			installation_path = candidate_path;
++			error = ERROR_FILENAME_EXCED_RANGE;
++			return module_export_inspection::failed;
++		}
++
++		DWORD candidate_error = ERROR_SUCCESS;
++		switch (file_has_export(
++			candidate_path,
++			reshade_version_export,
++			candidate_error))
++		{
++		case module_export_inspection::present:
++			installation_path = candidate_path;
++			return module_export_inspection::present;
++		case module_export_inspection::failed:
++			installation_path = candidate_path;
++			error = candidate_error != ERROR_SUCCESS
++				? candidate_error
++				: ERROR_GEN_FAILURE;
++			return module_export_inspection::failed;
++		case module_export_inspection::not_present:
++			break;
++		}
++	} while (FindNextFileW(files.handle, &find_data));
++
++	const DWORD enumeration_error = GetLastError();
++	if (enumeration_error != ERROR_NO_MORE_FILES)
++	{
++		error = enumeration_error;
++		return module_export_inspection::failed;
++	}
++
++	return module_export_inspection::not_present;
++}
++
++static module_export_inspection inspect_target_directory_for_reshade(
++	const std::wstring &target_image_path,
++	std::wstring &installation_path,
++	DWORD &error)
++{
++	const size_t separator = target_image_path.find_last_of(L"\\/");
++	if (separator == std::wstring::npos)
++	{
++		installation_path.clear();
++		error = ERROR_INVALID_NAME;
++		return module_export_inspection::failed;
++	}
++
++	return inspect_directory_for_reshade(
++		target_image_path.substr(0, separator),
++		installation_path,
++		error);
++}
++
++static bool read_bounded_regular_file(
++	const std::wstring &path,
++	SIZE_T maximum_size,
++	std::vector<BYTE> &bytes,
++	bool &missing,
++	DWORD &error)
++{
++	bytes.clear();
++	missing = false;
++	error = ERROR_SUCCESS;
++
++	const scoped_handle file = CreateFileW(
++		make_extended_length_path(path).c_str(),
++		GENERIC_READ,
++		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++		nullptr,
++		OPEN_EXISTING,
++		FILE_FLAG_OPEN_REPARSE_POINT,
++		nullptr);
++	if (file == INVALID_HANDLE_VALUE)
++	{
++		error = GetLastError();
++		if (error == ERROR_FILE_NOT_FOUND ||
++			error == ERROR_PATH_NOT_FOUND)
++		{
++			missing = true;
++			error = ERROR_SUCCESS;
++			return true;
++		}
++		return false;
++	}
++
++	BY_HANDLE_FILE_INFORMATION file_information = {};
++	if (!GetFileInformationByHandle(file, &file_information))
++	{
++		error = GetLastError();
++		return false;
++	}
++	if ((file_information.dwFileAttributes &
++			(FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
++	{
++		error = ERROR_CANT_ACCESS_FILE;
++		return false;
++	}
++
++	LARGE_INTEGER file_size = {};
++	if (!GetFileSizeEx(file, &file_size))
++	{
++		error = GetLastError();
++		return false;
++	}
++	if (file_size.QuadPart < 0 ||
++		static_cast<ULONGLONG>(file_size.QuadPart) > maximum_size ||
++		static_cast<ULONGLONG>(file_size.QuadPart) > MAXDWORD)
++	{
++		error = ERROR_FILE_TOO_LARGE;
++		return false;
++	}
++
++	bytes.resize(static_cast<size_t>(file_size.QuadPart));
++	SIZE_T total_read = 0;
++	while (total_read < bytes.size())
++	{
++		DWORD bytes_read = 0;
++		const DWORD bytes_to_read = static_cast<DWORD>(
++			std::min<SIZE_T>(bytes.size() - total_read, 64 * 1024));
++		if (!ReadFile(
++				file,
++				bytes.data() + total_read,
++				bytes_to_read,
++				&bytes_read,
++				nullptr))
++		{
++			error = GetLastError();
++			return false;
++		}
++		if (bytes_read == 0)
++		{
++			error = ERROR_HANDLE_EOF;
++			return false;
++		}
++		total_read += bytes_read;
++	}
++
++	return true;
++}
++
++static bool decode_utf8_text(
++	const std::vector<BYTE> &bytes,
++	std::wstring &text,
++	DWORD &error)
++{
++	size_t offset = 0;
++	if (bytes.size() >= 3 &&
++		bytes[0] == 0xEF &&
++		bytes[1] == 0xBB &&
++		bytes[2] == 0xBF)
++		offset = 3;
++
++	for (size_t index = offset; index < bytes.size(); ++index)
++	{
++		if (bytes[index] == 0)
++		{
++			error = ERROR_INVALID_DATA;
++			return false;
++		}
++	}
++
++	const size_t byte_count = bytes.size() - offset;
++	if (byte_count == 0)
++	{
++		text.clear();
++		return true;
++	}
++	if (byte_count > static_cast<size_t>(INT_MAX))
++	{
++		error = ERROR_FILE_TOO_LARGE;
++		return false;
++	}
++
++	const int character_count = MultiByteToWideChar(
++		CP_UTF8,
++		MB_ERR_INVALID_CHARS,
++		reinterpret_cast<const char *>(bytes.data() + offset),
++		static_cast<int>(byte_count),
++		nullptr,
++		0);
++	if (character_count <= 0)
++	{
++		error = GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_NO_UNICODE_TRANSLATION;
++		return false;
++	}
++
++	text.resize(static_cast<size_t>(character_count));
++	if (MultiByteToWideChar(
++			CP_UTF8,
++			MB_ERR_INVALID_CHARS,
++			reinterpret_cast<const char *>(bytes.data() + offset),
++			static_cast<int>(byte_count),
++			text.data(),
++			character_count) != character_count)
++	{
++		error = GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_NO_UNICODE_TRANSLATION;
++		return false;
++	}
++
++	return true;
++}
++
++static std::wstring trim_ini_token(const std::wstring &value)
++{
++	size_t first = 0;
++	while (first < value.size() && iswspace(value[first]))
++		++first;
++
++	size_t last = value.size();
++	while (last > first && iswspace(value[last - 1]))
++		--last;
++
++	return value.substr(first, last - first);
++}
++
++static void append_ini_value_elements(
++	const std::wstring &value,
++	std::vector<std::wstring> &elements)
++{
++	for (size_t offset = 0, base = 0, length = value.size();
++		offset <= length;)
++	{
++		const size_t found = std::min(
++			value.find(L',', offset),
++			length);
++		if (found + 1 < length && value[found + 1] == L',')
++		{
++			offset = found + 2;
++		}
++		else
++		{
++			std::wstring &element = elements.emplace_back();
++			element.reserve(found - base);
++			while (base < found)
++			{
++				const wchar_t character = value[base++];
++				element.push_back(character);
++				if (character == L',' &&
++					base < found &&
++					value[base] == L',')
++					++base;
++			}
++			offset = base = found + 1;
++		}
++	}
++}
++
++static bool find_ini_values(
++	const std::wstring &text,
++	const wchar_t *requested_section,
++	const wchar_t *requested_key,
++	bool &found,
++	std::vector<std::wstring> &values,
++	DWORD &error)
++{
++	found = false;
++	values.clear();
++	std::wstring section;
++
++	size_t line_start = 0;
++	while (line_start <= text.size())
++	{
++		size_t line_end = text.find_first_of(L"\r\n", line_start);
++		if (line_end == std::wstring::npos)
++			line_end = text.size();
++
++		const std::wstring line =
++			trim_ini_token(text.substr(line_start, line_end - line_start));
++		if (!line.empty() &&
++			line[0] != L';' &&
++			line[0] != L'#' &&
++			line[0] != L'/')
++		{
++			if (line[0] == L'[')
++			{
++				const size_t section_end = line.find(L']', 1);
++				if (section_end == std::wstring::npos)
++				{
++					error = ERROR_INVALID_DATA;
++					return false;
++				}
++				section = trim_ini_token(
++					line.substr(1, section_end - 1));
++			}
++			else
++			{
++				const size_t separator = line.find(L'=');
++				if (separator != std::wstring::npos)
++				{
++					const std::wstring key =
++						trim_ini_token(line.substr(0, separator));
++					if (section == requested_section &&
++						key == requested_key)
++					{
++						found = true;
++						const std::wstring raw_value =
++							trim_ini_token(line.substr(separator + 1));
++						if (!raw_value.empty())
++							append_ini_value_elements(raw_value, values);
++					}
++				}
++			}
++		}
++
++		if (line_end == text.size())
++			break;
++		line_start = line_end + 1;
++		if (line_start < text.size() &&
++			text[line_end] == L'\r' &&
++			text[line_start] == L'\n')
++			++line_start;
++	}
++
++	return true;
++}
++
++static bool read_bounded_utf8_ini_values(
++	const std::wstring &path,
++	const wchar_t *section,
++	const wchar_t *key,
++	bool &file_missing,
++	bool &value_found,
++	std::vector<std::wstring> &values,
++	DWORD &error)
++{
++	constexpr SIZE_T maximum_ini_size = 1024 * 1024;
++	std::vector<BYTE> bytes;
++	if (!read_bounded_regular_file(
++			path,
++			maximum_ini_size,
++			bytes,
++			file_missing,
++			error))
++		return false;
++	if (file_missing)
++	{
++		value_found = false;
++		values.clear();
++		return true;
++	}
++
++	std::wstring text;
++	if (!decode_utf8_text(bytes, text, error))
++		return false;
++
++	return find_ini_values(
++		text,
++		section,
++		key,
++		value_found,
++		values,
++		error);
++}
++
++static bool get_full_path(
++	const std::wstring &path,
++	std::wstring &full_path,
++	DWORD &error)
++{
++	constexpr DWORD maximum_path_length = 32767;
++	if (path.empty() || path.size() > maximum_path_length)
++	{
++		error = path.empty()
++			? ERROR_INVALID_NAME
++			: ERROR_FILENAME_EXCED_RANGE;
++		return false;
++	}
++
++	const DWORD required = GetFullPathNameW(
++		path.c_str(),
++		0,
++		nullptr,
++		nullptr);
++	if (required == 0 || required > maximum_path_length)
++	{
++		error = required == 0
++			? GetLastError()
++			: ERROR_FILENAME_EXCED_RANGE;
++		if (error == ERROR_SUCCESS)
++			error = ERROR_INVALID_NAME;
++		return false;
++	}
++
++	std::vector<wchar_t> buffer(static_cast<size_t>(required) + 1);
++	const DWORD written = GetFullPathNameW(
++		path.c_str(),
++		static_cast<DWORD>(buffer.size()),
++		buffer.data(),
++		nullptr);
++	if (written == 0 || written >= buffer.size())
++	{
++		error = written == 0
++			? GetLastError()
++			: ERROR_INSUFFICIENT_BUFFER;
++		if (error == ERROR_SUCCESS)
++			error = ERROR_INVALID_NAME;
++		return false;
++	}
++
++	full_path.assign(buffer.data(), written);
++	for (wchar_t &character : full_path)
++	{
++		if (character == L'/')
++			character = L'\\';
++	}
++	while (full_path.size() > 3 && full_path.back() == L'\\')
++		full_path.pop_back();
++	return true;
++}
++
++static bool get_final_directory_path(
++	const std::wstring &path,
++	std::wstring &final_path,
++	DWORD &error)
++{
++	const scoped_handle directory = CreateFileW(
++		make_extended_length_path(path).c_str(),
++		FILE_READ_ATTRIBUTES,
++		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++		nullptr,
++		OPEN_EXISTING,
++		FILE_FLAG_BACKUP_SEMANTICS,
++		nullptr);
++	if (directory == INVALID_HANDLE_VALUE)
++	{
++		error = GetLastError();
++		return false;
++	}
++
++	BY_HANDLE_FILE_INFORMATION information = {};
++	if (!GetFileInformationByHandle(directory, &information))
++	{
++		error = GetLastError();
++		return false;
++	}
++	if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
++	{
++		error = ERROR_DIRECTORY;
++		return false;
++	}
++
++	const DWORD required = GetFinalPathNameByHandleW(
++		directory,
++		nullptr,
++		0,
++		FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
++	if (required == 0 || required > 32767)
++	{
++		error = required == 0
++			? GetLastError()
++			: ERROR_FILENAME_EXCED_RANGE;
++		return false;
++	}
++
++	std::vector<wchar_t> buffer(static_cast<size_t>(required) + 1);
++	const DWORD written = GetFinalPathNameByHandleW(
++		directory,
++		buffer.data(),
++		static_cast<DWORD>(buffer.size()),
++		FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
++	if (written == 0 || written >= buffer.size())
++	{
++		error = written == 0
++			? GetLastError()
++			: ERROR_INSUFFICIENT_BUFFER;
++		return false;
++	}
++
++	final_path.assign(buffer.data(), written);
++	if (final_path.compare(0, 8, L"\\\\?\\UNC\\") == 0)
++		final_path = L"\\\\" + final_path.substr(8);
++	else if (final_path.compare(0, 4, L"\\\\?\\") == 0)
++		final_path.erase(0, 4);
++	for (wchar_t &character : final_path)
++	{
++		if (character == L'/')
++			character = L'\\';
++	}
++	while (final_path.size() > 3 && final_path.back() == L'\\')
++		final_path.pop_back();
++	return true;
++}
++
++static bool path_is_same_or_descendant(
++	const std::wstring &root,
++	const std::wstring &candidate)
++{
++	if (candidate.size() < root.size() ||
++		CompareStringOrdinal(
++			root.data(),
++			static_cast<int>(root.size()),
++			candidate.data(),
++			static_cast<int>(root.size()),
++			TRUE) != CSTR_EQUAL)
++		return false;
++	return candidate.size() == root.size() ||
++		root.back() == L'\\' ||
++		candidate[root.size()] == L'\\';
++}
++
++static bool is_absolute_windows_path(const std::wstring &path)
++{
++	return
++		(path.size() >= 2 &&
++		 path[0] == L'\\' &&
++		 path[1] == L'\\') ||
++		(path.size() >= 3 &&
++		 iswalpha(path[0]) &&
++		 path[1] == L':' &&
++		 (path[2] == L'\\' || path[2] == L'/'));
++}
++
++struct target_environment
++{
++	std::vector<std::pair<std::wstring, std::wstring>> variables;
++	bool reshade_base_path_override_present = false;
++	std::wstring reshade_base_path_override;
++	bool reshade_disable_loading_check_present = false;
++	bool layer_search_ambiguous = false;
++	std::wstring layer_search_evidence;
++};
++
++static const std::wstring *find_target_environment_value(
++	const target_environment &environment,
++	const wchar_t *name)
++{
++	for (const auto &variable : environment.variables)
++	{
++		if (_wcsicmp(variable.first.c_str(), name) == 0)
++			return &variable.second;
++	}
++	return nullptr;
++}
++
++static bool parse_target_environment_block(
++	const std::vector<wchar_t> &block,
++	size_t terminator,
++	target_environment &environment,
++	DWORD &error)
++{
++	environment = {};
++	size_t entry_start = 0;
++	while (entry_start < terminator)
++	{
++		size_t entry_end = entry_start;
++		while (entry_end < terminator && block[entry_end] != L'\0')
++			++entry_end;
++		if (entry_end == entry_start)
++			break;
++
++		const std::wstring entry(
++			block.data() + entry_start,
++			entry_end - entry_start);
++		const size_t separator = entry.find(
++			L'=',
++			!entry.empty() && entry[0] == L'=' ? 1 : 0);
++		if (separator == std::wstring::npos || separator == 0)
++		{
++			error = ERROR_INVALID_DATA;
++			return false;
++		}
++
++		const std::wstring name = entry.substr(0, separator);
++		const std::wstring value = entry.substr(separator + 1);
++		if (name[0] != L'=')
++		{
++			if (find_target_environment_value(environment, name.c_str()) !=
++				nullptr)
++			{
++				error = ERROR_DUP_NAME;
++				return false;
++			}
++			environment.variables.emplace_back(name, value);
++		}
++		entry_start = entry_end + 1;
++	}
++
++	if (const std::wstring *const override_value =
++			find_target_environment_value(
++				environment,
++				L"RESHADE_BASE_PATH_OVERRIDE");
++		override_value != nullptr && !override_value->empty())
++	{
++		environment.reshade_base_path_override_present = true;
++		environment.reshade_base_path_override = *override_value;
++	}
++	if (const std::wstring *const disable_loading_check =
++			find_target_environment_value(
++				environment,
++				L"RESHADE_DISABLE_LOADING_CHECK");
++		disable_loading_check != nullptr &&
++		!disable_loading_check->empty())
++		environment.reshade_disable_loading_check_present = true;
++
++	const wchar_t *const ambiguous_path_variables[] = {
++		L"VK_ADD_LAYER_PATH",
++		L"VK_LAYER_PATH",
++		L"VK_IMPLICIT_LAYER_PATH",
++		L"XR_API_LAYER_PATH",
++	};
++	for (const wchar_t *const name : ambiguous_path_variables)
++	{
++		if (const std::wstring *const value =
++				find_target_environment_value(environment, name);
++			value != nullptr && !value->empty())
++		{
++			environment.layer_search_ambiguous = true;
++			environment.layer_search_evidence = name;
++			return true;
++		}
++	}
++
++	const wchar_t *const explicit_layer_variables[] = {
++		L"VK_INSTANCE_LAYERS",
++		L"VK_LOADER_LAYERS_ENABLE",
++		L"XR_ENABLE_API_LAYERS",
++	};
++	for (const wchar_t *const name : explicit_layer_variables)
++	{
++		if (const std::wstring *const value =
++				find_target_environment_value(environment, name);
++			value != nullptr &&
++			path_contains_case_insensitive(*value, L"reshade"))
++		{
++			environment.layer_search_ambiguous = true;
++			environment.layer_search_evidence = name;
++			return true;
++		}
++	}
++
++	return true;
++}
++
++static bool inspect_target_environment(
++	HANDLE process,
++	target_environment &environment,
++	DWORD &error)
++{
++	constexpr SIZE_T maximum_environment_bytes = 1024 * 1024;
++	constexpr SIZE_T read_chunk_size = 4096;
++	static_assert(sizeof(void *) == 8);
++	static_assert(sizeof(RTL_USER_PROCESS_PARAMETERS) == 0x80);
++
++	const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
++	const auto nt_query_information_process =
++		ntdll != nullptr
++			? reinterpret_cast<decltype(&NtQueryInformationProcess)>(
++				GetProcAddress(ntdll, "NtQueryInformationProcess"))
++			: nullptr;
++	const auto rtl_nt_status_to_dos_error =
++		ntdll != nullptr
++			? reinterpret_cast<decltype(&RtlNtStatusToDosError)>(
++				GetProcAddress(ntdll, "RtlNtStatusToDosError"))
++			: nullptr;
++	if (nt_query_information_process == nullptr)
++	{
++		error = ERROR_PROC_NOT_FOUND;
++		return false;
++	}
++
++	PROCESS_BASIC_INFORMATION basic_information = {};
++	const NTSTATUS query_status = nt_query_information_process(
++		process,
++		ProcessBasicInformation,
++		&basic_information,
++		sizeof(basic_information),
++		nullptr);
++	if (query_status < 0 || basic_information.PebBaseAddress == nullptr)
++	{
++		error = rtl_nt_status_to_dos_error != nullptr
++			? rtl_nt_status_to_dos_error(query_status)
++			: ERROR_GEN_FAILURE;
++		if (error == ERROR_SUCCESS)
++			error = ERROR_GEN_FAILURE;
++		return false;
++	}
++
++	uintptr_t process_parameters = 0;
++	if (!read_remote_bytes(
++			process,
++			reinterpret_cast<uintptr_t>(
++				basic_information.PebBaseAddress) +
++				offsetof(PEB, ProcessParameters),
++			&process_parameters,
++			sizeof(process_parameters),
++			error) ||
++		process_parameters == 0)
++	{
++		if (error == ERROR_SUCCESS)
++			error = ERROR_INVALID_ADDRESS;
++		return false;
++	}
++
++	uintptr_t environment_address = 0;
++	if (!read_remote_bytes(
++			process,
++			process_parameters + sizeof(RTL_USER_PROCESS_PARAMETERS),
++			&environment_address,
++			sizeof(environment_address),
++			error) ||
++		environment_address == 0 ||
++		environment_address % alignof(wchar_t) != 0)
++	{
++		if (error == ERROR_SUCCESS)
++			error = ERROR_INVALID_ADDRESS;
++		return false;
++	}
++
++	std::vector<wchar_t> environment_block;
++	environment_block.reserve(32768);
++	uintptr_t cursor = environment_address;
++	while (environment_block.size() * sizeof(wchar_t) <
++		maximum_environment_bytes)
++	{
++		MEMORY_BASIC_INFORMATION memory = {};
++		if (VirtualQueryEx(
++				process,
++				reinterpret_cast<LPCVOID>(cursor),
++				&memory,
++				sizeof(memory)) != sizeof(memory) ||
++			memory.State != MEM_COMMIT ||
++			(memory.Protect &
++				(PAGE_GUARD | PAGE_NOACCESS)) != 0)
++		{
++			error = GetLastError();
++			if (error == ERROR_SUCCESS)
++				error = ERROR_PARTIAL_COPY;
++			return false;
++		}
++
++		const uintptr_t region_start =
++			reinterpret_cast<uintptr_t>(memory.BaseAddress);
++		const uintptr_t region_end =
++			region_start + memory.RegionSize;
++		if (region_end < region_start ||
++			cursor < region_start ||
++			cursor >= region_end)
++		{
++			error = ERROR_INVALID_ADDRESS;
++			return false;
++		}
++
++		const SIZE_T remaining_limit =
++			maximum_environment_bytes -
++			environment_block.size() * sizeof(wchar_t);
++		SIZE_T bytes_to_read = std::min<SIZE_T>(
++			read_chunk_size,
++			std::min<SIZE_T>(
++				static_cast<SIZE_T>(region_end - cursor),
++				remaining_limit));
++		bytes_to_read -= bytes_to_read % sizeof(wchar_t);
++		if (bytes_to_read == 0)
++		{
++			error = ERROR_PARTIAL_COPY;
++			return false;
++		}
++
++		const size_t old_size = environment_block.size();
++		environment_block.resize(
++			old_size + bytes_to_read / sizeof(wchar_t));
++		if (!read_remote_bytes(
++			process,
++			cursor,
++			environment_block.data() + old_size,
++			bytes_to_read,
++			error))
++			return false;
++
++		const size_t search_start = old_size == 0
++			? 0
++			: old_size - 1;
++		for (size_t index = search_start;
++			index + 1 < environment_block.size();
++			++index)
++		{
++			if (environment_block[index] == L'\0' &&
++				environment_block[index + 1] == L'\0')
++				return parse_target_environment_block(
++					environment_block,
++					index + 1,
++					environment,
++					error);
++		}
++		cursor += bytes_to_read;
++	}
++
++	error = ERROR_BUFFER_OVERFLOW;
++	return false;
++}
++
++static bool expand_target_environment_strings(
++	const std::wstring &value,
++	const target_environment &environment,
++	std::wstring &expanded,
++	DWORD &error)
++{
++	constexpr size_t maximum_expanded_length = 32767;
++	expanded.clear();
++	for (size_t index = 0; index < value.size();)
++	{
++		if (value[index] != L'%')
++		{
++			expanded.push_back(value[index++]);
++		}
++		else
++		{
++			const size_t closing = value.find(L'%', index + 1);
++			if (closing == std::wstring::npos)
++			{
++				expanded.append(value.substr(index));
++				break;
++			}
++
++			const std::wstring name =
++				value.substr(index + 1, closing - index - 1);
++			if (const std::wstring *const replacement =
++					find_target_environment_value(
++						environment,
++						name.c_str());
++				replacement != nullptr)
++				expanded.append(*replacement);
++			else
++				expanded.append(
++					value.substr(index, closing - index + 1));
++			index = closing + 1;
++		}
++
++		if (expanded.size() > maximum_expanded_length)
++		{
++			error = ERROR_FILENAME_EXCED_RANGE;
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool directory_path_has_reparse_component(
++	const std::wstring &root,
++	const std::wstring &candidate,
++	DWORD &error)
++{
++	if (!path_is_same_or_descendant(root, candidate))
++	{
++		error = ERROR_BAD_PATHNAME;
++		return true;
++	}
++
++	std::wstring component_path = root;
++	for (;;)
++	{
++		const DWORD attributes = GetFileAttributesW(
++			make_extended_length_path(component_path).c_str());
++		if (attributes == INVALID_FILE_ATTRIBUTES)
++		{
++			error = GetLastError();
++			return true;
++		}
++		if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
++		{
++			error = ERROR_CANT_ACCESS_FILE;
++			return true;
++		}
++
++		if (component_path.size() == candidate.size())
++			return false;
++
++		const size_t next_separator =
++			candidate.find(L'\\', component_path.size() + 1);
++		component_path = candidate.substr(
++			0,
++			next_separator == std::wstring::npos
++				? candidate.size()
++				: next_separator);
++	}
++}
++
++struct target_reshade_configuration
++{
++	bool present = false;
++	bool has_base_path = false;
++	std::wstring config_path;
++	std::wstring target_directory_path;
++	std::wstring resolved_base_path;
++};
++
++static module_export_inspection inspect_target_reshade_configuration(
++	const std::wstring &target_image_path,
++	const target_environment &environment,
++	target_reshade_configuration &configuration,
++	DWORD &error)
++{
++	configuration = {};
++	error = ERROR_SUCCESS;
++
++	const size_t separator = target_image_path.find_last_of(L"\\/");
++	if (separator == std::wstring::npos)
++	{
++		error = ERROR_INVALID_NAME;
++		return module_export_inspection::failed;
++	}
++
++	if (!get_full_path(
++			target_image_path.substr(0, separator),
++			configuration.target_directory_path,
++			error))
++		return module_export_inspection::failed;
++
++	configuration.config_path =
++		configuration.target_directory_path + L"\\ReShade.ini";
++	bool config_missing = false;
++	bool base_path_found = false;
++	std::vector<std::wstring> base_path_values;
++	if (!read_bounded_utf8_ini_values(
++			configuration.config_path,
++			L"INSTALL",
++			L"BasePath",
++			config_missing,
++			base_path_found,
++			base_path_values,
++			error))
++		return module_export_inspection::failed;
++	if (config_missing)
++		return module_export_inspection::not_present;
++
++	configuration.present = true;
++	if (!base_path_found || base_path_values.empty())
++		return module_export_inspection::present;
++	const std::wstring &base_path_value = base_path_values.front();
++	if (base_path_value.empty())
++		return module_export_inspection::present;
++
++	std::wstring expanded_path;
++	if (!expand_target_environment_strings(
++			base_path_value,
++			environment,
++			expanded_path,
++			error))
++		return module_export_inspection::failed;
++	if (!is_absolute_windows_path(expanded_path))
++		expanded_path =
++			configuration.target_directory_path + L"\\" + expanded_path;
++
++	std::wstring lexical_base_path;
++	if (!get_full_path(expanded_path, lexical_base_path, error))
++		return module_export_inspection::failed;
++	if (!path_is_same_or_descendant(
++			configuration.target_directory_path,
++			lexical_base_path))
++	{
++		error = ERROR_BAD_PATHNAME;
++		return module_export_inspection::failed;
++	}
++	if (directory_path_has_reparse_component(
++			configuration.target_directory_path,
++			lexical_base_path,
++			error))
++		return module_export_inspection::failed;
++
++	std::wstring final_target_directory;
++	std::wstring final_base_path;
++	if (!get_final_directory_path(
++			configuration.target_directory_path,
++			final_target_directory,
++			error) ||
++		!get_final_directory_path(
++			lexical_base_path,
++			final_base_path,
++			error))
++		return module_export_inspection::failed;
++	if (!path_is_same_or_descendant(
++			final_target_directory,
++			final_base_path))
++	{
++		error = ERROR_BAD_PATHNAME;
++		return module_export_inspection::failed;
++	}
++
++	configuration.has_base_path = true;
++	configuration.resolved_base_path = std::move(final_base_path);
++	return module_export_inspection::present;
++}
++
++struct target_effective_reshade_settings
++{
++	std::wstring reshade_base_path;
++	std::wstring addon_directory_path;
++	bool electron_game_overlay_addon_disabled = false;
++};
++
++static bool try_resolve_target_environment_directory(
++	const std::wstring &raw_path,
++	const std::wstring &module_directory,
++	const target_environment &environment,
++	std::wstring &resolved_path)
++{
++	DWORD ignored_error = ERROR_SUCCESS;
++	std::wstring expanded_path;
++	if (!expand_target_environment_strings(
++			raw_path,
++			environment,
++			expanded_path,
++			ignored_error) ||
++		expanded_path.empty())
++		return false;
++	if (!is_absolute_windows_path(expanded_path))
++		expanded_path = module_directory + L"\\" + expanded_path;
++
++	std::wstring lexical_path;
++	if (!get_full_path(expanded_path, lexical_path, ignored_error))
++		return false;
++	return get_final_directory_path(
++		lexical_path,
++		resolved_path,
++		ignored_error);
++}
++
++static bool runtime_defaults_base_to_target_executable_path(
++	HANDLE target_process,
++	const std::wstring &runtime_module_path,
++	bool &defaults_to_target,
++	DWORD &error)
++{
++	const size_t separator =
++		runtime_module_path.find_last_of(L"\\/");
++	const std::wstring file_name =
++		separator == std::wstring::npos
++			? runtime_module_path
++			: runtime_module_path.substr(separator + 1);
++	const size_t extension_separator = file_name.find_last_of(L'.');
++	const std::wstring module_name =
++		extension_separator == std::wstring::npos
++			? file_name
++			: file_name.substr(0, extension_separator);
++	const std::wstring extension =
++		extension_separator == std::wstring::npos
++			? std::wstring()
++			: file_name.substr(extension_separator);
++	const bool is_proxy =
++		_wcsnicmp(module_name.c_str(), L"d3d", 3) == 0 ||
++		_wcsicmp(module_name.c_str(), L"dxgi") == 0 ||
++		_wcsicmp(module_name.c_str(), L"opengl32") == 0 ||
++		_wcsnicmp(module_name.c_str(), L"dinput", 6) == 0 ||
++		extension == L".asi";
++	if (is_proxy)
++	{
++		defaults_to_target = false;
++		return true;
++	}
++
++	const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
++	using get_package_full_name_proc =
++		LONG(WINAPI *)(HANDLE, UINT32 *, PWSTR);
++	const auto get_package_full_name =
++		kernel32 != nullptr
++			? reinterpret_cast<get_package_full_name_proc>(
++				GetProcAddress(kernel32, "GetPackageFullName"))
++			: nullptr;
++	if (get_package_full_name == nullptr)
++	{
++		defaults_to_target = true;
++		return true;
++	}
++
++	UINT32 package_name_length = 0;
++	const LONG package_status = get_package_full_name(
++		target_process,
++		&package_name_length,
++		nullptr);
++	if (package_status == APPMODEL_ERROR_NO_PACKAGE)
++	{
++		defaults_to_target = true;
++		return true;
++	}
++	if (package_status == ERROR_INSUFFICIENT_BUFFER)
++	{
++		defaults_to_target = false;
++		return true;
++	}
++
++	error = static_cast<DWORD>(package_status);
++	if (error == ERROR_SUCCESS)
++		error = ERROR_INVALID_DATA;
++	return false;
++}
++
++static bool inspect_target_effective_reshade_settings(
++	const std::wstring &target_image_path,
++	const std::wstring &runtime_module_path,
++	HANDLE target_process,
++	const target_environment &environment,
++	const target_reshade_configuration &configuration,
++	target_effective_reshade_settings &settings,
++	DWORD &error)
++{
++	settings = {};
++	error = ERROR_SUCCESS;
++
++	const size_t module_separator =
++		runtime_module_path.find_last_of(L"\\/");
++	if (module_separator == std::wstring::npos)
++	{
++		error = ERROR_INVALID_NAME;
++		return false;
++	}
++	std::wstring module_directory;
++	if (!get_full_path(
++			runtime_module_path.substr(0, module_separator),
++			module_directory,
++			error))
++		return false;
++
++	if (configuration.has_base_path)
++	{
++		settings.reshade_base_path =
++			configuration.resolved_base_path;
++	}
++	else if (
++		environment.reshade_base_path_override_present &&
++		try_resolve_target_environment_directory(
++			environment.reshade_base_path_override,
++			module_directory,
++			environment,
++			settings.reshade_base_path))
++	{
++		// The target process environment takes precedence over the default.
++	}
++	else
++	{
++		bool defaults_to_target = false;
++		if (!runtime_defaults_base_to_target_executable_path(
++				target_process,
++				runtime_module_path,
++				defaults_to_target,
++				error))
++			return false;
++		if (defaults_to_target)
++		{
++			const size_t target_separator =
++				target_image_path.find_last_of(L"\\/");
++			if (target_separator == std::wstring::npos ||
++				!get_full_path(
++					target_image_path.substr(0, target_separator),
++					settings.reshade_base_path,
++					error))
++				return false;
++		}
++		else
++		{
++			settings.reshade_base_path =
++				std::move(module_directory);
++		}
++	}
++
++	const std::wstring config_path =
++		settings.reshade_base_path + L"\\ReShade.ini";
++	constexpr SIZE_T maximum_ini_size = 1024 * 1024;
++	bool config_missing = false;
++	std::vector<BYTE> config_bytes;
++	if (!read_bounded_regular_file(
++			config_path,
++			maximum_ini_size,
++			config_bytes,
++			config_missing,
++			error))
++		return false;
++	if (config_missing)
++	{
++		settings.addon_directory_path =
++			settings.reshade_base_path;
++		return true;
++	}
++
++	std::wstring config_text;
++	if (!decode_utf8_text(config_bytes, config_text, error))
++		return false;
++
++	bool addon_path_found = false;
++	std::vector<std::wstring> addon_path_values;
++	if (!find_ini_values(
++			config_text,
++			L"ADDON",
++			L"AddonPath",
++			addon_path_found,
++			addon_path_values,
++			error))
++		return false;
++
++	std::wstring addon_directory = settings.reshade_base_path;
++	if (addon_path_found &&
++		!addon_path_values.empty() &&
++		!addon_path_values.front().empty())
++	{
++		addon_directory = addon_path_values.front();
++		if (!is_absolute_windows_path(addon_directory))
++			addon_directory =
++				settings.reshade_base_path +
++				L"\\" +
++				addon_directory;
++	}
++	if (!get_full_path(
++		addon_directory,
++		settings.addon_directory_path,
++		error))
++		return false;
++
++	bool disabled_addons_found = false;
++	std::vector<std::wstring> disabled_addons;
++	if (!find_ini_values(
++			config_text,
++			L"ADDON",
++			L"DisabledAddons",
++			disabled_addons_found,
++			disabled_addons,
++			error))
++		return false;
++	if (disabled_addons_found)
++	{
++		constexpr wchar_t addon_name[] =
++			L"Electron Game Overlay Runtime";
++		constexpr wchar_t addon_file[] =
++			L"electron_game_overlay.addon64";
++		const std::wstring name_and_file =
++			std::wstring(addon_name) + L"@" + addon_file;
++		const std::wstring file_only =
++			std::wstring(L"@") + addon_file;
++		for (const std::wstring &disabled_addon : disabled_addons)
++		{
++			if (disabled_addon == addon_name ||
++				disabled_addon == file_only ||
++				disabled_addon == name_and_file)
++			{
++				settings.electron_game_overlay_addon_disabled = true;
++				break;
++			}
++		}
++	}
++
++	return true;
++}
++
++static bool compact_json_text(
++	const std::wstring &text,
++	std::wstring &compacted,
++	DWORD &error)
++{
++	compacted.clear();
++	compacted.reserve(text.size());
++	bool in_string = false;
++	bool escaped = false;
++
++	for (size_t index = 0; index < text.size(); ++index)
++	{
++		const wchar_t character = text[index];
++		if (!in_string)
++		{
++			if (iswspace(character))
++				continue;
++			if (character < 0x20)
++			{
++				error = ERROR_INVALID_DATA;
++				return false;
++			}
++			compacted.push_back(character);
++			if (character == L'"')
++				in_string = true;
++			continue;
++		}
++
++		compacted.push_back(character);
++		if (escaped)
++		{
++			if (character == L'u')
++			{
++				if (index + 4 >= text.size())
++				{
++					error = ERROR_INVALID_DATA;
++					return false;
++				}
++				for (size_t digit = 1; digit <= 4; ++digit)
++				{
++					const wchar_t hex = text[index + digit];
++					if (!iswxdigit(hex))
++					{
++						error = ERROR_INVALID_DATA;
++						return false;
++					}
++					compacted.push_back(hex);
++				}
++				index += 4;
++			}
++			else if (
++				character != L'"' &&
++				character != L'\\' &&
++				character != L'/' &&
++				character != L'b' &&
++				character != L'f' &&
++				character != L'n' &&
++				character != L'r' &&
++				character != L't')
++			{
++				error = ERROR_INVALID_DATA;
++				return false;
++			}
++			escaped = false;
++		}
++		else if (character == L'\\')
++		{
++			escaped = true;
++		}
++		else if (character == L'"')
++		{
++			in_string = false;
++		}
++		else if (character < 0x20)
++		{
++			error = ERROR_INVALID_DATA;
++			return false;
++		}
++	}
++
++	if (in_string || escaped)
++	{
++		error = ERROR_INVALID_DATA;
++		return false;
++	}
++	return true;
++}
++
++static bool text_contains_exactly_once(
++	const std::wstring &text,
++	const std::wstring &value)
++{
++	const size_t first = text.find(value);
++	return first != std::wstring::npos &&
++		text.find(value, first + value.size()) == std::wstring::npos;
++}
++
++enum class reshade_global_layer_kind
++{
++	vulkan,
++	openxr,
++};
++
++static module_export_inspection inspect_reshade_apps_membership(
++	const std::wstring &installation_directory,
++	const std::wstring &target_image_path,
++	bool &target_is_member,
++	DWORD &error)
++{
++	target_is_member = false;
++	bool file_missing = false;
++	bool apps_found = false;
++	std::vector<std::wstring> apps_values;
++	if (!read_bounded_utf8_ini_values(
++			installation_directory + L"\\ReShadeApps.ini",
++			L"",
++			L"Apps",
++			file_missing,
++			apps_found,
++			apps_values,
++			error))
++		return module_export_inspection::failed;
++	if (file_missing || !apps_found)
++		return module_export_inspection::not_present;
++
++	std::wstring canonical_target;
++	if (!get_full_path(target_image_path, canonical_target, error))
++		return module_export_inspection::failed;
++
++	for (const std::wstring &raw_member : apps_values)
++	{
++		const std::wstring member =
++			trim_ini_token(raw_member);
++		if (!member.empty())
++		{
++			if (!is_absolute_windows_path(member))
++			{
++				error = ERROR_BAD_PATHNAME;
++				return module_export_inspection::failed;
++			}
++			std::wstring canonical_member;
++			if (!get_full_path(member, canonical_member, error))
++				return module_export_inspection::failed;
++			if (_wcsicmp(
++					canonical_member.c_str(),
++					canonical_target.c_str()) == 0)
++			{
++				target_is_member = true;
++				return module_export_inspection::present;
++			}
++		}
++	}
++
++	return module_export_inspection::not_present;
++}
++
++static module_export_inspection inspect_registered_reshade_manifest(
++	const std::wstring &manifest_path,
++	reshade_global_layer_kind kind,
++	std::wstring &module_path,
++	DWORD &error)
++{
++	constexpr SIZE_T maximum_manifest_size = 1024 * 1024;
++	module_path.clear();
++
++	const size_t separator = manifest_path.find_last_of(L"\\/");
++	if (separator == std::wstring::npos)
++	{
++		error = ERROR_INVALID_NAME;
++		return module_export_inspection::failed;
++	}
++	const std::wstring installation_directory =
++		manifest_path.substr(0, separator);
++	module_path = installation_directory + L"\\ReShade64.dll";
++
++	bool manifest_missing = false;
++	std::vector<BYTE> manifest_bytes;
++	if (!read_bounded_regular_file(
++			manifest_path,
++			maximum_manifest_size,
++			manifest_bytes,
++			manifest_missing,
++			error))
++		return module_export_inspection::failed;
++	if (manifest_missing)
++	{
++		error = ERROR_FILE_NOT_FOUND;
++		return module_export_inspection::failed;
++	}
++
++	std::wstring manifest_text;
++	if (!decode_utf8_text(manifest_bytes, manifest_text, error))
++		return module_export_inspection::failed;
++	std::wstring compacted_manifest;
++	if (!compact_json_text(manifest_text, compacted_manifest, error))
++		return module_export_inspection::failed;
++
++	const std::wstring expected_name =
++		kind == reshade_global_layer_kind::vulkan
++			? L"\"name\":\"VK_LAYER_reshade\""
++			: L"\"name\":\"XR_APILAYER_reshade\"";
++	const std::wstring expected_library =
++		L"\"library_path\":\".\\\\ReShade64.dll\"";
++	if (!text_contains_exactly_once(
++			compacted_manifest,
++			expected_name) ||
++		!text_contains_exactly_once(
++			compacted_manifest,
++			expected_library))
++	{
++		error = ERROR_INVALID_DATA;
++		return module_export_inspection::failed;
++	}
++
++	DWORD module_error = ERROR_SUCCESS;
++	switch (file_has_export(
++		module_path,
++		"ReShadeVersion",
++		module_error,
++		IMAGE_FILE_MACHINE_AMD64))
++	{
++	case module_export_inspection::present:
++		return module_export_inspection::present;
++	case module_export_inspection::not_present:
++		error = ERROR_PROC_NOT_FOUND;
++		return module_export_inspection::failed;
++	case module_export_inspection::failed:
++		error = module_error != ERROR_SUCCESS
++			? module_error
++			: ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	error = ERROR_GEN_FAILURE;
++	return module_export_inspection::failed;
++}
++
++static bool is_reshade_layer_manifest_candidate(
++	const std::wstring &manifest_path)
++{
++	if (path_contains_case_insensitive(
++			manifest_path,
++			L"reshade"))
++		return true;
++
++	const size_t separator = manifest_path.find_last_of(L"\\/");
++	const wchar_t *const file_name =
++		separator == std::wstring::npos
++			? manifest_path.c_str()
++			: manifest_path.c_str() + separator + 1;
++	return _wcsicmp(file_name, L"VkLayer_override.json") == 0;
++}
++
++static module_export_inspection inspect_global_layer_registry_key(
++	HKEY root,
++	const std::wstring &subkey,
++	REGSAM view_flags,
++	reshade_global_layer_kind kind,
++	const std::wstring &target_image_path,
++	bool target_config_present,
++	const target_environment &environment,
++	std::wstring &evidence_path,
++	DWORD &error)
++{
++	constexpr DWORD maximum_registry_values = 512;
++	constexpr DWORD maximum_registry_value_name = 32767;
++	evidence_path.clear();
++
++	scoped_registry_key key;
++	const LSTATUS open_status = RegOpenKeyExW(
++		root,
++		subkey.c_str(),
++		0,
++		KEY_READ | view_flags,
++		&key.key);
++	if (open_status == ERROR_FILE_NOT_FOUND ||
++		open_status == ERROR_PATH_NOT_FOUND)
++		return module_export_inspection::not_present;
++	if (open_status != ERROR_SUCCESS)
++	{
++		error = static_cast<DWORD>(open_status);
++		return module_export_inspection::failed;
++	}
++
++	DWORD value_count = 0;
++	DWORD maximum_value_name_length = 0;
++	const LSTATUS query_status = RegQueryInfoKeyW(
++		key.key,
++		nullptr,
++		nullptr,
++		nullptr,
++		nullptr,
++		nullptr,
++		nullptr,
++		&value_count,
++		&maximum_value_name_length,
++		nullptr,
++		nullptr,
++		nullptr);
++	if (query_status != ERROR_SUCCESS)
++	{
++		error = static_cast<DWORD>(query_status);
++		return module_export_inspection::failed;
++	}
++	if (value_count > maximum_registry_values ||
++		maximum_value_name_length > maximum_registry_value_name)
++	{
++		error = ERROR_BUFFER_OVERFLOW;
++		return module_export_inspection::failed;
++	}
++
++	std::vector<wchar_t> value_name(
++		static_cast<size_t>(maximum_value_name_length) + 2);
++	for (DWORD value_index = 0;
++		value_index < value_count;
++		++value_index)
++	{
++		DWORD value_name_length =
++			static_cast<DWORD>(value_name.size());
++		DWORD value_type = REG_NONE;
++		DWORD value_data_size = 0;
++		const LSTATUS value_status = RegEnumValueW(
++			key.key,
++			value_index,
++			value_name.data(),
++			&value_name_length,
++			nullptr,
++			&value_type,
++			nullptr,
++			&value_data_size);
++		if (value_status != ERROR_SUCCESS)
++		{
++			error = static_cast<DWORD>(value_status);
++			return module_export_inspection::failed;
++		}
++
++		const std::wstring registry_value_name(
++			value_name.data(),
++			value_name_length);
++		if (!is_reshade_layer_manifest_candidate(registry_value_name))
++			continue;
++		evidence_path = registry_value_name;
++		if (registry_value_name.empty() ||
++			registry_value_name.find(L'\0') != std::wstring::npos ||
++			!is_absolute_windows_path(registry_value_name))
++		{
++			error = ERROR_INVALID_NAME;
++			return module_export_inspection::failed;
++		}
++
++		std::wstring manifest_path;
++		if (!get_full_path(
++				registry_value_name,
++				manifest_path,
++				error))
++			return module_export_inspection::failed;
++		evidence_path = manifest_path;
++		const size_t separator = manifest_path.find_last_of(L"\\/");
++		if (separator == std::wstring::npos)
++		{
++			error = ERROR_INVALID_NAME;
++			return module_export_inspection::failed;
++		}
++		const std::wstring installation_directory =
++			manifest_path.substr(0, separator);
++
++		bool target_is_member = false;
++		DWORD membership_error = ERROR_SUCCESS;
++		const module_export_inspection membership =
++			inspect_reshade_apps_membership(
++				installation_directory,
++				target_image_path,
++				target_is_member,
++				membership_error);
++		if (membership == module_export_inspection::failed)
++		{
++			error = membership_error != ERROR_SUCCESS
++				? membership_error
++				: ERROR_INVALID_DATA;
++			return module_export_inspection::failed;
++		}
++		if (!target_config_present &&
++			!target_is_member &&
++			!environment.reshade_base_path_override_present &&
++			!environment.reshade_disable_loading_check_present)
++			continue;
++
++		DWORD value_data = 0;
++		value_data_size = sizeof(value_data);
++		const LSTATUS data_status = RegQueryValueExW(
++			key.key,
++			registry_value_name.c_str(),
++			nullptr,
++			&value_type,
++			reinterpret_cast<BYTE *>(&value_data),
++			&value_data_size);
++		if (data_status != ERROR_SUCCESS)
++		{
++			error = static_cast<DWORD>(data_status);
+ 			return module_export_inspection::failed;
+ 		}
+-
+-		const std::wstring candidate_path =
+-			directory_prefix + find_data.cFileName;
+-		if (candidate_path.size() > max_win32_path_length)
++		if (value_type != REG_DWORD ||
++			value_data_size != sizeof(DWORD))
+ 		{
+-			installation_path = candidate_path;
+-			error = ERROR_FILENAME_EXCED_RANGE;
++			error = ERROR_INVALID_DATA;
+ 			return module_export_inspection::failed;
+ 		}
++		if (value_data != 0)
++			continue;
+ 
+-		DWORD candidate_error = ERROR_SUCCESS;
+-		switch (file_has_export(
+-			candidate_path,
+-			reshade_version_export,
+-			candidate_error))
++		std::wstring module_path;
++		switch (inspect_registered_reshade_manifest(
++			manifest_path,
++			kind,
++			module_path,
++			error))
+ 		{
+ 		case module_export_inspection::present:
+-			installation_path = candidate_path;
++			evidence_path = std::move(module_path);
+ 			return module_export_inspection::present;
+ 		case module_export_inspection::failed:
+-			installation_path = candidate_path;
+-			error = candidate_error != ERROR_SUCCESS
+-				? candidate_error
+-				: ERROR_GEN_FAILURE;
+ 			return module_export_inspection::failed;
+ 		case module_export_inspection::not_present:
+ 			break;
+ 		}
+-	} while (FindNextFileW(files.handle, &find_data));
++	}
+ 
+-	const DWORD enumeration_error = GetLastError();
+-	if (enumeration_error != ERROR_NO_MORE_FILES)
++	return module_export_inspection::not_present;
++}
++
++static bool read_test_layer_registry_root(
++	std::wstring &test_root,
++	DWORD &error)
++{
++	constexpr wchar_t environment_name[] =
++		L"ELECTRON_GAME_OVERLAY_TEST_LAYER_REGISTRY_ROOT";
++	constexpr wchar_t required_prefix[] =
++		L"Software\\ElectronGameOverlay\\Tests\\";
++	const DWORD required = GetEnvironmentVariableW(
++		environment_name,
++		nullptr,
++		0);
++	if (required == 0)
+ 	{
+-		error = enumeration_error;
++		error = GetLastError();
++		if (error == ERROR_ENVVAR_NOT_FOUND ||
++			error == ERROR_SUCCESS)
++		{
++			test_root.clear();
++			error = ERROR_SUCCESS;
++			return true;
++		}
++		return false;
++	}
++	if (required > 1024)
++	{
++		error = ERROR_BUFFER_OVERFLOW;
++		return false;
++	}
++
++	std::vector<wchar_t> buffer(static_cast<size_t>(required) + 1);
++	const DWORD written = GetEnvironmentVariableW(
++		environment_name,
++		buffer.data(),
++		static_cast<DWORD>(buffer.size()));
++	if (written == 0 || written >= buffer.size())
++	{
++		error = written == 0
++			? GetLastError()
++			: ERROR_INSUFFICIENT_BUFFER;
++		return false;
++	}
++
++	test_root.assign(buffer.data(), written);
++	if (test_root.compare(
++			0,
++			ARRAYSIZE(required_prefix) - 1,
++			required_prefix) != 0 ||
++		test_root.find(L"..") != std::wstring::npos ||
++		test_root.back() == L'\\')
++	{
++		error = ERROR_INVALID_NAME;
++		return false;
++	}
++	return true;
++}
++
++static module_export_inspection inspect_target_for_global_reshade_layer(
++	const std::wstring &target_image_path,
++	bool target_config_present,
++	const target_environment &environment,
++	std::wstring &evidence_path,
++	DWORD &error)
++{
++	evidence_path.clear();
++	error = ERROR_SUCCESS;
++	if (environment.layer_search_ambiguous)
++	{
++		error = ERROR_NOT_SUPPORTED;
++		return module_export_inspection::failed;
++	}
++	struct registry_location
++	{
++		HKEY root;
++		const wchar_t *subkey;
++		REGSAM view_flags;
++		reshade_global_layer_kind kind;
++	};
++	const registry_location locations[] = {
++		{
++			HKEY_LOCAL_MACHINE,
++			L"Software\\Khronos\\Vulkan\\ImplicitLayers",
++			KEY_WOW64_64KEY,
++			reshade_global_layer_kind::vulkan,
++		},
++		{
++			HKEY_CURRENT_USER,
++			L"Software\\Khronos\\Vulkan\\ImplicitLayers",
++			KEY_WOW64_64KEY,
++			reshade_global_layer_kind::vulkan,
++		},
++		{
++			HKEY_LOCAL_MACHINE,
++			L"Software\\Khronos\\Vulkan\\ExplicitLayers",
++			KEY_WOW64_64KEY,
++			reshade_global_layer_kind::vulkan,
++		},
++		{
++			HKEY_CURRENT_USER,
++			L"Software\\Khronos\\Vulkan\\ExplicitLayers",
++			KEY_WOW64_64KEY,
++			reshade_global_layer_kind::vulkan,
++		},
++		{
++			HKEY_LOCAL_MACHINE,
++			L"Software\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
++			KEY_WOW64_64KEY,
++			reshade_global_layer_kind::openxr,
++		},
++		{
++			HKEY_CURRENT_USER,
++			L"Software\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
++			KEY_WOW64_64KEY,
++			reshade_global_layer_kind::openxr,
++		},
++	};
++
++	std::wstring test_root;
++	if (!read_test_layer_registry_root(test_root, error))
+ 		return module_export_inspection::failed;
++	if (!test_root.empty())
++	{
++		const std::pair<const wchar_t *, reshade_global_layer_kind>
++			test_locations[] = {
++				{
++					L"Vulkan\\ImplicitLayers",
++					reshade_global_layer_kind::vulkan,
++				},
++				{
++					L"OpenXR\\1\\ApiLayers\\Implicit",
++					reshade_global_layer_kind::openxr,
++				},
++			};
++		for (const auto &location : test_locations)
++		{
++			const module_export_inspection inspection =
++				inspect_global_layer_registry_key(
++				HKEY_CURRENT_USER,
++				test_root + L"\\" + location.first,
++				KEY_WOW64_64KEY,
++				location.second,
++				target_image_path,
++				target_config_present,
++				environment,
++				evidence_path,
++				error);
++			if (inspection != module_export_inspection::not_present)
++				return inspection;
++		}
++	}
++
++	for (const registry_location &location : locations)
++	{
++		const module_export_inspection inspection =
++			inspect_global_layer_registry_key(
++			location.root,
++			location.subkey,
++			location.view_flags,
++			location.kind,
++			target_image_path,
++			target_config_present,
++			environment,
++			evidence_path,
++			error);
++		if (inspection != module_export_inspection::not_present)
++			return inspection;
+ 	}
+ 
+ 	return module_export_inspection::not_present;
+@@ -1071,7 +2907,12 @@ static target_preflight_result inspect_target_for_official_addon(
+ {
+ 	constexpr char addon_abi_export[] =
+ 		"ElectronGameOverlayReShadeAddonAbi";
++	constexpr char addon_build_id_export[] =
++		"ElectronGameOverlayReShadeAddonBuildId";
+ 	constexpr unsigned int supported_addon_abi = 1;
++	constexpr char expected_addon_build_id[] =
++		"202F40B8B4B04C519BF12F693BE2B94F";
++	static_assert(sizeof(expected_addon_build_id) == 33);
+ 	bool found_addon = false;
+ 
+ 	for (size_t index = 0; index < module_count; ++index)
+@@ -1117,13 +2958,56 @@ static target_preflight_result inspect_target_for_official_addon(
+ 				runtime.module_path.c_str()) == 0)
+ 			return target_preflight_result::runtime_incompatible;
+ 
++		uintptr_t addon_build_id_address = 0;
++		switch (remote_module_export_address(
++			process,
++			modules[index],
++			addon_build_id_export,
++			addon_build_id_address,
++			error))
++		{
++		case module_export_inspection::not_present:
++			return target_preflight_result::runtime_incompatible;
++		case module_export_inspection::failed:
++			return target_preflight_result::inspection_failed;
++		case module_export_inspection::present:
++			break;
++		}
++
++		char addon_build_id[sizeof(expected_addon_build_id)] = {};
++		if (!read_remote_bytes(
++				process,
++				addon_build_id_address,
++				addon_build_id,
++				sizeof(addon_build_id),
++				error))
++			return target_preflight_result::inspection_failed;
++		for (size_t digit = 0; digit < sizeof(addon_build_id) - 1; ++digit)
++		{
++			if (!(
++				(addon_build_id[digit] >= '0' &&
++				 addon_build_id[digit] <= '9') ||
++				(addon_build_id[digit] >= 'A' &&
++				 addon_build_id[digit] <= 'F')))
++				return target_preflight_result::runtime_incompatible;
++		}
++		if (addon_build_id[sizeof(addon_build_id) - 1] != '\0' ||
++			std::memcmp(
++				addon_build_id,
++				expected_addon_build_id,
++				sizeof(expected_addon_build_id)) != 0)
++			return target_preflight_result::runtime_incompatible;
++
+ 		runtime.addon_abi = addon_abi;
++		runtime.addon_build_id.assign(
++			addon_build_id,
++			sizeof(addon_build_id) - 1);
+ 		found_addon = true;
+ 	}
+ 
+ 	return found_addon
+ 		? target_preflight_result::official_addon
+-		: target_preflight_result::runtime_incompatible;
++		: target_preflight_result::official_addon_pending;
+ }
+ 
+ static target_preflight_result inspect_target_for_reshade_once(
+@@ -1257,25 +3141,53 @@ static bool is_transient_module_inspection_error(DWORD error)
+ 
+ static target_preflight_result inspect_target_for_reshade(
+ 	HANDLE process,
++	DWORD official_addon_wait_ms,
+ 	reusable_runtime_info &runtime,
+ 	DWORD &error)
+ {
+ 	constexpr unsigned int max_inspection_attempts = 4;
+-	for (unsigned int attempt = 0; attempt < max_inspection_attempts; ++attempt)
++	const ULONGLONG wait_deadline =
++		GetTickCount64() + official_addon_wait_ms;
++	for (;;)
+ 	{
+-		runtime = {};
+-		error = ERROR_SUCCESS;
+-		const target_preflight_result result =
+-			inspect_target_for_reshade_once(process, runtime, error);
+-		if (result != target_preflight_result::inspection_failed ||
+-			!is_transient_module_inspection_error(error) ||
+-			attempt + 1 == max_inspection_attempts)
++		target_preflight_result result =
++			target_preflight_result::inspection_failed;
++		for (unsigned int attempt = 0;
++			 attempt < max_inspection_attempts;
++			 ++attempt)
++		{
++			runtime = {};
++			error = ERROR_SUCCESS;
++			result = inspect_target_for_reshade_once(
++				process,
++				runtime,
++				error);
++			if (result != target_preflight_result::inspection_failed ||
++				!is_transient_module_inspection_error(error) ||
++				attempt + 1 == max_inspection_attempts)
++				break;
++			Sleep(1);
++		}
++
++		const bool may_still_load_official_addon =
++			result == target_preflight_result::clear ||
++			result == target_preflight_result::official_addon_pending;
++		if (!may_still_load_official_addon)
+ 			return result;
+-		Sleep(1);
++		if (official_addon_wait_ms == 0)
++			return result == target_preflight_result::official_addon_pending
++				? target_preflight_result::runtime_incompatible
++				: result;
++
++		const ULONGLONG now = GetTickCount64();
++		if (now >= wait_deadline)
++			return result == target_preflight_result::official_addon_pending
++				? target_preflight_result::runtime_incompatible
++				: result;
++		const ULONGLONG remaining = wait_deadline - now;
++		Sleep(static_cast<DWORD>(
++			remaining < 25 ? remaining : 25));
+ 	}
+-
+-	error = ERROR_GEN_FAILURE;
+-	return target_preflight_result::inspection_failed;
+ }
+ 
+ static void append_json_string(std::wstring &json, const std::wstring &value)
+@@ -1331,7 +3243,9 @@ static bool write_injector_diagnostic(
+ 	const wchar_t *code,
+ 	DWORD pid,
+ 	const std::wstring &module_path,
+-	DWORD windows_error)
++	DWORD windows_error,
++	const std::wstring &target_executable_path,
++	const target_effective_reshade_settings *effective_settings = nullptr)
+ {
+ 	std::wstring diagnostic =
+ 		L"ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {\"schemaVersion\":1,"
+@@ -1339,12 +3253,35 @@ static bool write_injector_diagnostic(
+ 	diagnostic.append(code);
+ 	diagnostic.append(L"\",\"pid\":");
+ 	diagnostic.append(std::to_wstring(pid));
++	if (!target_executable_path.empty())
++	{
++		diagnostic.append(L",\"targetExecutablePath\":");
++		append_json_string(diagnostic, target_executable_path);
++	}
+ 	diagnostic.append(L",\"injectionStarted\":false");
+ 	if (!module_path.empty())
+ 	{
+ 		diagnostic.append(L",\"modulePath\":");
+ 		append_json_string(diagnostic, module_path);
+ 	}
++	if (effective_settings != nullptr)
++	{
++		diagnostic.append(L",\"reshadeBasePath\":");
++		append_json_string(
++			diagnostic,
++			effective_settings->reshade_base_path);
++		diagnostic.append(L",\"addonDirectoryPath\":");
++		append_json_string(
++			diagnostic,
++			effective_settings->addon_directory_path);
++		diagnostic.append(
++			L",\"electronGameOverlayAddonDisabled\":");
++		diagnostic.append(
++			effective_settings
++				->electron_game_overlay_addon_disabled
++				? L"true"
++				: L"false");
++	}
+ 	if (windows_error != ERROR_SUCCESS)
+ 	{
+ 		diagnostic.append(L",\"windowsErrorCode\":");
+@@ -1361,13 +3298,16 @@ static bool write_injector_diagnostic(
+ static bool write_existing_runtime_load_diagnostic(
+ 	DWORD pid,
+ 	const std::wstring &module_path,
+-	DWORD windows_error)
++	DWORD windows_error,
++	const std::wstring &target_executable_path)
+ {
+ 	std::wstring diagnostic =
+ 		L"ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {\"schemaVersion\":1,"
+ 		L"\"stage\":\"existing-runtime-addon-load\","
+ 		L"\"code\":\"existing-runtime-addon-load-failed\",\"pid\":";
+ 	diagnostic.append(std::to_wstring(pid));
++	diagnostic.append(L",\"targetExecutablePath\":");
++	append_json_string(diagnostic, target_executable_path);
+ 	diagnostic.append(L",\"injectionStarted\":true");
+ 	if (!module_path.empty())
+ 	{
+@@ -1388,11 +3328,14 @@ static bool write_existing_runtime_load_diagnostic(
+ static bool write_injector_result(
+ 	DWORD pid,
+ 	bool reused_existing_runtime,
+-	const reusable_runtime_info &runtime)
++	const reusable_runtime_info &runtime,
++	const std::wstring &target_executable_path)
+ {
+ 	std::wstring result =
+ 		L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
+ 	result.append(std::to_wstring(pid));
++	result.append(L",\"targetExecutablePath\":");
++	append_json_string(result, target_executable_path);
+ 	result.append(
+ 		reused_existing_runtime
+ 			? L",\"runtimeMode\":\"existing-runtime\",\"runtimeModulePath\":"
+@@ -1411,11 +3354,15 @@ static bool write_injector_result(
+ 
+ static bool write_official_addon_result(
+ 	DWORD pid,
+-	const reusable_runtime_info &runtime)
++	const reusable_runtime_info &runtime,
++	const std::wstring &target_executable_path,
++	const target_effective_reshade_settings &effective_settings)
+ {
+ 	std::wstring result =
+ 		L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
+ 	result.append(std::to_wstring(pid));
++	result.append(L",\"targetExecutablePath\":");
++	append_json_string(result, target_executable_path);
+ 	result.append(
+ 		L",\"runtimeMode\":\"official-addon\",\"runtimeModulePath\":");
+ 	append_json_string(result, runtime.module_path);
+@@ -1423,6 +3370,25 @@ static bool write_official_addon_result(
+ 	append_json_string(result, runtime.addon_module_path);
+ 	result.append(L",\"addonAbi\":");
+ 	result.append(std::to_wstring(runtime.addon_abi));
++	result.append(L",\"addonBuildId\":");
++	append_json_string(
++		result,
++		std::wstring(
++			runtime.addon_build_id.begin(),
++			runtime.addon_build_id.end()));
++	result.append(L",\"reshadeBasePath\":");
++	append_json_string(
++		result,
++		effective_settings.reshade_base_path);
++	result.append(L",\"addonDirectoryPath\":");
++	append_json_string(
++		result,
++		effective_settings.addon_directory_path);
++	result.append(L",\"electronGameOverlayAddonDisabled\":");
++	result.append(
++		effective_settings.electron_game_overlay_addon_disabled
++			? L"true"
++			: L"false");
+ 	result.push_back(L'}');
+ 
+ 	return fwprintf(stdout, L"%ls\n", result.c_str()) >= 0 &&
+@@ -1786,11 +3752,17 @@ int wmain(int argc, wchar_t *argv[])
+ 		}
+ 	}
+ 	const bool exact_pid_requested = !path_watcher_requested && argc >= 3 && wcscmp(argv[2], L"--pid") == 0;
+-	const bool use_exact_pid = argc == 4 && exact_pid_requested;
++	const bool official_addon_wait_requested =
++		exact_pid_requested &&
++		argc == 6 &&
++		wcscmp(argv[4], L"--wait-for-official-addon") == 0;
++	const bool use_exact_pid =
++		exact_pid_requested &&
++		(argc == 4 || official_addon_wait_requested);
+ 	if ((argc != 2 && !use_exact_pid && !use_path_watcher) ||
+ 		(path_watcher_requested && !use_path_watcher))
+ 	{
+-		wprintf(L"usage: %s <exe name> [--pid <uint32>] | --path-contains <fragment> [--exclude-name <exe basename>]...\n", argv[0]);
++		wprintf(L"usage: %s <exe name> [--pid <uint32> [--wait-for-official-addon <milliseconds>]] | --path-contains <fragment> [--exclude-name <exe basename>]...\n", argv[0]);
+ 		if (exact_pid_requested || path_watcher_requested)
+ 			print_injection_not_started();
+ 		return exact_pid_requested || path_watcher_requested ? ERROR_INVALID_PARAMETER : 0;
+@@ -1807,6 +3779,7 @@ int wmain(int argc, wchar_t *argv[])
+ 	}
+ 
+ 	DWORD pid = 0;
++	DWORD official_addon_wait_ms = 0;
+ 	std::wstring matched_image_path;
+ 	if (use_exact_pid)
+ 	{
+@@ -1816,6 +3789,16 @@ int wmain(int argc, wchar_t *argv[])
+ 			print_injection_not_started();
+ 			return ERROR_INVALID_PARAMETER;
+ 		}
++		if (official_addon_wait_requested &&
++			(!parse_process_id(argv[5], official_addon_wait_ms) ||
++			 official_addon_wait_ms > 60000))
++		{
++			wprintf(
++				L"Invalid official add-on wait '%s': expected milliseconds from 1 through 60000.\n",
++				argv[5]);
++			print_injection_not_started();
++			return ERROR_INVALID_PARAMETER;
++		}
+ 	}
+ 	else if (!use_path_watcher)
+ 	{
+@@ -1853,7 +3836,13 @@ int wmain(int argc, wchar_t *argv[])
+ 	}
+ 
+ 	// Open target application process
+-	const scoped_handle remote_process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, pid);
++	DWORD desired_process_access =
++		PROCESS_VM_READ | PROCESS_QUERY_INFORMATION;
++	if (!official_addon_wait_requested)
++		desired_process_access |=
++			PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE;
++	const scoped_handle remote_process =
++		OpenProcess(desired_process_access, FALSE, pid);
+ 	if (remote_process == nullptr)
+ 	{
+ 		const DWORD error = GetLastError();
+@@ -1922,7 +3905,8 @@ int wmain(int argc, wchar_t *argv[])
+ 				L"target-injection-already-claimed",
+ 				pid,
+ 				std::wstring(),
+-				claim_error))
++				claim_error,
++				selected_image_path))
+ 			claim_error = ERROR_WRITE_FAULT;
+ 		print_injection_not_started();
+ 		return claim_error;
+@@ -1931,7 +3915,8 @@ int wmain(int argc, wchar_t *argv[])
+ 				L"target-injection-claim-failed",
+ 				pid,
+ 				std::wstring(),
+-				claim_error))
++				claim_error,
++				selected_image_path))
+ 			claim_error = ERROR_WRITE_FAULT;
+ 		print_injection_not_started();
+ 		return claim_error;
+@@ -1942,34 +3927,203 @@ int wmain(int argc, wchar_t *argv[])
+ 	reusable_runtime_info reusable_runtime;
+ 	DWORD preflight_error = ERROR_SUCCESS;
+ 	bool reuse_existing_runtime = false;
+-	switch (inspect_target_for_reshade(remote_process, reusable_runtime, preflight_error))
++	const target_preflight_result preflight_result =
++		inspect_target_for_reshade(
++			remote_process,
++			official_addon_wait_ms,
++			reusable_runtime,
++			preflight_error);
++	if (official_addon_wait_requested &&
++		(preflight_result == target_preflight_result::clear ||
++		 preflight_result == target_preflight_result::reusable_runtime))
++	{
++		if (!write_injector_diagnostic(
++				L"target-official-addon-wait-expired",
++				pid,
++				reusable_runtime.module_path,
++				ERROR_TIMEOUT,
++				selected_image_path))
++			preflight_error = ERROR_WRITE_FAULT;
++		else
++			preflight_error = ERROR_TIMEOUT;
++		print_injection_not_started();
++		return preflight_error;
++	}
++
++	switch (preflight_result)
+ 	{
+ 	case target_preflight_result::official_addon:
++	{
++		target_environment environment;
++		DWORD settings_error = ERROR_SUCCESS;
++		if (!inspect_target_environment(
++				remote_process,
++				environment,
++				settings_error))
++		{
++			if (settings_error == ERROR_SUCCESS)
++				settings_error = ERROR_PARTIAL_COPY;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					reusable_runtime.module_path,
++					settings_error,
++					selected_image_path))
++				settings_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return settings_error;
++		}
++
++		target_reshade_configuration configuration;
++		switch (inspect_target_reshade_configuration(
++			selected_image_path,
++			environment,
++			configuration,
++			settings_error))
++		{
++		case module_export_inspection::failed:
++			if (settings_error == ERROR_SUCCESS)
++				settings_error = ERROR_INVALID_DATA;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					configuration.config_path,
++					settings_error,
++					selected_image_path))
++				settings_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return settings_error;
++		case module_export_inspection::present:
++		case module_export_inspection::not_present:
++			break;
++		}
++
++		target_effective_reshade_settings effective_settings;
++		if (!inspect_target_effective_reshade_settings(
++				selected_image_path,
++				reusable_runtime.module_path,
++				remote_process,
++				environment,
++				configuration,
++				effective_settings,
++				settings_error))
++		{
++			if (settings_error == ERROR_SUCCESS)
++				settings_error = ERROR_INVALID_DATA;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					reusable_runtime.module_path,
++					settings_error,
++					selected_image_path))
++				settings_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return settings_error;
++		}
++
+ 		wprintf(
+ 			L"Found a matching process with PID %lu! "
+ 			L"Official ReShade and Electron Game Overlay add-on are already loaded. "
+ 			L"Succeeded!\n",
+ 			pid);
+-		if (!write_official_addon_result(pid, reusable_runtime))
++		if (!write_official_addon_result(
++				pid,
++				reusable_runtime,
++				selected_image_path,
++				effective_settings))
+ 			return ERROR_WRITE_FAULT;
+ 		return ERROR_SUCCESS;
++	}
+ 	case target_preflight_result::runtime_incompatible:
++	case target_preflight_result::official_addon_pending:
++	{
++		target_environment environment;
++		DWORD settings_error = ERROR_SUCCESS;
++		if (!inspect_target_environment(
++				remote_process,
++				environment,
++				settings_error))
++		{
++			if (settings_error == ERROR_SUCCESS)
++				settings_error = ERROR_PARTIAL_COPY;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					reusable_runtime.module_path,
++					settings_error,
++					selected_image_path))
++				settings_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return settings_error;
++		}
++
++		target_reshade_configuration configuration;
++		switch (inspect_target_reshade_configuration(
++			selected_image_path,
++			environment,
++			configuration,
++			settings_error))
++		{
++		case module_export_inspection::failed:
++			if (settings_error == ERROR_SUCCESS)
++				settings_error = ERROR_INVALID_DATA;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					configuration.config_path,
++					settings_error,
++					selected_image_path))
++				settings_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return settings_error;
++		case module_export_inspection::present:
++		case module_export_inspection::not_present:
++			break;
++		}
++
++		target_effective_reshade_settings effective_settings;
++		if (!inspect_target_effective_reshade_settings(
++				selected_image_path,
++				reusable_runtime.module_path,
++				remote_process,
++				environment,
++				configuration,
++				effective_settings,
++				settings_error))
++		{
++			if (settings_error == ERROR_SUCCESS)
++				settings_error = ERROR_INVALID_DATA;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					reusable_runtime.module_path,
++					settings_error,
++					selected_image_path))
++				settings_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return settings_error;
++		}
++
+ 		if (!write_injector_diagnostic(
+ 				L"target-runtime-incompatible",
+ 				pid,
+ 				reusable_runtime.module_path,
+-				ERROR_NOT_SUPPORTED))
++				ERROR_NOT_SUPPORTED,
++				selected_image_path,
++				&effective_settings))
+ 			preflight_error = ERROR_WRITE_FAULT;
+ 		else
+ 			preflight_error = ERROR_NOT_SUPPORTED;
+ 		print_injection_not_started();
+ 		return preflight_error;
++	}
+ 	case target_preflight_result::runtime_reuse_too_late:
+ 		if (!write_injector_diagnostic(
+ 				L"target-runtime-reuse-too-late",
+ 				pid,
+ 				reusable_runtime.module_path,
+-				ERROR_BUSY))
++				ERROR_BUSY,
++				selected_image_path))
+ 			preflight_error = ERROR_WRITE_FAULT;
+ 		else
+ 			preflight_error = ERROR_BUSY;
+@@ -1982,20 +4117,88 @@ int wmain(int argc, wchar_t *argv[])
+ 				L"target-module-inspection-failed",
+ 				pid,
+ 				std::wstring(),
+-				preflight_error))
++				preflight_error,
++				selected_image_path))
+ 			preflight_error = ERROR_WRITE_FAULT;
+ 		print_injection_not_started();
+ 		return preflight_error;
+ 	case target_preflight_result::clear:
+ 	{
+-		std::wstring installation_path;
++		target_environment environment;
+ 		DWORD installation_error = ERROR_SUCCESS;
++		if (!inspect_target_environment(
++			remote_process,
++			environment,
++			installation_error))
++		{
++			if (installation_error == ERROR_SUCCESS)
++				installation_error = ERROR_PARTIAL_COPY;
++			if (!write_injector_diagnostic(
++					L"target-global-reshade-layer-inspection-failed",
++					pid,
++					std::wstring(),
++					installation_error,
++					selected_image_path))
++				installation_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return installation_error;
++		}
++
++		target_reshade_configuration configuration;
++		switch (inspect_target_reshade_configuration(
++			selected_image_path,
++			environment,
++			configuration,
++			installation_error))
++		{
++		case module_export_inspection::failed:
++			if (installation_error == ERROR_SUCCESS)
++				installation_error = ERROR_INVALID_DATA;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					configuration.config_path,
++					installation_error,
++					selected_image_path))
++				installation_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return installation_error;
++		case module_export_inspection::present:
++		case module_export_inspection::not_present:
++			break;
++		}
++
++		std::wstring installation_path;
++		installation_error = ERROR_SUCCESS;
+ 		switch (inspect_target_directory_for_reshade(
+ 			selected_image_path,
+ 			installation_path,
+ 			installation_error))
+ 		{
+ 		case module_export_inspection::present:
++		{
++			target_effective_reshade_settings effective_settings;
++			if (!inspect_target_effective_reshade_settings(
++					selected_image_path,
++					installation_path,
++					remote_process,
++					environment,
++					configuration,
++					effective_settings,
++					installation_error))
++			{
++				if (installation_error == ERROR_SUCCESS)
++					installation_error = ERROR_INVALID_DATA;
++				if (!write_injector_diagnostic(
++						L"target-module-inspection-failed",
++						pid,
++						installation_path,
++						installation_error,
++						selected_image_path))
++					installation_error = ERROR_WRITE_FAULT;
++				print_injection_not_started();
++				return installation_error;
++			}
+ 			wprintf(
+ 				L"\nFound an existing inactive ReShade installation at '%s'. "
+ 				L"Project runtime injection was refused.\n",
+@@ -2004,12 +4207,15 @@ int wmain(int argc, wchar_t *argv[])
+ 					L"target-existing-reshade-installation",
+ 					pid,
+ 					installation_path,
+-					ERROR_SUCCESS))
++					ERROR_SUCCESS,
++					selected_image_path,
++					&effective_settings))
+ 				installation_error = ERROR_WRITE_FAULT;
+ 			else
+ 				installation_error = ERROR_ALREADY_EXISTS;
+ 			print_injection_not_started();
+ 			return installation_error;
++		}
+ 		case module_export_inspection::failed:
+ 			if (installation_error == ERROR_SUCCESS)
+ 				installation_error = ERROR_GEN_FAILURE;
+@@ -2017,7 +4223,145 @@ int wmain(int argc, wchar_t *argv[])
+ 					L"target-module-inspection-failed",
+ 					pid,
+ 					installation_path,
++					installation_error,
++					selected_image_path))
++				installation_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return installation_error;
++		case module_export_inspection::not_present:
++			break;
++		}
++
++		if (configuration.has_base_path &&
++			_wcsicmp(
++				configuration.target_directory_path.c_str(),
++				configuration.resolved_base_path.c_str()) != 0)
++		{
++			switch (inspect_directory_for_reshade(
++				configuration.resolved_base_path,
++				installation_path,
++				installation_error))
++			{
++			case module_export_inspection::present:
++			{
++				target_effective_reshade_settings effective_settings;
++				if (!inspect_target_effective_reshade_settings(
++						selected_image_path,
++						installation_path,
++						remote_process,
++						environment,
++						configuration,
++						effective_settings,
++						installation_error))
++				{
++					if (installation_error == ERROR_SUCCESS)
++						installation_error = ERROR_INVALID_DATA;
++					if (!write_injector_diagnostic(
++							L"target-module-inspection-failed",
++							pid,
++							installation_path,
++							installation_error,
++							selected_image_path))
++						installation_error = ERROR_WRITE_FAULT;
++					print_injection_not_started();
++					return installation_error;
++				}
++				wprintf(
++					L"\nFound an existing ReShade installation in "
++					L"the target's configured BasePath at '%s'. "
++					L"Project runtime injection was refused.\n",
++					installation_path.c_str());
++				if (!write_injector_diagnostic(
++						L"target-existing-reshade-installation",
++						pid,
++						installation_path,
++						ERROR_SUCCESS,
++						selected_image_path,
++						&effective_settings))
++					installation_error = ERROR_WRITE_FAULT;
++				else
++					installation_error = ERROR_ALREADY_EXISTS;
++				print_injection_not_started();
++				return installation_error;
++			}
++			case module_export_inspection::failed:
++				if (installation_error == ERROR_SUCCESS)
++					installation_error = ERROR_GEN_FAILURE;
++				if (!write_injector_diagnostic(
++						L"target-module-inspection-failed",
++						pid,
++						installation_path.empty()
++							? configuration.resolved_base_path
++							: installation_path,
++						installation_error,
++						selected_image_path))
++					installation_error = ERROR_WRITE_FAULT;
++				print_injection_not_started();
++				return installation_error;
++			case module_export_inspection::not_present:
++				break;
++			}
++		}
++
++		std::wstring global_layer_evidence_path;
++		installation_error = ERROR_SUCCESS;
++		switch (inspect_target_for_global_reshade_layer(
++			selected_image_path,
++			configuration.present,
++			environment,
++			global_layer_evidence_path,
++			installation_error))
++		{
++		case module_export_inspection::present:
++		{
++			target_effective_reshade_settings effective_settings;
++			if (!inspect_target_effective_reshade_settings(
++					selected_image_path,
++					global_layer_evidence_path,
++					remote_process,
++					environment,
++					configuration,
++					effective_settings,
+ 					installation_error))
++			{
++				if (installation_error == ERROR_SUCCESS)
++					installation_error = ERROR_INVALID_DATA;
++				if (!write_injector_diagnostic(
++						L"target-global-reshade-layer-inspection-failed",
++						pid,
++						global_layer_evidence_path,
++						installation_error,
++						selected_image_path))
++					installation_error = ERROR_WRITE_FAULT;
++				print_injection_not_started();
++				return installation_error;
++			}
++			wprintf(
++				L"\nFound an applicable existing global ReShade layer "
++				L"at '%s'. Project runtime injection was refused.\n",
++				global_layer_evidence_path.c_str());
++			if (!write_injector_diagnostic(
++					L"target-existing-reshade-global-layer",
++					pid,
++					global_layer_evidence_path,
++					ERROR_SUCCESS,
++					selected_image_path,
++					&effective_settings))
++				installation_error = ERROR_WRITE_FAULT;
++			else
++				installation_error = ERROR_ALREADY_EXISTS;
++			print_injection_not_started();
++			return installation_error;
++		}
++		case module_export_inspection::failed:
++			if (installation_error == ERROR_SUCCESS)
++				installation_error = ERROR_INVALID_DATA;
++			if (!write_injector_diagnostic(
++					L"target-global-reshade-layer-inspection-failed",
++					pid,
++					global_layer_evidence_path,
++					installation_error,
++					selected_image_path))
+ 				installation_error = ERROR_WRITE_FAULT;
+ 			print_injection_not_started();
+ 			return installation_error;
+@@ -2135,7 +4479,11 @@ int wmain(int argc, wchar_t *argv[])
+ #endif
+ 	{
+ 		wprintf(L"Succeeded!\n");
+-		if (!write_injector_result(pid, reuse_existing_runtime, reusable_runtime))
++		if (!write_injector_result(
++				pid,
++				reuse_existing_runtime,
++				reusable_runtime,
++				selected_image_path))
+ 			return ERROR_WRITE_FAULT;
+ 		return 0;
+ 	}
+@@ -2149,7 +4497,8 @@ int wmain(int argc, wchar_t *argv[])
+ 					L"target-runtime-reuse-raced",
+ 					pid,
+ 					reusable_runtime.module_path,
+-					exit_code))
++					exit_code,
++					selected_image_path))
+ 				exit_code = ERROR_WRITE_FAULT;
+ 			print_injection_not_started();
+ 			return exit_code;
+@@ -2163,7 +4512,8 @@ int wmain(int argc, wchar_t *argv[])
+ 			if (!write_existing_runtime_load_diagnostic(
+ 					pid,
+ 					reusable_runtime.module_path,
+-					exit_code))
++					exit_code,
++					selected_image_path))
+ 				return ERROR_WRITE_FAULT;
+ 			return exit_code;
+ 		}

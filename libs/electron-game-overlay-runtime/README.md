@@ -3,8 +3,10 @@
 This production Windows x64 package uses the ReShade 6.7.3 full add-on runtime
 as the native process-entry, graphics-hook, swap-chain, input, logging, and
 Dear ImGui layer. It builds the injector, controlled hosts, and
-`electron_game_overlay.addon64`. The historical hudhook payload is not part of
-the production SDK build or staged runtime.
+`electron_game_overlay.addon64`, plus the native
+`electron_game_overlay_reshade_manager.exe` used for ownership-safe changes to
+a verified official installation. The historical hudhook payload is not part
+of the production SDK build or staged runtime.
 
 The original baseline proved two things inside the target render path:
 
@@ -29,13 +31,19 @@ legacy route.
 Exact-PID SDK attachment uses a run-local rendezvous boundary. The injected
 transport prefers `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`; newly injected runtime
 mode also sets ReShade's base-path override to that run, while compatible
-existing-runtime mode deliberately leaves the host's configuration and log base
-path unchanged. Each consumed staged run receives a unique producer token bound
-to its expected PID before injection. The producer writes
+existing-runtime and official-host modes deliberately leave the host's
+configuration and log base path unchanged. Each consumed staged run receives a
+unique producer token bound to its expected PID before injection. The producer
+writes
 `electron-overlay-transport-v1.targeted` first, then the adjacent discovery
 record. The injected client treats that marker as persistent route intent: a
 missing, invalid, or revoked local credential fails closed instead of falling
 back to the global producer.
+
+An official add-on cannot inherit the isolated run-directory environment. For
+that mode, the SDK publishes the same PID-bound credential at a deterministic
+exact-PID temporary path, and authorizes a path-selected result only after the
+injector proves the selected process.
 
 The launcher retains the authorization while the target remains live. A
 confirmed terminal exit, launcher disposal, or session shutdown removes the
@@ -83,8 +91,11 @@ npx nx build electron-game-overlay-runtime
 ```
 
 That target builds the transport dependency, pinned ReShade runtime/injector,
-production add-on, and ABI smoke. To configure only the native controlled-host
-tree directly:
+production add-on, native target-local ReShade add-on manager, and ABI smoke.
+The staged package also contains
+`electron_game_overlay_runtime.build.json`, which binds those artifacts to their
+source and content hashes. To configure only the native controlled-host tree
+directly:
 
 ```powershell
 Push-Location libs/electron-game-overlay-runtime
@@ -99,8 +110,8 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies fourteen production
-patches to the pinned ReShade revision:
+downloads both into the ignored build directory, then applies seventeen
+production patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
   and exposes a passive copied-input event after ReShade decides to block;
@@ -150,6 +161,16 @@ patches to the pinned ReShade revision:
   unknown, incompatible, or already-active ReShade instances fail closed.
 - `reshade-injector-export-read-bounds.patch` bounds remote export-name reads to
   the requested symbol length while inspecting a candidate runtime.
+- `reshade-injector-existing-installation-preflight.patch` detects a
+  target-local official installation before target mutation and reports the
+  exact target executable, effective ReShade base path, add-on directory, and
+  project-add-on disable state from that process.
+- `reshade-injector-official-addon-host.patch` routes any detected target-local
+  x64 ReShade identity to the uniquely named public API-18 add-on and validates
+  the mapped add-on ABI and build identity without a version/hash allowlist.
+- `reshade-injector-global-layer-preflight.patch` discovers applicable
+  registered Vulkan and OpenXR ReShade layers and makes project-runtime
+  injection fail closed without changing those installations.
 - `reshade-shared-runtime-hardening.patch` closes the registration gate before
   add-on dispatch begins, uses a bounded x64 loader thunk, and makes gate races
   fail closed without spinning a CPU core.
@@ -158,8 +179,13 @@ patches to the pinned ReShade revision:
   pipeline, add-on callbacks, version metadata, `UNOFFICIAL` build identity,
   and the non-branded spinner for later explicit effect reloads intact.
 
-Use the runtime built by this repository with the Electron add-on; the stock
-API-18 ReShade 6.7.3 runtime is ABI-incompatible.
+The same Electron add-on has two negotiated hosts. On any detected target-local
+x64 ReShade identity it must register through public API 18 and obtain the exact
+Dear ImGui function table; it enables the private input observer only in this
+repository's patched host. Do not replace the staged `ReShade64.dll` with a
+stock build; the bundled project runtime remains the pinned ReShade 6.7.3 build,
+while public-host compatibility is selected by capabilities rather than product
+version or file hash.
 
 ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is
 MIT-licensed. Preserve their notices if compiled binaries are redistributed.
@@ -173,7 +199,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-17 build stamp, the fourteen
+The launchers validate the cache against a schema-20 build stamp, the seventeen
 production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
 all nine patched source files, the full-add-on configuration, and the
 runtime/injector SHA-256 hashes. CMake performs the same commit, nine-path, and
@@ -448,6 +474,83 @@ active graphics API, adopt the existing device or swap chain, load the add-on,
 or render the Electron scene. That route is unsupported. Probe evidence is under
 `build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
 
+## Existing target-local ReShade coexistence
+
+Clean targets continue through the repository's patched injected host. For an
+exact-PID target that already has ReShade, preflight resolves installation paths
+and enablement from the exact target process and its configuration. Every
+detected target-local x64 ReShade identity suppresses fallback project-runtime
+injection and is attempted with the uniquely named
+`electron_game_overlay.addon64`. There is no version/hash allowlist.
+`DisabledAddons` is authoritative: if the user disabled this add-on, the
+launcher leaves that decision intact and refuses attachment. Compatibility is
+  established only after the add-on loads: `ReShadeRegisterAddon` must accept
+  public API 18 and `ReShadeGetImGuiFunctionTable` must return the exact Dear ImGui
+  table requested by the add-on. A current add-on that has not loaded yet receives
+  one bounded, inspection-only startup grace. A host that remains mapped without
+  loading it reports `existing-reshade-addon-host-incompatible`; one that
+  disappears during the wait reports `target-official-addon-wait-expired`.
+  Neither result permits a repeated restart or fallback injection.
+
+No coexistence path replaces or rewrites the existing ReShade runtime/proxy,
+INI, presets, effects, or foreign add-ons. A public host that cannot complete
+the required registration/table negotiation is preserved and fails closed.
+Applicable configured global Vulkan/OpenXR ReShade layers are also preserved
+and block fallback project-runtime injection; they are not public-host
+integration paths.
+
+Only `electron_game_overlay_reshade_manager.exe` may change the reserved
+`electron_game_overlay.addon64`, ownership marker, transaction journal, and its
+verified temporary/backup names. The manager holds and verifies the exact
+runtime file named by the request while it performs a crash-recoverable
+transaction; it does not discover installations or edit ReShade configuration.
+The request hash is exact TOCTOU and transaction provenance, not a compatibility
+allowlist. The ownership marker's `reshadeModuleSha256` is installation
+provenance and is ignored for compatibility. Installing or updating the add-on
+requires a restart. A mapped add-on is never replaced in the running target: the
+SDK defers install/update maintenance until the exact target's exit is
+confirmed, then a later launch may load the current generation. A ReShade
+upgrade or runtime-hash change does not automatically remove the managed
+add-on. Foreign, partial, or tampered reserved-name collisions are preserved and
+receive no automatic maintenance.
+
+At the SDK boundary,
+`existing-reshade-addon-maintenance-deferred` means an install or update is
+queued behind exact-target exit proof.
+`existing-reshade-addon-restart-required` means this attempt installed or
+  updated the on-disk add-on after the current process started, so a new process is
+  needed and no maintenance is queued. If the already-current add-on remains
+  unloaded after the bounded startup grace, the result is host-incompatible
+  instead. Conflict and preparation-failure diagnostics also schedule no automatic
+  change.
+
+The controlled launchers for this boundary are:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\existing-reshade-installation-preflight.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\global-reshade-layer-preflight.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\reshade-addon-manager.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-official-reshade-addon-preflight.ps1 -OfficialRuntimePath C:\path\to\official\dxgi.dll
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-existing-reshade-installation.ps1 -OfficialRuntimePath C:\path\to\official\dxgi.dll
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-existing-reshade-upgrade.ps1 -OfficialRuntimePath C:\path\to\official\dxgi.dll
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-official-reshade-addon.ps1 -OfficialRuntimePath C:\path\to\official\dxgi.dll
+```
+
+These gates verify identification, fail-closed preservation, transaction
+behavior, and controlled official-host rendering/input. They do not establish
+coexistence with a real game's existing effects/add-ons, another proxy chain,
+or every public host that may lack the required API/table capabilities.
+
+The upgrade launcher also composes the production Steam process watcher,
+auto-attacher, SDK launcher, and packaged native manager. It seeds a managed
+add-on and marker against the supplied runtime, then appends a benign PE overlay
+byte to change only the runtime identity. The gate requires
+`runtimeMode: 'official-addon'`, connection only after startup-barrier release,
+normal exit, no deferred maintenance or removal, and retention of the managed
+add-on and marker. Except for the intentionally removed startup barrier, the
+complete ReShade installation must retain byte, attribute, and timestamp
+identity.
+
 ## Run the compatible shared-runtime gates
 
 Use the shared-runtime variants to model a game that already loads this
@@ -471,10 +574,10 @@ Both gates passed on July 30, 2026. Evidence is under
 `build/electron-game-overlay-runtime/client-sdk-d3d11-shared-runtime-20260730-084016`
 and
 `build/electron-game-overlay-runtime/client-sdk-d3d12-shared-runtime-20260730-084003`.
-This is deliberately narrower than general modded-game support: stock or
-differently patched ReShade, a compatible host whose gate has already closed,
-unknown proxy DLLs, and arbitrary real-game startup timing still fail closed or
-remain unsupported.
+This is deliberately narrower than general modded-game support: a compatible
+private host whose gate has already closed, a public host that cannot register
+API 18 or provide the exact ImGui table, unknown proxy chains, and arbitrary
+real-game startup timing still fail closed or remain unsupported.
 
 For existing-runtime results, the SDK currently infers `reshadeLogPath` as
 `ReShade.log` beside the loaded host module. ReShade `[INSTALL] BasePath` can
@@ -576,9 +679,9 @@ closed the host-switch milestone for this accepted target path.
   the target;
 - multiple-swap-chain/render-queue ownership and safe texture retirement;
 - graceful client disable/unload, post-render injection or existing-device/
-  swap-chain adoption, arbitrary stock/differently patched ReShade and proxy
-  coexistence, deterministic pre-entry injection, additional games, or broader
-  graphics/presentation compatibility;
+  swap-chain adoption, arbitrary proxy chains, real-game coexistence with
+  existing effects/add-ons, deterministic pre-entry injection, additional
+  games, or broader graphics/presentation compatibility;
 - end-to-end process identity beyond exact PID plus verified executable
   basename for exact-PID requests and fallback-WMI lifecycle correlation; the
   prearmed path-watcher baseline itself now retains handles for exact process

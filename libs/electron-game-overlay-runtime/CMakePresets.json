@@ -32,18 +32,14 @@
       "displayName": "RelWithDebInfo D3D11 host",
       "configurePreset": "vs2022-x64",
       "configuration": "RelWithDebInfo",
-      "targets": [
-        "d3d11_overlay_test_host"
-      ]
+      "targets": ["d3d11_overlay_test_host"]
     },
     {
       "name": "relwithdebinfo-dx12",
       "displayName": "RelWithDebInfo D3D12 host",
       "configurePreset": "vs2022-x64",
       "configuration": "RelWithDebInfo",
-      "targets": [
-        "d3d12_overlay_test_host"
-      ]
+      "targets": ["d3d12_overlay_test_host"]
     },
     {
       "name": "relwithdebinfo-production",
@@ -52,7 +48,8 @@
       "configuration": "RelWithDebInfo",
       "targets": [
         "electron_overlay_transport_abi_smoke",
-        "electron_game_overlay"
+        "electron_game_overlay",
+        "electron_game_overlay_reshade_manager"
       ]
     }
   ],

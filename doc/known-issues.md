@@ -6,9 +6,10 @@ known issues:
 
 ### Current ReShade migration support envelope
 
-The production Windows runtime uses ReShade 6.7.3 full add-on support. Its
-controlled D3D11 and D3D12 input gates passed on July 12, 2026: overlay controls
-remained interactive, game-side message/raw/polling counters stayed frozen,
+The bundled production Windows runtime uses the project's pinned ReShade 6.7.3
+full add-on host. On July 12, 2026, its controlled D3D11 and D3D12 input gates
+passed: overlay controls remained interactive, game-side message/raw/polling
+counters stayed frozen,
 cursor confinement was released while intercepting, resize preserved the gate,
 and release restored normal input. The D3D11 and D3D12 ReShade compositors now
 also render the real ordered multi-window Electron scene and route exact mouse
@@ -29,6 +30,31 @@ normally, finish loader work, and pause the cooperating host near entry before
 window/device setup; both passed again through the production client/SDK on
 July 30. The normal client later passed LORT's Unreal launcher/renderer chain,
 but arbitrary external-watcher timing remains unverified.
+
+Clean targets use the repository's pinned, patched ReShade 6.7.3 host. Every
+detected target-local x64 ReShade identity instead suppresses fallback
+project-runtime injection and is attempted with the uniquely named Electron
+add-on. There is no product-version or runtime-hash allowlist: compatibility is
+  established only when `ReShadeRegisterAddon` accepts public API 18 and the host
+  returns the exact Dear ImGui function table. The bounded startup grace is
+  inspection-only: a mapped host that still does not load the current add-on is
+  reported as host-incompatible, while a host that disappears during the wait
+  reports `target-official-addon-wait-expired`. Neither case can fall back to
+  project-runtime injection.
+
+Target-effective paths and `DisabledAddons` are resolved from the exact target
+process and configuration, and a user disable is honored. The existing
+runtime/proxy, INI, presets, effects, and foreign add-ons are never rewritten.
+Only the native manager may mutate the reserved Electron add-on, marker,
+journal, and verified temporary/backup files. Its runtime hash is exact
+request/TOCTOU/transaction provenance, not a compatibility identity; the
+marker's ReShade hash is installation provenance and is ignored for
+compatibility. Installing or updating the project-owned add-on requires a
+restart, and mapped-add-on maintenance waits for confirmed target exit. A
+runtime upgrade or hash change does not automatically remove the managed
+add-on. Applicable global Vulkan/OpenXR ReShade layers are preserved and block
+fallback injection. This has controlled-fixture coverage only and is not yet a
+broad real-game, arbitrary effect/add-on, or proxy-chain coexistence claim.
 
 The normal `npm run dev` Steam-path flow first gained real Gun Frog acceptance
 through a one-shot native path watcher, then temporarily moved to exact-PID-only
@@ -255,9 +281,10 @@ not supported by the current production runtime:
   chains, and simultaneous rendered targets beyond the completed same-listener
   credential-isolation and fail-closed route-selection tests until each has
   explicit graphics acceptance;
-- stock or differently patched ReShade and arbitrary coexistence with another
-  proxy DLL; the narrow compatible-host path described below does not imply
-  general modded-game support;
+- public ReShade hosts that cannot register add-on API 18 or return the exact
+  Dear ImGui function table, arbitrary coexistence with another proxy DLL, and
+  real-game combinations of existing effects/foreign add-ons; the narrow paths
+  described below do not imply general modded-game support;
 - real physical/VM mixed-scale target-follow acceptance, safe texture
   retirement, or broader gamepad/DirectInput/XInput/GameInput handling until
   their recorded acceptance work is complete.
@@ -271,6 +298,24 @@ proxy and configuration hashes unchanged. A host whose gate has already closed
 cannot accept late add-on registration safely. In existing mode the SDK's
 `reshadeLogPath` is inferred beside the host module; ReShade
 `[INSTALL] BasePath` can make that candidate non-authoritative.
+
+The separate public-host path does not require the private host gate. It
+attempts every detected target-local x64 ReShade identity and requires public
+API 18, the exact Dear ImGui function table, and the current mapped Electron
+add-on ABI/build identity. Preparation uses the target process's effective
+base/add-on paths and enablement state. Only the staged
+`electron_game_overlay_reshade_manager.exe` can change the reserved Electron
+add-on, ownership marker, transaction journal, and verified temporary/backup
+names. It never changes ReShade-owned or foreign files. Runtime hashes are used
+to verify and hold the exact file across requests and transactions; they do not
+allow or reject a host, and the marker's ReShade hash is ignored for
+compatibility. Install/update is restart-only; if the add-on is mapped, the SDK
+defers the manager retry until OS-confirmed target exit. Runtime-identity changes
+do not queue removal. Only
+`existing-reshade-addon-maintenance-deferred` identifies queued install/update
+work; restart-required, conflict, host-incompatible, and preparation-failure
+results queue nothing. Controlled preflight, transaction, and D3D11 host gates
+cover this behavior, not broad real-game coexistence.
 
 Before exact-PID injection mutates the target, it performs bounded loaded-module
 inspection. Exact `ReShadeVersion` identifies a candidate. Missing/wrong private
@@ -289,9 +334,11 @@ Module basenames and files beside the game executable are deliberately not
 conflict evidence. A file named `dxgi.dll`, `dinput8.dll`, `ReShade.ini`, or
 similarly does not prove which code is loaded and therefore is not an automatic
 block condition. This avoids executable-specific filename heuristics while
-leaving arbitrary runtime/proxy coexistence explicitly unsupported. The
-supported private-host path avoids loading a second runtime rather than trying
-to make two runtimes coexist.
+leaving arbitrary runtime/proxy coexistence explicitly unsupported. Supported
+paths either reuse the compatible private host or attempt the API-18 add-on in
+the detected target-local x64 ReShade host; capability-incompatible public
+hosts fail closed, and neither path tries to load two ReShade runtimes into one
+process.
 
 Unsupported or untested must produce a clear diagnostic rather than silently
 claiming compatibility. Maintain a matrix per target with architecture,

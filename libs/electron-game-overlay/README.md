@@ -12,8 +12,9 @@ Run `nx build electron-game-overlay` to build the library.
 
 `nx build electron-game-overlay` builds its native Nx dependencies, compiles the
 TypeScript SDK, and stages the
-patched Windows x64 ReShade runtime, injector, build stamp, Electron add-on, and
-configuration under `dist/runtime/win32-x64/reshade`. Consumers call
+patched Windows x64 ReShade runtime, injector, native target-local ReShade
+add-on manager, build stamps, Electron add-on, and configuration under
+`dist/runtime/win32-x64/reshade`. Consumers call
 `parseReShadeLaunchConfig()`, create `ReShadeOverlayLauncher`, then arm an
 executable process name or path fragment with `launcher.attach(session,
 target)`. Each request stages a writable isolated run directory. Immutable
@@ -52,12 +53,15 @@ endpoint has one active owner. Starting a session on another overlay instance
 fails explicitly until the current owner stops, preventing either producer from
 silently becoming unreachable.
 
-The exported `ReShadeRuntimeMode` is either `injected-runtime` or
-`existing-runtime`. `ReShadeLaunchResult.runtimeMode` identifies which path
-succeeded; compatible reuse also returns `hostRuntimePath`. In injected mode,
-`reshadeLogPath` points into the staged run. In existing mode it is inferred as
-`ReShade.log` beside the host module, but a host configured with ReShade's
-`[INSTALL] BasePath` may write its authoritative log elsewhere.
+The exported `ReShadeRuntimeMode` is `injected-runtime`, `existing-runtime`, or
+`official-addon`. `ReShadeLaunchResult.runtimeMode` identifies the selected
+host path. Compatible private-host reuse and official-host mode return
+`hostRuntimePath`; official-host mode also returns `addonModulePath`. In
+injected mode, `reshadeLogPath` points into the staged run. Existing private
+mode infers it beside the host module. Official mode does not expose a
+project-runtime startup record. A disk-prepared official result resolves its
+log from the verified ReShade base directory; an already-loaded official result
+currently infers it beside the host module.
 
 For launchers that need to prearm before they know an executable basename, use
 a path target. The native injector snapshots and ignores processes that already
@@ -85,8 +89,53 @@ transport connection, reauthentication, and terminal-exit correlation:
 await launcher?.attach(session, {
   processName: detectedProcess.name,
   pid: detectedProcess.pid,
+  executablePath: detectedProcess.filepath,
 });
 ```
+
+`executablePath` is accepted only with an exact PID. It must be an absolute path
+whose basename matches `processName`, and should come from the same trusted
+process observation as the PID. It lets the launcher safely inspect a detected
+target-local ReShade installation without guessing from process names.
+
+### Existing target-local ReShade
+
+A clean target still uses the staged project-patched runtime. When an exact-PID
+target has an existing installation, native preflight derives ReShade's
+effective base path, add-on directory, and `DisabledAddons` state from that
+target process and its configuration. It never substitutes the Electron
+process's environment.
+
+Every detected target-local x64 ReShade identity suppresses fallback injection
+of the project runtime and is attempted as the public host for the uniquely
+named `electron_game_overlay.addon64`. There is no product-version or
+runtime-hash allowlist. The loaded add-on is compatible only if
+`ReShadeRegisterAddon` accepts public API 18 and the host returns the exact Dear
+  ImGui function table it was built against. A user-disabled Electron add-on
+  remains disabled. If the current add-on is present but has not loaded yet, the
+  SDK performs one bounded startup-grace inspection. If it remains unloaded, the
+  SDK reports `existing-reshade-addon-host-incompatible` instead of requesting
+  another restart or trying fallback injection. The SDK never replaces
+or rewrites the existing ReShade runtime/proxy, INI, presets, effects, or foreign
+add-ons. Applicable global Vulkan/OpenXR ReShade layers are preserved and block
+fallback injection; they are not public-host integration paths.
+
+Reserved add-on file changes are delegated to the staged
+`electron_game_overlay_reshade_manager.exe`. That helper can mutate only the
+project's reserved add-on, ownership marker, transaction journal, and verified
+temporary/backup names. Installation or update requires a restart. If an older
+generation is already mapped, the launcher performs no in-process replacement
+and defers install/update maintenance until it has confirmed the exact target
+exited. The manager verifies and holds the exact runtime file named by each
+request to close TOCTOU races and recover transactions; that runtime hash is
+provenance, not compatibility. The ReShade hash stored in the ownership marker
+is likewise provenance and is ignored for compatibility. Upgrading or replacing
+ReShade does not automatically remove the managed add-on. An unowned or
+tampered reserved add-on, or a runtime that changes during maintenance, reports
+`existing-reshade-addon-conflict` and schedules no automatic maintenance.
+Controlled gates cover this boundary; public-host coexistence has not yet been
+accepted across real games, arbitrary existing effect/add-on sets, proxy
+chains, or every capability-incompatible host.
 
 An `expectedTargetPid` supplied by startup configuration is snapshotted into
 the same exact-PID target before any asynchronous staging, so it also reaches
@@ -101,7 +150,11 @@ the injector. Before that credential, it publishes the persistent
 The record is bound to the expected PID, and the loopback host rejects a
 token/PID mismatch before sending any Electron window state. The injected
 runtime prefers this run-local route and pins the selected path for subsequent
-reconnect attempts.
+reconnect attempts. An official add-on cannot inherit the isolated
+run-directory environment, so authorization also publishes the same credential
+to a deterministic exact-PID path under the user's temporary directory. A
+path-selected official result receives this PID authorization after the
+injector proves its selected process and before attachment proof can complete.
 
 Revoking the authorization removes the credential record but deliberately
 retains the route-intent marker. A payload that initializes late therefore
@@ -128,6 +181,7 @@ await launcher?.prepare();
 await launcher?.attach(session, {
   processName: detectedProcess.name,
   pid: detectedProcess.pid,
+  executablePath: detectedProcess.filepath,
 });
 ```
 
@@ -208,6 +262,7 @@ try {
   await launcher.attach(session, {
     processName: detectedProcess.name,
     pid: detectedProcess.pid,
+    executablePath: detectedProcess.filepath,
   });
 } catch (error) {
   if (!isReShadeOperationError(error)) {
@@ -234,6 +289,19 @@ runtime-startup record paths. If authenticated connection proof times out,
 `runtimeStartupCode` reports the last strictly validated bridge state (or a
 fixed missing/invalid/PID-mismatch classification) without exposing target
 output or parsing the ReShade log.
+
+`existing-reshade-addon-maintenance-deferred` is the only existing-installation
+diagnostic that promises automatic manager work is queued. Keep that exact
+launcher alive and call `confirmTargetExited(pid)` only after the OS proves the
+reported target PID has terminated; the launcher then performs the
+ownership-checked install or update. By contrast,
+`existing-reshade-addon-restart-required` means this attempt installed or
+updated the disk state after the current process started; no maintenance is
+  queued and a fresh target process is the remaining action. An already-current
+  add-on that remains unloaded after the bounded startup grace is
+  host-incompatible and also queues no work.
+`existing-reshade-addon-conflict` and
+`existing-reshade-addon-preparation-failed` also queue no automatic change.
 
 Running sessions expose a separate immutable diagnostic event for asynchronous
 transport observations:
@@ -298,8 +366,8 @@ evidence contract, while session diagnostics describe activity after the
 overlay transport starts. Failures before the runtime can connect still appear
 only in its local `ReShade.log`. Producer diagnostics do not yet cover
 ambiguous-raster recovery failures. A globally bounded control/backpressure
-queue and compatibility with stock or arbitrary already-modded ReShade games
-remain future work.
+queue and compatibility with arbitrary already-modded ReShade games remain
+future work beyond the controlled public-host fixtures above.
 
 Exact-PID injection performs a bounded module preflight before allocating or
 writing target memory. A loaded module becomes a ReShade candidate only when
@@ -326,13 +394,20 @@ the environment or calls `LoadLibrary`. The add-on-load failure is reported at
 `target-runtime-conflict` remains accepted for older injector protocol
 compatibility but is not emitted by the current native injector.
 
-The preflight deliberately does not reject a process because a module has a
-familiar filename or because `dxgi.dll`, `dinput8.dll`, `ReShade.ini`, or other
-proxy-like files exist beside the executable. Those are not reliable proof of
-what code is loaded. The supported path avoids loading a second runtime only
-for this project's compatible pre-initialization host. Stock or differently
-patched ReShade, another proxy runtime, and clean runtime disable/unload remain
-unsupported.
+The preflight deliberately does not reject a process merely because a module
+has a familiar filename or because `dxgi.dll`, `dinput8.dll`, `ReShade.ini`, or
+other proxy-like files exist beside the executable. Those are not reliable
+proof of what code is loaded. A detected target-local x64 ReShade identity
+suppresses fallback project-runtime injection. The SDK can reuse this project's
+  compatible pre-initialization host or prepare its public API-18 add-on for the
+  existing installation; the loaded add-on then negotiates registration and the
+  exact ImGui table. The bounded startup grace is inspection-only. A host that
+  remains mapped without loading the current add-on is host-incompatible; one
+  that disappears during the wait reports
+  `target-official-addon-wait-expired`. Neither case may fall back to the
+  project runtime. Unrelated
+proxy chains, broad modded-game coexistence, and clean runtime disable/unload
+remain unsupported and fail closed.
 
 The lower-level `launch()` / `acceptTargetConnection()` pair has no session
 event source and is intentionally one-shot. It stays latched after proof (or an

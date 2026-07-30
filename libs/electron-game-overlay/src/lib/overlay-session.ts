@@ -219,6 +219,7 @@ export class OverlaySession {
   public async authorizeTarget(
     pid: number,
     discoveryPath: string,
+    expectedExecutablePath?: string,
   ): Promise<Disposable> {
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
       throw new RangeError(
@@ -233,6 +234,16 @@ export class OverlaySession {
         'the overlay target discovery path must be a non-empty string',
       );
     }
+    if (
+      expectedExecutablePath !== undefined &&
+      (typeof expectedExecutablePath !== 'string' ||
+        expectedExecutablePath.length === 0 ||
+        expectedExecutablePath.includes('\0'))
+    ) {
+      throw new TypeError(
+        'the expected overlay target executable path must be a non-empty string without NUL characters',
+      );
+    }
 
     this.ensureStarted();
     await this.overlay.whenReady();
@@ -243,6 +254,7 @@ export class OverlaySession {
     const backendRelease = await this.overlay.authorizeTarget?.(
       pid,
       discoveryPath,
+      expectedExecutablePath,
     );
     if (!backendRelease) {
       if (this.closed) {

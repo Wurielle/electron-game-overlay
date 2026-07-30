@@ -523,6 +523,20 @@ namespace ReShadeClientSdkGate
             });
         }
 
+        public static void SendEscapeDown()
+        {
+            SendInputs(new [] {
+                KeyboardInput(VK_ESCAPE, (char)0, 0)
+            });
+        }
+
+        public static void SendEscapeUp()
+        {
+            SendInputs(new [] {
+                KeyboardInput(VK_ESCAPE, (char)0, KEYEVENTF_KEYUP)
+            });
+        }
+
         private static int NormalizeAbsolute(int coordinate, int origin, int extent)
         {
             long value = ((long)coordinate - origin) * 65535L / (extent - 1);

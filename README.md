@@ -18,8 +18,9 @@ ReShade blocks the corresponding game input.
   versioned C ABI to the injected runtime.
 - [`libs/electron-game-overlay-runtime`](libs/electron-game-overlay-runtime/README.md)
   is the Windows x64 injected host. It builds the pinned patched ReShade
-  runtime, injector, `electron_game_overlay.addon64`, controlled D3D11/D3D12
-  hosts, and human-facing acceptance launchers.
+  runtime, injector, native target-local ReShade add-on manager,
+  `electron_game_overlay.addon64`, controlled D3D11/D3D12 hosts, and
+  human-facing acceptance launchers.
 - [`apps/client`](apps/client/README.md) is an SDK demo and acceptance client. It
   is not a second overlay implementation.
 
@@ -43,10 +44,39 @@ runtime, then stages the immutable runtime assets under:
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade
 ```
 
-The staged add-on is `electron_game_overlay.addon64`. Native builds require
-Rust, CMake, Git, and Visual Studio 2022 with the Desktop development with C++
-workload. ReShade and Dear ImGui are pinned; a stock ReShade 6.7.3 runtime is
-not ABI-compatible with this repository's patched add-on API.
+The staged add-on is `electron_game_overlay.addon64`, and
+`electron_game_overlay_reshade_manager.exe` is the native transaction helper
+used for a verified existing official installation. Native builds require Rust,
+CMake, Git, and Visual Studio 2022 with the Desktop development with C++
+workload.
+
+A clean target uses the repository's bundled, patched ReShade 6.7.3 host. When
+preflight detects any target-local x64 ReShade identity, that installation
+suppresses fallback project-runtime injection and is attempted as the public
+host for the uniquely named Electron add-on. There is no product-version or
+runtime-hash allowlist. Compatibility is established only when the loaded
+add-on can call `ReShadeRegisterAddon` with public API 18 and obtain the exact
+Dear ImGui function table it was built against; the private input observer is
+  negotiated only with the repository's patched host. If a current add-on has
+  not loaded yet, the SDK gives the host one bounded, inspection-only startup
+  grace. A host that remains mapped without loading it is reported as
+  host-incompatible; a host that disappears during the wait reports
+  `target-official-addon-wait-expired`. Neither outcome can fall back to
+  injecting the project runtime.
+
+The launcher resolves the ReShade base path, add-on path, and `DisabledAddons`
+state from the exact target process and its configuration. It never replaces or
+rewrites the existing runtime/proxy, INI, presets, effects, or foreign add-ons.
+Only the native transaction helper may mutate the project's reserved add-on,
+marker, journal, and verified temporary/backup files. The runtime hash pins the
+exact inspected file through request verification, TOCTOU protection, and
+transaction recovery; it is not a compatibility decision. The ReShade hash in
+the ownership marker is provenance and is ignored for compatibility. Installing
+or updating the project-owned add-on requires a target restart; if the old
+add-on is mapped, maintenance is deferred until that exact target's exit is
+confirmed. A ReShade upgrade or other runtime-identity change does not
+automatically remove the owned add-on. Applicable global Vulkan/OpenXR ReShade
+layers are likewise preserved and block fallback injection.
 
 The native projects can also be addressed directly through Nx:
 
@@ -97,8 +127,10 @@ session.on('diagnostic', (diagnostic) => {
 overlayWindow.followTarget({ area: 'render' });
 ```
 
-The demo's native Steam-path observer supplies each exact PID and executable
-basename; WMI is started only if that observer fails. Observation starts before
+The demo's native Steam-path observer supplies each exact PID, executable
+basename, and canonical executable path; WMI is started only if that observer
+fails. The trusted path lets the SDK identify an adjacent target-local ReShade
+installation without guessing. Observation starts before
 the demo concurrently prepares a pool of four isolated SDK launchers. Creation
 events wait in order for prepared slots, and every successful consumption starts
 replacement preparation immediately. Preparation failures use bounded retry
@@ -116,6 +148,7 @@ The demo uses the SDK's exact-PID target:
 await launcher.attach(session, {
   processName: detectedProcess.processName,
   pid: detectedProcess.pid,
+  executablePath: detectedProcess.filepath,
 });
 ```
 
@@ -129,6 +162,7 @@ The SDK also accepts an exact PID:
 await launcher.attach(session, {
   processName: detectedProcess.name,
   pid: detectedProcess.pid,
+  executablePath: detectedProcess.filepath,
 });
 ```
 
@@ -153,6 +187,12 @@ Every human-facing runtime case has its own launcher under
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\existing-reshade-installation-preflight.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\global-reshade-layer-preflight.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\reshade-addon-manager.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-official-reshade-addon-preflight.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-existing-reshade-installation.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-official-reshade-addon.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-electron-scene.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk.ps1
 ```
@@ -167,10 +207,18 @@ hold controlled device creation behind a marker, then inject through the real
 frontend before releasing that marker. The shared-runtime variants start with a
 compatible target-local `dxgi.dll` proxy already loaded and prove that the SDK
 registers only its staged add-on without replacing the proxy or its
-configuration. The D3D12 client gate exercises two fresh target/client cycles.
-The reinjection gate keeps one Electron client alive while the controlled
-target exits and restarts. The Gun Frog gate is a permitted real-game proof for
-the process-name, arm-before-launch route.
+configuration. The existing-installation gates prove that the injector performs
+no target mutation when an inactive ReShade installation is present. The
+official-add-on gates exercise a caller-supplied target-local x64 ReShade
+fixture through the public capability-negotiation path and assert that the
+project runtime is not loaded. The D3D12
+client gate exercises two fresh target/client cycles. The reinjection gate
+keeps one Electron client alive while the controlled target exits and restarts.
+The Gun Frog gate is a permitted real-game proof for the process-name,
+arm-before-launch project-runtime route. The official-add-on gates use
+controlled fixtures; they do not yet prove coexistence with real games,
+arbitrary effect/add-on sets, proxy chains, or every capability-incompatible
+public host.
 
 ## Input acceptance boundary
 

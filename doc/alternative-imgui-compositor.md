@@ -6,9 +6,9 @@
 > production stack uses an authenticated
 > Node/Rust loopback transport with direct BGRA frame packets.
 
-> **Current host decision, updated July 30, 2026:** ReShade 6.7.3 full add-on
-> support is
-> the selected production host for process entry, graphics hooks,
+> **Current bundled-host decision, updated July 30, 2026:** the project's
+> injected runtime remains pinned to ReShade 6.7.3 full add-on support as the
+> selected production host for process entry, graphics hooks,
 > swap-chain/resource lifecycle, the managed Dear ImGui context, logging, native
 > input collection, and game-side input blocking. The controlled D3D11/D3D12
 > input gates and real Electron scenes passed visible acceptance. A first Gun
@@ -41,10 +41,14 @@
 > project-built target-local ReShade proxy exporting private host ABI 1 with its
 > registration gate `OPEN` accepted only the SDK's privately staged add-on,
 > without replacing the target's proxy or configuration. Faithful D3D11 and D3D12
-> gates passed. Arbitrary stock, unknown, or already-active ReShade runtimes and
-> other proxy coexistence remain deferred. The reported host `ReShade.log` path is
-> inferred beside the host module and is not authoritative when an existing
-> runtime's `[INSTALL] BasePath` redirects it.
+> gates passed. A separate fail-closed path attempts every detected target-local
+> x64 ReShade identity without a version/hash allowlist. The add-on must register
+> through public API 18 and obtain its exact Dear ImGui function table. It
+> preserves all user runtime/configuration/effect/add-on files and owns only its
+> reserved add-on transaction; broad real-game, effect/add-on, and proxy-chain
+> coexistence remain deferred. The reported host `ReShade.log` path is inferred beside the host
+> module and is not authoritative when an existing runtime's `[INSTALL] BasePath`
+> redirects it.
 > The hudhook implementation remains the verified Electron compositor and routing
 > reference, not the selected injected host.
 
@@ -67,14 +71,21 @@ The follow-up experiment in [`hudhook-imgui-overlay-poc.md`](hudhook-imgui-overl
 
 The completed baseline uses the ReShade 6.7.3 full add-on runtime as the alternative native hook/runtime layer. ReShade, rather than ImGui, owns process entry, graphics API hooks, swap-chain lifecycle, input infrastructure, logging, and renderer integration. The add-on uses ReShade's managed Dear ImGui context to draw an always-visible diagnostics panel and a generated RGBA texture uploaded through ReShade's graphics-agnostic resource API.
 
-The compatible-runtime path is deliberately narrower than general ReShade
+The existing-runtime paths are deliberately narrower than general ReShade
 coexistence. When an existing project-built runtime exports private host ABI 1
 and its registration gate is still `OPEN`, the SDK reuses that host and asks it
-to load only the run's private staged add-on. It does not overwrite the
-target-local proxy or configuration. The faithful target-local `dxgi.dll` proxy
-gates passed on D3D11 and D3D12 on July 30, 2026. Stock or unknown ReShade
-builds, a compatible host whose gate has already closed, and unrelated graphics
-proxies remain fail-closed/deferred rather than assumed safe.
+to load only the run's private staged add-on. The faithful target-local
+`dxgi.dll` proxy gates passed on D3D11 and D3D12 on July 30, 2026. Separately,
+every detected target-local x64 ReShade identity is attempted with the uniquely
+named public API-18 add-on. Product version and runtime hash are not allowlists;
+the loaded add-on must register and obtain its exact ImGui table. Neither path
+overwrites the target-local proxy or configuration, and neither loads a fallback
+  runtime alongside it. A current public add-on that remains unloaded after one
+  bounded startup grace is host-incompatible; the runtime hash is only
+  request/TOCTOU/transaction provenance, and the marker's ReShade hash is ignored
+  for compatibility. Changing that identity does not
+automatically remove the managed add-on. A private host whose gate has already
+closed and unrelated proxy chains remain fail-closed/deferred.
 
 This choice keeps the first experiment focused on the compositor seam instead of implementing another custom `Present` hook. A controlled D3D11 test host is included so the proof can be exercised without injecting into third-party software. ReShade's full add-on build is not anti-cheat allowlisted, so this experiment is limited to the test host and offline/single-player applications the operator is explicitly allowed to modify.
 
@@ -411,7 +422,7 @@ multi-window compositor milestones are complete:
 - the production client/public SDK also passed two isolated controlled D3D12 cycles on PIDs 17248 and 13528: both Electron windows accepted input, caption drag remained interactive at the moved coordinates, the foreground game oracle froze while intercepted, release restored legacy/raw/primary-pointer input and confinement, released Escape closed each target, and a clean fresh relaunch completed; the runner emitted `D3D12_REAL_CLIENT_SDK_GATE_PASS`;
 - the reusable `attach(session, target)` lifecycle then kept Electron PID 17756 alive across controlled target PIDs 19764 and 17940, pinned each injector-selected PID, kept the injection latch across transient transport loss, returned to `idle` after each OS-confirmed target exit, staged distinct runtime directories, and passed the second D3D12 scene/input cycle; the frontend-driven runner emitted `D3D12_REAL_CLIENT_SDK_REINJECTION_GATE_PASS`;
 - `attach(session, { processName, pid })` now exposes exact-PID selection through the public SDK, and the Electron demo exposes the same optional field; the current process-start gates launch the target normally and pause at a test-only pre-device marker after normal loader work. Both D3D11 and D3D12 passed transport, API, two-window scene, input, exit-0, frontend-idle, and no-leftover checks on July 30, 2026. The July 13 suspended runs (D3D11 PID 7428 at 72.393 ms and D3D12 PID 21508 at 84.061 ms) are historical exact-injector-argument and pre-resume plumbing evidence only;
-- compatible project-built target-local ReShade proxies now expose private host ABI 1 and an `OPEN` registration gate, allowing the SDK to load only its privately staged add-on while leaving the target proxy and configuration untouched; faithful D3D11 and D3D12 shared-runtime gates passed on July 30, 2026, while stock/unknown/already-active ReShade and other proxies remain outside this coexistence contract;
+- compatible project-built target-local ReShade proxies now expose private host ABI 1 and an `OPEN` registration gate, allowing the SDK to load only its privately staged add-on while leaving the target proxy and configuration untouched; faithful D3D11 and D3D12 shared-runtime gates passed on July 30, 2026; the initial public-API fixture used official ReShade 6.7.3, while the current path attempts every detected target-local x64 identity and accepts it only through API-18 registration plus the exact ImGui table, preserving every non-project file and keeping arbitrary real-game coexistence outside the contract;
 - the plus-three-second post-render probe loaded `ReShade64.dll` into both controlled backends without adopting the existing device/swap chain or initializing the runtime, add-on, or Electron scene, so that timing is unsupported;
 - upstream hudhook 0.9.1 independently hooks the controlled D3D11 host and owns the ImGui lifecycle;
 - the public Electron SDK publishes a 640 x 360 offscreen window from both a focused lifecycle producer and the real built client through the authenticated loopback transport;
@@ -440,7 +451,7 @@ The implemented hudhook path is defined in [`hudhook-imgui-overlay-poc.md`](hudh
 9. Integrate the proven hudhook path into the real client workflow and replace the old injection/transport dependencies needed to finish the POC. **Complete.**
 10. After the POC is complete, harden target-HWND display/client-origin ownership, backing-window/per-target geometry, real mixed-scale hardware/VM behavior, and deferred GPU texture retirement.
 
-The controlled D3D11 and D3D12 graphics paths, real-client integration, project-owned Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence was not an adoption gate for that completed hudhook-controlled milestone; the current host decision above supersedes its runtime selection after real-game input validation. A compatible project-runtime coexistence foundation is now proven, but arbitrary stock/unknown/active ReShade and other proxy combinations remain hardening. Target-display ownership, mixed-monitor acceptance, texture retirement, a production injector, and other geometry/DPI edge cases remain recorded post-POC hardening rather than blockers.
+The controlled D3D11 and D3D12 graphics paths, real-client integration, project-owned Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence was not an adoption gate for that completed hudhook-controlled milestone; the current host decision above supersedes its runtime selection after real-game input validation. Compatible project-runtime reuse and the initial official ReShade 6.7.3 public-host fixture have controlled evidence. The current public-host contract is version/hash agnostic and capability negotiated; active-host races, proxy combinations, capability-incompatible hosts, and broad real-game effect/add-on coexistence remain hardening. Target-display ownership, mixed-monitor acceptance, texture retirement, a production injector, and other geometry/DPI edge cases remain recorded post-POC hardening rather than blockers.
 
 ## Research checklist for search agent
 
@@ -718,9 +729,12 @@ That run had no readable temperature sensor and is not a thermal soak.
 Target-HWND/client-origin ownership, mixed monitors, multiple
 targets, texture retirement, broader game/API coverage, exact process-creation
 identity across PID reuse, arbitrary watcher latency, graceful disable/unload,
-and arbitrary stock/unknown/active ReShade or other proxy coexistence remain
-post-POC hardening. A compatible project-built ABI-1 host is the only proven
-shared-runtime path. Post-render injection is unsupported unless
-existing-device/swap-chain adoption is added. Package publishing is deferred.
+capability-incompatible public hosts, and other proxy coexistence remain
+post-POC hardening. The compatible project-built ABI-1 host and a public API-18
+fixture are the controlled existing-host paths; every detected target-local x64
+ReShade identity is attempted, but only successful registration plus the exact
+ImGui table establishes compatibility. Post-render injection is unsupported
+unless existing-device/swap-chain adoption is added. Package publishing is
+deferred.
 Competitive or anti-cheat-protected targets, anti-cheat bypass work, and VR
 remain outside the unsigned full-add-on runtime boundary.

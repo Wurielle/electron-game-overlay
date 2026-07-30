@@ -16,6 +16,13 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import {
+  ExistingReShadeInstallationError,
+  inspectLoadedOfficialReShadeAddon,
+  prepareExistingReShadeAddon,
+  type PrepareExistingReShadeAddonOptions,
+  type PrepareExistingReShadeAddonResult,
+} from './existing-reshade-installation.js';
 import { OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME } from './overlay-loopback-transport.js';
 import type { OverlaySession } from './overlay-session.js';
 
@@ -24,8 +31,11 @@ const RESHADE_RUNTIME_DIRECTORY_OPTION = '--reshade-runtime-dir';
 const RESHADE_AUTO_TARGET_PROCESS_OPTION = '--reshade-auto-target-process';
 const RESHADE_EXPECTED_TARGET_PID_OPTION = '--reshade-expected-target-pid';
 const INJECTOR_FILE_NAME = 'inject.exe';
+const ADDON_MANAGER_FILE_NAME = 'electron_game_overlay_reshade_manager.exe';
 const RUNTIME_FILE_NAME = 'ReShade64.dll';
 const BUILD_STAMP_FILE_NAME = 'ReShade64.build.json';
+const PACKAGE_BUILD_STAMP_FILE_NAME =
+  'electron_game_overlay_runtime.build.json';
 const ADDON_FILE_NAME = 'electron_game_overlay.addon64';
 const CONFIG_FILE_NAME = 'ReShade.ini';
 const INJECTOR_STDOUT_FILE_NAME = 'inject.stdout.log';
@@ -36,10 +46,11 @@ const INJECTOR_SUCCESS_MARKER = 'Injecting ReShade ... Succeeded!';
 const INJECTOR_NOT_STARTED_MARKER = 'ReShade injection not started.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
-const INJECTOR_TARGET_PATH_PATTERN = /^Matched executable path: (.+)$/m;
+const OFFICIAL_ADDON_BUILD_ID = '202F40B8B4B04C519BF12F693BE2B94F';
 const REQUEST_TIMEOUT_MS = 120_000;
 const TARGET_PROOF_TIMEOUT_MS = 120_000;
 const PATH_TARGET_PROOF_TIMEOUT_MS = 10_000;
+const OFFICIAL_ADDON_STARTUP_GRACE_MS = 30_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_RUNTIME_STARTUP_RECORD_BYTES = 256;
 const RUNTIME_STARTUP_OBSERVATION_TIMEOUT_MS = 250;
@@ -84,8 +95,10 @@ const RUNTIME_STARTUP_RECORD_KEYS = Object.freeze([
 
 const RUNTIME_ARTIFACTS = Object.freeze([
   INJECTOR_FILE_NAME,
+  ADDON_MANAGER_FILE_NAME,
   RUNTIME_FILE_NAME,
   BUILD_STAMP_FILE_NAME,
+  PACKAGE_BUILD_STAMP_FILE_NAME,
   ADDON_FILE_NAME,
   CONFIG_FILE_NAME,
 ] as const);
@@ -93,6 +106,13 @@ const RUNTIME_ARTIFACTS = Object.freeze([
 export type ReShadeProcessTarget = Readonly<{
   processName: string;
   pid?: number;
+  /**
+   * Canonical executable path observed by a trusted process watcher. When
+   * supplied, the launcher can safely prepare its uniquely named add-on for a
+   * recognized official ReShade installation without guessing target paths.
+   * This is accepted only together with an exact PID.
+   */
+  executablePath?: string;
 }>;
 
 export type ReShadePathTarget = Readonly<{
@@ -106,8 +126,10 @@ export type ReShadeLaunchConfig = Readonly<{
   runtimeDirectory: string;
   runsRootDirectory: string;
   injectorPath: string;
+  addonManagerPath: string;
   runtimePath: string;
   buildStampPath: string;
+  packageBuildStampPath: string;
   addonPath: string;
   configPath: string;
   autoTargetProcess?: string;
@@ -126,7 +148,10 @@ export type ReShadeInvocation = Readonly<{
   workingDirectory: string;
 }>;
 
-export type ReShadeRuntimeMode = 'injected-runtime' | 'existing-runtime';
+export type ReShadeRuntimeMode =
+  | 'injected-runtime'
+  | 'existing-runtime'
+  | 'official-addon';
 
 export type ReShadeRuntimeStartupCode =
   | ReShadeRuntimeStartupRecordCode
@@ -137,11 +162,13 @@ export type ReShadeRuntimeStartupCode =
 
 export type ReShadeLaunchResult = Readonly<{
   processName: string;
+  targetExecutablePath: string;
   selectedPath?: string;
   targetLabel: string;
   injectorTargetPid: number;
   runtimeMode: ReShadeRuntimeMode;
   hostRuntimePath?: string;
+  addonModulePath?: string;
   runDirectory: string;
   injectorStdoutPath: string;
   injectorStderrPath: string;
@@ -159,16 +186,31 @@ type StagedRuntime = Readonly<{
   runsRootDirectory: string;
   runDirectory: string;
   injectorPath: string;
+  addonManagerPath: string;
   injectorStdoutPath: string;
   injectorStderrPath: string;
   reshadeLogPath: string;
   runtimeStartupPath: string;
 }>;
 
+type InjectorCompletion = Readonly<{
+  error: Error | null;
+  stdout: string;
+  stderr: string;
+  didSpawn: boolean;
+}>;
+
 type CurrentRuntime = Readonly<{
   staged: StagedRuntime;
   targetLabel: string;
   launchGeneration: number;
+}>;
+
+type PendingExistingReShadeMaintenance = Readonly<{
+  pid: number;
+  targetLabel: string;
+  staged: StagedRuntime;
+  options: PrepareExistingReShadeAddonOptions;
 }>;
 
 type RunOwnershipMarker = Readonly<{
@@ -201,6 +243,74 @@ type RunRetentionSweepState = {
 };
 
 const runRetentionSweeps = new Map<string, RunRetentionSweepState>();
+const existingReShadeMaintenanceByTarget = new Map<string, Promise<void>>();
+const officialAddonStartupGraceByTarget = new Map<string, object>();
+
+const existingReShadeMaintenanceTargetKey = (
+  targetExecutablePath: string,
+): string =>
+  path.win32
+    .normalize(path.resolve(targetExecutablePath))
+    .toLocaleLowerCase('en-US');
+
+const scheduleExistingReShadeMaintenance = (
+  targetExecutablePath: string,
+  operation: () => Promise<void>,
+): Promise<void> => {
+  const targetKey = existingReShadeMaintenanceTargetKey(targetExecutablePath);
+  const previous = existingReShadeMaintenanceByTarget.get(targetKey);
+  const maintenance = (previous ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(operation);
+  existingReShadeMaintenanceByTarget.set(targetKey, maintenance);
+  void maintenance
+    .finally(() => {
+      if (existingReShadeMaintenanceByTarget.get(targetKey) === maintenance) {
+        existingReShadeMaintenanceByTarget.delete(targetKey);
+      }
+    })
+    .catch(() => undefined);
+  return maintenance;
+};
+
+const waitForExistingReShadeMaintenance = async (
+  target: ReShadeTarget,
+): Promise<void> => {
+  const targetExecutablePath = isPathTarget(target)
+    ? undefined
+    : target.executablePath;
+  const pending =
+    targetExecutablePath === undefined
+      ? [...existingReShadeMaintenanceByTarget.values()]
+      : [
+          existingReShadeMaintenanceByTarget.get(
+            existingReShadeMaintenanceTargetKey(targetExecutablePath),
+          ),
+        ].filter((maintenance): maintenance is Promise<void> =>
+          Boolean(maintenance),
+        );
+  if (pending.length === 0) {
+    return;
+  }
+  await Promise.allSettled(pending);
+};
+
+const shouldDeferExistingReShadeMaintenance = (
+  error: unknown,
+): error is ExistingReShadeInstallationError =>
+  error instanceof ExistingReShadeInstallationError &&
+  (error.code === 'manager-failed' ||
+    error.code === 'manager-timeout' ||
+    error.code === 'write-race');
+
+const isExistingReShadeOwnershipConflict = (
+  error: unknown,
+): error is ExistingReShadeInstallationError =>
+  error instanceof ExistingReShadeInstallationError &&
+  (error.code === 'foreign-addon-collision' ||
+    error.code === 'owned-addon-tampered' ||
+    error.code === 'ownership-marker-invalid' ||
+    error.code === 'file-changed');
 
 export type ReShadeAttachmentState =
   | 'idle'
@@ -224,8 +334,19 @@ export type ReShadeDiagnosticStage =
 
 export type ReShadeDiagnosticCode =
   | 'runtime-staging-failed'
+  | 'official-addon-startup-grace-coordinated'
   | 'target-injection-already-claimed'
   | 'target-injection-claim-failed'
+  | 'target-official-addon-wait-expired'
+  | 'target-existing-reshade-installation'
+  | 'target-existing-reshade-global-layer'
+  | 'target-global-reshade-layer-inspection-failed'
+  | 'existing-reshade-addon-preparation-failed'
+  | 'existing-reshade-addon-conflict'
+  | 'existing-reshade-addon-disabled'
+  | 'existing-reshade-addon-host-incompatible'
+  | 'existing-reshade-addon-maintenance-deferred'
+  | 'existing-reshade-addon-restart-required'
   | 'target-runtime-conflict'
   | 'target-runtime-incompatible'
   | 'target-runtime-reuse-too-late'
@@ -236,6 +357,7 @@ export type ReShadeDiagnosticCode =
   | 'injector-evidence-write-failed'
   | 'injector-failed'
   | 'injector-result-invalid'
+  | 'target-rendezvous-authorization-failed'
   | 'runtime-initialization-timeout'
   | 'target-disconnected'
   | 'session-closed'
@@ -259,7 +381,9 @@ export type ReShadeDiagnostic = Readonly<{
   message: string;
   targetLabel?: string;
   pid?: number;
+  targetExecutablePath?: string;
   modulePath?: string;
+  addonPath?: string;
   windowsErrorCode?: number;
   runtimeStartupCode?: ReShadeRuntimeStartupCode;
   evidence?: ReShadeDiagnosticEvidence;
@@ -337,14 +461,22 @@ type InjectorPreflightDiagnostic = Readonly<{
   code:
     | 'target-injection-already-claimed'
     | 'target-injection-claim-failed'
+    | 'target-official-addon-wait-expired'
+    | 'target-existing-reshade-installation'
+    | 'target-existing-reshade-global-layer'
+    | 'target-global-reshade-layer-inspection-failed'
     | 'target-runtime-conflict'
     | 'target-runtime-incompatible'
     | 'target-runtime-reuse-too-late'
     | 'target-runtime-reuse-raced'
     | 'target-module-inspection-failed';
   pid: number;
+  targetExecutablePath: string;
   injectionStarted: false;
   modulePath?: string;
+  reshadeBasePath?: string;
+  addonDirectoryPath?: string;
+  electronGameOverlayAddonDisabled?: boolean;
   windowsErrorCode?: number;
 }>;
 
@@ -353,6 +485,7 @@ type InjectorExistingRuntimeAddonLoadDiagnostic = Readonly<{
   stage: 'existing-runtime-addon-load';
   code: 'existing-runtime-addon-load-failed';
   pid: number;
+  targetExecutablePath: string;
   injectionStarted: true;
   modulePath?: string;
   windowsErrorCode?: number;
@@ -366,14 +499,29 @@ type InjectorResult =
   | Readonly<{
       schemaVersion: 1;
       pid: number;
+      targetExecutablePath: string;
       runtimeMode: 'injected-runtime';
     }>
   | Readonly<{
       schemaVersion: 1;
       pid: number;
+      targetExecutablePath: string;
       runtimeMode: 'existing-runtime';
       runtimeModulePath: string;
       hostAbi: 1;
+    }>
+  | Readonly<{
+      schemaVersion: 1;
+      pid: number;
+      targetExecutablePath: string;
+      runtimeMode: 'official-addon';
+      runtimeModulePath: string;
+      addonModulePath: string;
+      addonAbi: 1;
+      addonBuildId: string;
+      reshadeBasePath: string;
+      addonDirectoryPath: string;
+      electronGameOverlayAddonDisabled: boolean;
     }>;
 
 type ReShadeTargetConnection = Readonly<{
@@ -390,6 +538,7 @@ type ReShadeAttachmentSession = Pick<
 type TargetRendezvousAuthorizer = (
   runDirectory: string,
   pid: number,
+  expectedExecutablePath?: string,
 ) => Promise<() => void>;
 
 type ConnectedTarget = ReShadeTargetConnection &
@@ -453,6 +602,11 @@ export function parseReShadeLaunchConfig(
     INJECTOR_FILE_NAME,
     'ReShade injector',
   );
+  const addonManagerPath = canonicalArtifact(
+    runtimeDirectory,
+    ADDON_MANAGER_FILE_NAME,
+    'Electron Game Overlay ReShade add-on manager',
+  );
   const runtimePath = canonicalArtifact(
     runtimeDirectory,
     RUNTIME_FILE_NAME,
@@ -462,6 +616,11 @@ export function parseReShadeLaunchConfig(
     runtimeDirectory,
     BUILD_STAMP_FILE_NAME,
     'ReShade runtime build stamp',
+  );
+  const packageBuildStampPath = canonicalArtifact(
+    runtimeDirectory,
+    PACKAGE_BUILD_STAMP_FILE_NAME,
+    'Electron Game Overlay runtime package build stamp',
   );
   const addonPath = canonicalArtifact(
     runtimeDirectory,
@@ -505,8 +664,10 @@ export function parseReShadeLaunchConfig(
     runtimeDirectory,
     runsRootDirectory: path.resolve(requestedRunsRoot),
     injectorPath,
+    addonManagerPath,
     runtimePath,
     buildStampPath,
+    packageBuildStampPath,
     addonPath,
     configPath,
     ...(autoTargetProcess === undefined ? {} : { autoTargetProcess }),
@@ -563,6 +724,14 @@ export class ReShadeOverlayLauncher {
   private latestRunDirectory: string | null = null;
   private currentRuntime: CurrentRuntime | null = null;
   private preparedRuntime: Promise<StagedRuntime> | null = null;
+  private readonly pendingExistingReShadeMaintenanceByPid = new Map<
+    number,
+    PendingExistingReShadeMaintenance
+  >();
+  private readonly confirmedTargetExitRuntimeByPid = new Map<
+    number,
+    StagedRuntime
+  >();
   private releaseTargetAuthorization: (() => void) | null = null;
   private launchGeneration = 0;
   private disposed = false;
@@ -657,6 +826,15 @@ export class ReShadeOverlayLauncher {
     if (!isValidProcessPid(pid)) {
       return false;
     }
+    const current = this.currentRuntime;
+    if (
+      current !== null &&
+      this.attachmentExpectedTargetPid === pid &&
+      current.targetLabel === this.attachmentTargetLabel
+    ) {
+      this.confirmedTargetExitRuntimeByPid.set(pid, current.staged);
+    }
+    const maintenanceStarted = this.startPendingExistingReShadeMaintenance(pid);
     const connectedTarget = this.connectedTarget;
     if (connectedTarget?.pid === pid) {
       this.disconnectConnectedTarget(connectedTarget);
@@ -668,10 +846,9 @@ export class ReShadeOverlayLauncher {
       this.attachmentExpectedTargetPid !== pid ||
       targetLabel === null
     ) {
-      return false;
+      return maintenanceStarted;
     }
 
-    const current = this.currentRuntime;
     const error = new ReShadeOperationError({
       message: `the ReShade target pid=${pid} was confirmed exited before attachment completed`,
       code: 'target-disconnected',
@@ -812,6 +989,16 @@ export class ReShadeOverlayLauncher {
       this.config.expectedTargetPid,
     );
     const targetLabel = targetLabelFor(launchTarget);
+    if (
+      expectedTargetPid !== undefined &&
+      this.pendingExistingReShadeMaintenanceByPid.has(expectedTargetPid)
+    ) {
+      return Promise.reject(
+        new Error(
+          `target pid=${expectedTargetPid} must exit before its pending ReShade add-on maintenance can run`,
+        ),
+      );
+    }
     if (!attachmentOwner && this.activeAttach) {
       return Promise.reject(
         new Error('a ReShade attachment is already active'),
@@ -911,6 +1098,7 @@ export class ReShadeOverlayLauncher {
     if (this.disposed) {
       return;
     }
+    const requestAtDisposal = this.activeRequest;
     this.disposed = true;
     this.activeAttach?.cancel(
       new Error(
@@ -938,6 +1126,19 @@ export class ReShadeOverlayLauncher {
     }
     this.invalidateActiveLaunch();
     this.clearTargetAuthorization();
+    this.abandonPendingExistingReShadeMaintenance();
+    if (
+      requestAtDisposal !== null &&
+      this.confirmedTargetExitRuntimeByPid.size > 0
+    ) {
+      void requestAtDisposal
+        .finally(() => {
+          this.confirmedTargetExitRuntimeByPid.clear();
+        })
+        .catch(() => undefined);
+    } else {
+      this.confirmedTargetExitRuntimeByPid.clear();
+    }
   }
 
   private async performAttach(
@@ -1124,10 +1325,7 @@ export class ReShadeOverlayLauncher {
         ) {
           return;
         }
-        if (
-          !recognizedCandidatePids.has(connection.pid) &&
-          !targetPathMatches(connection.path, target)
-        ) {
+        if (!targetPathMatches(connection.path, target)) {
           console.warn(
             `Ignored ReShade target connection from unexpected path=${JSON.stringify(connection.path)}; expected ${targetPathExpectation(target)}`,
           );
@@ -1255,11 +1453,12 @@ export class ReShadeOverlayLauncher {
     const authorizeTarget = session.authorizeTarget;
     const targetRendezvousAuthorizer: TargetRendezvousAuthorizer | undefined =
       authorizeTarget
-        ? (runDirectory, pid) =>
+        ? (runDirectory, pid, expectedExecutablePath) =>
             authorizeTarget.call(
               session,
               pid,
               path.join(runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME),
+              expectedExecutablePath,
             )
         : undefined;
     let launch: Promise<ReShadeLaunchResult> | undefined;
@@ -1284,7 +1483,10 @@ export class ReShadeOverlayLauncher {
       ]);
       const [launchResult, connection] = outcome;
       attachmentCompleted = true;
-      return Object.freeze({ ...launchResult, pid: connection.pid });
+      return Object.freeze({
+        ...launchResult,
+        pid: connection.pid,
+      });
     } catch (error) {
       proofSettled = true;
       this.invalidateActiveLaunch();
@@ -1315,6 +1517,8 @@ export class ReShadeOverlayLauncher {
     launchGeneration: number,
     authorizeTarget?: TargetRendezvousAuthorizer,
   ): Promise<ReShadeLaunchResult> {
+    await waitForExistingReShadeMaintenance(target);
+    this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     const preparedRuntime = this.preparedRuntime;
     this.preparedRuntime = null;
     const staged = await (preparedRuntime ??
@@ -1326,6 +1530,7 @@ export class ReShadeOverlayLauncher {
         newTargetAuthorization = await authorizeTarget(
           staged.runDirectory,
           expectedTargetPid,
+          isPathTarget(target) ? undefined : target.executablePath,
         );
         this.assertLaunchCanSpawn(targetLabel, launchGeneration);
         if (this.releaseTargetAuthorization) {
@@ -1392,13 +1597,71 @@ export class ReShadeOverlayLauncher {
           void this.finishInjector(
             target,
             targetLabel,
+            launchGeneration,
             expectedTargetPid,
             staged,
             error,
             stdout,
             stderr,
             didSpawn,
-          ).then(resolve, reject);
+          )
+            .then(async (result) => {
+              if (
+                isPathTarget(target) &&
+                result.runtimeMode === 'official-addon' &&
+                authorizeTarget
+              ) {
+                let selectedTargetAuthorization: (() => void) | undefined;
+                try {
+                  selectedTargetAuthorization = await authorizeTarget(
+                    staged.runDirectory,
+                    result.injectorTargetPid,
+                    result.selectedPath,
+                  );
+                  this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+                  if (this.releaseTargetAuthorization) {
+                    throw new Error(
+                      'a ReShade target rendezvous is already authorized',
+                    );
+                  }
+                  this.releaseTargetAuthorization = selectedTargetAuthorization;
+                  selectedTargetAuthorization = undefined;
+                  this.emitEvent(
+                    Object.freeze({
+                      type: 'target-rendezvous-authorized',
+                      targetLabel,
+                      pid: result.injectorTargetPid,
+                      discoveryPath: path.join(
+                        staged.runDirectory,
+                        OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME,
+                      ),
+                    }),
+                  );
+                } catch (authorizationError) {
+                  selectedTargetAuthorization?.();
+                  if (isReShadeOperationError(authorizationError)) {
+                    throw authorizationError;
+                  }
+                  throw this.createInjectorFailure({
+                    message: `the official ReShade add-on was detected for target pid=${result.injectorTargetPid}, but its target-specific transport rendezvous could not be authorized: ${formatUnknownError(authorizationError)}`,
+                    code: 'target-rendezvous-authorization-failed',
+                    stage: 'runtime-initialization',
+                    retrySafety: 'definite-safe',
+                    targetLabel,
+                    pid: result.injectorTargetPid,
+                    ...(result.hostRuntimePath === undefined
+                      ? {}
+                      : { modulePath: result.hostRuntimePath }),
+                    ...(result.addonModulePath === undefined
+                      ? {}
+                      : { addonPath: result.addonModulePath }),
+                    evidence: diagnosticEvidenceForLaunchResult(result),
+                  });
+                }
+              }
+              return result;
+            })
+            .then(resolve, reject);
         },
       );
       child.once('spawn', () => {
@@ -1439,8 +1702,10 @@ export class ReShadeOverlayLauncher {
 
       const sourceByName = new Map<string, string>([
         [INJECTOR_FILE_NAME, this.config.injectorPath],
+        [ADDON_MANAGER_FILE_NAME, this.config.addonManagerPath],
         [RUNTIME_FILE_NAME, this.config.runtimePath],
         [BUILD_STAMP_FILE_NAME, this.config.buildStampPath],
+        [PACKAGE_BUILD_STAMP_FILE_NAME, this.config.packageBuildStampPath],
         [ADDON_FILE_NAME, this.config.addonPath],
         [CONFIG_FILE_NAME, this.config.configPath],
       ]);
@@ -1451,7 +1716,8 @@ export class ReShadeOverlayLauncher {
             path.join(createdRunDirectory, fileName),
             fileName === CONFIG_FILE_NAME ||
               fileName === RUNTIME_FILE_NAME ||
-              fileName === ADDON_FILE_NAME,
+              fileName === ADDON_FILE_NAME ||
+              fileName === ADDON_MANAGER_FILE_NAME,
           ),
         ),
       );
@@ -1475,6 +1741,10 @@ export class ReShadeOverlayLauncher {
         runsRootDirectory,
         runDirectory: createdRunDirectory,
         injectorPath: path.join(createdRunDirectory, INJECTOR_FILE_NAME),
+        addonManagerPath: path.join(
+          createdRunDirectory,
+          ADDON_MANAGER_FILE_NAME,
+        ),
         injectorStdoutPath: path.join(
           createdRunDirectory,
           INJECTOR_STDOUT_FILE_NAME,
@@ -1510,12 +1780,14 @@ export class ReShadeOverlayLauncher {
   private async finishInjector(
     target: ReShadeTarget,
     targetLabel: string,
+    launchGeneration: number,
     expectedTargetPid: number | undefined,
     staged: StagedRuntime,
     error: Error | null,
     stdout: string,
     stderr: string,
     didSpawn: boolean,
+    officialAddonStartupGraceAttempted = false,
   ): Promise<ReShadeLaunchResult> {
     const retrySafeBeforeMutation =
       isPathTarget(target) || target.pid !== undefined;
@@ -1586,6 +1858,7 @@ export class ReShadeOverlayLauncher {
       const isContradictory =
         hasSuccessMarker ||
         hasResultRecord ||
+        !injectorDiagnosticExitMatches(error, didSpawn, diagnostic) ||
         (diagnostic.stage === 'target-preflight'
           ? !injectorDidNotStart(stdout)
           : injectorDidNotStart(stdout)) ||
@@ -1605,6 +1878,184 @@ export class ReShadeOverlayLauncher {
         });
       }
 
+      const existingInstallationDiagnostic =
+        didSpawn &&
+        diagnostic.stage === 'target-preflight' &&
+        diagnostic.modulePath !== undefined &&
+        (diagnostic.code === 'target-existing-reshade-installation' ||
+          diagnostic.code === 'target-runtime-incompatible')
+          ? diagnostic
+          : undefined;
+      const existingInstallationTarget =
+        existingInstallationDiagnostic === undefined
+          ? undefined
+          : existingInstallationTargetFor(
+              target,
+              existingInstallationDiagnostic,
+            );
+      if (
+        existingInstallationTarget !== undefined &&
+        existingInstallationDiagnostic !== undefined
+      ) {
+        const preflightTargetExecutablePath =
+          existingInstallationDiagnostic.targetExecutablePath;
+        const preparationOptions: PrepareExistingReShadeAddonOptions =
+          Object.freeze({
+            targetExecutablePath: existingInstallationTarget.executablePath,
+            reshadeModulePath: existingInstallationDiagnostic.modulePath!,
+            addonSourcePath: path.join(staged.runDirectory, ADDON_FILE_NAME),
+            managerExecutablePath: staged.addonManagerPath,
+            targetEffectiveSettings: Object.freeze({
+              reshadeBasePath: existingInstallationDiagnostic.reshadeBasePath!,
+              addonDirectoryPath:
+                existingInstallationDiagnostic.addonDirectoryPath!,
+              electronGameOverlayAddonDisabled:
+                existingInstallationDiagnostic.electronGameOverlayAddonDisabled!,
+            }),
+          });
+        let prepared: PrepareExistingReShadeAddonResult;
+        try {
+          prepared = await prepareExistingReShadeAddon(preparationOptions);
+        } catch (preparationError) {
+          const maintenanceQueued =
+            shouldDeferExistingReShadeMaintenance(preparationError) &&
+            this.queuePendingExistingReShadeMaintenance(
+              diagnostic.pid,
+              targetLabel,
+              staged,
+              preparationOptions,
+            );
+          const preparationCode =
+            preparationError instanceof ExistingReShadeInstallationError
+              ? ` (${preparationError.code})`
+              : '';
+          const detail =
+            `the existing ReShade installation at ${JSON.stringify(existingInstallationDiagnostic.modulePath)} was preserved, but its overlay add-on could not be prepared${preparationCode}: ` +
+            formatUnknownError(preparationError) +
+            (maintenanceQueued
+              ? '; maintenance is deferred until the exact target exit is confirmed'
+              : '');
+          throw this.createInjectorFailure({
+            message: detail,
+            code: maintenanceQueued
+              ? 'existing-reshade-addon-maintenance-deferred'
+              : isExistingReShadeOwnershipConflict(preparationError)
+                ? 'existing-reshade-addon-conflict'
+                : 'existing-reshade-addon-preparation-failed',
+            stage: 'target-preflight',
+            retrySafety: 'definite-safe',
+            targetLabel,
+            pid: diagnostic.pid,
+            ...(preflightTargetExecutablePath === undefined
+              ? {}
+              : { targetExecutablePath: preflightTargetExecutablePath }),
+            modulePath: existingInstallationDiagnostic.modulePath,
+            evidence: diagnosticEvidence,
+          });
+        }
+
+        if (prepared.status === 'disabled-by-user') {
+          const detail =
+            `the existing ReShade installation at ${JSON.stringify(prepared.reshadeModulePath)} was preserved, ` +
+            `but the user has disabled ${JSON.stringify('Electron Game Overlay Runtime')} in ${JSON.stringify(prepared.reshadeConfigPath)}; ` +
+            'enable that add-on in ReShade before attaching';
+          throw this.createInjectorFailure({
+            message: detail,
+            code: 'existing-reshade-addon-disabled',
+            stage: 'target-preflight',
+            retrySafety: 'definite-safe',
+            targetLabel,
+            pid: diagnostic.pid,
+            ...(preflightTargetExecutablePath === undefined
+              ? {}
+              : { targetExecutablePath: preflightTargetExecutablePath }),
+            modulePath: prepared.reshadeModulePath,
+            evidence: Object.freeze({
+              ...diagnosticEvidence,
+              reshadeLogPath: path.join(
+                prepared.reshadeBaseDirectoryPath,
+                RESHADE_LOG_FILE_NAME,
+              ),
+            }),
+          });
+        }
+
+        if (prepared.status === 'already-current') {
+          if (!officialAddonStartupGraceAttempted) {
+            this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+            const retry = await this.waitForOfficialAddonStartup(
+              existingInstallationTarget,
+              targetLabel,
+              launchGeneration,
+              diagnostic.pid,
+              staged,
+            );
+            return this.finishInjector(
+              target,
+              targetLabel,
+              launchGeneration,
+              diagnostic.pid,
+              staged,
+              retry.error,
+              retry.stdout,
+              retry.stderr,
+              retry.didSpawn,
+              true,
+            );
+          }
+          throw this.createInjectorFailure({
+            message:
+              `the existing ReShade host at ${JSON.stringify(prepared.reshadeModulePath)} started with the current Electron Game Overlay add-on at ${JSON.stringify(prepared.addonDestinationPath)}, but did not load it; ` +
+              'the host must support public add-on API 18 and the required Dear ImGui function table',
+            code: 'existing-reshade-addon-host-incompatible',
+            stage: 'target-preflight',
+            retrySafety: 'definite-safe',
+            targetLabel,
+            pid: diagnostic.pid,
+            ...(preflightTargetExecutablePath === undefined
+              ? {}
+              : { targetExecutablePath: preflightTargetExecutablePath }),
+            modulePath: prepared.reshadeModulePath,
+            addonPath: prepared.addonDestinationPath,
+            evidence: Object.freeze({
+              ...diagnosticEvidence,
+              reshadeLogPath: path.join(
+                prepared.reshadeBaseDirectoryPath,
+                RESHADE_LOG_FILE_NAME,
+              ),
+            }),
+          });
+        }
+
+        if (prepared.status === 'installed' || prepared.status === 'updated') {
+          const action =
+            prepared.status === 'installed' ? 'installed' : 'updated';
+          const detail =
+            `the existing ReShade installation at ${JSON.stringify(prepared.reshadeModulePath)} was preserved; ` +
+            `the Electron Game Overlay add-on was ${action} at ${JSON.stringify(prepared.addonDestinationPath)}, so the target must be restarted before attachment`;
+          throw this.createInjectorFailure({
+            message: detail,
+            code: 'existing-reshade-addon-restart-required',
+            stage: 'target-preflight',
+            retrySafety: 'definite-safe',
+            targetLabel,
+            pid: diagnostic.pid,
+            ...(preflightTargetExecutablePath === undefined
+              ? {}
+              : { targetExecutablePath: preflightTargetExecutablePath }),
+            modulePath: prepared.reshadeModulePath,
+            addonPath: prepared.addonDestinationPath,
+            evidence: Object.freeze({
+              ...diagnosticEvidence,
+              reshadeLogPath: path.join(
+                prepared.reshadeBaseDirectoryPath,
+                RESHADE_LOG_FILE_NAME,
+              ),
+            }),
+          });
+        }
+      }
+
       const windowsErrorDetail =
         diagnostic.windowsErrorCode === undefined
           ? ''
@@ -1616,6 +2067,26 @@ export class ReShadeOverlayLauncher {
           break;
         case 'target-injection-claim-failed':
           detail = `unable to establish exclusive ReShade injection ownership for target pid=${diagnostic.pid}${windowsErrorDetail}`;
+          break;
+        case 'target-official-addon-wait-expired':
+          detail = `the bounded official ReShade add-on startup wait ended for target pid=${diagnostic.pid}${windowsErrorDetail}; project runtime and add-on injection were refused`;
+          break;
+        case 'target-existing-reshade-installation':
+          detail = `target pid=${diagnostic.pid} has an existing ReShade installation${
+            diagnostic.modulePath
+              ? ` at ${JSON.stringify(diagnostic.modulePath)}`
+              : ''
+          }; the installation was preserved and the project runtime was not injected`;
+          break;
+        case 'target-existing-reshade-global-layer':
+          detail = `target pid=${diagnostic.pid} is configured for an existing global ReShade layer${
+            diagnostic.modulePath
+              ? ` at ${JSON.stringify(diagnostic.modulePath)}`
+              : ''
+          }; the installation was preserved and the project runtime was not injected`;
+          break;
+        case 'target-global-reshade-layer-inspection-failed':
+          detail = `global ReShade layer inspection failed for target pid=${diagnostic.pid}${windowsErrorDetail}; project runtime injection was refused`;
           break;
         case 'target-runtime-conflict':
           detail = `target pid=${diagnostic.pid} already has a loaded ReShade runtime${
@@ -1669,6 +2140,7 @@ export class ReShadeOverlayLauncher {
             : 'indeterminate',
         targetLabel,
         pid: diagnostic.pid,
+        targetExecutablePath: diagnostic.targetExecutablePath,
         ...(diagnostic.modulePath === undefined
           ? {}
           : { modulePath: diagnostic.modulePath }),
@@ -1750,6 +2222,21 @@ export class ReShadeOverlayLauncher {
     const injectorResult = parsedResult.result;
     const injectorTargetPid = injectorResult.pid;
     if (
+      officialAddonStartupGraceAttempted &&
+      injectorResult.runtimeMode !== 'official-addon'
+    ) {
+      throw this.createInjectorFailure({
+        message:
+          'the official ReShade add-on startup wait returned a mutating runtime mode; the result was rejected',
+        code: 'injector-result-invalid',
+        stage: 'injector',
+        retrySafety: 'indeterminate',
+        targetLabel,
+        pid: injectorTargetPid,
+        evidence,
+      });
+    }
+    if (
       expectedTargetPid !== undefined &&
       injectorTargetPid !== expectedTargetPid
     ) {
@@ -1765,58 +2252,174 @@ export class ReShadeOverlayLauncher {
       });
     }
 
-    let selectedPath: string | undefined;
-    let processName: string;
-    if (isPathTarget(target)) {
+    const selectedTargetExecutablePath = injectorResult.targetExecutablePath;
+    if (!targetPathMatches(selectedTargetExecutablePath, target)) {
+      const detail = `ReShade injector selected unexpected path=${JSON.stringify(selectedTargetExecutablePath)}; expected ${targetPathExpectation(target)}`;
+      throw this.createInjectorFailure({
+        message: detail,
+        code: 'injector-result-invalid',
+        stage: 'injector',
+        retrySafety: 'indeterminate',
+        targetLabel,
+        pid: injectorTargetPid,
+        targetExecutablePath: selectedTargetExecutablePath,
+        evidence,
+      });
+    }
+    const selectedPath = isPathTarget(target)
+      ? selectedTargetExecutablePath
+      : undefined;
+    const processName = isPathTarget(target)
+      ? path.win32.basename(selectedTargetExecutablePath)
+      : target.processName;
+
+    if (injectorResult.runtimeMode === 'official-addon') {
+      if (injectorResult.electronGameOverlayAddonDisabled) {
+        throw this.createInjectorFailure({
+          message:
+            'the loaded official ReShade host reports that Electron Game Overlay is disabled by the user; the installation was preserved',
+          code: 'existing-reshade-addon-disabled',
+          stage: 'target-preflight',
+          retrySafety: 'definite-safe',
+          targetLabel,
+          pid: injectorTargetPid,
+          targetExecutablePath: selectedTargetExecutablePath,
+          modulePath: injectorResult.runtimeModulePath,
+          addonPath: injectorResult.addonModulePath,
+          evidence: diagnosticEvidenceForHostRuntime(
+            staged,
+            injectorResult.runtimeModulePath,
+          ),
+        });
+      }
+      const officialAddonPreparationOptions: PrepareExistingReShadeAddonOptions =
+        Object.freeze({
+          targetExecutablePath: selectedTargetExecutablePath,
+          reshadeModulePath: injectorResult.runtimeModulePath,
+          addonSourcePath: path.join(staged.runDirectory, ADDON_FILE_NAME),
+          managerExecutablePath: staged.addonManagerPath,
+          targetEffectiveSettings: Object.freeze({
+            reshadeBasePath: injectorResult.reshadeBasePath,
+            addonDirectoryPath: injectorResult.addonDirectoryPath,
+            electronGameOverlayAddonDisabled:
+              injectorResult.electronGameOverlayAddonDisabled,
+          }),
+        });
+      let inspection: Awaited<
+        ReturnType<typeof inspectLoadedOfficialReShadeAddon>
+      >;
       try {
-        selectedPath = parseInjectorTargetPath(stdout);
-      } catch (parseError) {
-        const detail =
-          parseError instanceof Error ? parseError.message : String(parseError);
+        inspection = await inspectLoadedOfficialReShadeAddon({
+          targetExecutablePath:
+            officialAddonPreparationOptions.targetExecutablePath,
+          reshadeModulePath: officialAddonPreparationOptions.reshadeModulePath,
+          loadedAddonModulePath: injectorResult.addonModulePath,
+          addonSourcePath: officialAddonPreparationOptions.addonSourcePath,
+          managerExecutablePath:
+            officialAddonPreparationOptions.managerExecutablePath,
+          targetEffectiveSettings:
+            officialAddonPreparationOptions.targetEffectiveSettings,
+        });
+      } catch (inspectionError) {
+        const maintenanceQueued =
+          shouldDeferExistingReShadeMaintenance(inspectionError) &&
+          this.queuePendingExistingReShadeMaintenance(
+            injectorTargetPid,
+            targetLabel,
+            staged,
+            officialAddonPreparationOptions,
+          );
+        const inspectionCode =
+          inspectionError instanceof ExistingReShadeInstallationError
+            ? ` (${inspectionError.code})`
+            : '';
         throw this.createInjectorFailure({
-          message: detail,
-          code: 'injector-result-invalid',
-          stage: 'injector',
-          retrySafety: 'indeterminate',
+          message:
+            `the loaded official ReShade add-on could not be verified as the current managed generation${inspectionCode}: ` +
+            formatUnknownError(inspectionError) +
+            (maintenanceQueued
+              ? '; maintenance is deferred until the exact target exit is confirmed'
+              : ''),
+          code: maintenanceQueued
+            ? 'existing-reshade-addon-maintenance-deferred'
+            : isExistingReShadeOwnershipConflict(inspectionError)
+              ? 'existing-reshade-addon-conflict'
+              : 'existing-reshade-addon-preparation-failed',
+          stage: 'target-preflight',
+          retrySafety: 'definite-safe',
           targetLabel,
           pid: injectorTargetPid,
-          evidence,
+          targetExecutablePath: selectedTargetExecutablePath,
+          modulePath: injectorResult.runtimeModulePath,
+          addonPath: injectorResult.addonModulePath,
+          evidence: diagnosticEvidenceForHostRuntime(
+            staged,
+            injectorResult.runtimeModulePath,
+          ),
         });
       }
-      if (!targetPathMatches(selectedPath, target)) {
-        const detail = `ReShade injector selected unexpected path=${JSON.stringify(selectedPath)}; expected ${targetPathExpectation(target)}`;
+      if (inspection.status !== 'already-current') {
+        const canMaintainAfterTargetExit =
+          inspection.status === 'not-installed' ||
+          inspection.status === 'update-required' ||
+          inspection.status === 'transaction-pending';
+        const maintenanceQueued =
+          canMaintainAfterTargetExit &&
+          this.queuePendingExistingReShadeMaintenance(
+            injectorTargetPid,
+            targetLabel,
+            staged,
+            officialAddonPreparationOptions,
+          );
         throw this.createInjectorFailure({
-          message: detail,
-          code: 'injector-result-invalid',
-          stage: 'injector',
-          retrySafety: 'indeterminate',
+          message: maintenanceQueued
+            ? `the official ReShade host loaded a non-current managed add-on (${inspection.status}); the target must exit before the add-on can be updated and then restarted`
+            : canMaintainAfterTargetExit
+              ? `the official ReShade host loaded a non-current managed add-on (${inspection.status}); the existing installation was preserved, but target-exit maintenance was not scheduled because the launcher is no longer active`
+              : `the official ReShade host add-on cannot be accepted (${inspection.status}); the existing installation was preserved and no automatic update was scheduled`,
+          code: maintenanceQueued
+            ? 'existing-reshade-addon-maintenance-deferred'
+            : canMaintainAfterTargetExit
+              ? 'existing-reshade-addon-preparation-failed'
+              : 'existing-reshade-addon-conflict',
+          stage: 'target-preflight',
+          retrySafety: 'definite-safe',
           targetLabel,
           pid: injectorTargetPid,
-          evidence,
+          targetExecutablePath: selectedTargetExecutablePath,
+          modulePath: injectorResult.runtimeModulePath,
+          addonPath: injectorResult.addonModulePath,
+          evidence: diagnosticEvidenceForHostRuntime(
+            staged,
+            injectorResult.runtimeModulePath,
+          ),
         });
       }
-      processName = path.win32.basename(selectedPath);
-    } else {
-      processName = target.processName;
     }
 
     const result: ReShadeLaunchResult = Object.freeze({
       processName,
+      targetExecutablePath: selectedTargetExecutablePath,
       ...(selectedPath === undefined ? {} : { selectedPath }),
       targetLabel,
       injectorTargetPid,
       runtimeMode: injectorResult.runtimeMode,
-      ...(injectorResult.runtimeMode === 'existing-runtime'
+      ...(injectorResult.runtimeMode !== 'injected-runtime'
         ? { hostRuntimePath: injectorResult.runtimeModulePath }
+        : {}),
+      ...(injectorResult.runtimeMode === 'official-addon'
+        ? { addonModulePath: injectorResult.addonModulePath }
         : {}),
       runDirectory: staged.runDirectory,
       injectorStdoutPath: staged.injectorStdoutPath,
       injectorStderrPath: staged.injectorStderrPath,
       reshadeLogPath:
-        injectorResult.runtimeMode === 'existing-runtime'
+        injectorResult.runtimeMode !== 'injected-runtime'
           ? hostRuntimeLogPath(injectorResult.runtimeModulePath)
           : staged.reshadeLogPath,
-      runtimeStartupPath: staged.runtimeStartupPath,
+      ...(injectorResult.runtimeMode === 'official-addon'
+        ? {}
+        : { runtimeStartupPath: staged.runtimeStartupPath }),
     });
     this.emitEvent(
       Object.freeze({
@@ -1825,6 +2428,248 @@ export class ReShadeOverlayLauncher {
       }),
     );
     return result;
+  }
+
+  private waitForOfficialAddonStartup(
+    target: ExistingInstallationTarget,
+    targetLabel: string,
+    launchGeneration: number,
+    pid: number,
+    staged: StagedRuntime,
+  ): Promise<InjectorCompletion> {
+    this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+    const coordinationKey = `${existingReShadeMaintenanceTargetKey(
+      target.executablePath,
+    )}\0${pid}`;
+    if (officialAddonStartupGraceByTarget.has(coordinationKey)) {
+      return Promise.reject(
+        this.createInjectorFailure({
+          message: `another launcher in this process is already waiting for the official ReShade add-on in target pid=${pid}`,
+          code: 'official-addon-startup-grace-coordinated',
+          stage: 'target-preflight',
+          retrySafety: 'definite-safe',
+          targetLabel,
+          pid,
+          targetExecutablePath: target.executablePath,
+          evidence: diagnosticEvidenceForStagedRuntime(staged),
+        }),
+      );
+    }
+
+    const invocation = buildReShadeInvocation(
+      Object.freeze({
+        processName: target.processName,
+        pid,
+        executablePath: target.executablePath,
+      }),
+      staged.runDirectory,
+    );
+    const retryInvocation: ReShadeInvocation = Object.freeze({
+      ...invocation,
+      arguments: Object.freeze([
+        ...invocation.arguments,
+        '--wait-for-official-addon',
+        String(OFFICIAL_ADDON_STARTUP_GRACE_MS),
+      ]),
+    });
+    let resolveCompletion!: (completion: InjectorCompletion) => void;
+    let rejectCompletion!: (error: unknown) => void;
+    const completion = new Promise<InjectorCompletion>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    const coordination = {};
+    officialAddonStartupGraceByTarget.set(coordinationKey, coordination);
+    void completion
+      .finally(() => {
+        if (
+          officialAddonStartupGraceByTarget.get(coordinationKey) ===
+          coordination
+        ) {
+          officialAddonStartupGraceByTarget.delete(coordinationKey);
+        }
+      })
+      .catch(() => undefined);
+
+    try {
+      this.emitEvent(
+        Object.freeze({
+          type: 'injector-started',
+          invocation: retryInvocation,
+        }),
+      );
+      this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+      let didSpawn = false;
+      const child = execFile(
+        retryInvocation.executable,
+        [...retryInvocation.arguments],
+        {
+          cwd: retryInvocation.workingDirectory,
+          encoding: 'utf8',
+          maxBuffer: MAX_OUTPUT_BYTES,
+          shell: false,
+          timeout: OFFICIAL_ADDON_STARTUP_GRACE_MS + 5_000,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          if (this.activeChild === child) {
+            this.activeChild = null;
+          }
+          resolveCompletion(
+            Object.freeze({
+              error,
+              stdout,
+              stderr,
+              didSpawn,
+            }),
+          );
+        },
+      );
+      child.once('spawn', () => {
+        didSpawn = true;
+      });
+      this.activeChild = child;
+    } catch (error) {
+      rejectCompletion(error);
+    }
+    return completion;
+  }
+
+  private queuePendingExistingReShadeMaintenance(
+    pid: number,
+    targetLabel: string,
+    staged: StagedRuntime,
+    options: PrepareExistingReShadeAddonOptions,
+  ): boolean {
+    const targetExitAlreadyConfirmed =
+      this.confirmedTargetExitRuntimeByPid.get(pid) === staged;
+    if (this.disposed && !targetExitAlreadyConfirmed) {
+      return false;
+    }
+    const existing = this.pendingExistingReShadeMaintenanceByPid.get(pid);
+    if (existing !== undefined) {
+      return existing.staged === staged;
+    }
+    this.pendingExistingReShadeMaintenanceByPid.set(
+      pid,
+      Object.freeze({
+        pid,
+        targetLabel,
+        staged,
+        options: Object.freeze({
+          ...options,
+          targetEffectiveSettings: Object.freeze({
+            ...options.targetEffectiveSettings,
+          }),
+        }),
+      }),
+    );
+    if (this.confirmedTargetExitRuntimeByPid.get(pid) === staged) {
+      this.startPendingExistingReShadeMaintenance(pid);
+    }
+    return true;
+  }
+
+  private startPendingExistingReShadeMaintenance(pid: number): boolean {
+    const pending = this.pendingExistingReShadeMaintenanceByPid.get(pid);
+    if (pending === undefined) {
+      return false;
+    }
+    this.pendingExistingReShadeMaintenanceByPid.delete(pid);
+    this.confirmedTargetExitRuntimeByPid.delete(pid);
+    if (this.currentRuntime?.staged === pending.staged) {
+      this.currentRuntime = null;
+    }
+
+    let completedStatus: string | undefined;
+    const maintenance = scheduleExistingReShadeMaintenance(
+      pending.options.targetExecutablePath,
+      async () => {
+        const prepared = await prepareExistingReShadeAddon(pending.options);
+        if (
+          prepared.status !== 'installed' &&
+          prepared.status !== 'updated' &&
+          prepared.status !== 'already-current'
+        ) {
+          throw new Error(
+            `deferred ReShade add-on maintenance was refused with status=${prepared.status}`,
+          );
+        }
+        completedStatus = prepared.status;
+      },
+    );
+    void (async () => {
+      try {
+        await maintenance;
+        if (completedStatus === undefined) {
+          throw new Error(
+            'deferred ReShade add-on maintenance completed without a result status',
+          );
+        }
+        console.log(
+          `ELECTRON_GAME_OVERLAY_RESHADE_MAINTENANCE_COMPLETED pid=${pending.pid} operation=prepare status=${completedStatus} target=${JSON.stringify(pending.options.targetExecutablePath)}`,
+        );
+      } catch (error) {
+        console.error(
+          `ELECTRON_GAME_OVERLAY_RESHADE_MAINTENANCE_FAILED pid=${pending.pid} operation=prepare target=${JSON.stringify(pending.options.targetExecutablePath)} detail=${JSON.stringify(formatUnknownError(error))}`,
+        );
+      } finally {
+        try {
+          await markRunDirectoryReclaimable(pending.staged);
+          scheduleRunRetentionSweep(pending.staged.runsRootDirectory);
+        } catch (error) {
+          if (!(await pathIsMissing(pending.staged.runDirectory))) {
+            console.warn(
+              `Unable to retire a deferred ReShade maintenance run directory: ${formatUnknownError(error)}`,
+            );
+          }
+        }
+      }
+    })();
+    return true;
+  }
+
+  private abandonPendingExistingReShadeMaintenance(): void {
+    const stagedRuntimes = new Set(
+      [...this.pendingExistingReShadeMaintenanceByPid.values()].map(
+        ({ staged }) => staged,
+      ),
+    );
+    this.pendingExistingReShadeMaintenanceByPid.clear();
+    if (
+      this.currentRuntime !== null &&
+      stagedRuntimes.has(this.currentRuntime.staged)
+    ) {
+      this.currentRuntime = null;
+    }
+    for (const staged of stagedRuntimes) {
+      void markRunDirectoryReclaimable(staged)
+        .then(() => scheduleRunRetentionSweep(staged.runsRootDirectory))
+        .catch(async (error) => {
+          if (!(await pathIsMissing(staged.runDirectory))) {
+            console.warn(
+              `Unable to retire an abandoned ReShade maintenance run directory: ${formatUnknownError(error)}`,
+            );
+          }
+        });
+    }
+  }
+
+  private currentRuntimeHasPendingExistingReShadeMaintenance(
+    targetLabel: string,
+    launchGeneration: number,
+  ): boolean {
+    const current = this.currentRuntime;
+    if (
+      current === null ||
+      current.targetLabel !== targetLabel ||
+      current.launchGeneration !== launchGeneration
+    ) {
+      return false;
+    }
+    return [...this.pendingExistingReShadeMaintenanceByPid.values()].some(
+      (pending) => pending.staged === current.staged,
+    );
   }
 
   private disconnectConnectedTarget(target: ConnectedTarget): void {
@@ -1851,7 +2696,11 @@ export class ReShadeOverlayLauncher {
     if (
       launchGeneration !== undefined &&
       error instanceof ReShadeOperationError &&
-      error.retrySafety === 'definite-safe'
+      error.retrySafety === 'definite-safe' &&
+      !this.currentRuntimeHasPendingExistingReShadeMaintenance(
+        targetLabel,
+        launchGeneration,
+      )
     ) {
       this.retireCurrentRuntime(targetLabel, launchGeneration);
     }
@@ -2039,6 +2888,7 @@ function diagnosticReferencesHostRuntime(
   }
 
   switch (diagnostic.code) {
+    case 'target-existing-reshade-installation':
     case 'target-runtime-conflict':
     case 'target-runtime-incompatible':
     case 'target-runtime-reuse-too-late':
@@ -2270,8 +3120,8 @@ async function stageRuntimeArtifact(
   requiresPrivateCopy: boolean,
 ): Promise<void> {
   // ReShade.ini is mutable, while the injector adjusts the loaded payload's
-  // ACL. The payload is ReShade64.dll for a new runtime and the add-on when
-  // reusing a compatible runtime, so all three need a private file record.
+  // ACL. Payload DLLs and the ownership-sensitive native manager must also
+  // remain exact private files for the lifetime of this run.
   if (!requiresPrivateCopy) {
     try {
       await link(sourcePath, destinationPath);
@@ -2663,7 +3513,12 @@ function targetLabelFor(target: ReShadeTarget): string {
   }
   return target.pid === undefined
     ? `process:${target.processName}`
-    : `process:${target.processName}:pid:${target.pid}`;
+    : [
+        `process:${target.processName}:pid:${target.pid}`,
+        ...(target.executablePath === undefined
+          ? []
+          : [`path:${normalizeExecutablePathIdentity(target.executablePath)}`]),
+      ].join(':');
 }
 
 function effectiveExpectedTargetPid(
@@ -2726,20 +3581,42 @@ function snapshotTarget(
     Object.freeze({
       processName: target.processName,
       ...(expectedTargetPid === undefined ? {} : { pid: expectedTargetPid }),
+      ...(target.executablePath === undefined
+        ? {}
+        : { executablePath: target.executablePath }),
     }),
     expectedTargetPid,
   ];
 }
 
-function parseInjectorTargetPath(stdout: string): string {
-  const match = INJECTOR_TARGET_PATH_PATTERN.exec(stdout);
-  const selectedPath = match?.[1]?.trim();
-  if (!selectedPath || !path.win32.isAbsolute(selectedPath)) {
-    throw new Error(
-      'ReShade injector stdout did not contain a valid matched executable path',
-    );
+type ExistingInstallationTarget = Readonly<{
+  executablePath: string;
+  processName: string;
+  selectedPath?: string;
+}>;
+
+function existingInstallationTargetFor(
+  target: ReShadeTarget,
+  diagnostic: InjectorPreflightDiagnostic,
+): ExistingInstallationTarget | undefined {
+  const selectedPath = diagnostic.targetExecutablePath;
+  if (!targetPathMatches(selectedPath, target)) {
+    return undefined;
   }
-  return selectedPath;
+  if (!isPathTarget(target)) {
+    if (target.executablePath === undefined) {
+      return undefined;
+    }
+    return Object.freeze({
+      executablePath: selectedPath,
+      processName: target.processName,
+    });
+  }
+  return Object.freeze({
+    executablePath: selectedPath,
+    processName: path.win32.basename(selectedPath),
+    selectedPath,
+  });
 }
 
 function parseInjectorResult(
@@ -2779,8 +3656,12 @@ function parseInjectorResult(
   if (
     candidate.schemaVersion !== 1 ||
     !isValidProcessPid(candidate.pid) ||
+    typeof candidate.targetExecutablePath !== 'string' ||
+    !path.win32.isAbsolute(candidate.targetExecutablePath) ||
+    candidate.targetExecutablePath.includes('\0') ||
     (candidate.runtimeMode !== 'injected-runtime' &&
-      candidate.runtimeMode !== 'existing-runtime')
+      candidate.runtimeMode !== 'existing-runtime' &&
+      candidate.runtimeMode !== 'official-addon')
   ) {
     return Object.freeze({
       kind: 'invalid',
@@ -2790,7 +3671,12 @@ function parseInjectorResult(
 
   if (candidate.runtimeMode === 'injected-runtime') {
     if (
-      !hasExactObjectKeys(candidate, ['schemaVersion', 'pid', 'runtimeMode'])
+      !hasExactObjectKeys(candidate, [
+        'pid',
+        'runtimeMode',
+        'schemaVersion',
+        'targetExecutablePath',
+      ])
     ) {
       return Object.freeze({
         kind: 'invalid',
@@ -2803,7 +3689,64 @@ function parseInjectorResult(
       result: Object.freeze({
         schemaVersion: 1,
         pid: candidate.pid,
+        targetExecutablePath: candidate.targetExecutablePath,
         runtimeMode: 'injected-runtime',
+      }),
+    });
+  }
+
+  if (candidate.runtimeMode === 'official-addon') {
+    if (
+      !hasExactObjectKeys(candidate, [
+        'addonAbi',
+        'addonBuildId',
+        'addonDirectoryPath',
+        'addonModulePath',
+        'electronGameOverlayAddonDisabled',
+        'pid',
+        'reshadeBasePath',
+        'runtimeMode',
+        'runtimeModulePath',
+        'schemaVersion',
+        'targetExecutablePath',
+      ]) ||
+      typeof candidate.runtimeModulePath !== 'string' ||
+      !path.win32.isAbsolute(candidate.runtimeModulePath) ||
+      candidate.runtimeModulePath.includes('\0') ||
+      typeof candidate.addonModulePath !== 'string' ||
+      !path.win32.isAbsolute(candidate.addonModulePath) ||
+      candidate.addonModulePath.includes('\0') ||
+      candidate.addonAbi !== 1 ||
+      candidate.addonBuildId !== OFFICIAL_ADDON_BUILD_ID ||
+      typeof candidate.reshadeBasePath !== 'string' ||
+      !path.win32.isAbsolute(candidate.reshadeBasePath) ||
+      candidate.reshadeBasePath.includes('\0') ||
+      typeof candidate.addonDirectoryPath !== 'string' ||
+      !path.win32.isAbsolute(candidate.addonDirectoryPath) ||
+      candidate.addonDirectoryPath.includes('\0') ||
+      typeof candidate.electronGameOverlayAddonDisabled !== 'boolean'
+    ) {
+      return Object.freeze({
+        kind: 'invalid',
+        detail:
+          'official-addon result requires absolute runtime and add-on module paths and add-on ABI 1, the current build identity, and target-effective ReShade settings',
+      });
+    }
+    return Object.freeze({
+      kind: 'valid',
+      result: Object.freeze({
+        schemaVersion: 1,
+        pid: candidate.pid,
+        targetExecutablePath: candidate.targetExecutablePath,
+        runtimeMode: 'official-addon',
+        runtimeModulePath: candidate.runtimeModulePath,
+        addonModulePath: candidate.addonModulePath,
+        addonAbi: 1,
+        addonBuildId: candidate.addonBuildId,
+        reshadeBasePath: candidate.reshadeBasePath,
+        addonDirectoryPath: candidate.addonDirectoryPath,
+        electronGameOverlayAddonDisabled:
+          candidate.electronGameOverlayAddonDisabled,
       }),
     });
   }
@@ -2815,6 +3758,7 @@ function parseInjectorResult(
       'runtimeMode',
       'runtimeModulePath',
       'schemaVersion',
+      'targetExecutablePath',
     ]) ||
     typeof candidate.runtimeModulePath !== 'string' ||
     !path.win32.isAbsolute(candidate.runtimeModulePath) ||
@@ -2832,6 +3776,7 @@ function parseInjectorResult(
     result: Object.freeze({
       schemaVersion: 1,
       pid: candidate.pid,
+      targetExecutablePath: candidate.targetExecutablePath,
       runtimeMode: 'existing-runtime',
       runtimeModulePath: candidate.runtimeModulePath,
       hostAbi: 1,
@@ -2875,12 +3820,21 @@ function parseInjectorDiagnostic(
 
   const candidate = parsed as Record<string, unknown>;
   const code = candidate.code;
+  const targetExecutablePath = candidate.targetExecutablePath;
   const modulePath = candidate.modulePath;
+  const reshadeBasePath = candidate.reshadeBasePath;
+  const addonDirectoryPath = candidate.addonDirectoryPath;
+  const electronGameOverlayAddonDisabled =
+    candidate.electronGameOverlayAddonDisabled;
   const windowsErrorCode = candidate.windowsErrorCode;
   const isPreflightDiagnostic =
     candidate.stage === 'target-preflight' &&
     (code === 'target-injection-already-claimed' ||
       code === 'target-injection-claim-failed' ||
+      code === 'target-official-addon-wait-expired' ||
+      code === 'target-existing-reshade-installation' ||
+      code === 'target-existing-reshade-global-layer' ||
+      code === 'target-global-reshade-layer-inspection-failed' ||
       code === 'target-runtime-conflict' ||
       code === 'target-runtime-incompatible' ||
       code === 'target-runtime-reuse-too-late' ||
@@ -2891,16 +3845,78 @@ function parseInjectorDiagnostic(
     candidate.stage === 'existing-runtime-addon-load' &&
     code === 'existing-runtime-addon-load-failed' &&
     candidate.injectionStarted === true;
+  const exactKeys = [
+    'schemaVersion',
+    'stage',
+    'code',
+    'pid',
+    'injectionStarted',
+    'targetExecutablePath',
+    ...(modulePath === undefined ? [] : ['modulePath']),
+    ...(reshadeBasePath === undefined ? [] : ['reshadeBasePath']),
+    ...(addonDirectoryPath === undefined ? [] : ['addonDirectoryPath']),
+    ...(electronGameOverlayAddonDisabled === undefined
+      ? []
+      : ['electronGameOverlayAddonDisabled']),
+    ...(windowsErrorCode === undefined ? [] : ['windowsErrorCode']),
+  ];
+  const preflightRequiresModule =
+    code === 'target-existing-reshade-installation' ||
+    code === 'target-existing-reshade-global-layer' ||
+    code === 'target-runtime-conflict' ||
+    code === 'target-runtime-incompatible' ||
+    code === 'target-runtime-reuse-too-late' ||
+    code === 'target-runtime-reuse-raced';
+  const preflightRequiresWindowsError =
+    code === 'target-injection-already-claimed' ||
+    code === 'target-injection-claim-failed' ||
+    code === 'target-official-addon-wait-expired' ||
+    code === 'target-global-reshade-layer-inspection-failed' ||
+    code === 'target-runtime-conflict' ||
+    code === 'target-runtime-incompatible' ||
+    code === 'target-runtime-reuse-too-late' ||
+    code === 'target-runtime-reuse-raced' ||
+    code === 'target-module-inspection-failed';
+  const preflightRequiresEffectiveSettings =
+    code === 'target-existing-reshade-installation' ||
+    code === 'target-existing-reshade-global-layer' ||
+    code === 'target-runtime-incompatible';
+  const hasAnyEffectiveSetting =
+    reshadeBasePath !== undefined ||
+    addonDirectoryPath !== undefined ||
+    electronGameOverlayAddonDisabled !== undefined;
   if (
     candidate.schemaVersion !== 1 ||
     (!isPreflightDiagnostic && !isExistingRuntimeAddonLoadDiagnostic) ||
+    !hasExactObjectKeys(candidate, exactKeys) ||
     !isValidProcessPid(candidate.pid) ||
+    typeof targetExecutablePath !== 'string' ||
+    !path.win32.isAbsolute(targetExecutablePath) ||
+    targetExecutablePath.includes('\0') ||
     (modulePath !== undefined &&
-      (typeof modulePath !== 'string' || modulePath.length === 0)) ||
+      (typeof modulePath !== 'string' ||
+        !path.win32.isAbsolute(modulePath) ||
+        modulePath.includes('\0'))) ||
+    (hasAnyEffectiveSetting &&
+      (typeof reshadeBasePath !== 'string' ||
+        !path.win32.isAbsolute(reshadeBasePath) ||
+        reshadeBasePath.includes('\0') ||
+        typeof addonDirectoryPath !== 'string' ||
+        !path.win32.isAbsolute(addonDirectoryPath) ||
+        addonDirectoryPath.includes('\0') ||
+        typeof electronGameOverlayAddonDisabled !== 'boolean')) ||
     (windowsErrorCode !== undefined &&
       (!Number.isSafeInteger(windowsErrorCode) ||
-        (windowsErrorCode as number) < 0 ||
-        (windowsErrorCode as number) > 0xffffffff))
+        (windowsErrorCode as number) <= 0 ||
+        (windowsErrorCode as number) > 0xffffffff)) ||
+    (isPreflightDiagnostic &&
+      ((preflightRequiresModule && modulePath === undefined) ||
+        (preflightRequiresWindowsError && windowsErrorCode === undefined) ||
+        preflightRequiresEffectiveSettings !== hasAnyEffectiveSetting)) ||
+    (isExistingRuntimeAddonLoadDiagnostic &&
+      (modulePath === undefined ||
+        windowsErrorCode === undefined ||
+        hasAnyEffectiveSetting))
   ) {
     return Object.freeze({
       kind: 'invalid',
@@ -2916,6 +3932,7 @@ function parseInjectorDiagnostic(
         stage: 'existing-runtime-addon-load',
         code: 'existing-runtime-addon-load-failed',
         pid: candidate.pid,
+        targetExecutablePath,
         injectionStarted: true,
         ...(modulePath === undefined ? {} : { modulePath }),
         ...(windowsErrorCode === undefined
@@ -2932,8 +3949,14 @@ function parseInjectorDiagnostic(
       stage: 'target-preflight',
       code: code as InjectorPreflightDiagnostic['code'],
       pid: candidate.pid,
+      targetExecutablePath: targetExecutablePath as string,
       injectionStarted: false,
       ...(modulePath === undefined ? {} : { modulePath }),
+      ...(reshadeBasePath === undefined ? {} : { reshadeBasePath }),
+      ...(addonDirectoryPath === undefined ? {} : { addonDirectoryPath }),
+      ...(electronGameOverlayAddonDisabled === undefined
+        ? {}
+        : { electronGameOverlayAddonDisabled }),
       ...(windowsErrorCode === undefined
         ? {}
         : { windowsErrorCode: windowsErrorCode as number }),
@@ -2969,6 +3992,50 @@ function injectorDidNotStart(stdout: string): boolean {
     .some((line) => line.trim() === INJECTOR_NOT_STARTED_MARKER);
 }
 
+function injectorDiagnosticExitMatches(
+  error: Error | null,
+  didSpawn: boolean,
+  diagnostic: InjectorDiagnostic,
+): boolean {
+  if (!didSpawn || error === null) {
+    return false;
+  }
+  const candidate = error as Error & {
+    code?: unknown;
+    killed?: unknown;
+    signal?: unknown;
+  };
+  if (candidate.killed === true || candidate.signal != null) {
+    return false;
+  }
+  const expectedExitCode = (() => {
+    switch (diagnostic.code) {
+      case 'target-existing-reshade-installation':
+      case 'target-existing-reshade-global-layer':
+      case 'target-runtime-conflict':
+        return 183;
+      case 'target-runtime-incompatible':
+        return 50;
+      case 'target-injection-already-claimed':
+      case 'target-runtime-reuse-too-late':
+        return 170;
+      case 'target-runtime-reuse-raced':
+        return 1237;
+      case 'target-injection-claim-failed':
+      case 'target-official-addon-wait-expired':
+      case 'target-module-inspection-failed':
+      case 'target-global-reshade-layer-inspection-failed':
+      case 'existing-runtime-addon-load-failed':
+        return diagnostic.windowsErrorCode;
+    }
+  })();
+  return (
+    typeof expectedExitCode === 'number' &&
+    expectedExitCode > 0 &&
+    candidate.code === expectedExitCode
+  );
+}
+
 function readTargetConnection(
   payload: unknown,
 ): ReShadeTargetConnection | null {
@@ -2997,6 +4064,12 @@ function targetPathMatches(targetPath: string, target: ReShadeTarget): boolean {
       ) && !normalizedExcludedProcessNames(target).includes(normalizedName)
     );
   }
+  if (target.executablePath !== undefined) {
+    return (
+      normalizeExecutablePathIdentity(targetPath) ===
+      normalizeExecutablePathIdentity(target.executablePath)
+    );
+  }
   return (
     path.win32.basename(targetPath).toLowerCase() ===
     target.processName.toLowerCase()
@@ -3004,9 +4077,12 @@ function targetPathMatches(targetPath: string, target: ReShadeTarget): boolean {
 }
 
 function targetPathExpectation(target: ReShadeTarget): string {
-  return isPathTarget(target)
-    ? `path fragment=${JSON.stringify(target.pathContains)} excluding=${JSON.stringify(target.excludedProcessNames ?? [])}`
-    : `basename=${JSON.stringify(target.processName)}`;
+  if (isPathTarget(target)) {
+    return `path fragment=${JSON.stringify(target.pathContains)} excluding=${JSON.stringify(target.excludedProcessNames ?? [])}`;
+  }
+  return target.executablePath === undefined
+    ? `basename=${JSON.stringify(target.processName)}`
+    : `exact path=${JSON.stringify(target.executablePath)}`;
 }
 
 function targetStageName(target: ReShadeTarget): string {
@@ -3015,6 +4091,16 @@ function targetStageName(target: ReShadeTarget): string {
 
 function normalizePathForMatch(value: string): string {
   return value.replace(/\//g, '\\').toLowerCase();
+}
+
+function normalizeExecutablePathIdentity(value: string): string {
+  let normalized = path.win32.normalize(value).toLowerCase();
+  if (normalized.startsWith('\\\\?\\unc\\')) {
+    normalized = `\\\\${normalized.slice('\\\\?\\unc\\'.length)}`;
+  } else if (normalized.startsWith('\\\\?\\')) {
+    normalized = normalized.slice('\\\\?\\'.length);
+  }
+  return normalized;
 }
 
 function normalizedExcludedProcessNames(
@@ -3135,6 +4221,18 @@ function validateTarget(target: ReShadeTarget): void {
   validateProcessName(target.processName);
   if (target.pid !== undefined && !isValidProcessPid(target.pid)) {
     throw new Error('the ReShade target PID must be a positive uint32 integer');
+  }
+  if (
+    target.executablePath !== undefined &&
+    (target.pid === undefined ||
+      !path.win32.isAbsolute(target.executablePath) ||
+      target.executablePath.includes('\0') ||
+      path.win32.basename(target.executablePath).toLowerCase() !==
+        target.processName.toLowerCase())
+  ) {
+    throw new Error(
+      'the ReShade target executable path requires an exact PID, must be absolute, and must match its process basename',
+    );
   }
 }
 

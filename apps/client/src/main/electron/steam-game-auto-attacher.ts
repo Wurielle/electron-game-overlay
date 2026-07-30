@@ -282,10 +282,15 @@ export class SteamGameAutoAttacher {
   private preparedLauncherFailureCount = 0;
   private watcher: ProcessWatcher | null = null;
   private armedLauncher: ReShadeLauncherForSteamTarget | null = null;
+  private armedLauncherTargetPid: number | null = null;
   private rearmTimer: ReturnType<typeof setTimeout> | null = null;
   private prearmedRearmBlocked = false;
   private blockedPrearmedTargetPid: number | null = null;
   private readonly deletedTargetPids = new Set<number>();
+  private readonly launchersAwaitingTargetExit = new Map<
+    number,
+    Set<ReShadeLauncherForSteamTarget>
+  >();
   private removeSessionListener: (() => void) | null = null;
   private watcherStatusValue: ProcessWatcherStatus = 'stopped';
   private watcherErrorValue: string | null = null;
@@ -426,6 +431,7 @@ export class SteamGameAutoAttacher {
     }
     this.armedLauncher?.dispose();
     this.armedLauncher = null;
+    this.armedLauncherTargetPid = null;
     this.prearmedRearmBlocked = false;
     this.blockedPrearmedTargetPid = null;
     if (this.preparedLauncherRetryTimer) {
@@ -444,6 +450,12 @@ export class SteamGameAutoAttacher {
       launcher.dispose();
     }
     this.preparingLaunchers.clear();
+    for (const launchers of this.launchersAwaitingTargetExit.values()) {
+      for (const launcher of launchers) {
+        launcher.dispose();
+      }
+    }
+    this.launchersAwaitingTargetExit.clear();
     this.pendingTargetEntries.length = 0;
     this.targetEntries.clear();
     this.deletedTargetPids.clear();
@@ -517,13 +529,19 @@ export class SteamGameAutoAttacher {
   ): void {
     entry.exactAttemptStarted = true;
     entry.attempts.add(launcher);
-    const { pid, processName } = entry.state;
+    const { pid, processName, filepath } = entry.state;
     console.log(
       `STEAM_GAME_AUTO_ATTACH_INJECTING pid=${pid} processName=${JSON.stringify(processName)}`,
     );
 
     void Promise.resolve()
-      .then(() => launcher.attach(this.options.session, { processName, pid }))
+      .then(() =>
+        launcher.attach(this.options.session, {
+          processName,
+          pid,
+          executablePath: filepath,
+        }),
+      )
       .then((result) => {
         if (
           this.disposed ||
@@ -550,8 +568,20 @@ export class SteamGameAutoAttacher {
           return;
         }
         entry.attempts.delete(launcher);
-        launcher.dispose();
+        if (!this.retainLauncherUntilTargetExit(launcher, error)) {
+          launcher.dispose();
+        }
         if (entry.state.phase === 'connected') {
+          return;
+        }
+        const diagnostic = getReShadeDiagnostic(error);
+        if (diagnostic?.code === 'official-addon-startup-grace-coordinated') {
+          if (this.armedLauncher) {
+            this.armedLauncherTargetPid = pid;
+          }
+          console.log(
+            `STEAM_GAME_AUTO_ATTACH_EXACT_COORDINATED pid=${pid} code=${diagnostic.code}`,
+          );
           return;
         }
         this.failTarget(entry, error);
@@ -607,6 +637,7 @@ export class SteamGameAutoAttacher {
           return;
         }
         this.armedLauncher = null;
+        this.armedLauncherTargetPid = null;
         const pid = result.pid;
         if (this.deletedTargetPids.has(pid)) {
           launcher.dispose();
@@ -649,17 +680,24 @@ export class SteamGameAutoAttacher {
           return;
         }
         this.armedLauncher = null;
+        const coordinatedTargetPid = this.armedLauncherTargetPid;
+        this.armedLauncherTargetPid = null;
         const retryIsSafe = launcher.state === 'idle';
-        launcher.dispose();
         const diagnostic = isReShadeOperationError(error)
           ? error.diagnostic
           : null;
+        if (!this.retainLauncherUntilTargetExit(launcher, error)) {
+          launcher.dispose();
+        }
         const coordinated =
-          diagnostic?.code === 'target-injection-already-claimed';
+          diagnostic?.code === 'target-injection-already-claimed' ||
+          diagnostic?.code === 'official-addon-startup-grace-coordinated';
+        const failedTargetPid =
+          diagnostic?.pid ?? coordinatedTargetPid ?? undefined;
         const entry =
-          diagnostic?.pid === undefined
+          failedTargetPid === undefined
             ? undefined
-            : this.targetEntries.get(diagnostic.pid);
+            : this.targetEntries.get(failedTargetPid);
         if (
           entry &&
           entry.state.phase !== 'connected' &&
@@ -951,6 +989,7 @@ export class SteamGameAutoAttacher {
   }
 
   private removeTarget(pid: number): void {
+    this.releaseLaunchersAwaitingTargetExit(pid);
     const entry = this.targetEntries.get(pid);
     if (!entry) {
       this.deletedTargetPids.add(pid);
@@ -968,6 +1007,46 @@ export class SteamGameAutoAttacher {
     console.log(`STEAM_GAME_AUTO_ATTACH_RELEASED pid=${pid}`);
     this.publishState();
     this.releaseBlockedPrearmedLane(pid);
+  }
+
+  private retainLauncherUntilTargetExit(
+    launcher: ReShadeLauncherForSteamTarget,
+    failure: unknown,
+  ): boolean {
+    const diagnostic = getReShadeDiagnostic(failure);
+    if (
+      !launcher.confirmTargetExited ||
+      !isValidPid(diagnostic?.pid) ||
+      diagnostic.code !== 'existing-reshade-addon-maintenance-deferred'
+    ) {
+      return false;
+    }
+
+    const pid = diagnostic.pid;
+    if (this.deletedTargetPids.has(pid)) {
+      launcher.confirmTargetExited(pid);
+      return false;
+    }
+
+    let launchers = this.launchersAwaitingTargetExit.get(pid);
+    if (!launchers) {
+      launchers = new Set();
+      this.launchersAwaitingTargetExit.set(pid, launchers);
+    }
+    launchers.add(launcher);
+    return true;
+  }
+
+  private releaseLaunchersAwaitingTargetExit(pid: number): void {
+    const launchers = this.launchersAwaitingTargetExit.get(pid);
+    if (!launchers) {
+      return;
+    }
+    this.launchersAwaitingTargetExit.delete(pid);
+    for (const launcher of launchers) {
+      launcher.confirmTargetExited?.(pid);
+      launcher.dispose();
+    }
   }
 
   private releaseBlockedPrearmedLane(pid: number): void {
@@ -998,6 +1077,7 @@ export class SteamGameAutoAttacher {
       }
       this.armedLauncher?.dispose();
       this.armedLauncher = null;
+      this.armedLauncherTargetPid = null;
       console.error(
         `STEAM_GAME_PROCESS_WATCHER_FAILED detail=${JSON.stringify(this.watcherErrorValue)}`,
       );

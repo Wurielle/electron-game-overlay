@@ -158,6 +158,35 @@ remaining PE image range. This keeps shared-host capability lookup from reading
 across a sparse or malformed image page while preserving the export table's
 lexical binary search.
 
+## `reshade-injector-existing-installation-preflight.patch`
+
+Finds inactive target-local x64 ReShade candidates and resolves the effective
+base path, add-on directory, and `DisabledAddons` state from the exact target
+process and its configuration. A detected installation suppresses project-host
+injection and is returned to the SDK for ownership-checked add-on preparation;
+the injector never replaces the runtime, proxy, configuration, presets, effects,
+or foreign add-ons.
+
+## `reshade-injector-official-addon-host.patch`
+
+Recognizes the uniquely named Electron add-on when an official ReShade host has
+loaded it, then emits the structured `official-addon` result with the exact
+runtime and add-on module paths. The injector verifies the add-on ABI and build
+identity, while host-version compatibility is decided inside the add-on through
+public API-18 registration and the requested Dear ImGui function table. There is
+no ReShade product-version or runtime-hash allowlist.
+
+## `reshade-injector-global-layer-preflight.patch`
+
+Extends preservation-only preflight to applicable configured global
+Vulkan/OpenXR ReShade layers and is the terminal injector patch over the
+preceding stack. It also adds the SDK-private exact-PID
+`--wait-for-official-addon <milliseconds>` inspection mode. The SDK uses that
+mode only after the native manager proves the current reserved add-on is already
+installed, giving a newly starting ReShade host one bounded chance to load it
+without polling through repeated injector processes. The option performs no
+runtime or add-on injection and is capped at 60 seconds.
+
 ## `reshade-shared-runtime-hardening.patch`
 
 Closes or waits out external registration for every `load_addons()` caller
@@ -191,6 +220,6 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all fourteen
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all seventeen
 production-patch hashes, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache.

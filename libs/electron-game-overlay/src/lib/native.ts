@@ -34,7 +34,11 @@ export interface NativeOverlayWindowGeometry {
 export interface NativeOverlay {
   start(): void;
   whenReady(): Promise<unknown>;
-  authorizeTarget?(pid: number, discoveryPath: string): Promise<Disposable>;
+  authorizeTarget?(
+    pid: number,
+    discoveryPath: string,
+    expectedExecutablePath?: string,
+  ): Promise<Disposable>;
   stop(): void;
   setDiagnosticCallback?(callback: (diagnostic: unknown) => void): void;
   setEventCallback(callback: (event: string, ...args: any[]) => void): void;

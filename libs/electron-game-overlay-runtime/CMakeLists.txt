@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.24)
 
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
+set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
+    "202F40B8B4B04C519BF12F693BE2B94F"
+)
+set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
+    "2D14C5FBCB09C2E352345C3D1369F215197700A7C5F7331AC95E2FAE8A0D6E81"
+)
+
 option(
     ELECTRON_GAME_OVERLAY_BUILD_ADDON
     "Build the production Electron compositor add-on and transport ABI smoke test"
@@ -52,6 +59,15 @@ set(RESHAPE_SHARED_RUNTIME_HOST_PATCH
 set(RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-export-read-bounds.patch"
 )
+set(RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-existing-installation-preflight.patch"
+)
+set(RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-official-addon-host.patch"
+)
+set(RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-global-layer-preflight.patch"
+)
 set(RESHAPE_SHARED_RUNTIME_HARDENING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-shared-runtime-hardening.patch"
 )
@@ -84,7 +100,7 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp=87D5C0A2DF3418C343AC2736CC537F50FD2804F4979046739D1D3C9D7072B037"
+    "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
@@ -95,6 +111,9 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
     "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
     "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
+    "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH}"
+    "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH}"
+    "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
     "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
     "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
@@ -257,14 +276,134 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply fourteen narrow pinned seams: the passive copied-input observer, an injector
+# Apply seventeen narrow pinned seams: the passive copied-input observer, an injector
 # base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
-# observation, loaded-ReShade conflict preflight, per-PID injection ownership,
-# compatible shared-runtime registration plus its bounded export and loader
-# hardening, and startup splash suppression. The watcher patches are terminal so existing
+# observation, loaded and inactive ReShade conflict preflight, official add-on
+# discovery, per-PID injection ownership, compatible shared-runtime registration
+# plus its bounded export and loader hardening, and startup splash suppression. The watcher patches are terminal so existing
 # exact-PID and original watcher trees can migrate without replacing those
 # ignored source trees.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+
+# A build-ID bump changes one literal in the terminal injector patch. That
+# makes neither the new terminal patch nor its lower superseded patches
+# independently reversible in an existing fetched tree. Replace a prior
+# 32-hex build ID only when the resulting normalized file is byte-for-byte
+# the current pinned injector. Arbitrary or locally modified trees continue
+# into the normal fail-closed checks below.
+if(NOT RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED EQUAL 0)
+    set(RESHAPE_FETCHED_INJECTOR_PATH
+        "${reshade_SOURCE_DIR}/tools/injector.cpp")
+    if(EXISTS "${RESHAPE_FETCHED_INJECTOR_PATH}")
+        file(READ "${RESHAPE_FETCHED_INJECTOR_PATH}"
+            RESHAPE_FETCHED_INJECTOR_CONTENT)
+        string(REGEX MATCHALL
+            "constexpr char expected_addon_build_id\\[\\] =[\t\r\n ]*\"[0-9A-F]+\""
+            RESHAPE_ADDON_BUILD_ID_DECLARATIONS
+            "${RESHAPE_FETCHED_INJECTOR_CONTENT}"
+        )
+        list(LENGTH RESHAPE_ADDON_BUILD_ID_DECLARATIONS
+            RESHAPE_ADDON_BUILD_ID_DECLARATION_COUNT)
+        if(RESHAPE_ADDON_BUILD_ID_DECLARATION_COUNT EQUAL 1)
+            list(GET RESHAPE_ADDON_BUILD_ID_DECLARATIONS 0
+                RESHAPE_ADDON_BUILD_ID_DECLARATION)
+            string(REGEX MATCH "\"[0-9A-F]+\"$"
+                RESHAPE_PREVIOUS_ADDON_BUILD_ID_QUOTED
+                "${RESHAPE_ADDON_BUILD_ID_DECLARATION}"
+            )
+            string(REGEX REPLACE "^\"|\"$" ""
+                RESHAPE_PREVIOUS_ADDON_BUILD_ID
+                "${RESHAPE_PREVIOUS_ADDON_BUILD_ID_QUOTED}"
+            )
+            string(LENGTH "${RESHAPE_PREVIOUS_ADDON_BUILD_ID}"
+                RESHAPE_PREVIOUS_ADDON_BUILD_ID_LENGTH)
+            if(RESHAPE_PREVIOUS_ADDON_BUILD_ID_LENGTH EQUAL 32 AND
+                NOT RESHAPE_PREVIOUS_ADDON_BUILD_ID STREQUAL
+                    ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID)
+                string(REPLACE
+                    "${RESHAPE_PREVIOUS_ADDON_BUILD_ID_QUOTED}"
+                    "\"${ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID}\""
+                    RESHAPE_MIGRATED_ADDON_BUILD_ID_DECLARATION
+                    "${RESHAPE_ADDON_BUILD_ID_DECLARATION}"
+                )
+                string(REPLACE
+                    "${RESHAPE_ADDON_BUILD_ID_DECLARATION}"
+                    "${RESHAPE_MIGRATED_ADDON_BUILD_ID_DECLARATION}"
+                    RESHAPE_MIGRATED_INJECTOR_CONTENT
+                    "${RESHAPE_FETCHED_INJECTOR_CONTENT}"
+                )
+
+                set(RESHAPE_NORMALIZED_MIGRATED_INJECTOR_CONTENT
+                    "${RESHAPE_MIGRATED_INJECTOR_CONTENT}")
+                string(REPLACE "\r\n" "\n"
+                    RESHAPE_NORMALIZED_MIGRATED_INJECTOR_CONTENT
+                    "${RESHAPE_NORMALIZED_MIGRATED_INJECTOR_CONTENT}")
+                string(REPLACE "\r" "\n"
+                    RESHAPE_NORMALIZED_MIGRATED_INJECTOR_CONTENT
+                    "${RESHAPE_NORMALIZED_MIGRATED_INJECTOR_CONTENT}")
+                string(SHA256 RESHAPE_MIGRATED_INJECTOR_CONTENT_SHA256
+                    "${RESHAPE_NORMALIZED_MIGRATED_INJECTOR_CONTENT}")
+                string(TOUPPER
+                    "${RESHAPE_MIGRATED_INJECTOR_CONTENT_SHA256}"
+                    RESHAPE_MIGRATED_INJECTOR_CONTENT_SHA256)
+
+                if(RESHAPE_MIGRATED_INJECTOR_CONTENT_SHA256 STREQUAL
+                    RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
+                    string(RANDOM LENGTH 16
+                        ALPHABET "0123456789abcdef"
+                        RESHAPE_INJECTOR_MIGRATION_SUFFIX)
+                    string(CONCAT RESHAPE_INJECTOR_MIGRATION_TEMP_PATH
+                        "${RESHAPE_FETCHED_INJECTOR_PATH}."
+                        "electron-game-overlay-"
+                        "${RESHAPE_INJECTOR_MIGRATION_SUFFIX}.tmp")
+                    file(WRITE "${RESHAPE_INJECTOR_MIGRATION_TEMP_PATH}"
+                        "${RESHAPE_MIGRATED_INJECTOR_CONTENT}")
+                    file(RENAME
+                        "${RESHAPE_INJECTOR_MIGRATION_TEMP_PATH}"
+                        "${RESHAPE_FETCHED_INJECTOR_PATH}"
+                        RESULT RESHAPE_INJECTOR_MIGRATION_RENAME_RESULT)
+                    if(NOT RESHAPE_INJECTOR_MIGRATION_RENAME_RESULT
+                        STREQUAL "0")
+                        file(REMOVE
+                            "${RESHAPE_INJECTOR_MIGRATION_TEMP_PATH}")
+                    endif()
+
+                    # Recheck even when rename reported failure: another
+                    # concurrent configure may have completed the same
+                    # idempotent migration.
+                    execute_process(
+                        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+                            "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
+                        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+                        RESULT_VARIABLE
+                            RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED
+                        OUTPUT_QUIET
+                        ERROR_QUIET
+                    )
+                    if(NOT
+                        RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED
+                        EQUAL 0)
+                        message(FATAL_ERROR
+                            "Unable to migrate the exact pinned ReShade "
+                            "injector add-on build ID.\n"
+                            "${RESHAPE_INJECTOR_MIGRATION_RENAME_RESULT}"
+                        )
+                    endif()
+                endif()
+            endif()
+        endif()
+    endif()
+endif()
+
+if(NOT RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED EQUAL 0)
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
         "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
@@ -1099,6 +1238,150 @@ if(NOT RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLIED EQUAL 0)
     endif()
 endif()
 
+# Before injecting the private runtime, inspect bounded top-level DLL/ASI PE
+# exports beside the selected executable. A validated inactive ReShade install
+# takes precedence and remains untouched for its next normal launch.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned inactive ReShade installation-preflight patch cannot migrate "
+            "the ReShade patch stack.\n"
+            "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to add inactive ReShade installation preflight to the injector.\n"
+            "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# A stock full-add-on ReShade may already have loaded this project's add-on at
+# normal startup. Recognize its exact exported ABI marker as a no-mutation
+# success while keeping the private compatible-host path authoritative.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned official ReShade add-on-host patch cannot migrate "
+            "the ReShade patch stack.\n"
+            "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to add official ReShade add-on hosting to the injector.\n"
+            "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# Preserve applicable x64 ReShade Vulkan/OpenXR layers before any injection
+# mutation. The same terminal preflight also resolves target-owned
+# [INSTALL] BasePath compatibility installs without following reparse points.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned global ReShade layer-preflight patch cannot migrate "
+            "the ReShade patch stack.\n"
+            "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to add global ReShade layer preservation to the injector.\n"
+            "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# A reverse-applicable terminal patch plus exact per-file hashes below proves
+# the complete lower patch stack in an existing fetched tree. Skipping lower
+# migration checks here avoids asking those superseded hunks to reverse through
+# the terminal injector changes.
+endif()
+
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and
 # native-host and production presets, before CMake generates build targets.
@@ -1196,6 +1479,41 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
 
     find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
+    add_executable(electron_game_overlay_reshade_manager
+        src/electron_game_overlay_reshade_manager.cpp
+    )
+    target_compile_features(
+        electron_game_overlay_reshade_manager
+        PRIVATE
+        cxx_std_20
+    )
+    target_compile_definitions(
+        electron_game_overlay_reshade_manager
+        PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+    target_compile_options(
+        electron_game_overlay_reshade_manager
+        PRIVATE
+        /W4
+        /permissive-
+        /EHsc
+    )
+    target_link_libraries(
+        electron_game_overlay_reshade_manager
+        PRIVATE
+        bcrypt
+    )
+    set_target_properties(
+        electron_game_overlay_reshade_manager
+        PROPERTIES
+        OUTPUT_NAME "electron_game_overlay_reshade_manager"
+        MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+    )
+
     set(ELECTRON_TRANSPORT_SOURCE_DIR
         "${CMAKE_CURRENT_SOURCE_DIR}/../electron-overlay-transport"
     )
@@ -1281,6 +1599,7 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
         UNICODE
         _UNICODE
         ImTextureID=ImU64
+        ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID="${ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID}"
     )
     target_compile_options(electron_game_overlay PRIVATE
         /W4

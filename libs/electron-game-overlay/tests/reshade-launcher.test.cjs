@@ -26,11 +26,14 @@ const {
   isReShadeOperationError,
   parseReShadeLaunchConfig,
 } = require('../dist/lib/reshade-launcher.js');
+const existingReShadeInstallation = require('../dist/lib/existing-reshade-installation.js');
 
 const artifacts = [
   'inject.exe',
+  'electron_game_overlay_reshade_manager.exe',
   'ReShade64.dll',
   'ReShade64.build.json',
+  'electron_game_overlay_runtime.build.json',
   'electron_game_overlay.addon64',
   'ReShade.ini',
 ];
@@ -60,6 +63,7 @@ let retainedRunSequence = 0;
 const injectorResult = (result) =>
   `ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ${JSON.stringify({
     schemaVersion: 1,
+    targetExecutablePath: 'C:\\games\\game.exe',
     ...result,
   })}\n`;
 const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>
@@ -67,6 +71,7 @@ const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>
   `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n` +
   injectorResult({
     pid,
+    targetExecutablePath: path.win32.join('C:\\games', processName),
     runtimeMode: 'injected-runtime',
   });
 const existingRuntimeSuccessFor = (
@@ -78,9 +83,38 @@ const existingRuntimeSuccessFor = (
   `Found a matching process with PID ${pid}! Reusing ReShade ... Succeeded!\n` +
   injectorResult({
     pid,
+    targetExecutablePath: path.win32.join(
+      path.win32.dirname(runtimeModulePath),
+      processName,
+    ),
     runtimeMode: 'existing-runtime',
     runtimeModulePath,
     hostAbi: 1,
+  });
+const officialAddonSuccessFor = (
+  pid,
+  runtimeModulePath,
+  addonModulePath,
+  processName = 'Gun Frog.exe',
+  effectiveOverrides = {},
+) =>
+  `Waiting for a '${processName}' process to spawn ...\n` +
+  `Found a matching process with PID ${pid}! Using official ReShade add-on ... Succeeded!\n` +
+  injectorResult({
+    pid,
+    targetExecutablePath: path.win32.join(
+      path.win32.dirname(runtimeModulePath),
+      processName,
+    ),
+    runtimeMode: 'official-addon',
+    runtimeModulePath,
+    addonModulePath,
+    addonAbi: 1,
+    addonBuildId: '202F40B8B4B04C519BF12F693BE2B94F',
+    reshadeBasePath: path.win32.dirname(runtimeModulePath),
+    addonDirectoryPath: path.win32.dirname(addonModulePath),
+    electronGameOverlayAddonDisabled: false,
+    ...effectiveOverrides,
   });
 const injectorSuccess = injectorSuccessFor(4242);
 const pathInjectorSuccessFor = (pid, executablePath) =>
@@ -89,19 +123,39 @@ const pathInjectorSuccessFor = (pid, executablePath) =>
   `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n` +
   injectorResult({
     pid,
+    targetExecutablePath: executablePath,
     runtimeMode: 'injected-runtime',
   });
 const injectorDiagnostic = (diagnostic) =>
   `ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ${JSON.stringify({
     schemaVersion: 1,
+    targetExecutablePath: 'C:\\game\\game.exe',
     ...diagnostic,
   })}\n`;
-const injectorPreflightDiagnostic = (diagnostic) =>
-  injectorDiagnostic({
+const injectorPreflightDiagnostic = (diagnostic) => {
+  const hasEffectiveSettings = [
+    'target-existing-reshade-installation',
+    'target-existing-reshade-global-layer',
+    'target-runtime-incompatible',
+  ].includes(diagnostic.code);
+  return injectorDiagnostic({
     stage: 'target-preflight',
     injectionStarted: false,
+    targetExecutablePath: 'C:\\game\\game.exe',
+    ...(hasEffectiveSettings
+      ? {
+          reshadeBasePath: path.win32.dirname(
+            diagnostic.modulePath ?? 'C:\\game\\dxgi.dll',
+          ),
+          addonDirectoryPath: path.win32.dirname(
+            diagnostic.modulePath ?? 'C:\\game\\dxgi.dll',
+          ),
+          electronGameOverlayAddonDisabled: false,
+        }
+      : {}),
     ...diagnostic,
   });
+};
 const runtimeStartupRecord = (pid, code, additionalFields = {}) =>
   JSON.stringify({
     schemaVersion: 1,
@@ -157,8 +211,10 @@ test('startup parsing validates a co-located runtime without a graphics backend'
   assert.deepEqual(
     [
       config.injectorPath,
+      config.addonManagerPath,
       config.runtimePath,
       config.buildStampPath,
+      config.packageBuildStampPath,
       config.addonPath,
       config.configPath,
     ].map((artifactPath) => path.basename(artifactPath)),
@@ -290,6 +346,32 @@ test('startup and target validation reject incomplete or unsafe inputs', () => {
       /target PID.*positive uint32 integer/,
     );
   }
+
+  for (const executablePath of [
+    'game.exe',
+    'C:\\games\\other.exe',
+    'C:\\games\\game.exe\0suffix',
+  ]) {
+    assert.throws(
+      () =>
+        buildReShadeInvocation(
+          { processName: 'game.exe', pid: 42, executablePath },
+          path.join(fixture.runsRootDirectory, 'run'),
+        ),
+      /executable path.*exact PID.*absolute.*match its process basename/,
+    );
+  }
+  assert.throws(
+    () =>
+      buildReShadeInvocation(
+        {
+          processName: 'game.exe',
+          executablePath: 'C:\\games\\game.exe',
+        },
+        path.join(fixture.runsRootDirectory, 'run'),
+      ),
+    /executable path.*requires an exact PID/,
+  );
 
   for (const pathContains of ['', 'steamapps', ' \\steamapps\\', 'x\0y']) {
     assert.throws(
@@ -531,6 +613,17 @@ test('structured target preflight failures expose stable diagnostics and remain 
         /unable to establish exclusive ReShade injection ownership.*Windows error 5/,
     },
     {
+      code: 'target-existing-reshade-installation',
+      exitCode: 183,
+      native: {
+        code: 'target-existing-reshade-installation',
+        pid: 6101,
+        modulePath: 'C:\\game\\dxgi.dll',
+      },
+      message:
+        /has an existing ReShade installation.*installation was preserved.*was not injected/,
+    },
+    {
       code: 'target-runtime-conflict',
       native: {
         code: 'target-runtime-conflict',
@@ -546,6 +639,7 @@ test('structured target preflight failures expose stable diagnostics and remain 
         code: 'target-runtime-incompatible',
         pid: 6101,
         modulePath: 'C:\\game\\dxgi.dll',
+        windowsErrorCode: 50,
       },
       message: /has an incompatible ReShade runtime/,
     },
@@ -555,6 +649,7 @@ test('structured target preflight failures expose stable diagnostics and remain 
         code: 'target-runtime-reuse-too-late',
         pid: 6101,
         modulePath: 'C:\\game\\dxgi.dll',
+        windowsErrorCode: 170,
       },
       message: /loaded ReShade too late for safe runtime reuse/,
     },
@@ -564,6 +659,7 @@ test('structured target preflight failures expose stable diagnostics and remain 
         code: 'target-runtime-reuse-raced',
         pid: 6101,
         modulePath: 'C:\\game\\dxgi.dll',
+        windowsErrorCode: 1237,
       },
       message: /runtime changed while preparing reuse/,
     },
@@ -596,7 +692,7 @@ test('structured target preflight failures expose stable diagnostics and remain 
         const runDirectory = execution.calls[0].options.cwd;
         execution.calls[0].callback(
           Object.assign(new Error('injector preflight rejected the target'), {
-            code: scenario.native.windowsErrorCode,
+            code: scenario.exitCode ?? scenario.native.windowsErrorCode,
           }),
           `Found a matching process with PID 6101! Injecting ReShade ... \n` +
             injectorPreflightDiagnostic(scenario.native) +
@@ -626,6 +722,7 @@ test('structured target preflight failures expose stable diagnostics and remain 
           const referencesHostRuntime =
             scenario.native.modulePath !== undefined &&
             [
+              'target-existing-reshade-installation',
               'target-runtime-conflict',
               'target-runtime-incompatible',
               'target-runtime-reuse-too-late',
@@ -725,6 +822,17 @@ test('malformed or contradictory injector diagnostic records cannot claim safe p
       stdout:
         'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {not-json}\n' +
         'ReShade injection not started.\n',
+      retrySafety: 'definite-safe',
+      state: 'idle',
+    },
+    {
+      name: 'relative module path',
+      stdout:
+        injectorPreflightDiagnostic({
+          code: 'target-existing-reshade-installation',
+          pid: 6201,
+          modulePath: 'dxgi.dll',
+        }) + 'ReShade injection not started.\n',
       retrySafety: 'definite-safe',
       state: 'idle',
     },
@@ -870,7 +978,8 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
       if (
         artifact === 'ReShade.ini' ||
         artifact === 'ReShade64.dll' ||
-        artifact === 'electron_game_overlay.addon64'
+        artifact === 'electron_game_overlay.addon64' ||
+        artifact === 'electron_game_overlay_reshade_manager.exe'
       ) {
         assert.notEqual(stagedStats.ino, sourceStats.ino);
       } else {
@@ -960,6 +1069,7 @@ test('attach reports a validated existing ReShade host runtime', async () => {
       pid: 4252,
     });
     await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
     execution.calls[0].callback(
       null,
       existingRuntimeSuccessFor(4252, hostRuntimePath),
@@ -983,6 +1093,1365 @@ test('attach reports a validated existing ReShade host runtime', async () => {
   } finally {
     launcher.dispose();
     console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('attach reports a preinstalled add-on hosted by official ReShade', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const hostRuntimePath = 'D:\\Games\\Gun Frog\\dxgi.dll';
+  const addonModulePath = 'D:\\Games\\Gun Frog\\electron_game_overlay.addon64';
+  const inspections = [];
+  const inspectionStub = stubLoadedOfficialReShadeInspection(
+    async (options) => {
+      inspections.push(options);
+      return officialLoadedAddonInspectionResult({
+        targetExecutablePath: 'D:\\Games\\Gun Frog\\Gun Frog.exe',
+        reshadeModulePath: hostRuntimePath,
+        loadedAddonModulePath: addonModulePath,
+      });
+    },
+  );
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'Gun Frog.exe',
+      pid: 4253,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      null,
+      officialAddonSuccessFor(4253, hostRuntimePath, addonModulePath),
+      '',
+    );
+    sessionHarness.emitNative('game.process', {
+      pid: 4253,
+      path: 'D:\\Games\\Gun Frog\\Gun Frog.exe',
+    });
+
+    const result = await attachment;
+    assert.equal(result.pid, 4253);
+    assert.equal(result.injectorTargetPid, 4253);
+    assert.equal(result.runtimeMode, 'official-addon');
+    assert.equal(result.hostRuntimePath, hostRuntimePath);
+    assert.equal(result.addonModulePath, addonModulePath);
+    assert.equal(result.reshadeLogPath, 'D:\\Games\\Gun Frog\\ReShade.log');
+    assert.equal(inspections.length, 1);
+    assert.equal(
+      inspections[0].managerExecutablePath,
+      path.join(
+        result.runDirectory,
+        'electron_game_overlay_reshade_manager.exe',
+      ),
+    );
+    assert.deepEqual(inspections[0].targetEffectiveSettings, {
+      reshadeBasePath: 'D:\\Games\\Gun Frog',
+      addonDirectoryPath: 'D:\\Games\\Gun Frog',
+      electronGameOverlayAddonDisabled: false,
+    });
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    inspectionStub.restore();
+    execution.restore();
+  }
+});
+
+test('a loaded stale official add-on is refused until it can be updated and restarted', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Gun Frog\\Gun Frog.exe';
+  const hostRuntimePath = 'D:\\Games\\Gun Frog\\dxgi.dll';
+  const addonModulePath = 'D:\\Games\\Gun Frog\\electron_game_overlay.addon64';
+  const inspectionStub = stubLoadedOfficialReShadeInspection(async () =>
+    officialLoadedAddonInspectionResult({
+      status: 'update-required',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+      loadedAddonModulePath: addonModulePath,
+    }),
+  );
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'Gun Frog.exe',
+      pid: 4259,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      null,
+      officialAddonSuccessFor(4259, hostRuntimePath, addonModulePath),
+      '',
+    );
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-maintenance-deferred');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.match(error.message, /non-current managed add-on/);
+      return true;
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    inspectionStub.restore();
+    execution.restore();
+  }
+});
+
+test('a foreign official-host add-on collision is preserved without scheduling maintenance', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Gun Frog\\Gun Frog.exe';
+  const hostRuntimePath = 'D:\\Games\\Gun Frog\\dxgi.dll';
+  const addonModulePath = 'D:\\Games\\Gun Frog\\electron_game_overlay.addon64';
+  let preparationCount = 0;
+  const preparationStub = stubExistingReShadePreparation(async () => {
+    preparationCount += 1;
+    throw new Error('foreign add-on maintenance must not be scheduled');
+  });
+  const inspectionStub = stubLoadedOfficialReShadeInspection(async () =>
+    officialLoadedAddonInspectionResult({
+      status: 'foreign-collision',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+      loadedAddonModulePath: addonModulePath,
+    }),
+  );
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'Gun Frog.exe',
+      pid: 4265,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      null,
+      officialAddonSuccessFor(4265, hostRuntimePath, addonModulePath),
+      '',
+    );
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-conflict');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.match(error.message, /existing installation was preserved/);
+      assert.match(error.message, /no automatic update was scheduled/);
+      return true;
+    });
+    assert.equal(launcher.confirmTargetExited(4265), false);
+    await flushMicrotasks();
+    assert.equal(preparationCount, 0);
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    inspectionStub.restore();
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('a target-effective DisabledAddons opt-out refuses a loaded official add-on without disk inspection', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Gun Frog\\Gun Frog.exe';
+  const hostRuntimePath = 'D:\\Games\\Gun Frog\\dxgi.dll';
+  const addonModulePath = 'D:\\Games\\Gun Frog\\electron_game_overlay.addon64';
+  let inspectionCount = 0;
+  const inspectionStub = stubLoadedOfficialReShadeInspection(async () => {
+    inspectionCount += 1;
+    throw new Error('inspection must not run for a disabled add-on');
+  });
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'Gun Frog.exe',
+      pid: 4260,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      null,
+      officialAddonSuccessFor(
+        4260,
+        hostRuntimePath,
+        addonModulePath,
+        'Gun Frog.exe',
+        { electronGameOverlayAddonDisabled: true },
+      ),
+      '',
+    );
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-disabled');
+      assert.equal(error.retrySafety, 'definite-safe');
+      return true;
+    });
+    assert.equal(inspectionCount, 0);
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    inspectionStub.restore();
+    execution.restore();
+  }
+});
+
+test('an inactive recognized official install is prepared once and requires a target restart', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const prepared = officialPreparedAddonResult({
+    status: 'installed',
+    targetExecutablePath,
+    reshadeModulePath: hostRuntimePath,
+  });
+  const preparations = [];
+  const preparationStub = stubExistingReShadePreparation(async (options) => {
+    preparations.push(options);
+    return prepared;
+  });
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4254,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    execution.calls[0].callback(
+      Object.assign(new Error('existing installation'), { code: 183 }),
+      `Found a matching process with PID 4254!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-existing-reshade-installation',
+          pid: 4254,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-restart-required');
+      assert.equal(error.stage, 'target-preflight');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.equal(error.diagnostic.modulePath, hostRuntimePath);
+      assert.equal(error.diagnostic.addonPath, prepared.addonDestinationPath);
+      assert.match(error.message, /was installed.*must be restarted/);
+      return true;
+    });
+    assert.deepEqual(preparations, [
+      {
+        targetExecutablePath,
+        reshadeModulePath: hostRuntimePath,
+        addonSourcePath: path.join(
+          runDirectory,
+          'electron_game_overlay.addon64',
+        ),
+        managerExecutablePath: path.join(
+          runDirectory,
+          'electron_game_overlay_reshade_manager.exe',
+        ),
+        targetEffectiveSettings: {
+          reshadeBasePath: path.win32.dirname(hostRuntimePath),
+          addonDirectoryPath: path.win32.dirname(hostRuntimePath),
+          electronGameOverlayAddonDisabled: false,
+        },
+      },
+    ]);
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('an arbitrary ReShade identity never schedules automatic owned add-on removal', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Upgraded\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Upgraded\\dxgi.dll';
+  const addonModulePath = 'D:\\Games\\Upgraded\\electron_game_overlay.addon64';
+  const preparationOptions = [];
+  const preparationStub = stubExistingReShadePreparation(async (options) => {
+    preparationOptions.push(options);
+    return officialPreparedAddonResult({
+      status: 'already-current',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+      reshadeModuleSha256: 'B'.repeat(64),
+    });
+  });
+  let removalCount = 0;
+  const removalStub = stubExistingReShadeRemoval(async () => {
+    removalCount += 1;
+    throw new Error('automatic removal must not run');
+  });
+  const originalError = console.error;
+  const originalLog = console.log;
+  const maintenanceLogs = [];
+  console.error = () => undefined;
+  console.log = (...values) => maintenanceLogs.push(values.join(' '));
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4266,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    execution.calls[0].callback(
+      Object.assign(new Error('unsupported upgraded runtime'), { code: 50 }),
+      `Found a matching process with PID 4266!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-runtime-incompatible',
+          pid: 4266,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+          windowsErrorCode: 50,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+    await waitFor(() => execution.calls.length === 2);
+    assert.deepEqual(execution.calls[1].arguments, [
+      'game.exe',
+      '--pid',
+      '4266',
+      '--wait-for-official-addon',
+      '30000',
+    ]);
+    execution.calls[1].callback(
+      Object.assign(new Error('unsupported upgraded runtime'), { code: 50 }),
+      `Found a matching process with PID 4266!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-runtime-incompatible',
+          pid: 4266,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+          windowsErrorCode: 50,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-host-incompatible');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.equal(error.diagnostic.addonPath, addonModulePath);
+      assert.match(
+        error.message,
+        /did not load it.*public add-on API 18.*Dear ImGui/,
+      );
+      return true;
+    });
+    assert.equal(
+      preparationOptions.length,
+      2,
+      'the post-grace diagnostic revalidates the still-current managed add-on',
+    );
+    assert.equal(removalCount, 0);
+    assert.equal(launcher.confirmTargetExited(4266), false);
+    await flushMicrotasks();
+    assert.equal(removalCount, 0);
+    assert.deepEqual(maintenanceLogs, []);
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+    );
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    console.log = originalLog;
+    removalStub.restore();
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('a mapped official add-on update retries only after confirmed target exit and then retires its staged run', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const preparations = [];
+  let releaseDeferredPreparation;
+  const deferredPreparation = new Promise((resolve) => {
+    releaseDeferredPreparation = resolve;
+  });
+  const preparationStub = stubExistingReShadePreparation(async (options) => {
+    preparations.push(options);
+    if (preparations.length === 1) {
+      throw new existingReShadeInstallation.ExistingReShadeInstallationError(
+        'manager-failed',
+        'the mapped add-on could not be replaced while the target was alive',
+        options.addonSourcePath,
+      );
+    }
+    await deferredPreparation;
+    return officialPreparedAddonResult({
+      status: 'updated',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+    });
+  });
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.error = () => undefined;
+  console.log = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4261,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    execution.calls[0].callback(
+      Object.assign(new Error('incompatible loaded runtime'), { code: 50 }),
+      `Found a matching process with PID 4261!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-runtime-incompatible',
+          pid: 4261,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+          windowsErrorCode: 50,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-maintenance-deferred');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.match(error.message, /manager-failed/);
+      return true;
+    });
+    await flushMicrotasks();
+    assert.equal(
+      preparations.length,
+      1,
+      'the manager must not retry while the target may still map the add-on',
+    );
+    assert.equal(
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+      false,
+      'the staged manager and add-on must remain available for the deferred retry',
+    );
+    assert.equal(launcher.confirmTargetExited(4262), false);
+    assert.equal(preparations.length, 1);
+
+    assert.equal(launcher.confirmTargetExited(4261), true);
+    await waitFor(() => preparations.length === 2);
+    assert.deepEqual(preparations[1], preparations[0]);
+    assert.equal(
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+      false,
+      'the run must remain live until deferred maintenance settles',
+    );
+
+    releaseDeferredPreparation();
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+    );
+    assert.equal(launcher.confirmTargetExited(4261), false);
+  } finally {
+    releaseDeferredPreparation?.();
+    launcher.dispose();
+    console.error = originalError;
+    console.log = originalLog;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('a confirmed exit that races manager failure survives immediate launcher disposal', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\racing-game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  let rejectFirstPreparation;
+  let resolveFirstPreparationStarted;
+  const firstPreparationStarted = new Promise((resolve) => {
+    resolveFirstPreparationStarted = resolve;
+  });
+  let preparationCount = 0;
+  const preparationStub = stubExistingReShadePreparation(async (options) => {
+    ++preparationCount;
+    if (preparationCount === 1) {
+      resolveFirstPreparationStarted();
+      return new Promise((resolve, reject) => {
+        void resolve;
+        rejectFirstPreparation = () =>
+          reject(
+            new existingReShadeInstallation.ExistingReShadeInstallationError(
+              'manager-failed',
+              'the target exited while its mapped add-on was still locked',
+              options.addonSourcePath,
+            ),
+          );
+      });
+    }
+    return officialPreparedAddonResult({
+      status: 'updated',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+    });
+  });
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.error = () => undefined;
+  console.log = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'racing-game.exe',
+      pid: 4263,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('incompatible loaded runtime'), { code: 50 }),
+      injectorPreflightDiagnostic({
+        code: 'target-runtime-incompatible',
+        pid: 4263,
+        targetExecutablePath,
+        modulePath: hostRuntimePath,
+        windowsErrorCode: 50,
+      }) + 'ReShade injection not started.\n',
+      '',
+    );
+
+    await firstPreparationStarted;
+    assert.equal(launcher.confirmTargetExited(4263), true);
+    launcher.dispose();
+    rejectFirstPreparation();
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-maintenance-deferred');
+      return true;
+    });
+    await waitFor(() => preparationCount === 2);
+  } finally {
+    rejectFirstPreparation?.();
+    launcher.dispose();
+    console.error = originalError;
+    console.log = originalLog;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('disposal before exit proof cannot claim that delayed maintenance was queued', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\disposed-game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  let rejectPreparation;
+  let resolvePreparationStarted;
+  const preparationStarted = new Promise((resolve) => {
+    resolvePreparationStarted = resolve;
+  });
+  let preparationCount = 0;
+  const preparationStub = stubExistingReShadePreparation(async (options) => {
+    ++preparationCount;
+    resolvePreparationStarted();
+    return new Promise((resolve, reject) => {
+      void resolve;
+      rejectPreparation = () =>
+        reject(
+          new existingReShadeInstallation.ExistingReShadeInstallationError(
+            'manager-failed',
+            'the delayed manager request failed after launcher disposal',
+            options.addonSourcePath,
+          ),
+        );
+    });
+  });
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'disposed-game.exe',
+      pid: 4267,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    execution.calls[0].callback(
+      Object.assign(new Error('incompatible loaded runtime'), { code: 50 }),
+      injectorPreflightDiagnostic({
+        code: 'target-runtime-incompatible',
+        pid: 4267,
+        targetExecutablePath,
+        modulePath: hostRuntimePath,
+        windowsErrorCode: 50,
+      }) + 'ReShade injection not started.\n',
+      '',
+    );
+
+    await preparationStarted;
+    launcher.dispose();
+    rejectPreparation();
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-preparation-failed');
+      assert.doesNotMatch(error.message, /maintenance is deferred/);
+      return true;
+    });
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+    );
+    assert.equal(launcher.confirmTargetExited(4267), false);
+    assert.equal(preparationCount, 1);
+  } finally {
+    rejectPreparation?.();
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('disposing before target exit abandons deferred maintenance and retires its staged run', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\abandoned-game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  let preparationCount = 0;
+  const preparationStub = stubExistingReShadePreparation(async (options) => {
+    ++preparationCount;
+    throw new existingReShadeInstallation.ExistingReShadeInstallationError(
+      'manager-failed',
+      'the mapped add-on remains locked',
+      options.addonSourcePath,
+    );
+  });
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'abandoned-game.exe',
+      pid: 4264,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    execution.calls[0].callback(
+      Object.assign(new Error('incompatible loaded runtime'), { code: 50 }),
+      injectorPreflightDiagnostic({
+        code: 'target-runtime-incompatible',
+        pid: 4264,
+        targetExecutablePath,
+        modulePath: hostRuntimePath,
+        windowsErrorCode: 50,
+      }) + 'ReShade injection not started.\n',
+      '',
+    );
+
+    await assert.rejects(launch);
+    assert.equal(preparationCount, 1);
+    launcher.dispose();
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+    );
+    assert.equal(launcher.confirmTargetExited(4264), false);
+    assert.equal(preparationCount, 1);
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('official add-on preparation requires the exact normal native preflight exit', async (t) => {
+  const cases = [
+    {
+      name: 'wrong exit code',
+      error: Object.assign(new Error('wrong terminal status'), { code: 1 }),
+    },
+    {
+      name: 'timeout kill',
+      error: Object.assign(new Error('timed out'), {
+        code: 183,
+        killed: true,
+        signal: 'SIGTERM',
+      }),
+    },
+    {
+      name: 'zero exit',
+      error: null,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const fixture = createRuntime();
+      const execution = stubExecFile();
+      const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+      const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+      let preparationCount = 0;
+      const preparationStub = stubExistingReShadePreparation(async () => {
+        ++preparationCount;
+        return officialPreparedAddonResult({
+          status: 'installed',
+          targetExecutablePath,
+          reshadeModulePath: hostRuntimePath,
+        });
+      });
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      const originalError = console.error;
+      console.error = () => undefined;
+
+      try {
+        const launch = launcher.launch({
+          processName: 'game.exe',
+          pid: 4254,
+          executablePath: targetExecutablePath,
+        });
+        await waitFor(() => execution.calls.length === 1);
+        execution.calls[0].callback(
+          scenario.error,
+          injectorPreflightDiagnostic({
+            code: 'target-existing-reshade-installation',
+            pid: 4254,
+            targetExecutablePath,
+            modulePath: hostRuntimePath,
+          }) + 'ReShade injection not started.\n',
+          '',
+        );
+
+        await assert.rejects(launch, (error) => {
+          assert.ok(error instanceof ReShadeOperationError);
+          assert.equal(error.code, 'injector-result-invalid');
+          assert.equal(error.retrySafety, 'indeterminate');
+          return true;
+        });
+        assert.equal(
+          preparationCount,
+          0,
+          'an untrusted injector termination must never mutate an official installation',
+        );
+        assert.equal(launcher.state, 'blocked');
+      } finally {
+        launcher.dispose();
+        console.error = originalError;
+        preparationStub.restore();
+        execution.restore();
+      }
+    });
+  }
+});
+
+test('an expired official add-on startup wait remains definite-safe and never falls back', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const prepared = officialPreparedAddonResult({
+    status: 'already-current',
+    targetExecutablePath,
+    reshadeModulePath: hostRuntimePath,
+  });
+  const preparationStub = stubExistingReShadePreparation(async () => prepared);
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4255,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('existing installation'), { code: 183 }),
+      `Found a matching process with PID 4255!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-existing-reshade-installation',
+          pid: 4255,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+    await waitFor(() => execution.calls.length === 2);
+    assert.deepEqual(execution.calls[1].arguments, [
+      'game.exe',
+      '--pid',
+      '4255',
+      '--wait-for-official-addon',
+      '30000',
+    ]);
+    execution.calls[1].callback(
+      Object.assign(new Error('official add-on startup wait expired'), {
+        code: 1460,
+      }),
+      `Found a matching process with PID 4255!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-official-addon-wait-expired',
+          pid: 4255,
+          targetExecutablePath,
+          windowsErrorCode: 1460,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'target-official-addon-wait-expired');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.match(
+        error.message,
+        /bounded official ReShade add-on startup wait ended.*injection were refused/,
+      );
+      return true;
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('the SDK rejects a mutating result from the inspection-only official add-on wait', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const preparationStub = stubExistingReShadePreparation(async () =>
+    officialPreparedAddonResult({
+      status: 'already-current',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+    }),
+  );
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4265,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('existing installation'), { code: 183 }),
+      injectorPreflightDiagnostic({
+        code: 'target-existing-reshade-installation',
+        pid: 4265,
+        targetExecutablePath,
+        modulePath: hostRuntimePath,
+      }) + 'ReShade injection not started.\n',
+      '',
+    );
+
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, injectorSuccessFor(4265, 'game.exe'), '');
+
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'injector-result-invalid');
+      assert.equal(error.retrySafety, 'indeterminate');
+      assert.match(
+        error.message,
+        /startup wait returned a mutating runtime mode/,
+      );
+      return true;
+    });
+    assert.equal(launcher.state, 'blocked');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('a current add-on may finish loading during the bounded startup grace', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const addonModulePath = 'D:\\Games\\Official\\electron_game_overlay.addon64';
+  const preparationStub = stubExistingReShadePreparation(async () =>
+    officialPreparedAddonResult({
+      status: 'already-current',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+    }),
+  );
+  const inspectionStub = stubLoadedOfficialReShadeInspection(async (options) =>
+    officialLoadedAddonInspectionResult({
+      targetExecutablePath: options.targetExecutablePath,
+      reshadeModulePath: options.reshadeModulePath,
+      loadedAddonModulePath: options.loadedAddonModulePath,
+    }),
+  );
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4257,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('existing installation'), { code: 183 }),
+      `Found a matching process with PID 4257!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-existing-reshade-installation',
+          pid: 4257,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+
+    await waitFor(() => execution.calls.length === 2);
+    assert.deepEqual(execution.calls[1].arguments, [
+      'game.exe',
+      '--pid',
+      '4257',
+      '--wait-for-official-addon',
+      '30000',
+    ]);
+    execution.calls[1].callback(
+      null,
+      officialAddonSuccessFor(
+        4257,
+        hostRuntimePath,
+        addonModulePath,
+        'game.exe',
+      ),
+      '',
+    );
+
+    const result = await launch;
+    assert.equal(result.runtimeMode, 'official-addon');
+    assert.equal(result.hostRuntimePath, hostRuntimePath);
+    assert.equal(result.addonModulePath, addonModulePath);
+    assert.equal(launcher.acceptTargetConnection(4257), true);
+  } finally {
+    launcher.dispose();
+    inspectionStub.restore();
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('concurrent launchers coordinate one same-process official add-on startup grace', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const config = createConfig(fixture);
+  const firstLauncher = new ReShadeOverlayLauncher(config);
+  const secondLauncher = new ReShadeOverlayLauncher(config);
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const addonModulePath = 'D:\\Games\\Official\\electron_game_overlay.addon64';
+  const preparationStub = stubExistingReShadePreparation(async () =>
+    officialPreparedAddonResult({
+      status: 'already-current',
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+    }),
+  );
+  const inspectionStub = stubLoadedOfficialReShadeInspection(async (options) =>
+    officialLoadedAddonInspectionResult({
+      targetExecutablePath: options.targetExecutablePath,
+      reshadeModulePath: options.reshadeModulePath,
+      loadedAddonModulePath: options.loadedAddonModulePath,
+    }),
+  );
+  const events = [];
+  firstLauncher.onEvent((event) => events.push(event));
+  secondLauncher.onEvent((event) => events.push(event));
+
+  try {
+    const target = {
+      processName: 'game.exe',
+      pid: 4258,
+      executablePath: targetExecutablePath,
+    };
+    const firstLaunch = firstLauncher.launch(target).then(
+      (value) => ({ status: 'fulfilled', value }),
+      (reason) => ({ status: 'rejected', reason }),
+    );
+    const secondLaunch = secondLauncher.launch(target).then(
+      (value) => ({ status: 'fulfilled', value }),
+      (reason) => ({ status: 'rejected', reason }),
+    );
+    await waitFor(() => execution.calls.length === 2);
+    const preflightOutput =
+      `Found a matching process with PID 4258!\n` +
+      injectorPreflightDiagnostic({
+        code: 'target-existing-reshade-installation',
+        pid: 4258,
+        targetExecutablePath,
+        modulePath: hostRuntimePath,
+      }) +
+      'ReShade injection not started.\n';
+    for (const call of execution.calls.slice(0, 2)) {
+      call.callback(
+        Object.assign(new Error('existing installation'), { code: 183 }),
+        preflightOutput,
+        '',
+      );
+    }
+
+    await waitFor(() => execution.calls.length === 3);
+    assert.deepEqual(execution.calls[2].arguments, [
+      'game.exe',
+      '--pid',
+      '4258',
+      '--wait-for-official-addon',
+      '30000',
+    ]);
+    await flushMicrotasks();
+    assert.equal(
+      execution.calls.length,
+      3,
+      'same PID and executable path must start one native grace process',
+    );
+    execution.calls[2].callback(
+      null,
+      officialAddonSuccessFor(
+        4258,
+        hostRuntimePath,
+        addonModulePath,
+        'game.exe',
+      ),
+      '',
+    );
+
+    const outcomes = await Promise.all([firstLaunch, secondLaunch]);
+    const fulfilled = outcomes.filter(({ status }) => status === 'fulfilled');
+    const rejected = outcomes.filter(({ status }) => status === 'rejected');
+    assert.equal(fulfilled.length, 1);
+    assert.equal(rejected.length, 1);
+    assert.equal(fulfilled[0].value.runtimeMode, 'official-addon');
+    assert.ok(rejected[0].reason instanceof ReShadeOperationError);
+    assert.equal(
+      rejected[0].reason.code,
+      'official-addon-startup-grace-coordinated',
+    );
+    assert.equal(
+      events.filter(({ type }) => type === 'injector-returned').length,
+      1,
+      'only the native grace owner may publish a success result',
+    );
+    assert.equal(
+      events.filter(
+        (event) =>
+          event.type === 'injector-failed' &&
+          event.diagnostic.code === 'official-addon-startup-grace-coordinated',
+      ).length,
+      1,
+    );
+    assert.equal(
+      firstLauncher.acceptTargetConnection(4258) ||
+        secondLauncher.acceptTargetConnection(4258),
+      true,
+    );
+  } finally {
+    firstLauncher.dispose();
+    secondLauncher.dispose();
+    inspectionStub.restore();
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('a loaded ReShade host that rejected the current add-on is capability-incompatible', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const prepared = officialPreparedAddonResult({
+    status: 'already-current',
+    targetExecutablePath,
+    reshadeModulePath: hostRuntimePath,
+  });
+  const preparationStub = stubExistingReShadePreparation(async () => prepared);
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4256,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('incompatible loaded runtime'), { code: 50 }),
+      `Found a matching process with PID 4256!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-runtime-incompatible',
+          pid: 4256,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+          windowsErrorCode: 50,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+    await waitFor(() => execution.calls.length === 2);
+    assert.deepEqual(execution.calls[1].arguments, [
+      'game.exe',
+      '--pid',
+      '4256',
+      '--wait-for-official-addon',
+      '30000',
+    ]);
+    execution.calls[1].callback(
+      Object.assign(new Error('incompatible loaded runtime'), { code: 50 }),
+      `Found a matching process with PID 4256!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-runtime-incompatible',
+          pid: 4256,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+          windowsErrorCode: 50,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-host-incompatible');
+      assert.match(
+        error.message,
+        /did not load it.*public add-on API 18.*Dear ImGui/,
+      );
+      return true;
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('a user-disabled official add-on is preserved and reported without a restart loop', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  const prepared = officialPreparedAddonResult({
+    status: 'disabled-by-user',
+    targetExecutablePath,
+    reshadeModulePath: hostRuntimePath,
+  });
+  const preparationStub = stubExistingReShadePreparation(async () => prepared);
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4256,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('existing installation'), { code: 183 }),
+      injectorPreflightDiagnostic({
+        code: 'target-existing-reshade-installation',
+        pid: 4256,
+        targetExecutablePath,
+        modulePath: hostRuntimePath,
+      }) + 'ReShade injection not started.\n',
+      '',
+    );
+
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-disabled');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.equal(error.diagnostic.addonPath, undefined);
+      assert.match(
+        error.message,
+        /user has disabled "Electron Game Overlay Runtime".*enable that add-on/,
+      );
+      return true;
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('an arbitrary existing ReShade identity is prepared and requires one restart', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'D:\\Games\\Arbitrary\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Arbitrary\\dxgi.dll';
+  const prepared = officialPreparedAddonResult({
+    status: 'installed',
+    targetExecutablePath,
+    reshadeModulePath: hostRuntimePath,
+    reshadeModuleSha256: 'D'.repeat(64),
+  });
+  const preparationStub = stubExistingReShadePreparation(async () => prepared);
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const launch = launcher.launch({
+      processName: 'game.exe',
+      pid: 4257,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('existing installation'), { code: 183 }),
+      `Found a matching process with PID 4257!\n` +
+        injectorPreflightDiagnostic({
+          code: 'target-existing-reshade-installation',
+          pid: 4257,
+          targetExecutablePath,
+          modulePath: hostRuntimePath,
+        }) +
+        'ReShade injection not started.\n',
+      '',
+    );
+
+    await assert.rejects(launch, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-reshade-addon-restart-required');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.equal(error.diagnostic.modulePath, hostRuntimePath);
+      assert.equal(error.diagnostic.addonPath, prepared.addonDestinationPath);
+      assert.match(error.message, /was installed.*must be restarted/);
+      return true;
+    });
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    preparationStub.restore();
+    execution.restore();
+  }
+});
+
+test('path-selected official add-ons publish exact-PID discovery before accepting proof', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath =
+    'D:\\SteamLibrary\\steamapps\\common\\Official\\game.exe';
+  const hostRuntimePath =
+    'D:\\SteamLibrary\\steamapps\\common\\Official\\dxgi.dll';
+  const addonModulePath =
+    'D:\\SteamLibrary\\steamapps\\common\\Official\\electron_game_overlay.addon64';
+  const inspectionStub = stubLoadedOfficialReShadeInspection(async () =>
+    officialLoadedAddonInspectionResult({
+      targetExecutablePath,
+      reshadeModulePath: hostRuntimePath,
+      loadedAddonModulePath: addonModulePath,
+    }),
+  );
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      pathContains: '\\steamapps\\',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    execution.calls[0].callback(
+      null,
+      `Matched executable path: ${targetExecutablePath}\n` +
+        officialAddonSuccessFor(
+          4258,
+          hostRuntimePath,
+          addonModulePath,
+          'game.exe',
+        ),
+      '',
+    );
+    await waitFor(
+      () => sessionHarness.targetAuthorizations.length === 1,
+      1_000,
+    );
+    assert.deepEqual(sessionHarness.targetAuthorizations[0], {
+      pid: 4258,
+      discoveryPath: path.join(
+        runDirectory,
+        'electron-overlay-transport-v1.json',
+      ),
+      expectedExecutablePath: targetExecutablePath,
+      releaseCount: 0,
+    });
+    sessionHarness.emitNative('game.process', {
+      pid: 4258,
+      path: targetExecutablePath,
+    });
+
+    const result = await attachment;
+    assert.equal(result.pid, 4258);
+    assert.equal(result.runtimeMode, 'official-addon');
+    assert.equal(result.selectedPath, targetExecutablePath);
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    inspectionStub.restore();
     execution.restore();
   }
 });
@@ -1039,6 +2508,53 @@ test('structured injector results reject malformed and contradictory runtime met
         hostAbi: 2,
       }),
       message: /absolute runtime module path and host ABI 1/,
+    },
+    {
+      name: 'official add-on without add-on module path',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'official-addon',
+        runtimeModulePath: 'C:\\game\\dxgi.dll',
+        addonAbi: 1,
+      }),
+      message: /absolute runtime and add-on module paths and add-on ABI 1/,
+    },
+    {
+      name: 'official add-on with relative add-on module path',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'official-addon',
+        runtimeModulePath: 'C:\\game\\dxgi.dll',
+        addonModulePath: 'electron_game_overlay.addon64',
+        addonAbi: 1,
+      }),
+      message: /absolute runtime and add-on module paths and add-on ABI 1/,
+    },
+    {
+      name: 'official add-on with incompatible add-on ABI',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'official-addon',
+        runtimeModulePath: 'C:\\game\\dxgi.dll',
+        addonModulePath: 'C:\\game\\electron_game_overlay.addon64',
+        addonAbi: 2,
+      }),
+      message: /absolute runtime and add-on module paths and add-on ABI 1/,
+    },
+    {
+      name: 'official add-on with a stale build identity',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'official-addon',
+        runtimeModulePath: 'C:\\game\\dxgi.dll',
+        addonModulePath: 'C:\\game\\electron_game_overlay.addon64',
+        addonAbi: 1,
+        addonBuildId: '00000000000000000000000000000000',
+        reshadeBasePath: 'C:\\game',
+        addonDirectoryPath: 'C:\\game',
+        electronGameOverlayAddonDisabled: false,
+      }),
+      message: /absolute runtime and add-on module paths and add-on ABI 1/,
     },
     {
       name: 'unexpected schema field',
@@ -2856,6 +4372,15 @@ test('candidate transport loss before PID proof requires same-PID reauthenticati
       pid: 8201,
       path: 'D:\\reauthenticated\\renamed-image.bin',
     });
+    assert.equal(
+      (await settleWithin(attachment, 20)).status,
+      'timeout',
+      'PID reuse must not bypass the requested executable identity',
+    );
+    sessionHarness.emitNative('game.process', {
+      pid: 8201,
+      path: 'C:\\games\\game.exe',
+    });
     assert.equal((await attachment).pid, 8201);
     assert.equal(launcher.state, 'connected');
 
@@ -3119,6 +4644,97 @@ function createConfig(fixture, overrides = {}) {
   return Object.freeze({ ...config, ...overrides });
 }
 
+function officialPreparedAddonResult({
+  status,
+  targetExecutablePath,
+  reshadeModulePath,
+  reshadeModuleSha256 = 'B'.repeat(64),
+}) {
+  const addonDirectoryPath = path.win32.dirname(reshadeModulePath);
+  return Object.freeze({
+    targetExecutablePath,
+    reshadeModulePath,
+    reshadeModuleSha256,
+    status,
+    addonSourcePath: 'C:\\sdk\\electron_game_overlay.addon64',
+    addonSourceSha256: 'A'.repeat(64),
+    reshadeBaseDirectoryPath: addonDirectoryPath,
+    reshadeConfigPath: path.win32.join(addonDirectoryPath, 'ReShade.ini'),
+    addonDirectoryPath,
+    addonDestinationPath: path.win32.join(
+      addonDirectoryPath,
+      existingReShadeInstallation.existingReShadeAddonFileName,
+    ),
+    ownershipMarkerPath: path.win32.join(
+      addonDirectoryPath,
+      existingReShadeInstallation.existingReShadeAddonMarkerFileName,
+    ),
+    currentProcessLoadState: 'unknown',
+    restartRequired: status !== 'disabled-by-user',
+  });
+}
+
+function officialLoadedAddonInspectionResult({
+  targetExecutablePath,
+  reshadeModulePath,
+  loadedAddonModulePath,
+  status = 'already-current',
+  reshadeModuleSha256 = 'C'.repeat(64),
+}) {
+  const addonDirectoryPath = path.win32.dirname(loadedAddonModulePath);
+  return Object.freeze({
+    status,
+    targetExecutablePath,
+    reshadeModulePath,
+    reshadeModuleSha256,
+    loadedAddonModulePath,
+    addonSourcePath: 'C:\\sdk\\electron_game_overlay.addon64',
+    addonSourceSha256: 'A'.repeat(64),
+    addonDirectoryPath,
+    addonDestinationPath: path.win32.join(
+      addonDirectoryPath,
+      existingReShadeInstallation.existingReShadeAddonFileName,
+    ),
+    ownershipMarkerPath: path.win32.join(
+      addonDirectoryPath,
+      existingReShadeInstallation.existingReShadeAddonMarkerFileName,
+    ),
+    restartRequired: status !== 'already-current',
+  });
+}
+
+function stubExistingReShadePreparation(implementation) {
+  const original = existingReShadeInstallation.prepareExistingReShadeAddon;
+  existingReShadeInstallation.prepareExistingReShadeAddon = implementation;
+  return {
+    restore() {
+      existingReShadeInstallation.prepareExistingReShadeAddon = original;
+    },
+  };
+}
+
+function stubExistingReShadeRemoval(implementation) {
+  const original = existingReShadeInstallation.removeOwnedExistingReShadeAddon;
+  existingReShadeInstallation.removeOwnedExistingReShadeAddon = implementation;
+  return {
+    restore() {
+      existingReShadeInstallation.removeOwnedExistingReShadeAddon = original;
+    },
+  };
+}
+
+function stubLoadedOfficialReShadeInspection(implementation) {
+  const original =
+    existingReShadeInstallation.inspectLoadedOfficialReShadeAddon;
+  existingReShadeInstallation.inspectLoadedOfficialReShadeAddon =
+    implementation;
+  return {
+    restore() {
+      existingReShadeInstallation.inspectLoadedOfficialReShadeAddon = original;
+    },
+  };
+}
+
 async function runRuntimeStartupTimeoutScenario({
   pid,
   record,
@@ -3302,13 +4918,16 @@ function createSessionHarness(
         }
         return ready;
       },
-      async authorizeTarget(pid, discoveryPath) {
+      async authorizeTarget(pid, discoveryPath, expectedExecutablePath) {
         if (closed) {
           throw new Error('the overlay session is closed');
         }
         const authorization = {
           pid,
           discoveryPath,
+          ...(expectedExecutablePath === undefined
+            ? {}
+            : { expectedExecutablePath }),
           releaseCount: 0,
         };
         targetAuthorizations.push(authorization);
