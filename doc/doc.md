@@ -247,11 +247,20 @@ publication succeeds. Translation, focus/blur, and Chromium input-dispatch
 exceptions are reported locally and contained instead of being misclassified as
 a bad target packet and disconnecting the runtime.
 
+Authenticated `game.input` now has a fail-closed transport schema before SDK
+forwarding. The wire record must contain only `type`, a positive uint32
+`windowId`, a routable producer Win32 `msg`, uint32 `wparam`/`lparam`, and an
+optional positive uint32 `scaleFactorMicros`; PID comes only from the
+authenticated socket. Window registration rejects zero IDs and scales before
+they can enter the native route. An invalid record closes that target connection
+with the fixed `invalid-game-input` classification and cannot mutate translator
+state or reach Electron.
+
 This slice does not diagnose renderer acknowledgement or `capturePage()`
-failures during ambiguous-raster recovery, redesign the transport into a
-globally bounded control/backpressure queue, or strictly parse every incoming
-`game.input` shape. Stock/differently patched ReShade and arbitrary modded-game
-coexistence also remain outside the supported compatibility envelope.
+failures during ambiguous-raster recovery or redesign the transport into a
+globally bounded control/backpressure queue. Stock/differently patched ReShade
+and arbitrary modded-game coexistence also remain outside the supported
+compatibility envelope.
 
 For an exact PID, the injector inspects loaded modules before remote allocation
 or thread creation. Exact `ReShadeVersion` identifies a candidate, but reuse

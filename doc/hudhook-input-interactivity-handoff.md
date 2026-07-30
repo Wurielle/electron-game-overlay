@@ -56,9 +56,10 @@
 > also leaves one strict run-local startup record before authenticated IPC, so
 > connection timeouts identify its last fixed discovery/target/loopback state
 > without parsing free-form ReShade logs. Initialization that never reaches the
-> bridge remains local evidence. Ambiguous
-> raster-recovery diagnostics, a globally bounded control/backpressure queue,
-> strict parsing for every input envelope, and stock/arbitrary modded-ReShade
+> bridge remains local evidence. Authenticated `game.input` is now canonicalized
+> by an exact fail-closed schema before SDK forwarding, with socket-owned PID and
+> fixed redacted rejection evidence. Ambiguous raster-recovery diagnostics, a
+> globally bounded control/backpressure queue, and stock/arbitrary modded-ReShade
 > compatibility remain deferred. Within the documented near-process-creation
 > D3D11/D3D12 boundary, the library POC is now ready for application testing;
 > the unchecked compatibility and hardening items are post-POC work. An existing
@@ -354,7 +355,10 @@ The implementation reuses the existing Electron side:
    `command.input.intercept` through the project-owned Node transport.
 2. The game-side client is expected to return `game.input.intercept`, `game.input`,
    and `game.window.focused` packets.
-3. `OverlaySession` receives `game.input`, calls the pure TypeScript
+3. The authenticated Node boundary validates the complete `game.input` record,
+   rejects extra/coerced/out-of-range fields and messages outside the native
+   producer's routable set, and attaches the socket-owned PID.
+4. `OverlaySession` receives the canonical input, calls the pure TypeScript
    `translateInputEvent()`, divides the returned local physical `x`/`y` by the
    packet's optional `scaleFactorMicros`, and calls
    `BrowserWindow.focusOnWebView()` followed by
@@ -364,7 +368,7 @@ The implementation reuses the existing Electron side:
    New payload packets carry the scale active when they were routed, preventing
    queued input from being reinterpreted after a later scale commit; an untagged
    legacy packet falls back to that window's current active factor.
-4. `game.window.focused` already drives Electron webview focus.
+5. `game.window.focused` already drives Electron webview focus.
 
 Relevant existing code:
 

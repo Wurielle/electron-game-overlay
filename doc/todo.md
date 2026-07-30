@@ -336,10 +336,23 @@ they are not the active production-host roadmap.
     memory/count bound remains separate work. This slice makes publication
     transactional and contains synchronous socket-write failures; it does not
     claim a fully bounded outbound control queue.
-  - Strictly parse and classify every inbound `game.input` record before SDK
-    forwarding. The current slice contains forwarding exceptions after the
-    authenticated transport supplies PID, but does not turn the full input
-    envelope into a fail-closed typed schema.
+  - Completed: every authenticated `game.input` record is parsed before PID
+    attachment or SDK forwarding. Only the exact legacy fields
+    `type/windowId/msg/wparam/lparam` and optional `scaleFactorMicros` are
+    accepted; window and scale IDs are positive uint32 values, `msg` must be in
+    the native producer's routable Win32 message set, `wparam`/`lparam` are
+    uint32, extra fields and wire-supplied PID are rejected, and PID comes only
+    from the authenticated socket. Window metadata rejects zero IDs and scales
+    before native routing. A malformed record closes that target connection with
+    fixed `invalid-game-input` evidence instead of reaching translator state or
+    Electron. Only an omitted legacy scale uses the active-window fallback; a
+    malformed scale is rejected.
+  - The D3D11 and D3D12 production process-start gates passed the strict input
+    boundary on July 30, 2026. Both forwarded intercepted Escape, kept the host
+    alive, and emitted no `target-packet-rejected` diagnostic. Evidence is under
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-134210`
+    and
+    `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-134224`.
   - Stock/differently patched ReShade and arbitrary modded-game coexistence
     remain the explicit compatibility task under “Runtime compatibility and
     hardening”; producer diagnostics do not expand that support envelope.

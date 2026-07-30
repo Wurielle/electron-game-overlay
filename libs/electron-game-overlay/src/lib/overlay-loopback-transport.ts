@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   InputEventTranslator,
+  parseNativeInputMessage,
   type NativeInputMessage,
   type TranslatedInputEvent,
 } from './input-translation.js';
@@ -755,7 +756,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     windowId: number,
     details: NativeOverlayWindowDetails,
   ): void {
-    assertUnsigned32(windowId, 'windowId');
+    assertPositiveUnsigned32(windowId, 'windowId');
+    if (details.scaleFactorMicros !== undefined) {
+      assertPositiveUnsigned32(details.scaleFactorMicros, 'scaleFactorMicros');
+    }
     const message: WindowMessage = {
       type: 'window',
       windowId,
@@ -782,7 +786,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   }
 
   public closeWindow(windowId: number): void {
-    assertUnsigned32(windowId, 'windowId');
+    assertPositiveUnsigned32(windowId, 'windowId');
     const packet = encodeJsonTransportPacket({
       type: 'window.close',
       windowId,
@@ -796,7 +800,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     windowId: number,
     details: NativeOverlayWindowGeometry,
   ): void {
-    assertUnsigned32(windowId, 'windowId');
+    assertPositiveUnsigned32(windowId, 'windowId');
+    if (details.scaleFactorMicros !== undefined) {
+      assertPositiveUnsigned32(details.scaleFactorMicros, 'scaleFactorMicros');
+    }
     const message: JsonObject = {
       type: 'window.bounds',
       windowId,
@@ -1318,6 +1325,21 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       if (this.takeDiagnosticRate(client.diagnosticRates, diagnostic.code)) {
         this.queueDiagnostic(diagnostic);
       }
+      return true;
+    }
+    if (eventName === 'game.input') {
+      const input =
+        client.pid === undefined
+          ? null
+          : parseNativeInputMessage(parsed, client.pid);
+      if (!input) {
+        return this.rejectAuthenticatedPacket(
+          client,
+          'invalid-game-input',
+          eventName,
+        );
+      }
+      this.emitEvent(eventName, { ...input });
       return true;
     }
     if (

@@ -190,6 +190,42 @@ test('failed window encoding does not mutate retained transport state', () => {
   assert.equal(transport.latestFrames.has(7), true);
 });
 
+test('window metadata rejects zero identifiers and scale factors at ingress', () => {
+  const transport = new OverlayLoopbackTransport();
+  const details = overlayWindow('strict-window');
+  const geometry = { rect: { ...details.rect } };
+
+  assert.throws(
+    () => transport.addWindow(0, details),
+    /windowId must be greater than zero/,
+  );
+  assert.throws(
+    () =>
+      transport.addWindow(7, {
+        ...details,
+        scaleFactorMicros: 0,
+      }),
+    /scaleFactorMicros must be greater than zero/,
+  );
+  assert.throws(
+    () => transport.sendWindowBounds(0, geometry),
+    /windowId must be greater than zero/,
+  );
+  assert.throws(
+    () =>
+      transport.sendWindowBounds(7, {
+        ...geometry,
+        scaleFactorMicros: 0,
+      }),
+    /scaleFactorMicros must be greater than zero/,
+  );
+  assert.throws(
+    () => transport.closeWindow(0),
+    /windowId must be greater than zero/,
+  );
+  assert.equal(transport.windows.size, 0);
+});
+
 test('legacy process discovery and injection fail explicitly', () => {
   const message = /unavailable in the overlay transport/;
   const overlay = new ElectronGameOverlay();
@@ -388,7 +424,6 @@ test('authenticated clients receive canonical snapshot before callback commands'
   socket.write(
     encodeJsonTransportPacket({
       type: 'game.input',
-      pid: 9999,
       windowId: 1,
       msg: 0x0200,
       wparam: 0,
@@ -412,6 +447,87 @@ test('authenticated clients receive canonical snapshot before callback commands'
     readFile(discoveryPath, 'utf8'),
     (error) => error.code === 'ENOENT',
   );
+});
+
+test('invalid authenticated input envelopes fail closed before SDK forwarding', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-input-envelope-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const events = [];
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\invalid-input-envelope.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+  await waitFor(() => events.length === 1);
+
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.input',
+      windowId: 1,
+      msg: '512',
+      wparam: null,
+      lparam: [0],
+      secret: 'must-not-cross',
+    }),
+  );
+  await closed;
+  await waitFor(() =>
+    diagnostics.some(({ code }) => code === 'target-packet-rejected'),
+  );
+
+  assert.equal(
+    events.some(({ event }) => event === 'game.input'),
+    false,
+  );
+  assert.deepEqual(
+    diagnostics.filter(({ code }) => code === 'target-packet-rejected'),
+    [
+      {
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        severity: 'warning',
+        code: 'target-packet-rejected',
+        message:
+          'The overlay transport rejected a packet from an authenticated target.',
+        pid: 4321,
+        context: {
+          reason: 'invalid-game-input',
+          eventType: 'game.input',
+        },
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(diagnostics).includes('must-not-cross'), false);
 });
 
 test('Electron input dispatch failure does not disconnect the authenticated target', async (t) => {

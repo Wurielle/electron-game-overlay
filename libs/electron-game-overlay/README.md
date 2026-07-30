@@ -265,8 +265,8 @@ evidence contract, while session diagnostics describe activity after the
 overlay transport starts. Failures before the runtime can connect still appear
 only in its local `ReShade.log`. Producer diagnostics do not yet cover
 ambiguous-raster recovery failures. A globally bounded control/backpressure
-queue, strict schema parsing for every `game.input` packet, and compatibility
-with stock or arbitrary already-modded ReShade games remain future work.
+queue and compatibility with stock or arbitrary already-modded ReShade games
+remain future work.
 
 Exact-PID injection performs a bounded module preflight before allocating or
 writing target memory. A loaded module becomes a ReShade candidate only when
@@ -457,6 +457,18 @@ was active when the packet was routed. The SDK uses that optional
 so an already queued packet cannot be reinterpreted after a scale commit. A
 packet from a legacy payload has no tag and falls back to the receiving window's
 current active scale before `webContents.sendInputEvent()`.
+
+Before that packet reaches the session, the authenticated transport requires an
+exact fail-closed envelope: `type`, positive uint32 `windowId`, a Win32 `msg`
+from the native producer's routable message set, uint32 `wparam`/`lparam`, and
+optional positive uint32 `scaleFactorMicros`. Producer-supplied PID and all
+extra fields are rejected; PID is attached from the authenticated socket.
+Window registration also rejects zero IDs and scales before native routing.
+Missing, coerced, fractional, negative, overflowing, unsupported, or malformed
+fields close only that target connection and publish the fixed
+`target-packet-rejected` / `invalid-game-input` diagnostic without forwarding
+target data. An omitted scale remains the supported legacy fallback, while a
+present malformed scale is never treated as legacy.
 
 Immediately before each returned input packet, the session calls
 `BrowserWindow.focusOnWebView()`. Electron 16's `WebContents.focus()` does not

@@ -427,6 +427,13 @@ different compatible-host environment handoff passed the same requirement under
 `client-sdk-d3d11-shared-runtime-20260730-130358` and
 `client-sdk-d3d12-shared-runtime-20260730-130412`.
 
+The strict authenticated-input extension re-ran the injected-runtime gates.
+Both accepted their production tagged `game.input` stream, forwarded intercepted
+Escape to Electron while the host remained alive, and completed with no
+`target-packet-rejected` diagnostic. Evidence is under
+`client-sdk-d3d11-process-start-20260730-134210` and
+`client-sdk-d3d12-process-start-20260730-134224`.
+
 Each `result.txt` contains its
 `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS` or
 `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS` marker. The earlier

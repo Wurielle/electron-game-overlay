@@ -4,6 +4,7 @@ export interface NativeInputMessage {
   msg: number;
   wparam: number;
   lparam: number;
+  scaleFactorMicros?: number;
 }
 
 export interface TranslatedInputEvent {
@@ -45,6 +46,111 @@ export const WINDOWS_MESSAGE = {
   xButtonDoubleClick: 0x020d,
   mouseHorizontalWheel: 0x020e,
 } as const;
+
+const UINT32_MAX = 0xffff_ffff;
+const INPUT_MESSAGE_KEYS = Object.freeze([
+  'type',
+  'windowId',
+  'msg',
+  'wparam',
+  'lparam',
+] as const);
+const TAGGED_INPUT_MESSAGE_KEYS = Object.freeze([
+  ...INPUT_MESSAGE_KEYS,
+  'scaleFactorMicros',
+] as const);
+const ROUTABLE_WINDOWS_MESSAGES: ReadonlySet<number> = new Set([
+  WINDOWS_MESSAGE.keyDown,
+  WINDOWS_MESSAGE.keyUp,
+  WINDOWS_MESSAGE.char,
+  WINDOWS_MESSAGE.sysKeyDown,
+  WINDOWS_MESSAGE.sysKeyUp,
+  WINDOWS_MESSAGE.sysChar,
+  WINDOWS_MESSAGE.uniChar,
+  WINDOWS_MESSAGE.mouseMove,
+  WINDOWS_MESSAGE.leftButtonDown,
+  WINDOWS_MESSAGE.leftButtonUp,
+  WINDOWS_MESSAGE.leftButtonDoubleClick,
+  WINDOWS_MESSAGE.rightButtonDown,
+  WINDOWS_MESSAGE.rightButtonUp,
+  WINDOWS_MESSAGE.rightButtonDoubleClick,
+  WINDOWS_MESSAGE.middleButtonDown,
+  WINDOWS_MESSAGE.middleButtonUp,
+  WINDOWS_MESSAGE.middleButtonDoubleClick,
+  WINDOWS_MESSAGE.mouseWheel,
+  WINDOWS_MESSAGE.mouseHorizontalWheel,
+]);
+
+type JsonRecord = Record<string, unknown>;
+
+/**
+ * Validates the complete authenticated `game.input` wire envelope before any
+ * JavaScript numeric coercion or SDK forwarding can occur. PID ownership comes
+ * only from the authenticated socket and is never accepted from the payload.
+ */
+export function parseNativeInputMessage(
+  value: unknown,
+  authoritativePid: number,
+): NativeInputMessage | null {
+  if (!isJsonRecord(value) || !isPositiveUint32(authoritativePid)) {
+    return null;
+  }
+
+  const tagged = Object.hasOwn(value, 'scaleFactorMicros');
+  const expectedKeys = tagged ? TAGGED_INPUT_MESSAGE_KEYS : INPUT_MESSAGE_KEYS;
+  if (
+    !hasExactOwnKeys(value, expectedKeys) ||
+    value.type !== 'game.input' ||
+    !isPositiveUint32(value.windowId) ||
+    !isRoutableWindowsMessage(value.msg) ||
+    !isUint32(value.wparam) ||
+    !isUint32(value.lparam) ||
+    (tagged && !isPositiveUint32(value.scaleFactorMicros))
+  ) {
+    return null;
+  }
+
+  return Object.freeze({
+    pid: authoritativePid,
+    windowId: value.windowId,
+    msg: value.msg,
+    wparam: value.wparam,
+    lparam: value.lparam,
+    ...(tagged ? { scaleFactorMicros: value.scaleFactorMicros as number } : {}),
+  });
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactOwnKeys(
+  value: JsonRecord,
+  expectedKeys: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === expectedKeys.length &&
+    keys.every((key) => expectedKeys.includes(key))
+  );
+}
+
+function isUint32(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= UINT32_MAX
+  );
+}
+
+function isPositiveUint32(value: unknown): value is number {
+  return isUint32(value) && value > 0;
+}
+
+function isRoutableWindowsMessage(value: unknown): value is number {
+  return isUint32(value) && ROUTABLE_WINDOWS_MESSAGES.has(value);
+}
 
 const VIRTUAL_KEY = {
   shift: 0x10,

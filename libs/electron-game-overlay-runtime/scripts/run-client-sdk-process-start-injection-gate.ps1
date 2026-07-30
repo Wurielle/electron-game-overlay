@@ -504,6 +504,19 @@ function Test-OverlayInputAndRelease {
         -AfterIndex $StatusValueBeforeDrag.Index `
         -Deadline ([DateTime]::UtcNow.AddSeconds(10))
 
+    [ReShadeClientSdkGate.NativeInputMethods]::SendEscape()
+    $EscapeForwarded = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern '(?m)^HUDHOOK_CLIENT_INPUT_ESCAPE_FORWARDED\r?$' `
+        -AfterIndex $MainValueBeforeDrag.Index `
+        -Deadline ([DateTime]::UtcNow.AddSeconds(10))
+    Start-Sleep -Milliseconds 250
+    $HostProcess.Refresh()
+    if ($HostProcess.HasExited) {
+        throw "Intercepted Escape reached the controlled $BackendLabel host."
+    }
+
     # Move the focused main overlay away from the status overlay. The follow-up
     # click at the moved text-field coordinates proves the new main placement;
     # the subsequent status click proves the stale main bounds no longer cover it.
@@ -598,6 +611,7 @@ function Test-OverlayInputAndRelease {
         EnabledMarkerIndex = $Enabled.Index
         MainValueBeforeDragMarkerIndex = $MainValueBeforeDrag.Index
         StatusValueBeforeDragMarkerIndex = $StatusValueBeforeDrag.Index
+        EscapeForwardedMarkerIndex = $EscapeForwarded.Index
         MainValueAfterDragMarkerIndex = $MainValueAfterDrag.Index
         StatusValueAfterDragMarkerIndex = $StatusValueAfterDrag.Index
         DisabledMarkerIndex = $Disabled.Index
@@ -1220,6 +1234,13 @@ try {
         -CaseSensitive
     if ($ProducerDiagnosticFault) {
         throw "The Electron producer reported a warning/error diagnostic: $($ProducerDiagnosticFault.Line -join ' | ')"
+    }
+    $TargetPacketRejection = Select-String `
+        -LiteralPath $ClientStdout `
+        -Pattern "OVERLAY_SESSION_DIAGNOSTIC source=electron-overlay-transport severity=warning code=target-packet-rejected pid=$HostPid" `
+        -CaseSensitive
+    if ($TargetPacketRejection) {
+        throw "The transport rejected an authenticated target packet, including a possible invalid game.input envelope: $($TargetPacketRejection.Line -join ' | ')"
     }
     $TargetDirectoryLog = Join-Path $TargetDirectory "ReShade.log"
     if (-not $ExistingCompatibleRuntime -and

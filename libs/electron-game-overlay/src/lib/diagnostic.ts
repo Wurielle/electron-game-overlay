@@ -271,6 +271,7 @@ const PACKET_REJECTION_EVENT_BY_REASON = {
   'invalid-target-surface-removal': 'game.target.surface.removed',
   'invalid-graphics-fps': 'game.graphics.fps',
   'invalid-runtime-diagnostic': 'game.diagnostic',
+  'invalid-game-input': 'game.input',
 } as const;
 
 export type OverlayPacketRejectionReason =
