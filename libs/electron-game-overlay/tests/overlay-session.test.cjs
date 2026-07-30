@@ -248,6 +248,232 @@ test('consumer event failures cannot corrupt telemetry or interrupt internal upd
   assert.equal(warnings.length, 2);
 });
 
+test('emits canonical immutable diagnostics and isolates consumer failures', (t) => {
+  const session = new OverlaySession({});
+  const warnings = [];
+  const diagnostics = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+
+  session.on('diagnostic', () => {
+    throw new Error('diagnostic listener failure');
+  });
+  session.on('diagnostic', (diagnostic) => diagnostics.push(diagnostic));
+
+  const raw = {
+    schemaVersion: 1,
+    source: 'electron-overlay-transport',
+    severity: 'warning',
+    code: 'target-packet-rejected',
+    message:
+      'The overlay transport rejected a packet from an authenticated target.',
+    pid: 4321,
+    context: {
+      reason: 'invalid-graphics-fps',
+      eventType: 'game.graphics.fps',
+    },
+  };
+  session.handleDiagnostic(raw);
+  raw.context.reason = 'mutated';
+
+  assert.equal(diagnostics.length, 1);
+  assert.ok(Object.isFrozen(diagnostics[0]));
+  assert.ok(Object.isFrozen(diagnostics[0].context));
+  assert.deepEqual(diagnostics[0], {
+    schemaVersion: 1,
+    source: 'electron-overlay-transport',
+    severity: 'warning',
+    code: 'target-packet-rejected',
+    message:
+      'The overlay transport rejected a packet from an authenticated target.',
+    pid: 4321,
+    context: {
+      reason: 'invalid-graphics-fps',
+      eventType: 'game.graphics.fps',
+    },
+  });
+  assert.equal(warnings.length, 1);
+
+  session.handleDiagnostic({
+    ...raw,
+    context: { nested: { token: 'must-not-escape' } },
+  });
+  session.handleDiagnostic({
+    ...raw,
+    pid: 0,
+  });
+  session.handleDiagnostic({
+    ...raw,
+    message: 'token=SUPERSECRET C:\\secret\\game.exe',
+    context: {
+      token: 'SUPERSECRET',
+      stack: 'C:\\secret\\game.exe',
+    },
+  });
+  assert.doesNotThrow(() => {
+    session.handleDiagnostic(
+      Object.defineProperty({}, 'schemaVersion', {
+        get() {
+          throw new Error('hostile diagnostic getter');
+        },
+      }),
+    );
+  });
+  assert.equal(diagnostics.length, 1, 'invalid diagnostics must be ignored');
+});
+
+test('binds diagnostic observation before backend startup without re-entry', () => {
+  const calls = [];
+  let publishDiagnostic;
+  let starts = 0;
+  const overlay = {
+    setEventCallback: () => calls.push('event-callback'),
+    setDiagnosticCallback(callback) {
+      calls.push('diagnostic-callback');
+      publishDiagnostic = callback;
+    },
+    start() {
+      starts += 1;
+      if (starts > 1) {
+        throw new Error('backend startup re-entered');
+      }
+      calls.push('start');
+      publishDiagnostic({
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        severity: 'info',
+        code: 'transport-ready',
+        message: 'The overlay loopback transport is ready.',
+        context: { port: 4242 },
+      });
+    },
+    setHotkeys() {
+      calls.push('set-hotkeys');
+    },
+    stop() {},
+  };
+  const session = new OverlaySession(overlay);
+  session.electronScreen = {
+    on() {},
+    removeListener() {},
+  };
+  const diagnostics = [];
+  session.on('diagnostic', (diagnostic) => {
+    diagnostics.push(diagnostic);
+    session.setHotkeys([]);
+  });
+
+  session.start();
+
+  assert.deepEqual(calls, [
+    'event-callback',
+    'diagnostic-callback',
+    'start',
+    'set-hotkeys',
+  ]);
+  assert.equal(starts, 1);
+  assert.equal(diagnostics[0].code, 'transport-ready');
+});
+
+test('rolls back session startup state when the backend throws', () => {
+  let starts = 0;
+  let stops = 0;
+  const overlay = {
+    setEventCallback() {},
+    start() {
+      starts += 1;
+      if (starts === 1) {
+        throw new Error('startup failed');
+      }
+    },
+    stop() {
+      stops += 1;
+    },
+  };
+  const session = new OverlaySession(overlay);
+  session.electronScreen = {
+    on() {},
+    removeListener() {},
+  };
+
+  assert.throws(() => session.start(), /startup failed/);
+  assert.equal(stops, 1);
+  assert.doesNotThrow(() => session.start());
+  assert.equal(starts, 2);
+  session.close();
+  assert.equal(stops, 2);
+});
+
+test('does not start a backend after callback registration closes the session', () => {
+  const calls = [];
+  const overlay = {
+    setEventCallback() {
+      calls.push('event-callback');
+    },
+    setDiagnosticCallback(callback) {
+      calls.push('diagnostic-callback');
+      callback({
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        code: 'transport-ready',
+        context: { port: 4242 },
+      });
+    },
+    start() {
+      calls.push('start');
+    },
+    stop() {
+      calls.push('stop');
+    },
+  };
+  const session = new OverlaySession(overlay);
+  session.on('diagnostic', () => session.close());
+
+  session.start();
+
+  assert.deepEqual(calls, ['event-callback', 'diagnostic-callback', 'stop']);
+  assert.throws(() => session.start(), /session is closed/);
+});
+
+test('removes partial screen bindings and stops after screen setup fails', () => {
+  const calls = [];
+  const overlay = {
+    setEventCallback() {},
+    start() {
+      calls.push('start');
+    },
+    stop() {
+      calls.push('stop');
+    },
+  };
+  const session = new OverlaySession(overlay);
+  session.electronScreen = {
+    on(event) {
+      calls.push(`on:${event}`);
+      if (event === 'display-metrics-changed') {
+        throw new Error('screen binding failed');
+      }
+    },
+    removeListener(event) {
+      calls.push(`off:${event}`);
+    },
+  };
+
+  assert.throws(() => session.start(), /screen binding failed/);
+  assert.deepEqual(calls, [
+    'start',
+    'on:display-added',
+    'on:display-removed',
+    'on:display-metrics-changed',
+    'off:display-removed',
+    'off:display-added',
+    'stop',
+  ]);
+});
+
 test('surface removal honors revisions and causes the default selector to fall back', () => {
   const session = new OverlaySession({});
   session.handleEvent('game.target.surface', targetSurface());

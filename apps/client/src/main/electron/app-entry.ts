@@ -22,6 +22,7 @@ import {
   isReShadeOperationError,
   ReShadeOverlayLauncher,
   type ElectronOverlayWindow,
+  type OverlayDiagnostic,
   type OverlayHotkey,
   type OverlaySession,
   type ReShadeDiagnostic,
@@ -77,6 +78,7 @@ class Application {
   private overlayStarted = false;
   private inputInterceptRequested = false;
   private inputInterceptEffective = false;
+  private latestOverlayDiagnostic: OverlayDiagnostic | null = null;
   private readonly targetInputInterceptState = new TargetInputInterceptState();
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
@@ -153,6 +155,9 @@ class Application {
     });
     this.overlaySession.on('fps', (payload) => {
       this.handleOverlayFps(payload.fps);
+    });
+    this.overlaySession.on('diagnostic', (diagnostic) => {
+      this.handleOverlayDiagnostic(diagnostic);
     });
     this.overlaySession.on('targetSurfaceChanged', () => {
       this.publishDemoState();
@@ -701,6 +706,7 @@ class Application {
         : null,
       steamAutoAttach: this.steamGameAutoAttacher?.state ?? null,
       attachment: this.reshadeAttachment,
+      diagnostic: this.latestOverlayDiagnostic,
       targetSurface,
       windows: {
         [AppWindows.demoControlOverlay]:
@@ -729,6 +735,22 @@ class Application {
         window.webContents.send('fps', fps);
       }
     }
+  }
+
+  private handleOverlayDiagnostic(diagnostic: OverlayDiagnostic) {
+    this.latestOverlayDiagnostic = diagnostic;
+    const marker =
+      `OVERLAY_SESSION_DIAGNOSTIC source=${diagnostic.source} ` +
+      `severity=${diagnostic.severity} code=${diagnostic.code}` +
+      `${diagnostic.pid === undefined ? '' : ` pid=${diagnostic.pid}`}`;
+    if (diagnostic.severity === 'error') {
+      console.error(marker, diagnostic.message, diagnostic.context ?? {});
+    } else if (diagnostic.severity === 'warning') {
+      console.warn(marker, diagnostic.message, diagnostic.context ?? {});
+    } else {
+      console.log(marker, diagnostic.message, diagnostic.context ?? {});
+    }
+    this.publishDemoState();
   }
 
   private handleOverlayHotkeyDown(name: string) {
@@ -770,6 +792,7 @@ class Application {
     }
 
     if (event === 'game.process') {
+      this.latestOverlayDiagnostic = null;
       const pid = getNativeEventPid(payload);
       if (pid !== null) {
         this.targetInputInterceptState.connect(pid);

@@ -204,6 +204,22 @@ promise zero remote coordination. An `indeterminate` failure keeps it
 `blocked`. Staged-run failures can include paths to the injector stdout/stderr
 and `ReShade.log` evidence.
 
+Asynchronous session observations use a separate typed event:
+
+```ts
+session.on('diagnostic', (diagnostic) => {
+  console.log(diagnostic.source, diagnostic.severity, diagnostic.code);
+});
+```
+
+`OverlayDiagnostic` is immutable and structured-clone-safe. Its optional PID is
+authoritative and its context is limited to eight primitive values. The current
+loopback transport uses fixed redacted messages and excludes credentials, raw
+packets, executable paths, stacks, and arbitrary remote error text. Each
+transport diagnostic code is limited to eight observations per minute. These
+observations complement rather than replace the terminal
+`ReShadeOperationError` attachment contract.
+
 For an exact PID, the injector inspects loaded modules before remote allocation
 or thread creation. Exact `ReShadeVersion` identifies a candidate, but reuse
 requires this project's private host ABI 1 and an `OPEN` add-on gate.

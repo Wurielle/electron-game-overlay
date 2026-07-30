@@ -316,6 +316,14 @@
         white-space: nowrap;
       }
 
+      .hint[data-severity='warning'] {
+        color: #ffd784;
+      }
+
+      .hint[data-severity='error'] {
+        color: #ff9797;
+      }
+
       .launcher {
         display: none;
         margin-top: 11px;
@@ -593,6 +601,7 @@
           error: null,
           diagnostic: null,
         },
+        diagnostic: null,
         targetSurface: null,
         windows: {},
         presentation: null,
@@ -672,11 +681,15 @@
         elements.shortcut.textContent = shortcut;
         elements.inputState.textContent = inputState.label;
         elements.inputDetail.textContent = inputState.detail;
-        elements.hint.textContent = expanded
-          ? state.inputInterceptEffective
-            ? 'Select a test window or press the shortcut to return input'
-            : 'Waiting for the injected overlay to capture input…'
-          : `Press ${shortcut} to capture input and open controls`;
+        const diagnostic = visibleDiagnostic();
+        elements.hint.dataset.severity = diagnostic?.severity || '';
+        elements.hint.textContent = diagnostic
+          ? `${diagnostic.code} · ${diagnostic.pid ? `PID ${diagnostic.pid}` : 'session'}: ${diagnostic.message}`
+          : expanded
+            ? state.inputInterceptEffective
+              ? 'Select a test window or press the shortcut to return input'
+              : 'Waiting for the injected overlay to capture input…'
+            : `Press ${shortcut} to capture input and open controls`;
 
         renderTarget();
 
@@ -733,6 +746,17 @@
               label: 'Passthrough',
               detail: 'Game receives input',
             };
+      }
+
+      function visibleDiagnostic() {
+        const diagnostic = state.diagnostic;
+        return diagnostic &&
+          (diagnostic.severity === 'warning' ||
+            diagnostic.severity === 'error') &&
+          typeof diagnostic.code === 'string' &&
+          typeof diagnostic.message === 'string'
+          ? diagnostic
+          : null;
       }
 
       function renderTarget() {

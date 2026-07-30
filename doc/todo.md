@@ -122,6 +122,24 @@ acceptance evidence and are intentionally preserved as records.
     gate, arbitrary real-game startup timing, or interactions with an existing
     effect/add-on set. Prove those cases or produce clear fail-closed
     diagnostics without modifying the installation.
+  - Use loaded-module capability inspection as the authoritative runtime
+    decision; proxy-like files beside the executable are only prelaunch
+    discovery hints. A validated official on-disk ReShade hint takes precedence
+    before launch: stage the official-ABI add-on and suppress project-runtime
+    injection for that launch, then validate the actual loaded host and its
+    capabilities. Only inject the project runtime when neither a loaded ReShade
+    nor a validated official prelaunch hint exists. Reuse a project-compatible
+    runtime while its private gate is open.
+  - Never silently replace an existing ReShade proxy, configuration, effects,
+    or add-ons. If an official host has already completed add-on initialization,
+    leave the current process untouched and prepare/report the integration for
+    its next launch unless ReShade gains a supported dynamic-registration
+    lifecycle.
+  - Pursue upstream support for both a passive post-suppression input event and
+    a race-free add-on registration capability. Until those exist, the official
+    build is a prelaunch/partial integration path; the project fork remains the
+    full Electron input-routing host. Add explicit host-version/capability
+    negotiation before considering the two paths interchangeable.
   - Resolve host installation/base-path ownership. The current existing-mode
     `reshadeLogPath` is inferred beside the host module, while ReShade
     `[INSTALL] BasePath` may put the authoritative log elsewhere.
@@ -218,8 +236,18 @@ they are not the active production-host roadmap.
     agent-driven debugging and user support slow.
   - Desired direction: make every layer report structured diagnostics with enough context to identify where the failure occurred and what the next action should be.
   - The completed launcher/injector slice above does not yet add diagnostic
-    events for transport packet handling, window/frame publication, graphics
-    resource creation, input forwarding, or other injected-runtime internals.
+    events for window/frame publication, graphics resource creation, input
+    forwarding, or other injected-runtime internals. The Node transport now
+    diagnoses rejected authenticated packets, but native packet production and
+    rendering failures remain visible only through existing logs.
+  - The SDK now exposes a frozen `session.on("diagnostic")` contract. The Node
+    loopback transport emits bounded, redacted startup/discovery,
+    authorization/authentication, authenticated-packet, socket, and
+    process-inspection observations; the demo retains the latest record, logs
+    it, and shows warnings/errors in the always-visible control dock. Discovery
+    credentials, raw packets, executable paths, stacks, and arbitrary error
+    messages are excluded. Authenticated native `game.diagnostic` publication
+    and graphics/window/input codes remain a later vertical slice.
   - Suggested logging layers:
     - `electron-game-overlay`: typed events such as `session.on("diagnostic", ...)`, attach results, window registration state, frame send failures, focus/input forwarding failures.
     - `electron-overlay-transport`: rendezvous, authentication, producer/target

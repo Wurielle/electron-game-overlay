@@ -76,6 +76,7 @@ export interface NativeOverlay {
   whenReady(): Promise<unknown>;
   authorizeTarget?(pid: number, discoveryPath: string): Promise<Disposable>;
   stop(): void;
+  setDiagnosticCallback?(callback: (diagnostic: unknown) => void): void;
   setEventCallback(callback: (event: string, ...args: any[]) => void): void;
   setHotkeys(hotkeys: NativeHotkey[]): void;
   sendCommand(command: NativeOverlayCommand): void;

@@ -29,7 +29,46 @@ export type OverlayProcessTarget = (
   includeMinimized?: boolean;
 };
 
+export type OverlayDiagnosticSource =
+  | 'electron-game-overlay'
+  | 'electron-overlay-transport'
+  | 'electron-game-overlay-runtime';
+
+export type OverlayDiagnosticSeverity = 'info' | 'warning' | 'error';
+
+export type OverlayDiagnosticCode =
+  | 'transport-ready'
+  | 'transport-listener-failed'
+  | 'transport-discovery-failed'
+  | 'target-authorized'
+  | 'target-authorization-failed'
+  | 'target-authentication-rejected'
+  | 'target-authenticated'
+  | 'target-packet-rejected'
+  | 'target-socket-error'
+  | 'target-process-inspection-failed';
+
+export type OverlayDiagnosticContextValue = string | number | boolean | null;
+
+/**
+ * An immutable asynchronous observation from a running overlay session.
+ *
+ * Attachment failures remain `ReShadeDiagnostic`. Current codes cover the
+ * loopback transport; the same bounded contract is intended for later runtime,
+ * graphics, window, and input observations.
+ */
+export type OverlayDiagnostic = Readonly<{
+  schemaVersion: 1;
+  source: OverlayDiagnosticSource;
+  severity: OverlayDiagnosticSeverity;
+  code: OverlayDiagnosticCode;
+  message: string;
+  pid?: number;
+  context?: Readonly<Record<string, OverlayDiagnosticContextValue>>;
+}>;
+
 export type OverlaySessionEventMap = {
+  diagnostic: OverlayDiagnostic;
   fps: OverlayGraphicsFps;
   hotkeyDown: {
     name: string;

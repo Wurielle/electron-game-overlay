@@ -9,6 +9,11 @@ import {
   type NativeInputMessage,
   type TranslatedInputEvent,
 } from './input-translation.js';
+import {
+  normalizeOverlayDiagnosticErrorCode,
+  parseOverlayDiagnostic,
+  type OverlayPacketRejectionReason,
+} from './diagnostic.js';
 import type {
   NativeHotkey,
   NativeOverlay,
@@ -21,6 +26,11 @@ import {
   parseOverlayTargetSurface,
   parseOverlayTargetSurfaceRemoved,
 } from './target-surface.js';
+import type {
+  OverlayDiagnostic,
+  OverlayDiagnosticCode,
+  OverlayDiagnosticContextValue,
+} from './types.js';
 
 export const OVERLAY_TRANSPORT_PROTOCOL_VERSION = 1;
 export const OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME =
@@ -39,6 +49,9 @@ const DEFAULT_PROCESS_EXIT_POLL_INTERVAL_MS = 250;
 const MIN_PROCESS_EXIT_POLL_INTERVAL_MS = 1;
 const MAX_PROCESS_EXIT_POLL_INTERVAL_MS = 60_000;
 const MAX_TOKEN_ALLOCATION_ATTEMPTS = 16;
+const MAX_PENDING_DIAGNOSTICS = 32;
+const MAX_DIAGNOSTICS_PER_CODE = 8;
+const DIAGNOSTIC_RATE_WINDOW_MS = 60_000;
 
 export interface OverlayDiscoveryRecord {
   version: 1;
@@ -177,12 +190,15 @@ interface ClientState {
   path?: string;
   targetAuthorization?: TargetAuthorization;
   inputTranslator?: InputEventTranslator;
+  packetRejectionDiagnosed?: boolean;
+  socketErrorDiagnosed?: boolean;
 }
 
 interface ProcessExitWatch {
   pid: number;
   path: string;
   timer?: ReturnType<typeof setTimeout>;
+  inspectionFailureDiagnosed?: boolean;
 }
 
 interface TargetAuthorization {
@@ -193,6 +209,11 @@ interface TargetAuthorization {
   record: OverlayDiscoveryRecord;
   references: number;
   generation: number;
+}
+
+interface DiagnosticRateState {
+  windowStartedAt: number;
+  count: number;
 }
 
 function defaultIsProcessAlive(pid: number): boolean {
@@ -283,6 +304,16 @@ function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function errorCodeContext(
+  error: unknown,
+): Readonly<Record<string, OverlayDiagnosticContextValue>> | undefined {
+  if (!isJsonObject(error)) {
+    return undefined;
+  }
+  const errorCode = normalizeOverlayDiagnosticErrorCode(error.code);
+  return errorCode === undefined ? undefined : { errorCode };
+}
+
 function isValidToken(token: string): boolean {
   return /^[a-fA-F0-9]{64}$/.test(token);
 }
@@ -371,8 +402,16 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   >();
   private readonly fallbackInputTranslator = new InputEventTranslator();
   private readonly pendingEvents: PendingEvent[] = [];
+  private readonly pendingDiagnostics: OverlayDiagnostic[] = [];
+  private readonly diagnosticRates = new Map<
+    OverlayDiagnosticCode,
+    DiagnosticRateState
+  >();
   private server: Server | undefined;
   private callback: ((event: string, ...args: any[]) => void) | undefined;
+  private diagnosticCallback:
+    | ((diagnostic: OverlayDiagnostic) => void)
+    | undefined;
   private hotkeys: NativeHotkey[] = [];
   private showFps = false;
   private fpsPosition = 1;
@@ -408,6 +447,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return;
     }
 
+    this.diagnosticRates.clear();
     const token = this.allocateToken();
 
     const generation = ++this.generation;
@@ -421,6 +461,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
           if (this.generation !== generation) {
             return;
           }
+          this.publishDiagnostic({
+            code: 'transport-listener-failed',
+            context: errorCodeContext(error),
+          });
           this.server = undefined;
           this.token = undefined;
           this.readyPromise = undefined;
@@ -432,8 +476,12 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         server.once('error', handleStartupError);
         server.listen(0, LOOPBACK_HOST, () => {
           server.off('error', handleStartupError);
-          server.on('error', () => {
+          server.on('error', (error) => {
             if (this.generation === generation && this.server === server) {
+              this.publishDiagnostic({
+                code: 'transport-listener-failed',
+                context: errorCodeContext(error),
+              });
               this.stop();
             }
           });
@@ -592,7 +640,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.latestCursor = undefined;
     this.inputIntercept = undefined;
     this.pendingEvents.length = 0;
+    this.pendingDiagnostics.length = 0;
     this.callback = undefined;
+    this.diagnosticCallback = undefined;
+    this.diagnosticRates.clear();
     this.fallbackInputTranslator.reset();
 
     if (priorRecord) {
@@ -620,6 +671,18 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       const event = this.pendingEvents.shift();
       if (event) {
         callback(event.event, event.payload);
+      }
+    }
+  }
+
+  public setDiagnosticCallback(
+    callback: (diagnostic: OverlayDiagnostic) => void,
+  ): void {
+    this.diagnosticCallback = callback;
+    while (this.pendingDiagnostics.length > 0) {
+      const diagnostic = this.pendingDiagnostics.shift();
+      if (diagnostic) {
+        this.deliverDiagnostic(diagnostic);
       }
     }
   }
@@ -857,6 +920,13 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       await this.publishDiscovery(authorization.routeIntentPath, record);
       await this.publishDiscovery(discoveryPath, record);
     } catch (error) {
+      if (generation === this.generation) {
+        this.publishDiagnostic({
+          code: 'target-authorization-failed',
+          pid,
+          context: errorCodeContext(error),
+        });
+      }
       if (this.targetAuthorizationsByPid.get(pid) === authorization) {
         this.targetAuthorizationsByPid.delete(pid);
       }
@@ -900,6 +970,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       }
       existingClient.socket.destroy();
     }
+    this.publishDiagnostic({
+      code: 'target-authorized',
+      pid,
+    });
     return authorization;
   }
 
@@ -966,7 +1040,17 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       this.discoveryRecord = record;
       this.rejectReady = undefined;
       resolve(record);
+      this.publishDiagnostic({
+        code: 'transport-ready',
+        context: { port: record.port },
+      });
     } catch (error) {
+      if (this.generation === generation) {
+        this.publishDiagnostic({
+          code: 'transport-discovery-failed',
+          context: errorCodeContext(error),
+        });
+      }
       reject(error instanceof Error ? error : new Error(String(error)));
       if (this.generation === generation) {
         this.stop();
@@ -1044,7 +1128,21 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.clients.add(client);
     socket.on('data', (chunk: Buffer) => this.receiveClientData(client, chunk));
     socket.on('drain', () => client.writer.handleDrain());
-    socket.on('error', () => socket.destroy());
+    socket.on('error', (error) => {
+      if (
+        client.authenticated &&
+        client.pid !== undefined &&
+        !client.socketErrorDiagnosed
+      ) {
+        client.socketErrorDiagnosed = true;
+        this.publishDiagnostic({
+          code: 'target-socket-error',
+          pid: client.pid,
+          context: errorCodeContext(error),
+        });
+      }
+      socket.destroy();
+    });
     socket.on('close', () => {
       const isAuthoritativeClient =
         client.authenticated &&
@@ -1080,6 +1178,12 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       const bodyBytes = client.receiveBuffer.readUInt32LE(0);
       const kind = client.receiveBuffer.readUInt8(4);
       if (kind !== PACKET_KIND_JSON || bodyBytes > MAX_JSON_BODY_BYTES) {
+        this.rejectAuthenticatedPacket(
+          client,
+          kind !== PACKET_KIND_JSON
+            ? 'unsupported-packet-kind'
+            : 'json-body-too-large',
+        );
         client.socket.destroy();
         return;
       }
@@ -1098,7 +1202,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       try {
         accepted = this.receiveJsonMessage(client, body);
       } catch {
-        accepted = false;
+        accepted = this.rejectAuthenticatedPacket(
+          client,
+          'packet-handler-failed',
+        );
       }
       if (!accepted) {
         client.socket.destroy();
@@ -1110,6 +1217,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       client.receiveBuffer.byteLength >
       MAX_JSON_BODY_BYTES + PACKET_PREFIX_BYTES
     ) {
+      this.rejectAuthenticatedPacket(client, 'receive-buffer-too-large');
       client.socket.destroy();
     }
   }
@@ -1119,10 +1227,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     try {
       parsed = JSON.parse(body.toString('utf8'));
     } catch {
-      return false;
+      return this.rejectAuthenticatedPacket(client, 'malformed-json');
     }
     if (!isJsonObject(parsed) || typeof parsed.type !== 'string') {
-      return false;
+      return this.rejectAuthenticatedPacket(client, 'invalid-message-shape');
     }
 
     if (!client.authenticated) {
@@ -1134,7 +1242,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       parsed.type === 'game.process.disconnected' ||
       parsed.type === 'game.process.transport-lost'
     ) {
-      return false;
+      return this.rejectAuthenticatedPacket(client, 'reserved-event');
     }
 
     const eventName = parsed.type;
@@ -1143,7 +1251,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     if (eventName === 'game.target.surface') {
       const surface = parseOverlayTargetSurface(authoritativePayload);
       if (!surface) {
-        return false;
+        return this.rejectAuthenticatedPacket(
+          client,
+          'invalid-target-surface',
+          eventName,
+        );
       }
       this.emitEvent(eventName, { ...surface });
       return true;
@@ -1151,7 +1263,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     if (eventName === 'game.target.surface.removed') {
       const removed = parseOverlayTargetSurfaceRemoved(authoritativePayload);
       if (!removed) {
-        return false;
+        return this.rejectAuthenticatedPacket(
+          client,
+          'invalid-target-surface-removal',
+          eventName,
+        );
       }
       this.emitEvent(eventName, { ...removed });
       return true;
@@ -1159,7 +1275,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     if (eventName === 'game.graphics.fps') {
       const fps = parseOverlayGraphicsFps(authoritativePayload);
       if (!fps) {
-        return false;
+        return this.rejectAuthenticatedPacket(
+          client,
+          'invalid-graphics-fps',
+          eventName,
+        );
       }
       this.emitEvent(eventName, { ...fps });
       return true;
@@ -1193,6 +1313,13 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       ? tokensEqual(hello.token, targetAuthorization.record.token)
       : this.token !== undefined && tokensEqual(hello.token, this.token);
     if (!tokenMatches) {
+      this.publishDiagnostic({
+        code: 'target-authentication-rejected',
+        ...(targetAuthorization ? { pid: targetAuthorization.pid } : {}),
+        context: {
+          scope: targetAuthorization ? 'targeted' : 'global',
+        },
+      });
       return false;
     }
 
@@ -1219,6 +1346,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.emitEvent('game.process', {
       pid: hello.pid,
       path: hello.path,
+    });
+    this.publishDiagnostic({
+      code: 'target-authenticated',
+      pid: hello.pid,
     });
     return true;
   }
@@ -1264,6 +1395,76 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
   }
 
+  private publishDiagnostic(diagnostic: {
+    code: OverlayDiagnosticCode;
+    pid?: number;
+    context?: Readonly<Record<string, OverlayDiagnosticContextValue>>;
+  }): void {
+    const now = Date.now();
+    let rate = this.diagnosticRates.get(diagnostic.code);
+    if (
+      !rate ||
+      now - rate.windowStartedAt >= DIAGNOSTIC_RATE_WINDOW_MS ||
+      now < rate.windowStartedAt
+    ) {
+      rate = { windowStartedAt: now, count: 0 };
+      this.diagnosticRates.set(diagnostic.code, rate);
+    }
+    if (rate.count >= MAX_DIAGNOSTICS_PER_CODE) {
+      return;
+    }
+
+    const canonical = parseOverlayDiagnostic({
+      schemaVersion: 1,
+      source: 'electron-overlay-transport',
+      ...diagnostic,
+    });
+    if (!canonical) {
+      return;
+    }
+
+    rate.count += 1;
+    if (this.diagnosticCallback) {
+      this.deliverDiagnostic(canonical);
+      return;
+    }
+    if (this.pendingDiagnostics.length >= MAX_PENDING_DIAGNOSTICS) {
+      this.pendingDiagnostics.shift();
+    }
+    this.pendingDiagnostics.push(canonical);
+  }
+
+  private deliverDiagnostic(diagnostic: OverlayDiagnostic): void {
+    try {
+      this.diagnosticCallback?.(diagnostic);
+    } catch {
+      // Diagnostic consumers cannot interrupt transport or target lifecycle.
+    }
+  }
+
+  private rejectAuthenticatedPacket(
+    client: ClientState,
+    reason: OverlayPacketRejectionReason,
+    eventType?: string,
+  ): false {
+    if (
+      client.authenticated &&
+      client.pid !== undefined &&
+      !client.packetRejectionDiagnosed
+    ) {
+      client.packetRejectionDiagnosed = true;
+      this.publishDiagnostic({
+        code: 'target-packet-rejected',
+        pid: client.pid,
+        context: {
+          reason,
+          ...(eventType === undefined ? {} : { eventType }),
+        },
+      });
+    }
+    return false;
+  }
+
   private emitLifecycleEvent(event: string, payload: JsonObject): void {
     try {
       this.emitEvent(event, payload);
@@ -1290,9 +1491,17 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     let alive = true;
     try {
       alive = this.isProcessAlive(watch.pid);
-    } catch {
+    } catch (error) {
       // Failure to inspect a process is not proof that it exited.
       alive = true;
+      if (!watch.inspectionFailureDiagnosed) {
+        watch.inspectionFailureDiagnosed = true;
+        this.publishDiagnostic({
+          code: 'target-process-inspection-failed',
+          pid: watch.pid,
+          context: errorCodeContext(error),
+        });
+      }
     }
     if (!alive) {
       this.processExitWatchesByPid.delete(watch.pid);

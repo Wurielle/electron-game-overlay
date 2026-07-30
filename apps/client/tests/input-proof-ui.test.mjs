@@ -185,6 +185,29 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
 });
 
+test('the client retains and displays bounded session diagnostics', () => {
+  const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
+  const renderer = readClientFile('src', 'renderer', 'main.ts');
+  const controlOverlay = readClientFile(
+    'public',
+    'index',
+    'demo-control-overlay.html',
+  );
+
+  assert.match(appEntry, /type OverlayDiagnostic/);
+  assert.match(appEntry, /this\.overlaySession\.on\('diagnostic'/);
+  assert.match(appEntry, /this\.latestOverlayDiagnostic = diagnostic/);
+  assert.match(appEntry, /OVERLAY_SESSION_DIAGNOSTIC/);
+  assert.match(appEntry, /diagnostic: this\.latestOverlayDiagnostic/);
+  assert.match(renderer, /diagnostic: OverlayDiagnostic \| null/);
+  assert.match(renderer, /formatOverlayDiagnosticTag/);
+  assert.match(renderer, /diagnostic\.severity !== 'info'/);
+  assert.match(controlOverlay, /function visibleDiagnostic\(\)/);
+  assert.match(controlOverlay, /elements\.hint\.dataset\.severity/);
+  assert.match(controlOverlay, /diagnostic\.code\} · \$\{diagnostic\.pid/);
+  assert.match(controlOverlay, /: \$\{diagnostic\.message\}/);
+});
+
 test('the demo prearms Steam injection and still attempts every detected executable by exact PID', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
   const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
@@ -225,10 +248,7 @@ test('the demo prearms Steam injection and still attempts every detected executa
     /launcher\.attach[\s\S]{0,120}?processName,[\s\S]{0,40}?pid/,
   );
   assert.doesNotMatch(autoAttacher, /STEAM_AUTO_ATTACH_EXCLUDED/);
-  assert.match(
-    autoAttacher,
-    /pathContains:\s*STEAM_APPS_PATH_FRAGMENT/,
-  );
+  assert.match(autoAttacher, /pathContains:\s*STEAM_APPS_PATH_FRAGMENT/);
   assert.doesNotMatch(autoAttacher, /excludedProcessNames/);
   assert.match(autoAttacher, /isReShadeOperationError\(error\)/);
   assert.match(autoAttacher, /diagnostic: ReShadeDiagnostic \| null/);

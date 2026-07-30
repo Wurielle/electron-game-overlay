@@ -198,6 +198,28 @@ no bounded remote coordination occurred. `indeterminate` retains the existing
 fail-closed `blocked` behavior. When a run was staged, the diagnostic may
 include the run directory and injector stdout, stderr, and ReShade log paths.
 
+Running sessions expose a separate immutable diagnostic event for asynchronous
+transport observations:
+
+```ts
+session.on('diagnostic', (diagnostic) => {
+  console.log(
+    diagnostic.source,
+    diagnostic.severity,
+    diagnostic.code,
+    diagnostic.pid,
+  );
+});
+```
+
+`OverlayDiagnostic` is bounded, schema-versioned, and structured-clone-safe.
+Its context accepts at most eight primitive values. Transport diagnostics never
+include discovery credentials, raw packets, executable paths, stacks, or
+arbitrary remote error text. Each code is limited to eight observations per
+minute. This event does not replace `ReShadeOperationError`: attachment errors retain their
+retry-safety and evidence contract, while session diagnostics describe activity
+after the overlay transport starts.
+
 Exact-PID injection performs a bounded module preflight before allocating or
 writing target memory. A loaded module becomes a ReShade candidate only when
 its PE export table contains exact `ReShadeVersion`. Reuse then requires private

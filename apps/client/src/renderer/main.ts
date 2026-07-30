@@ -1,5 +1,8 @@
 import { ipcRenderer, IpcRendererEvent } from 'electron';
-import type { ReShadeDiagnostic } from 'electron-game-overlay';
+import type {
+  OverlayDiagnostic,
+  ReShadeDiagnostic,
+} from 'electron-game-overlay';
 
 type DemoState = {
   overlayStarted: boolean;
@@ -32,6 +35,7 @@ type DemoState = {
     error: string | null;
     diagnostic: ReShadeDiagnostic | null;
   };
+  diagnostic: OverlayDiagnostic | null;
   windows: Record<string, boolean>;
 };
 
@@ -59,6 +63,7 @@ let state: DemoState = {
     error: null,
     diagnostic: null,
   },
+  diagnostic: null,
   windows: {},
 };
 
@@ -258,8 +263,13 @@ function renderInjectAvailability() {
 function renderAttachmentStatus() {
   statusElement.classList.toggle(
     'error',
-    Boolean(state.steamAutoAttach?.watcherError || state.attachment.error),
+    Boolean(
+      state.steamAutoAttach?.watcherError ||
+        state.attachment.error ||
+        state.diagnostic?.severity === 'error',
+    ),
   );
+  const sessionDiagnosticTag = formatOverlayDiagnosticTag(state.diagnostic);
 
   if (!state.runtime) {
     statusElement.textContent =
@@ -292,8 +302,8 @@ function renderAttachmentStatus() {
     )?.diagnostic;
     const diagnosticTag = formatDiagnosticTag(failedDiagnostic);
     statusElement.textContent = steamAutoAttach.targets.length
-      ? `Watching ${steamAutoAttach.pattern} · ${connected} connected · ${attaching} attaching · ${failed} failed${diagnosticTag ? ` · ${diagnosticTag}` : ''}`
-      : `Watching ${steamAutoAttach.pattern}. Launch a Steam game to inject automatically.`;
+      ? `Watching ${steamAutoAttach.pattern} · ${connected} connected · ${attaching} attaching · ${failed} failed${diagnosticTag ? ` · ${diagnosticTag}` : ''}${sessionDiagnosticTag ? ` · ${sessionDiagnosticTag}` : ''}`
+      : `Watching ${steamAutoAttach.pattern}. Launch a Steam game to inject automatically.${sessionDiagnosticTag ? ` ${sessionDiagnosticTag}` : ''}`;
     return;
   }
 
@@ -313,7 +323,7 @@ function renderAttachmentStatus() {
   }
 
   if (state.attachment.phase === 'connected') {
-    statusElement.textContent = `Connected to ${state.attachment.processName} (PID ${state.attachment.pid}) with ReShade`;
+    statusElement.textContent = `Connected to ${state.attachment.processName} (PID ${state.attachment.pid}) with ReShade${sessionDiagnosticTag ? ` · ${sessionDiagnosticTag}` : ''}`;
     return;
   }
 
@@ -322,7 +332,7 @@ function renderAttachmentStatus() {
     return;
   }
 
-  statusElement.textContent = `${state.overlayStarted ? 'Session ready' : 'Session idle'} · ReShade`;
+  statusElement.textContent = `${state.overlayStarted ? 'Session ready' : 'Session idle'} · ReShade${sessionDiagnosticTag ? ` · ${sessionDiagnosticTag}` : ''}`;
 }
 
 function getErrorMessage(error: unknown) {
@@ -333,6 +343,16 @@ function formatDiagnosticTag(
   diagnostic: ReShadeDiagnostic | null | undefined,
 ): string {
   return diagnostic ? `${diagnostic.stage}/${diagnostic.code}` : '';
+}
+
+function formatOverlayDiagnosticTag(
+  diagnostic: OverlayDiagnostic | null | undefined,
+): string {
+  return diagnostic && diagnostic.severity !== 'info'
+    ? `${diagnostic.source}/${diagnostic.code}${
+        diagnostic.pid === undefined ? ' (session)' : ` (PID ${diagnostic.pid})`
+      }`
+    : '';
 }
 
 function renderOverlayButton(

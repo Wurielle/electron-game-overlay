@@ -350,6 +350,7 @@ test('invalid authentication is closed without receiving a snapshot', async (t) 
     discoveryPath: path.join(tempDirectory, 'transport.json'),
     tokenFactory: () => TOKEN,
   });
+  const diagnostics = [];
   let socket;
   t.after(async () => {
     socket?.destroy();
@@ -357,20 +358,46 @@ test('invalid authentication is closed without receiving a snapshot', async (t) 
     await rm(tempDirectory, { recursive: true, force: true });
   });
 
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
   transport.start();
   const record = await transport.whenReady();
-  socket = await connect(record.port);
-  const closed = new Promise((resolve) => socket.once('close', resolve));
-  socket.write(
-    encodeJsonTransportPacket({
-      type: 'game.process',
-      protocolVersion: 1,
-      token: 'cd'.repeat(32),
-      pid: 4321,
-      path: 'bad.exe',
-    }),
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    socket = await connect(record.port);
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: 'cd'.repeat(32),
+        pid: 4321,
+        path: 'bad.exe',
+      }),
+    );
+    await closed;
+  }
+  const rejected = diagnostics.filter(
+    ({ code }) => code === 'target-authentication-rejected',
   );
-  await closed;
+  assert.equal(
+    rejected.length,
+    8,
+    'repeated rejected clients must hit the per-code diagnostic bound',
+  );
+  assert.deepEqual(rejected[0], {
+    schemaVersion: 1,
+    source: 'electron-overlay-transport',
+    severity: 'warning',
+    code: 'target-authentication-rejected',
+    message: 'An overlay target presented an invalid transport credential.',
+    context: { scope: 'global' },
+  });
+  assert.equal(
+    JSON.stringify(rejected).includes('cd'.repeat(32)),
+    false,
+    'diagnostics must not expose rejected credentials',
+  );
 });
 
 test('run-local credentials isolate simultaneous exact-PID targets', async (t) => {
@@ -582,6 +609,7 @@ test('authenticated surface and FPS telemetry is validated with an authoritative
     isProcessAlive: () => true,
   });
   const events = [];
+  const diagnostics = [];
   let socket;
   t.after(async () => {
     socket?.destroy();
@@ -591,6 +619,9 @@ test('authenticated surface and FPS telemetry is validated with an authoritative
 
   transport.setEventCallback((event, payload) => {
     events.push({ event, payload });
+  });
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
   });
   transport.start();
   const record = await transport.whenReady();
@@ -655,6 +686,24 @@ test('authenticated surface and FPS telemetry is validated with an authoritative
   await closed;
   assert.equal(events.length, 5, 'only transport loss follows malformed data');
   assert.equal(events.at(-1).event, 'game.process.transport-lost');
+  assert.deepEqual(
+    diagnostics.filter(({ code }) => code === 'target-packet-rejected'),
+    [
+      {
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        severity: 'warning',
+        code: 'target-packet-rejected',
+        message:
+          'The overlay transport rejected a packet from an authenticated target.',
+        pid: 4321,
+        context: {
+          reason: 'invalid-target-surface',
+          eventType: 'game.target.surface',
+        },
+      },
+    ],
+  );
 });
 
 test('authenticated clients cannot forge server-owned lifecycle events', async (t) => {
@@ -851,6 +900,70 @@ test('sequential same-PID reauthentication cancels exit confirmation', async (t)
         payload: { pid: 4321, path: 'C:\\games\\test.exe' },
       },
     ],
+  );
+});
+
+test('process exit inspection failures emit one bounded authoritative diagnostic', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-process-inspection-test-'),
+  );
+  let inspectionCalls = 0;
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => {
+      inspectionCalls += 1;
+      const error = new Error('sensitive process inspection detail');
+      error.code = 'EINSPECT';
+      throw error;
+    },
+    processExitPollIntervalMs: 5,
+  });
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\test.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+  socket.destroy();
+  await waitFor(() => inspectionCalls >= 3);
+  const failures = diagnostics.filter(
+    ({ code }) => code === 'target-process-inspection-failed',
+  );
+  assert.deepEqual(failures, [
+    {
+      schemaVersion: 1,
+      source: 'electron-overlay-transport',
+      severity: 'warning',
+      code: 'target-process-inspection-failed',
+      message:
+        'The overlay transport could not confirm whether a disconnected target exited.',
+      pid: 4321,
+    },
+  ]);
+  assert.equal(
+    JSON.stringify(failures).includes('sensitive process inspection detail'),
+    false,
   );
 });
 

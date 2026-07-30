@@ -1,6 +1,7 @@
 import { BrowserWindow, screen } from 'electron';
 import { physicalInputToDip } from './coordinate-space.js';
 import { toNativeCursor } from './cursor.js';
+import { parseOverlayDiagnostic } from './diagnostic.js';
 import { ElectronOverlayWindow } from './electron-overlay-window.js';
 import {
   createProcessInjectionUnavailableError,
@@ -38,6 +39,7 @@ import type {
   CreateElectronOverlayWindowOptions,
   ElectronOverlayWindowFollowTargetOptions,
   ElectronOverlayWindowOptions,
+  OverlayDiagnostic,
   OverlayHotkey,
   OverlayProcessAttachResult,
   OverlayProcessTarget,
@@ -143,13 +145,47 @@ export class OverlaySession {
       return;
     }
 
-    this.overlay.start();
-    this.overlay.setEventCallback((event: string, payload: any) => {
-      this.handleEvent(event, payload);
-    });
-
     this.started = true;
-    this.bindScreenEvents();
+    let backendStartAttempted = false;
+    try {
+      this.overlay.setEventCallback((event: string, payload: any) => {
+        this.handleEvent(event, payload);
+      });
+      this.overlay.setDiagnosticCallback?.((diagnostic: unknown) => {
+        this.handleDiagnostic(diagnostic);
+      });
+      if (this.closed || !this.started) {
+        return;
+      }
+      backendStartAttempted = true;
+      this.overlay.start();
+      if (this.closed || !this.started) {
+        this.overlay.stop();
+        return;
+      }
+      this.bindScreenEvents();
+    } catch (error) {
+      this.started = false;
+      try {
+        this.unbindScreenEvents();
+      } catch (cleanupError) {
+        console.error(
+          'Unable to remove Electron screen listeners after overlay startup failed',
+          cleanupError,
+        );
+      }
+      if (backendStartAttempted) {
+        try {
+          this.overlay.stop();
+        } catch (cleanupError) {
+          console.error(
+            'Unable to stop the overlay backend after startup failed',
+            cleanupError,
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   /** Resolves after the authenticated overlay transport is ready for a runtime. */
@@ -661,6 +697,18 @@ export class OverlaySession {
     });
   }
 
+  private handleDiagnostic(payload: unknown) {
+    let diagnostic: OverlayDiagnostic | null = null;
+    try {
+      diagnostic = parseOverlayDiagnostic(payload);
+    } catch {
+      // A backend diagnostic is observational and cannot interrupt the session.
+    }
+    if (diagnostic) {
+      this.emitEvent('diagnostic', diagnostic);
+    }
+  }
+
   private retainTargetSurface(payload: unknown) {
     const surface = parseOverlayTargetSurface(payload);
     if (!surface) {
@@ -766,12 +814,43 @@ export class OverlaySession {
       return;
     }
 
-    this.electronScreen.on('display-added', this.handleDisplayAdded);
-    this.electronScreen.on('display-removed', this.handleDisplayRemoved);
-    this.electronScreen.on(
-      'display-metrics-changed',
-      this.handleDisplayMetricsChanged,
-    );
+    const removeRegistrations: Array<() => void> = [];
+    try {
+      this.electronScreen.on('display-added', this.handleDisplayAdded);
+      removeRegistrations.push(() =>
+        this.electronScreen.removeListener(
+          'display-added',
+          this.handleDisplayAdded,
+        ),
+      );
+      this.electronScreen.on('display-removed', this.handleDisplayRemoved);
+      removeRegistrations.push(() =>
+        this.electronScreen.removeListener(
+          'display-removed',
+          this.handleDisplayRemoved,
+        ),
+      );
+      this.electronScreen.on(
+        'display-metrics-changed',
+        this.handleDisplayMetricsChanged,
+      );
+      removeRegistrations.push(() =>
+        this.electronScreen.removeListener(
+          'display-metrics-changed',
+          this.handleDisplayMetricsChanged,
+        ),
+      );
+    } catch (error) {
+      while (removeRegistrations.length > 0) {
+        try {
+          removeRegistrations.pop()?.();
+        } catch {
+          // Preserve the registration failure; startup cleanup reports stop
+          // failures separately and the session remains retryable.
+        }
+      }
+      throw error;
+    }
     this.screenEventsBound = true;
   }
 

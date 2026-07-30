@@ -68,6 +68,14 @@ input**, to collapse the menu and return input to the game. The presentation
 dock is enabled by
 `--demo-presentation`, which `npm run dev` supplies automatically.
 
+The demo also retains the latest typed `session.on("diagnostic")` observation.
+Warnings and errors replace the dock hint until another diagnostic arrives or a
+new target authenticates. Every observation is labeled and logged with its
+source, severity, code, and authoritative PID when one exists. The SDK
+canonicalizes and bounds the records; the current loopback transport supplies
+fixed redacted messages and never includes discovery tokens, raw packets,
+executable paths, stacks, or arbitrary remote error text.
+
 The dock reads `session.targets.list()` and the typed FPS event. The main test
 window calls `followTarget({ area: 'render' })`, so target resize, display/DPI,
 and fullscreen changes resize its hidden Electron backing surface while the

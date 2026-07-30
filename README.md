@@ -90,6 +90,9 @@ session.on('targetSurfaceChanged', (surface) => {
   console.log(surface.graphicsApi, surface.renderSize);
 });
 session.on('fps', ({ pid, fps }) => console.log(pid, fps));
+session.on('diagnostic', (diagnostic) => {
+  console.log(diagnostic.source, diagnostic.code, diagnostic.pid);
+});
 
 overlayWindow.followTarget({ area: 'render' });
 ```
