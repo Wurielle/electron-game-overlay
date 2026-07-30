@@ -33,8 +33,7 @@ const RESHADE_LOG_FILE_NAME = 'ReShade.log';
 const INJECTOR_SUCCESS_MARKER = 'Injecting ReShade ... Succeeded!';
 const INJECTOR_NOT_STARTED_MARKER = 'ReShade injection not started.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
-const INJECTOR_TARGET_PID_PATTERN =
-  /^Found a matching process with PID ([1-9][0-9]*)!/m;
+const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const INJECTOR_TARGET_PATH_PATTERN = /^Matched executable path: (.+)$/m;
 const REQUEST_TIMEOUT_MS = 120_000;
 const TARGET_PROOF_TIMEOUT_MS = 120_000;
@@ -111,11 +110,15 @@ export type ReShadeInvocation = Readonly<{
   workingDirectory: string;
 }>;
 
+export type ReShadeRuntimeMode = 'injected-runtime' | 'existing-runtime';
+
 export type ReShadeLaunchResult = Readonly<{
   processName: string;
   selectedPath?: string;
   targetLabel: string;
   injectorTargetPid: number;
+  runtimeMode: ReShadeRuntimeMode;
+  hostRuntimePath?: string;
   runDirectory: string;
   injectorStdoutPath: string;
   injectorStderrPath: string;
@@ -180,6 +183,11 @@ export type ReShadeAttachmentState =
   | 'connected'
   | 'blocked';
 
+/**
+ * `definite-safe` means a retry cannot duplicate a loaded ReShade runtime or
+ * add-on payload. It does not promise that no bounded remote coordination,
+ * allocation, or loader thread was attempted.
+ */
 export type ReShadeRetrySafety = 'definite-safe' | 'indeterminate';
 
 export type ReShadeDiagnosticStage =
@@ -194,7 +202,11 @@ export type ReShadeDiagnosticCode =
   | 'target-injection-already-claimed'
   | 'target-injection-claim-failed'
   | 'target-runtime-conflict'
+  | 'target-runtime-incompatible'
+  | 'target-runtime-reuse-too-late'
+  | 'target-runtime-reuse-raced'
   | 'target-module-inspection-failed'
+  | 'existing-runtime-addon-load-failed'
   | 'injector-start-failed'
   | 'injector-evidence-write-failed'
   | 'injector-failed'
@@ -261,12 +273,43 @@ type InjectorPreflightDiagnostic = Readonly<{
     | 'target-injection-already-claimed'
     | 'target-injection-claim-failed'
     | 'target-runtime-conflict'
+    | 'target-runtime-incompatible'
+    | 'target-runtime-reuse-too-late'
+    | 'target-runtime-reuse-raced'
     | 'target-module-inspection-failed';
   pid: number;
   injectionStarted: false;
   modulePath?: string;
   windowsErrorCode?: number;
 }>;
+
+type InjectorExistingRuntimeAddonLoadDiagnostic = Readonly<{
+  schemaVersion: 1;
+  stage: 'existing-runtime-addon-load';
+  code: 'existing-runtime-addon-load-failed';
+  pid: number;
+  injectionStarted: true;
+  modulePath?: string;
+  windowsErrorCode?: number;
+}>;
+
+type InjectorDiagnostic =
+  | InjectorPreflightDiagnostic
+  | InjectorExistingRuntimeAddonLoadDiagnostic;
+
+type InjectorResult =
+  | Readonly<{
+      schemaVersion: 1;
+      pid: number;
+      runtimeMode: 'injected-runtime';
+    }>
+  | Readonly<{
+      schemaVersion: 1;
+      pid: number;
+      runtimeMode: 'existing-runtime';
+      runtimeModulePath: string;
+      hostAbi: 1;
+    }>;
 
 type ReShadeTargetConnection = Readonly<{
   pid: number;
@@ -1276,7 +1319,9 @@ export class ReShadeOverlayLauncher {
           stageRuntimeArtifact(
             sourceByName.get(fileName)!,
             path.join(createdRunDirectory, fileName),
-            fileName === CONFIG_FILE_NAME || fileName === RUNTIME_FILE_NAME,
+            fileName === CONFIG_FILE_NAME ||
+              fileName === RUNTIME_FILE_NAME ||
+              fileName === ADDON_FILE_NAME,
           ),
         ),
       );
@@ -1339,9 +1384,12 @@ export class ReShadeOverlayLauncher {
     const retrySafeBeforeMutation =
       isPathTarget(target) || target.pid !== undefined;
     const hasSuccessMarker = stdout.includes(INJECTOR_SUCCESS_MARKER);
+    const parsedResult = parseInjectorResult(stdout);
+    const hasResultRecord = parsedResult.kind !== 'none';
     const hasNotStartedProof =
       retrySafeBeforeMutation &&
       !hasSuccessMarker &&
+      !hasResultRecord &&
       injectorDidNotStart(stdout);
     const evidence = diagnosticEvidenceForStagedRuntime(staged);
     try {
@@ -1385,9 +1433,9 @@ export class ReShadeOverlayLauncher {
       });
     }
 
-    const parsedPreflight = parseInjectorPreflightDiagnostic(stdout);
-    if (parsedPreflight.kind === 'invalid') {
-      const detail = `ReShade injector diagnostic protocol was invalid: ${parsedPreflight.detail}`;
+    const parsedDiagnostic = parseInjectorDiagnostic(stdout);
+    if (parsedDiagnostic.kind === 'invalid') {
+      const detail = `ReShade injector diagnostic protocol was invalid: ${parsedDiagnostic.detail}`;
       console.error(
         `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
@@ -1401,16 +1449,24 @@ export class ReShadeOverlayLauncher {
         evidence,
       });
     }
-    if (parsedPreflight.kind === 'valid') {
-      const diagnostic = parsedPreflight.diagnostic;
+    if (parsedDiagnostic.kind === 'valid') {
+      const diagnostic = parsedDiagnostic.diagnostic;
+      const diagnosticEvidence =
+        diagnostic.modulePath !== undefined &&
+        diagnosticReferencesHostRuntime(diagnostic)
+          ? diagnosticEvidenceForHostRuntime(staged, diagnostic.modulePath)
+          : evidence;
       const isContradictory =
         hasSuccessMarker ||
-        !injectorDidNotStart(stdout) ||
+        hasResultRecord ||
+        (diagnostic.stage === 'target-preflight'
+          ? !injectorDidNotStart(stdout)
+          : injectorDidNotStart(stdout)) ||
         (expectedTargetPid !== undefined &&
           diagnostic.pid !== expectedTargetPid);
       if (isContradictory) {
         const detail =
-          'ReShade injector preflight diagnostic contradicted its success, no-mutation, or exact-PID evidence';
+          'ReShade injector diagnostic contradicted its success, mutation-state, or exact-PID evidence';
         console.error(
           `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
         );
@@ -1444,8 +1500,36 @@ export class ReShadeOverlayLauncher {
               : ''
           }`;
           break;
+        case 'target-runtime-incompatible':
+          detail = `target pid=${diagnostic.pid} has an incompatible ReShade runtime${
+            diagnostic.modulePath
+              ? ` at ${JSON.stringify(diagnostic.modulePath)}`
+              : ''
+          }`;
+          break;
+        case 'target-runtime-reuse-too-late':
+          detail = `target pid=${diagnostic.pid} loaded ReShade too late for safe runtime reuse${
+            diagnostic.modulePath
+              ? ` at ${JSON.stringify(diagnostic.modulePath)}`
+              : ''
+          }`;
+          break;
+        case 'target-runtime-reuse-raced':
+          detail = `the loaded ReShade runtime changed while preparing reuse for target pid=${diagnostic.pid}${
+            diagnostic.modulePath
+              ? ` at ${JSON.stringify(diagnostic.modulePath)}`
+              : ''
+          }`;
+          break;
         case 'target-module-inspection-failed':
           detail = `loaded-module inspection failed for target pid=${diagnostic.pid}${windowsErrorDetail}`;
+          break;
+        case 'existing-runtime-addon-load-failed':
+          detail = `the overlay add-on could not be loaded into the existing ReShade runtime for target pid=${diagnostic.pid}${
+            diagnostic.modulePath
+              ? ` at ${JSON.stringify(diagnostic.modulePath)}`
+              : ''
+          }${windowsErrorDetail}`;
           break;
       }
       console.error(
@@ -1454,8 +1538,14 @@ export class ReShadeOverlayLauncher {
       throw new ReShadeOperationError({
         message: detail,
         code: diagnostic.code,
-        stage: 'target-preflight',
-        retrySafety: 'definite-safe',
+        stage:
+          diagnostic.stage === 'target-preflight'
+            ? 'target-preflight'
+            : 'runtime-initialization',
+        retrySafety:
+          diagnostic.stage === 'target-preflight'
+            ? 'definite-safe'
+            : 'indeterminate',
         targetLabel,
         pid: diagnostic.pid,
         ...(diagnostic.modulePath === undefined
@@ -1464,11 +1554,43 @@ export class ReShadeOverlayLauncher {
         ...(diagnostic.windowsErrorCode === undefined
           ? {}
           : { windowsErrorCode: diagnostic.windowsErrorCode }),
+        evidence: diagnosticEvidence,
+      });
+    }
+
+    if (parsedResult.kind === 'invalid') {
+      const detail = `ReShade injector result protocol was invalid: ${parsedResult.detail}`;
+      console.error(
+        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
+      );
+      throw new ReShadeOperationError({
+        message: detail,
+        code: 'injector-result-invalid',
+        stage: 'injector',
+        retrySafety: 'indeterminate',
+        targetLabel,
+        ...(expectedTargetPid === undefined ? {} : { pid: expectedTargetPid }),
         evidence,
       });
     }
 
     if (error) {
+      if (parsedResult.kind === 'valid') {
+        const detail =
+          'ReShade injector reported a structured success result while the injector process failed';
+        console.error(
+          `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
+        );
+        throw new ReShadeOperationError({
+          message: detail,
+          code: 'injector-result-invalid',
+          stage: 'injector',
+          retrySafety: 'indeterminate',
+          targetLabel,
+          pid: parsedResult.result.pid,
+          evidence,
+        });
+      }
       const detail = formatLaunchError(error, stdout, stderr);
       console.error(
         `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
@@ -1478,7 +1600,8 @@ export class ReShadeOverlayLauncher {
         code: didSpawn ? 'injector-failed' : 'injector-start-failed',
         stage: 'injector',
         retrySafety:
-          hasNotStartedProof || (!didSpawn && !hasSuccessMarker)
+          hasNotStartedProof ||
+          (!didSpawn && !hasSuccessMarker && !hasResultRecord)
             ? 'definite-safe'
             : 'indeterminate',
         targetLabel,
@@ -1486,8 +1609,8 @@ export class ReShadeOverlayLauncher {
         evidence,
       });
     }
-    if (!hasSuccessMarker) {
-      const detail = `ReShade injector stdout did not contain ${JSON.stringify(INJECTOR_SUCCESS_MARKER)}`;
+    if (parsedResult.kind === 'none') {
+      const detail = `ReShade injector stdout did not contain exactly one ${JSON.stringify(INJECTOR_RESULT_PREFIX.trim())} record`;
       console.error(
         `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
@@ -1503,7 +1626,7 @@ export class ReShadeOverlayLauncher {
     }
     if (!didSpawn) {
       const detail =
-        'ReShade injector reported success without a confirmed child-process spawn';
+        'ReShade injector reported a structured success result without a confirmed child-process spawn';
       console.error(
         `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
       );
@@ -1518,25 +1641,8 @@ export class ReShadeOverlayLauncher {
       });
     }
 
-    let injectorTargetPid: number;
-    try {
-      injectorTargetPid = parseInjectorTargetPid(stdout);
-    } catch (parseError) {
-      const detail =
-        parseError instanceof Error ? parseError.message : String(parseError);
-      console.error(
-        `${RESHADE_CLIENT_INJECTOR_FAILED_MARKER} target=${JSON.stringify(targetDescription)} detail=${JSON.stringify(detail)}`,
-      );
-      throw new ReShadeOperationError({
-        message: detail,
-        code: 'injector-result-invalid',
-        stage: 'injector',
-        retrySafety: 'indeterminate',
-        targetLabel,
-        ...(expectedTargetPid === undefined ? {} : { pid: expectedTargetPid }),
-        evidence,
-      });
-    }
+    const injectorResult = parsedResult.result;
+    const injectorTargetPid = injectorResult.pid;
     if (
       expectedTargetPid !== undefined &&
       injectorTargetPid !== expectedTargetPid
@@ -1605,10 +1711,17 @@ export class ReShadeOverlayLauncher {
       ...(selectedPath === undefined ? {} : { selectedPath }),
       targetLabel,
       injectorTargetPid,
+      runtimeMode: injectorResult.runtimeMode,
+      ...(injectorResult.runtimeMode === 'existing-runtime'
+        ? { hostRuntimePath: injectorResult.runtimeModulePath }
+        : {}),
       runDirectory: staged.runDirectory,
       injectorStdoutPath: staged.injectorStdoutPath,
       injectorStderrPath: staged.injectorStderrPath,
-      reshadeLogPath: staged.reshadeLogPath,
+      reshadeLogPath:
+        injectorResult.runtimeMode === 'existing-runtime'
+          ? hostRuntimeLogPath(injectorResult.runtimeModulePath)
+          : staged.reshadeLogPath,
     });
   }
 
@@ -1777,6 +1890,41 @@ function diagnosticEvidenceForStagedRuntime(
   });
 }
 
+function diagnosticEvidenceForHostRuntime(
+  staged: StagedRuntime,
+  runtimeModulePath: string,
+): ReShadeDiagnosticEvidence {
+  return Object.freeze({
+    ...diagnosticEvidenceForStagedRuntime(staged),
+    reshadeLogPath: hostRuntimeLogPath(runtimeModulePath),
+  });
+}
+
+function diagnosticReferencesHostRuntime(
+  diagnostic: InjectorDiagnostic,
+): boolean {
+  if (diagnostic.stage === 'existing-runtime-addon-load') {
+    return true;
+  }
+
+  switch (diagnostic.code) {
+    case 'target-runtime-conflict':
+    case 'target-runtime-incompatible':
+    case 'target-runtime-reuse-too-late':
+    case 'target-runtime-reuse-raced':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function hostRuntimeLogPath(runtimeModulePath: string): string {
+  return path.win32.join(
+    path.win32.dirname(runtimeModulePath),
+    RESHADE_LOG_FILE_NAME,
+  );
+}
+
 function diagnosticEvidenceForRunDirectory(
   runDirectory: string,
 ): ReShadeDiagnosticEvidence {
@@ -1793,8 +1941,9 @@ async function stageRuntimeArtifact(
   destinationPath: string,
   requiresPrivateCopy: boolean,
 ): Promise<void> {
-  // ReShade.ini is mutable, while the injector adjusts the runtime DLL's ACL.
-  // Both therefore need a private file record for every isolated run.
+  // ReShade.ini is mutable, while the injector adjusts the loaded payload's
+  // ACL. The payload is ReShade64.dll for a new runtime and the add-on when
+  // reusing a compatible runtime, so all three need a private file record.
   if (!requiresPrivateCopy) {
     try {
       await link(sourcePath, destinationPath);
@@ -2262,17 +2411,6 @@ function snapshotTarget(
   ];
 }
 
-function parseInjectorTargetPid(stdout: string): number {
-  const match = INJECTOR_TARGET_PID_PATTERN.exec(stdout);
-  const pid = match ? Number(match[1]) : Number.NaN;
-  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
-    throw new Error(
-      'ReShade injector stdout did not contain a valid matched process PID',
-    );
-  }
-  return pid;
-}
-
 function parseInjectorTargetPath(stdout: string): string {
   const match = INJECTOR_TARGET_PATH_PATTERN.exec(stdout);
   const selectedPath = match?.[1]?.trim();
@@ -2284,21 +2422,110 @@ function parseInjectorTargetPath(stdout: string): string {
   return selectedPath;
 }
 
-function parseInjectorPreflightDiagnostic(
+function parseInjectorResult(
   stdout: string,
 ):
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'invalid'; detail: string }>
-  | Readonly<{ kind: 'valid'; diagnostic: InjectorPreflightDiagnostic }> {
-  const records: string[] = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const markerIndex = line.indexOf(INJECTOR_DIAGNOSTIC_PREFIX);
-    if (markerIndex === -1) {
-      continue;
-    }
-    const record = line.slice(markerIndex + INJECTOR_DIAGNOSTIC_PREFIX.length);
-    records.push(record);
+  | Readonly<{ kind: 'valid'; result: InjectorResult }> {
+  const records = prefixedInjectorRecords(stdout, INJECTOR_RESULT_PREFIX);
+  if (records.length === 0) {
+    return Object.freeze({ kind: 'none' });
   }
+  if (records.length !== 1) {
+    return Object.freeze({
+      kind: 'invalid',
+      detail: `expected one result record, received ${records.length}`,
+    });
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(records[0]);
+  } catch {
+    return Object.freeze({
+      kind: 'invalid',
+      detail: 'result record was not valid JSON',
+    });
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.freeze({
+      kind: 'invalid',
+      detail: 'result record was not an object',
+    });
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    candidate.schemaVersion !== 1 ||
+    !isValidProcessPid(candidate.pid) ||
+    (candidate.runtimeMode !== 'injected-runtime' &&
+      candidate.runtimeMode !== 'existing-runtime')
+  ) {
+    return Object.freeze({
+      kind: 'invalid',
+      detail: 'result record did not match schema version 1',
+    });
+  }
+
+  if (candidate.runtimeMode === 'injected-runtime') {
+    if (
+      !hasExactObjectKeys(candidate, ['schemaVersion', 'pid', 'runtimeMode'])
+    ) {
+      return Object.freeze({
+        kind: 'invalid',
+        detail:
+          'injected-runtime result contained contradictory or unexpected fields',
+      });
+    }
+    return Object.freeze({
+      kind: 'valid',
+      result: Object.freeze({
+        schemaVersion: 1,
+        pid: candidate.pid,
+        runtimeMode: 'injected-runtime',
+      }),
+    });
+  }
+
+  if (
+    !hasExactObjectKeys(candidate, [
+      'hostAbi',
+      'pid',
+      'runtimeMode',
+      'runtimeModulePath',
+      'schemaVersion',
+    ]) ||
+    typeof candidate.runtimeModulePath !== 'string' ||
+    !path.win32.isAbsolute(candidate.runtimeModulePath) ||
+    candidate.runtimeModulePath.includes('\0') ||
+    candidate.hostAbi !== 1
+  ) {
+    return Object.freeze({
+      kind: 'invalid',
+      detail:
+        'existing-runtime result requires an absolute runtime module path and host ABI 1',
+    });
+  }
+  return Object.freeze({
+    kind: 'valid',
+    result: Object.freeze({
+      schemaVersion: 1,
+      pid: candidate.pid,
+      runtimeMode: 'existing-runtime',
+      runtimeModulePath: candidate.runtimeModulePath,
+      hostAbi: 1,
+    }),
+  });
+}
+
+function parseInjectorDiagnostic(
+  stdout: string,
+):
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'invalid'; detail: string }>
+  | Readonly<{ kind: 'valid'; diagnostic: InjectorDiagnostic }> {
+  const records = prefixedInjectorRecords(stdout, INJECTOR_DIAGNOSTIC_PREFIX);
 
   if (records.length === 0) {
     return Object.freeze({ kind: 'none' });
@@ -2330,15 +2557,24 @@ function parseInjectorPreflightDiagnostic(
   const code = candidate.code;
   const modulePath = candidate.modulePath;
   const windowsErrorCode = candidate.windowsErrorCode;
+  const isPreflightDiagnostic =
+    candidate.stage === 'target-preflight' &&
+    (code === 'target-injection-already-claimed' ||
+      code === 'target-injection-claim-failed' ||
+      code === 'target-runtime-conflict' ||
+      code === 'target-runtime-incompatible' ||
+      code === 'target-runtime-reuse-too-late' ||
+      code === 'target-runtime-reuse-raced' ||
+      code === 'target-module-inspection-failed') &&
+    candidate.injectionStarted === false;
+  const isExistingRuntimeAddonLoadDiagnostic =
+    candidate.stage === 'existing-runtime-addon-load' &&
+    code === 'existing-runtime-addon-load-failed' &&
+    candidate.injectionStarted === true;
   if (
     candidate.schemaVersion !== 1 ||
-    candidate.stage !== 'target-preflight' ||
-    (code !== 'target-injection-already-claimed' &&
-      code !== 'target-injection-claim-failed' &&
-      code !== 'target-runtime-conflict' &&
-      code !== 'target-module-inspection-failed') ||
+    (!isPreflightDiagnostic && !isExistingRuntimeAddonLoadDiagnostic) ||
     !isValidProcessPid(candidate.pid) ||
-    candidate.injectionStarted !== false ||
     (modulePath !== undefined &&
       (typeof modulePath !== 'string' || modulePath.length === 0)) ||
     (windowsErrorCode !== undefined &&
@@ -2352,12 +2588,29 @@ function parseInjectorPreflightDiagnostic(
     });
   }
 
+  if (isExistingRuntimeAddonLoadDiagnostic) {
+    return Object.freeze({
+      kind: 'valid',
+      diagnostic: Object.freeze({
+        schemaVersion: 1,
+        stage: 'existing-runtime-addon-load',
+        code: 'existing-runtime-addon-load-failed',
+        pid: candidate.pid,
+        injectionStarted: true,
+        ...(modulePath === undefined ? {} : { modulePath }),
+        ...(windowsErrorCode === undefined
+          ? {}
+          : { windowsErrorCode: windowsErrorCode as number }),
+      }),
+    });
+  }
+
   return Object.freeze({
     kind: 'valid',
     diagnostic: Object.freeze({
       schemaVersion: 1,
       stage: 'target-preflight',
-      code,
+      code: code as InjectorPreflightDiagnostic['code'],
       pid: candidate.pid,
       injectionStarted: false,
       ...(modulePath === undefined ? {} : { modulePath }),
@@ -2366,6 +2619,28 @@ function parseInjectorPreflightDiagnostic(
         : { windowsErrorCode: windowsErrorCode as number }),
     }),
   });
+}
+
+function prefixedInjectorRecords(stdout: string, prefix: string): string[] {
+  const records: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith(prefix)) {
+      records.push(line.slice(prefix.length));
+    }
+  }
+  return records;
+}
+
+function hasExactObjectKeys(
+  candidate: Record<string, unknown>,
+  expectedKeys: readonly string[],
+): boolean {
+  const actualKeys = Object.keys(candidate).sort();
+  const sortedExpectedKeys = [...expectedKeys].sort();
+  return (
+    actualKeys.length === sortedExpectedKeys.length &&
+    actualKeys.every((key, index) => key === sortedExpectedKeys[index])
+  );
 }
 
 function injectorDidNotStart(stdout: string): boolean {

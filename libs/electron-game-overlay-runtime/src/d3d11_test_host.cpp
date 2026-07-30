@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cwchar>
+#include <string>
 
 #include "input_oracle.hpp"
 
@@ -16,6 +17,8 @@ using Microsoft::WRL::ComPtr;
 
 constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D11TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D11 overlay test host";
+constexpr wchar_t kStartupBarrierMarker[] =
+    L"electron-game-overlay-startup-barrier.enabled";
 
 struct graphics_state
 {
@@ -59,6 +62,38 @@ bool enable_per_monitor_v2_awareness()
         L"running as Per-Monitor-V2.";
     OutputDebugStringW(message);
     MessageBoxW(nullptr, message, kWindowTitle, MB_OK | MB_ICONERROR);
+    return false;
+}
+
+bool wait_for_test_startup_barrier()
+{
+    wchar_t module_path[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH)
+        return false;
+
+    std::wstring marker(module_path, length);
+    const std::size_t separator = marker.find_last_of(L"\\/");
+    if (separator == std::wstring::npos)
+        return false;
+    marker.resize(separator + 1);
+    marker += kStartupBarrierMarker;
+    if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return true;
+
+    const ULONGLONG deadline = GetTickCount64() + 60'000;
+    while (GetTickCount64() < deadline)
+    {
+        if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
+            return true;
+        Sleep(10);
+    }
+
+    MessageBoxW(
+        nullptr,
+        L"The controlled host timed out at its test-only startup barrier.",
+        kWindowTitle,
+        MB_OK | MB_ICONERROR);
     return false;
 }
 
@@ -193,6 +228,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 {
     if (!enable_per_monitor_v2_awareness())
+        return 1;
+    if (!wait_for_test_startup_barrier())
         return 1;
 
     WNDCLASSEXW window_class = {};

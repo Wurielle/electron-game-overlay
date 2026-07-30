@@ -26,9 +26,12 @@ pointer metadata at the callback and, only after global sequence ordering on the
 single consumer, turns primary move/left-click records into the same Electron
 legacy route.
 
-Exact-PID SDK attachment also uses ReShade's injected base-path override as a
-run-local rendezvous boundary. Each consumed staged runtime receives a unique
-producer token bound to its expected PID before injection. The producer writes
+Exact-PID SDK attachment uses a run-local rendezvous boundary. The injected
+transport prefers `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`; newly injected runtime
+mode also sets ReShade's base-path override to that run, while compatible
+existing-runtime mode deliberately leaves the host's configuration and log base
+path unchanged. Each consumed staged run receives a unique producer token bound
+to its expected PID before injection. The producer writes
 `electron-overlay-transport-v1.targeted` first, then the adjacent discovery
 record. The injected client treats that marker as persistent route intent: a
 missing, invalid, or revoked local credential fails closed instead of falling
@@ -96,7 +99,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies ten production
+downloads both into the ignored build directory, then applies fourteen production
 patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -133,11 +136,23 @@ patches to the pinned ReShade revision:
   unresolved and retry with bounded backoff until the exact process exits.
 - `reshade-injector-conflict-preflight.patch` inspects bounded remote PE export
   tables before any target allocation, write, or remote thread. A loaded module
-  exporting exact `ReShadeVersion` is rejected using the same identity as
+  exporting exact `ReShadeVersion` is identified using the same identity as
   ReShade's duplicate-instance guard; proxy filenames and unloaded files beside
   the game are not guessed. Failures emit a versioned one-line
   `ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC` JSON record and retain the legacy
   no-injection marker.
+- `reshade-injector-per-pid-claim.patch` lets overlapping prearmed-path and
+  exact-PID launchers coordinate through one native target claim before either
+  mutates the process.
+- `reshade-shared-runtime-host.patch` gives this repository's runtime a private
+  host ABI and a short pre-initialization registration gate. The injector can
+  reuse that exact compatible runtime and load only the staged Electron add-on;
+  unknown, incompatible, or already-active ReShade instances fail closed.
+- `reshade-injector-export-read-bounds.patch` bounds remote export-name reads to
+  the requested symbol length while inspecting a candidate runtime.
+- `reshade-shared-runtime-hardening.patch` closes the registration gate before
+  add-on dispatch begins, uses a bounded x64 loader thunk, and makes gate races
+  fail closed without spinning a CPU core.
 - `reshade-suppress-splash.patch` suppresses ReShade's branded startup window
   because the embedding application owns startup UI. It leaves the full GUI
   pipeline, add-on callbacks, version metadata, `UNOFFICIAL` build identity,
@@ -158,11 +173,11 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-14 build stamp, the ten
+The launchers validate the cache against a schema-17 build stamp, the fourteen
 production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
-all nine patched
-source files, the full-add-on configuration, and the runtime/injector SHA-256
-hashes. CMake performs the same commit, nine-path, and normalized-content check
+all nine patched source files, the full-add-on configuration, and the
+runtime/injector SHA-256 hashes. CMake performs the same commit, nine-path, and
+normalized-content check
 independently for every fetched source tree before generating native targets.
 Extra edits inside an expected fetched-source file invalidate the build.
 
@@ -367,30 +382,28 @@ ordering:
 ```
 
 The public SDK accepts `attach(session, { processName, pid })`, and the Electron
-demo exposes the optional PID beside the process basename. Each gate creates its
-controlled target with Windows `CREATE_SUSPENDED`, captures that exact PID,
-enters both values in the real frontend, completes injection, and only then
-resumes the primary thread. This proves the intended ordering for a watcher that
-calls immediately after the process exists and before graphics-device/swap-chain
-creation.
+demo exposes the optional PID beside the process basename. Each current gate
+starts its controlled target normally, captures that exact PID after normal
+loader work, and blocks the cooperating host near entry at a test marker before
+window and graphics-device setup. It enters the PID and basename in the real
+frontend, proves that injection completed, then removes the marker and runs the
+full scene/input/release checks. This models a normal process that has started
+but has not created its graphics device; it does not manufacture a universal
+latency budget for an external watcher or arbitrary game startup.
 
-Both gates passed on July 13, 2026:
+Both current gates passed on July 30, 2026:
 
-- D3D11 selected target PID 7428 and reached the frontend injection click 72.393
-  ms after process creation. The runner emitted
-  `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is under
-  `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`.
-- D3D12 selected target PID 21508 and reached the click in 84.061 ms. The runner
-  emitted `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is
-  under
-  `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
+- D3D11 evidence is under
+  `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-084815`.
+- D3D12 evidence is under
+  `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-084831`.
 
-Both runs proved the exact injector argument vector and that `ReShade64.dll` was
-loaded before `ResumeThread`. After resume, authenticated transport, the expected
-graphics API, two Electron windows, and input acceptance passed. Each target
-exited with code 0, the frontend returned to `idle`, and the target/client/
-injector no-leftover check passed. This deterministic suspended ordering does not
-establish an arbitrary latency budget for an unsuspended watcher.
+Each `result.txt` contains its
+`D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS` or
+`D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS` marker. The earlier
+July 13 `CREATE_SUSPENDED` runs remain historical ordering evidence under the
+old `build/reshade-imgui-overlay` paths; they are no longer the behavior of
+these launchers.
 
 This is not post-render attachment. A separate probe waited three seconds after
 the controlled D3D11 and D3D12 targets began rendering. The injector returned
@@ -398,6 +411,39 @@ success and `ReShade64.dll` loaded, but the pinned runtime did not redirect the
 active graphics API, adopt the existing device or swap chain, load the add-on,
 or render the Electron scene. That route is unsupported. Probe evidence is under
 `build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
+
+## Run the compatible shared-runtime gates
+
+Use the shared-runtime variants to model a game that already loads this
+project's compatible ReShade build as a target-local DXGI proxy:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
+```
+
+The fixture starts normally with a target-local `dxgi.dll` and `ReShade.ini`,
+waits for private host ABI 1 with its add-on gate still open, and holds device
+creation behind the same test marker. The production client and public SDK then
+load only the privately staged `electron_game_overlay.addon64` into that host.
+The gate proves that no second ReShade runtime is loaded, no add-on is copied
+beside the game, the target proxy and configuration hashes remain unchanged,
+and the normal two-window scene, interception, release, and cleanup contract
+still passes.
+
+Both gates passed on July 30, 2026. Evidence is under
+`build/electron-game-overlay-runtime/client-sdk-d3d11-shared-runtime-20260730-084016`
+and
+`build/electron-game-overlay-runtime/client-sdk-d3d12-shared-runtime-20260730-084003`.
+This is deliberately narrower than general modded-game support: stock or
+differently patched ReShade, a compatible host whose gate has already closed,
+unknown proxy DLLs, and arbitrary real-game startup timing still fail closed or
+remain unsupported.
+
+For existing-runtime results, the SDK currently infers `reshadeLogPath` as
+`ReShade.log` beside the loaded host module. ReShade `[INSTALL] BasePath` can
+redirect the authoritative host log elsewhere; resolving that configured path
+is retained as compatibility hardening.
 
 ## Run the real client/SDK Gun Frog gate
 
@@ -494,8 +540,9 @@ closed the host-switch milestone for this accepted target path.
   the target;
 - multiple-swap-chain/render-queue ownership and safe texture retirement;
 - graceful client disable/unload, post-render injection or existing-device/
-  swap-chain adoption, deterministic pre-entry injection, additional games, or
-  broader graphics/presentation compatibility;
+  swap-chain adoption, arbitrary stock/differently patched ReShade and proxy
+  coexistence, deterministic pre-entry injection, additional games, or broader
+  graphics/presentation compatibility;
 - end-to-end process identity beyond exact PID plus verified executable
   basename for exact-PID requests and fallback-WMI lifecycle correlation; the
   prearmed path-watcher baseline itself now retains handles for exact process
@@ -514,7 +561,7 @@ CPU core before launch and rounded to 0% during the in-game sample. A readable
 temperature sensor was unavailable, so that run establishes functional and
 process-resource acceptance rather than a thermal soak.
 Exact-PID near-process-creation support is implemented and has dedicated
-suspended D3D11/D3D12 gates with passing acceptance. Raw normalization,
+normal-start/pre-device D3D11/D3D12 gates with passing acceptance. Raw normalization,
 graceful disable/unload, post-render attachment, arbitrary watcher latency,
 end-to-end process-creation correlation beyond the native watcher baseline,
 other games and APIs, and multiple-swap-chain hardening stay outside the

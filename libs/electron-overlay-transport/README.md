@@ -5,12 +5,17 @@ producer and an injected overlay runtime. It receives window frames and scene
 metadata, routes overlay input, and exposes the resulting state through both a
 Rust API and a stable C ABI for native rendering backends.
 
-When ReShade supplies `RESHADE_BASE_PATH_OVERRIDE`, the injected client prefers
-`electron-overlay-transport-v1.json` beside that isolated runtime. Exact-PID
-producers first place `electron-overlay-transport-v1.targeted` beside it to
-declare persistent run-local route intent. The marker pins that route even when
-the credential record has already been revoked, preventing a payload that
-initializes late from falling back to the global producer.
+The injected client resolves its run-local route directory from
+`ELECTRON_GAME_OVERLAY_RUN_DIRECTORY` first, then falls back to
+`RESHADE_BASE_PATH_OVERRIDE`. The explicit overlay directory lets a compatible
+ReShade runtime already loaded in the target host the SDK's private staged
+add-on without redirecting transport lookup to the target's own ReShade
+directory. The client prefers `electron-overlay-transport-v1.json` in the
+selected directory. Exact-PID producers first place
+`electron-overlay-transport-v1.targeted` beside it to declare persistent
+run-local route intent. The marker pins that route even when the credential
+record has already been revoked, preventing a payload that initializes late
+from falling back to the global producer.
 
 The legacy temporary-directory fallback is used only when neither an adjacent
 record nor the route-intent marker has selected the run-local route. Malformed,
@@ -19,3 +24,9 @@ reconnect attempt after the local record is deleted. The producer retains the
 marker after credential revocation, and staged-run cleanup removes it with the
 directory. This file-based routing prevents normal metadata collisions; it is
 not a hostile same-user security boundary.
+
+Compatible-runtime reuse is deliberately restricted to an exact-PID
+repository-built host whose ABI-1 add-on-registration gate is still open. The
+SDK's strict injector result distinguishes `injected-runtime` from
+`existing-runtime`; stock, unknown, already-active, or indeterminate hosts are
+rejected rather than treated as transport fallback cases.

@@ -23,10 +23,12 @@ passed two fresh controlled D3D12 lifecycle/multi-window cycles and a separate
 same-Electron-client restart/reinjection cycle. The public SDK additionally
 accepts an optional exact PID, and the Electron demo exposes the same field, for
 a watcher that injects immediately after the process exists and before graphics
-device/swap-chain creation. Deterministic `CREATE_SUSPENDED` D3D11/D3D12 gates
-passed that ordering on July 13, 2026. The normal client later passed LORT's
-Unreal launcher/renderer chain, but arbitrary unsuspended watcher timing remains
-unverified.
+device/swap-chain creation. Historical `CREATE_SUSPENDED` D3D11/D3D12 gates
+passed that ordering on July 13, 2026. The current controlled launchers start
+normally, finish loader work, and pause the cooperating host near entry before
+window/device setup; both passed again through the production client/SDK on
+July 30. The normal client later passed LORT's Unreal launcher/renderer chain,
+but arbitrary external-watcher timing remains unverified.
 
 The normal `npm run dev` Steam-path flow first gained real Gun Frog acceptance
 through a one-shot native path watcher, then temporarily moved to exact-PID-only
@@ -41,11 +43,15 @@ independent exact-PID SDK injection for every detected `.exe` under
 The two lanes may select the same PID, so a native per-PID claim serializes them
 before target mutation. A path winner is adopted by the coordinator and its
 exact-PID loser is disposed; an exact-PID winner makes the path attempt yield
-safely. The broad watcher is rearmed after selection and target exit.
+safely. The broad watcher is rearmed after safe completion, target exit, or a
+definite-safe failure; an indeterminate target mutation leaves that lane
+blocked.
 Observation starts before four isolated exact-PID launchers are prepared
 concurrently. Detected targets wait in order for prepared slots, successful
 consumption starts an immediate refill, and preparation failures retry with
-bounded backoff. Each active attempt still owns its own runtime.
+bounded backoff. Each active attempt owns its staged run, private add-on,
+credentials, and evidence. `runtimeMode` records whether it loaded the staged
+runtime or reused a compatible host.
 
 That initial success still missed a Windows PID-reuse defect. The watcher kept
 its startup baseline as bare numeric PIDs, so a later process that reused any
@@ -175,9 +181,9 @@ evidence is retained under
 the historical pre-promotion path
 `build/reshade-imgui-overlay/client-sdk-d3d12-reinjection-20260713-110105`.
 
-The exact-PID process-start gates passed through the real frontend and public
-SDK. D3D11 targeted PID 7428, reached the frontend click 72.393 ms after process
-creation, and emitted
+The historical July 13 exact-PID process-start gates passed through the real
+frontend and public SDK. D3D11 targeted PID 7428, reached the frontend click
+72.393 ms after process creation, and emitted
 `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is under
 `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`.
 D3D12 targeted PID 21508 at 84.061 ms and emitted
@@ -187,6 +193,14 @@ Both proved the exact injector arguments and ReShade loading before
 `ResumeThread`. Transport, API selection, two Electron windows, and input passed
 after resume; both targets exited 0, both frontends returned to `idle`, and no
 test process remained.
+
+The current launchers no longer create a suspended process. They let the normal
+loader finish and pause the cooperating host near entry with a test-only marker
+before window/device setup. D3D11 and D3D12 passed that path on July 30, 2026;
+evidence is under
+`build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-084815`
+and
+`build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-084831`.
 
 Exact PID narrows selection but does not make post-render injection work. In a
 controlled probe, the injector ran three seconds after D3D11 and D3D12 targets
@@ -241,27 +255,43 @@ not supported by the current production runtime:
   chains, and simultaneous rendered targets beyond the completed same-listener
   credential-isolation and fail-closed route-selection tests until each has
   explicit graphics acceptance;
-- coexistence with an existing ReShade installation or another proxy DLL;
-  exact-PID preflight now rejects a proven already-loaded ReShade runtime, but
-  coexistence and a supported shared-runtime installation strategy are not
-  implemented;
+- stock or differently patched ReShade and arbitrary coexistence with another
+  proxy DLL; the narrow compatible-host path described below does not imply
+  general modded-game support;
 - real physical/VM mixed-scale target-follow acceptance, safe texture
   retirement, or broader gamepad/DirectInput/XInput/GameInput handling until
   their recorded acceptance work is complete.
 
+The narrow shared-runtime foundation requires this project's private host ABI 1
+and an add-on gate that is still `OPEN`. Controlled target-local `dxgi.dll`
+fixtures passed the complete production client/SDK scene, input, release, and
+cleanup gates on D3D11 and D3D12 on July 30, 2026. The SDK loaded only its
+privately staged add-on, did not load a second runtime, and left the existing
+proxy and configuration hashes unchanged. A host whose gate has already closed
+cannot accept late add-on registration safely. In existing mode the SDK's
+`reshadeLogPath` is inferred beside the host module; ReShade
+`[INSTALL] BasePath` can make that candidate non-authoritative.
+
 Before exact-PID injection mutates the target, it performs bounded loaded-module
-inspection. A module is treated as a proven ReShade conflict only when its PE
-export table contains the exact `ReShadeVersion` export; the SDK reports the
-typed `target-runtime-conflict` diagnostic and returns the launcher to `idle`.
-If module enumeration or a candidate export table cannot be inspected safely,
-the injector fails closed with `target-module-inspection-failed`. Both failures
-include the stable no-injection proof and are `definite-safe`.
+inspection. Exact `ReShadeVersion` identifies a candidate. Missing/wrong private
+ABI reports `target-runtime-incompatible`; an active/closed gate reports
+`target-runtime-reuse-too-late`; a claim race reports
+`target-runtime-reuse-raced`; and unsafe module inspection reports
+`target-module-inspection-failed`. These include a stable no-payload-load proof
+and are `definite-safe`. The reuse-race result can follow bounded remote loader
+creation, but its CAS loses before environment mutation or `LoadLibrary`.
+`existing-runtime-addon-load-failed` occurs after the gate was claimed, is
+`indeterminate`, and keeps the launcher blocked. The SDK continues to parse
+legacy `target-runtime-conflict` records, but the current native injector does
+not emit that generic outcome.
 
 Module basenames and files beside the game executable are deliberately not
 conflict evidence. A file named `dxgi.dll`, `dinput8.dll`, `ReShade.ini`, or
 similarly does not prove which code is loaded and therefore is not an automatic
 block condition. This avoids executable-specific filename heuristics while
-leaving actual multi-runtime coexistence explicitly unsupported.
+leaving arbitrary runtime/proxy coexistence explicitly unsupported. The
+supported private-host path avoids loading a second runtime rather than trying
+to make two runtimes coexist.
 
 Unsupported or untested must produce a clear diagnostic rather than silently
 claiming compatibility. Maintain a matrix per target with architecture,

@@ -44,21 +44,51 @@ const runReclaimableMarkerFileName =
   '.electron-game-overlay-run-reclaimable.json';
 const runRetentionMaxAgeMs = 7 * 24 * 60 * 60 * 1_000;
 let retainedRunSequence = 0;
+const injectorResult = (result) =>
+  `ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ${JSON.stringify({
+    schemaVersion: 1,
+    ...result,
+  })}\n`;
 const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>
   `Waiting for a '${processName}' process to spawn ...\n` +
-  `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n`;
+  `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n` +
+  injectorResult({
+    pid,
+    runtimeMode: 'injected-runtime',
+  });
+const existingRuntimeSuccessFor = (
+  pid,
+  runtimeModulePath,
+  processName = 'Gun Frog.exe',
+) =>
+  `Waiting for a '${processName}' process to spawn ...\n` +
+  `Found a matching process with PID ${pid}! Reusing ReShade ... Succeeded!\n` +
+  injectorResult({
+    pid,
+    runtimeMode: 'existing-runtime',
+    runtimeModulePath,
+    hostAbi: 1,
+  });
 const injectorSuccess = injectorSuccessFor(4242);
 const pathInjectorSuccessFor = (pid, executablePath) =>
   'ReShade path watcher armed.\n' +
   `Matched executable path: ${executablePath}\n` +
-  `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n`;
-const injectorPreflightDiagnostic = (diagnostic) =>
+  `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n` +
+  injectorResult({
+    pid,
+    runtimeMode: 'injected-runtime',
+  });
+const injectorDiagnostic = (diagnostic) =>
   `ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ${JSON.stringify({
     schemaVersion: 1,
+    ...diagnostic,
+  })}\n`;
+const injectorPreflightDiagnostic = (diagnostic) =>
+  injectorDiagnostic({
     stage: 'target-preflight',
     injectionStarted: false,
     ...diagnostic,
-  })}\n`;
+  });
 const temporaryDirectories = new Set();
 
 test.afterEach(() => {
@@ -433,6 +463,33 @@ test('structured target preflight failures expose stable diagnostics and remain 
       message: /already has a loaded ReShade runtime/,
     },
     {
+      code: 'target-runtime-incompatible',
+      native: {
+        code: 'target-runtime-incompatible',
+        pid: 6101,
+        modulePath: 'C:\\game\\dxgi.dll',
+      },
+      message: /has an incompatible ReShade runtime/,
+    },
+    {
+      code: 'target-runtime-reuse-too-late',
+      native: {
+        code: 'target-runtime-reuse-too-late',
+        pid: 6101,
+        modulePath: 'C:\\game\\dxgi.dll',
+      },
+      message: /loaded ReShade too late for safe runtime reuse/,
+    },
+    {
+      code: 'target-runtime-reuse-raced',
+      native: {
+        code: 'target-runtime-reuse-raced',
+        pid: 6101,
+        modulePath: 'C:\\game\\dxgi.dll',
+      },
+      message: /runtime changed while preparing reuse/,
+    },
+    {
       code: 'target-module-inspection-failed',
       native: {
         code: 'target-module-inspection-failed',
@@ -488,6 +545,23 @@ test('structured target preflight failures expose stable diagnostics and remain 
             error.diagnostic.evidence.injectorStdoutPath,
             path.join(runDirectory, 'inject.stdout.log'),
           );
+          const referencesHostRuntime =
+            scenario.native.modulePath !== undefined &&
+            [
+              'target-runtime-conflict',
+              'target-runtime-incompatible',
+              'target-runtime-reuse-too-late',
+              'target-runtime-reuse-raced',
+            ].includes(scenario.code);
+          assert.equal(
+            error.diagnostic.evidence.reshadeLogPath,
+            referencesHostRuntime
+              ? path.win32.join(
+                  path.win32.dirname(scenario.native.modulePath),
+                  'ReShade.log',
+                )
+              : path.join(runDirectory, 'ReShade.log'),
+          );
           assert.equal(Object.isFrozen(error.diagnostic), true);
           assert.equal(Object.isFrozen(error.diagnostic.evidence), true);
           return true;
@@ -516,6 +590,53 @@ test('structured target preflight failures expose stable diagnostics and remain 
         execution.restore();
       }
     });
+  }
+});
+
+test('existing-runtime add-on load failure is post-mutation and blocks retry', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const target = { processName: 'game.exe', pid: 6151 };
+    const request = launcher.launch(target);
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('remote add-on load failed'), { code: 1114 }),
+      injectorDiagnostic({
+        stage: 'existing-runtime-addon-load',
+        code: 'existing-runtime-addon-load-failed',
+        pid: 6151,
+        injectionStarted: true,
+        modulePath: 'C:\\game\\dxgi.dll',
+        windowsErrorCode: 1114,
+      }),
+      '',
+    );
+
+    await assert.rejects(request, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'existing-runtime-addon-load-failed');
+      assert.equal(error.stage, 'runtime-initialization');
+      assert.equal(error.retrySafety, 'indeterminate');
+      assert.equal(error.diagnostic.pid, 6151);
+      assert.equal(error.diagnostic.modulePath, 'C:\\game\\dxgi.dll');
+      assert.equal(error.diagnostic.windowsErrorCode, 1114);
+      assert.equal(
+        error.diagnostic.evidence.reshadeLogPath,
+        'C:\\game\\ReShade.log',
+      );
+      return true;
+    });
+    assert.equal(launcher.state, 'blocked');
+    await assert.rejects(launcher.launch(target), /outcome is indeterminate/);
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
+    execution.restore();
   }
 });
 
@@ -585,6 +706,7 @@ test('pre-injection proof cannot make legacy or contradictory output retry-safe'
       name: 'name-only invocation',
       target: { processName: 'game.exe' },
       stdout: 'ReShade injection not started.\n',
+      message: /ambiguous injector failure/,
     },
     {
       name: 'exact-PID output that also reports injection success',
@@ -592,6 +714,7 @@ test('pre-injection proof cannot make legacy or contradictory output retry-safe'
       stdout:
         injectorSuccessFor(6002, 'game.exe') +
         'ReShade injection not started.\n',
+      message: /structured success result while the injector process failed/,
     },
   ];
 
@@ -612,7 +735,7 @@ test('pre-injection proof cannot make legacy or contradictory output retry-safe'
           scenario.stdout,
           '',
         );
-        await assert.rejects(request, /ambiguous injector failure/);
+        await assert.rejects(request, scenario.message);
         assert.equal(launcher.state, 'blocked');
       } finally {
         launcher.dispose();
@@ -667,7 +790,11 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
         path.join(fixture.runtimeDirectory, artifact),
       );
       const stagedStats = statSync(path.join(runDirectory, artifact));
-      if (artifact === 'ReShade.ini' || artifact === 'ReShade64.dll') {
+      if (
+        artifact === 'ReShade.ini' ||
+        artifact === 'ReShade64.dll' ||
+        artifact === 'electron_game_overlay.addon64'
+      ) {
         assert.notEqual(stagedStats.ino, sourceStats.ino);
       } else {
         assert.equal(stagedStats.ino, sourceStats.ino);
@@ -679,6 +806,8 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
     assert.equal(result.processName, 'Gun Frog.exe');
     assert.equal(result.targetLabel, 'process:Gun Frog.exe:pid:4242');
     assert.equal(result.injectorTargetPid, 4242);
+    assert.equal(result.runtimeMode, 'injected-runtime');
+    assert.equal(Object.hasOwn(result, 'hostRuntimePath'), false);
     assert.equal(result.runDirectory, runDirectory);
     assert.equal(launcher.runDirectory, runDirectory);
     assert.equal(
@@ -722,6 +851,133 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
     launcher.dispose();
     console.log = originalLog;
     execution.restore();
+  }
+});
+
+test('attach reports a validated existing ReShade host runtime', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const hostRuntimePath = 'D:\\Games\\Gun Frog\\dxgi.dll';
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'Gun Frog.exe',
+      pid: 4252,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      null,
+      existingRuntimeSuccessFor(4252, hostRuntimePath),
+      '',
+    );
+    sessionHarness.emitNative('game.process', {
+      pid: 4252,
+      path: 'D:\\Games\\Gun Frog\\Gun Frog.exe',
+    });
+
+    const result = await attachment;
+    assert.equal(result.pid, 4252);
+    assert.equal(result.injectorTargetPid, 4252);
+    assert.equal(result.runtimeMode, 'existing-runtime');
+    assert.equal(result.hostRuntimePath, hostRuntimePath);
+    assert.equal(result.reshadeLogPath, 'D:\\Games\\Gun Frog\\ReShade.log');
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('structured injector results reject malformed and contradictory runtime metadata', async (t) => {
+  const cases = [
+    {
+      name: 'malformed JSON',
+      stdout: 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {not-json}\n',
+      message: /result record was not valid JSON/,
+    },
+    {
+      name: 'duplicate records',
+      stdout:
+        injectorResult({ pid: 4262, runtimeMode: 'injected-runtime' }) +
+        injectorResult({ pid: 4262, runtimeMode: 'injected-runtime' }),
+      message: /expected one result record, received 2/,
+    },
+    {
+      name: 'injected runtime with host-only fields',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'injected-runtime',
+        runtimeModulePath: 'C:\\game\\dxgi.dll',
+        hostAbi: 1,
+      }),
+      message: /contradictory or unexpected fields/,
+    },
+    {
+      name: 'existing runtime without module path',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'existing-runtime',
+        hostAbi: 1,
+      }),
+      message: /absolute runtime module path and host ABI 1/,
+    },
+    {
+      name: 'existing runtime with relative module path',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'existing-runtime',
+        runtimeModulePath: 'dxgi.dll',
+        hostAbi: 1,
+      }),
+      message: /absolute runtime module path and host ABI 1/,
+    },
+    {
+      name: 'existing runtime with incompatible host ABI',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'existing-runtime',
+        runtimeModulePath: 'C:\\game\\dxgi.dll',
+        hostAbi: 2,
+      }),
+      message: /absolute runtime module path and host ABI 1/,
+    },
+    {
+      name: 'unexpected schema field',
+      stdout: injectorResult({
+        pid: 4262,
+        runtimeMode: 'injected-runtime',
+        extra: true,
+      }),
+      message: /contradictory or unexpected fields/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const fixture = createRuntime();
+      const execution = stubExecFile();
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      const originalError = console.error;
+      console.error = () => undefined;
+      try {
+        const request = launcher.launch({
+          processName: 'game.exe',
+          pid: 4262,
+        });
+        await waitFor(() => execution.calls.length === 1);
+        execution.calls[0].callback(null, scenario.stdout, '');
+        await assert.rejects(request, scenario.message);
+        assert.equal(launcher.state, 'blocked');
+      } finally {
+        launcher.dispose();
+        console.error = originalError;
+        execution.restore();
+      }
+    });
   }
 });
 
@@ -1345,7 +1601,10 @@ test('launch rejects a false-positive injector return and keeps its evidence', a
       'injector returned without proof\n',
       'warning\n',
     );
-    await assert.rejects(request, /did not contain.*Succeeded/);
+    await assert.rejects(
+      request,
+      /did not contain exactly one.*INJECTOR_RESULT/,
+    );
 
     const runDirectory = launcher.runDirectory;
     assert.ok(runDirectory);
@@ -1375,7 +1634,7 @@ test('launch rejects a false-positive injector return and keeps its evidence', a
   }
 });
 
-test('success marker with a missing PID blocks retries', async () => {
+test('legacy success marker without a structured result blocks retries', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
   const originalError = console.error;
@@ -1386,7 +1645,10 @@ test('success marker with a missing PID blocks retries', async () => {
     const request = launcher.launch({ processName: 'game.exe' });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(null, 'Injecting ReShade ... Succeeded!\n', '');
-    await assert.rejects(request, /valid matched process PID/);
+    await assert.rejects(
+      request,
+      /did not contain exactly one.*INJECTOR_RESULT/,
+    );
     assert.equal(launcher.state, 'blocked');
     await assert.rejects(
       launcher.launch({ processName: 'game.exe' }),
@@ -1417,7 +1679,10 @@ test('ambiguous injector callback and expected-PID mismatch block retries', asyn
         injectorSuccessFor(9001, 'game.exe'),
         '',
       );
-      await assert.rejects(request, /late callback failure/);
+      await assert.rejects(
+        request,
+        /structured success result while the injector process failed/,
+      );
       assert.equal(launcher.state, 'blocked');
       await assert.rejects(
         launcher.launch({ processName: 'game.exe' }),

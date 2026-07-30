@@ -104,7 +104,8 @@ Native notification and injector startup still happen after ordinary
 unsuspended process creation, rather than through a `CREATE_SUSPENDED` launcher.
 Independent launchers remove the one-shot gap for overlapping and
 launcher/child process chains, but the controlled acceptance launchers remain
-the deterministic injection-before-graphics proof.
+the deterministic injection-before-device-creation proof through a cooperating
+pre-device startup barrier.
 
 The demo uses the SDK's exact-PID target:
 
@@ -128,11 +129,10 @@ await launcher.attach(session, {
 });
 ```
 
-Use exact PID targeting for a process that your own launcher created suspended,
-or only when the caller can otherwise prove graphics initialization has not
-started. It is not post-render attachment. In a controlled probe, injecting
-after rendering had started loaded `ReShade64.dll` but did not adopt the
-existing device or swap chain.
+Use exact PID targeting only when the caller can reach the process before
+graphics initialization starts. It is not post-render attachment. In a
+controlled probe, injecting after rendering had started loaded
+`ReShade64.dll` but did not adopt the existing device or swap chain.
 
 ## Acceptance launchers
 
@@ -148,6 +148,8 @@ Every human-facing runtime case has its own launcher under
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-electron-scene.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk.ps1
 ```
@@ -157,12 +159,15 @@ New runs are written under `build/electron-game-overlay-runtime`. Dated
 acceptance evidence produced before the runtime was promoted and renamed; they
 are intentionally preserved as evidence paths, not current build instructions.
 
-The deterministic D3D11 and D3D12 exact-PID gates create the target suspended,
-inject through the real frontend, and resume only after injection succeeds. The
-D3D12 client gate exercises two fresh target/client cycles. The reinjection gate
-keeps one Electron client alive while the controlled target exits and restarts.
-The Gun Frog gate is a permitted real-game proof for the process-name,
-arm-before-launch route.
+The deterministic D3D11 and D3D12 exact-PID gates start the target normally but
+hold controlled device creation behind a marker, then inject through the real
+frontend before releasing that marker. The shared-runtime variants start with a
+compatible target-local `dxgi.dll` proxy already loaded and prove that the SDK
+registers only its staged add-on without replacing the proxy or its
+configuration. The D3D12 client gate exercises two fresh target/client cycles.
+The reinjection gate keeps one Electron client alive while the controlled
+target exits and restarts. The Gun Frog gate is a permitted real-game proof for
+the process-name, arm-before-launch route.
 
 ## Input acceptance boundary
 

@@ -280,6 +280,8 @@ export class SteamGameAutoAttacher {
   private watcher: ProcessWatcher | null = null;
   private armedLauncher: ReShadeLauncherForSteamTarget | null = null;
   private rearmTimer: ReturnType<typeof setTimeout> | null = null;
+  private prearmedRearmBlocked = false;
+  private blockedPrearmedTargetPid: number | null = null;
   private readonly deletedTargetPids = new Set<number>();
   private removeSessionListener: (() => void) | null = null;
   private watcherStatusValue: ProcessWatcherStatus = 'stopped';
@@ -421,6 +423,8 @@ export class SteamGameAutoAttacher {
     }
     this.armedLauncher?.dispose();
     this.armedLauncher = null;
+    this.prearmedRearmBlocked = false;
+    this.blockedPrearmedTargetPid = null;
     if (this.preparedLauncherRetryTimer) {
       clearTimeout(this.preparedLauncherRetryTimer);
       this.preparedLauncherRetryTimer = null;
@@ -566,7 +570,8 @@ export class SteamGameAutoAttacher {
       !this.watcher ||
       this.watcherStatusValue !== 'running' ||
       this.armedLauncher ||
-      this.rearmTimer
+      this.rearmTimer ||
+      this.prearmedRearmBlocked
     ) {
       return;
     }
@@ -637,13 +642,13 @@ export class SteamGameAutoAttacher {
           return;
         }
         this.armedLauncher = null;
+        const retryIsSafe = launcher.state === 'idle';
         launcher.dispose();
         const diagnostic = isReShadeOperationError(error)
           ? error.diagnostic
           : null;
         const coordinated =
-          diagnostic?.code === 'target-injection-already-claimed' ||
-          diagnostic?.code === 'target-runtime-conflict';
+          diagnostic?.code === 'target-injection-already-claimed';
         const entry =
           diagnostic?.pid === undefined
             ? undefined
@@ -665,7 +670,25 @@ export class SteamGameAutoAttacher {
         console.error(
           `STEAM_GAME_AUTO_ATTACH_ARM_FAILED detail=${JSON.stringify(getErrorMessage(error))}`,
         );
-        this.schedulePrearmedLauncherRetry(error);
+        if (retryIsSafe) {
+          this.schedulePrearmedLauncherRetry(error);
+        } else {
+          this.prearmedRearmBlocked = true;
+          this.blockedPrearmedTargetPid = diagnostic?.pid ?? null;
+          console.error(
+            `STEAM_GAME_AUTO_ATTACH_REARM_BLOCKED detail=${JSON.stringify(
+              this.blockedPrearmedTargetPid === null
+                ? 'the prior prearmed injection outcome is indeterminate and has no proven target PID'
+                : `the prior prearmed injection outcome is indeterminate for target pid=${this.blockedPrearmedTargetPid}`,
+            )}`,
+          );
+          if (
+            this.blockedPrearmedTargetPid !== null &&
+            this.deletedTargetPids.has(this.blockedPrearmedTargetPid)
+          ) {
+            this.releaseBlockedPrearmedLane(this.blockedPrearmedTargetPid);
+          }
+        }
       });
   }
 
@@ -675,7 +698,8 @@ export class SteamGameAutoAttacher {
       this.disposed ||
       !this.started ||
       this.watcherStatusValue !== 'running' ||
-      this.rearmTimer
+      this.rearmTimer ||
+      this.prearmedRearmBlocked
     ) {
       return;
     }
@@ -917,6 +941,7 @@ export class SteamGameAutoAttacher {
     const entry = this.targetEntries.get(pid);
     if (!entry) {
       this.deletedTargetPids.add(pid);
+      this.releaseBlockedPrearmedLane(pid);
       return;
     }
     for (const attempt of entry.attempts) {
@@ -929,6 +954,18 @@ export class SteamGameAutoAttacher {
     this.disposeTargetAttempts(entry);
     console.log(`STEAM_GAME_AUTO_ATTACH_RELEASED pid=${pid}`);
     this.publishState();
+    this.releaseBlockedPrearmedLane(pid);
+  }
+
+  private releaseBlockedPrearmedLane(pid: number): void {
+    if (!this.prearmedRearmBlocked || this.blockedPrearmedTargetPid !== pid) {
+      return;
+    }
+
+    this.prearmedRearmBlocked = false;
+    this.blockedPrearmedTargetPid = null;
+    console.log(`STEAM_GAME_AUTO_ATTACH_REARM_EXIT_CONFIRMED pid=${pid}`);
+    this.armNextSteamProcess();
   }
 
   private handleWatcherStatus(

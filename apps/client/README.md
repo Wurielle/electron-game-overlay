@@ -91,25 +91,30 @@ replacement preparation immediately. A failed preparation emits
 `STEAM_GAME_RUNTIME_PREPARE_FAILED` and retries with bounded backoff while
 queued targets remain recorded. Non-mutating artifacts are hard-linked into the
 directory when the filesystem permits, with portable copying as fallback.
-`ReShade64.dll` and `ReShade.ini` remain private copies because the injector
-adjusts the DLL ACL and ReShade may update its configuration. Disposing unused
-prepared launchers removes their directories. The SDK marks every isolated run
-as owned, but marks it reclaimable only after a definite-safe failure or an
-OS-confirmed target disconnect. Best-effort asynchronous sweeps after staging
-and retirement remove reclaimable runs older than seven days or outside the
-newest 64 reclaimable runs. Prepared, active, indeterminate, unmarked,
-malformed, and legacy pre-marker directories remain untouched.
+`ReShade64.dll`, `electron_game_overlay.addon64`, and `ReShade.ini` remain
+private copies because the injector adjusts payload ACLs and ReShade may update
+its configuration. Disposing unused prepared launchers removes their
+directories. The SDK marks every isolated run as owned, but marks it reclaimable
+only after a definite-safe failure or an OS-confirmed target disconnect.
+Best-effort asynchronous sweeps after staging and retirement remove reclaimable
+runs older than seven days or outside the newest 64 reclaimable runs. Prepared,
+active, indeterminate, unmarked, malformed, and legacy pre-marker directories
+remain untouched.
 
 The prearmed and exact-PID lanes may select the same process. A native per-PID
 claim serializes that overlap before target mutation. When the path lane wins,
 the coordinator adopts its selected target and disposes the exact-PID loser;
-when the exact lane wins, the path attempt yields without injecting. The broad
-watcher is rearmed after each selection and after target exit. Duplicate
-native/WMI creation events for a live PID are ignored, and process deletion
-releases that PID so a later reused PID can be attempted again. Neither lane has
-an executable-name filter or helper exclusion. This is still ordinary
-unsuspended user-mode observation and cannot provide a universal pre-entry
-timing guarantee.
+when the exact lane wins, the path attempt yields without injecting. After a
+failed attach, the broad watcher is rearmed only when native claim coordination
+proves another lane won or the failure is definitely safe because no runtime or
+add-on payload loaded. An indeterminate attempt remains blocked instead of being
+retried blindly; when its diagnostic identifies a PID, only that PID's
+confirmed exit releases the lane. An unknown-PID indeterminate result remains
+blocked for the client lifetime. Duplicate native/WMI creation events for a
+live PID are ignored, and process deletion releases that PID so a later reused
+PID can be attempted again. Neither lane has an executable-name filter or
+helper exclusion. This is still ordinary unsuspended user-mode observation and
+cannot provide a universal pre-entry timing guarantee.
 
 An initial PEAK run caught its Unity 6 D3D12 initialization and rendered the
 interactive Electron menu, but it used the retired full-system 5 ms observer; a
@@ -158,6 +163,15 @@ graphics device and swap chain; manually finding and entering a PID after a
 game is already rendering is not a supported late-attachment workflow.
 `--reshade-runtime-dir=<absolute-path>` remains a strict development/test
 override; invalid or incomplete runtime assets fail instead of falling back.
+
+The injector emits one strict `ELECTRON_GAME_OVERLAY_INJECTOR_RESULT` record.
+The SDK accepts either `runtimeMode: 'injected-runtime'`, where it loaded the
+staged runtime and add-on, or `runtimeMode: 'existing-runtime'`, where it reused
+a compatible runtime already loaded in the exact target PID. Existing-runtime
+reuse is intentionally narrow: the project-built runtime must expose host ABI
+1, and the exact-PID attempt must register the staged private add-on before that
+host closes its pre-initialization gate. A stock, unknown, already-active, or
+racing runtime fails closed instead of attempting unsafe late registration.
 
 The status moves from `attaching` to `connected` only after the SDK has
 correlated the requested exact PID with its authenticated transport. A failed or
@@ -235,30 +249,60 @@ backends:
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
 ```
 
-They create the target with Windows `CREATE_SUSPENDED`, enter its basename and
-exact PID in the real Electron frontend, click **Inject / arm**, and resume the
-primary thread only after injection completes. This deterministically tests the
-required process-exists-before-injection and injection-before-graphics ordering.
+The current gates start the controlled target normally, let normal loader work
+finish, then block the cooperating host near entry at a test-only startup
+marker before window and graphics-device setup. The real Electron frontend
+enters the target basename and exact PID, clicks **Inject / arm**, then the
+runner removes the marker. This proves the process-exists-before-injection and
+injection-before-device ordering without pretending that the production watcher
+owns a suspended process.
 
-Both gates passed on July 13, 2026:
+Both current gates passed on July 30, 2026:
 
-- D3D11 targeted PID 7428. The process-create-to-frontend-click interval was
-  72.393 ms, and the runner emitted
-  `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Historical
-  pre-promotion evidence is under
-  `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`.
-- D3D12 targeted PID 21508. The process-create-to-frontend-click interval was
-  84.061 ms, and the runner emitted
-  `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`. Historical
-  pre-promotion evidence is under
-  `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
+- D3D11 emitted
+  `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is under
+  `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-084815`.
+- D3D12 emitted
+  `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; evidence is under
+  `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-084831`.
 
-Both runs proved the exact injector arguments and that ReShade loaded before
-`ResumeThread`. After resume, transport connection, graphics-API detection, the
-two-window scene, and input acceptance passed. Each target exited with code 0,
-the frontend returned to `idle`, and no target, client, or injector process was
-left behind. This does not prove how much delay an unsuspended external watcher
-can tolerate.
+Both runs proved exact injector arguments, transport connection, graphics-API
+detection, the two-window scene, input acceptance/release, clean target exit,
+and no leftover target, client, or injector process. They do not prove real
+external-watcher latency or arbitrary-game timing.
+
+For historical context only, the July 13 pre-promotion gates used
+`CREATE_SUSPENDED` and proved injection before `ResumeThread`: D3D11 PID 7428
+passed in
+`build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623`,
+and D3D12 PID 21508 passed in
+`build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642`.
+Those records are not the current process-start test contract.
+
+Compatible existing-runtime reuse has its own controlled launchers:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
+```
+
+Each fixture stages the compatible project runtime as a target-local
+`dxgi.dll`, starts the host normally, waits for that proxy to initialize while
+the host is still held by the test-only pre-device marker, and asks the SDK to
+inject only its private staged add-on. The gate verifies
+`runtimeMode: 'existing-runtime'`, the reported host runtime path, exact add-on
+loading, unchanged target-local proxy/config files, and the full render,
+input-interception, release, and game-oracle flow. D3D11 and D3D12 passed on
+July 30, 2026 under
+`build/electron-game-overlay-runtime/client-sdk-d3d11-shared-runtime-20260730-084016`
+and
+`build/electron-game-overlay-runtime/client-sdk-d3d12-shared-runtime-20260730-084003`.
+
+This proves coexistence only with the repository-built ABI-1 host while its
+registration gate is still open. It does not establish compatibility with
+stock or independently modified ReShade builds, an already-active runtime,
+other proxy chains, arbitrary add-on/effect combinations, anti-cheat systems,
+or real-game startup timing.
 
 For the accepted real-game proof, close Gun Frog first and run:
 

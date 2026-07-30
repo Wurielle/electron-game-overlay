@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("d3d11", "d3d12")]
     [string]$Backend,
+    [switch]$ExistingCompatibleRuntime,
     [switch]$SkipBuild
 )
 
@@ -11,29 +12,49 @@ $ErrorActionPreference = "Stop"
 # Reuse the production client gate's window, input-oracle, coordinate, and
 # process-cleanup helpers without running that gate.
 #
-# Scope: this deterministic gate proves the target process exists before the
-# production exact-PID request and that injection finishes before its primary
-# thread runs. It does not claim that an external watcher can suspend arbitrary
-# games quickly enough, or that unsuspended post-swapchain injection works.
+# Scope: this deterministic gate proves the normally initialized target process
+# exists before the production exact-PID request and that injection finishes
+# behind a pre-device startup barrier. It does not claim arbitrary games expose
+# that barrier or that post-swapchain injection works.
 . (Join-Path $PSScriptRoot "run-client-sdk-input-gate.ps1") `
     -Backend $Backend `
     -SkipBuild:$SkipBuild `
     -FunctionsOnly
 
+$GateSlug = if ($ExistingCompatibleRuntime) {
+    "shared-runtime"
+}
+else {
+    "process-start"
+}
 $RunDirectory = Join-Path `
     $BuildRoot `
-    "client-sdk-$Backend-process-start-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+    "client-sdk-$Backend-$GateSlug-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
 $TargetDirectory = Join-Path $RunDirectory "target"
 $TargetExecutablePath = Join-Path $TargetDirectory $HostName
+$StartupBarrierPath =
+    Join-Path $TargetDirectory "electron-game-overlay-startup-barrier.enabled"
+$ExistingRuntimeDirectory = if ($ExistingCompatibleRuntime) {
+    $TargetDirectory
+}
+else {
+    Join-Path $RunDirectory "existing-runtime"
+}
+$RuntimeDistributionDirectory = Join-Path $RuntimeRoot "dist\win32-x64"
 $UserData = Join-Path $RunDirectory "user-data"
 $ClientStdout = Join-Path $RunDirectory "client.stdout.log"
 $ClientStderr = Join-Path $RunDirectory "client.stderr.log"
 $FrontendActions = Join-Path $RunDirectory "frontend-actions.jsonl"
-$ResultMarker = "${BackendLabel}_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS"
+$ResultMarker = if ($ExistingCompatibleRuntime) {
+    "${BackendLabel}_REAL_CLIENT_SDK_SHARED_RUNTIME_GATE_PASS"
+}
+else {
+    "${BackendLabel}_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS"
+}
 $ClientProcess = $null
-$SuspendedHost = $null
 $HostProcess = $null
 $ReShadeRunDirectory = $null
+$ExistingRuntimeArtifactHashes = $null
 $HostExitedNormally = $false
 
 function Get-FreeTcpPort {
@@ -307,8 +328,7 @@ function Get-StagedRunDirectoryFromMatch {
 function Assert-ExactTargetProcess {
     param(
         [Parameter(Mandatory = $true)][int]$ProcessId,
-        [Parameter(Mandatory = $true)][string]$ExpectedPath,
-        [switch]$AllowUninitializedImage
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
     )
 
     $Target = Get-CimInstance `
@@ -322,222 +342,7 @@ function Assert-ExactTargetProcess {
             [StringComparison]::OrdinalIgnoreCase)) {
         return
     }
-    if ($AllowUninitializedImage -and $Target -and
-        [string]::Equals(
-            $Target.Name,
-            [IO.Path]::GetFileName($ExpectedPath),
-            [StringComparison]::OrdinalIgnoreCase) -and
-        [string]::Equals(
-            $Target.CommandLine,
-            "`"$ExpectedPath`"",
-            [StringComparison]::OrdinalIgnoreCase)) {
-        # CREATE_SUSPENDED returns before the initial user-mode loader pass, so
-        # Win32_Process.ExecutablePath is empty. The exact CreateProcess command
-        # and PID are authoritative until the resumed image publishes its path.
-        return
-    }
     throw "Controlled target PID $ProcessId came from an unexpected path/command: path=$($Target.ExecutablePath) command=$($Target.CommandLine)"
-}
-
-if (-not ("ReShadeProcessStartGate.SuspendedProcess" -as [type])) {
-    Add-Type -TypeDefinition @"
-using System;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
-
-namespace ReShadeProcessStartGate
-{
-    public sealed class SuspendedProcess : IDisposable
-    {
-        private const uint CREATE_SUSPENDED = 0x00000004;
-        private IntPtr processHandle;
-        private IntPtr primaryThreadHandle;
-        private bool resumed;
-
-        private SuspendedProcess(
-            Process process,
-            IntPtr processHandle,
-            IntPtr primaryThreadHandle)
-        {
-            Process = process;
-            this.processHandle = processHandle;
-            this.primaryThreadHandle = primaryThreadHandle;
-        }
-
-        public Process Process { get; private set; }
-
-        public static SuspendedProcess Start(string executablePath, string workingDirectory)
-        {
-            STARTUPINFO startup = new STARTUPINFO();
-            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-            PROCESS_INFORMATION information;
-            StringBuilder commandLine = new StringBuilder(
-                "\"" + executablePath.Replace("\"", "\\\"") + "\"");
-            bool created = CreateProcess(
-                executablePath,
-                commandLine,
-                IntPtr.Zero,
-                IntPtr.Zero,
-                false,
-                CREATE_SUSPENDED,
-                IntPtr.Zero,
-                workingDirectory,
-                ref startup,
-                out information);
-            if (!created)
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(),
-                    "CreateProcess(CREATE_SUSPENDED) failed.");
-
-            try
-            {
-                Process process = Process.GetProcessById((int)information.dwProcessId);
-                return new SuspendedProcess(
-                    process,
-                    information.hProcess,
-                    information.hThread);
-            }
-            catch (Exception startError)
-            {
-                Exception cleanupError = null;
-                if (!TerminateProcess(information.hProcess, 1))
-                {
-                    cleanupError = new Win32Exception(
-                        Marshal.GetLastWin32Error(),
-                        "Failed to terminate the suspended process after its .NET wrapper could not be created.");
-                }
-                else
-                {
-                    uint wait = WaitForSingleObject(information.hProcess, 5000);
-                    if (wait != 0)
-                    {
-                        cleanupError = new Win32Exception(
-                            wait == 0xFFFFFFFF ? Marshal.GetLastWin32Error() : 1460,
-                            "The suspended process did not terminate after its .NET wrapper could not be created.");
-                    }
-                }
-                CloseHandle(information.hThread);
-                CloseHandle(information.hProcess);
-                if (cleanupError != null)
-                    throw new AggregateException(startError, cleanupError);
-                throw;
-            }
-        }
-
-        public void Resume()
-        {
-            if (resumed)
-                return;
-            uint previous = ResumeThread(primaryThreadHandle);
-            if (previous == uint.MaxValue)
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(),
-                    "ResumeThread failed.");
-            resumed = true;
-        }
-
-        public uint WaitForExitAndGetCode(uint timeoutMilliseconds)
-        {
-            if (processHandle == IntPtr.Zero)
-                throw new ObjectDisposedException("SuspendedProcess");
-
-            uint wait = WaitForSingleObject(processHandle, timeoutMilliseconds);
-            if (wait == 258)
-                throw new TimeoutException("The controlled process did not exit before the timeout.");
-            if (wait == 0xFFFFFFFF)
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(),
-                    "WaitForSingleObject failed for the controlled process.");
-            if (wait != 0)
-                throw new InvalidOperationException(
-                    "Unexpected process wait result: " + wait + ".");
-
-            uint exitCode;
-            if (!GetExitCodeProcess(processHandle, out exitCode))
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(),
-                    "GetExitCodeProcess failed for the controlled process.");
-            return exitCode;
-        }
-
-        public void Dispose()
-        {
-            if (primaryThreadHandle != IntPtr.Zero)
-            {
-                CloseHandle(primaryThreadHandle);
-                primaryThreadHandle = IntPtr.Zero;
-            }
-            if (processHandle != IntPtr.Zero)
-            {
-                CloseHandle(processHandle);
-                processHandle = IntPtr.Zero;
-            }
-        }
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct STARTUPINFO
-        {
-            public int cb;
-            public string lpReserved;
-            public string lpDesktop;
-            public string lpTitle;
-            public uint dwX;
-            public uint dwY;
-            public uint dwXSize;
-            public uint dwYSize;
-            public uint dwXCountChars;
-            public uint dwYCountChars;
-            public uint dwFillAttribute;
-            public uint dwFlags;
-            public ushort wShowWindow;
-            public ushort cbReserved2;
-            public IntPtr lpReserved2;
-            public IntPtr hStdInput;
-            public IntPtr hStdOutput;
-            public IntPtr hStdError;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct PROCESS_INFORMATION
-        {
-            public IntPtr hProcess;
-            public IntPtr hThread;
-            public uint dwProcessId;
-            public uint dwThreadId;
-        }
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern bool CreateProcess(
-            string applicationName,
-            StringBuilder commandLine,
-            IntPtr processAttributes,
-            IntPtr threadAttributes,
-            bool inheritHandles,
-            uint creationFlags,
-            IntPtr environment,
-            string currentDirectory,
-            ref STARTUPINFO startupInfo,
-            out PROCESS_INFORMATION processInformation);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern uint ResumeThread(IntPtr thread);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool TerminateProcess(IntPtr process, uint exitCode);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
-
-        [DllImport("kernel32.dll")]
-        private static extern bool CloseHandle(IntPtr handle);
-    }
-}
-"@
 }
 
 function Test-OverlayInputAndRelease {
@@ -763,19 +568,11 @@ function Stop-OwnedProcesses {
         $HostCleanupError = $_
     }
 
-    try {
-        foreach ($Injector in @(Get-OwnedInjectorProcesses)) {
-            Stop-Process -Id $Injector.ProcessId -Force -ErrorAction SilentlyContinue
-            Wait-Process -Id $Injector.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
-        }
-
-        Stop-AttemptElectronProcesses -UserData $UserData
+    foreach ($Injector in @(Get-OwnedInjectorProcesses)) {
+        Stop-Process -Id $Injector.ProcessId -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $Injector.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
     }
-    finally {
-        if ($SuspendedHost) {
-            $SuspendedHost.Dispose()
-        }
-    }
+    Stop-AttemptElectronProcesses -UserData $UserData
     if ($HostCleanupError) {
         throw $HostCleanupError
     }
@@ -831,6 +628,14 @@ if (-not $SkipBuild) {
 if (-not (Test-Path -LiteralPath $BuiltHost -PathType Leaf)) {
     throw "The controlled $BackendLabel host is unavailable: $BuiltHost"
 }
+if ($ExistingCompatibleRuntime) {
+    foreach ($ArtifactName in @("ReShade64.dll", "ReShade.ini")) {
+        $ArtifactPath = Join-Path $RuntimeDistributionDirectory $ArtifactName
+        if (-not (Test-Path -LiteralPath $ArtifactPath -PathType Leaf)) {
+            throw "The shared-runtime fixture artifact is unavailable: $ArtifactPath"
+        }
+    }
+}
 
 New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
 Copy-Item -LiteralPath $BuiltHost -Destination $TargetExecutablePath
@@ -838,19 +643,36 @@ New-Item `
     -ItemType File `
     -Path (Join-Path $TargetDirectory "reshade-input-gate.enabled") `
     -Force | Out-Null
+New-Item -ItemType File -Path $StartupBarrierPath -Force | Out-Null
+if ($ExistingCompatibleRuntime) {
+    # Model a game that already ships a compatible ReShade installation:
+    # loading the runtime as the local DXGI proxy happens before the controlled
+    # entry-point barrier, just as it does for an existing modded game.
+    Copy-Item `
+        -LiteralPath (Join-Path $RuntimeDistributionDirectory "ReShade64.dll") `
+        -Destination (Join-Path $ExistingRuntimeDirectory "dxgi.dll")
+    Copy-Item `
+        -LiteralPath (Join-Path $RuntimeDistributionDirectory "ReShade.ini") `
+        -Destination (Join-Path $ExistingRuntimeDirectory "ReShade.ini")
+}
 
 Write-Host ""
-Write-Host "Production client/SDK $BackendLabel process-start exact-PID injection gate"
+Write-Host "Production client/SDK $BackendLabel $GateSlug exact-PID injection gate"
 Write-Host "  - The real Electron client/session starts without an automatic target."
-Write-Host "  - The controlled host process is created first with CREATE_SUSPENDED."
+Write-Host "  - The controlled host starts normally behind a pre-device startup barrier."
+if ($ExistingCompatibleRuntime) {
+    Write-Host "  - A compatible local DXGI proxy is already loaded without the Electron add-on."
+    Write-Host "  - The SDK must reuse that runtime and load only its staged add-on."
+}
 Write-Host "  - Its exact PID is entered in the production frontend immediately."
-Write-Host "  - ReShade is proved loaded before the primary thread is resumed."
+Write-Host "  - ReShade is proved loaded before device creation is released."
 Write-Host "  - This is a process-creation case, not the known +3 s post-swapchain case."
-Write-Host "  - It does not prove unsuspended watcher latency or arbitrary-game timing."
+Write-Host "  - It does not prove real external-watcher latency or arbitrary-game timing."
 Write-Host "  - Evidence is preserved in: $RunDirectory"
 Write-Host ""
 
 $ControlledEnvironmentVariables = @(
+    "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
     "RESHADE_BASE_PATH_OVERRIDE",
     "RESHADE_DISABLE_GRAPHICS_HOOK",
     "RESHADE_DISABLE_INPUT_HOOK",
@@ -918,17 +740,48 @@ try {
     $AfterIndex = $BeforeTargetLog.Length - 1
 
     $CreateRequestUtc = [DateTime]::UtcNow
-    $SuspendedHost = [ReShadeProcessStartGate.SuspendedProcess]::Start(
-        $TargetExecutablePath,
-        $TargetDirectory
-    )
-    $HostProcess = $SuspendedHost.Process
+    $HostProcess = Start-Process `
+        -FilePath $TargetExecutablePath `
+        -WorkingDirectory $TargetDirectory `
+        -PassThru
     $ProcessCreatedUtc = [DateTime]::UtcNow
     $HostStartTimeUtc = $HostProcess.StartTime.ToUniversalTime()
     Assert-ExactTargetProcess `
         -ProcessId $HostProcess.Id `
-        -ExpectedPath $TargetExecutablePath `
-        -AllowUninitializedImage
+        -ExpectedPath $TargetExecutablePath
+
+    if ($ExistingCompatibleRuntime) {
+        $ExistingRuntimeLog =
+            Join-Path $ExistingRuntimeDirectory "ReShade.log"
+        $ExistingRuntimeReadyDeadline = [DateTime]::UtcNow.AddSeconds(20)
+        Wait-ForReShadeMarker `
+            -Path $ExistingRuntimeLog `
+            -Marker "Initialized." `
+            -Deadline $ExistingRuntimeReadyDeadline `
+            -HostProcess $HostProcess
+        $ExpectedExistingRuntimePath = [IO.Path]::GetFullPath(
+            (Join-Path $ExistingRuntimeDirectory "dxgi.dll")
+        )
+        $LoadedExistingRuntime = @($HostProcess.Modules) |
+            Where-Object {
+                $_.FileName -and
+                [string]::Equals(
+                    [IO.Path]::GetFullPath($_.FileName),
+                    $ExpectedExistingRuntimePath,
+                    [StringComparison]::OrdinalIgnoreCase)
+            }
+        if ($LoadedExistingRuntime.Count -ne 1) {
+            throw "The controlled target did not load the compatible DXGI proxy: $ExpectedExistingRuntimePath"
+        }
+        $ExistingRuntimeArtifactHashes = @{}
+        foreach ($ArtifactName in @("dxgi.dll", "ReShade.ini")) {
+            $ExistingRuntimeArtifactHashes[$ArtifactName] = (
+                Get-FileHash `
+                    -Algorithm SHA256 `
+                    -LiteralPath (Join-Path $ExistingRuntimeDirectory $ArtifactName)
+            ).Hash
+        }
+    }
 
     $FrontendAction = Invoke-ExactFrontendInjection `
         -WebSocketUrl $DevToolsPage.webSocketDebuggerUrl `
@@ -940,8 +793,9 @@ try {
     ).UtcDateTime
     $ProcessCreateToClickMilliseconds =
         ($InjectionClickUtc - $ProcessCreatedUtc).TotalMilliseconds
-    if ($ProcessCreateToClickMilliseconds -lt 0 -or
-        $ProcessCreateToClickMilliseconds -ge 2000) {
+    if (-not $ExistingCompatibleRuntime -and
+        ($ProcessCreateToClickMilliseconds -lt 0 -or
+            $ProcessCreateToClickMilliseconds -ge 2000)) {
         throw "The exact-PID request was not dispatched in the early process-start window ($([Math]::Round($ProcessCreateToClickMilliseconds, 1)) ms)."
     }
 
@@ -984,8 +838,7 @@ try {
         -Deadline $AttachDeadline
     Assert-ExactTargetProcess `
         -ProcessId $HostPid `
-        -ExpectedPath $TargetExecutablePath `
-        -AllowUninitializedImage
+        -ExpectedPath $TargetExecutablePath
     $InjectorStdout = Join-Path $ReShadeRunDirectory "inject.stdout.log"
     if (-not (Test-Path -LiteralPath $InjectorStdout -PathType Leaf)) {
         throw "The SDK did not preserve injector stdout: $InjectorStdout"
@@ -998,17 +851,47 @@ try {
     if ($SelectionMatches.Count -ne 1) {
         throw "The injector did not select exact controlled PID $HostPid exactly once. Inspect $InjectorStdout."
     }
+    $ExpectedRuntimeMode = if ($ExistingCompatibleRuntime) {
+        "existing-runtime"
+    }
+    else {
+        "injected-runtime"
+    }
+    if (-not $InjectorLog.Contains(
+            "ELECTRON_GAME_OVERLAY_INJECTOR_RESULT") -or
+        -not $InjectorLog.Contains(
+            "`"runtimeMode`":`"$ExpectedRuntimeMode`"")) {
+        throw "The SDK injector did not report runtime mode '$ExpectedRuntimeMode'. Inspect $InjectorStdout."
+    }
 
-    $ReShadeLog = Join-Path $ReShadeRunDirectory "ReShade.log"
+    $ReShadeLog = if ($ExistingCompatibleRuntime) {
+        Join-Path $ExistingRuntimeDirectory "ReShade.log"
+    }
+    else {
+        Join-Path $ReShadeRunDirectory "ReShade.log"
+    }
     Wait-ForReShadeMarker `
         -Path $ReShadeLog `
         -Marker "Initialized." `
         -Deadline $AttachDeadline `
         -HostProcess $HostProcess
-    $ExpectedRuntimePath = [IO.Path]::GetFullPath(
-        (Join-Path $ReShadeRunDirectory "ReShade64.dll")
+    $ExpectedRuntimePath = if ($ExistingCompatibleRuntime) {
+        [IO.Path]::GetFullPath(
+            (Join-Path $ExistingRuntimeDirectory "dxgi.dll")
+        )
+    }
+    else {
+        [IO.Path]::GetFullPath(
+            (Join-Path $ReShadeRunDirectory "ReShade64.dll")
+        )
+    }
+    # Process.Modules is cached by the .NET Process wrapper. Reopen the PID
+    # after injection so the add-on loaded moments ago is present in this
+    # authoritative snapshot.
+    $LoadedModules = @(
+        ([Diagnostics.Process]::GetProcessById($HostPid)).Modules
     )
-    $LoadedRuntime = @($HostProcess.Modules) |
+    $LoadedRuntime = $LoadedModules |
         Where-Object {
             $_.FileName -and
             [string]::Equals(
@@ -1017,9 +900,53 @@ try {
                 [StringComparison]::OrdinalIgnoreCase)
         }
     if ($LoadedRuntime.Count -ne 1) {
-        throw "The exact ReShade runtime was not loaded in suspended PID $HostPid before resume: $ExpectedRuntimePath"
+        throw "The exact ReShade runtime was not loaded in controlled PID $HostPid before startup release: $ExpectedRuntimePath"
     }
-    $RuntimeLoadedBeforeResumeUtc = [DateTime]::UtcNow
+    if ($ExistingCompatibleRuntime) {
+        $ExpectedAddonPath = [IO.Path]::GetFullPath(
+            (Join-Path $ReShadeRunDirectory "electron_game_overlay.addon64")
+        )
+        $LoadedAddon = $LoadedModules |
+            Where-Object {
+                $_.FileName -and
+                [string]::Equals(
+                    [IO.Path]::GetFullPath($_.FileName),
+                    $ExpectedAddonPath,
+                    [StringComparison]::OrdinalIgnoreCase)
+            }
+        if ($LoadedAddon.Count -ne 1) {
+            throw "The staged Electron add-on was not loaded into the compatible runtime before startup release: $ExpectedAddonPath"
+        }
+        $UnexpectedSdkRuntimePath = [IO.Path]::GetFullPath(
+            (Join-Path $ReShadeRunDirectory "ReShade64.dll")
+        )
+        $UnexpectedSdkRuntime = $LoadedModules |
+            Where-Object {
+                $_.FileName -and
+                [string]::Equals(
+                    [IO.Path]::GetFullPath($_.FileName),
+                    $UnexpectedSdkRuntimePath,
+                    [StringComparison]::OrdinalIgnoreCase)
+            }
+        if ($UnexpectedSdkRuntime.Count -ne 0) {
+            throw "The SDK loaded a second ReShade runtime instead of reusing the compatible host."
+        }
+        if (Test-Path `
+                -LiteralPath (Join-Path $ExistingRuntimeDirectory "electron_game_overlay.addon64")) {
+            throw "Shared-runtime attachment copied the Electron add-on into the existing runtime directory."
+        }
+        foreach ($ArtifactName in @("dxgi.dll", "ReShade.ini")) {
+            $ActualHash = (
+                Get-FileHash `
+                    -Algorithm SHA256 `
+                    -LiteralPath (Join-Path $ExistingRuntimeDirectory $ArtifactName)
+            ).Hash
+            if ($ActualHash -ne $ExistingRuntimeArtifactHashes[$ArtifactName]) {
+                throw "Shared-runtime attachment modified existing artifact '$ArtifactName'."
+            }
+        }
+    }
+    $RuntimeLoadedBeforeStartupReleaseUtc = [DateTime]::UtcNow
 
     $ConnectedLine = "RESHADE_CLIENT_TARGET_CONNECTED pid=$HostPid"
     $ConnectedStateLine =
@@ -1030,7 +957,7 @@ try {
     )
     if ($PreResumeClientTail.Contains($ConnectedLine) -or
         $PreResumeClientTail.Contains($ConnectedStateLine)) {
-        throw "The target transport connected before the controlled primary thread was resumed."
+        throw "The target transport connected before the controlled startup barrier was released."
     }
     $PreResumeReShadeLog = Get-Content -Raw -LiteralPath $ReShadeLog
     foreach ($ForbiddenMarker in @(
@@ -1041,19 +968,19 @@ try {
             "Redirecting D3D12CreateDevice"
         )) {
         if ($PreResumeReShadeLog.Contains($ForbiddenMarker)) {
-            throw "ReShade graphics/add-on marker '$ForbiddenMarker' appeared before ResumeThread."
+            throw "ReShade graphics/add-on marker '$ForbiddenMarker' appeared before startup release."
         }
     }
     $PreResumeClientLogBoundaryIndex = $PreResumeClientLog.Length - 1
     $PreResumeBoundaryUtc = [DateTime]::UtcNow
 
-    $ResumeRequestUtc = [DateTime]::UtcNow
-    $SuspendedHost.Resume()
-    $PrimaryThreadResumedUtc = [DateTime]::UtcNow
+    $StartupReleaseRequestUtc = [DateTime]::UtcNow
+    Remove-Item -LiteralPath $StartupBarrierPath -Force
+    $StartupReleasedUtc = [DateTime]::UtcNow
 
-    # The runtime is loaded while suspended, but its add-on transport is
-    # graphics-lifecycle driven and cannot connect until the primary thread is
-    # resumed and creates the device/swap chain.
+    # The runtime is loaded before the controlled graphics boundary, but its
+    # transport is graphics-lifecycle driven and cannot connect until startup
+    # is released and the host creates its device/swap chain.
     $Connected = Wait-ForClientRegex `
         -Path $ClientStdout `
         -Process $ClientProcess `
@@ -1115,12 +1042,12 @@ try {
     }
     Start-Sleep -Milliseconds 250
     [ReShadeClientSdkGate.NativeInputMethods]::SendEscape()
-    try {
-        $HostExitCode = $SuspendedHost.WaitForExitAndGetCode(10000)
-    }
-    catch [TimeoutException] {
+    if (-not $HostProcess.WaitForExit(10000)) {
         throw "Released Escape did not normally close the controlled host."
     }
+    $HostProcess.WaitForExit()
+    $HostProcess.Refresh()
+    $HostExitCode = $HostProcess.ExitCode
     if ($HostExitCode -ne 0) {
         throw "The controlled host exited with code $HostExitCode."
     }
@@ -1156,22 +1083,28 @@ try {
         throw "The ReShade log reported an input/router fault: $($Fault.Line -join ' | ')"
     }
     $TargetDirectoryLog = Join-Path $TargetDirectory "ReShade.log"
-    if (Test-Path -LiteralPath $TargetDirectoryLog -PathType Leaf) {
+    if (-not $ExistingCompatibleRuntime -and
+        (Test-Path -LiteralPath $TargetDirectoryLog -PathType Leaf)) {
         throw "The run wrote an unexpected target-directory log: $TargetDirectoryLog"
     }
 
     $Summary = [pscustomobject]@{
         Result = $ResultMarker
         Backend = $Backend
-        Case = "process-start-exact-pid"
+        Case = if ($ExistingCompatibleRuntime) {
+            "process-start-shared-runtime-exact-pid"
+        }
+        else {
+            "process-start-exact-pid"
+        }
         LateInjectionBoundary = [pscustomobject]@{
             Classification = "early-after-process-create"
-            StartupBarrier = "CREATE_SUSPENDED"
+            StartupBarrier = "pre-device marker"
             OrderingProof =
-                "exact injector argv, injector return, runtime log, and loaded module observed before ResumeThread; transport/API/add-on markers were absent at the pre-resume boundary and observed only after ResumeThread"
+                "exact injector result and loaded runtime modules were observed before removal of the pre-device marker; transport, graphics-API hook, add-on initialization, and first-scene markers appeared only after that startup release"
             ExcludesKnownCase = "+3s post-swapchain injection"
             DoesNotProve =
-                "unsuspended external-watcher latency or arbitrary-game startup timing"
+                "real external-watcher latency or arbitrary-game startup timing"
         }
         ClientProcessId = $ClientProcess.Id
         ClientStartup = [pscustomobject]@{
@@ -1188,16 +1121,17 @@ try {
             ProcessCreateToClickMilliseconds =
                 [Math]::Round($ProcessCreateToClickMilliseconds, 3)
             InjectorReturnedMarkerIndex = $InjectorReturned.Index
-            RuntimeLoadedBeforeResumeUtc =
-                $RuntimeLoadedBeforeResumeUtc.ToString("o")
+            RuntimeLoadedBeforeStartupReleaseUtc =
+                $RuntimeLoadedBeforeStartupReleaseUtc.ToString("o")
             PreResumeClientLogBoundaryIndex =
                 $PreResumeClientLogBoundaryIndex
             PreResumeBoundaryUtc = $PreResumeBoundaryUtc.ToString("o")
             TargetConnectedMarkerIndex = $Connected.Index
             TargetConnectedObservedUtc =
                 $TargetConnectedObservedUtc.ToString("o")
-            ResumeRequestUtc = $ResumeRequestUtc.ToString("o")
-            PrimaryThreadResumedUtc = $PrimaryThreadResumedUtc.ToString("o")
+            StartupReleaseRequestUtc =
+                $StartupReleaseRequestUtc.ToString("o")
+            StartupReleasedUtc = $StartupReleasedUtc.ToString("o")
         }
         ExactPidProof = [pscustomobject]@{
             FrontendProcessName = $FrontendAction.ProcessName

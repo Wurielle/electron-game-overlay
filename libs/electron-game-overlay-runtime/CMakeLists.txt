@@ -46,6 +46,15 @@ set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH
 set(RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-per-pid-claim.patch"
 )
+set(RESHAPE_SHARED_RUNTIME_HOST_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-shared-runtime-host.patch"
+)
+set(RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-export-read-bounds.patch"
+)
+set(RESHAPE_SHARED_RUNTIME_HARDENING_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-shared-runtime-hardening.patch"
+)
 set(RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-legacy-snapshot-observer.patch"
 )
@@ -70,12 +79,12 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "include/reshade.hpp=CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp=80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
     "include/reshade_events.hpp=8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
-    "source/addon_manager.cpp=1023CA3F0A271855CAF9B3D47B03D54443B60433B16EB0C2ED5023B26046046C"
+    "source/addon_manager.cpp=28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
     "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp=90517727A8B376D4F73DA688ABAC89AECF1082CB603E2B2E8F39C386AFD62D06"
+    "tools/injector.cpp=87D5C0A2DF3418C343AC2736CC537F50FD2804F4979046739D1D3C9D7072B037"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
@@ -84,6 +93,9 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
     "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
+    "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
+    "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
+    "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
     "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
     "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
@@ -245,11 +257,12 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply eleven narrow pinned seams: the passive copied-input observer, an injector
+# Apply fourteen narrow pinned seams: the passive copied-input observer, an injector
 # base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
 # observation, loaded-ReShade conflict preflight, per-PID injection ownership,
-# and startup splash suppression. The watcher patches are terminal so existing
+# compatible shared-runtime registration plus its bounded export and loader
+# hardening, and startup splash suppression. The watcher patches are terminal so existing
 # exact-PID and original watcher trees can migrate without replacing those
 # ignored source trees.
 execute_process(
@@ -768,30 +781,56 @@ set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE FALSE)
 set(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED FALSE)
 set(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED FALSE)
 
-# Reject an already-loaded ReShade instance before allocating or writing target
-# memory. This patch identifies ReShade by the same exact exported symbol as the
-# runtime's duplicate-instance guard, never by proxy filenames or adjacent
-# game-directory files. The per-PID claim layers directly over it, so treat that
-# terminal patch as proof that this lower patch is already present.
+# Inspect loaded ReShade instances before allocating or writing target memory.
+# The export-read bounds patch is terminal over shared-runtime hosting,
+# conflict preflight, and the per-PID claim, so it proves all lower injector
+# patches are present in an existing fetched tree.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
-        "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
+        "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-    RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
+    RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED
     OUTPUT_QUIET
     ERROR_QUIET
 )
-if(RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED EQUAL 0)
+if(RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0)
+    set(RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED 0)
+    set(RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED 0)
     set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED 0)
 else()
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
-            "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-        RESULT_VARIABLE RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED
+        RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED
         OUTPUT_QUIET
         ERROR_QUIET
     )
+    if(RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED EQUAL 0)
+        set(RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED 0)
+        set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED 0)
+    else()
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+                "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
+            WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+            RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
+            OUTPUT_QUIET
+            ERROR_QUIET
+        )
+        if(RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED EQUAL 0)
+            set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED 0)
+        else()
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+                    "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
+                WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+                RESULT_VARIABLE RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED
+                OUTPUT_QUIET
+                ERROR_QUIET
+            )
+        endif()
+    endif()
 endif()
 if(NOT RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     execute_process(
@@ -831,14 +870,17 @@ endif()
 # Serialize injectors targeting the same selected PID before either can inspect
 # or mutate that process. This deliberately layers after conflict preflight so
 # existing fetched source trees can migrate by applying one terminal patch.
-execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
-        "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
-    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
-    RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
-    OUTPUT_QUIET
-    ERROR_QUIET
-)
+if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0 AND
+    NOT RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+endif()
 if(NOT RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED EQUAL 0)
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" apply --check
@@ -914,6 +956,145 @@ if(NOT RESHAPE_SUPPRESS_SPLASH_PATCH_APPLIED EQUAL 0)
             "Unable to suppress the pinned ReShade splash window.\n"
             "${RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY_OUTPUT}"
             "${RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# A project-compatible loaded runtime exposes an ABI marker and an atomic
+# pre-initialization gate. The injector can then load only the staged Electron
+# add-on while unknown or already-active ReShade runtimes remain fail-closed.
+if(RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0)
+    set(RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED 0)
+else()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+endif()
+if(NOT RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_SHARED_RUNTIME_HOST_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned shared-runtime host patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to add compatible shared-runtime hosting to ReShade.\n"
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# Bound each remote export-name read to the requested symbol length. This
+# terminal hardening avoids crossing sparse PE image pages while retaining the
+# lexical binary search used by shared-runtime capability inspection.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned injector export-read bounds patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to bound ReShade injector export reads.\n"
+            "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# Make the shared registration hand-off low-CPU and re-entrancy-safe, and
+# measure the copied x64 loader thunk from unwind metadata instead of relying
+# on an unchecked byte-count estimate.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned shared-runtime hardening patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to harden compatible shared-runtime hosting.\n"
+            "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLY_ERROR}"
         )
     endif()
 endif()

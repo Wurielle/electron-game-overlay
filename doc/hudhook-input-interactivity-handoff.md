@@ -39,12 +39,16 @@
 > loaded, rendered the dock, captured Ctrl+I, and accepted the status-window
 > click. No readable temperature sensor was available, so this was not a
 > thermal soak. A later production-launcher hardening slice added typed,
-> structured-clone-safe `ReShadeOperationError` diagnostics and a pre-mutation
-> exact-PID loaded-module check. The check rejects only a loaded module whose PE
-> exports contain the exact `ReShadeVersion` symbol, and fails closed if module
-> inspection cannot complete; filenames and adjacent proxy-like files are not
-> treated as proof. ReShade/proxy coexistence, broader all-layer diagnostics,
-> and clean unload remain deferred. The
+> structured-clone-safe `ReShadeOperationError` diagnostics and bounded
+> exact-PID loaded-module inspection. A July 30 coexistence foundation now
+> reuses a project-built target-local ReShade runtime only when it exports
+> private host ABI 1 and its add-on registration gate is still `OPEN`; the SDK
+> loads only its privately staged add-on and leaves the target proxy and
+> configuration untouched. Faithful D3D11/D3D12 target-local `dxgi.dll` gates
+> passed. Arbitrary stock, unknown, or already-active ReShade runtimes, other
+> proxies, broader all-layer diagnostics, and clean unload remain deferred. An
+> existing runtime may redirect logs with `[INSTALL] BasePath`, so a
+> `ReShade.log` path inferred beside its module is not authoritative. The
 > [production runtime README](../libs/electron-game-overlay-runtime/README.md)
 > is authoritative.
 > The authenticated Node/Rust transport, wire/frame
@@ -82,6 +86,37 @@ transport readiness, and authenticated target connection proof; ReShade selects
 the graphics API without a manual client backend setting. The real client
 imports those public SDK APIs and contains no separate launcher or native
 staging implementation.
+
+## July 30 compatible existing-ReShade and process-start gates
+
+The shared-runtime contract is intentionally private and fail-closed. A
+compatible project-built runtime exports host ABI 1 and exposes an add-on
+registration gate. Only while that gate is `OPEN` may the injector ask the
+already-loaded host to register the run's privately staged add-on. It does not
+replace or rewrite the target-local ReShade proxy or configuration. The
+human-facing
+`d3d11-client-sdk-shared-runtime.ps1` and
+`d3d12-client-sdk-shared-runtime.ps1` launchers exercised a faithful
+target-local `dxgi.dll` proxy and passed the complete controlled scene, input,
+release, and cleanup boundaries on July 30, 2026.
+
+The current exact-PID process-start gates also launch the hosts normally, then
+hold them at a test-only startup marker after normal loader work and before
+graphics-device creation. Both D3D11 and D3D12 passed through the production
+frontend and SDK. This proves the supported pre-device ordering without making
+the test harness own a pre-loader suspended process; it does not prove arbitrary
+external-watcher latency, arbitrary-game timing, or post-render adoption. The
+July 13 suspended-host results remain historical exact-PID injector plumbing
+evidence.
+
+This foundation does not claim compatibility with stock or unknown ReShade
+builds, a compatible runtime whose gate is already active/closed, or unrelated
+graphics proxies. Those combinations remain deferred. Host log evidence also
+has a known reporting limit: the current result infers `ReShade.log` beside the
+loaded host module, while an existing runtime's `[INSTALL] BasePath` can direct
+the real log elsewhere. The full-add-on runtime remains limited to controlled
+targets and offline/single-player applications the operator is allowed to
+modify; anti-cheat-protected targets and bypass work remain out of scope.
 
 ## July 12 ReShade controlled-gate update
 

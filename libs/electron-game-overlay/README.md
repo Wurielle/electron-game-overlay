@@ -18,10 +18,11 @@ configuration under `dist/runtime/win32-x64/reshade`. Consumers call
 executable process name or path fragment with `launcher.attach(session,
 target)`. Each request stages a writable isolated run directory. Immutable
 artifacts are hard-linked when the source and run root share a filesystem, with
-copying as a portable fallback; `ReShade64.dll` and mutable `ReShade.ini` always
-receive private file records. The SDK
+copying as a portable fallback; `ReShade64.dll`,
+`electron_game_overlay.addon64`, and mutable `ReShade.ini` always receive
+private file records. The SDK
 waits for transport discovery, executes the injector without a shell, and
-parses the injector-selected PID, then resolves only after an add-on with that
+requires one strict structured injector result, then resolves only after an add-on with that
 PID and the expected executable basename authenticates back to the session.
 ReShade selects the target graphics API; callers do not select D3D11 or D3D12.
 The staged add-on is `electron_game_overlay.addon64`.
@@ -35,8 +36,16 @@ const config = parseReShadeLaunchConfig(process.argv);
 const launcher = config ? new ReShadeOverlayLauncher(config) : null;
 
 session.start();
-await launcher?.attach(session, { processName: 'game.exe' });
+const result = await launcher?.attach(session, { processName: 'game.exe' });
+console.log(result?.runtimeMode, result?.hostRuntimePath);
 ```
+
+The exported `ReShadeRuntimeMode` is either `injected-runtime` or
+`existing-runtime`. `ReShadeLaunchResult.runtimeMode` identifies which path
+succeeded; compatible reuse also returns `hostRuntimePath`. In injected mode,
+`reshadeLogPath` points into the staged run. In existing mode it is inferred as
+`ReShade.log` beside the host module, but a host configured with ReShade's
+`[INSTALL] BasePath` may write its authoritative log elsewhere.
 
 For launchers that need to prearm before they know an executable basename, use
 a path target. The native injector snapshots and ignores processes that already
@@ -98,7 +107,7 @@ Target authorization leases belong to their `OverlaySession`. Closing the
 session revokes active leases, and an authorization that finishes after close
 is immediately released instead of escaping from a closed session.
 
-Latency-sensitive watchers may stage the next isolated runtime before process
+Latency-sensitive watchers may stage the next isolated run bundle before process
 detection. `prepare()` performs no injection, concurrent calls coalesce, and
 the next `attach()` or `launch()` consumes that prepared directory:
 
@@ -138,7 +147,7 @@ proof that the target exited, so the injection latch remains active while a
 same-PID payload can reauthenticate. The transport polls process liveness and
 emits `game.process.disconnected` only after the OS confirms that PID is gone.
 That terminal event returns the launcher to `idle`, so the same launcher and
-session can attach the restarted executable with a new isolated runtime
+session can attach the restarted executable with a new isolated run
 directory. Client-originated lifecycle events are rejected by the authenticated
 transport.
 
@@ -147,8 +156,9 @@ The exact-PID injector also emits a stable no-injection proof when it fails
 before creating a remote thread; that proven outcome returns to `idle` even
 though the injector child itself spawned.
 Once an injector may have run, an unprovable outcome is deliberately
-`blocked` until the launcher is disposed; retrying could otherwise inject a
-second runtime into a live target. An OS-confirmed exit of the selected PID is
+`blocked` until the launcher is disposed; retrying could otherwise perform a
+second target mutation, inject another runtime, or repeat an existing-runtime
+add-on load against a live target. An OS-confirmed exit of the selected PID is
 the other safe re-arm boundary when that PID authenticated and is observable by
 the transport.
 
@@ -182,24 +192,44 @@ try {
 `error.diagnostic` is a frozen, structured-clone-safe schema-versioned record;
 the error also exposes its `code`, `stage`, and `retrySafety` directly.
 Use `isReShadeOperationError()` for narrowing. A `definite-safe` failure is
-known to precede target mutation and returns the launcher to `idle`;
-`indeterminate` retains the existing fail-closed `blocked` behavior. When a run
-was staged, the diagnostic may include the run directory and injector stdout,
-stderr, and ReShade log paths.
+known not to have loaded a runtime or add-on payload whose duplication would
+make retry unsafe, and returns the launcher to `idle`. It does not promise that
+no bounded remote coordination occurred. `indeterminate` retains the existing
+fail-closed `blocked` behavior. When a run was staged, the diagnostic may
+include the run directory and injector stdout, stderr, and ReShade log paths.
 
 Exact-PID injection performs a bounded module preflight before allocating or
-writing target memory. An already-loaded module is considered a proven ReShade
-conflict only when its PE export table contains the exact `ReShadeVersion`
-export. That case fails with `target-runtime-conflict`. If the target module
-list or a candidate export table cannot be inspected safely, injection fails
-closed with `target-module-inspection-failed`. Both outcomes carry the
-injector's no-injection proof and are retry-safe.
+writing target memory. A loaded module becomes a ReShade candidate only when
+its PE export table contains exact `ReShadeVersion`. Reuse then requires private
+`ElectronGameOverlayReShadeHostAbi` value 1 and an `OPEN`
+`ElectronGameOverlayReShadeAddonGate`:
+
+- `target-runtime-incompatible` means those private capabilities are absent or
+  have the wrong ABI;
+- `target-runtime-reuse-too-late` means compatible registration is already
+  active or closed;
+- `target-runtime-reuse-raced` means the gate changed before the injector could
+  claim it;
+- `target-module-inspection-failed` means module or PE inspection could not
+  complete safely;
+- `existing-runtime-addon-load-failed` means the compatible gate was claimed
+  but the staged add-on did not load.
+
+The first four are `definite-safe` because no ReShade or add-on payload was
+loaded, and return the launcher to `idle`. In the reuse-race case the bounded
+remote loader has already been created, but its gate CAS loses before it changes
+the environment or calls `LoadLibrary`. The add-on-load failure is reported at
+`runtime-initialization`, is `indeterminate`, and keeps the launcher blocked.
+`target-runtime-conflict` remains accepted for older injector protocol
+compatibility but is not emitted by the current native injector.
 
 The preflight deliberately does not reject a process because a module has a
 familiar filename or because `dxgi.dll`, `dinput8.dll`, `ReShade.ini`, or other
 proxy-like files exist beside the executable. Those are not reliable proof of
-what code is loaded. Coexistence with another ReShade/proxy runtime and clean
-runtime disable/unload remain unsupported.
+what code is loaded. The supported path avoids loading a second runtime only
+for this project's compatible pre-initialization host. Stock or differently
+patched ReShade, another proxy runtime, and clean runtime disable/unload remain
+unsupported.
 
 The lower-level `launch()` / `acceptTargetConnection()` pair has no session
 event source and is intentionally one-shot. It stays latched after proof (or an
@@ -218,10 +248,12 @@ Steam-path executable its own exact-PID launcher. A native per-PID claim
 serializes overlap before target mutation. If the path launcher wins, the
 coordinator adopts that target and disposes the exact-PID loser; if an exact
 launcher wins, the path attempt yields safely. The broad watcher is rearmed
-after selection and target exit. The runtime directory can be overridden
-explicitly for development tests; otherwise it resolves relative to the built
-SDK. The legacy `findWindows()` and `session.attachToProcess()` methods still
-throw.
+after safe completion, confirmed target exit, or a definite-safe failure.
+Native claim loss is coordination, not runtime incompatibility; an
+indeterminate add-on-load outcome does not auto-rearm that lane. The runtime
+directory can be overridden explicitly for development tests; otherwise it
+resolves relative to the built SDK. The legacy `findWindows()` and
+`session.attachToProcess()` methods still throw.
 
 The controlled production client/SDK D3D12 gate is available through:
 

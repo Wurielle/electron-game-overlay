@@ -1,0 +1,57 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 5a91787..536d768 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -316,6 +316,13 @@ static module_export_inspection remote_module_export_address(
+ 	constexpr LONG max_pe_header_offset = 1024 * 1024;
+ 	constexpr DWORD max_export_names = 65536;
+ 	constexpr size_t max_export_name_length = 128;
++	const size_t requested_export_name_length = std::strlen(requested_export_name);
++	if (requested_export_name_length == 0 ||
++		requested_export_name_length >= max_export_name_length)
++	{
++		error = ERROR_INVALID_PARAMETER;
++		return module_export_inspection::failed;
++	}
+ 
+ 	export_address = 0;
+ 	const uintptr_t module_base = reinterpret_cast<uintptr_t>(module);
+@@ -426,9 +433,15 @@ static module_export_inspection remote_module_export_address(
+ 		}
+ 
+ 		char export_name[max_export_name_length] = {};
+-		const SIZE_T readable_name_bytes = std::min<SIZE_T>(
+-			sizeof(export_name),
+-			optional_header.SizeOfImage - name_rva);
++		const SIZE_T readable_name_bytes = requested_export_name_length + 1;
++		if (!image_range_is_valid(
++				name_rva,
++				readable_name_bytes,
++				optional_header.SizeOfImage))
++		{
++			error = ERROR_BAD_EXE_FORMAT;
++			return module_export_inspection::failed;
++		}
+ 		if (!read_remote_bytes(
+ 				process,
+ 				module_base + name_rva,
+@@ -437,13 +450,12 @@ static module_export_inspection remote_module_export_address(
+ 				readable_name_bytes,
+ 				error))
+ 			return module_export_inspection::failed;
+-		if (std::memchr(export_name, '\0', readable_name_bytes) == nullptr)
+-		{
+-			error = ERROR_BAD_EXE_FORMAT;
+-			return module_export_inspection::failed;
+-		}
+-
+-		const int comparison = std::strcmp(export_name, requested_export_name);
++		int comparison = std::memcmp(
++			export_name,
++			requested_export_name,
++			requested_export_name_length);
++		if (comparison == 0 && export_name[requested_export_name_length] != '\0')
++			comparison = 1;
+ 		if (comparison == 0)
+ 		{
+ 			WORD ordinal = 0;

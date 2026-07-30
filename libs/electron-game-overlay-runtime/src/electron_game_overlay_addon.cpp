@@ -1448,7 +1448,13 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     {
     case DLL_PROCESS_ATTACH:
         if (!reshade::register_addon(module))
+        {
+            // ReShade's header helper registers the module before negotiating
+            // its exact ImGui table. Undo any partial registration when that
+            // second capability check rejects a shared runtime.
+            reshade::unregister_addon(module);
             return FALSE;
+        }
 
         reshade::register_event<reshade::addon_event::init_device>(on_init_device);
         reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);

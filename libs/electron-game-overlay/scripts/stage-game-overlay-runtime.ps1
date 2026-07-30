@@ -72,6 +72,12 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-conflict-preflight.patch"
     injectorPerPidClaimPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-per-pid-claim.patch"
+    sharedRuntimeHostPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-shared-runtime-host.patch"
+    injectorExportReadBoundsPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-export-read-bounds.patch"
+    sharedRuntimeHardeningPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-shared-runtime-hardening.patch"
     suppressSplashPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-suppress-splash.patch"
 }
@@ -124,7 +130,7 @@ try {
 catch {
     throw "The native runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 15 -or
+if ($BuildStamp.schemaVersion -ne 17 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne "64-bit" -or

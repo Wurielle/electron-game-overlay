@@ -21,10 +21,13 @@ runtime hardening.
 
 ## `reshade-injector-base-path.patch`
 
-Sets `RESHADE_BASE_PATH_OVERRIDE` inside the target to the injector directory, so
-configuration, add-ons, and logs stay in an isolated stage instead of the game
-directory. It also removes the upstream 50 ms post-discovery delay: the Gun Frog
-Unity swap chain was created inside that delay, before the runtime could attach.
+Sets `RESHADE_BASE_PATH_OVERRIDE` inside the target to the injector directory
+when injecting a new runtime, so configuration, add-ons, and logs stay in an
+isolated stage instead of the game directory. Compatible shared-runtime reuse
+leaves the host's ReShade base path unchanged and routes only this project's
+transport through `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`. The patch also removes
+the upstream 50 ms post-discovery delay: the Gun Frog Unity swap chain was
+created inside that delay, before the runtime could attach.
 
 ## `reshade-injector-exact-pid.patch`
 
@@ -104,18 +107,65 @@ backoff until they exit, and the observer never polls all retained handles.
 Adds a bounded target-module inspection after identity and architecture
 validation but before `VirtualAllocEx`, `WriteProcessMemory`, or
 `CreateRemoteThread`. It parses each loaded image module's remote PE export
-table and rejects an exact `ReShadeVersion` export, matching ReShade's own
+table and identifies an exact `ReShadeVersion` export, matching ReShade's own
 duplicate-instance guard without guessing from DLL names or files beside the
 game. The complete module snapshot and export scan retries transient loader-list
 or remote-read races four times, caps the module and export tables, and
-otherwise fails closed before mutation.
+otherwise fails closed before mutation. This is the inspection/protocol
+foundation; the later shared-runtime patch refines a proven ReShade match into
+compatible reuse or a specific fail-closed diagnostic.
 
 Failures emit `ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ` followed by one-line
-JSON schema version 1. The `target-preflight` record uses
-`target-runtime-conflict` or `target-module-inspection-failed`, includes the
+JSON schema version 1. The final `target-preflight` record uses
+`target-runtime-incompatible`, `target-runtime-reuse-too-late`,
+`target-runtime-reuse-raced`, or `target-module-inspection-failed`, includes the
 selected PID and `injectionStarted:false`, and carries the module path or Win32
-error when available. The legacy `ReShade injection not started.` line remains
-present for conservative older launchers.
+error when available. The SDK still accepts the older
+`target-runtime-conflict` code for protocol compatibility. The legacy
+`ReShade injection not started.` line remains present for conservative older
+launchers. In this schema, `injectionStarted:false` means no ReShade runtime or
+add-on payload was loaded. `target-runtime-reuse-raced` is detected after the
+bounded remote loader starts, but its gate CAS loses before environment mutation
+or `LoadLibrary`, so retry cannot duplicate a payload.
+
+## `reshade-injector-per-pid-claim.patch`
+
+Serializes path-watcher and exact-PID injector attempts for the same target
+before remote mutation. One injector owns the native claim; a competing lane
+receives the structured `target-injection-already-claimed` coordination result
+and can yield without treating it as runtime incompatibility.
+
+## `reshade-shared-runtime-host.patch`
+
+Exports the private `ElectronGameOverlayReShadeHostAbi` value 1 and
+`ElectronGameOverlayReShadeAddonGate` state from this repository's runtime.
+Before normal add-on loading begins, the gate is `OPEN`; one injector may claim
+it, set `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`, and load only the privately
+staged Electron add-on. Normal initialization closes or waits out that claim
+before dispatching add-on callbacks.
+
+The injector emits one strict `ELECTRON_GAME_OVERLAY_INJECTOR_RESULT` JSON
+record for success. It reports `injected-runtime`, or `existing-runtime` with
+the host module path and ABI. Stock/differently patched ReShade lacks the
+private ABI, and a compatible runtime whose gate is already active or closed
+cannot accept late registration. Add-on load failure is reported separately as
+`existing-runtime-addon-load-failed` because target mutation has begun.
+
+## `reshade-injector-export-read-bounds.patch`
+
+Bounds each remote export-name read to the requested symbol length and the
+remaining PE image range. This keeps shared-host capability lookup from reading
+across a sparse or malformed image page while preserving the export table's
+lexical binary search.
+
+## `reshade-shared-runtime-hardening.patch`
+
+Closes or waits out external registration for every `load_addons()` caller
+before callback dispatch, and changes the fail-closed wait to a low-CPU
+`Sleep(1)`. The copied remote loader uses the compiler's inline interlocked
+primitive instead of an invalid remote function pointer. Its exact x64 extent
+is measured through unwind metadata and rejected if it is absent or exceeds the
+bounded loader buffer.
 
 ## Migration-only observer patches
 
@@ -141,6 +191,6 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all ten
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all fourteen
 production-patch hashes, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache.

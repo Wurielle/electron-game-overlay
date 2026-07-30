@@ -124,7 +124,8 @@ if (!config) {
 }
 
 const launcher = new ReShadeOverlayLauncher(config);
-await launcher.attach(session, { processName: 'game.exe' });
+const result = await launcher.attach(session, { processName: 'game.exe' });
+console.log(result.runtimeMode, result.hostRuntimePath);
 ```
 
 Pass `--reshade-overlay` exactly once to the Electron main process to opt in and
@@ -136,6 +137,13 @@ back.
 For name-only selection, arm before the target starts. ReShade chooses D3D11 or
 D3D12 after it enters the target; there is no graphics-backend option in the
 application API.
+
+Every successful injector run must produce one strict structured result.
+`runtimeMode` is `injected-runtime` when the staged ReShade DLL was loaded, or
+`existing-runtime` when a compatible host was reused; the latter also supplies
+`hostRuntimePath`. `reshadeLogPath` points into the staged run in injected mode.
+For an existing host it is inferred beside the host module, so a ReShade
+`[INSTALL] BasePath` override can place the authoritative log elsewhere.
 
 A process watcher may provide the exact process it just observed:
 
@@ -150,14 +158,15 @@ The PID must be a positive uint32. The injector verifies the executable
 basename before remote mutation. Call this immediately after process creation
 and before graphics-device and swap-chain initialization. The runtime does not
 currently adopt an already-rendering device or swap chain, so this is not a
-general late-attachment API.
+general late-attachment API. A compatible existing runtime must additionally
+still expose its private ABI-1 add-on gate in the `OPEN` state.
 
 `attach()` moves through `idle`, `attaching`, `connected`, and, for an
 unprovable injector outcome, `blocked`. A transport close is not treated as
 proof that the target exited. Once Windows confirms the selected PID is gone,
 the launcher returns to `idle` and the same session can attach a restarted
 target. A `blocked` launcher must be disposed before retrying so a live target
-cannot accidentally receive a second runtime.
+cannot accidentally receive a second target mutation or payload load.
 
 ## Handle typed attachment diagnostics
 
@@ -189,19 +198,28 @@ The public diagnostic surface consists of `ReShadeDiagnostic`,
 `ReShadeDiagnosticStage`, `ReShadeDiagnosticCode`, `ReShadeRetrySafety`,
 `ReShadeOperationError`, and `isReShadeOperationError()`.
 `error.diagnostic` is frozen, schema-versioned, and structured-clone-safe.
-`definite-safe` means the failure is proven to precede target mutation and the
-launcher can return to `idle`; an `indeterminate` failure keeps it `blocked`.
-Staged-run failures can include paths to the injector stdout/stderr and
-`ReShade.log` evidence.
+`definite-safe` means no runtime or add-on payload was loaded whose duplication
+would make retry unsafe, so the launcher can return to `idle`; it does not
+promise zero remote coordination. An `indeterminate` failure keeps it
+`blocked`. Staged-run failures can include paths to the injector stdout/stderr
+and `ReShade.log` evidence.
 
 For an exact PID, the injector inspects loaded modules before remote allocation
-or thread creation. It reports `target-runtime-conflict` only for a loaded
-module whose PE export table contains the exact `ReShadeVersion` export. If
-module enumeration or export inspection cannot complete safely, it fails closed
-as `target-module-inspection-failed`. Filenames and on-disk proxy-like files are
-not used as conflict proof, so coexistence with another ReShade or proxy runtime
-is still unsupported rather than silently claimed. Clean disable/unload also
-remains future work.
+or thread creation. Exact `ReShadeVersion` identifies a candidate, but reuse
+requires this project's private host ABI 1 and an `OPEN` add-on gate.
+`target-runtime-incompatible`, `target-runtime-reuse-too-late`,
+`target-runtime-reuse-raced`, and `target-module-inspection-failed` are
+`definite-safe` because they load no runtime/add-on payload. The reuse-race
+result can follow bounded remote loader creation, but its gate CAS loses before
+environment mutation or `LoadLibrary`. `existing-runtime-addon-load-failed`
+means gate acquisition began a payload load; it is an `indeterminate`
+`runtime-initialization` failure and keeps the launcher blocked. The older
+`target-runtime-conflict` code remains parseable for protocol compatibility.
+
+Filenames and on-disk proxy-like files are not used as proof. This supports only
+the project's compatible pre-initialization runtime; stock/differently patched
+ReShade, other proxies, arbitrary modded-game coexistence, and clean
+disable/unload remain future work.
 
 ## Input and lifecycle
 
@@ -243,11 +261,18 @@ Use the dedicated launchers under
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
 ```
 
 New evidence is written below `build/electron-game-overlay-runtime`. Dated
 `build/reshade-imgui-overlay/...` paths elsewhere in the documentation are
 historical evidence created before the production package was renamed.
+The current process-start launchers use ordinary process startup plus a
+test-only pre-device marker. The shared-runtime variants load a compatible
+target-local proxy first and prove staged-add-on-only reuse without modifying
+that proxy or its configuration; they do not establish stock ReShade or
+arbitrary modded-game compatibility.
 
 Use the unsigned full add-on runtime only with the included controlled hosts or
 an offline/single-player target you are allowed to modify. Anti-cheat bypasses,

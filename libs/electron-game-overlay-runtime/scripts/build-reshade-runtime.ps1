@@ -47,6 +47,18 @@ $InjectorPerPidClaimPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-per-pid-claim.patch"
 $InjectorPerPidClaimPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorPerPidClaimPatch).Hash
+$SharedRuntimeHostPatch =
+    Join-Path $RuntimeRoot "patches\reshade-shared-runtime-host.patch"
+$SharedRuntimeHostPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $SharedRuntimeHostPatch).Hash
+$InjectorExportReadBoundsPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-export-read-bounds.patch"
+$InjectorExportReadBoundsPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExportReadBoundsPatch).Hash
+$SharedRuntimeHardeningPatch =
+    Join-Path $RuntimeRoot "patches\reshade-shared-runtime-hardening.patch"
+$SharedRuntimeHardeningPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $SharedRuntimeHardeningPatch).Hash
 $SuppressSplashPatch = Join-Path $RuntimeRoot "patches\reshade-suppress-splash.patch"
 $SuppressSplashPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $SuppressSplashPatch).Hash
@@ -65,12 +77,12 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp" = "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
     "include/reshade_events.hpp" = "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
-    "source/addon_manager.cpp" = "1023CA3F0A271855CAF9B3D47B03D54443B60433B16EB0C2ED5023B26046046C"
+    "source/addon_manager.cpp" = "28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp" = "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
     "source/input.cpp" = "4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
     "source/input.hpp" = "C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "90517727A8B376D4F73DA688ABAC89AECF1082CB603E2B2E8F39C386AFD62D06"
+    "tools/injector.cpp" = "87D5C0A2DF3418C343AC2736CC537F50FD2804F4979046739D1D3C9D7072B037"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -114,7 +126,8 @@ function Test-ReShadePatchedSourceState {
     foreach ($Patch in @(
         $PointerInputPatch,
         $InjectorResilientProcessObserverPatch,
-        $InjectorPerPidClaimPatch,
+        $InjectorExportReadBoundsPatch,
+        $SharedRuntimeHardeningPatch,
         $SuppressSplashPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -172,7 +185,7 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 15 -and
+        return $Stamp.schemaVersion -eq 17 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -184,6 +197,9 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorResilientProcessObserverPatchSha256 -eq $InjectorResilientProcessObserverPatchHash -and
             $Stamp.injectorConflictPreflightPatchSha256 -eq $InjectorConflictPreflightPatchHash -and
             $Stamp.injectorPerPidClaimPatchSha256 -eq $InjectorPerPidClaimPatchHash -and
+            $Stamp.sharedRuntimeHostPatchSha256 -eq $SharedRuntimeHostPatchHash -and
+            $Stamp.injectorExportReadBoundsPatchSha256 -eq $InjectorExportReadBoundsPatchHash -and
+            $Stamp.sharedRuntimeHardeningPatchSha256 -eq $SharedRuntimeHardeningPatchHash -and
             $Stamp.suppressSplashPatchSha256 -eq $SuppressSplashPatchHash -and
             $Stamp.configuration -eq "Release" -and
             $Stamp.platform -eq "64-bit" -and
@@ -294,7 +310,7 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 15
+    schemaVersion = 17
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -306,6 +322,9 @@ $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
     injectorResilientProcessObserverPatchSha256 = $InjectorResilientProcessObserverPatchHash
     injectorConflictPreflightPatchSha256 = $InjectorConflictPreflightPatchHash
     injectorPerPidClaimPatchSha256 = $InjectorPerPidClaimPatchHash
+    sharedRuntimeHostPatchSha256 = $SharedRuntimeHostPatchHash
+    injectorExportReadBoundsPatchSha256 = $InjectorExportReadBoundsPatchHash
+    sharedRuntimeHardeningPatchSha256 = $SharedRuntimeHardeningPatchHash
     suppressSplashPatchSha256 = $SuppressSplashPatchHash
     configuration = "Release"
     platform = "64-bit"

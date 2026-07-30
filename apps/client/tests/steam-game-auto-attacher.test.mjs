@@ -249,7 +249,7 @@ test('an exact-PID winner keeps the target connected when the prearmed attempt l
   await autoAttacher.dispose();
 });
 
-test('a path-first target still receives its independent exact-PID attempt when observation arrives', async () => {
+test('a connected path-first target stays connected when its independent runtime-reuse attempt fails', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
   const launchers = [];
@@ -291,15 +291,229 @@ test('a path-first target still receives its independent exact-PID attempt when 
   launchers[2].fail(
     new ReShadeOperationError({
       stage: 'target-preflight',
-      code: 'target-runtime-conflict',
+      code: 'target-runtime-reuse-too-late',
       retrySafety: 'definite-safe',
-      message: 'the prearmed lane already initialized the runtime',
+      message: 'the existing runtime can no longer accept this add-on',
       targetLabel: 'process:path-first.exe:pid:8821',
       pid: info.pid,
     }),
   );
   await flushMicrotasks();
   assert.equal(autoAttacher.targets[0].phase, 'connected');
+
+  await autoAttacher.dispose();
+});
+
+test('existing-runtime reuse failures remain visible with their SDK retry safety', async (t) => {
+  const scenarios = [
+    {
+      code: 'target-runtime-incompatible',
+      retrySafety: 'definite-safe',
+      message: 'the existing ReShade runtime is not ABI compatible',
+      stage: 'target-preflight',
+    },
+    {
+      code: 'target-runtime-reuse-too-late',
+      retrySafety: 'definite-safe',
+      message: 'the existing runtime can no longer accept this add-on',
+      stage: 'target-preflight',
+    },
+    {
+      code: 'target-runtime-reuse-raced',
+      retrySafety: 'definite-safe',
+      message: 'the target runtime changed during reuse preflight',
+      stage: 'target-preflight',
+    },
+    {
+      code: 'existing-runtime-addon-load-failed',
+      retrySafety: 'indeterminate',
+      message: 'the existing runtime add-on load outcome is indeterminate',
+      stage: 'injector',
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.code, async () => {
+      const watcher = new FakeProcessWatcher();
+      const session = new FakeOverlaySession();
+      const launchers = [];
+      const autoAttacher = new SteamGameAutoAttacher({
+        session,
+        reshadeConfig: createConfig(),
+        watcherFactory: () => watcher,
+        launcherFactory: (config) => {
+          const launcher = new FakeLauncher(config);
+          launchers.push(launcher);
+          return launcher;
+        },
+        prearmedPathInjection: true,
+        preparedLauncherPoolSize: 0,
+      });
+      const pid = 8841 + index;
+      const filepath = `D:\\SteamLibrary\\steamapps\\common\\Reuse Failure ${index}\\reuse-failure-${index}.exe`;
+
+      autoAttacher.start();
+      watcher.ready();
+      watcher.create(processInfo(pid, filepath));
+      await flushMicrotasks();
+      assert.equal(launchers.length, 2);
+
+      const failure = new ReShadeOperationError({
+        stage: scenario.stage,
+        code: scenario.code,
+        retrySafety: scenario.retrySafety,
+        message: scenario.message,
+        targetLabel: 'path:\\steamapps\\',
+        pid,
+      });
+      launchers[0].fail(failure);
+      await flushMicrotasks();
+
+      assert.deepEqual(autoAttacher.targets, [
+        {
+          pid,
+          processName: `reuse-failure-${index}.exe`,
+          filepath,
+          phase: 'failed',
+          error: scenario.message,
+          diagnostic: failure.diagnostic,
+        },
+      ]);
+
+      await autoAttacher.dispose();
+    });
+  }
+});
+
+test('the prearmed lane rearms only after a retry-safe failure or its blocked target exits', async (t) => {
+  const scenarios = [
+    {
+      name: 'definite-safe failure rearms',
+      code: 'target-runtime-incompatible',
+      retrySafety: 'definite-safe',
+      expectedLauncherCount: 3,
+    },
+    {
+      name: 'indeterminate failure remains blocked',
+      code: 'existing-runtime-addon-load-failed',
+      retrySafety: 'indeterminate',
+      expectedLauncherCount: 2,
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async () => {
+      const watcher = new FakeProcessWatcher();
+      const session = new FakeOverlaySession();
+      const launchers = [];
+      const autoAttacher = new SteamGameAutoAttacher({
+        session,
+        reshadeConfig: createConfig(),
+        watcherFactory: () => watcher,
+        launcherFactory: (config) => {
+          const launcher = new FakeLauncher(config);
+          launchers.push(launcher);
+          return launcher;
+        },
+        prearmedPathInjection: true,
+        preparedLauncherPoolSize: 0,
+      });
+      const pid = 8851 + index;
+      const filepath = `D:\\SteamLibrary\\steamapps\\common\\Retry Safety ${index}\\retry-safety-${index}.exe`;
+
+      autoAttacher.start();
+      watcher.ready();
+      watcher.create(processInfo(pid, filepath));
+      await flushMicrotasks();
+      assert.equal(launchers.length, 2);
+
+      launchers[0].fail(
+        new ReShadeOperationError({
+          stage:
+            scenario.retrySafety === 'definite-safe'
+              ? 'target-preflight'
+              : 'injector',
+          code: scenario.code,
+          retrySafety: scenario.retrySafety,
+          message: scenario.name,
+          targetLabel: 'path:\\steamapps\\',
+          pid,
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      assert.equal(launchers.length, scenario.expectedLauncherCount);
+      assert.equal(autoAttacher.targets[0].phase, 'failed');
+
+      if (scenario.retrySafety === 'indeterminate') {
+        watcher.delete(processInfo(pid + 100, ''));
+        await flushMicrotasks();
+        assert.equal(
+          launchers.length,
+          2,
+          'an unrelated process exit must not release the blocked path lane',
+        );
+
+        watcher.delete(processInfo(pid, filepath));
+        await flushMicrotasks();
+        assert.equal(
+          launchers.length,
+          3,
+          'the blocked target exit is a safe boundary for a fresh path lane',
+        );
+      }
+
+      await autoAttacher.dispose();
+    });
+  }
+});
+
+test('a target exit observed before an indeterminate path result still releases that lane', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config);
+      launchers.push(launcher);
+      return launcher;
+    },
+    prearmedPathInjection: true,
+    preparedLauncherPoolSize: 0,
+  });
+  const info = processInfo(
+    8853,
+    'D:\\SteamLibrary\\steamapps\\common\\Early Exit\\early-exit.exe',
+  );
+
+  autoAttacher.start();
+  watcher.ready();
+  watcher.create(info);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+
+  watcher.delete(info);
+  await flushMicrotasks();
+  launchers[0].fail(
+    new ReShadeOperationError({
+      stage: 'runtime-initialization',
+      code: 'existing-runtime-addon-load-failed',
+      retrySafety: 'indeterminate',
+      message: 'the result arrived after the observed exit',
+      targetLabel: 'path:\\steamapps\\',
+      pid: info.pid,
+    }),
+  );
+  await flushMicrotasks();
+
+  assert.equal(
+    launchers.length,
+    3,
+    'the retained process-exit proof must release the path lane immediately',
+  );
 
   await autoAttacher.dispose();
 });
@@ -1135,7 +1349,11 @@ class FakeLauncher {
   }
 
   fail(error) {
-    this.state = 'blocked';
+    this.state =
+      error instanceof ReShadeOperationError &&
+      error.retrySafety === 'definite-safe'
+        ? 'idle'
+        : 'blocked';
     this.reject(error);
   }
 

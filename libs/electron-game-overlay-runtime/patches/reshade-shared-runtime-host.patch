@@ -1,0 +1,643 @@
+diff --git a/source/addon_manager.cpp b/source/addon_manager.cpp
+index 3ff3faa..8f39f81 100644
+--- a/source/addon_manager.cpp
++++ b/source/addon_manager.cpp
+@@ -21,6 +21,21 @@ extern HMODULE g_module_handle;
+ 
+ extern std::filesystem::path get_module_path(HMODULE module);
+ 
++namespace
++{
++constexpr LONG electron_game_overlay_addon_gate_open = 0;
++constexpr LONG electron_game_overlay_addon_gate_loading = 1;
++constexpr LONG electron_game_overlay_addon_gate_registered = 2;
++constexpr LONG electron_game_overlay_addon_gate_closed = 3;
++}
++
++// These two exports are a private host capability, not part of ReShade's
++// public add-on ABI. The injector requires both before it will reuse a loaded
++// runtime, so stock or differently patched ReShade builds remain fail-closed.
++extern "C" __declspec(dllexport) const unsigned int ElectronGameOverlayReShadeHostAbi = 1;
++extern "C" __declspec(dllexport) volatile LONG ElectronGameOverlayReShadeAddonGate =
++	electron_game_overlay_addon_gate_open;
++
+ #if RESHADE_VERBOSE_LOG
+ static const char *addon_event_to_string(reshade::addon_event ev)
+ {
+@@ -148,6 +163,36 @@ void reshade::load_addons()
+ 	if (InterlockedIncrement(&s_reference_count) != 1)
+ 		return;
+ 
++	// Serialize the first normal add-on-manager initialization with the one
++	// project-owned external add-on load that may have claimed the gate. This
++	// closes registration before event vectors can be iterated, while allowing
++	// an already-claimed LoadLibrary call to finish registering from DllMain.
++	for (;;)
++	{
++		const LONG state = InterlockedCompareExchange(
++			&ElectronGameOverlayReShadeAddonGate,
++			electron_game_overlay_addon_gate_closed,
++			electron_game_overlay_addon_gate_open);
++		if (state == electron_game_overlay_addon_gate_open ||
++			state == electron_game_overlay_addon_gate_closed)
++			break;
++		if (state == electron_game_overlay_addon_gate_registered)
++		{
++			if (InterlockedCompareExchange(
++					&ElectronGameOverlayReShadeAddonGate,
++					electron_game_overlay_addon_gate_closed,
++					electron_game_overlay_addon_gate_registered) ==
++				electron_game_overlay_addon_gate_registered)
++				break;
++			continue;
++		}
++
++		// The external loader owns the registration vectors until it publishes
++		// either REGISTERED or OPEN. Do not begin normal initialization midway
++		// through its DllMain callbacks.
++		SwitchToThread();
++	}
++
+ 	ini_file &config = global_config();
+ 
+ 	addon_all_loaded = true;
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 68e0422..5a91787 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -9,6 +9,7 @@
+ #include <AclAPI.h>
+ #include <Psapi.h>
+ #include <TlHelp32.h>
++#include <algorithm>
+ #include <cstdint>
+ #include <cstring>
+ #include <string>
+@@ -21,6 +22,8 @@
+ 
+ #define RESHADE_LOADING_THREAD_FUNC 1
+ 
++using compare_exchange_function = LONG (WINAPI *)(volatile LONG *, LONG, LONG);
++
+ struct loading_data
+ {
+ 	WCHAR load_path[MAX_PATH] = L"";
+@@ -28,7 +31,11 @@ struct loading_data
+ 	decltype(&LoadLibraryW) LoadLibraryW = nullptr;
+ 	const WCHAR env_var_name[30] = L"RESHADE_BASE_PATH_OVERRIDE";
+ 	WCHAR env_var_value[MAX_PATH] = L"";
++	const WCHAR routing_env_var_name[36] = L"ELECTRON_GAME_OVERLAY_RUN_DIRECTORY";
++	WCHAR routing_env_var_value[MAX_PATH] = L"";
+ 	decltype(&SetEnvironmentVariableW) SetEnvironmentVariableW = nullptr;
++	volatile LONG *existing_runtime_addon_gate = nullptr;
++	compare_exchange_function CompareExchange = nullptr;
+ };
+ 
+ struct scoped_handle
+@@ -269,10 +276,19 @@ enum class module_export_inspection
+ enum class target_preflight_result
+ {
+ 	clear,
+-	runtime_conflict,
++	reusable_runtime,
++	runtime_incompatible,
++	runtime_reuse_too_late,
+ 	inspection_failed,
+ };
+ 
++struct reusable_runtime_info
++{
++	std::wstring module_path;
++	uintptr_t addon_gate_address = 0;
++	unsigned int host_abi = 0;
++};
++
+ static bool read_remote_bytes(HANDLE process, uintptr_t address, void *destination, SIZE_T size, DWORD &error)
+ {
+ 	SIZE_T bytes_read = 0;
+@@ -293,15 +309,18 @@ static bool image_range_is_valid(DWORD rva, SIZE_T size, DWORD image_size)
+ 	return rva <= image_size && size <= static_cast<SIZE_T>(image_size - rva);
+ }
+ 
+-static module_export_inspection remote_module_exports_reshade_version(
++static module_export_inspection remote_module_export_address(
+ 	HANDLE process,
+ 	HMODULE module,
++	const char *requested_export_name,
++	uintptr_t &export_address,
+ 	DWORD &error)
+ {
+ 	constexpr LONG max_pe_header_offset = 1024 * 1024;
+ 	constexpr DWORD max_export_names = 65536;
+-	constexpr char reshade_export_name[] = "ReShadeVersion";
++	constexpr size_t max_export_name_length = 128;
+ 
++	export_address = 0;
+ 	const uintptr_t module_base = reinterpret_cast<uintptr_t>(module);
+ 	IMAGE_DOS_HEADER dos_header = {};
+ 	if (!read_remote_bytes(process, module_base, &dos_header, sizeof(dos_header), error))
+@@ -350,7 +369,7 @@ static module_export_inspection remote_module_exports_reshade_version(
+ 		return module_export_inspection::not_present;
+ 	if (!image_range_is_valid(
+ 			export_data.VirtualAddress,
+-			sizeof(IMAGE_EXPORT_DIRECTORY),
++			export_data.Size,
+ 			optional_header.SizeOfImage))
+ 	{
+ 		error = ERROR_BAD_EXE_FORMAT;
+@@ -371,6 +390,15 @@ static module_export_inspection remote_module_exports_reshade_version(
+ 		!image_range_is_valid(
+ 			export_directory.AddressOfNames,
+ 			static_cast<SIZE_T>(export_directory.NumberOfNames) * sizeof(DWORD),
++			optional_header.SizeOfImage) ||
++		!image_range_is_valid(
++			export_directory.AddressOfNameOrdinals,
++			static_cast<SIZE_T>(export_directory.NumberOfNames) * sizeof(WORD),
++			optional_header.SizeOfImage) ||
++		export_directory.NumberOfFunctions == 0 ||
++		!image_range_is_valid(
++			export_directory.AddressOfFunctions,
++			static_cast<SIZE_T>(export_directory.NumberOfFunctions) * sizeof(DWORD),
+ 			optional_header.SizeOfImage))
+ 	{
+ 		error = ERROR_BAD_EXE_FORMAT;
+@@ -394,24 +422,67 @@ static module_export_inspection remote_module_exports_reshade_version(
+ 	{
+ 		const size_t middle = first + (last - first) / 2;
+ 		const DWORD name_rva = name_rvas[middle];
+-		if (!image_range_is_valid(name_rva, sizeof(reshade_export_name), optional_header.SizeOfImage))
++		if (!image_range_is_valid(name_rva, 1, optional_header.SizeOfImage))
+ 		{
+ 			error = ERROR_BAD_EXE_FORMAT;
+ 			return module_export_inspection::failed;
+ 		}
+ 
+-		char export_name[sizeof(reshade_export_name)] = {};
++		char export_name[max_export_name_length] = {};
++		const SIZE_T readable_name_bytes = std::min<SIZE_T>(
++			sizeof(export_name),
++			optional_header.SizeOfImage - name_rva);
+ 		if (!read_remote_bytes(
+ 				process,
+ 				module_base + name_rva,
+ 				export_name,
+-				sizeof(export_name),
++				readable_name_bytes,
+ 				error))
+ 			return module_export_inspection::failed;
+-		const int comparison =
+-			std::memcmp(export_name, reshade_export_name, sizeof(reshade_export_name));
++		if (std::memchr(export_name, '\0', readable_name_bytes) == nullptr)
++		{
++			error = ERROR_BAD_EXE_FORMAT;
++			return module_export_inspection::failed;
++		}
++
++		const int comparison = std::strcmp(export_name, requested_export_name);
+ 		if (comparison == 0)
++		{
++			WORD ordinal = 0;
++			if (!read_remote_bytes(
++					process,
++					module_base + export_directory.AddressOfNameOrdinals +
++						middle * sizeof(WORD),
++					&ordinal,
++					sizeof(ordinal),
++					error))
++				return module_export_inspection::failed;
++			if (ordinal >= export_directory.NumberOfFunctions)
++			{
++				error = ERROR_BAD_EXE_FORMAT;
++				return module_export_inspection::failed;
++			}
++
++			DWORD function_rva = 0;
++			if (!read_remote_bytes(
++					process,
++					module_base + export_directory.AddressOfFunctions +
++						static_cast<size_t>(ordinal) * sizeof(DWORD),
++					&function_rva,
++					sizeof(function_rva),
++					error))
++				return module_export_inspection::failed;
++			if (!image_range_is_valid(function_rva, 1, optional_header.SizeOfImage) ||
++				(function_rva >= export_data.VirtualAddress &&
++				 function_rva < export_data.VirtualAddress + export_data.Size))
++			{
++				error = ERROR_BAD_EXE_FORMAT;
++				return module_export_inspection::failed;
++			}
++
++			export_address = module_base + function_rva;
+ 			return module_export_inspection::present;
++		}
+ 		if (comparison < 0)
+ 			first = middle + 1;
+ 		else
+@@ -423,9 +494,16 @@ static module_export_inspection remote_module_exports_reshade_version(
+ 
+ static target_preflight_result inspect_target_for_reshade_once(
+ 	HANDLE process,
+-	std::wstring &conflicting_module_path,
++	reusable_runtime_info &runtime,
+ 	DWORD &error)
+ {
++	constexpr char reshade_version_export[] = "ReShadeVersion";
++	constexpr char host_abi_export[] = "ElectronGameOverlayReShadeHostAbi";
++	constexpr char addon_gate_export[] = "ElectronGameOverlayReShadeAddonGate";
++	constexpr unsigned int supported_host_abi = 1;
++	constexpr LONG addon_gate_open = 0;
++	constexpr LONG addon_gate_registered = 2;
++	constexpr LONG addon_gate_closed = 3;
+ 	constexpr size_t max_modules = 4096;
+ 	std::vector<HMODULE> modules(max_modules);
+ 	DWORD bytes_needed = 0;
+@@ -449,24 +527,92 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 	const size_t module_count = bytes_needed / sizeof(HMODULE);
+ 	for (size_t index = 0; index < module_count; ++index)
+ 	{
+-		switch (remote_module_exports_reshade_version(process, modules[index], error))
++		uintptr_t export_address = 0;
++		switch (remote_module_export_address(
++			process,
++			modules[index],
++			reshade_version_export,
++			export_address,
++			error))
+ 		{
+ 		case module_export_inspection::not_present:
+ 			continue;
+ 		case module_export_inspection::failed:
+ 			return target_preflight_result::inspection_failed;
+ 		case module_export_inspection::present:
+-			WCHAR module_path[32768] = L"";
+-			if (const DWORD length = K32GetModuleFileNameExW(
+-					process,
+-					modules[index],
+-					module_path,
+-					static_cast<DWORD>(sizeof(module_path) / sizeof(module_path[0])));
+-				length != 0 && length < sizeof(module_path) / sizeof(module_path[0]))
+-				conflicting_module_path.assign(module_path, length);
+-			return target_preflight_result::runtime_conflict;
++			break;
++		}
++
++		WCHAR module_path[32768] = L"";
++		const DWORD module_path_length = K32GetModuleFileNameExW(
++			process,
++			modules[index],
++			module_path,
++			static_cast<DWORD>(sizeof(module_path) / sizeof(module_path[0])));
++		if (module_path_length == 0 ||
++			module_path_length >= sizeof(module_path) / sizeof(module_path[0]))
++		{
++			error = GetLastError();
++			if (error == ERROR_SUCCESS)
++				error = ERROR_INSUFFICIENT_BUFFER;
++			return target_preflight_result::inspection_failed;
++		}
++		runtime.module_path.assign(module_path, module_path_length);
++
++		uintptr_t host_abi_address = 0;
++		const module_export_inspection host_abi_inspection =
++			remote_module_export_address(
++				process,
++				modules[index],
++				host_abi_export,
++				host_abi_address,
++				error);
++		if (host_abi_inspection == module_export_inspection::failed)
++			return target_preflight_result::inspection_failed;
++		if (host_abi_inspection == module_export_inspection::not_present)
++			return target_preflight_result::runtime_incompatible;
++		if (!read_remote_bytes(
++				process,
++				host_abi_address,
++				&runtime.host_abi,
++				sizeof(runtime.host_abi),
++				error))
++			return target_preflight_result::inspection_failed;
++		if (runtime.host_abi != supported_host_abi)
++			return target_preflight_result::runtime_incompatible;
++
++		const module_export_inspection addon_gate_inspection =
++			remote_module_export_address(
++				process,
++				modules[index],
++				addon_gate_export,
++				runtime.addon_gate_address,
++				error);
++		if (addon_gate_inspection == module_export_inspection::failed)
++			return target_preflight_result::inspection_failed;
++		if (addon_gate_inspection == module_export_inspection::not_present)
++			return target_preflight_result::runtime_incompatible;
++
++		LONG addon_gate = -1;
++		if (!read_remote_bytes(
++				process,
++				runtime.addon_gate_address,
++				&addon_gate,
++				sizeof(addon_gate),
++				error))
++			return target_preflight_result::inspection_failed;
++		if (addon_gate == addon_gate_open)
++			return target_preflight_result::reusable_runtime;
++		if (addon_gate == addon_gate_registered || addon_gate == addon_gate_closed)
++			return target_preflight_result::runtime_reuse_too_late;
++
++		// LOADING can only be transiently owned by another external loader, and
++		// unknown values are not part of this host ABI. Both are closed to this
++		// attempt without probing the target further.
++		if (addon_gate == 1)
++			return target_preflight_result::runtime_reuse_too_late;
++		return target_preflight_result::runtime_incompatible;
+ 		}
+-	}
+ 
+ 	return target_preflight_result::clear;
+ }
+@@ -481,16 +627,16 @@ static bool is_transient_module_inspection_error(DWORD error)
+ 
+ static target_preflight_result inspect_target_for_reshade(
+ 	HANDLE process,
+-	std::wstring &conflicting_module_path,
++	reusable_runtime_info &runtime,
+ 	DWORD &error)
+ {
+ 	constexpr unsigned int max_inspection_attempts = 4;
+ 	for (unsigned int attempt = 0; attempt < max_inspection_attempts; ++attempt)
+ 	{
+-		conflicting_module_path.clear();
++		runtime = {};
+ 		error = ERROR_SUCCESS;
+ 		const target_preflight_result result =
+-			inspect_target_for_reshade_once(process, conflicting_module_path, error);
++			inspect_target_for_reshade_once(process, runtime, error);
+ 		if (result != target_preflight_result::inspection_failed ||
+ 			!is_transient_module_inspection_error(error) ||
+ 			attempt + 1 == max_inspection_attempts)
+@@ -582,6 +728,57 @@ static bool write_injector_diagnostic(
+ 		fflush(stdout) == 0;
+ }
+ 
++static bool write_existing_runtime_load_diagnostic(
++	DWORD pid,
++	const std::wstring &module_path,
++	DWORD windows_error)
++{
++	std::wstring diagnostic =
++		L"ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {\"schemaVersion\":1,"
++		L"\"stage\":\"existing-runtime-addon-load\","
++		L"\"code\":\"existing-runtime-addon-load-failed\",\"pid\":";
++	diagnostic.append(std::to_wstring(pid));
++	diagnostic.append(L",\"injectionStarted\":true");
++	if (!module_path.empty())
++	{
++		diagnostic.append(L",\"modulePath\":");
++		append_json_string(diagnostic, module_path);
++	}
++	if (windows_error != ERROR_SUCCESS)
++	{
++		diagnostic.append(L",\"windowsErrorCode\":");
++		diagnostic.append(std::to_wstring(windows_error));
++	}
++	diagnostic.push_back(L'}');
++
++	return fwprintf(stdout, L"%ls\n", diagnostic.c_str()) >= 0 &&
++		fflush(stdout) == 0;
++}
++
++static bool write_injector_result(
++	DWORD pid,
++	bool reused_existing_runtime,
++	const reusable_runtime_info &runtime)
++{
++	std::wstring result =
++		L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
++	result.append(std::to_wstring(pid));
++	result.append(
++		reused_existing_runtime
++			? L",\"runtimeMode\":\"existing-runtime\",\"runtimeModulePath\":"
++			: L",\"runtimeMode\":\"injected-runtime\"");
++	if (reused_existing_runtime)
++	{
++		append_json_string(result, runtime.module_path);
++		result.append(L",\"hostAbi\":");
++		result.append(std::to_wstring(runtime.host_abi));
++	}
++	result.push_back(L'}');
++
++	return fwprintf(stdout, L"%ls\n", result.c_str()) >= 0 &&
++		fflush(stdout) == 0;
++}
++
+ enum class injection_claim_result
+ {
+ 	acquired,
+@@ -818,9 +1015,52 @@ static DWORD observe_path_matches(const wchar_t *fragment, DWORD parent_pid)
+ #if RESHADE_LOADING_THREAD_FUNC
+ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ {
+-	arg->SetEnvironmentVariableW(arg->env_var_name, arg->env_var_value);
++	constexpr LONG addon_gate_open = 0;
++	constexpr LONG addon_gate_loading = 1;
++	constexpr LONG addon_gate_registered = 2;
++
++	if (arg->existing_runtime_addon_gate != nullptr &&
++		arg->CompareExchange(
++			arg->existing_runtime_addon_gate,
++			addon_gate_loading,
++			addon_gate_open) != addon_gate_open)
++		return ERROR_RETRY;
++
++	if (!arg->SetEnvironmentVariableW(
++			arg->routing_env_var_name,
++			arg->routing_env_var_value) ||
++		(arg->env_var_value[0] != L'\0' &&
++		 !arg->SetEnvironmentVariableW(arg->env_var_name, arg->env_var_value)))
++	{
++		DWORD error = arg->GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_GEN_FAILURE;
++		if (arg->existing_runtime_addon_gate != nullptr)
++			arg->CompareExchange(
++				arg->existing_runtime_addon_gate,
++				addon_gate_open,
++				addon_gate_loading);
++		return error;
++	}
++
+ 	if (arg->LoadLibraryW(arg->load_path) == NULL)
+-		return arg->GetLastError();
++	{
++		DWORD error = arg->GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_MOD_NOT_FOUND;
++		if (arg->existing_runtime_addon_gate != nullptr)
++			arg->CompareExchange(
++				arg->existing_runtime_addon_gate,
++				addon_gate_open,
++				addon_gate_loading);
++		return error;
++	}
++
++	if (arg->existing_runtime_addon_gate != nullptr)
++		arg->CompareExchange(
++			arg->existing_runtime_addon_gate,
++			addon_gate_registered,
++			addon_gate_loading);
+ 	return ERROR_SUCCESS;
+ }
+ #endif
+@@ -1011,19 +1251,31 @@ int wmain(int argc, wchar_t *argv[])
+ 		break;
+ 	}
+ 
+-	std::wstring conflicting_module_path;
++	reusable_runtime_info reusable_runtime;
+ 	DWORD preflight_error = ERROR_SUCCESS;
+-	switch (inspect_target_for_reshade(remote_process, conflicting_module_path, preflight_error))
++	bool reuse_existing_runtime = false;
++	switch (inspect_target_for_reshade(remote_process, reusable_runtime, preflight_error))
+ 	{
+-	case target_preflight_result::runtime_conflict:
++	case target_preflight_result::runtime_incompatible:
++		if (!write_injector_diagnostic(
++				L"target-runtime-incompatible",
++				pid,
++				reusable_runtime.module_path,
++				ERROR_NOT_SUPPORTED))
++			preflight_error = ERROR_WRITE_FAULT;
++		else
++			preflight_error = ERROR_NOT_SUPPORTED;
++		print_injection_not_started();
++		return preflight_error;
++	case target_preflight_result::runtime_reuse_too_late:
+ 		if (!write_injector_diagnostic(
+-				L"target-runtime-conflict",
++				L"target-runtime-reuse-too-late",
+ 				pid,
+-				conflicting_module_path,
+-				ERROR_ALREADY_EXISTS))
++				reusable_runtime.module_path,
++				ERROR_BUSY))
+ 			preflight_error = ERROR_WRITE_FAULT;
+ 		else
+-			preflight_error = ERROR_ALREADY_EXISTS;
++			preflight_error = ERROR_BUSY;
+ 		print_injection_not_started();
+ 		return preflight_error;
+ 	case target_preflight_result::inspection_failed:
+@@ -1039,9 +1291,16 @@ int wmain(int argc, wchar_t *argv[])
+ 		return preflight_error;
+ 	case target_preflight_result::clear:
+ 		break;
++	case target_preflight_result::reusable_runtime:
++		reuse_existing_runtime = true;
++		break;
+ 	}
+ 
+-	wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
++	wprintf(
++		reuse_existing_runtime
++			? L"Found a matching process with PID %lu! Loading Electron Game Overlay into existing ReShade ... "
++			: L"Found a matching process with PID %lu! Injecting ReShade ... ",
++		pid);
+ 	fflush(stdout);
+ 
+ 	loading_data arg;
+@@ -1053,13 +1312,19 @@ int wmain(int argc, wchar_t *argv[])
+ 	if (wchar_t *const load_path_filename = wcsrchr(arg.load_path, L'\\'))
+ 		*load_path_filename = '\0';
+ #endif
+-	wcscpy_s(arg.env_var_value, arg.load_path);
++	wcscpy_s(arg.routing_env_var_value, arg.load_path);
++	if (!reuse_existing_runtime)
++		wcscpy_s(arg.env_var_value, arg.load_path);
+ 	wcscat_s(arg.load_path, L"\\");
+-	wcscat_s(arg.load_path, remote_is_wow64 ? L"ReShade32.dll" : L"ReShade64.dll");
++	wcscat_s(
++		arg.load_path,
++		reuse_existing_runtime
++			? L"electron_game_overlay.addon64"
++			: (remote_is_wow64 ? L"ReShade32.dll" : L"ReShade64.dll"));
+ 
+ 	if (GetFileAttributesW(arg.load_path) == INVALID_FILE_ATTRIBUTES)
+ 	{
+-		wprintf(L"\nFailed to find ReShade at \"%s\"!\n", arg.load_path);
++		wprintf(L"\nFailed to find injection payload at \"%s\"!\n", arg.load_path);
+ 		if (use_exact_pid || use_path_watcher)
+ 			print_injection_not_started();
+ 		return ERROR_FILE_NOT_FOUND;
+@@ -1072,9 +1337,21 @@ int wmain(int argc, wchar_t *argv[])
+ 	arg.GetLastError = GetLastError;
+ 	arg.LoadLibraryW = LoadLibraryW;
+ 	arg.SetEnvironmentVariableW = SetEnvironmentVariableW;
++	arg.CompareExchange = reinterpret_cast<compare_exchange_function>(
++		GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "InterlockedCompareExchange"));
++	if (arg.CompareExchange == nullptr)
++	{
++		wprintf(L"\nFailed to resolve the atomic registration primitive.\n");
++		if (use_exact_pid || use_path_watcher)
++			print_injection_not_started();
++		return ERROR_PROC_NOT_FOUND;
++	}
++	if (reuse_existing_runtime)
++		arg.existing_runtime_addon_gate =
++			reinterpret_cast<volatile LONG *>(reusable_runtime.addon_gate_address);
+ 
+ #if RESHADE_LOADING_THREAD_FUNC
+-	const auto loading_thread_func_size = 256; // An estimate of the size of the 'loading_thread_func' function
++	const auto loading_thread_func_size = 512; // An upper bound for the copied loader thunk
+ #else
+ 	const auto loading_thread_func_size = 0;
+ #endif
+@@ -1116,7 +1393,7 @@ int wmain(int argc, wchar_t *argv[])
+ 	VirtualFreeEx(remote_process, load_param, 0, MEM_RELEASE);
+ 
+ 	// Thread thread exit code will contain the module handle
+-	if (DWORD exit_code;
++	if (DWORD exit_code = ERROR_GEN_FAILURE;
+ 		GetExitCodeThread(load_thread, &exit_code) &&
+ #if RESHADE_LOADING_THREAD_FUNC
+ 		exit_code == ERROR_SUCCESS)
+@@ -1125,11 +1402,39 @@ int wmain(int argc, wchar_t *argv[])
+ #endif
+ 	{
+ 		wprintf(L"Succeeded!\n");
++		if (!write_injector_result(pid, reuse_existing_runtime, reusable_runtime))
++			return ERROR_WRITE_FAULT;
+ 		return 0;
+ 	}
+ 	else
+ 	{
+ #if RESHADE_LOADING_THREAD_FUNC
++		if (reuse_existing_runtime && exit_code == ERROR_RETRY)
++		{
++			wprintf(L"\nCompatible ReShade registration closed before the add-on could claim it.\n");
++			if (!write_injector_diagnostic(
++					L"target-runtime-reuse-raced",
++					pid,
++					reusable_runtime.module_path,
++					exit_code))
++				exit_code = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return exit_code;
++		}
++		if (reuse_existing_runtime)
++		{
++			wprintf(
++				L"\nFailed to load Electron Game Overlay into the existing ReShade runtime! "
++				L"Error code is 0x%x.\n",
++				exit_code);
++			if (!write_existing_runtime_load_diagnostic(
++					pid,
++					reusable_runtime.module_path,
++					exit_code))
++				return ERROR_WRITE_FAULT;
++			return exit_code;
++		}
++
+ 		wprintf(L"\nFailed to load ReShade in target application! Error code is 0x%x.\n", exit_code);
+ 		return exit_code;
+ #else

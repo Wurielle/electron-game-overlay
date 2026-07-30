@@ -61,9 +61,10 @@ acceptance evidence and are intentionally preserved as records.
   - The SDK accepts optional `{ processName, pid }` targets and the Electron demo exposes the optional PID. The intended watcher calls immediately after the process exists and before graphics-device/swap-chain creation.
   - `d3d11-client-sdk-process-start-injection.ps1` passed against PID 7428 with a 72.393 ms process-create-to-frontend-click interval. Exact injector arguments and pre-`ResumeThread` ReShade loading were proven; transport, D3D11, two windows, and input passed after resume. The target exited 0, the frontend returned to `idle`, and no test process remained. Evidence under `build/reshade-imgui-overlay/client-sdk-d3d11-process-start-20260713-131623` contains `D3D11_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`.
   - `d3d12-client-sdk-process-start-injection.ps1` passed the same boundary against PID 21508 with an 84.061 ms interval. Evidence under `build/reshade-imgui-overlay/client-sdk-d3d12-process-start-20260713-131642` contains `D3D12_REAL_CLIENT_SDK_PROCESS_START_INJECTION_GATE_PASS`; D3D12, two windows, input, exit 0, frontend `idle`, and no-leftover checks passed.
+  - Those July 13 runs are historical suspended-ordering evidence. The current launchers start the host normally and hold only device creation behind a test marker; D3D11 and D3D12 passed that production client/SDK path again on July 30 under `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-084815` and `client-sdk-d3d12-process-start-20260730-084831`.
 - [x] Use a hybrid prearmed Steam-path and exact-PID coordinator and pass normal-client Gun Frog launch/relaunch.
   - The former WMI `WITHIN 1` path loaded ReShade after Gun Frog had created its primary DXGI swap chain, so injection logs could report success while no transported scene appeared. The first native path milestone excluded Unity crash-handler helpers, and its one-shot selection could not cover launcher/child chains. The current design keeps one broad `\\steamapps\\` path launcher prearmed with zero executable exclusions while the continuous observer independently starts an exact-PID attempt for every detected Steam executable; WMI is fallback-only.
-  - A native per-PID claim serializes overlapping path/exact selection before target mutation. The coordinator adopts a path winner and disposes its exact loser; an exact winner makes the path attempt yield cleanly. The broad watcher is rearmed after selection and target exit.
+  - A native per-PID claim serializes overlapping path/exact selection before target mutation. The coordinator adopts a path winner and disposes its exact loser; an exact winner makes the path attempt yield cleanly. The broad watcher is rearmed after safe completion, target exit, or a definite-safe failure. An indeterminate target mutation remains blocked.
   - On July 13, 2026, ordinary `npm run dev` attached to Gun Frog PIDs 22640 and 8732 in sequence without restarting Electron. Both distinct path-watcher runs selected `Gun Frog.exe`, intercepted `CreateSwapChainForHwnd`, authenticated the target, and rendered transported Electron scenes. The compact dock, expanded Ctrl+I menu, and full main test window were all verified visually; both exits emitted terminal disconnect/release and left a fresh watcher armed.
   - A later real rerun exposed why launches could still fail intermittently: the watcher's permanent startup baseline keyed ignored processes only by numeric PID, so Windows PID reuse made a new game look like an old process. The baseline now retains handles for the exact startup process objects and prunes signaled handles on every poll. With one unchanged Electron client, the final implementation injected and rendered Gun Frog PIDs 19052 and 22644 across close/relaunch; the second run also opened Ctrl+I, captured input, and accepted the `Open status window` click before normal game close left the next watcher armed.
 - [x] Keep independent exact-PID attempts for every detected Steam executable and pass LORT's launcher/renderer chain.
@@ -79,29 +80,51 @@ acceptance evidence and are intentionally preserved as records.
 
 ### Runtime compatibility and hardening
 
-- [x] Add exact-PID loaded-ReShade conflict preflight and typed launcher diagnostics.
+- [x] Add exact-PID loaded-runtime compatibility preflight and a strict structured injector result.
   - Before target mutation, the injector performs bounded module enumeration
-    and PE export inspection. Only an already-loaded module exporting the exact
-    `ReShadeVersion` symbol is a proof-grade conflict; it is rejected as
-    `target-runtime-conflict`. Inspection that cannot complete safely fails
+    and PE export inspection. Exact `ReShadeVersion` identifies a candidate;
+    private host ABI/gate exports decide compatible reuse versus specific
+    fail-closed diagnostics. Inspection that cannot complete safely fails
     closed as `target-module-inspection-failed`.
   - The SDK exports `ReShadeDiagnostic`, `ReShadeDiagnosticStage`,
     `ReShadeDiagnosticCode`, `ReShadeRetrySafety`, `ReShadeOperationError`, and
-    `isReShadeOperationError()`. The frozen structured-clone-safe diagnostic
+    `isReShadeOperationError()`, plus `ReShadeRuntimeMode`. The frozen
+    structured-clone-safe diagnostic
     preserves stage, code, retry safety, target context, applicable Win32
-    status, and staged-run evidence paths. Proven pre-mutation outcomes return
-    to `idle`; indeterminate post-mutation outcomes remain `blocked`.
+    status, and staged-run evidence paths. Outcomes proven not to have loaded a
+    runtime/add-on payload return to `idle`; indeterminate payload-load outcomes
+    remain `blocked`. A reuse-race can perform bounded remote coordination
+    before losing its gate CAS, so `definite-safe` does not universally mean
+    zero remote mutation.
+  - Success requires exactly one structured injector result. It distinguishes
+    `injected-runtime` from `existing-runtime` and includes the compatible host
+    path for the latter. The SDK continues to parse legacy
+    `target-runtime-conflict` diagnostics but the current injector does not emit
+    that generic outcome.
   - Module filenames and on-disk proxy-like files are not used as conflict
     proof. This intentionally avoids false-positive, executable-specific
     heuristics.
+- [x] Prove the narrow project-compatible existing-runtime foundation.
+  - A loaded runtime may be reused only when it exports private host ABI 1 and
+    its add-on gate is still `OPEN`. The injector then loads only the privately
+    staged Electron add-on and leaves the host proxy, ReShade configuration, and
+    base-path ownership unchanged.
+  - `d3d11-client-sdk-shared-runtime.ps1` and
+    `d3d12-client-sdk-shared-runtime.ps1` passed on July 30, 2026 with normal
+    target startup behind a test-only pre-device marker. Both proved
+    `existing-runtime`, no second loaded runtime, unchanged proxy/config hashes,
+    no add-on copied into the target directory, and the full scene/input/release
+    boundary.
 - [ ] Support games already modded with ReShade through a compatible
       shared-runtime/add-on integration path.
-  - The current exact-PID preflight intentionally rejects an already-loaded
-    ReShade runtime as `target-runtime-conflict`; that is a pre-mutation safety
-    boundary, not coexistence support. Define and prove a version/ABI-compatible
-    path that loads the Electron Game Overlay add-on into the game's existing
-    ReShade runtime while preserving the existing installation, overlay
-    rendering, and input interception.
+  - The controlled foundation does not support stock API-18 or differently
+    patched ReShade, missing private host exports, an already-active/closed host
+    gate, arbitrary real-game startup timing, or interactions with an existing
+    effect/add-on set. Prove those cases or produce clear fail-closed
+    diagnostics without modifying the installation.
+  - Resolve host installation/base-path ownership. The current existing-mode
+    `reshadeLogPath` is inferred beside the host module, while ReShade
+    `[INSTALL] BasePath` may put the authoritative log elsewhere.
 - [ ] Define a supported coexistence strategy for targets using another proxy
       runtime.
 - [ ] Add clean runtime disable/unload behavior.
@@ -111,7 +134,7 @@ acceptance evidence and are intentionally preserved as records.
 - [x] Replace WMI as the hot creation path with continuous native multi-process observation and an explicit ready handshake.
   - The parent-scoped continuous observer reports matching creation/deletion identities through a strict UTF-8 protocol and exits with its forked watcher parent. A separate broad `\\steamapps\\` path launcher remains prearmed alongside exact-PID attempts, with the native per-PID claim arbitrating overlap. WMI is now created only as the slower fallback if the continuous observer fails.
   - The first 5 ms implementation walked a full Toolhelp snapshot and every retained process handle on each pass. After a PEAK thermal report, it was replaced with one compact `EnumProcesses` PID array per pass, executable-path queries only until resolution, and stable process handles that are retained but never polled. Temporarily inaccessible paths retry with bounded backoff until exit. The tightened automated gate measured 1.5% of one CPU core with no accumulating handle/private-memory growth in the latest focused run, versus roughly 25-34% for the retired scanner.
-  - Observation starts before the demo prepares four launchers concurrently. Creation events wait in order for prepared slots, successful consumption starts an immediate refill, and preparation failures emit diagnostics and retry with bounded backoff instead of staging reactively for a detected target. The SDK hard-links non-mutating artifacts when supported, privately copies `ReShade64.dll` and mutable `ReShade.ini`, and removes unconsumed prepared directories on disposal or staging failure.
+  - Observation starts before the demo prepares four launchers concurrently. Creation events wait in order for prepared slots, successful consumption starts an immediate refill, and preparation failures emit diagnostics and retry with bounded backoff instead of staging reactively for a detected target. The SDK hard-links non-mutating artifacts when supported, privately copies `ReShade64.dll`, `electron_game_overlay.addon64`, and mutable `ReShade.ini`, and removes unconsumed prepared directories on disposal or staging failure.
   - The old WMI path reached PEAK roughly 481 ms after process creation and missed its existing D3D12 objects. A preliminary native-observer run caught PEAK before D3D12 initialization and rendered the overlay, but it used the retired hot scanner. On July 28, 2026, the bounded replacement injected PEAK PID 11920 before `d3d12.dll` loaded, initialized the transport, rendered the dock, captured Ctrl+I, and accepted the status-window click. The observer measured 0.6% of one CPU core before launch and rounded to 0% during the in-game sample; PEAK itself reported 374-396 FPS during its splash and roughly 94 FPS on the menu. No readable temperature sensor was available, so this closes the short functional/resource rerun but not a thermal soak.
 - [ ] Harden fallback-WMI startup teardown.
   - Disconnecting the isolated watcher child while the real `wql-process-monitor` subscription is still starting reproduced Windows exit `0xC0000005`. The normal native-observer path is unaffected, and hermetic fallback coverage passes with the same ready/shutdown ordering, but the real COM subscription needs a cancellation-safe startup/drain before fallback teardown is considered reliable.
@@ -126,7 +149,7 @@ acceptance evidence and are intentionally preserved as records.
 - [ ] Expand real-client compatibility through additional permitted games; do not infer other-game support from the accepted Gun Frog path or controlled hosts.
 - [ ] Run real physical/VM mixed-scale acceptance for target-follow placement; the contract and simulated cross-display tests are complete, but this machine still exposes only one 100% virtual display.
 - [x] Isolate production rendezvous and authentication for simultaneous exact-PID target processes.
-  - Every exact-PID `attach()` now publishes `electron-overlay-transport-v1.targeted` before writing a unique token and expected PID into the consumed run directory. Revoking the credential leaves that marker in place, so a payload that initializes late fails closed instead of falling back globally; removing the staged run directory removes the marker with it. The injected transport resolves the adjacent route through `RESHADE_BASE_PATH_OVERRIDE`, rejects malformed credentials and target-PID mismatch, and pins the selected route. The Node listener validates token plus PID before publishing its scene and can retain multiple authenticated PIDs concurrently.
+  - Every exact-PID `attach()` now publishes `electron-overlay-transport-v1.targeted` before writing a unique token and expected PID into the consumed run directory. Revoking the credential leaves that marker in place, so a payload that initializes late fails closed instead of falling back globally; removing the staged run directory removes the marker with it. The injected transport resolves the adjacent route through `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`, with `RESHADE_BASE_PATH_OVERRIDE` as the injected-runtime fallback, rejects malformed credentials and target-PID mismatch, and pins the selected route. The Node listener validates token plus PID before publishing its scene and can retain multiple authenticated PIDs concurrently.
   - Configured or call-site exact PIDs are snapshotted into the injector invocation before asynchronous work. `attach()` reserves its launcher while session readiness is pending, and session close revokes active or late-completing authorization leases. Rust unit coverage directly verifies missing-local legacy fallback before route intent, marker and invalid-local fail-closed pinning, target binding, and fail-closed reconnect selection after local credential deletion. Node coverage verifies distinct simultaneous credentials on one listener, same-path rejection, cross-PID token rejection, global-token bypass rejection with zero pre-snapshot bytes, scoped socket-loss and reauthentication, independent credential release, and route-intent marker persistence. Independent-producer and end-to-end native poison-global coverage remain follow-up tests. Legacy controlled and low-level launchers fall back to the well-known record only when neither an adjacent credential nor its route-intent marker exists.
   - A local July 28, 2026 D3D11 process-start run recorded PID 15836 authorization before injector spawn, a subsequent target connection, two-window rendering, input acceptance, terminal disconnect, and cleanup. Its evidence remains in the ignored local directory `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260728-222813` and is not part of the repository. The run proves publication and end-to-end operation in the same attempt; it does not independently prove that the Rust client selected the run-local credential instead of the legacy fallback.
 - [ ] Add safe texture retirement and per-swap-chain production routing. Multiple swap chains still need explicit resource/input ownership and a primary-surface policy for process-level FPS.
@@ -183,6 +206,10 @@ they are not the active production-host roadmap.
     `ReShadeDiagnosticCode`, `ReShadeDiagnosticStage`, and
     `ReShadeRetrySafety` values. Staged failures retain applicable evidence
     paths.
+  - Success requires one strict structured injector result and exposes
+    `injected-runtime` versus `existing-runtime`. Failure after claiming a
+    compatible host gate is reported as the post-mutation
+    `existing-runtime-addon-load-failed` runtime-initialization stage.
 - [ ] Improve error logging and diagnostics across every overlay layer.
   - Current issue: failures can happen in multiple places: Electron SDK code,
     runtime staging, injector launch, DLL injection, authenticated transport,

@@ -62,6 +62,8 @@ const TRANSPORT_VERSION: u32 = 1;
 const DISCOVERY_DIRECTORY: &str = "electron-game-overlay";
 const DISCOVERY_FILE: &str = "electron-overlay-transport-v1.json";
 const TARGET_ROUTE_FILE: &str = "electron-overlay-transport-v1.targeted";
+const ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV: &str =
+    "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY";
 const RESHADE_BASE_PATH_OVERRIDE_ENV: &str = "RESHADE_BASE_PATH_OVERRIDE";
 const MAX_DISCOVERY_BYTES: usize = 64 * 1024;
 const BYTES_PER_PIXEL: usize = 4;
@@ -2213,7 +2215,8 @@ fn graphics_api_name(graphics_api: u32) -> &'static str {
 
 fn discovery_paths() -> (PathBuf, Option<PathBuf>, Option<PathBuf>) {
     discovery_paths_from(
-        std::env::var_os(RESHADE_BASE_PATH_OVERRIDE_ENV),
+        std::env::var_os(ELECTRON_GAME_OVERLAY_RUN_DIRECTORY_ENV)
+            .or_else(|| std::env::var_os(RESHADE_BASE_PATH_OVERRIDE_ENV)),
         std::env::temp_dir(),
     )
 }
