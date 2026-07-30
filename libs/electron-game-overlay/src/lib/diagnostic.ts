@@ -19,7 +19,13 @@ type DiagnosticDefinition = Readonly<{
     | 'error-code'
     | 'ego-error-code'
     | 'auth-scope'
-    | 'packet-rejection';
+    | 'packet-rejection'
+    | 'producer-window'
+    | 'producer-window-operation'
+    | 'producer-frame'
+    | 'producer-frame-rejection'
+    | 'producer-frame-operation'
+    | 'producer-input-operation';
 }>;
 
 const DIAGNOSTIC_DEFINITIONS = {
@@ -95,6 +101,52 @@ const DIAGNOSTIC_DEFINITIONS = {
       'The overlay transport could not confirm whether a disconnected target exited.',
     pid: 'required',
     context: 'error-code',
+  },
+  'producer-window-registered': {
+    source: 'electron-game-overlay',
+    severity: 'info',
+    message: 'The Electron overlay SDK registered an offscreen window.',
+    pid: 'forbidden',
+    context: 'producer-window',
+  },
+  'producer-window-publication-failed': {
+    source: 'electron-game-overlay',
+    severity: 'error',
+    message:
+      'The Electron overlay SDK could not publish an offscreen window update.',
+    pid: 'forbidden',
+    context: 'producer-window-operation',
+  },
+  'producer-frame-publication-started': {
+    source: 'electron-game-overlay',
+    severity: 'info',
+    message:
+      'The Electron overlay SDK published the first offscreen frame for a window.',
+    pid: 'forbidden',
+    context: 'producer-frame',
+  },
+  'producer-frame-rejected': {
+    source: 'electron-game-overlay',
+    severity: 'warning',
+    message:
+      'The Electron overlay SDK rejected an offscreen frame that did not match the active or desired raster.',
+    pid: 'forbidden',
+    context: 'producer-frame-rejection',
+  },
+  'producer-frame-publication-failed': {
+    source: 'electron-game-overlay',
+    severity: 'error',
+    message: 'The Electron overlay SDK could not publish an offscreen frame.',
+    pid: 'forbidden',
+    context: 'producer-frame-operation',
+  },
+  'producer-input-forwarding-failed': {
+    source: 'electron-game-overlay',
+    severity: 'error',
+    message:
+      'The Electron overlay SDK could not forward intercepted input to an offscreen window.',
+    pid: 'required',
+    context: 'producer-input-operation',
   },
   'runtime-ready': {
     source: 'electron-game-overlay-runtime',
@@ -338,7 +390,13 @@ function parseDiagnosticContext(
   if (value === undefined) {
     return kind === 'port' ||
       kind === 'auth-scope' ||
-      kind === 'packet-rejection'
+      kind === 'packet-rejection' ||
+      kind === 'producer-window' ||
+      kind === 'producer-window-operation' ||
+      kind === 'producer-frame' ||
+      kind === 'producer-frame-rejection' ||
+      kind === 'producer-frame-operation' ||
+      kind === 'producer-input-operation'
       ? null
       : undefined;
   }
@@ -387,6 +445,99 @@ function parseDiagnosticContext(
     }
     return Object.freeze({ scope: context.scope });
   }
+  if (kind === 'producer-window') {
+    if (
+      !hasOnlyContextKeys(context, ['windowId']) ||
+      !isPositiveUnsigned32(context.windowId)
+    ) {
+      return null;
+    }
+    return Object.freeze({ windowId: context.windowId });
+  }
+  if (kind === 'producer-window-operation') {
+    if (
+      !hasOnlyContextKeys(context, ['windowId', 'operation', 'errorCode']) ||
+      !isPositiveUnsigned32(context.windowId) ||
+      (context.operation !== 'register' &&
+        context.operation !== 'bounds' &&
+        context.operation !== 'close')
+    ) {
+      return null;
+    }
+    return freezeProducerOperationContext(context, 'operation');
+  }
+  if (kind === 'producer-frame') {
+    if (
+      !hasOnlyContextKeys(context, ['windowId', 'width', 'height']) ||
+      !isPositiveUnsigned32(context.windowId) ||
+      !isPositiveUnsigned32(context.width) ||
+      !isPositiveUnsigned32(context.height)
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      windowId: context.windowId,
+      width: context.width,
+      height: context.height,
+    });
+  }
+  if (kind === 'producer-frame-rejection') {
+    if (
+      !hasOnlyContextKeys(context, [
+        'windowId',
+        'reason',
+        'width',
+        'height',
+        'activeWidth',
+        'activeHeight',
+        'desiredWidth',
+        'desiredHeight',
+      ]) ||
+      !isPositiveUnsigned32(context.windowId) ||
+      (context.reason !== 'ambiguous' && context.reason !== 'unmatched') ||
+      !isPositiveUnsigned32(context.width) ||
+      !isPositiveUnsigned32(context.height) ||
+      !isPositiveUnsigned32(context.activeWidth) ||
+      !isPositiveUnsigned32(context.activeHeight) ||
+      !isPositiveUnsigned32(context.desiredWidth) ||
+      !isPositiveUnsigned32(context.desiredHeight)
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      windowId: context.windowId,
+      reason: context.reason,
+      width: context.width,
+      height: context.height,
+      activeWidth: context.activeWidth,
+      activeHeight: context.activeHeight,
+      desiredWidth: context.desiredWidth,
+      desiredHeight: context.desiredHeight,
+    });
+  }
+  if (kind === 'producer-frame-operation') {
+    if (
+      !hasOnlyContextKeys(context, ['windowId', 'stage', 'errorCode']) ||
+      !isPositiveUnsigned32(context.windowId) ||
+      (context.stage !== 'bitmap' && context.stage !== 'transport')
+    ) {
+      return null;
+    }
+    return freezeProducerOperationContext(context, 'stage');
+  }
+  if (kind === 'producer-input-operation') {
+    if (
+      !hasOnlyContextKeys(context, ['windowId', 'stage', 'errorCode']) ||
+      !isUnsigned32(context.windowId) ||
+      (context.stage !== 'translate' &&
+        context.stage !== 'focus' &&
+        context.stage !== 'blur' &&
+        context.stage !== 'dispatch')
+    ) {
+      return null;
+    }
+    return freezeProducerOperationContext(context, 'stage');
+  }
   if (!hasOnlyContextKeys(context, ['reason', 'eventType'])) {
     return null;
   }
@@ -413,9 +564,23 @@ function parseContextRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value) || Array.isArray(value)) {
     return null;
   }
-  return Object.keys(value).length <= MAX_DIAGNOSTIC_CONTEXT_ENTRIES
-    ? value
-    : null;
+  try {
+    const keys = Object.keys(value);
+    if (keys.length > MAX_DIAGNOSTIC_CONTEXT_ENTRIES) {
+      return null;
+    }
+
+    // Snapshot each producer-owned property exactly once. Accessor-backed
+    // objects must not be able to return a safe value during validation and a
+    // different, potentially sensitive value during canonicalization.
+    const snapshot = Object.create(null) as Record<string, unknown>;
+    for (const key of keys) {
+      snapshot[key] = Reflect.get(value, key);
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
 }
 
 function hasOnlyContextKeys(
@@ -423,6 +588,33 @@ function hasOnlyContextKeys(
   allowed: readonly string[],
 ): boolean {
   return Object.keys(context).every((key) => allowed.includes(key));
+}
+
+function freezeProducerOperationContext(
+  context: Record<string, unknown>,
+  operationKey: 'operation' | 'stage',
+): Readonly<Record<string, OverlayDiagnosticContextValue>> | null {
+  const errorCode = normalizeOverlayDiagnosticErrorCode(context.errorCode);
+  if (context.errorCode !== undefined && errorCode === undefined) {
+    return null;
+  }
+  return Object.freeze({
+    windowId: context.windowId as number,
+    [operationKey]: context[operationKey] as string,
+    ...(errorCode === undefined ? {} : { errorCode }),
+  });
+}
+
+function isUnsigned32(value: unknown): value is number {
+  return (
+    Number.isSafeInteger(value) &&
+    (value as number) >= 0 &&
+    (value as number) <= 0xffffffff
+  );
+}
+
+function isPositiveUnsigned32(value: unknown): value is number {
+  return isUnsigned32(value) && value > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

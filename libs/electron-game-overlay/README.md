@@ -219,12 +219,50 @@ arbitrary remote error text. Authenticated injected runtimes can additionally
 report fixed `runtime-*` milestones and scene, frame-upload, or input failures.
 Those packets contain only an allowlisted code and optional EGO status; the
 Node transport supplies the authenticated PID and owns the public severity and
-message. Each code is limited to eight observations per minute, with runtime
+message.
+
+The Electron producer uses the same event for six fixed SDK-owned observations:
+
+- `producer-window-registered` (`info`, `windowId`) after backend registration;
+- `producer-window-publication-failed` (`error`, `windowId`,
+  `register | bounds | close`, optional safe error code);
+- `producer-frame-publication-started` (`info`, `windowId`, width, height) for
+  the first submitted frame in a registration lifecycle;
+- `producer-frame-rejected` (`warning`, `windowId`, `ambiguous | unmatched`,
+  received/active/desired dimensions);
+- `producer-frame-publication-failed` (`error`, `windowId`,
+  `bitmap | transport`, optional safe error code);
+- `producer-input-forwarding-failed` (`error`, authoritative PID, `windowId`,
+  `translate | focus | blur | dispatch`, optional safe error code).
+
+Messages and severities are owned by those codes. Window/frame context requires
+a positive Electron window ID. Input context may use window ID `0` for a focus
+reset. All other context is restricted to the fixed values above, positive
+uint32 frame dimensions, and an allowlisted OS error code where applicable.
+Window and frame publication records do not claim a target PID because one
+session can publish the same scene to several targets. Input failure records
+carry the authenticated target PID.
+
+Producer observations are queued asynchronously so a diagnostic listener cannot
+re-enter a partially committed Electron window operation. At most 32 await that
+microtask delivery, and repeated observations use a 7.5-second cooldown per
+PID (when present), code, window, and fixed operation/stage/rejection reason.
+Rate state is retired when that target disconnects or the window is finally
+removed. Window metadata is encoded before retained transport state changes, and
+session geometry/raster state advances only after the corresponding backend
+publication succeeds. A failed input translation, focus/blur operation, or
+Chromium dispatch is reported and contained instead of escaping the target
+packet callback and disconnecting the authenticated runtime.
+
+Each transport code is limited to eight observations per minute, with runtime
 limits isolated per connected target. This event does not replace
 `ReShadeOperationError`: attachment errors retain their retry-safety and
 evidence contract, while session diagnostics describe activity after the
 overlay transport starts. Failures before the runtime can connect still appear
-only in its local `ReShade.log`.
+only in its local `ReShade.log`. Producer diagnostics do not yet cover
+ambiguous-raster recovery failures. A globally bounded control/backpressure
+queue, strict schema parsing for every `game.input` packet, and compatibility
+with stock or arbitrary already-modded ReShade games remain future work.
 
 Exact-PID injection performs a bounded module preflight before allocating or
 writing target memory. A loaded module becomes a ReShade candidate only when

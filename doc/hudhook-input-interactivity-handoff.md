@@ -46,8 +46,19 @@
 > loads only its privately staged add-on and leaves the target proxy and
 > configuration untouched. Faithful D3D11/D3D12 target-local `dxgi.dll` gates
 > passed. Arbitrary stock, unknown, or already-active ReShade runtimes, other
-> proxies, broader all-layer diagnostics, and clean unload remain deferred. An
-> existing runtime may redirect logs with `[INSTALL] BasePath`, so a
+> proxies and clean unload remain deferred. Authenticated runtime diagnostics
+> now cover fixed initialization/render/input observations, and the Electron SDK
+> emits six fixed producer window/frame/input records through a bounded
+> asynchronous queue. Producer publication is transactional, and Electron input
+> forwarding exceptions no longer escape as target packet failures. The
+> production D3D11/D3D12 client gates require the producer registration and
+> first-frame milestones and passed on 2026-07-30. Ambiguous
+> raster-recovery diagnostics, a globally bounded control/backpressure queue,
+> strict parsing for every input envelope, and stock/arbitrary modded-ReShade
+> compatibility remain deferred. Within the documented near-process-creation
+> D3D11/D3D12 boundary, the library POC is now ready for application testing;
+> the unchecked compatibility and hardening items are post-POC work. An existing
+> runtime may redirect logs with `[INSTALL] BasePath`, so a
 > `ReShade.log` path inferred beside its module is not authoritative. The
 > [production runtime README](../libs/electron-game-overlay-runtime/README.md)
 > is authoritative.

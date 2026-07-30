@@ -727,6 +727,16 @@ try {
             -Process $ClientProcess `
             -Pattern '(?m)^OVERLAY_CLIENT_INPUT_TARGET role=status name=text(?: .*)?\r?$' `
             -Deadline $StartupDeadline)
+    $ProducerWindowRegisteredDiagnostic = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern '(?m)^OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay severity=info code=producer-window-registered(?: .*)?\r?$' `
+        -Deadline $StartupDeadline
+    $ProducerFramePublicationStartedDiagnostic = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern '(?m)^OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay severity=info code=producer-frame-publication-started(?: .*)?\r?$' `
+        -Deadline $StartupDeadline
 
     $DevToolsPage = Wait-ForDevToolsPage `
         -Port $DevToolsPort `
@@ -1107,6 +1117,13 @@ try {
     if ($RuntimeDiagnosticFault) {
         throw "The injected runtime reported a warning/error diagnostic: $($RuntimeDiagnosticFault.Line -join ' | ')"
     }
+    $ProducerDiagnosticFault = Select-String `
+        -LiteralPath $ClientStdout `
+        -Pattern "OVERLAY_SESSION_DIAGNOSTIC source=electron-game-overlay severity=(warning|error) code=producer-" `
+        -CaseSensitive
+    if ($ProducerDiagnosticFault) {
+        throw "The Electron producer reported a warning/error diagnostic: $($ProducerDiagnosticFault.Line -join ' | ')"
+    }
     $TargetDirectoryLog = Join-Path $TargetDirectory "ReShade.log"
     if (-not $ExistingCompatibleRuntime -and
         (Test-Path -LiteralPath $TargetDirectoryLog -PathType Leaf)) {
@@ -1175,6 +1192,12 @@ try {
             SwapchainReadyMarkerIndex = $SwapchainReadyDiagnostic.Index
             SceneRenderingStartedMarkerIndex =
                 $SceneRenderingDiagnostic.Index
+        }
+        ProducerDiagnosticProof = [pscustomobject]@{
+            WindowRegisteredMarkerIndex =
+                $ProducerWindowRegisteredDiagnostic.Index
+            FramePublicationStartedMarkerIndex =
+                $ProducerFramePublicationStartedDiagnostic.Index
         }
         SceneWindowCount = 2
         InputProof = $InputProof

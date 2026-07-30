@@ -91,7 +91,7 @@ export interface NativeOverlay {
     buffer: Buffer,
     width: number,
     height: number,
-  ): void;
+  ): boolean | void;
   translateInputEvent(event: NativeInputMessage): any;
 }
 

@@ -227,6 +227,32 @@ available remain in the target's local `ReShade.log`. These observations
 complement rather than replace the terminal `ReShadeOperationError` attachment
 contract.
 
+The Electron producer adds six code-owned observations:
+`producer-window-registered`, `producer-window-publication-failed`,
+`producer-frame-publication-started`, `producer-frame-rejected`,
+`producer-frame-publication-failed`, and
+`producer-input-forwarding-failed`. Their context contains only validated
+window IDs, fixed operation/stage or raster-rejection values, bounded frame
+dimensions, and an allowlisted OS error code. Window and frame records omit PID
+because a session can publish to multiple targets. Input failures require the
+authenticated target PID and permit window ID `0` for focus reset.
+
+Producer records wait in a bounded 32-entry asynchronous delivery queue and
+repeat at most once every 7.5 seconds for the same PID (when present), code,
+window, and fixed operation/stage/rejection reason. Rate state retires with the
+target or final window removal. This prevents listener re-entry during a
+partially completed window lifecycle. Window metadata is encoded before retained
+transport state is changed, and geometry/raster state commits only after backend
+publication succeeds. Translation, focus/blur, and Chromium input-dispatch
+exceptions are reported locally and contained instead of being misclassified as
+a bad target packet and disconnecting the runtime.
+
+This slice does not diagnose renderer acknowledgement or `capturePage()`
+failures during ambiguous-raster recovery, redesign the transport into a
+globally bounded control/backpressure queue, or strictly parse every incoming
+`game.input` shape. Stock/differently patched ReShade and arbitrary modded-game
+coexistence also remain outside the supported compatibility envelope.
+
 For an exact PID, the injector inspects loaded modules before remote allocation
 or thread creation. Exact `ReShadeVersion` identifies a candidate, but reuse
 requires this project's private host ABI 1 and an `OPEN` add-on gate.

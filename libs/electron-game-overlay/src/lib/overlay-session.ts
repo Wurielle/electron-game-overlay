@@ -1,7 +1,10 @@
 import { BrowserWindow, screen } from 'electron';
 import { physicalInputToDip } from './coordinate-space.js';
 import { toNativeCursor } from './cursor.js';
-import { parseOverlayDiagnostic } from './diagnostic.js';
+import {
+  normalizeOverlayDiagnosticErrorCode,
+  parseOverlayDiagnostic,
+} from './diagnostic.js';
 import { ElectronOverlayWindow } from './electron-overlay-window.js';
 import {
   createProcessInjectionUnavailableError,
@@ -40,6 +43,7 @@ import type {
   ElectronOverlayWindowFollowTargetOptions,
   ElectronOverlayWindowOptions,
   OverlayDiagnostic,
+  OverlayDiagnosticContextValue,
   OverlayHotkey,
   OverlayProcessAttachResult,
   OverlayProcessTarget,
@@ -50,6 +54,17 @@ import type {
   Disposable,
   Rect,
 } from './types.js';
+
+const MAX_PENDING_PRODUCER_DIAGNOSTICS = 32;
+const PRODUCER_DIAGNOSTIC_COOLDOWN_MS = 7_500;
+
+type ProducerDiagnosticCode =
+  | 'producer-window-registered'
+  | 'producer-window-publication-failed'
+  | 'producer-frame-publication-started'
+  | 'producer-frame-rejected'
+  | 'producer-frame-publication-failed'
+  | 'producer-input-forwarding-failed';
 
 type OverlayScreen = Pick<
   typeof screen,
@@ -69,6 +84,12 @@ export class OverlaySession {
   >();
   private readonly targetFollowRestoreBounds = new Map<number, Rect>();
   private readonly unmatchedFrameDiagnostics = new Map<number, string>();
+  private readonly producerFramePublicationStarted = new Set<number>();
+  private readonly producerDiagnosticPublicationTimes = new Map<
+    string,
+    number
+  >();
+  private readonly pendingProducerDiagnostics: OverlayDiagnostic[] = [];
   private readonly ambiguousCaptureTokens = new Map<number, symbol>();
   private readonly ambiguousCaptureRetryTasks = new Map<
     number,
@@ -82,6 +103,7 @@ export class OverlaySession {
   private readonly closeHandlers = new Set<() => void>();
   private readonly targetAuthorizationReleases = new Set<Disposable>();
   private screenEventsBound = false;
+  private producerDiagnosticFlushScheduled = false;
   private started = false;
   private quitting = false;
   private closed = false;
@@ -273,6 +295,10 @@ export class OverlaySession {
     this.targetFollowOptions.clear();
     this.targetFollowRestoreBounds.clear();
     this.unmatchedFrameDiagnostics.clear();
+    this.producerFramePublicationStarted.clear();
+    this.producerDiagnosticPublicationTimes.clear();
+    this.pendingProducerDiagnostics.length = 0;
+    this.producerDiagnosticFlushScheduled = false;
     this.ambiguousCaptureTokens.clear();
     for (const retry of this.ambiguousCaptureRetryTasks.values()) {
       clearTimeout(retry);
@@ -407,10 +433,14 @@ export class OverlaySession {
   }
 
   private handleWindowGeometryChanged(window: ElectronOverlayWindow) {
-    if (this.targetFollowOptions.has(window.nativeId)) {
-      this.applyTargetFollow(window);
-    } else {
-      this.syncWindowGeometry(window);
+    try {
+      if (this.targetFollowOptions.has(window.nativeId)) {
+        this.applyTargetFollow(window);
+      } else {
+        this.syncWindowGeometry(window);
+      }
+    } catch (error) {
+      this.reportWindowBoundsFailure(window, error);
     }
   }
 
@@ -456,7 +486,7 @@ export class OverlaySession {
   private reapplyTargetFollowers() {
     for (const window of this.windowsById.values()) {
       if (this.targetFollowOptions.has(window.nativeId)) {
-        this.applyTargetFollow(window);
+        this.handleWindowGeometryChanged(window);
       }
     }
   }
@@ -471,31 +501,65 @@ export class OverlaySession {
 
   private registerWindow(window: ElectronOverlayWindow) {
     this.ensureStarted();
-    this.applyTargetFollow(window);
-    const browserWindow = window.browserWindow;
-    const rasterBounds = getWindowContentBounds(browserWindow);
-    const display = this.getWindowDisplayScale(rasterBounds);
-    const state = createWindowScaleState(display, rasterBounds);
-    const geometry = this.getWindowGeometry(window, state);
-    this.windowScaleStates.set(window.nativeId, state);
-    this.publishedWindowGeometry.set(window.nativeId, geometry);
-    this.unmatchedFrameDiagnostics.delete(window.nativeId);
+    try {
+      this.applyTargetFollow(window);
+      const browserWindow = window.browserWindow;
+      const rasterBounds = getWindowContentBounds(browserWindow);
+      const display = this.getWindowDisplayScale(rasterBounds);
+      const state = createWindowScaleState(display, rasterBounds);
+      const geometry = this.getWindowGeometry(window, state);
 
-    this.overlay.addWindow(browserWindow.id, {
-      name: window.name,
-      transparent: window.transparent,
-      resizable: browserWindow.isResizable(),
-      nativeHandle: browserWindow.getNativeWindowHandle().readUInt32LE(0),
-      ...geometry,
-    });
+      this.overlay.addWindow(browserWindow.id, {
+        name: window.name,
+        transparent: window.transparent,
+        resizable: browserWindow.isResizable(),
+        nativeHandle: browserWindow.getNativeWindowHandle().readUInt32LE(0),
+        ...geometry,
+      });
+
+      this.windowScaleStates.set(window.nativeId, state);
+      this.publishedWindowGeometry.set(window.nativeId, geometry);
+      this.unmatchedFrameDiagnostics.delete(window.nativeId);
+      this.producerFramePublicationStarted.delete(window.nativeId);
+      this.publishProducerDiagnostic('producer-window-registered', {
+        windowId: window.nativeId,
+      });
+    } catch (error) {
+      this.windowScaleStates.delete(window.nativeId);
+      this.publishedWindowGeometry.delete(window.nativeId);
+      this.unmatchedFrameDiagnostics.delete(window.nativeId);
+      this.producerFramePublicationStarted.delete(window.nativeId);
+      this.publishProducerFailure(
+        'producer-window-publication-failed',
+        {
+          windowId: window.nativeId,
+          operation: 'register',
+        },
+        error,
+      );
+      throw error;
+    }
   }
 
   private unregisterWindow(window: ElectronOverlayWindow) {
+    try {
+      this.overlay.closeWindow(window.nativeId);
+    } catch (error) {
+      this.publishProducerFailure(
+        'producer-window-publication-failed',
+        {
+          windowId: window.nativeId,
+          operation: 'close',
+        },
+        error,
+      );
+      throw error;
+    }
     this.cancelAmbiguousCapture(window);
-    this.overlay.closeWindow(window.nativeId);
     this.windowScaleStates.delete(window.nativeId);
     this.publishedWindowGeometry.delete(window.nativeId);
     this.unmatchedFrameDiagnostics.delete(window.nativeId);
+    this.producerFramePublicationStarted.delete(window.nativeId);
   }
 
   private removeWindow(window: ElectronOverlayWindow) {
@@ -507,6 +571,8 @@ export class OverlaySession {
     this.targetFollowOptions.delete(window.nativeId);
     this.targetFollowRestoreBounds.delete(window.nativeId);
     this.unmatchedFrameDiagnostics.delete(window.nativeId);
+    this.producerFramePublicationStarted.delete(window.nativeId);
+    this.clearProducerDiagnosticStateForWindow(window.nativeId);
   }
 
   private syncWindowGeometry(window: ElectronOverlayWindow) {
@@ -515,24 +581,40 @@ export class OverlaySession {
       return;
     }
 
-    const rasterBounds = getWindowContentBounds(window.browserWindow);
-    const desiredDisplay = this.getWindowDisplayScale(rasterBounds);
-    const current =
-      this.windowScaleStates.get(window.nativeId) ||
-      createWindowScaleState(desiredDisplay, rasterBounds);
-    const reconciliation = reconcileWindowScale(
-      current,
-      desiredDisplay,
-      rasterBounds,
-    );
-    if (reconciliation.desiredRasterChanged) {
-      this.cancelAmbiguousCapture(window);
-    }
-    this.windowScaleStates.set(window.nativeId, reconciliation.state);
-    this.publishWindowGeometry(window, reconciliation.state);
+    try {
+      const rasterBounds = getWindowContentBounds(window.browserWindow);
+      const desiredDisplay = this.getWindowDisplayScale(rasterBounds);
+      const current =
+        this.windowScaleStates.get(window.nativeId) ||
+        createWindowScaleState(desiredDisplay, rasterBounds);
+      const reconciliation = reconcileWindowScale(
+        current,
+        desiredDisplay,
+        rasterBounds,
+      );
+      if (reconciliation.desiredRasterChanged) {
+        this.cancelAmbiguousCapture(window);
+      }
+      if (!this.publishWindowGeometry(window, reconciliation.state)) {
+        return;
+      }
+      this.windowScaleStates.set(window.nativeId, reconciliation.state);
 
-    if (reconciliation.shouldInvalidate) {
-      window.browserWindow.webContents.invalidate();
+      if (reconciliation.shouldInvalidate) {
+        try {
+          window.browserWindow.webContents.invalidate();
+        } catch (error) {
+          // Bounds publication and scale-state commit already succeeded. Until
+          // renderer invalidation has its own fixed diagnostic stage, keep
+          // this local instead of misreporting a bounds transport failure.
+          console.warn(
+            `Cannot invalidate Electron overlay window ${window.nativeId} after a raster change`,
+            error,
+          );
+        }
+      }
+    } catch (error) {
+      this.reportWindowBoundsFailure(window, error);
     }
   }
 
@@ -549,7 +631,13 @@ export class OverlaySession {
       return;
     }
 
-    const size = image.getSize();
+    let size: Electron.Size;
+    try {
+      size = image.getSize();
+    } catch (error) {
+      this.reportFramePublicationFailure(window, 'bitmap', error);
+      return;
+    }
     if (size.width <= 0 || size.height <= 0) {
       return;
     }
@@ -573,6 +661,24 @@ export class OverlaySession {
       return;
     }
 
+    let bitmap: Buffer;
+    try {
+      bitmap = image.getBitmap();
+    } catch (error) {
+      this.reportFramePublicationFailure(window, 'bitmap', error);
+      return;
+    }
+
+    if (
+      !this.publishWindowGeometry(
+        window,
+        reconciliation.state,
+        reconciliation.rasterChanged,
+      )
+    ) {
+      return;
+    }
+
     this.unmatchedFrameDiagnostics.delete(window.nativeId);
     this.windowScaleStates.set(window.nativeId, reconciliation.state);
     if (reconciliation.rasterChanged) {
@@ -582,18 +688,31 @@ export class OverlaySession {
           `scale ${reconciliation.scaleFactor}, frame ${size.width}x${size.height}`,
       );
     }
-    this.publishWindowGeometry(
-      window,
-      reconciliation.state,
-      reconciliation.rasterChanged,
-    );
 
-    this.overlay.sendFrameBuffer(
-      window.nativeId,
-      image.getBitmap(),
-      size.width,
-      size.height,
-    );
+    try {
+      const published = this.overlay.sendFrameBuffer(
+        window.nativeId,
+        bitmap,
+        size.width,
+        size.height,
+      );
+      if (published === false) {
+        this.reportFramePublicationFailure(window, 'transport');
+        return;
+      }
+    } catch (error) {
+      this.reportFramePublicationFailure(window, 'transport', error);
+      return;
+    }
+
+    if (!this.producerFramePublicationStarted.has(window.nativeId)) {
+      this.producerFramePublicationStarted.add(window.nativeId);
+      this.publishProducerDiagnostic('producer-frame-publication-started', {
+        windowId: window.nativeId,
+        width: size.width,
+        height: size.height,
+      });
+    }
   }
 
   private sendCursor(type: string) {
@@ -605,44 +724,58 @@ export class OverlaySession {
   }
 
   private forwardGameInput(payload: any) {
-    const overlayWindow = this.windowsByNativeId.get(payload.windowId);
-    const scaleState = this.windowScaleStates.get(payload.windowId);
-    if (!overlayWindow || !overlayWindow.visible || !scaleState) {
-      return;
-    }
+    let pid: unknown;
+    let windowId = 0;
+    let stage: 'translate' | 'focus' | 'dispatch' = 'translate';
+    try {
+      pid = payload?.pid;
+      windowId = payload?.windowId;
+      const overlayWindow = this.windowsByNativeId.get(windowId);
+      const scaleState = this.windowScaleStates.get(windowId);
+      if (!overlayWindow || !overlayWindow.visible || !scaleState) {
+        return;
+      }
 
-    const inputEvent = this.overlay.translateInputEvent(payload);
-    if (!inputEvent) {
-      return;
-    }
+      const inputEvent = this.overlay.translateInputEvent(payload);
+      if (!inputEvent) {
+        return;
+      }
 
-    const inputScaleFactor = resolveInputScaleFactor(
-      payload.scaleFactorMicros,
-      scaleState.activeDisplay.scaleFactor,
-    );
-    if ('x' in inputEvent) {
-      inputEvent.x = physicalInputToDip(inputEvent.x, inputScaleFactor);
-    }
-    if ('y' in inputEvent) {
-      inputEvent.y = physicalInputToDip(inputEvent.y, inputScaleFactor);
-    }
+      const inputScaleFactor = resolveInputScaleFactor(
+        payload.scaleFactorMicros,
+        scaleState.activeDisplay.scaleFactor,
+      );
+      if ('x' in inputEvent) {
+        inputEvent.x = physicalInputToDip(inputEvent.x, inputScaleFactor);
+      }
+      if ('y' in inputEvent) {
+        inputEvent.y = physicalInputToDip(inputEvent.y, inputScaleFactor);
+      }
 
-    const webContents = this.focusInputWebContents(overlayWindow);
-    if (!webContents) {
-      return;
-    }
+      stage = 'focus';
+      const webContents = this.focusInputWebContents(overlayWindow);
+      if (!webContents) {
+        return;
+      }
 
-    // Reassert Chromium page focus immediately before dispatch. Electron's
-    // WebContents.focus() is a no-op for offscreen rendering, while this OSR
-    // API focuses the render widget without activating a native window or
-    // taking foreground ownership away from the game.
-    webContents.sendInputEvent(inputEvent);
+      // Reassert Chromium page focus immediately before dispatch. Electron's
+      // WebContents.focus() is a no-op for offscreen rendering, while this OSR
+      // API focuses the render widget without activating a native window or
+      // taking foreground ownership away from the game.
+      stage = 'dispatch';
+      webContents.sendInputEvent(inputEvent);
+    } catch (error) {
+      this.reportInputForwardingFailure(pid, windowId, stage, error);
+    }
   }
 
   private focusInputWebContents(window: ElectronOverlayWindow) {
     const browserWindow = window.browserWindow;
+    if (browserWindow.isDestroyed()) {
+      return null;
+    }
     const webContents = browserWindow.webContents;
-    if (browserWindow.isDestroyed() || webContents.isDestroyed()) {
+    if (webContents.isDestroyed()) {
       return null;
     }
 
@@ -659,23 +792,57 @@ export class OverlaySession {
       this.removeTargetSurface(payload);
     } else if (event === 'game.process.disconnected') {
       this.removeTargetSurfacesForProcess(payload?.pid);
+      this.clearProducerDiagnosticStateForProcess(payload?.pid);
     } else if (event === 'game.window.focused') {
-      console.log('focusWindowId', payload.focusWindowId);
+      const pid = payload?.pid;
+      const focusWindowId = payload?.focusWindowId;
+      let diagnosticFocusWindowId = this.windowsByNativeId.has(focusWindowId)
+        ? focusWindowId
+        : 0;
+      console.log('focusWindowId', focusWindowId);
 
-      BrowserWindow.getAllWindows().forEach((window) => {
-        window.blurWebView();
-      });
+      let browserWindows: Electron.BrowserWindow[] = [];
+      try {
+        browserWindows = BrowserWindow.getAllWindows();
+      } catch (error) {
+        this.reportInputForwardingFailure(
+          pid,
+          diagnosticFocusWindowId,
+          'blur',
+          error,
+        );
+      }
+      for (const browserWindow of browserWindows) {
+        try {
+          browserWindow.blurWebView();
+        } catch (error) {
+          this.reportInputForwardingFailure(pid, 0, 'blur', error);
+        }
+      }
 
-      const overlayWindow = this.windowsByNativeId.get(payload.focusWindowId);
-      if (overlayWindow) {
-        this.focusInputWebContents(overlayWindow);
-      } else {
-        // Retain compatibility with focus events for BrowserWindows that are
-        // not present in this session's registered-window map.
-        BrowserWindow.fromId(payload.focusWindowId)?.focusOnWebView();
+      try {
+        const overlayWindow = this.windowsByNativeId.get(focusWindowId);
+        if (overlayWindow) {
+          this.focusInputWebContents(overlayWindow);
+        } else {
+          // Retain compatibility with focus events for BrowserWindows that are
+          // not present in this session's registered-window map.
+          const fallbackWindow = BrowserWindow.fromId(focusWindowId);
+          if (fallbackWindow) {
+            diagnosticFocusWindowId = fallbackWindow.id;
+            fallbackWindow.focusOnWebView();
+          }
+        }
+      } catch (error) {
+        this.reportInputForwardingFailure(
+          pid,
+          diagnosticFocusWindowId,
+          'focus',
+          error,
+        );
       }
       this.emitEvent('windowFocused', {
-        windowId: payload.focusWindowId,
+        windowId: focusWindowId,
       });
     } else if (event === 'game.graphics.fps') {
       const fps = parseOverlayGraphicsFps(payload);
@@ -891,10 +1058,7 @@ export class OverlaySession {
           this.syncWindowGeometry(window);
         }
       } catch (error) {
-        console.warn(
-          `Cannot reconcile Electron overlay display state for window ${window.nativeId}`,
-          error,
-        );
+        this.reportWindowBoundsFailure(window, error);
       }
     }
   }
@@ -953,7 +1117,7 @@ export class OverlaySession {
     window: ElectronOverlayWindow,
     state: WindowScaleState,
     rasterChanged = false,
-  ) {
+  ): boolean {
     const geometry = this.getWindowGeometry(window, state);
     const published = this.publishedWindowGeometry.get(window.nativeId);
     if (
@@ -961,14 +1125,20 @@ export class OverlaySession {
       published &&
       sameWindowGeometry(published, geometry)
     ) {
-      return;
+      return true;
     }
 
-    this.overlay.sendWindowBounds(
-      window.nativeId,
-      rasterChanged ? { ...geometry, rasterChanged: true } : geometry,
-    );
+    try {
+      this.overlay.sendWindowBounds(
+        window.nativeId,
+        rasterChanged ? { ...geometry, rasterChanged: true } : geometry,
+      );
+    } catch (error) {
+      this.reportWindowBoundsFailure(window, error);
+      return false;
+    }
     this.publishedWindowGeometry.set(window.nativeId, geometry);
+    return true;
   }
 
   private beginAmbiguousCapture(window: ElectronOverlayWindow) {
@@ -1182,6 +1352,16 @@ export class OverlaySession {
     }
 
     this.unmatchedFrameDiagnostics.set(window.nativeId, diagnostic);
+    this.publishProducerDiagnostic('producer-frame-rejected', {
+      windowId: window.nativeId,
+      reason: reconciliation.reason,
+      width: size.width,
+      height: size.height,
+      activeWidth: reconciliation.activeSize.width,
+      activeHeight: reconciliation.activeSize.height,
+      desiredWidth: reconciliation.desiredSize.width,
+      desiredHeight: reconciliation.desiredSize.height,
+    });
     console.warn(
       `Suppressing ${reconciliation.reason} Electron overlay frame for window ${window.nativeId}: ` +
         `received ${size.width}x${size.height}, ` +
@@ -1190,11 +1370,218 @@ export class OverlaySession {
     );
   }
 
+  private reportWindowBoundsFailure(
+    window: ElectronOverlayWindow,
+    error: unknown,
+  ) {
+    if (
+      this.publishProducerFailure(
+        'producer-window-publication-failed',
+        {
+          windowId: window.nativeId,
+          operation: 'bounds',
+        },
+        error,
+      )
+    ) {
+      console.warn(
+        `Cannot publish Electron overlay bounds for window ${window.nativeId}`,
+        error,
+      );
+    }
+  }
+
+  private reportFramePublicationFailure(
+    window: ElectronOverlayWindow,
+    stage: 'bitmap' | 'transport',
+    error?: unknown,
+  ) {
+    if (
+      this.publishProducerFailure(
+        'producer-frame-publication-failed',
+        {
+          windowId: window.nativeId,
+          stage,
+        },
+        error,
+      )
+    ) {
+      console.warn(
+        `Cannot publish Electron overlay frame for window ${window.nativeId} during ${stage}`,
+        error,
+      );
+    }
+  }
+
+  private reportInputForwardingFailure(
+    pid: unknown,
+    windowId: unknown,
+    stage: 'translate' | 'focus' | 'blur' | 'dispatch',
+    error: unknown,
+  ) {
+    const safeWindowId =
+      typeof windowId === 'number' &&
+      Number.isSafeInteger(windowId) &&
+      windowId >= 0 &&
+      windowId <= 0xffffffff
+        ? windowId
+        : 0;
+    if (
+      this.publishProducerFailure(
+        'producer-input-forwarding-failed',
+        {
+          windowId: safeWindowId,
+          stage,
+        },
+        error,
+        pid,
+      )
+    ) {
+      console.warn(
+        `Cannot forward intercepted input for window ${safeWindowId} during ${stage}`,
+        error,
+      );
+    }
+  }
+
+  private publishProducerFailure(
+    code:
+      | 'producer-window-publication-failed'
+      | 'producer-frame-publication-failed'
+      | 'producer-input-forwarding-failed',
+    context: Readonly<Record<string, OverlayDiagnosticContextValue>>,
+    error?: unknown,
+    pid?: unknown,
+  ): boolean {
+    const errorCode = producerDiagnosticErrorCode(error);
+    return this.publishProducerDiagnostic(
+      code,
+      {
+        ...context,
+        ...(errorCode === undefined ? {} : { errorCode }),
+      },
+      pid,
+    );
+  }
+
+  private publishProducerDiagnostic(
+    code: ProducerDiagnosticCode,
+    context: Readonly<Record<string, OverlayDiagnosticContextValue>>,
+    pid?: unknown,
+  ): boolean {
+    let diagnostic: OverlayDiagnostic | null = null;
+    try {
+      diagnostic = parseOverlayDiagnostic({
+        schemaVersion: 1,
+        source: 'electron-game-overlay',
+        code,
+        ...(pid === undefined ? {} : { pid }),
+        context,
+      });
+    } catch {
+      return false;
+    }
+    if (!diagnostic) {
+      return false;
+    }
+
+    const windowId = diagnostic.context?.windowId ?? 0;
+    const discriminator =
+      diagnostic.context?.operation ??
+      diagnostic.context?.stage ??
+      diagnostic.context?.reason ??
+      '';
+    const rateKey =
+      `p${diagnostic.pid ?? 0}:w${windowId}:` +
+      `${diagnostic.code}:${String(discriminator)}`;
+    const now = Date.now();
+    const lastPublished = this.producerDiagnosticPublicationTimes.get(rateKey);
+    if (
+      lastPublished !== undefined &&
+      now >= lastPublished &&
+      now - lastPublished < PRODUCER_DIAGNOSTIC_COOLDOWN_MS
+    ) {
+      return false;
+    }
+    this.producerDiagnosticPublicationTimes.set(rateKey, now);
+
+    if (
+      this.pendingProducerDiagnostics.length >= MAX_PENDING_PRODUCER_DIAGNOSTICS
+    ) {
+      this.pendingProducerDiagnostics.shift();
+    }
+    this.pendingProducerDiagnostics.push(diagnostic);
+    if (!this.producerDiagnosticFlushScheduled) {
+      this.producerDiagnosticFlushScheduled = true;
+      queueMicrotask(() => this.flushProducerDiagnostics());
+    }
+    return true;
+  }
+
+  private flushProducerDiagnostics() {
+    this.producerDiagnosticFlushScheduled = false;
+    if (this.closed) {
+      this.pendingProducerDiagnostics.length = 0;
+      return;
+    }
+
+    const diagnostics = this.pendingProducerDiagnostics.splice(0);
+    for (const diagnostic of diagnostics) {
+      if (this.closed) {
+        break;
+      }
+      this.emitEvent('diagnostic', diagnostic);
+    }
+  }
+
+  private clearProducerDiagnosticStateForWindow(windowId: number) {
+    const marker = `:w${windowId}:`;
+    for (const key of this.producerDiagnosticPublicationTimes.keys()) {
+      if (key.includes(marker)) {
+        this.producerDiagnosticPublicationTimes.delete(key);
+      }
+    }
+  }
+
+  private clearProducerDiagnosticStateForProcess(pid: unknown) {
+    if (
+      typeof pid !== 'number' ||
+      !Number.isSafeInteger(pid) ||
+      pid <= 0 ||
+      pid > 0xffffffff
+    ) {
+      return;
+    }
+    const prefix = `p${pid}:`;
+    for (const key of this.producerDiagnosticPublicationTimes.keys()) {
+      if (key.startsWith(prefix)) {
+        this.producerDiagnosticPublicationTimes.delete(key);
+      }
+    }
+  }
+
   private ensureStarted() {
     if (!this.started) {
       this.start();
     }
   }
+}
+
+function producerDiagnosticErrorCode(
+  error: unknown,
+): string | number | undefined {
+  let candidate = error;
+  if (
+    (typeof error === 'object' && error !== null) ||
+    typeof error === 'function'
+  ) {
+    try {
+      candidate = Reflect.get(error, 'code');
+    } catch {
+      return undefined;
+    }
+  }
+  return normalizeOverlayDiagnosticErrorCode(candidate);
 }
 
 type DesiredRasterSnapshot = {

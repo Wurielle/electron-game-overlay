@@ -25,6 +25,23 @@ New runs use `build/electron-game-overlay-runtime`. Dated
 `build/reshade-imgui-overlay/...` paths below are historical pre-promotion
 acceptance evidence and are intentionally preserved as records.
 
+### POC completion boundary
+
+As of July 30, 2026, the library POC is ready for application testing through
+the public `electron-game-overlay` SDK within its documented boundary:
+near-process-creation injection, automatic D3D11/D3D12 host selection,
+multi-window Electron rendering/input, target relaunch without restarting
+Electron, demo-owned Steam process observation, target-follow/FPS telemetry, and
+structured attachment/transport/runtime/producer diagnostics all have
+production-client evidence. Package publishing is intentionally excluded.
+
+Unchecked items below are post-POC compatibility or hardening work. They do not
+extend the current completion boundary by implication; stock/arbitrary existing
+ReShade integration, late post-swap-chain adoption, clean in-process unload,
+additional graphics/input APIs, multi-swap-chain policy, and physical
+mixed-monitor acceptance remain explicitly unsupported or deferred until chosen
+as a separate task.
+
 ### Completed promotion milestones
 
 - [x] Pass the visible ReShade-owned input gate on the controlled D3D11 host.
@@ -247,6 +264,30 @@ they are not the active production-host roadmap.
     `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-111004`
     and
     `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-111018`.
+- [x] Add bounded producer-side Electron window, frame, and input diagnostics.
+  - Six fixed `electron-game-overlay` codes distinguish successful window
+    registration and first-frame publication from window publication, frame
+    rejection/publication, and input-forwarding failures. Severities and
+    messages are code-owned. Context accepts only validated window IDs, fixed
+    operation/stage or rejection values, bounded frame dimensions, and an
+    allowlisted OS error code.
+  - Producer records use a 32-entry asynchronous queue and a 7.5-second
+    per-PID/code/window/variant cooldown, with PID omitted for window/frame
+    records and rate state retired on target or final-window removal. The
+    asynchronous boundary prevents diagnostic listeners from re-entering a
+    partially committed window lifecycle. Input failures receive the
+    authenticated target PID and allow window ID `0` for focus reset.
+  - Window/control packets are encoded before retained transport state mutates,
+    and session geometry/raster state advances only after backend publication
+    succeeds. Translation, focus/blur, and Chromium dispatch exceptions are
+    diagnosed and contained instead of escaping as `packet-handler-failed` and
+    tearing down the authenticated target connection.
+  - The production client process-start gates require registration and
+    first-frame producer milestones and reject any producer warning/error.
+    Clean D3D11 and D3D12 evidence is preserved in
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260730-120110`
+    and
+    `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-120149`.
 - [ ] Improve error logging and diagnostics across every overlay layer.
   - Current issue: failures can happen in multiple places: Electron SDK code,
     runtime staging, injector launch, DLL injection, authenticated transport,
@@ -254,10 +295,11 @@ they are not the active production-host roadmap.
     rendering. Today those failures are hard to distinguish, which makes
     agent-driven debugging and user support slow.
   - Desired direction: make every layer report structured diagnostics with enough context to identify where the failure occurred and what the next action should be.
-  - The completed launcher/injector and injected-runtime slices above cover
-    attachment, authentication, render milestones, scene/frame upload, and
-    native input-routing failures. Producer-side Electron window/frame
-    publication failures and richer pre-IPC hook initialization remain.
+  - The completed launcher/injector, injected-runtime, and Electron-producer
+    slices above cover attachment, authentication, render milestones,
+    scene/frame upload, native input routing, producer registration/frame
+    publication, and contained Electron input-forwarding failures. Richer
+    pre-IPC hook initialization remains.
   - The SDK now exposes a frozen `session.on("diagnostic")` contract. The Node
     loopback transport emits bounded, redacted startup/discovery,
     authorization/authentication, authenticated-packet, socket, and
@@ -265,8 +307,22 @@ they are not the active production-host roadmap.
     it, and shows warnings/errors in the always-visible control dock. Discovery
     credentials, raw packets, executable paths, stacks, and arbitrary error
     messages are excluded. Authenticated native `game.diagnostic` publication
-    now covers the fixed injected-runtime codes; producer-side window/frame
-    publication diagnostics remain a later vertical slice.
+    covers the fixed injected-runtime codes, while SDK-owned producer records
+    are canonicalized and delivered locally without crossing target IPC.
+  - Producer raster-recovery diagnostics remain open: renderer DPR/viewport
+    acknowledgement timeouts, capture-size mismatches, and `capturePage()`
+    failures still retry and retain their existing console warnings.
+  - Redesigning the control side of `BackpressurePacketQueue` with a global
+    memory/count bound remains separate work. This slice makes publication
+    transactional and contains synchronous socket-write failures; it does not
+    claim a fully bounded outbound control queue.
+  - Strictly parse and classify every inbound `game.input` record before SDK
+    forwarding. The current slice contains forwarding exceptions after the
+    authenticated transport supplies PID, but does not turn the full input
+    envelope into a fail-closed typed schema.
+  - Stock/differently patched ReShade and arbitrary modded-game coexistence
+    remain the explicit compatibility task under “Runtime compatibility and
+    hardening”; producer diagnostics do not expand that support envelope.
   - Suggested logging layers:
     - `electron-game-overlay`: typed events such as `session.on("diagnostic", ...)`, attach results, window registration state, frame send failures, focus/input forwarding failures.
     - `electron-overlay-transport`: rendezvous, authentication, producer/target

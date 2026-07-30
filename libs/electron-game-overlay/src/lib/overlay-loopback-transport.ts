@@ -123,7 +123,10 @@ export class BackpressurePacketQueue {
   private blocked = false;
   private readonly pending: QueuedPacket[] = [];
 
-  constructor(private readonly sink: PacketSink) {}
+  constructor(
+    private readonly sink: PacketSink,
+    private readonly onWriteError: (error: unknown) => void = () => undefined,
+  ) {}
 
   public sendControl(packet: Buffer): void {
     this.send({ packet });
@@ -153,7 +156,10 @@ export class BackpressurePacketQueue {
 
   private send(entry: QueuedPacket): void {
     if (!this.blocked && this.pending.length === 0) {
-      this.blocked = !this.sink.write(entry.packet);
+      const accepted = this.write(entry.packet);
+      if (accepted !== undefined) {
+        this.blocked = !accepted;
+      }
       return;
     }
 
@@ -176,8 +182,22 @@ export class BackpressurePacketQueue {
     while (!this.blocked && this.pending.length > 0) {
       const entry = this.pending.shift();
       if (entry) {
-        this.blocked = !this.sink.write(entry.packet);
+        const accepted = this.write(entry.packet);
+        if (accepted === undefined) {
+          return;
+        }
+        this.blocked = !accepted;
       }
+    }
+  }
+
+  private write(packet: Uint8Array): boolean | undefined {
+    try {
+      return this.sink.write(packet);
+    } catch (error) {
+      this.clear();
+      this.onWriteError(error);
+      return undefined;
     }
   }
 }
@@ -754,20 +774,22 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         ? { scaleFactorMicros: details.scaleFactorMicros }
         : {}),
     };
+    const packet = encodeJsonTransportPacket(message);
     this.windows.delete(windowId);
     this.windows.set(windowId, message);
     this.latestFrames.delete(windowId);
-    this.broadcastWindowBarrier(windowId, message);
+    this.broadcastWindowBarrierPacket(windowId, packet);
   }
 
   public closeWindow(windowId: number): void {
     assertUnsigned32(windowId, 'windowId');
-    this.windows.delete(windowId);
-    this.latestFrames.delete(windowId);
-    this.broadcastWindowBarrier(windowId, {
+    const packet = encodeJsonTransportPacket({
       type: 'window.close',
       windowId,
     });
+    this.windows.delete(windowId);
+    this.latestFrames.delete(windowId);
+    this.broadcastWindowBarrierPacket(windowId, packet);
   }
 
   public sendWindowBounds(
@@ -775,6 +797,33 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     details: NativeOverlayWindowGeometry,
   ): void {
     assertUnsigned32(windowId, 'windowId');
+    const message: JsonObject = {
+      type: 'window.bounds',
+      windowId,
+      rect: { ...details.rect },
+      ...(details.maxWidth !== undefined ? { maxWidth: details.maxWidth } : {}),
+      ...(details.maxHeight !== undefined
+        ? { maxHeight: details.maxHeight }
+        : {}),
+      ...(details.minWidth !== undefined ? { minWidth: details.minWidth } : {}),
+      ...(details.minHeight !== undefined
+        ? { minHeight: details.minHeight }
+        : {}),
+      ...(details.dragBorderWidth !== undefined
+        ? { dragBorderWidth: details.dragBorderWidth }
+        : {}),
+      ...(details.caption !== undefined
+        ? { caption: { ...details.caption } }
+        : {}),
+      ...(details.scaleFactorMicros !== undefined
+        ? { scaleFactorMicros: details.scaleFactorMicros }
+        : {}),
+      ...(details.rasterChanged !== undefined
+        ? { rasterChanged: details.rasterChanged }
+        : {}),
+    };
+    const packet = encodeJsonTransportPacket(message);
+
     const window = this.windows.get(windowId);
     if (window) {
       window.rect = { ...details.rect };
@@ -801,37 +850,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       }
     }
 
-    const message: JsonObject = {
-      type: 'window.bounds',
-      windowId,
-      rect: { ...details.rect },
-      ...(details.maxWidth !== undefined ? { maxWidth: details.maxWidth } : {}),
-      ...(details.maxHeight !== undefined
-        ? { maxHeight: details.maxHeight }
-        : {}),
-      ...(details.minWidth !== undefined ? { minWidth: details.minWidth } : {}),
-      ...(details.minHeight !== undefined
-        ? { minHeight: details.minHeight }
-        : {}),
-      ...(details.dragBorderWidth !== undefined
-        ? { dragBorderWidth: details.dragBorderWidth }
-        : {}),
-      ...(details.caption !== undefined
-        ? { caption: { ...details.caption } }
-        : {}),
-      ...(details.scaleFactorMicros !== undefined
-        ? { scaleFactorMicros: details.scaleFactorMicros }
-        : {}),
-      ...(details.rasterChanged !== undefined
-        ? { rasterChanged: details.rasterChanged }
-        : {}),
-    };
-
     if (details.rasterChanged) {
       this.latestFrames.delete(windowId);
-      this.broadcastWindowBarrier(windowId, message);
+      this.broadcastWindowBarrierPacket(windowId, packet);
     } else {
-      this.broadcastControl(message);
+      this.broadcastControlPacket(packet);
     }
   }
 
@@ -840,9 +863,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     buffer: Buffer,
     width: number,
     height: number,
-  ): void {
+  ): boolean {
     if (!this.windows.has(windowId)) {
-      return;
+      return false;
     }
     const packet = encodeFrameTransportPacket(windowId, width, height, buffer);
     this.latestFrames.set(windowId, packet);
@@ -851,6 +874,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         client.writer.sendFrame(windowId, packet);
       }
     }
+    return true;
   }
 
   public translateInputEvent(
@@ -1121,9 +1145,12 @@ export class OverlayLoopbackTransport implements NativeOverlay {
 
   private acceptClient(socket: Socket): void {
     socket.setNoDelay(true);
-    const client: ClientState = {
+    let client: ClientState;
+    client = {
       socket,
-      writer: new BackpressurePacketQueue(socket),
+      writer: new BackpressurePacketQueue(socket, (error) => {
+        this.handleClientSocketError(client, error);
+      }),
       receiveBuffer: Buffer.alloc(0),
       authenticated: false,
       diagnosticRates: new Map(),
@@ -1132,19 +1159,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     socket.on('data', (chunk: Buffer) => this.receiveClientData(client, chunk));
     socket.on('drain', () => client.writer.handleDrain());
     socket.on('error', (error) => {
-      if (
-        client.authenticated &&
-        client.pid !== undefined &&
-        !client.socketErrorDiagnosed
-      ) {
-        client.socketErrorDiagnosed = true;
-        this.publishDiagnostic({
-          code: 'target-socket-error',
-          pid: client.pid,
-          context: errorCodeContext(error),
-        });
-      }
-      socket.destroy();
+      this.handleClientSocketError(client, error);
     });
     socket.on('close', () => {
       const isAuthoritativeClient =
@@ -1578,7 +1593,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   }
 
   private broadcastControl(message: JsonObject): void {
-    const packet = encodeJsonTransportPacket(message);
+    this.broadcastControlPacket(encodeJsonTransportPacket(message));
+  }
+
+  private broadcastControlPacket(packet: Buffer): void {
     for (const client of this.clients) {
       if (client.authenticated) {
         client.writer.sendControl(packet);
@@ -1586,13 +1604,28 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
   }
 
-  private broadcastWindowBarrier(windowId: number, message: JsonObject): void {
-    const packet = encodeJsonTransportPacket(message);
+  private broadcastWindowBarrierPacket(windowId: number, packet: Buffer): void {
     for (const client of this.clients) {
       if (client.authenticated) {
         client.writer.dropPendingFrames(windowId);
         client.writer.sendControl(packet);
       }
     }
+  }
+
+  private handleClientSocketError(client: ClientState, error: unknown): void {
+    if (
+      client.authenticated &&
+      client.pid !== undefined &&
+      !client.socketErrorDiagnosed
+    ) {
+      client.socketErrorDiagnosed = true;
+      this.publishDiagnostic({
+        code: 'target-socket-error',
+        pid: client.pid,
+        context: errorCodeContext(error),
+      });
+    }
+    client.socket.destroy();
   }
 }

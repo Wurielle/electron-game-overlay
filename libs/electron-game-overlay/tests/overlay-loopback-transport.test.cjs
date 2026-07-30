@@ -15,6 +15,7 @@ const {
 } = require('../dist/lib/overlay-loopback-transport.js');
 const { ElectronGameOverlay } = require('../dist/lib/electron-game-overlay.js');
 const { OverlaySession } = require('../dist/lib/overlay-session.js');
+const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
 
 const TOKEN = 'ab'.repeat(32);
 
@@ -167,6 +168,28 @@ test('packet framing uses a body-only length and validates BGRA dimensions', () 
   );
 });
 
+test('failed window encoding does not mutate retained transport state', () => {
+  const transport = new OverlayLoopbackTransport();
+  const oversizedWindow = overlayWindow('x'.repeat(MAX_JSON_BODY_BYTES));
+
+  assert.throws(
+    () => transport.addWindow(7, oversizedWindow),
+    /Overlay JSON packet exceeds/,
+  );
+  assert.equal(transport.windows.has(7), false);
+  assert.equal(transport.latestFrames.has(7), false);
+
+  transport.addWindow(7, overlayWindow('retained'));
+  transport.sendFrameBuffer(7, Buffer.alloc(8, 1), 2, 1);
+
+  assert.throws(
+    () => transport.addWindow(7, oversizedWindow),
+    /Overlay JSON packet exceeds/,
+  );
+  assert.equal(transport.windows.get(7).name, 'retained');
+  assert.equal(transport.latestFrames.has(7), true);
+});
+
 test('legacy process discovery and injection fail explicitly', () => {
   const message = /unavailable in the overlay transport/;
   const overlay = new ElectronGameOverlay();
@@ -239,6 +262,47 @@ test('window barriers drop only stale unsent frames and retain control FIFO orde
     'other-window',
     'window.close',
   ]);
+});
+
+test('one synchronous client write failure does not abort later clients', () => {
+  const writeErrors = [];
+  const delivered = [];
+  const transport = new OverlayLoopbackTransport();
+  const failingWriter = new BackpressurePacketQueue(
+    {
+      write() {
+        const error = new Error('synchronous sink failure');
+        error.code = 'EPIPE';
+        throw error;
+      },
+    },
+    (error) => writeErrors.push(error),
+  );
+  const healthyWriter = new BackpressurePacketQueue({
+    write(packet) {
+      delivered.push(Buffer.from(packet));
+      return true;
+    },
+  });
+  const client = (writer) => ({
+    socket: { destroy() {} },
+    writer,
+    receiveBuffer: Buffer.alloc(0),
+    authenticated: true,
+    diagnosticRates: new Map(),
+  });
+  transport.clients.add(client(failingWriter));
+  transport.clients.add(client(healthyWriter));
+
+  assert.doesNotThrow(() =>
+    transport.addWindow(9, overlayWindow('still-delivered')),
+  );
+  assert.equal(writeErrors.length, 1);
+  assert.equal(delivered.length, 1);
+  const message = JSON.parse(delivered[0].subarray(5).toString('utf8'));
+  assert.equal(message.type, 'window');
+  assert.equal(message.windowId, 9);
+  assert.equal(message.name, 'still-delivered');
 });
 
 test('authenticated clients receive canonical snapshot before callback commands', async (t) => {
@@ -348,6 +412,109 @@ test('authenticated clients receive canonical snapshot before callback commands'
     readFile(discoveryPath, 'utf8'),
     (error) => error.code === 'ENOENT',
   );
+});
+
+test('Electron input dispatch failure does not disconnect the authenticated target', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-input-dispatch-containment-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const session = new OverlaySession(transport);
+  const diagnostics = [];
+  const delivered = [];
+  const warnings = [];
+  const originalWarn = console.warn;
+  let rejectDispatch = true;
+  let socket;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(async () => {
+    console.warn = originalWarn;
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  session.windowsByNativeId.set(7, {
+    nativeId: 7,
+    visible: true,
+    browserWindow: {
+      focusOnWebView() {},
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        sendInputEvent(event) {
+          if (rejectDispatch) {
+            throw Object.assign(new Error('dispatch failed'), {
+              code: 'EPIPE',
+            });
+          }
+          delivered.push(event);
+        },
+      },
+    },
+  });
+  session.windowScaleStates.set(
+    7,
+    createWindowScaleState(
+      { id: 1, scaleFactor: 1, width: 1920, height: 1080 },
+      { x: 0, y: 0, width: 640, height: 360 },
+    ),
+  );
+  session.on('diagnostic', (diagnostic) => diagnostics.push(diagnostic));
+  transport.setEventCallback((event, payload) => {
+    session.handleEvent(event, payload);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 6101,
+      path: 'C:\\games\\input-dispatch-containment.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+  await waitFor(() => transport.activeClientsByPid.has(6101));
+  const authoritativeClient = transport.activeClientsByPid.get(6101);
+
+  const sendMouseMove = (x) => {
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.input',
+        windowId: 7,
+        msg: 0x0200,
+        wparam: 0,
+        lparam: (20 << 16) | x,
+      }),
+    );
+  };
+  sendMouseMove(10);
+  await waitFor(() =>
+    diagnostics.some(
+      ({ code, pid }) =>
+        code === 'producer-input-forwarding-failed' && pid === 6101,
+    ),
+  );
+
+  rejectDispatch = false;
+  sendMouseMove(11);
+  await waitFor(() => delivered.length === 1);
+  assert.equal(delivered[0].x, 11);
+  assert.equal(
+    transport.activeClientsByPid.get(6101),
+    authoritativeClient,
+    'the same authenticated socket must remain authoritative',
+  );
+  assert.equal(socket.destroyed, false);
+  assert.equal(warnings.length, 1);
 });
 
 test('invalid authentication is closed without receiving a snapshot', async (t) => {

@@ -119,9 +119,71 @@ function createHarness() {
 
 function forwardInput(session) {
   session.handleEvent('game.input', {
+    pid: 4321,
     windowId: 7,
     scaleFactorMicros: 1_000_000,
   });
+}
+
+function createProducerPublicationHarness(overlayOverrides = {}) {
+  const calls = [];
+  let contentBounds = { ...bounds };
+  const overlay = {
+    addWindow: (windowId, details) =>
+      calls.push({ type: 'add', windowId, details }),
+    closeWindow: (windowId) => calls.push({ type: 'close', windowId }),
+    sendWindowBounds: (windowId, details) =>
+      calls.push({ type: 'bounds', windowId, details }),
+    sendFrameBuffer: (windowId, bitmap, width, height) => {
+      calls.push({ type: 'frame', windowId, bitmap, width, height });
+      return true;
+    },
+    ...overlayOverrides,
+  };
+  const session = new OverlaySession(overlay);
+  session.started = true;
+  session.electronScreen = {
+    getDisplayMatching: () => ({
+      id: display.id,
+      scaleFactor: display.scaleFactor,
+      bounds: { width: display.width, height: display.height },
+    }),
+    screenToDipRect: (_window, rect) => ({ ...rect }),
+    on() {},
+    removeListener() {},
+  };
+  const window = {
+    id: 'producer-window',
+    name: 'Producer window',
+    nativeId: 7,
+    transparent: true,
+    dragBorder: 8,
+    captionHeight: 32,
+    visible: true,
+    browserWindow: {
+      id: 7,
+      isDestroyed: () => false,
+      isResizable: () => true,
+      getContentBounds: () => ({ ...contentBounds }),
+      getNativeWindowHandle: () => Buffer.from([123, 0, 0, 0]),
+      webContents: {
+        invalidate() {},
+        isDestroyed: () => false,
+      },
+    },
+  };
+  session.windowsById.set(window.id, window);
+  session.windowsByNativeId.set(window.nativeId, window);
+
+  return {
+    calls,
+    overlay,
+    session,
+    setContentBounds: (next) => {
+      contentBounds = { ...next };
+    },
+    window,
+  };
 }
 
 test('focuses the target page immediately before input dispatch without native focus', () => {
@@ -166,6 +228,53 @@ test('reasserts OSR page focus for every forwarded input event', (t) => {
     'webContents.sendInputEvent',
   ]);
   assert.deepEqual(warnings, []);
+});
+
+test('contains input dispatch failures and keeps forwarding later events', async (t) => {
+  const harness = createHarness();
+  const diagnostics = [];
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+  harness.session.on('diagnostic', (diagnostic) =>
+    diagnostics.push(diagnostic),
+  );
+
+  const webContents =
+    harness.session.windowsByNativeId.get(7).browserWindow.webContents;
+  const failure = Object.assign(new Error('dispatch failed'), {
+    code: 'EPIPE',
+  });
+  webContents.sendInputEvent = () => {
+    throw failure;
+  };
+
+  assert.doesNotThrow(() => forwardInput(harness.session));
+  await Promise.resolve();
+  assert.deepEqual(diagnostics, [
+    {
+      schemaVersion: 1,
+      source: 'electron-game-overlay',
+      severity: 'error',
+      code: 'producer-input-forwarding-failed',
+      message:
+        'The Electron overlay SDK could not forward intercepted input to an offscreen window.',
+      pid: 4321,
+      context: {
+        windowId: 7,
+        stage: 'dispatch',
+        errorCode: 'EPIPE',
+      },
+    },
+  ]);
+  assert.equal(warnings.length, 1);
+
+  webContents.sendInputEvent = (event) => harness.sentEvents.push(event);
+  assert.doesNotThrow(() => forwardInput(harness.session));
+  assert.equal(harness.sentEvents.length, 1);
 });
 
 test('retains immutable target surfaces and typed FPS until confirmed process exit', () => {
@@ -799,4 +908,249 @@ test('target following moves the backing window in DIP but commits local physica
     top: 12,
     height: 48,
   });
+});
+
+test('publishes asynchronous producer milestones after window and first-frame success', async () => {
+  const harness = createProducerPublicationHarness();
+  const diagnostics = [];
+  harness.session.on('diagnostic', (diagnostic) =>
+    diagnostics.push(diagnostic),
+  );
+
+  harness.session.registerWindow(harness.window);
+  harness.session.sendFrame(harness.window, {
+    getSize: () => ({ width: 640, height: 360 }),
+    getBitmap: () => Buffer.from([1, 2, 3, 4]),
+  });
+  assert.deepEqual(diagnostics, [], 'producer delivery must not re-enter show');
+
+  await Promise.resolve();
+  assert.deepEqual(
+    diagnostics.map(({ code, context }) => ({ code, context })),
+    [
+      {
+        code: 'producer-window-registered',
+        context: { windowId: 7 },
+      },
+      {
+        code: 'producer-frame-publication-started',
+        context: { windowId: 7, width: 640, height: 360 },
+      },
+    ],
+  );
+
+  harness.session.sendFrame(harness.window, {
+    getSize: () => ({ width: 640, height: 360 }),
+    getBitmap: () => Buffer.from([5, 6, 7, 8]),
+  });
+  await Promise.resolve();
+  assert.equal(
+    diagnostics.filter(
+      ({ code }) => code === 'producer-frame-publication-started',
+    ).length,
+    1,
+  );
+});
+
+test('registration failure rolls back state and reports only a safe code', async () => {
+  const failure = Object.assign(new Error('secret registration detail'), {
+    code: 'ENOMEM',
+  });
+  const harness = createProducerPublicationHarness({
+    addWindow: () => {
+      throw failure;
+    },
+  });
+  const diagnostics = [];
+  harness.session.on('diagnostic', (diagnostic) =>
+    diagnostics.push(diagnostic),
+  );
+
+  assert.throws(() => harness.session.registerWindow(harness.window), failure);
+  assert.equal(harness.session.windowScaleStates.has(7), false);
+  assert.equal(harness.session.publishedWindowGeometry.has(7), false);
+  await Promise.resolve();
+  assert.deepEqual(
+    diagnostics.map(({ code, context }) => ({ code, context })),
+    [
+      {
+        code: 'producer-window-publication-failed',
+        context: {
+          windowId: 7,
+          operation: 'register',
+          errorCode: 'ENOMEM',
+        },
+      },
+    ],
+  );
+});
+
+test('frame transport rejection is contained and does not claim publication', async (t) => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+  const harness = createProducerPublicationHarness({
+    sendFrameBuffer: () => false,
+  });
+  const diagnostics = [];
+  harness.session.on('diagnostic', (diagnostic) =>
+    diagnostics.push(diagnostic),
+  );
+  harness.session.registerWindow(harness.window);
+  await Promise.resolve();
+  diagnostics.length = 0;
+
+  assert.doesNotThrow(() => {
+    harness.session.sendFrame(harness.window, {
+      getSize: () => ({ width: 640, height: 360 }),
+      getBitmap: () => Buffer.from([1, 2, 3, 4]),
+    });
+  });
+  await Promise.resolve();
+  assert.deepEqual(
+    diagnostics.map(({ code, context }) => ({ code, context })),
+    [
+      {
+        code: 'producer-frame-publication-failed',
+        context: { windowId: 7, stage: 'transport' },
+      },
+    ],
+  );
+  assert.equal(harness.session.producerFramePublicationStarted.has(7), false);
+  assert.equal(warnings.length, 1);
+});
+
+test('producer diagnostic delivery is bounded and rate limited per window code', async () => {
+  const session = new OverlaySession({});
+  const diagnostics = [];
+  session.on('diagnostic', (diagnostic) => diagnostics.push(diagnostic));
+
+  for (let windowId = 1; windowId <= 40; windowId += 1) {
+    session.publishProducerDiagnostic('producer-window-registered', {
+      windowId,
+    });
+  }
+  session.publishProducerDiagnostic('producer-window-registered', {
+    windowId: 40,
+  });
+  await Promise.resolve();
+
+  assert.equal(diagnostics.length, 32);
+  assert.deepEqual(
+    diagnostics.map(({ context }) => context.windowId),
+    Array.from({ length: 32 }, (_value, index) => index + 9),
+  );
+});
+
+test('input diagnostic cooldowns are isolated and retired per target PID', async () => {
+  const session = new OverlaySession({});
+  const diagnostics = [];
+  session.on('diagnostic', (diagnostic) => diagnostics.push(diagnostic));
+  const publish = (pid) =>
+    session.publishProducerDiagnostic(
+      'producer-input-forwarding-failed',
+      { windowId: 7, stage: 'dispatch' },
+      pid,
+    );
+
+  assert.equal(publish(5001), true);
+  assert.equal(publish(5001), false);
+  assert.equal(publish(5002), true);
+  await Promise.resolve();
+  assert.deepEqual(
+    diagnostics.map(({ pid }) => pid),
+    [5001, 5002],
+  );
+
+  session.handleEvent('game.process.disconnected', { pid: 5001 });
+  assert.equal(publish(5001), true);
+  await Promise.resolve();
+  assert.deepEqual(
+    diagnostics.map(({ pid }) => pid),
+    [5001, 5002, 5001],
+  );
+});
+
+test('renderer invalidation failure is not mislabeled as bounds publication', async (t) => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+  const harness = createProducerPublicationHarness();
+  const diagnostics = [];
+  harness.session.on('diagnostic', (diagnostic) =>
+    diagnostics.push(diagnostic),
+  );
+  harness.session.registerWindow(harness.window);
+  await Promise.resolve();
+  diagnostics.length = 0;
+  harness.window.browserWindow.webContents.invalidate = () => {
+    throw Object.assign(new Error('renderer unavailable'), { code: 'EIO' });
+  };
+
+  harness.setContentBounds({ x: 0, y: 0, width: 800, height: 450 });
+  assert.doesNotThrow(() => harness.session.syncWindowGeometry(harness.window));
+  await Promise.resolve();
+
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(
+    harness.session.windowScaleStates.get(7).desiredRasterBounds,
+    { x: 0, y: 0, width: 800, height: 450 },
+  );
+  assert.equal(warnings.length, 1);
+});
+
+test('bounds publication failure keeps the last committed scale state', async (t) => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+  let rejectBounds = false;
+  const failure = Object.assign(new Error('secret bounds detail'), {
+    code: 'EIO',
+  });
+  const harness = createProducerPublicationHarness({
+    sendWindowBounds: () => {
+      if (rejectBounds) {
+        throw failure;
+      }
+    },
+  });
+  const diagnostics = [];
+  harness.session.on('diagnostic', (diagnostic) =>
+    diagnostics.push(diagnostic),
+  );
+  harness.session.registerWindow(harness.window);
+  await Promise.resolve();
+  diagnostics.length = 0;
+
+  rejectBounds = true;
+  harness.setContentBounds({ x: 20, y: 30, width: 640, height: 360 });
+  assert.doesNotThrow(() => harness.session.syncWindowGeometry(harness.window));
+  assert.deepEqual(
+    harness.session.windowScaleStates.get(7).desiredRasterBounds,
+    bounds,
+  );
+  await Promise.resolve();
+  assert.deepEqual(
+    diagnostics.map(({ code, context }) => ({ code, context })),
+    [
+      {
+        code: 'producer-window-publication-failed',
+        context: {
+          windowId: 7,
+          operation: 'bounds',
+          errorCode: 'EIO',
+        },
+      },
+    ],
+  );
+  assert.equal(warnings.length, 1);
 });
