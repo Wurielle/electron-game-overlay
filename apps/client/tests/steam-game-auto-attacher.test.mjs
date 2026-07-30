@@ -558,6 +558,89 @@ test('a process deleted while queued is never attached after preparation finishe
   await autoAttacher.dispose();
 });
 
+test('connected and attaching target deletion is confirmed before launcher disposal', async () => {
+  const watcher = new FakeProcessWatcher();
+  const session = new FakeOverlaySession();
+  const order = [];
+  const launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session,
+    reshadeConfig: createConfig(),
+    watcherFactory: () => watcher,
+    launcherFactory: (config) => {
+      const launcher = new FakeLauncher(config, order);
+      launchers.push(launcher);
+      return launcher;
+    },
+    preparedLauncherPoolSize: 0,
+  });
+  const watcherDeleted = processInfo(
+    9040,
+    'D:\\SteamLibrary\\steamapps\\common\\Deleted\\deleted.exe',
+  );
+  const sessionDisconnected = processInfo(
+    9041,
+    'D:\\SteamLibrary\\steamapps\\common\\Disconnected\\disconnected.exe',
+  );
+  const attachingDeleted = processInfo(
+    9042,
+    'D:\\SteamLibrary\\steamapps\\common\\Attaching\\attaching.exe',
+  );
+
+  autoAttacher.start();
+  watcher.create(watcherDeleted);
+  await flushMicrotasks();
+  launchers[0].connect(watcherDeleted.pid, watcherDeleted.filepath);
+  await flushMicrotasks();
+
+  watcher.delete(watcherDeleted);
+
+  assert.deepEqual(launchers[0].exitConfirmations, [
+    { pid: watcherDeleted.pid, confirmed: true },
+  ]);
+  assert.deepEqual(order, [
+    `launcher-confirm-exit:${watcherDeleted.pid}:true`,
+    'launcher-dispose',
+  ]);
+  assert.deepEqual(autoAttacher.targets, []);
+
+  order.length = 0;
+  watcher.create(sessionDisconnected);
+  await flushMicrotasks();
+  launchers[1].connect(sessionDisconnected.pid, sessionDisconnected.filepath);
+  await flushMicrotasks();
+
+  session.emitNative('game.process.disconnected', {
+    pid: sessionDisconnected.pid,
+  });
+  await flushMicrotasks();
+
+  assert.deepEqual(launchers[1].exitConfirmations, [
+    { pid: sessionDisconnected.pid, confirmed: false },
+  ]);
+  assert.deepEqual(order, [
+    `launcher-confirm-exit:${sessionDisconnected.pid}:false`,
+    'launcher-dispose',
+  ]);
+  assert.deepEqual(autoAttacher.targets, []);
+
+  order.length = 0;
+  watcher.create(attachingDeleted);
+  await flushMicrotasks();
+  watcher.delete(attachingDeleted);
+
+  assert.deepEqual(launchers[2].exitConfirmations, [
+    { pid: attachingDeleted.pid, confirmed: true },
+  ]);
+  assert.deepEqual(order, [
+    `launcher-confirm-exit:${attachingDeleted.pid}:true`,
+    'launcher-dispose',
+  ]);
+  assert.deepEqual(autoAttacher.targets, []);
+
+  await autoAttacher.dispose();
+});
+
 test('every detected Steam executable starts an independent exact-PID injection', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
@@ -992,6 +1075,8 @@ class FakeLauncher {
   state = 'idle';
   target = null;
   disposed = false;
+  connectedPid = null;
+  exitConfirmations = [];
   prepareCalls = 0;
   prepared = false;
 
@@ -1018,6 +1103,21 @@ class FakeLauncher {
     assert.ok(session);
     this.state = 'attaching';
     this.target = target;
+    this.removeSessionListener = session.on(
+      'nativeEvent',
+      ({ event, payload }) => {
+        if (
+          event !== 'game.process.disconnected' ||
+          payload?.pid !== this.connectedPid
+        ) {
+          return;
+        }
+        this.state = 'idle';
+        this.connectedPid = null;
+        this.removeSessionListener?.();
+        this.removeSessionListener = undefined;
+      },
+    );
     return this.promise;
   }
 
@@ -1026,6 +1126,7 @@ class FakeLauncher {
     selectedPath = `C:\\SteamLibrary\\steamapps\\common\\Game\\game.exe`,
   ) {
     this.state = 'connected';
+    this.connectedPid = pid;
     this.resolve({
       pid,
       processName: selectedPath.split(/[\\/]/).at(-1),
@@ -1038,9 +1139,27 @@ class FakeLauncher {
     this.reject(error);
   }
 
+  confirmTargetExited(pid) {
+    const confirmed =
+      (this.state === 'connected' && this.connectedPid === pid) ||
+      (this.state === 'attaching' && this.target?.pid === pid);
+    this.exitConfirmations.push({ pid, confirmed });
+    this.order.push(`launcher-confirm-exit:${pid}:${confirmed}`);
+    if (confirmed) {
+      this.state = 'idle';
+      this.connectedPid = null;
+      this.removeSessionListener?.();
+      this.removeSessionListener = undefined;
+    }
+    return confirmed;
+  }
+
   dispose() {
     this.disposed = true;
     this.state = 'idle';
+    this.connectedPid = null;
+    this.removeSessionListener?.();
+    this.removeSessionListener = undefined;
     this.order.push('launcher-dispose');
   }
 }

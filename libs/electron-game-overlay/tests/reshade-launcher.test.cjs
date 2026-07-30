@@ -39,6 +39,11 @@ const artifacts = [
   'electron_game_overlay.addon64',
   'ReShade.ini',
 ];
+const runOwnershipMarkerFileName = '.electron-game-overlay-run.json';
+const runReclaimableMarkerFileName =
+  '.electron-game-overlay-run-reclaimable.json';
+const runRetentionMaxAgeMs = 7 * 24 * 60 * 60 * 1_000;
+let retainedRunSequence = 0;
 const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>
   `Waiting for a '${processName}' process to spawn ...\n` +
   `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n`;
@@ -338,9 +343,16 @@ test('exact-PID stdout mismatch remains indeterminate and blocks retry', async (
   try {
     const request = launcher.launch({ processName: 'game.exe', pid: 5001 });
     await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
     execution.calls[0].callback(null, injectorSuccessFor(5002, 'game.exe'), '');
     await assert.rejects(request, /selected pid=5002; expected pid=5001/);
     assert.equal(launcher.state, 'blocked');
+    await flushMicrotasks();
+    assert.equal(
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+      false,
+      'an indeterminate injection result must not become reclaimable',
+    );
     await assert.rejects(
       launcher.launch({ processName: 'game.exe', pid: 5001 }),
       /outcome is indeterminate/,
@@ -764,6 +776,154 @@ test('prepare stages once without injection and the next launch consumes that ex
   }
 });
 
+test('prepare prunes reclaimable runs older than seven days and beyond the newest 64', async () => {
+  const fixture = createRuntime();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const now = Date.now();
+  const countLimitedRuns = Array.from({ length: 66 }, (_, index) =>
+    createRetainedRun(
+      fixture,
+      `count-limited-${String(index).padStart(2, '0')}`,
+      {
+        createdAt: now - (index + 2) * 60_000,
+        retiredAt: now - (index + 1) * 60_000,
+      },
+    ),
+  );
+  const ageLimitedRun = createRetainedRun(fixture, 'age-limited', {
+    createdAt: now - runRetentionMaxAgeMs - 120_000,
+    retiredAt: now - runRetentionMaxAgeMs - 60_000,
+  });
+  console.log = () => undefined;
+  console.warn = () => undefined;
+
+  try {
+    await launcher.prepare();
+
+    await waitFor(() => !existsSync(ageLimitedRun));
+    assert.equal(existsSync(ageLimitedRun), false);
+    await waitFor(() => !existsSync(countLimitedRuns.at(-1)));
+    for (const [index, runDirectory] of countLimitedRuns.entries()) {
+      assert.equal(
+        existsSync(runDirectory),
+        index < 64,
+        `count-limited run ${index} should ${
+          index < 64 ? 'be retained' : 'be pruned'
+        }`,
+      );
+    }
+
+    const preparedDirectories = readdirSync(fixture.runsRootDirectory).filter(
+      (entry) => entry.startsWith('prepared-'),
+    );
+    assert.equal(preparedDirectories.length, 1);
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+});
+
+test('retention preserves unmarked, malformed, non-reclaimable, and prepared runs', async () => {
+  const fixture = createRuntime();
+  const preparedLauncher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const sweepLauncher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const oldTimestamp = Date.now() - runRetentionMaxAgeMs - 60_000;
+  console.log = () => undefined;
+  console.warn = () => undefined;
+
+  try {
+    await preparedLauncher.prepare();
+    const preparedDirectoryName = readdirSync(fixture.runsRootDirectory).find(
+      (entry) => entry.startsWith('prepared-'),
+    );
+    assert.ok(preparedDirectoryName);
+    const preparedDirectory = path.join(
+      fixture.runsRootDirectory,
+      preparedDirectoryName,
+    );
+    assert.equal(
+      existsSync(path.join(preparedDirectory, runOwnershipMarkerFileName)),
+      true,
+    );
+    assert.equal(
+      existsSync(path.join(preparedDirectory, runReclaimableMarkerFileName)),
+      false,
+    );
+
+    const unmarkedDirectory = path.join(
+      fixture.runsRootDirectory,
+      'foreign-unmarked',
+    );
+    mkdirSync(unmarkedDirectory);
+
+    const malformedDirectory = createRetainedRun(
+      fixture,
+      'malformed-reclaimable',
+      {
+        createdAt: oldTimestamp - 60_000,
+        retiredAt: oldTimestamp,
+      },
+    );
+    writeFileSync(
+      path.join(malformedDirectory, runReclaimableMarkerFileName),
+      '{not-json',
+    );
+
+    const nonReclaimableDirectory = createRetainedRun(
+      fixture,
+      'ownership-only',
+      {
+        createdAt: oldTimestamp,
+      },
+    );
+    const mismatchedDirectory = createRetainedRun(
+      fixture,
+      'mismatched-markers',
+      {
+        createdAt: oldTimestamp - 60_000,
+        retiredAt: oldTimestamp,
+        reclaimableRunId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      },
+    );
+    const eligibleControlDirectory = createRetainedRun(
+      fixture,
+      'eligible-control',
+      {
+        createdAt: oldTimestamp - 60_000,
+        retiredAt: oldTimestamp,
+      },
+    );
+
+    await sweepLauncher.prepare();
+
+    await waitFor(() => !existsSync(eligibleControlDirectory));
+    assert.equal(existsSync(eligibleControlDirectory), false);
+    for (const preservedDirectory of [
+      preparedDirectory,
+      unmarkedDirectory,
+      malformedDirectory,
+      nonReclaimableDirectory,
+      mismatchedDirectory,
+    ]) {
+      assert.equal(
+        existsSync(preservedDirectory),
+        true,
+        `${path.basename(preservedDirectory)} should be preserved`,
+      );
+    }
+  } finally {
+    preparedLauncher.dispose();
+    sweepLauncher.dispose();
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+});
+
 test('dispose removes successful and in-flight unused prepared runtimes', async (t) => {
   await t.test('successful preparation', async () => {
     const fixture = createRuntime();
@@ -937,15 +1097,56 @@ test('path watcher is prearmed without an injector timeout and pins the selected
     );
     assert.equal(launcher.state, 'connected');
 
-    sessionHarness.emitNative('game.process.disconnected', {
-      pid: 9301,
-      path: selectedPath,
-    });
+    assert.equal(launcher.confirmTargetExited(9302), false);
+    assert.equal(launcher.confirmTargetExited(9301), true);
+    assert.equal(launcher.confirmTargetExited(9301), false);
     assert.equal(launcher.state, 'idle');
+    await waitFor(() =>
+      existsSync(path.join(result.runDirectory, runReclaimableMarkerFileName)),
+    );
   } finally {
     launcher.dispose();
     console.log = originalLog;
     console.warn = originalWarn;
+    execution.restore();
+  }
+});
+
+test('authoritative process exit retires an attaching exact-PID run before disposal', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalLog = console.log;
+  console.log = () => undefined;
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+      pid: 9351,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
+    assert.equal(launcher.state, 'attaching');
+    assert.equal(launcher.confirmTargetExited(9352), false);
+    assert.equal(launcher.confirmTargetExited(9351), true);
+    assert.equal(execution.calls[0].child.killed, true);
+    assert.equal(launcher.state, 'idle');
+
+    launcher.dispose();
+    await assert.rejects(attachment, (error) => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'target-disconnected');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.equal(error.diagnostic.pid, 9351);
+      return true;
+    });
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+    );
+  } finally {
+    launcher.dispose();
+    console.log = originalLog;
     execution.restore();
   }
 });
@@ -961,6 +1162,7 @@ test('path watcher pre-mutation proof is retry-safe', async () => {
     const target = { pathContains: '\\steamapps\\' };
     const failed = launcher.launch(target);
     await waitFor(() => execution.calls.length === 1);
+    const runDirectory = execution.calls[0].options.cwd;
     execution.calls[0].callback(
       Object.assign(new Error('selected process was unsupported'), { code: 1 }),
       'ReShade path watcher armed.\nReShade injection not started.\n',
@@ -968,6 +1170,9 @@ test('path watcher pre-mutation proof is retry-safe', async () => {
     );
     await assert.rejects(failed, /selected process was unsupported/);
     assert.equal(launcher.state, 'idle');
+    await waitFor(() =>
+      existsSync(path.join(runDirectory, runReclaimableMarkerFileName)),
+    );
   } finally {
     launcher.dispose();
     console.error = originalError;
@@ -1991,6 +2196,41 @@ test('disposing a pending attachment kills the injector and rejects promptly', a
     execution.restore();
   }
 });
+
+function createRetainedRun(
+  fixture,
+  directoryName,
+  { createdAt, retiredAt, reclaimableRunId } = {},
+) {
+  const runDirectory = path.join(fixture.runsRootDirectory, directoryName);
+  const runId = `00000000-0000-4000-8000-${(++retainedRunSequence)
+    .toString(16)
+    .padStart(12, '0')}`;
+  mkdirSync(runDirectory);
+  writeFileSync(
+    path.join(runDirectory, runOwnershipMarkerFileName),
+    JSON.stringify({
+      schemaVersion: 1,
+      kind: 'electron-game-overlay-reshade-run',
+      runId,
+      directoryName,
+      createdAt: new Date(createdAt ?? Date.now()).toISOString(),
+    }),
+  );
+  if (retiredAt !== undefined) {
+    writeFileSync(
+      path.join(runDirectory, runReclaimableMarkerFileName),
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: 'electron-game-overlay-reshade-run-reclaimable',
+        runId: reclaimableRunId ?? runId,
+        directoryName,
+        retiredAt: new Date(retiredAt).toISOString(),
+      }),
+    );
+  }
+  return runDirectory;
+}
 
 function createRuntime() {
   const root = mkdtempSync(path.join(tmpdir(), 'reshade-sdk-launch-'));

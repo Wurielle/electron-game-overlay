@@ -93,7 +93,12 @@ queued targets remain recorded. Non-mutating artifacts are hard-linked into the
 directory when the filesystem permits, with portable copying as fallback.
 `ReShade64.dll` and `ReShade.ini` remain private copies because the injector
 adjusts the DLL ACL and ReShade may update its configuration. Disposing unused
-prepared launchers removes their directories.
+prepared launchers removes their directories. The SDK marks every isolated run
+as owned, but marks it reclaimable only after a definite-safe failure or an
+OS-confirmed target disconnect. Best-effort asynchronous sweeps after staging
+and retirement remove reclaimable runs older than seven days or outside the
+newest 64 reclaimable runs. Prepared, active, indeterminate, unmarked,
+malformed, and legacy pre-marker directories remain untouched.
 
 The prearmed and exact-PID lanes may select the same process. A native per-PID
 claim serializes that overlap before target mutation. When the path lane wins,

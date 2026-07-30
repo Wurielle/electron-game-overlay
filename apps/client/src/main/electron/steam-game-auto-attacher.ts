@@ -226,6 +226,7 @@ export type ReShadeLauncherForSteamTarget = Readonly<{
     session: OverlaySessionForAttachment,
     target: ReShadeTarget,
   ): Promise<ReShadeAttachResult>;
+  confirmTargetExited?(pid: number): boolean;
   dispose(): void;
   readonly state: ReShadeAttachmentState;
 }>;
@@ -918,6 +919,10 @@ export class SteamGameAutoAttacher {
       this.deletedTargetPids.add(pid);
       return;
     }
+    for (const attempt of entry.attempts) {
+      attempt.confirmTargetExited?.(pid);
+    }
+    this.armedLauncher?.confirmTargetExited?.(pid);
     this.targetEntries.delete(pid);
     this.deletedTargetPids.add(pid);
     this.removePendingTarget(entry);

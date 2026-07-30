@@ -1,11 +1,15 @@
 import { execFile, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import {
   copyFile,
   link,
   mkdir,
   mkdtemp,
+  readdir,
+  readFile,
   realpath,
+  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -36,6 +40,15 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const TARGET_PROOF_TIMEOUT_MS = 120_000;
 const PATH_TARGET_PROOF_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+const RUN_OWNERSHIP_MARKER_FILE_NAME = '.electron-game-overlay-run.json';
+const RUN_RECLAIMABLE_MARKER_FILE_NAME =
+  '.electron-game-overlay-run-reclaimable.json';
+const RUN_OWNERSHIP_MARKER_KIND = 'electron-game-overlay-reshade-run';
+const RUN_RECLAIMABLE_MARKER_KIND =
+  'electron-game-overlay-reshade-run-reclaimable';
+const RUN_MARKER_SCHEMA_VERSION = 1;
+const RUN_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+const RUN_RETENTION_MAX_DIRECTORIES = 64;
 
 export const RESHADE_CLIENT_RUNTIME_STAGED_MARKER =
   'RESHADE_CLIENT_RUNTIME_STAGED';
@@ -51,6 +64,8 @@ export const RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER =
   'RESHADE_CLIENT_TARGET_DISCONNECTED';
 export const RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED_MARKER =
   'RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED';
+const RESHADE_CLIENT_RUN_RETENTION_PRUNED_MARKER =
+  'RESHADE_CLIENT_RUN_RETENTION_PRUNED';
 
 const RUNTIME_ARTIFACTS = Object.freeze([
   INJECTOR_FILE_NAME,
@@ -113,6 +128,7 @@ export type ReShadeAttachResult = ReShadeLaunchResult &
   }>;
 
 type StagedRuntime = Readonly<{
+  runId: string;
   runsRootDirectory: string;
   runDirectory: string;
   injectorPath: string;
@@ -120,6 +136,43 @@ type StagedRuntime = Readonly<{
   injectorStderrPath: string;
   reshadeLogPath: string;
 }>;
+
+type CurrentRuntime = Readonly<{
+  staged: StagedRuntime;
+  targetLabel: string;
+  launchGeneration: number;
+}>;
+
+type RunOwnershipMarker = Readonly<{
+  schemaVersion: 1;
+  kind: typeof RUN_OWNERSHIP_MARKER_KIND;
+  runId: string;
+  directoryName: string;
+  createdAt: string;
+}>;
+
+type RunReclaimableMarker = Readonly<{
+  schemaVersion: 1;
+  kind: typeof RUN_RECLAIMABLE_MARKER_KIND;
+  runId: string;
+  directoryName: string;
+  retiredAt: string;
+}>;
+
+type ReclaimableRunDirectory = Readonly<{
+  runsRootDirectory: string;
+  runDirectory: string;
+  ownership: RunOwnershipMarker;
+  reclaimable: RunReclaimableMarker;
+  retiredAtMs: number;
+}>;
+
+type RunRetentionSweepState = {
+  rescanRequested: boolean;
+  promise: Promise<void>;
+};
+
+const runRetentionSweeps = new Map<string, RunRetentionSweepState>();
 
 export type ReShadeAttachmentState =
   | 'idle'
@@ -399,6 +452,7 @@ export class ReShadeOverlayLauncher {
   private awaitingTargetProof = false;
   private targetProofTimer: ReturnType<typeof setTimeout> | null = null;
   private latestRunDirectory: string | null = null;
+  private currentRuntime: CurrentRuntime | null = null;
   private preparedRuntime: Promise<StagedRuntime> | null = null;
   private releaseTargetAuthorization: (() => void) | null = null;
   private launchGeneration = 0;
@@ -461,6 +515,49 @@ export class ReShadeOverlayLauncher {
 
     this.attachmentState = 'connected';
     this.closeTargetProofWindow();
+    return true;
+  }
+
+  /**
+   * Applies an external, authoritative process-exit observation to a connected
+   * attachment or an attaching exact-PID target. This closes the ordering gap
+   * when a process watcher observes termination before the overlay transport.
+   */
+  public confirmTargetExited(pid: number): boolean {
+    if (!isValidProcessPid(pid)) {
+      return false;
+    }
+    const connectedTarget = this.connectedTarget;
+    if (connectedTarget?.pid === pid) {
+      this.disconnectConnectedTarget(connectedTarget);
+      return true;
+    }
+    const targetLabel = this.attachmentTargetLabel;
+    if (
+      this.attachmentState !== 'attaching' ||
+      this.attachmentExpectedTargetPid !== pid ||
+      targetLabel === null
+    ) {
+      return false;
+    }
+
+    const current = this.currentRuntime;
+    const error = new ReShadeOperationError({
+      message: `the ReShade target pid=${pid} was confirmed exited before attachment completed`,
+      code: 'target-disconnected',
+      stage: 'lifecycle',
+      retrySafety: 'definite-safe',
+      targetLabel,
+      pid,
+      ...(current?.targetLabel !== targetLabel
+        ? {}
+        : { evidence: diagnosticEvidenceForStagedRuntime(current.staged) }),
+    });
+    console.log(`${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=${pid}`);
+    this.activeAttach?.cancel(error);
+    this.invalidateActiveLaunch();
+    this.retireCurrentRuntime(targetLabel, current?.launchGeneration);
+    this.resetTargetState(targetLabel);
     return true;
   }
 
@@ -660,7 +757,7 @@ export class ReShadeOverlayLauncher {
         return result;
       })
       .catch((error) => {
-        this.applyFailureState(targetLabel, error);
+        this.applyFailureState(targetLabel, error, launchGeneration);
         throw error;
       });
     this.activeRequest = request;
@@ -804,6 +901,7 @@ export class ReShadeOverlayLauncher {
       if (disconnectedCandidate) {
         proofSettled = true;
         removeListeners();
+        this.retireCurrentRuntime(targetLabel);
         this.resetTargetState(targetLabel);
         rejectConnectionLost(
           new ReShadeOperationError({
@@ -906,6 +1004,7 @@ export class ReShadeOverlayLauncher {
       ) {
         proofSettled = true;
         removeListeners();
+        this.retireCurrentRuntime(targetLabel);
         this.resetTargetState(targetLabel);
         rejectConnectionLost(
           new ReShadeOperationError({
@@ -1081,10 +1180,21 @@ export class ReShadeOverlayLauncher {
       await removeStagedRuntime(staged).catch(() => undefined);
       throw error;
     }
-    this.latestRunDirectory = staged.runDirectory;
     const invocation = buildReShadeInvocation(target, staged.runDirectory);
     const invocationArguments = [...invocation.arguments];
-    this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+    try {
+      this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+    } catch (error) {
+      this.clearTargetAuthorization();
+      await removeStagedRuntime(staged).catch(() => undefined);
+      throw error;
+    }
+    this.latestRunDirectory = staged.runDirectory;
+    this.currentRuntime = Object.freeze({
+      staged,
+      targetLabel,
+      launchGeneration,
+    });
     console.log(
       `${RESHADE_CLIENT_INJECTOR_STARTED_MARKER} target=${JSON.stringify(targetDescription)} arguments=${JSON.stringify(invocationArguments)}`,
     );
@@ -1140,6 +1250,19 @@ export class ReShadeOverlayLauncher {
         createdRunDirectory,
         'ReShade run directory',
       );
+      const runId = randomUUID();
+      const ownership: RunOwnershipMarker = Object.freeze({
+        schemaVersion: RUN_MARKER_SCHEMA_VERSION,
+        kind: RUN_OWNERSHIP_MARKER_KIND,
+        runId,
+        directoryName: path.basename(createdRunDirectory),
+        createdAt: new Date().toISOString(),
+      });
+      await writeFile(
+        path.join(createdRunDirectory, RUN_OWNERSHIP_MARKER_FILE_NAME),
+        `${JSON.stringify(ownership)}\n`,
+        { encoding: 'utf8', flag: 'wx' },
+      );
 
       const sourceByName = new Map<string, string>([
         [INJECTOR_FILE_NAME, this.config.injectorPath],
@@ -1165,10 +1288,12 @@ export class ReShadeOverlayLauncher {
         throw failedStaging.reason;
       }
 
+      scheduleRunRetentionSweepAfterCurrentTurn(runsRootDirectory);
       console.log(
         `${RESHADE_CLIENT_RUNTIME_STAGED_MARKER} directory=${JSON.stringify(createdRunDirectory)}`,
       );
       return Object.freeze({
+        runId,
         runsRootDirectory,
         runDirectory: createdRunDirectory,
         injectorPath: path.join(createdRunDirectory, INJECTOR_FILE_NAME),
@@ -1494,10 +1619,22 @@ export class ReShadeOverlayLauncher {
     console.log(
       `${RESHADE_CLIENT_TARGET_DISCONNECTED_MARKER} pid=${target.pid}`,
     );
+    this.retireCurrentRuntime(target.targetLabel);
     this.resetTargetState(target.targetLabel);
   }
 
-  private applyFailureState(targetLabel: string, error: unknown): void {
+  private applyFailureState(
+    targetLabel: string,
+    error: unknown,
+    launchGeneration?: number,
+  ): void {
+    if (
+      launchGeneration !== undefined &&
+      error instanceof ReShadeOperationError &&
+      error.retrySafety === 'definite-safe'
+    ) {
+      this.retireCurrentRuntime(targetLabel, launchGeneration);
+    }
     if (
       this.attachmentState === 'blocked' ||
       (error instanceof ReShadeOperationError &&
@@ -1507,6 +1644,33 @@ export class ReShadeOverlayLauncher {
       return;
     }
     this.resetTargetState(targetLabel);
+  }
+
+  private retireCurrentRuntime(
+    targetLabel: string,
+    launchGeneration?: number,
+  ): void {
+    const current = this.currentRuntime;
+    if (
+      !current ||
+      current.targetLabel !== targetLabel ||
+      (launchGeneration !== undefined &&
+        current.launchGeneration !== launchGeneration)
+    ) {
+      return;
+    }
+    this.currentRuntime = null;
+    const { staged } = current;
+    void markRunDirectoryReclaimable(staged)
+      .then(() => scheduleRunRetentionSweep(staged.runsRootDirectory))
+      .catch(async (error) => {
+        if (await pathIsMissing(staged.runDirectory)) {
+          return;
+        }
+        console.warn(
+          `Unable to retire a completed ReShade run directory: ${formatUnknownError(error)}`,
+        );
+      });
   }
 
   private blockTargetState(targetLabel: string): void {
@@ -1650,6 +1814,373 @@ async function removeStagedRuntime(staged: StagedRuntime): Promise<void> {
     'ReShade run directory',
   );
   await rm(staged.runDirectory, { recursive: true, force: true });
+}
+
+async function markRunDirectoryReclaimable(
+  staged: StagedRuntime,
+): Promise<void> {
+  await assertCanonicalDirectChildDirectory(
+    staged.runsRootDirectory,
+    staged.runDirectory,
+    'ReShade run directory',
+  );
+  const directoryName = path.basename(staged.runDirectory);
+  const ownership = await readRunOwnershipMarker(
+    staged.runDirectory,
+    directoryName,
+  );
+  if (!ownership || ownership.runId !== staged.runId) {
+    throw new Error(
+      'the ReShade run ownership marker no longer matches the staged runtime',
+    );
+  }
+
+  const reclaimable: RunReclaimableMarker = Object.freeze({
+    schemaVersion: RUN_MARKER_SCHEMA_VERSION,
+    kind: RUN_RECLAIMABLE_MARKER_KIND,
+    runId: staged.runId,
+    directoryName,
+    retiredAt: new Date().toISOString(),
+  });
+  const markerPath = path.join(
+    staged.runDirectory,
+    RUN_RECLAIMABLE_MARKER_FILE_NAME,
+  );
+  try {
+    await writeFile(markerPath, `${JSON.stringify(reclaimable)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+  } catch (error) {
+    if (!isErrnoException(error, 'EEXIST')) {
+      throw error;
+    }
+    const existing = await readRunReclaimableMarker(
+      staged.runDirectory,
+      directoryName,
+    );
+    if (!existing || existing.runId !== reclaimable.runId) {
+      throw new Error(
+        'the ReShade run reclaimable marker already exists with unexpected contents',
+      );
+    }
+  }
+}
+
+function scheduleRunRetentionSweep(runsRootDirectory: string): Promise<void> {
+  const retentionKey = path.resolve(runsRootDirectory).toLowerCase();
+  const existing = runRetentionSweeps.get(retentionKey);
+  if (existing) {
+    existing.rescanRequested = true;
+    return existing.promise;
+  }
+
+  const state: RunRetentionSweepState = {
+    rescanRequested: false,
+    promise: Promise.resolve(),
+  };
+  const sweep = (async () => {
+    do {
+      state.rescanRequested = false;
+      try {
+        await pruneReclaimableRunDirectories(runsRootDirectory);
+      } catch (error) {
+        if (!(await pathIsMissing(runsRootDirectory))) {
+          console.warn(
+            `Unable to scan completed ReShade run directories: ${formatUnknownError(error)}`,
+          );
+        }
+      }
+    } while (state.rescanRequested);
+  })().finally(() => {
+    if (runRetentionSweeps.get(retentionKey) === state) {
+      runRetentionSweeps.delete(retentionKey);
+    }
+  });
+  state.promise = sweep;
+  runRetentionSweeps.set(retentionKey, state);
+  return sweep;
+}
+
+function scheduleRunRetentionSweepAfterCurrentTurn(
+  runsRootDirectory: string,
+): void {
+  const scheduledSweep = setImmediate(() => {
+    void scheduleRunRetentionSweep(runsRootDirectory);
+  });
+  scheduledSweep.unref();
+}
+
+async function pruneReclaimableRunDirectories(
+  runsRootDirectory: string,
+): Promise<void> {
+  const entries = await readdir(runsRootDirectory, { withFileTypes: true });
+  const candidates: ReclaimableRunDirectory[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      continue;
+    }
+    const candidate = await readReclaimableRunDirectory(
+      runsRootDirectory,
+      entry.name,
+    );
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  candidates.sort(
+    (left, right) =>
+      right.retiredAtMs - left.retiredAtMs ||
+      right.reclaimable.directoryName.localeCompare(
+        left.reclaimable.directoryName,
+      ),
+  );
+  const now = Date.now();
+  const directoriesToRemove = candidates.filter(
+    (candidate, index) =>
+      now - candidate.retiredAtMs >= RUN_RETENTION_MAX_AGE_MS ||
+      index >= RUN_RETENTION_MAX_DIRECTORIES,
+  );
+
+  let removedCount = 0;
+  for (const candidate of directoriesToRemove) {
+    const quarantineDirectory = path.join(
+      candidate.runsRootDirectory,
+      `.electron-game-overlay-retired-${randomUUID()}`,
+    );
+    try {
+      const verified = await readReclaimableRunDirectory(
+        candidate.runsRootDirectory,
+        candidate.reclaimable.directoryName,
+      );
+      if (
+        !verified ||
+        verified.ownership.runId !== candidate.ownership.runId ||
+        verified.reclaimable.retiredAt !== candidate.reclaimable.retiredAt
+      ) {
+        continue;
+      }
+      assertDirectChild(
+        candidate.runsRootDirectory,
+        quarantineDirectory,
+        'ReShade retention quarantine directory',
+      );
+      try {
+        await rename(verified.runDirectory, quarantineDirectory);
+      } catch (error) {
+        if (isErrnoException(error, 'ENOENT')) {
+          continue;
+        }
+        throw error;
+      }
+      const quarantined = await readReclaimableRunDirectoryAt(
+        candidate.runsRootDirectory,
+        quarantineDirectory,
+        candidate.reclaimable.directoryName,
+      );
+      if (
+        !quarantined ||
+        quarantined.ownership.runId !== candidate.ownership.runId ||
+        quarantined.reclaimable.retiredAt !== candidate.reclaimable.retiredAt
+      ) {
+        await restoreQuarantinedRunDirectory(
+          quarantineDirectory,
+          verified.runDirectory,
+        );
+        continue;
+      }
+      try {
+        await rm(quarantined.runDirectory, { recursive: true, force: true });
+      } catch (error) {
+        await restoreQuarantinedRunDirectory(
+          quarantineDirectory,
+          verified.runDirectory,
+        );
+        throw error;
+      }
+      removedCount += 1;
+    } catch (error) {
+      console.warn(
+        `Unable to remove completed ReShade run directory ${JSON.stringify(candidate.runDirectory)}: ${formatUnknownError(error)}`,
+      );
+    }
+  }
+
+  if (removedCount > 0) {
+    console.log(
+      `${RESHADE_CLIENT_RUN_RETENTION_PRUNED_MARKER} root=${JSON.stringify(runsRootDirectory)} count=${removedCount}`,
+    );
+  }
+}
+
+async function readReclaimableRunDirectory(
+  runsRootDirectory: string,
+  directoryName: string,
+): Promise<ReclaimableRunDirectory | undefined> {
+  return readReclaimableRunDirectoryAt(
+    runsRootDirectory,
+    path.join(runsRootDirectory, directoryName),
+    directoryName,
+  );
+}
+
+async function readReclaimableRunDirectoryAt(
+  runsRootDirectory: string,
+  runDirectory: string,
+  markerDirectoryName: string,
+): Promise<ReclaimableRunDirectory | undefined> {
+  try {
+    await assertCanonicalDirectChildDirectory(
+      runsRootDirectory,
+      runDirectory,
+      'ReShade retained run directory',
+    );
+    const [ownership, reclaimable] = await Promise.all([
+      readRunOwnershipMarker(runDirectory, markerDirectoryName),
+      readRunReclaimableMarker(runDirectory, markerDirectoryName),
+    ]);
+    if (!ownership || !reclaimable || ownership.runId !== reclaimable.runId) {
+      return undefined;
+    }
+    return Object.freeze({
+      runsRootDirectory,
+      runDirectory,
+      ownership,
+      reclaimable,
+      retiredAtMs: Date.parse(reclaimable.retiredAt),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function restoreQuarantinedRunDirectory(
+  quarantineDirectory: string,
+  originalRunDirectory: string,
+): Promise<void> {
+  try {
+    await rename(quarantineDirectory, originalRunDirectory);
+  } catch (error) {
+    console.warn(
+      `Unable to restore a ReShade run directory after retention validation failed; preserved at ${JSON.stringify(quarantineDirectory)}: ${formatUnknownError(error)}`,
+    );
+  }
+}
+
+async function readRunOwnershipMarker(
+  runDirectory: string,
+  directoryName: string,
+): Promise<RunOwnershipMarker | undefined> {
+  const value = await readJsonFile(
+    path.join(runDirectory, RUN_OWNERSHIP_MARKER_FILE_NAME),
+  );
+  if (
+    !isJsonRecord(value) ||
+    value.schemaVersion !== RUN_MARKER_SCHEMA_VERSION ||
+    value.kind !== RUN_OWNERSHIP_MARKER_KIND ||
+    !isRunId(value.runId) ||
+    value.directoryName !== directoryName ||
+    !isCanonicalIsoTimestamp(value.createdAt)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    schemaVersion: RUN_MARKER_SCHEMA_VERSION,
+    kind: RUN_OWNERSHIP_MARKER_KIND,
+    runId: value.runId,
+    directoryName: value.directoryName,
+    createdAt: value.createdAt,
+  });
+}
+
+async function readRunReclaimableMarker(
+  runDirectory: string,
+  directoryName: string,
+): Promise<RunReclaimableMarker | undefined> {
+  const value = await readJsonFile(
+    path.join(runDirectory, RUN_RECLAIMABLE_MARKER_FILE_NAME),
+  );
+  if (
+    !isJsonRecord(value) ||
+    value.schemaVersion !== RUN_MARKER_SCHEMA_VERSION ||
+    value.kind !== RUN_RECLAIMABLE_MARKER_KIND ||
+    !isRunId(value.runId) ||
+    value.directoryName !== directoryName ||
+    !isCanonicalIsoTimestamp(value.retiredAt)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    schemaVersion: RUN_MARKER_SCHEMA_VERSION,
+    kind: RUN_RECLAIMABLE_MARKER_KIND,
+    runId: value.runId,
+    directoryName: value.directoryName,
+    retiredAt: value.retiredAt,
+  });
+}
+
+async function readJsonFile(filePath: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(filePath, 'utf8')) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isRunId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  );
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const timestamp = Date.parse(value);
+  return (
+    Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value
+  );
+}
+
+function isErrnoException(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === code
+  );
+}
+
+async function pathIsMissing(candidatePath: string): Promise<boolean> {
+  try {
+    await realpath(candidatePath);
+    return false;
+  } catch (error) {
+    return isErrnoException(error, 'ENOENT');
+  }
+}
+
+async function assertCanonicalDirectChildDirectory(
+  parentDirectory: string,
+  childPath: string,
+  label: string,
+): Promise<void> {
+  assertDirectChild(parentDirectory, childPath, label);
+  const resolvedChild = path.resolve(childPath);
+  const canonicalChild = await realpath(resolvedChild);
+  if (canonicalChild.toLowerCase() !== resolvedChild.toLowerCase()) {
+    throw new Error(`${label} is not a canonical direct child`);
+  }
+  assertDirectChild(parentDirectory, canonicalChild, label);
 }
 
 function targetLabelFor(target: ReShadeTarget): string {

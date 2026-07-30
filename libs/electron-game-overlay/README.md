@@ -111,8 +111,19 @@ await launcher?.attach(session, {
 ```
 
 Disposing an unconsumed prepared launcher removes its directory, including when
-preparation is still in flight. Consumed run directories retain their evidence
-logs.
+preparation is still in flight. Every isolated run also receives an immutable
+SDK ownership marker. Only a definite-safe failure or an OS-confirmed target
+disconnect adds the matching reclaimable marker. Asynchronous sweeps after
+staging and retirement remove reclaimable evidence older than seven days or
+outside the newest 64 reclaimable runs. Prepared, active, indeterminate,
+unmarked, malformed, and legacy pre-marker directories are preserved, and
+cleanup failures do not block staging or injection.
+
+If an application-level process watcher can observe termination before the
+transport disconnect event, call `launcher.confirmTargetExited(pid)` before
+disposing that launcher. It applies only to the matching connected PID or an
+attaching exact-PID target and makes the terminal lifecycle proof available to
+retention.
 
 `pid` is optional for backward compatibility and must be a positive uint32
 integer when supplied. The PID is part of the target identity, so requests for
