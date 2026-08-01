@@ -220,6 +220,24 @@ type SharedInputOrder = Arc<Mutex<()>>;
 type SharedStackGeneration = Arc<AtomicU64>;
 type SharedTargetSurfaces = Arc<Mutex<RetainedTargetSurfaces>>;
 
+const PRODUCER_SESSION_ACTIVE_BIT: u64 = 1;
+
+fn producer_session_is_active(epoch: u64) -> bool {
+    epoch & PRODUCER_SESSION_ACTIVE_BIT != 0
+}
+
+fn advance_producer_session_epoch(epoch: &AtomicU64, active: bool) -> u64 {
+    let previous = epoch
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .expect("producer session epoch exhausted");
+    debug_assert_eq!(producer_session_is_active(previous), !active);
+    let current = previous + 1;
+    debug_assert_eq!(producer_session_is_active(current), active);
+    current
+}
+
 #[derive(Debug, Default)]
 struct RetainedTargetSurfaces {
     /// Oldest to newest revision. Live surfaces and removal tombstones share
@@ -407,6 +425,7 @@ pub struct ElectronFrameBridge {
     scene: PublishedScene,
     input_router: SharedInputRouter,
     interception: Arc<AtomicInterceptionState>,
+    producer_session_epoch: Arc<AtomicU64>,
     outbound: SharedOutboundQueue,
     target_surfaces: SharedTargetSurfaces,
     input_order: SharedInputOrder,
@@ -427,6 +446,8 @@ impl ElectronFrameBridge {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .atomic_interception_state();
+        let producer_session_epoch = Arc::new(AtomicU64::new(0));
+        let worker_producer_session_epoch = Arc::clone(&producer_session_epoch);
         let worker_input_router = Arc::clone(&input_router);
         let outbound = Arc::new(Mutex::new(OutboundQueue::new()));
         let worker_outbound = Arc::clone(&outbound);
@@ -447,6 +468,7 @@ impl ElectronFrameBridge {
                 run_bridge_thread(
                     worker_scene,
                     worker_input_router,
+                    worker_producer_session_epoch,
                     worker_outbound,
                     worker_target_surfaces,
                     worker_input_order,
@@ -479,6 +501,7 @@ impl ElectronFrameBridge {
             scene,
             input_router,
             interception,
+            producer_session_epoch,
             outbound,
             target_surfaces,
             input_order,
@@ -529,6 +552,17 @@ impl ElectronFrameBridge {
     /// native filter through its guarded transition state machine.
     pub fn desired_interception(&self) -> bool {
         self.interception.desired()
+    }
+
+    /// Returns the exact producer-session epoch.
+    ///
+    /// Zero is the initial dormant state. Each authenticated session start and
+    /// disconnect advances the epoch once, so odd values are authenticated and
+    /// even values are dormant. A native backend can therefore detect a full
+    /// disconnect/reconnect cycle even when both transitions occur between two
+    /// render callbacks.
+    pub fn producer_session_epoch(&self) -> u64 {
+        self.producer_session_epoch.load(Ordering::Acquire)
     }
 
     /// Publishes whether the target game window is currently focused.
@@ -845,6 +879,7 @@ impl Error for ElectronFrameBridgeError {
 fn run_bridge_thread(
     scene: PublishedScene,
     input_router: SharedInputRouter,
+    producer_session_epoch: Arc<AtomicU64>,
     outbound: SharedOutboundQueue,
     target_surfaces: SharedTargetSurfaces,
     input_order: SharedInputOrder,
@@ -888,6 +923,7 @@ fn run_bridge_thread(
         hwnd,
         scene,
         input_router,
+        producer_session_epoch,
         outbound,
         target_surfaces,
         input_order,
@@ -1063,6 +1099,7 @@ struct BridgeThreadState {
     routed_discovery_pinned: bool,
     scene: PublishedScene,
     input_router: SharedInputRouter,
+    producer_session_epoch: Arc<AtomicU64>,
     outbound: SharedOutboundQueue,
     target_surfaces: SharedTargetSurfaces,
     input_order: SharedInputOrder,
@@ -1083,6 +1120,7 @@ impl BridgeThreadState {
         hwnd: HWND,
         scene: PublishedScene,
         input_router: SharedInputRouter,
+        producer_session_epoch: Arc<AtomicU64>,
         outbound: SharedOutboundQueue,
         target_surfaces: SharedTargetSurfaces,
         input_order: SharedInputOrder,
@@ -1110,6 +1148,7 @@ impl BridgeThreadState {
             routed_discovery_pinned: false,
             scene,
             input_router,
+            producer_session_epoch,
             outbound,
             target_surfaces,
             input_order,
@@ -1266,6 +1305,9 @@ impl BridgeThreadState {
     }
 
     fn disconnect(&mut self) {
+        if producer_session_is_active(self.producer_session_epoch.load(Ordering::Acquire)) {
+            advance_producer_session_epoch(&self.producer_session_epoch, false);
+        }
         if let Some(transport) = self.transport.take() {
             let TcpTransport {
                 commands,
@@ -1302,6 +1344,13 @@ impl BridgeThreadState {
                         .as_ref()
                         .is_some_and(|transport| transport.generation == generation) =>
                 {
+                    if self
+                        .transport
+                        .as_ref()
+                        .is_some_and(|transport| !transport.authenticated)
+                    {
+                        advance_producer_session_epoch(&self.producer_session_epoch, true);
+                    }
                     if let Some(transport) = self.transport.as_mut() {
                         transport.authenticated = true;
                     }
@@ -3374,6 +3423,7 @@ mod tests {
             HWND(std::ptr::null_mut()),
             Arc::new(RwLock::new(Arc::new(ElectronScene::default()))),
             Arc::new(Mutex::new(InputRouter::new())),
+            Arc::new(AtomicU64::new(0)),
             Arc::new(Mutex::new(OutboundQueue::new())),
             Arc::new(Mutex::new(RetainedTargetSurfaces::default())),
             Arc::new(Mutex::new(())),
@@ -3654,6 +3704,85 @@ mod tests {
             })
             .unwrap();
         assert_eq!(state.scene.read().unwrap().windows.len(), 1);
+    }
+
+    #[test]
+    fn producer_session_epoch_preserves_a_rapid_disconnect_reconnect() {
+        let epoch = AtomicU64::new(0);
+        assert!(!producer_session_is_active(epoch.load(Ordering::Acquire)));
+
+        let first_session = advance_producer_session_epoch(&epoch, true);
+        assert_eq!(first_session, 1);
+        assert!(producer_session_is_active(first_session));
+
+        let disconnected = advance_producer_session_epoch(&epoch, false);
+        assert_eq!(disconnected, 2);
+        assert!(!producer_session_is_active(disconnected));
+
+        let replacement_session = advance_producer_session_epoch(&epoch, true);
+        assert_eq!(replacement_session, 3);
+        assert!(producer_session_is_active(replacement_session));
+        assert_ne!(replacement_session, first_session);
+    }
+
+    #[test]
+    fn disconnect_marks_the_session_dormant_and_resets_scene_and_input() {
+        let mut state = test_bridge_state();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![window_metadata(42, "Dormant", 10)],
+            })
+            .unwrap();
+        state
+            .on_frame(WireFrame {
+                window_id: 42,
+                width: 1,
+                height: 1,
+                bgra: vec![1, 2, 3, 255],
+            })
+            .unwrap();
+
+        let interception = {
+            let mut router = state.input_router.lock().unwrap();
+            let interception = router.atomic_interception_state();
+            assert!(router.set_target_focused(true).is_empty());
+            assert!(router.request_interception(true).is_empty());
+            assert_eq!(
+                router.apply_input_filter(true, true),
+                vec![OutboundMessage::InputIntercept { intercepting: true }]
+            );
+            interception
+        };
+        assert_eq!(
+            advance_producer_session_epoch(&state.producer_session_epoch, true),
+            1
+        );
+        assert_eq!(state.producer_session_epoch.load(Ordering::Acquire), 1);
+        assert!(interception.desired());
+        assert_eq!(state.scene.read().unwrap().windows.len(), 1);
+
+        state.disconnect();
+
+        assert_eq!(state.producer_session_epoch.load(Ordering::Acquire), 2);
+        assert!(!interception.desired());
+        assert!(state.scene.read().unwrap().windows.is_empty());
+        assert!(state.windows.is_empty());
+        let mut router = state.input_router.lock().unwrap();
+        let input = router.state();
+        assert!(!input.requested_interception);
+        assert_eq!(input.window_count, 0);
+        assert_eq!(input.focused_window_id, None);
+        assert_eq!(input.captured_window_id, None);
+        // The native compositor owns this final transition so transport state
+        // does not claim fail-open before the message filter actually releases.
+        assert!(input.effective_interception);
+        assert_eq!(
+            router.apply_input_filter(false, true),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+        assert!(!router.effective_interception());
     }
 
     #[test]

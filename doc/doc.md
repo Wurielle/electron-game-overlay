@@ -220,7 +220,8 @@ for compatibility. Installation and update require a restart. If the add-on is
 already mapped, the launcher waits for confirmed target exit before retrying
 maintenance rather than replacing a live module. A ReShade upgrade or other
 runtime-identity change does not automatically remove the managed add-on. The
-public path has controlled-host evidence, not broad real-game coexistence
+public path has controlled-host evidence plus one accepted Gun Frog
+stock-host/foreign-add-on/effect combination, not broad real-game coexistence
 acceptance.
 
 `attach()` moves through `idle`, `attaching`, `connected`, and, for an
@@ -372,8 +373,8 @@ supports the project's compatible pre-initialization runtime and attempts its
 current API-18 add-on in any detected target-local x64 ReShade host. Public-host
 compatibility is negotiated by registration and the exact ImGui table, not
 version or hash. Capability-incompatible hosts, other proxy chains, arbitrary
-modded-game coexistence, and clean disable/unload remain fail-closed or future
-work.
+modded-game coexistence, and clean in-process runtime/add-on unload remain
+fail-closed or future work.
 
 ## Input and lifecycle
 
@@ -429,8 +430,9 @@ The current process-start launchers use ordinary process startup plus a
 test-only pre-device marker. The shared-runtime variants load a compatible
 target-local proxy first and prove staged-add-on-only reuse without modifying
 that proxy or its configuration. The target-local installation launchers prove
-preservation and the controlled API-18 capability boundary. None establishes
-public-host coexistence in real games or arbitrary modded-game compatibility.
+preservation and the controlled API-18 capability boundary. The dedicated Gun
+Frog launcher establishes one stock public-host/foreign-add-on/effect
+combination; none establishes arbitrary modded-game compatibility.
 
 Use the unsigned full add-on runtime only with the included controlled hosts or
 an offline/single-player target you are allowed to modify. Anti-cheat bypasses,

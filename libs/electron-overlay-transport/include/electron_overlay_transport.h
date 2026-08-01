@@ -155,6 +155,15 @@ ego_status EGO_CALL ego_scene_snapshot_get_window(
 ego_status EGO_CALL ego_transport_desired_interception(
     const ego_transport *transport,
     uint32_t *out_desired);
+#define EGO_SESSION_EPOCH_ACTIVE_BIT UINT64_C(1)
+/*
+ * Zero is the initial dormant producer-session epoch. Every authenticated
+ * session start and disconnect increments it once, so odd epochs are active
+ * and even epochs are dormant.
+ */
+ego_status EGO_CALL ego_transport_session_epoch(
+    const ego_transport *transport,
+    uint64_t *out_epoch);
 ego_status EGO_CALL ego_transport_set_target_focused(
     ego_transport *transport,
     uint32_t focused);

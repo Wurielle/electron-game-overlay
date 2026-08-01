@@ -48,10 +48,21 @@ new session; `overlay.dispose()` closes the active session, if any.
 Disposal is final; create a new `ElectronGameOverlay` instance to start again
 after disposal.
 
+`session.close()` deactivates publication; it does not unload code from a live
+target. The mapped runtime observes the producer-session epoch change on its
+next ReShade overlay callback, releases interception, retires prior
+single-swap-chain scene textures, and remains dormant. If the target has stopped
+presenting entirely, that render-thread transition waits until presentation
+resumes.
+
 Transports do not share callbacks, but the process-wide default discovery
 endpoint has one active owner. Starting a session on another overlay instance
 fails explicitly until the current owner stops, preventing either producer from
 silently becoming unreachable.
+
+Separate application processes may concurrently use isolated exact-PID routes
+for different target PIDs. Multiple independent applications targeting the same
+PID remain unsupported.
 
 The exported `ReShadeRuntimeMode` is `injected-runtime`, `existing-runtime`, or
 `official-addon`. `ReShadeLaunchResult.runtimeMode` identifies the selected
@@ -133,9 +144,11 @@ is likewise provenance and is ignored for compatibility. Upgrading or replacing
 ReShade does not automatically remove the managed add-on. An unowned or
 tampered reserved add-on, or a runtime that changes during maintenance, reports
 `existing-reshade-addon-conflict` and schedules no automatic maintenance.
-Controlled gates cover this boundary; public-host coexistence has not yet been
-accepted across real games, arbitrary existing effect/add-on sets, proxy
-chains, or every capability-incompatible host.
+Controlled gates cover this boundary. A July 31, 2026 Gun Frog gate accepted one
+stock public host with a pristine foreign API-18 add-on and one enabled benign
+effect, including four-button input isolation and complete test-installation
+restoration. This is not acceptance of arbitrary existing effect/add-on sets,
+proxy chains, other games, or every capability-incompatible host.
 
 An `expectedTargetPid` supplied by startup configuration is snapshotted into
 the same exact-PID target before any asynchronous staging, so it also reaches
@@ -406,7 +419,7 @@ suppresses fallback project-runtime injection. The SDK can reuse this project's
   that disappears during the wait reports
   `target-official-addon-wait-expired`. Neither case may fall back to the
   project runtime. Unrelated
-proxy chains, broad modded-game coexistence, and clean runtime disable/unload
+proxy chains, broad modded-game coexistence, and clean in-process runtime/add-on unload
 remain unsupported and fail closed.
 
 The lower-level `launch()` / `acceptTargetConnection()` pair has no session
@@ -467,8 +480,9 @@ The controlled host cooperates with the prearmed launcher before its deliberatel
 fast graphics initialization. This proves SDK-owned launch and ReShade's D3D12
 selection for that host, not arbitrary fast-start target timing. Each client is
 force-cleaned after target exit in the original gate; the reinjection gate keeps
-one client/session alive while replacing the target. Graceful injected-runtime
-disable/unload while a target remains alive is separate lifecycle hardening.
+one client/session alive while replacing the target. Producer-session
+deactivation while a target remains alive is supported; clean in-process
+runtime/add-on unload remains separate lifecycle hardening.
 
 The real production client/SDK gate passed against Gun Frog on July 13, 2026
 through
@@ -633,8 +647,10 @@ the SDK owns its hidden desktop placement from the target HWND/client telemetry
 and publishes a local `(0, 0)` surface. The retained target model is keyed by
 PID and surface ID. One loopback listener accepts multiple independently
 authenticated exact-PID targets, while the application session intentionally
-publishes the same overlay scene to each connected target. Independent
-simultaneous `OverlaySession` instances in one Electron process, multiple swap
-chains, real physical/VM mixed-scale acceptance, unusual exclusive-fullscreen
-paths, and Electron 42 OSR behavior remain follow-up work rather than current
-compatibility claims.
+publishes the same overlay scene to each connected target. Two independent
+application processes have accepted concurrent operation against different
+exact-PID D3D11 and D3D12 targets. Independent simultaneous `OverlaySession`
+instances in one Electron process, multiple applications targeting the same
+PID, multiple swap chains, real physical/VM mixed-scale acceptance, unusual
+exclusive-fullscreen paths, and Electron 42 OSR behavior remain follow-up work
+rather than current compatibility claims.

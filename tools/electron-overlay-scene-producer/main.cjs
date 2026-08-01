@@ -202,6 +202,7 @@ let inputInterceptRequested = false;
 let inputInterceptEnabled = false;
 let inputReleaseRequested = false;
 let inputReleaseAcknowledged = false;
+let sessionDeactivated = false;
 let manualInputReadyLogged = false;
 let lastInputControlCommand = '';
 const lifecycleTimers = new Set();
@@ -1010,6 +1011,29 @@ function applyMultiwindowCommand(command, source) {
       session.input.release();
       console.log('HUDHOOK_CLIENT_MULTIWINDOW_RELEASE_REQUESTED');
       return;
+    case 'deactivate-session':
+      if (sessionDeactivated) {
+        return;
+      }
+      sessionDeactivated = true;
+      cleanupStarted = true;
+      clearTargetConnectionTimeout();
+      for (const timer of lifecycleTimers) {
+        clearTimeout(timer);
+      }
+      lifecycleTimers.clear();
+      if (disposeNativeEvent) {
+        disposeNativeEvent();
+        disposeNativeEvent = null;
+      }
+      session.close();
+      session = null;
+      overlay.dispose();
+      overlay = null;
+      overlayWindow = null;
+      frontOverlayWindow = null;
+      console.log('HUDHOOK_CLIENT_MULTIWINDOW_SESSION_DEACTIVATED');
+      return;
     default:
       throw new Error(`unsupported multi-window command: ${command}`);
   }
@@ -1133,6 +1157,9 @@ function pollInputControlFile() {
     }
   }
 
+  if (cleanupStarted) {
+    return;
+  }
   schedule(pollInputControlFile, 50);
 }
 

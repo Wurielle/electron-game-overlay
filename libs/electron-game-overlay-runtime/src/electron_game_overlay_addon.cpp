@@ -847,12 +847,17 @@ struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
     std::uint64_t target_surface_id = 0;
     std::uint64_t target_surface_revision = 0;
     std::uint64_t last_fps_publication_tick = 0;
+    std::uint64_t observed_session_epoch = 0;
+    std::uint64_t retired_session_textures = 0;
     bool has_target_surface = false;
     bool first_scene_logged = false;
     bool first_multiwindow_scene_logged = false;
+    bool has_observed_session_epoch = false;
+    bool has_observed_authenticated_session = false;
     bool scene_query_failure_active = false;
     bool frame_rejection_reported = false;
     ego_status last_focus_error = EGO_STATUS_OK;
+    ego_status last_session_query_error = EGO_STATUS_OK;
     ego_status last_interception_error = EGO_STATUS_OK;
     ego_status last_filter_error = EGO_STATUS_OK;
     ego_status last_scene_query_error = EGO_STATUS_OK;
@@ -1836,6 +1841,28 @@ void drain_input_messages(ego_transport *transport)
     }
 }
 
+void discard_dormant_input()
+{
+    // Invalidate every in-flight producer/batch even if another render
+    // callback currently owns the destructive queue reset below.
+    g_input_generation.fetch_add(1, std::memory_order_acq_rel);
+
+    if (g_input_consumer.test_and_set(std::memory_order_acquire))
+        return;
+    const input_consumer_release release_consumer;
+
+    // A copied message may have raced the transport disconnect. Advance the
+    // generation before competing for the consumer so a preempted producer
+    // cannot republish a stale event into a later producer session.
+    reset_ordered_pointer_state();
+    g_pointer_route_reset_pending.store(false, std::memory_order_release);
+    discard_queued_input();
+    g_dropped_input_messages.store(0, std::memory_order_release);
+    g_input_recovery_pending.store(false, std::memory_order_release);
+    g_last_input_sequence = 0;
+    g_has_last_input_sequence = false;
+}
+
 input_phase next_phase(input_phase current, bool desired)
 {
     switch (current)
@@ -1881,6 +1908,31 @@ void destroy_texture(device *device, electron_texture &texture)
     if (texture.texture.handle != 0)
         device->destroy_resource(texture.texture);
     texture = {};
+}
+
+std::size_t retire_all_electron_textures(effect_runtime *runtime)
+{
+    device *const device = runtime->get_device();
+    auto *const data = device->get_private_data<device_data>();
+    if (data == nullptr)
+        return 0;
+
+    const std::scoped_lock lock(data->mutex);
+    if (data->textures.empty())
+        return 0;
+
+    // ReShade keeps the add-on and graphics device loaded after a producer
+    // disconnect. Wait for prior draws once, then release every producer-owned
+    // resource so the dormant add-on retains no Electron framebuffers.
+    const std::size_t retired_count = data->textures.size();
+    runtime->get_command_queue()->wait_idle();
+    for (auto &[window_id, texture] : data->textures)
+    {
+        static_cast<void>(window_id);
+        destroy_texture(device, texture);
+    }
+    data->textures.clear();
+    return retired_count;
 }
 
 void report_frame_upload_failure(
@@ -2860,6 +2912,59 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
     io.MouseDrawCursor = routing_enabled && !native_cursor_visible;
 }
 
+bool transport_session_epoch(
+    swapchain_data &data,
+    std::uint64_t &epoch)
+{
+    if (data.transport == nullptr)
+        return false;
+
+    const ego_status status =
+        ego_transport_session_epoch(data.transport, &epoch);
+    if (status != EGO_STATUS_OK)
+    {
+        if (status != data.last_session_query_error)
+        {
+            data.last_session_query_error = status;
+            log_transport_error("producer-session query", status);
+            publish_input_routing_failure(data.transport, status);
+        }
+        return false;
+    }
+
+    data.last_session_query_error = EGO_STATUS_OK;
+    return true;
+}
+
+bool producer_session_active(std::uint64_t epoch)
+{
+    return (epoch & EGO_SESSION_EPOCH_ACTIVE_BIT) != 0;
+}
+
+void deactivate_dormant_input(swapchain_data &data)
+{
+    data.phase = input_phase::disabled;
+    if (!g_has_private_input_observer)
+        publish_official_hook_phase(data, input_phase::disabled);
+
+    discard_dormant_input();
+
+    const ego_status status =
+        ego_transport_apply_input_filter(data.transport, 0, 1);
+    if (status != EGO_STATUS_OK && status != data.last_filter_error)
+    {
+        data.last_filter_error = status;
+        log_transport_error("dormant input release", status);
+        publish_input_routing_failure(data.transport, status);
+    }
+    else if (status == EGO_STATUS_OK)
+    {
+        data.last_filter_error = EGO_STATUS_OK;
+    }
+
+    ImGui::GetIO().MouseDrawCursor = false;
+}
+
 void log_official_pointer_sequence()
 {
     if (g_has_private_input_observer ||
@@ -3003,6 +3108,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
         swapchain_state.frame_rejection_reported = false;
 
     bool removed_texture = false;
+    std::uint64_t removed_texture_count = 0;
     for (auto iterator = data->textures.begin(); iterator != data->textures.end();)
     {
         if (active_windows.contains(iterator->first))
@@ -3017,7 +3123,9 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
         }
         destroy_texture(device, iterator->second);
         iterator = data->textures.erase(iterator);
+        ++removed_texture_count;
     }
+    swapchain_state.retired_session_textures += removed_texture_count;
 
     ego_scene_snapshot_release(snapshot);
     if (rendered_window_count != 0 && !swapchain_state.first_scene_logged)
@@ -3052,6 +3160,96 @@ void on_reshade_overlay(effect_runtime *runtime)
         return;
 
     publish_target_surface(runtime, *data);
+    std::uint64_t session_epoch = 0;
+    if (!transport_session_epoch(*data, session_epoch))
+    {
+        deactivate_dormant_input(*data);
+        data->retired_session_textures +=
+            retire_all_electron_textures(runtime);
+        return;
+    }
+
+    const bool session_active =
+        producer_session_active(session_epoch);
+    const bool first_session_observation =
+        !data->has_observed_session_epoch;
+    const std::uint64_t previous_session_epoch =
+        data->observed_session_epoch;
+    const bool session_epoch_changed =
+        !first_session_observation &&
+        previous_session_epoch != session_epoch;
+
+    if (first_session_observation)
+    {
+        data->has_observed_session_epoch = true;
+        data->observed_session_epoch = session_epoch;
+        if (session_active)
+        {
+            data->has_observed_authenticated_session = true;
+            data->retired_session_textures = 0;
+        }
+    }
+    else if (session_epoch_changed)
+    {
+        // An epoch can advance from one odd value to another when a complete
+        // disconnect/reconnect cycle occurs between Presents. Invalidate the
+        // old input generation and GPU resources before touching the new
+        // session's scene, regardless of the epoch's current active bit.
+        data->observed_session_epoch = session_epoch;
+        deactivate_dormant_input(*data);
+        data->retired_session_textures +=
+            retire_all_electron_textures(runtime);
+
+        if (!session_active &&
+            data->has_observed_authenticated_session)
+        {
+            char message[256] = {};
+            sprintf_s(
+                message,
+                "Electron game overlay runtime deactivated its producer session, "
+                "released input, and retired %llu transported texture(s); the "
+                "add-on remains loaded dormant.",
+                static_cast<unsigned long long>(
+                    data->retired_session_textures));
+            reshade::log::message(reshade::log::level::info, message);
+            data->retired_session_textures = 0;
+        }
+        else if (session_active)
+        {
+            if (data->has_observed_authenticated_session)
+            {
+                char message[320] = {};
+                sprintf_s(
+                    message,
+                    "Electron game overlay runtime advanced its producer "
+                    "session epoch from %llu to %llu, released old input, and "
+                    "retired %llu transported texture(s) before composing the "
+                    "replacement session.",
+                    static_cast<unsigned long long>(
+                        previous_session_epoch),
+                    static_cast<unsigned long long>(session_epoch),
+                    static_cast<unsigned long long>(
+                        data->retired_session_textures));
+                reshade::log::message(
+                    reshade::log::level::info,
+                    message);
+            }
+            data->has_observed_authenticated_session = true;
+            data->retired_session_textures = 0;
+        }
+    }
+
+    if (!session_active)
+    {
+        if (!session_epoch_changed)
+        {
+            deactivate_dormant_input(*data);
+            data->retired_session_textures +=
+                retire_all_electron_textures(runtime);
+        }
+        return;
+    }
+
     publish_render_fps(*data);
     update_input_ownership(runtime, *data);
     drain_input_messages(data->transport);

@@ -642,6 +642,23 @@ pub unsafe extern "C" fn ego_transport_desired_interception(
 }
 
 /// # Safety
+/// `transport` must remain live for the call and `out_epoch` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_session_epoch(
+    transport: *const EgoTransport,
+    out_epoch: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        let out_epoch = out_epoch.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_epoch pointer is null")
+        })?;
+        *out_epoch = transport.bridge.producer_session_epoch();
+        Ok(())
+    })
+}
+
+/// # Safety
 /// `transport` must remain live and must not be destroyed concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn ego_transport_set_target_focused(
@@ -984,6 +1001,12 @@ mod tests {
     fn null_arguments_return_status_and_error_text() {
         let status = unsafe { ego_transport_destroy(ptr::null_mut()) };
         assert_eq!(status, EGO_STATUS_INVALID_ARGUMENT);
+
+        let mut epoch = u64::MAX;
+        assert_eq!(
+            unsafe { ego_transport_session_epoch(ptr::null(), &mut epoch) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
 
         let mut required = 0_u64;
         assert_eq!(

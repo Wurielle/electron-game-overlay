@@ -5,6 +5,13 @@ producer and an injected overlay runtime. It receives window frames and scene
 metadata, routes overlay input, and exposes the resulting state through both a
 Rust API and a stable C ABI for native rendering backends.
 
+The C ABI exposes a monotonic producer-session epoch. Zero is initially
+dormant; every authenticated connection and disconnect advances it once, so odd
+epochs are active and even epochs are dormant. Native renderers must invalidate
+prior session-owned input and graphics state whenever the value changes. This
+also preserves a complete disconnect/reconnect transition that occurs between
+two render callbacks.
+
 The injected client resolves its run-local route directory from
 `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY` first, then falls back to
 `RESHADE_BASE_PATH_OVERRIDE`. The explicit overlay directory lets a compatible

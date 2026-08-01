@@ -135,6 +135,16 @@ class Application {
       );
     }
     this.steamGameAutoAttacher?.onStateChange(() => {
+      if (
+        this.gunFrogInputProof &&
+        this.steamGameAutoAttacher?.state.targets.some(
+          (target) =>
+            target.phase === 'connected' &&
+            target.processName.toLowerCase() === 'gun frog.exe',
+        )
+      ) {
+        this.markGunFrogTargetConnected();
+      }
       this.publishDemoState();
     });
     this.inputInterceptShortcut = new InputInterceptShortcut(

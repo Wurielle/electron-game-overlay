@@ -53,8 +53,10 @@ compatibility. Installing or updating the project-owned add-on requires a
 restart, and mapped-add-on maintenance waits for confirmed target exit. A
 runtime upgrade or hash change does not automatically remove the managed
 add-on. Applicable global Vulkan/OpenXR ReShade layers are preserved and block
-fallback injection. This has controlled-fixture coverage only and is not yet a
-broad real-game, arbitrary effect/add-on, or proxy-chain coexistence claim.
+fallback injection. Controlled fixtures plus one July 31, 2026 Gun Frog run
+cover the narrow stock-host/foreign-API-18-add-on/enabled-effect combination.
+This is not a broad real-game, arbitrary effect/add-on, or proxy-chain
+coexistence claim.
 
 The normal `npm run dev` Steam-path flow first gained real Gun Frog acceptance
 through a one-shot native path watcher, then temporarily moved to exact-PID-only
@@ -190,8 +192,9 @@ under the historical pre-promotion path
 That controlled host uses a test-only injection-wait marker before its unusually
 fast D3D12 initialization. It validates the prearmed SDK launcher and automatic
 ReShade D3D12 selection for a cooperating target, not general injection timing.
-Forced client cleanup plus a fresh launch is accepted here; graceful client
-disable/unload remains open.
+Forced client cleanup plus a fresh launch is accepted here. That is distinct
+from supported producer-session deactivation; clean in-process runtime/add-on
+unload remains open.
 
 The same-client gate passed through
 `libs/electron-game-overlay-runtime/scripts/test-cases/d3d12-client-sdk-reinjection.ps1`.
@@ -315,7 +318,8 @@ do not queue removal. Only
 `existing-reshade-addon-maintenance-deferred` identifies queued install/update
 work; restart-required, conflict, host-incompatible, and preparation-failure
 results queue nothing. Controlled preflight, transaction, and D3D11 host gates
-cover this behavior, not broad real-game coexistence.
+cover this behavior. The narrow Gun Frog coexistence gate adds one real-game
+combination, not broad real-game coexistence.
 
 Before exact-PID injection mutates the target, it performs bounded loaded-module
 inspection. Exact `ReShadeVersion` identifies a candidate. Missing/wrong private

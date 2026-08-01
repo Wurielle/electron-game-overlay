@@ -74,6 +74,10 @@ test('the Gun Frog client proof publishes four aligned Electron controls and rea
   assert.match(windowSource, /HUDHOOK_GUN_FROG_BUTTONS_READY/);
   assert.match(appEntry, /HUDHOOK_CLIENT_GUN_FROG_PROOF_READY/);
   assert.match(appEntry, /HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK/);
+  assert.match(
+    appEntry,
+    /steamGameAutoAttacher\?\.state\.targets\.some\([\s\S]{0,220}?target\.phase === 'connected'[\s\S]{0,180}?gun frog\.exe[\s\S]{0,180}?markGunFrogTargetConnected/,
+  );
 
   for (const [name, top] of [
     ['continue', 80],

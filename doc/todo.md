@@ -179,6 +179,14 @@ task.
     installation retained. These controlled fixtures are not evidence of
     arbitrary real-game effect/add-on coexistence.
 - [ ] Expand existing-ReShade coexistence evidence beyond controlled fixtures.
+  - [x] Accept one real Gun Frog combination with a stock ReShade host, the
+    pristine API-18 FPS Limiter add-on, and one enabled benign effect. On July
+    31, 2026, the production Steam auto-attacher connected in
+    `official-addon` mode, all four intercepted Electron buttons left the game
+    menu unchanged, released Quit closed the game, and cleanup restored the
+    original clean directory with byte/attribute/timestamp proof. Evidence is
+    under
+    `build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20260731-002038-058ec1a0`.
   - Build a coexistence matrix for real games with existing presets, effects,
     and foreign add-ons, including ordering, input ownership, shutdown, and
     upgrade behavior. Do not infer these outcomes from the controlled fixture.
@@ -190,7 +198,19 @@ task.
     and patched hosts as interchangeable.
 - [ ] Define a supported coexistence strategy for targets using another proxy
       runtime.
-- [ ] Add clean runtime disable/unload behavior.
+- [x] Add producer-session deactivation without unloading the runtime/add-on for
+      the accepted single-swap-chain path.
+  - Closing the SDK session advances a monotonic epoch. On the next ReShade
+    overlay callback, native input fails open, the old scene is cleared, and its
+    two textures retire while the target and producer process remain alive and
+    the runtime/add-on remain mapped dormant.
+  - D3D11 and D3D12 passed on July 31, 2026 under
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-session-deactivation-20260731-000557`
+    and
+    `build/electron-game-overlay-runtime/client-sdk-d3d12-session-deactivation-20260731-000709`.
+    A target that has stopped presenting cannot complete this render-thread
+    transition until its next ReShade callback.
+- [ ] Add clean in-process runtime/add-on unload behavior.
 - [ ] Investigate the non-fatal ReShade reference-count warnings emitted during accepted shutdowns: `ID3D11Device3` in Gun Frog and D3D12 command-queue/device objects in PEAK. Keep this under resource retirement/unload hardening.
 - [ ] Carry process creation identity end to end through exact-PID requests and WMI lifecycle correlation.
   - The native Steam-path watcher's ignore-baseline now retains handles for exact process objects, so sequential launch/relaunch cannot skip a new process solely because Windows reused a baseline PID. Exact-PID selection and fallback-WMI create/delete correlation still use PID plus executable basename and need an equivalent creation nonce before stale lifecycle events are considered fully hardened.
@@ -213,9 +233,20 @@ task.
 - [ ] Run real physical/VM mixed-scale acceptance for target-follow placement; the contract and simulated cross-display tests are complete, but this machine still exposes only one 100% virtual display.
 - [x] Isolate production rendezvous and authentication for simultaneous exact-PID target processes.
   - Every exact-PID `attach()` now publishes `electron-overlay-transport-v1.targeted` before writing a unique token and expected PID into the consumed run directory. Revoking the credential leaves that marker in place, so a payload that initializes late fails closed instead of falling back globally; removing the staged run directory removes the marker with it. The injected transport resolves the adjacent route through `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`, with `RESHADE_BASE_PATH_OVERRIDE` as the injected-runtime fallback, rejects malformed credentials and target-PID mismatch, and pins the selected route. The Node listener validates token plus PID before publishing its scene and can retain multiple authenticated PIDs concurrently.
-  - Configured or call-site exact PIDs are snapshotted into the injector invocation before asynchronous work. `attach()` reserves its launcher while session readiness is pending, and session close revokes active or late-completing authorization leases. Rust unit coverage directly verifies missing-local legacy fallback before route intent, marker and invalid-local fail-closed pinning, target binding, and fail-closed reconnect selection after local credential deletion. Node coverage verifies distinct simultaneous credentials on one listener, same-path rejection, cross-PID token rejection, global-token bypass rejection with zero pre-snapshot bytes, scoped socket-loss and reauthentication, independent credential release, and route-intent marker persistence. Independent-producer and end-to-end native poison-global coverage remain follow-up tests. Legacy controlled and low-level launchers fall back to the well-known record only when neither an adjacent credential nor its route-intent marker exists.
+  - Configured or call-site exact PIDs are snapshotted into the injector invocation before asynchronous work. `attach()` reserves its launcher while session readiness is pending, and session close revokes active or late-completing authorization leases. Rust unit coverage directly verifies missing-local legacy fallback before route intent, marker and invalid-local fail-closed pinning, target binding, and fail-closed reconnect selection after local credential deletion. Node coverage verifies distinct simultaneous credentials on one listener, same-path rejection, cross-PID token rejection, global-token bypass rejection with zero pre-snapshot bytes, scoped socket-loss and reauthentication, independent credential release, and route-intent marker persistence. End-to-end native poison-global coverage remains a follow-up test. Legacy controlled and low-level launchers fall back to the well-known record only when neither an adjacent credential nor its route-intent marker exists.
   - A local July 28, 2026 D3D11 process-start run recorded PID 15836 authorization before injector spawn, a subsequent target connection, two-window rendering, input acceptance, terminal disconnect, and cleanup. Its evidence remains in the ignored local directory `build/electron-game-overlay-runtime/client-sdk-d3d11-process-start-20260728-222813` and is not part of the repository. The run proves publication and end-to-end operation in the same attempt; it does not independently prove that the Rust client selected the run-local credential instead of the legacy fallback.
-- [ ] Add safe texture retirement and per-swap-chain production routing. Multiple swap chains still need explicit resource/input ownership and a primary-surface policy for process-level FPS.
+  - On July 31, 2026, two independent Electron processes concurrently attached
+    to separate exact-PID D3D11 and D3D12 targets with distinct run directories,
+    ports, and credentials. Scene/input state stayed isolated, and stopping app
+    A did not disturb app B. Evidence is under
+    `build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`.
+- [x] Retire producer-session textures on deactivation for the accepted
+      single-swap-chain path.
+  - Both July 31 deactivation gates retired the complete two-window scene while
+    leaving the runtime and add-on mapped dormant.
+- [ ] Add per-swap-chain production routing, cross-queue-safe texture
+      retirement, explicit resource/input ownership, and a primary-surface
+      policy for process-level FPS.
 - [ ] Make final target-surface removal a bounded graceful transport drain. OS-confirmed disconnect already clears retained SDK state, but destroying the final swap chain can close the socket before its explicit removal revision reaches Electron.
 - [ ] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including buffered-record target ownership and raw-only text policy.
 - [ ] Extend the accepted `WM_POINTER` translation beyond primary mouse move/left click to secondary/X buttons, double-click semantics, pointer wheel, and explicit touch/pen policy, with duplicate-projection tests.
@@ -418,3 +449,19 @@ they are not the active production-host roadmap.
   - DLL logging options: write to `OutputDebugString` for DebugView/Visual Studio, write rotating log files under a configurable temp/app-data directory, or send diagnostic IPC messages back to the host when the IPC link is available. Before IPC is connected, the DLL should still log locally so early injection/hook failures are not lost.
   - Possible API shape: `new GameOverlay({ logger, logLevel, diagnostics: true })`, `session.on("diagnostic", event => ...)`, and a stable diagnostic event schema with `layer`, `code`, `severity`, `message`, `context`, and optional `windowsErrorCode`.
   - Agent workflow goal: when a user reports "nothing appears", logs should show whether the failure is asset copy, injection launch, DLL load, IPC connect, graphics hook, window registration, frame upload, or game compatibility.
+- [ ] Low priority: support multiple independent applications targeting the
+      same game process.
+  - Keep one ReShade runtime and one Electron overlay add-on inside each target;
+    do not solve this by injecting one copy per application.
+  - Add a per-user broker that multiplexes independently authenticated
+    application sessions into the target, namespaces window identities, merges
+    scene ordering, arbitrates focus and input ownership, reference-counts
+    interception, and retires an application cleanly after disconnect or crash.
+  - Define broker/add-on protocol-version negotiation so applications shipping
+    different SDK versions cannot replace or downgrade one another's runtime.
+  - Until this exists, different applications may target different processes,
+    but concurrent independent sessions for the same PID remain unsupported and
+    should fail closed.
+  - The different-PID case has accepted two-app/two-target evidence under
+    `build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`;
+    it does not reduce the same-PID broker requirement.

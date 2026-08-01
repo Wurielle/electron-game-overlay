@@ -185,6 +185,9 @@ Every human-facing runtime case has its own launcher under
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-session-deactivation.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-session-deactivation.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-d3d12-client-sdk-two-app-two-target.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\existing-reshade-installation-preflight.ps1
@@ -195,6 +198,7 @@ Every human-facing runtime case has its own launcher under
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-official-reshade-addon.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-electron-scene.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk-official-reshade-coexistence.ps1
 ```
 
 New runs are written under `build/electron-game-overlay-runtime`. Dated
@@ -211,14 +215,20 @@ configuration. The existing-installation gates prove that the injector performs
 no target mutation when an inactive ReShade installation is present. The
 official-add-on gates exercise a caller-supplied target-local x64 ReShade
 fixture through the public capability-negotiation path and assert that the
-project runtime is not loaded. The D3D12
-client gate exercises two fresh target/client cycles. The reinjection gate
+project runtime is not loaded. The session-deactivation variants close the
+public SDK session while the target and producer process remain alive. A
+monotonic producer-session epoch makes the target dormant on its next ReShade
+overlay callback, releases input, and retires the prior single-swap-chain scene
+textures without unloading ReShade or the add-on. The two-app launcher proves
+independent Electron processes against separate exact-PID D3D11 and D3D12
+targets, including isolated credentials, scenes, input, and teardown. The D3D12
+client gate exercises two fresh target/client cycles, and the reinjection gate
 keeps one Electron client alive while the controlled target exits and restarts.
-The Gun Frog gate is a permitted real-game proof for the process-name,
-arm-before-launch project-runtime route. The official-add-on gates use
-controlled fixtures; they do not yet prove coexistence with real games,
-arbitrary effect/add-on sets, proxy chains, or every capability-incompatible
-public host.
+The normal Gun Frog gate covers the process-name, arm-before-launch
+project-runtime route. The official-ReShade Gun Frog launcher passed on July 31,
+2026 with a stock host, a pristine foreign API-18 add-on, and one enabled benign
+effect. It is a narrow real-game coexistence proof, not compatibility with
+arbitrary proxy chains or public hosts.
 
 ## Input acceptance boundary
 
@@ -232,6 +242,11 @@ Interception is accepted only when all of the following hold:
 - release, target exit, transport failure, or shutdown restores safe game
   input.
 
+Explicit release is acknowledged on a rendering frame. Producer loss is
+detected by a monotonic session epoch and fails open on the target's next
+ReShade overlay callback; a target that has stopped presenting entirely cannot
+complete that render-thread transition until presentation resumes.
+
 Controlled D3D11/D3D12 hosts and Gun Frog passed this boundary in July 2026,
 including Electron controls placed directly over four game menu controls. The
 game stayed unchanged during interception and received the same Quit position
@@ -239,10 +254,11 @@ only after release. Exact-PID near-process-creation injection and same-client
 target restart also passed their dedicated gates.
 
 These results do not establish arbitrary late injection, every game, Vulkan,
-OpenGL, unusual presentation paths, live simultaneous-game acceptance,
-anti-cheat compatibility, or VR. Use the unsigned full add-on runtime only with
-the included controlled hosts or an offline/single-player application you are
-allowed to modify. Do not use it to bypass anti-cheat controls.
+OpenGL, unusual presentation paths, simultaneous arbitrary real-game
+acceptance, anti-cheat compatibility, or VR. Use the unsigned full add-on
+runtime only with the included controlled hosts or an offline/single-player
+application you are allowed to modify. Do not use it to bypass anti-cheat
+controls.
 
 ## Historical hudhook experiment
 

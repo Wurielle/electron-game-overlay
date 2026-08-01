@@ -230,6 +230,18 @@ int main()
         return EXIT_FAILURE;
     }
 
+    uint64_t session_epoch = UINT64_MAX;
+    if (!expect_status(
+            "ego_transport_session_epoch",
+            ego_transport_session_epoch(transport, &session_epoch),
+            EGO_STATUS_OK))
+    {
+        std::fputs("producer session epoch is not ABI-conformant\n", stderr);
+        ego_scene_snapshot_release(snapshot);
+        ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+
     const ego_status release_status = ego_scene_snapshot_release(snapshot);
     snapshot = nullptr;
     if (!expect_status(

@@ -391,7 +391,7 @@ graphics hooks before this deliberately fast controlled host creates D3D12. This
 proves the production client/public SDK path and ReShade's D3D12 selection for a
 cooperating target; it does not prove late injection or arbitrary fast-start
 D3D12 game timing. Client cleanup in this gate is forced teardown followed by a
-fresh launch, not graceful runtime disable/unload.
+fresh launch, not producer-session deactivation or clean runtime/add-on unload.
 
 ## Run the same-client restart/reinjection gate
 
@@ -474,6 +474,34 @@ active graphics API, adopt the existing device or swap chain, load the add-on,
 or render the Electron scene. That route is unsupported. Probe evidence is under
 `build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
 
+## Run producer-session and independent-app lifecycle gates
+
+Use the dedicated human-facing launchers:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-session-deactivation.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-session-deactivation.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-d3d12-client-sdk-two-app-two-target.ps1
+```
+
+The D3D11 and D3D12 gates close the public SDK session while the Electron
+producer and controlled target remain alive. On the next ReShade overlay
+callback, the monotonic epoch transition releases interception, clears the old
+scene, and retires both textures in each accepted single-swap-chain target.
+ReShade and the Electron add-on remain mapped and dormant. This is session
+deactivation, not unload. July 31, 2026 evidence is under
+`build/electron-game-overlay-runtime/client-sdk-d3d11-session-deactivation-20260731-000557`
+and
+`build/electron-game-overlay-runtime/client-sdk-d3d12-session-deactivation-20260731-000709`.
+
+The two-app gate runs two independent Electron processes against separate
+exact-PID D3D11 and D3D12 targets. It proves distinct run directories,
+rendezvous paths, ports, and credentials; isolated scene and input state; and
+that stopping one app/target does not disturb the other. July 31, 2026 evidence
+is under
+`build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`.
+Concurrent independent applications targeting the same PID remain unsupported.
+
 ## Existing target-local ReShade coexistence
 
 Clean targets continue through the repository's patched injected host. For an
@@ -534,12 +562,26 @@ The controlled launchers for this boundary are:
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-existing-reshade-installation.ps1 -OfficialRuntimePath C:\path\to\official\dxgi.dll
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-existing-reshade-upgrade.ps1 -OfficialRuntimePath C:\path\to\official\dxgi.dll
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-official-reshade-addon.ps1 -OfficialRuntimePath C:\path\to\official\dxgi.dll
+.\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk-official-reshade-coexistence.ps1
 ```
 
 These gates verify identification, fail-closed preservation, transaction
-behavior, and controlled official-host rendering/input. They do not establish
-coexistence with a real game's existing effects/add-ons, another proxy chain,
-or every public host that may lack the required API/table capabilities.
+behavior, and official-host rendering/input. The Gun Frog case additionally
+seeds a stock full-add-on host, a pristine API-18 foreign add-on, and a benign
+enabled effect into one reversible test-owned installation, then runs the real
+Steam auto-attacher and four-button input proof. It still does not establish
+another proxy chain or every public host that may lack the required API/table
+capabilities.
+
+That Gun Frog gate passed on July 31, 2026. Stock ReShade loaded the pristine
+API-18 FPS Limiter add-on, the Electron add-on, and the enabled
+`EGOCoexistenceWitness` effect together. All four Electron buttons remained
+isolated from the game menu; after Ctrl+I released interception, the same Quit
+position closed the game. Cleanup then proved byte/attribute/timestamp identity
+for the seeded installation and restored the original clean game directory.
+Evidence is under
+`build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20260731-002038-058ec1a0`.
+Arbitrary effect sets and proxy chains remain deferred.
 
 The upgrade launcher also composes the production Steam process watcher,
 auto-attacher, SDK launcher, and packaged native manager. It seeds a managed
@@ -677,11 +719,12 @@ closed the host-switch milestone for this accepted target path.
   accepted Electron route covers primary mouse move/left click and preserves
   captured Ctrl/Shift state); touch and pen remain unconverted and fail open to
   the target;
-- multiple-swap-chain/render-queue ownership and safe texture retirement;
-- graceful client disable/unload, post-render injection or existing-device/
+- multiple-swap-chain/render-queue ownership and cross-queue-safe texture
+  retirement;
+- clean in-process runtime/add-on unload, post-render injection or existing-device/
   swap-chain adoption, arbitrary proxy chains, real-game coexistence with
-  existing effects/add-ons, deterministic pre-entry injection, additional
-  games, or broader graphics/presentation compatibility;
+  arbitrary effect/add-on combinations, deterministic pre-entry injection,
+  additional games, or broader graphics/presentation compatibility;
 - end-to-end process identity beyond exact PID plus verified executable
   basename for exact-PID requests and fallback-WMI lifecycle correlation; the
   prearmed path-watcher baseline itself now retains handles for exact process
@@ -701,7 +744,7 @@ temperature sensor was unavailable, so that run establishes functional and
 process-resource acceptance rather than a thermal soak.
 Exact-PID near-process-creation support is implemented and has dedicated
 normal-start/pre-device D3D11/D3D12 gates with passing acceptance. Raw normalization,
-graceful disable/unload, post-render attachment, arbitrary watcher latency,
+clean in-process unload, post-render attachment, arbitrary watcher latency,
 end-to-end process-creation correlation beyond the native watcher baseline,
 other games and APIs, and multiple-swap-chain hardening stay outside the
 accepted boundary. Package publishing is deferred
