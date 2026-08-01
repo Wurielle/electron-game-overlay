@@ -1,12 +1,12 @@
 # Electron game overlay Windows runtime
 
-This production Windows x64 package uses the ReShade 6.7.3 full add-on runtime
-as the native process-entry, graphics-hook, swap-chain, input, logging, and
-Dear ImGui layer. It builds the injector, controlled hosts, and
-`electron_game_overlay.addon64`, plus the native
-`electron_game_overlay_reshade_manager.exe` used for ownership-safe changes to
-a verified official installation. The historical hudhook payload is not part
-of the production SDK build or staged runtime.
+This production Windows package builds x64 and x86 ReShade 6.7.3 full add-on
+runtimes as the native process-entry, graphics-hook, swap-chain, input, logging,
+and Dear ImGui layer. It builds architecture-specific injectors, controlled hosts,
+`.addon64`/`.addon32` payloads, and native ReShade add-on managers. The x64
+manager provides ownership-safe changes to a verified official installation;
+the x86 official-installation path remains fail-closed. The historical hudhook
+payload is not part of the production SDK build or staged runtime.
 
 The original baseline proved two things inside the target render path:
 
@@ -106,9 +106,17 @@ Requirements:
 
 - Windows 10 or newer;
 - Visual Studio 2022 with the Desktop development with C++ workload;
+- Rust via rustup with the `x86_64-pc-windows-msvc` and
+  `i686-pc-windows-msvc` targets;
 - CMake 3.24 or newer;
 - Git;
 - an internet connection for the first configure, which fetches the pinned ReShade and ImGui headers.
+
+Install both Rust targets before building:
+
+```powershell
+rustup target add --toolchain stable x86_64-pc-windows-msvc i686-pc-windows-msvc
+```
 
 From a Visual Studio Developer PowerShell opened at the repository root:
 
@@ -118,9 +126,12 @@ npx nx build electron-game-overlay-runtime
 
 That target builds the transport dependency, pinned ReShade runtime/injector,
 production add-on, native target-local ReShade add-on manager, and ABI smoke.
-The staged package also contains
-`electron_game_overlay_runtime.build.json`, which binds those artifacts to their
-source and content hashes. To configure only the native controlled-host tree
+Each architecture distribution contains a schema-2
+`electron_game_overlay_runtime.build.json` that binds its artifacts to their
+source and content hashes. Composite SDK staging retains the x64 manifest under
+that name and the x86 manifest as
+`electron_game_overlay_runtime32.build.json`; the shared `ReShade.ini` must
+match both manifests. To configure only the native controlled-host tree
 directly:
 
 ```powershell
@@ -136,7 +147,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies twenty
+downloads both into the ignored build directory, then applies twenty-three
 production patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -240,17 +251,18 @@ wire schema, or public Node SDK API.
 
 ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is
 MIT-licensed. Preserve their notices if compiled binaries are redistributed.
-The helper builds the pinned ReShade runtime and x64 injector only into the
-ignored local build directory; it does not run the injector. Do not commit or
-redistribute those binaries.
+The helper builds the pinned ReShade runtime and matching injector only into
+the ignored local build directory; it does not run the injector. Both x64 and
+x86 payloads are supported. Do not commit or redistribute those binaries.
 
 To build the pinned ReShade full-add-on runtime explicitly:
 
 ```powershell
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
+.\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1 -Architecture x86
 ```
 
-The launchers validate the cache against a schema-23 build stamp, the twenty
+The launchers validate the cache against a schema-26 build stamp, the twenty-three
 production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
 all nine patched source files, the full-add-on configuration, and the
 runtime/injector SHA-256 hashes. CMake performs the same commit, nine-path, and
@@ -267,6 +279,12 @@ Each human-facing backend has its own launcher:
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-native-input-gate.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-native-input-gate.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-native-input-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-x86-native-input-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-x86-native-input-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-x86-exact-injection-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-x86-exact-injection-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-x86-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-x86-client-sdk.ps1
 ```
 
 The launchers build the host and add-on, build or reuse the pinned local ReShade
@@ -277,7 +295,15 @@ runtime as `d3d9.dll`, `d3d10.dll`, and `d3d11.dll`; D3D12 stages it as
 `dxgi.dll`. All four stage `ReShade.ini` with `[INPUT] InputProcessing=2`, the add-on,
 and the `reshade-input-gate.enabled` marker that enables the controlled host
 oracle. The parameterized `scripts/run-input-gate.ps1` runner remains available
-for automation and supports `-NoLaunch`.
+for automation and supports `-Architecture x64|x86` and `-NoLaunch`. The x86
+launchers use `ReShade32.dll`, `.addon32`, and controlled PE32 hosts; the x64
+launchers retain their existing artifact names and directories.
+
+The x86 exact-injection launchers keep the target executable separate from the
+runtime payload, invoke the Win32 injector against an exact PID, validate all
+native files as PE32/I386, and require the first add-on ImGui frame. The x86
+client/SDK launchers additionally exercise the production Electron client and
+the SDK's validated x64-to-x86 injector handoff.
 
 To reproduce visible acceptance for either backend:
 
@@ -342,9 +368,28 @@ isolated runtime directories, and no leftover target/client/injector process.
 The result markers are `D3D9_REAL_CLIENT_SDK_GATE_PASS` and
 `D3D10_REAL_CLIENT_SDK_GATE_PASS`.
 
-These are Windows x64 results. Portal's installed `hl2.exe` is PE32/x86 and is
-not covered until the runtime, injector, add-on, Rust transport library, and SDK
-artifact selection also support Win32.
+These are Windows x64 real-client results. The package now also contains a
+Win32 injector, `ReShade32.dll`, `.addon32`, the i686 Rust transport, and SDK
+architecture handoff. Portal remains unclaimed until its real PE32 `hl2.exe`
+passes launch, rendering, interception/release, reset, relaunch, and cleanup.
+
+### Accepted controlled x86 results: August 1, 2026
+
+Both D3D9 and D3D10 exact-PID gates validated I386 host, injector, runtime, and
+add-on artifacts, returned the requested PID/path in `injected-runtime` mode,
+rendered the first ImGui frame, and shut down cleanly. The production
+Electron/client SDK gate then passed two fresh cycles per backend. Each cycle
+preserved the x64 architecture diagnostic plus x86 injector result, rendered
+two transported Electron windows, froze the host input oracle throughout
+overlay interaction, released input, resized the legacy graphics surface, and
+left no client, host, or injector process behind. The result markers are
+`D3D9_X86_REAL_CLIENT_SDK_GATE_PASS` and
+`D3D10_X86_REAL_CLIENT_SDK_GATE_PASS`.
+
+A compatible already-loaded project ReShade runtime can be reused on x86 after
+the Win32 injector loads and validates `electron_game_overlay.addon32`. An
+official ReShade host or an inactive target-local installation still remains
+fail-closed until the x86 coexistence/manager path has its own acceptance gates.
 
 ReShade's managed ImGui context samples button and key state once per `Present`.
 Human-duration clicks, typing, dragging, and wheel input passed this controlled

@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [switch]$Force
+    [switch]$Force,
+    [ValidateSet("x64", "x86")]
+    [string]$Architecture = "x64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,9 +11,30 @@ $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
 $BuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime"
 $ReShadeSource = Join-Path $BuildRoot "_deps\reshade-src"
-$Runtime = Join-Path $ReShadeSource "bin\x64\Release\ReShade64.dll"
-$Injector = Join-Path $ReShadeSource "bin\x64\Release\inject.exe"
-$BuildStamp = Join-Path $ReShadeSource "bin\x64\Release\ReShade64.build.json"
+$ArchitectureConfig = if ($Architecture -eq "x86") {
+    [pscustomobject]@{
+        OutputDirectory = "bin\Win32\Release"
+        RuntimeName = "ReShade32.dll"
+        StampName = "ReShade32.build.json"
+        RuntimePlatform = "32-bit"
+        InjectorPlatform = "Win32"
+    }
+}
+else {
+    [pscustomobject]@{
+        OutputDirectory = "bin\x64\Release"
+        RuntimeName = "ReShade64.dll"
+        StampName = "ReShade64.build.json"
+        RuntimePlatform = "64-bit"
+        InjectorPlatform = "x64"
+    }
+}
+$Runtime = Join-Path $ReShadeSource (
+    Join-Path $ArchitectureConfig.OutputDirectory $ArchitectureConfig.RuntimeName)
+$Injector = Join-Path $ReShadeSource (
+    Join-Path $ArchitectureConfig.OutputDirectory "inject.exe")
+$BuildStamp = Join-Path $ReShadeSource (
+    Join-Path $ArchitectureConfig.OutputDirectory $ArchitectureConfig.StampName)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ObserverPatch = Join-Path $RuntimeRoot "patches\reshade-input-observer.patch"
 $ObserverPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ObserverPatch).Hash
@@ -86,6 +109,17 @@ $SharedRuntimeHardeningPatchHash =
 $SuppressSplashPatch = Join-Path $RuntimeRoot "patches\reshade-suppress-splash.patch"
 $SuppressSplashPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $SuppressSplashPatch).Hash
+$X86RuntimePatch = Join-Path $RuntimeRoot "patches\reshade-x86-runtime.patch"
+$X86RuntimePatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $X86RuntimePatch).Hash
+$X86TargetArchitectureDiagnosticPatch =
+    Join-Path $RuntimeRoot "patches\reshade-x86-target-architecture-diagnostic.patch"
+$X86TargetArchitectureDiagnosticPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $X86TargetArchitectureDiagnosticPatch).Hash
+$InjectorExactTargetPathPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-exact-target-path.patch"
+$InjectorExactTargetPathPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExactTargetPathPatch).Hash
 $ExpectedPatchedFiles = @(
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -106,7 +140,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/input.cpp" = "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
     "source/input.hpp" = "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "8218A8263F78145173F344FD4FDA7B019189ACBF7923C15EF38E75C0AEE54CB2"
+    "tools/injector.cpp" = "BCE49FAA997F42B6EF8E1DC6D6BEA224F3C74E647FD902373CDFE788705BC43D"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -142,14 +176,16 @@ function Test-ReShadePatchedSourceState {
         return $false
     }
 
-    # The global-layer preflight is terminal over the injector stack, so lower
-    # injector patches cannot all be reverse-checked independently in the final
-    # tree. This terminal patch plus exact content hashes below proves that
-    # complete ordered stack instead.
+    # Terminal injector patches overlap the historical stack, so lower patches
+    # cannot all be reverse-checked independently in the final tree. The
+    # independently reversible terminal seams below plus exact content hashes
+    # prove the complete ordered stack instead.
     foreach ($Patch in @(
         $RawInputFocusFollowingRootPatch,
-        $InjectorGlobalLayerPreflightPatch,
-        $SuppressSplashPatch
+        $SuppressSplashPatch,
+        $X86RuntimePatch,
+        $X86TargetArchitectureDiagnosticPatch,
+        $InjectorExactTargetPathPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -205,7 +241,7 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 23 -and
+        return $Stamp.schemaVersion -eq 26 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -227,8 +263,11 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorGlobalLayerPreflightPatchSha256 -eq $InjectorGlobalLayerPreflightPatchHash -and
             $Stamp.sharedRuntimeHardeningPatchSha256 -eq $SharedRuntimeHardeningPatchHash -and
             $Stamp.suppressSplashPatchSha256 -eq $SuppressSplashPatchHash -and
+            $Stamp.x86RuntimePatchSha256 -eq $X86RuntimePatchHash -and
+            $Stamp.x86TargetArchitectureDiagnosticPatchSha256 -eq $X86TargetArchitectureDiagnosticPatchHash -and
+            $Stamp.injectorExactTargetPathPatchSha256 -eq $InjectorExactTargetPathPatchHash -and
             $Stamp.configuration -eq "Release" -and
-            $Stamp.platform -eq "64-bit" -and
+            $Stamp.platform -eq $ArchitectureConfig.RuntimePlatform -and
             $Stamp.addonLevel -eq 2 -and
             $Stamp.runtimeSha256 -eq $RuntimeHash -and
             $Stamp.injectorSha256 -eq $InjectorHash
@@ -240,7 +279,7 @@ function Test-RuntimeBuildCache {
 
 if ((Test-RuntimeBuildCache) -and -not $Force) {
     Write-Host "RESHade full-add-on runtime already built: $Runtime"
-    Write-Host "ReShade x64 injector already built: $Injector"
+    Write-Host "ReShade $Architecture injector already built: $Injector"
     return
 }
 
@@ -311,7 +350,7 @@ if (Test-Path -LiteralPath $BuildStamp -PathType Leaf) {
     /t:ReShade `
     /m `
     /p:Configuration=Release `
-    /p:Platform=64-bit `
+    /p:Platform=$($ArchitectureConfig.RuntimePlatform) `
     /verbosity:minimal
 if ($LASTEXITCODE -ne 0) {
     throw "ReShade runtime build failed with exit code $LASTEXITCODE."
@@ -320,7 +359,7 @@ if ($LASTEXITCODE -ne 0) {
 & $MsBuild $InjectorProject `
     /m `
     /p:Configuration=Release `
-    /p:Platform=x64 `
+    /p:Platform=$($ArchitectureConfig.InjectorPlatform) `
     /verbosity:minimal
 if ($LASTEXITCODE -ne 0) {
     throw "ReShade injector build failed with exit code $LASTEXITCODE."
@@ -336,7 +375,7 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 23
+    schemaVersion = 26
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -358,12 +397,15 @@ $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
     injectorGlobalLayerPreflightPatchSha256 = $InjectorGlobalLayerPreflightPatchHash
     sharedRuntimeHardeningPatchSha256 = $SharedRuntimeHardeningPatchHash
     suppressSplashPatchSha256 = $SuppressSplashPatchHash
+    x86RuntimePatchSha256 = $X86RuntimePatchHash
+    x86TargetArchitectureDiagnosticPatchSha256 = $X86TargetArchitectureDiagnosticPatchHash
+    injectorExactTargetPathPatchSha256 = $InjectorExactTargetPathPatchHash
     configuration = "Release"
-    platform = "64-bit"
+    platform = $ArchitectureConfig.RuntimePlatform
     addonLevel = 2
     runtimeSha256 = $RuntimeHash
     injectorSha256 = $InjectorHash
 } | ConvertTo-Json | Set-Content -LiteralPath $BuildStamp -Encoding UTF8
 
 Write-Host "RESHade full-add-on runtime built: $Runtime"
-Write-Host "ReShade x64 injector built: $Injector"
+Write-Host "ReShade $Architecture injector built: $Injector"

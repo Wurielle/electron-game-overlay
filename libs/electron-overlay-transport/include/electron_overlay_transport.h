@@ -4,10 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if !defined(_WIN64)
-#error "electron-overlay-transport supports x64 Windows only"
-#endif
-
 #if defined(_MSC_VER)
 #define EGO_CALL __cdecl
 #else

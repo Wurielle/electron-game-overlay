@@ -1,0 +1,221 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -25,6 +25,24 @@
+ 
+ #define RESHADE_LOADING_THREAD_FUNC 1
+ 
++#ifdef _WIN64
++using target_optional_header = IMAGE_OPTIONAL_HEADER64;
++constexpr WORD target_machine = IMAGE_FILE_MACHINE_AMD64;
++constexpr WORD target_optional_header_magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC;
++constexpr REGSAM target_registry_view = KEY_WOW64_64KEY;
++constexpr wchar_t target_reshade_runtime_file[] = L"ReShade64.dll";
++constexpr wchar_t target_electron_overlay_addon_file[] =
++	L"electron_game_overlay.addon64";
++#else
++using target_optional_header = IMAGE_OPTIONAL_HEADER32;
++constexpr WORD target_machine = IMAGE_FILE_MACHINE_I386;
++constexpr WORD target_optional_header_magic = IMAGE_NT_OPTIONAL_HDR32_MAGIC;
++constexpr REGSAM target_registry_view = KEY_WOW64_32KEY;
++constexpr wchar_t target_reshade_runtime_file[] = L"ReShade32.dll";
++constexpr wchar_t target_electron_overlay_addon_file[] =
++	L"electron_game_overlay.addon32";
++#endif
++
+ struct loading_data
+ {
+ 	WCHAR load_path[MAX_PATH] = L"";
+@@ -1495,8 +1514,13 @@ static bool inspect_target_environment(
+ {
+ 	constexpr SIZE_T maximum_environment_bytes = 1024 * 1024;
+ 	constexpr SIZE_T read_chunk_size = 4096;
++#ifdef _WIN64
+ 	static_assert(sizeof(void *) == 8);
+ 	static_assert(sizeof(RTL_USER_PROCESS_PARAMETERS) == 0x80);
++#else
++	static_assert(sizeof(void *) == 4);
++	static_assert(sizeof(RTL_USER_PROCESS_PARAMETERS) == 0x48);
++#endif
+ 
+ 	const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+ 	const auto nt_query_information_process =
+@@ -2056,8 +2080,8 @@ static bool resolve_target_effective_settings(
+ 	{
+ 		constexpr wchar_t addon_name[] =
+ 			L"Electron Game Overlay Runtime";
+-		constexpr wchar_t addon_file[] =
+-			L"electron_game_overlay.addon64";
++		constexpr const wchar_t *addon_file =
++			target_electron_overlay_addon_file;
+ 		const std::wstring name_and_file =
+ 			std::wstring(addon_name) + L"@" + addon_file;
+ 		const std::wstring file_only =
+@@ -2249,6 +2273,7 @@ static module_export_inspection inspect_registered_reshade_manifest(
+ 	const std::wstring installation_directory =
+ 		manifest_path.substr(0, separator);
+-	module_path = installation_directory + L"\\ReShade64.dll";
++	module_path = installation_directory + L"\\" +
++		target_reshade_runtime_file;
+ 
+ 	bool manifest_missing = false;
+ 	std::vector<BYTE> manifest_bytes;
+@@ -2278,8 +2303,9 @@ static module_export_inspection inspect_registered_reshade_manifest(
+ 		kind == reshade_global_layer_kind::vulkan
+ 			? L"\"name\":\"VK_LAYER_reshade\""
+ 			: L"\"name\":\"XR_APILAYER_reshade\"";
+-	const std::wstring expected_library =
+-		L"\"library_path\":\".\\\\ReShade64.dll\"";
++	const std::wstring expected_library =
++		std::wstring(L"\"library_path\":\".\\\\") +
++		target_reshade_runtime_file + L"\"";
+ 	if (!text_contains_exactly_once(
+ 			compacted_manifest,
+ 			expected_name) ||
+@@ -2296,8 +2322,8 @@ static module_export_inspection inspect_registered_reshade_manifest(
+ 	switch (file_has_export(
+ 		module_path,
+ 		"ReShadeVersion",
+ 		module_error,
+-		IMAGE_FILE_MACHINE_AMD64))
++		target_machine))
+ 	{
+ 	case module_export_inspection::present:
+ 		return module_export_inspection::present;
+@@ -2589,37 +2615,37 @@ static module_export_inspection inspect_target_for_global_reshade_layer(
+ 		{
+ 			HKEY_LOCAL_MACHINE,
+ 			L"Software\\Khronos\\Vulkan\\ImplicitLayers",
+-			KEY_WOW64_64KEY,
++			target_registry_view,
+ 			reshade_global_layer_kind::vulkan,
+ 		},
+ 		{
+ 			HKEY_CURRENT_USER,
+ 			L"Software\\Khronos\\Vulkan\\ImplicitLayers",
+-			KEY_WOW64_64KEY,
++			target_registry_view,
+ 			reshade_global_layer_kind::vulkan,
+ 		},
+ 		{
+ 			HKEY_LOCAL_MACHINE,
+ 			L"Software\\Khronos\\Vulkan\\ExplicitLayers",
+-			KEY_WOW64_64KEY,
++			target_registry_view,
+ 			reshade_global_layer_kind::vulkan,
+ 		},
+ 		{
+ 			HKEY_CURRENT_USER,
+ 			L"Software\\Khronos\\Vulkan\\ExplicitLayers",
+-			KEY_WOW64_64KEY,
++			target_registry_view,
+ 			reshade_global_layer_kind::vulkan,
+ 		},
+ 		{
+ 			HKEY_LOCAL_MACHINE,
+ 			L"Software\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+-			KEY_WOW64_64KEY,
++			target_registry_view,
+ 			reshade_global_layer_kind::openxr,
+ 		},
+ 		{
+ 			HKEY_CURRENT_USER,
+ 			L"Software\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+-			KEY_WOW64_64KEY,
++			target_registry_view,
+ 			reshade_global_layer_kind::openxr,
+ 		},
+ 	};
+@@ -2644,7 +2670,7 @@ static module_export_inspection inspect_target_for_global_reshade_layer(
+ 			const module_export_inspection inspection =
+ 				inspect_global_layer_registry_key(
+ 				HKEY_CURRENT_USER,
+ 				test_root + L"\\" + location.first,
+-				KEY_WOW64_64KEY,
++				target_registry_view,
+ 				location.second,
+ 				target_image_path,
+@@ -2716,13 +2742,13 @@ static module_export_inspection remote_module_export_address(
+ 		return module_export_inspection::failed;
+ 	if (signature != IMAGE_NT_SIGNATURE ||
+-		file_header.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+-		file_header.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64))
++		file_header.Machine != target_machine ||
++		file_header.SizeOfOptionalHeader < sizeof(target_optional_header))
+ 	{
+ 		error = ERROR_BAD_EXE_FORMAT;
+ 		return module_export_inspection::failed;
+ 	}
+ 
+-	IMAGE_OPTIONAL_HEADER64 optional_header = {};
++	target_optional_header optional_header = {};
+ 	if (!read_remote_bytes(
+ 			process,
+ 			nt_header_address + sizeof(signature) + sizeof(file_header),
+@@ -2732,6 +2758,6 @@ static module_export_inspection remote_module_export_address(
+ 			error))
+ 		return module_export_inspection::failed;
+-	if (optional_header.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
++	if (optional_header.Magic != target_optional_header_magic ||
+ 		optional_header.SizeOfImage == 0 ||
+ 		optional_header.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT)
+ 	{
+@@ -3630,8 +3656,20 @@ static DWORD observe_path_matches(const wchar_t *fragment, DWORD parent_pid)
+ }
+ 
+ #if RESHADE_LOADING_THREAD_FUNC
++#ifndef _WIN64
++__declspec(noinline)
++__declspec(code_seg(".egothunk$z"))
++static DWORD WINAPI loading_thread_func_end_marker(loading_data *)
++{
++	return ERROR_INVALID_FUNCTION;
++}
++#endif
+ #pragma optimize("", off)
+-__declspec(noinline) static DWORD WINAPI loading_thread_func(loading_data *arg)
++__declspec(noinline)
++#ifndef _WIN64
++__declspec(code_seg(".egothunk$m"))
++#endif
++static DWORD WINAPI loading_thread_func(loading_data *arg)
+ {
+ 	constexpr LONG addon_gate_open = 0;
+ 	constexpr LONG addon_gate_loading = 1;
+@@ -3685,6 +3723,7 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ static bool get_loading_thread_func_size(SIZE_T &size)
+ {
+ 	constexpr SIZE_T maximum_loader_thunk_size = 4096;
++#ifdef _WIN64
+ 	const DWORD64 function_start =
+ 		reinterpret_cast<DWORD64>(loading_thread_func);
+ 	DWORD64 image_base = 0;
+@@ -3705,6 +3744,17 @@ static bool get_loading_thread_func_size(SIZE_T &size)
+ 		return false;
+ 
+ 	size = static_cast<SIZE_T>(unwind_end - unwind_start);
++#else
++	const uintptr_t function_start =
++		reinterpret_cast<uintptr_t>(loading_thread_func);
++	const uintptr_t function_end =
++		reinterpret_cast<uintptr_t>(loading_thread_func_end_marker);
++	if (function_end <= function_start ||
++		function_end - function_start > maximum_loader_thunk_size)
++		return false;
++
++	size = static_cast<SIZE_T>(function_end - function_start);
++#endif
+ 	return true;
+ }
+ #endif
+@@ -4422,8 +4472,8 @@ int wmain(int argc, wchar_t *argv[])
+ 	wcscat_s(
+ 		arg.load_path,
+ 		reuse_existing_runtime
+-			? L"electron_game_overlay.addon64"
+-			: (remote_is_wow64 ? L"ReShade32.dll" : L"ReShade64.dll"));
++			? target_electron_overlay_addon_file
++			: target_reshade_runtime_file);
+ 
+ 	if (GetFileAttributesW(arg.load_path) == INVALID_FILE_ATTRIBUTES)
+ 	{

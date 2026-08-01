@@ -73,8 +73,10 @@ class bounded_input_queue
 public:
     bounded_input_queue() noexcept
     {
-        for (std::uint64_t index = 0; index < Capacity; ++index)
-            slots_[index].sequence.store(index, std::memory_order_relaxed);
+        for (std::size_t index = 0; index < Capacity; ++index)
+            slots_[index].sequence.store(
+                static_cast<std::uint64_t>(index),
+                std::memory_order_relaxed);
     }
 
     bounded_input_queue(const bounded_input_queue &) = delete;

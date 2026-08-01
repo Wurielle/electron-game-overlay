@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const childProcess = require('node:child_process');
+const { createHash } = require('node:crypto');
 const fsPromises = require('node:fs/promises');
 const { EventEmitter } = require('node:events');
 const {
@@ -30,11 +31,17 @@ const existingReShadeInstallation = require('../dist/lib/existing-reshade-instal
 
 const artifacts = [
   'inject.exe',
+  'inject32.exe',
   'electron_game_overlay_reshade_manager.exe',
+  'electron_game_overlay_reshade_manager32.exe',
   'ReShade64.dll',
+  'ReShade32.dll',
   'ReShade64.build.json',
+  'ReShade32.build.json',
   'electron_game_overlay_runtime.build.json',
+  'electron_game_overlay_runtime32.build.json',
   'electron_game_overlay.addon64',
+  'electron_game_overlay.addon32',
   'ReShade.ini',
 ];
 const runOwnershipMarkerFileName = '.electron-game-overlay-run.json';
@@ -74,6 +81,13 @@ const injectorSuccessFor = (pid, processName = 'Gun Frog.exe') =>
     targetExecutablePath: path.win32.join('C:\\games', processName),
     runtimeMode: 'injected-runtime',
   });
+const injectorSuccessAt = (pid, targetExecutablePath) =>
+  `Found a matching process with PID ${pid}! Injecting ReShade ... Succeeded!\n` +
+  injectorResult({
+    pid,
+    targetExecutablePath,
+    runtimeMode: 'injected-runtime',
+  });
 const existingRuntimeSuccessFor = (
   pid,
   runtimeModulePath,
@@ -110,7 +124,7 @@ const officialAddonSuccessFor = (
     runtimeModulePath,
     addonModulePath,
     addonAbi: 1,
-    addonBuildId: '9CA4D5BAB1754B8B9FBDF3721DF8B458',
+    addonBuildId: 'F2A88AD705204DBB8E18D86E7147A13C',
     reshadeBasePath: path.win32.dirname(runtimeModulePath),
     addonDirectoryPath: path.win32.dirname(addonModulePath),
     electronGameOverlayAddonDisabled: false,
@@ -156,6 +170,21 @@ const injectorPreflightDiagnostic = (diagnostic) => {
     ...diagnostic,
   });
 };
+const architectureMismatchFor = (
+  pid,
+  targetExecutablePath = 'C:\\game\\game.exe',
+  overrides = {},
+  includeNotStartedMarker = true,
+) =>
+  `Found a matching process with PID ${pid}! Injecting ReShade ... \n` +
+  injectorPreflightDiagnostic({
+    code: 'target-architecture-mismatch',
+    pid,
+    targetExecutablePath,
+    windowsErrorCode: 706,
+    ...overrides,
+  }) +
+  (includeNotStartedMarker ? 'ReShade injection not started.\n' : '');
 const runtimeStartupRecord = (pid, code, additionalFields = {}) =>
   JSON.stringify({
     schemaVersion: 1,
@@ -211,11 +240,17 @@ test('startup parsing validates a co-located runtime without a graphics backend'
   assert.deepEqual(
     [
       config.injectorPath,
+      config.x86InjectorPath,
       config.addonManagerPath,
+      config.x86AddonManagerPath,
       config.runtimePath,
+      config.x86RuntimePath,
       config.buildStampPath,
+      config.x86BuildStampPath,
       config.packageBuildStampPath,
+      config.x86PackageBuildStampPath,
       config.addonPath,
+      config.x86AddonPath,
       config.configPath,
     ].map((artifactPath) => path.basename(artifactPath)),
     artifacts,
@@ -240,6 +275,28 @@ test('startup parsing validates a co-located runtime without a graphics backend'
       executable: path.join(runDirectory, 'inject.exe'),
       arguments: ['Gun Frog.exe', '--pid', '4242'],
       targetLabel: 'process:Gun Frog.exe:pid:4242',
+      workingDirectory: runDirectory,
+    },
+  );
+  assert.deepEqual(
+    buildReShadeInvocation(
+      {
+        processName: 'Gun Frog.exe',
+        pid: 4242,
+        executablePath:
+          'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe',
+      },
+      runDirectory,
+    ),
+    {
+      executable: path.join(runDirectory, 'inject.exe'),
+      arguments: [
+        'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe',
+        '--pid',
+        '4242',
+      ],
+      targetLabel:
+        'process:Gun Frog.exe:pid:4242:path:d:\\steamlibrary\\steamapps\\common\\gun frog\\gun frog.exe',
       workingDirectory: runDirectory,
     },
   );
@@ -278,6 +335,209 @@ test('startup parsing validates a co-located runtime without a graphics backend'
       workingDirectory: runDirectory,
     },
   );
+});
+
+test('exact-PID invocations normalize native image paths while preserving case', () => {
+  const runDirectory = path.join(tmpdir(), 'reshade-exact-path-run');
+  const cases = [
+    {
+      input:
+        'D:/SteamLibrary/STEAMAPPS/common/Example/../Gun Frog/./Gun Frog.exe',
+      expected: 'D:\\SteamLibrary\\STEAMAPPS\\common\\Gun Frog\\Gun Frog.exe',
+    },
+    {
+      input:
+        '\\\\?\\D:\\SteamLibrary\\STEAMAPPS\\common\\Gun Frog\\.\\Gun Frog.exe',
+      expected: 'D:\\SteamLibrary\\STEAMAPPS\\common\\Gun Frog\\Gun Frog.exe',
+    },
+    {
+      input:
+        '\\\\?\\UNC\\GameServer\\OverlayShare\\Games\\..\\Gun Frog\\Gun Frog.exe',
+      expected: '\\\\GameServer\\OverlayShare\\Gun Frog\\Gun Frog.exe',
+    },
+  ];
+
+  for (const { input, expected } of cases) {
+    const invocation = buildReShadeInvocation(
+      {
+        processName: 'Gun Frog.exe',
+        pid: 4242,
+        executablePath: input,
+      },
+      runDirectory,
+    );
+    assert.deepEqual(invocation.arguments, [expected, '--pid', '4242']);
+    assert.ok(
+      invocation.targetLabel.endsWith(`:path:${expected.toLowerCase()}`),
+    );
+  }
+});
+
+test('startup parsing validates both architecture package manifests and payload hashes', async (t) => {
+  await t.test('rejects a corrupted x86 add-on', () => {
+    const fixture = createRuntime();
+    writeFileSync(
+      path.join(fixture.runtimeDirectory, 'electron_game_overlay.addon32'),
+      'corrupted x86 add-on',
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x86 Electron Game Overlay runtime package build stamp addonSha256 does not match electron_game_overlay\.addon32/,
+    );
+  });
+
+  await t.test('rejects a corrupted x64 manager', () => {
+    const fixture = createRuntime();
+    writeFileSync(
+      path.join(
+        fixture.runtimeDirectory,
+        'electron_game_overlay_reshade_manager.exe',
+      ),
+      'corrupted x64 manager',
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x64 Electron Game Overlay runtime package build stamp managerSha256 does not match electron_game_overlay_reshade_manager\.exe/,
+    );
+  });
+
+  await t.test('rejects an unknown schema property', () => {
+    const fixture = createRuntime();
+    rewriteRuntimePackageBuildStamp(
+      fixture.runtimeDirectory,
+      'electron_game_overlay_runtime32.build.json',
+      (manifest) => {
+        manifest.unexpected = true;
+      },
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x86 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+    );
+  });
+
+  await t.test('rejects a repeated literal x64 schema key', () => {
+    const fixture = createRuntime();
+    prependDuplicateRuntimePackageBuildStampKey(
+      fixture.runtimeDirectory,
+      'electron_game_overlay_runtime.build.json',
+      'managerSha256',
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x64 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+    );
+  });
+
+  await t.test('rejects an escaped x86 schema-key alias', () => {
+    const fixture = createRuntime();
+    prependDuplicateRuntimePackageBuildStampKey(
+      fixture.runtimeDirectory,
+      'electron_game_overlay_runtime32.build.json',
+      'addonSha256',
+      '\\u0061ddonSha256',
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x86 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+    );
+  });
+
+  await t.test('rejects a schema-version mismatch', () => {
+    const fixture = createRuntime();
+    rewriteRuntimePackageBuildStamp(
+      fixture.runtimeDirectory,
+      'electron_game_overlay_runtime.build.json',
+      (manifest) => {
+        manifest.schemaVersion = 3;
+      },
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x64 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+    );
+  });
+
+  await t.test('rejects a manifest staged under the wrong architecture', () => {
+    const fixture = createRuntime();
+    rewriteRuntimePackageBuildStamp(
+      fixture.runtimeDirectory,
+      'electron_game_overlay_runtime32.build.json',
+      (manifest) => {
+        manifest.platform = 'win32-x64';
+      },
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x86 Electron Game Overlay runtime package build stamp declares platform "win32-x64"; expected win32-ia32/,
+    );
+  });
+});
+
+test('staged payloads are revalidated before injector execution', async () => {
+  const fixture = createRuntime();
+  const config = createConfig(fixture);
+  writeFileSync(
+    path.join(fixture.runtimeDirectory, 'electron_game_overlay.addon32'),
+    'corrupted after configuration',
+  );
+  const launcher = new ReShadeOverlayLauncher(config);
+
+  try {
+    await assert.rejects(launcher.prepare(), (error) => {
+      assert.ok(isReShadeOperationError(error));
+      assert.equal(error.code, 'runtime-staging-failed');
+      assert.equal(error.stage, 'runtime-staging');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.match(
+        error.message,
+        /x86 Electron Game Overlay runtime package build stamp addonSha256 does not match electron_game_overlay\.addon32/,
+      );
+      return true;
+    });
+    assert.deepEqual(await fsPromises.readdir(fixture.runsRootDirectory), []);
+  } finally {
+    launcher.dispose();
+  }
+});
+
+test('prepared runtime artifacts remain private snapshots after their package source changes', async () => {
+  const fixture = createRuntime();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  let stagedRunDirectory;
+  const unsubscribe = launcher.onEvent((event) => {
+    if (event.type === 'runtime-staged') {
+      stagedRunDirectory = event.runDirectory;
+    }
+  });
+
+  try {
+    await launcher.prepare();
+    assert.ok(stagedRunDirectory);
+    const stagedInjectorPath = path.join(stagedRunDirectory, 'inject32.exe');
+    const stagedBytes = readFileSync(stagedInjectorPath);
+
+    writeFileSync(
+      path.join(fixture.runtimeDirectory, 'inject32.exe'),
+      'changed after prepare',
+    );
+
+    assert.deepEqual(readFileSync(stagedInjectorPath), stagedBytes);
+    assert.notDeepEqual(
+      readFileSync(stagedInjectorPath),
+      readFileSync(path.join(fixture.runtimeDirectory, 'inject32.exe')),
+    );
+  } finally {
+    unsubscribe();
+    launcher.dispose();
+  }
 });
 
 test('startup and target validation reject incomplete or unsafe inputs', () => {
@@ -587,6 +847,264 @@ test('exact-PID pre-injection failure proof returns to idle after the child spaw
     launcher.dispose();
     console.error = originalError;
     console.log = originalLog;
+    execution.restore();
+  }
+});
+
+test('a successful x64 injection never starts the x86 injector', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+
+  try {
+    const request = launcher.launch({ processName: 'game.exe', pid: 6051 });
+    await waitFor(() => execution.calls.length === 1);
+    assert.equal(path.basename(execution.calls[0].executable), 'inject.exe');
+    execution.calls[0].callback(null, injectorSuccessFor(6051, 'game.exe'), '');
+    await request;
+    await flushMicrotasks();
+    assert.equal(execution.calls.length, 1);
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+test('a validated x64 architecture mismatch hands the exact target to x86 once', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath =
+    'C:\\Steam\\steamapps\\common\\Example\\game.exe';
+  const reportedTargetExecutablePath =
+    '\\\\?\\C:\\Steam\\steamapps\\common\\Example\\.\\game.exe';
+
+  try {
+    const request = launcher.launch({ pathContains: '\\steamapps\\' });
+    await waitFor(() => execution.calls.length === 1);
+    assert.deepEqual(execution.calls[0].arguments, [
+      '--path-contains',
+      '\\steamapps\\',
+    ]);
+    assert.equal(execution.calls[0].options.timeout, 0);
+    execution.calls[0].callback(
+      Object.assign(new Error('wrong injector architecture'), { code: 706 }),
+      architectureMismatchFor(6061, reportedTargetExecutablePath, {}, false),
+      'x64 mismatch\n',
+    );
+
+    await waitFor(() => execution.calls.length === 2);
+    assert.equal(path.basename(execution.calls[1].executable), 'inject32.exe');
+    assert.equal(
+      execution.calls[1].options.cwd,
+      execution.calls[0].options.cwd,
+    );
+    assert.equal(execution.calls[1].options.timeout, 120_000);
+    assert.deepEqual(execution.calls[1].arguments, [
+      targetExecutablePath,
+      '--pid',
+      '6061',
+    ]);
+    execution.calls[1].callback(
+      null,
+      injectorSuccessAt(6061, targetExecutablePath),
+      'x86 success\n',
+    );
+
+    const result = await request;
+    assert.equal(result.injectorTargetPid, 6061);
+    assert.equal(result.targetExecutablePath, targetExecutablePath);
+    assert.equal(result.selectedPath, targetExecutablePath);
+    assert.equal(result.runtimeMode, 'injected-runtime');
+    assert.equal(execution.calls.length, 2);
+    assert.match(
+      readFileSync(result.injectorStdoutPath, 'utf8'),
+      /=== x64 injector stdout ===[\s\S]*target-architecture-mismatch[\s\S]*=== x86 injector stdout ===[\s\S]*Succeeded!/,
+    );
+    assert.match(
+      readFileSync(result.injectorStderrPath, 'utf8'),
+      /=== x64 injector stderr ===\nx64 mismatch\n=== x86 injector stderr ===\nx86 success\n/,
+    );
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+test('a confirmed path-target exit during architecture handoff prevents the x86 spawn', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const delayedEvidence = delayInjectorEvidenceWrite();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'C:\\Steam\\steamapps\\common\\Exited\\game.exe';
+
+  try {
+    const request = launcher.launch({ pathContains: '\\steamapps\\' });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('wrong injector architecture'), { code: 706 }),
+      architectureMismatchFor(6062, targetExecutablePath, {}, false),
+      '',
+    );
+
+    await delayedEvidence.entered;
+    assert.equal(launcher.confirmTargetExited(6062), true);
+    delayedEvidence.release();
+    await assert.rejects(request, (error) => {
+      assert.equal(error.code, 'operation-cancelled');
+      assert.equal(error.retrySafety, 'definite-safe');
+      return true;
+    });
+    await flushMicrotasks();
+    assert.equal(execution.calls.length, 1);
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    delayedEvidence.release();
+    delayedEvidence.restore();
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+test('x86 fallback accepts a compatible existing runtime after loading addon32', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  let preparationCalls = 0;
+  const preparation = stubExistingReShadePreparation(async () => {
+    preparationCalls += 1;
+    throw new Error('x86 existing-runtime reuse must not touch disk');
+  });
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const targetExecutablePath = 'C:\\game\\game.exe';
+  const runtimeModulePath = 'C:\\game\\ReShade32.dll';
+
+  try {
+    const request = launcher.launch({
+      processName: 'game.exe',
+      pid: 6063,
+      executablePath: targetExecutablePath,
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('wrong injector architecture'), { code: 706 }),
+      architectureMismatchFor(6063, targetExecutablePath, {}, false),
+      '',
+    );
+
+    await waitFor(() => execution.calls.length === 2);
+    assert.deepEqual(execution.calls[1].arguments, [
+      targetExecutablePath,
+      '--pid',
+      '6063',
+    ]);
+    execution.calls[1].callback(
+      null,
+      existingRuntimeSuccessFor(6063, runtimeModulePath, 'game.exe'),
+      '',
+    );
+
+    const result = await request;
+    assert.equal(result.runtimeMode, 'existing-runtime');
+    assert.equal(result.injectorTargetPid, 6063);
+    assert.equal(result.targetExecutablePath, targetExecutablePath);
+    assert.equal(result.hostRuntimePath, runtimeModulePath);
+    assert.equal(preparationCalls, 0);
+    assert.equal(execution.calls.length, 2);
+  } finally {
+    launcher.dispose();
+    preparation.restore();
+    execution.restore();
+  }
+});
+
+test('malformed or mismatched architecture diagnostics cannot start x86', async (t) => {
+  const scenarios = [
+    {
+      name: 'malformed schema',
+      target: { processName: 'game.exe', pid: 6071 },
+      stdout: architectureMismatchFor(6071, 'C:\\game\\game.exe', {
+        targetArchitecture: 'x86',
+      }),
+    },
+    {
+      name: 'wrong pid',
+      target: { processName: 'game.exe', pid: 6072 },
+      stdout: architectureMismatchFor(9999, 'C:\\game\\game.exe'),
+    },
+    {
+      name: 'wrong exact path',
+      target: {
+        processName: 'game.exe',
+        pid: 6073,
+        executablePath: 'C:\\game\\game.exe',
+      },
+      stdout: architectureMismatchFor(6073, 'C:\\other\\game.exe'),
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fixture = createRuntime();
+      const execution = stubExecFile();
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      const originalError = console.error;
+      console.error = () => undefined;
+      try {
+        const request = launcher.launch(scenario.target);
+        await waitFor(() => execution.calls.length === 1);
+        execution.calls[0].callback(
+          Object.assign(new Error('wrong injector architecture'), {
+            code: 706,
+          }),
+          scenario.stdout,
+          '',
+        );
+        await assert.rejects(request);
+        await flushMicrotasks();
+        assert.equal(execution.calls.length, 1);
+      } finally {
+        launcher.dispose();
+        console.error = originalError;
+        execution.restore();
+      }
+    });
+  }
+});
+
+test('a markerless x86 architecture mismatch is terminal and cannot loop', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const request = launcher.launch({ processName: 'game.exe', pid: 6081 });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(
+      Object.assign(new Error('wrong injector architecture'), { code: 706 }),
+      architectureMismatchFor(6081, 'C:\\game\\game.exe', {}, false),
+      '',
+    );
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(
+      Object.assign(new Error('x86 injector also rejected target'), {
+        code: 706,
+      }),
+      architectureMismatchFor(6081, 'C:\\game\\game.exe', {}, false),
+      '',
+    );
+
+    await assert.rejects(request, (error) => {
+      assert.equal(error.code, 'target-architecture-mismatch');
+      assert.equal(error.retrySafety, 'definite-safe');
+      return true;
+    });
+    await flushMicrotasks();
+    assert.equal(execution.calls.length, 2);
+  } finally {
+    launcher.dispose();
+    console.error = originalError;
     execution.restore();
   }
 });
@@ -967,24 +1485,15 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
     const runDirectory = call.options.cwd;
     assert.equal(path.dirname(runDirectory), fixture.runsRootDirectory);
     for (const artifact of artifacts) {
-      assert.equal(
-        readFileSync(path.join(runDirectory, artifact), 'utf8'),
-        `fixture:${artifact}`,
+      assert.deepEqual(
+        readFileSync(path.join(runDirectory, artifact)),
+        readFileSync(path.join(fixture.runtimeDirectory, artifact)),
       );
       const sourceStats = statSync(
         path.join(fixture.runtimeDirectory, artifact),
       );
       const stagedStats = statSync(path.join(runDirectory, artifact));
-      if (
-        artifact === 'ReShade.ini' ||
-        artifact === 'ReShade64.dll' ||
-        artifact === 'electron_game_overlay.addon64' ||
-        artifact === 'electron_game_overlay_reshade_manager.exe'
-      ) {
-        assert.notEqual(stagedStats.ino, sourceStats.ino);
-      } else {
-        assert.equal(stagedStats.ino, sourceStats.ino);
-      }
+      assert.notEqual(stagedStats.ino, sourceStats.ino);
     }
 
     call.callback(null, injectorSuccess, 'diagnostic stderr\n');
@@ -1442,7 +1951,7 @@ test('an arbitrary ReShade identity never schedules automatic owned add-on remov
     );
     await waitFor(() => execution.calls.length === 2);
     assert.deepEqual(execution.calls[1].arguments, [
-      'game.exe',
+      targetExecutablePath,
       '--pid',
       '4266',
       '--wait-for-official-addon',
@@ -1884,6 +2393,8 @@ test('an expired official add-on startup wait remains definite-safe and never fa
   const execution = stubExecFile();
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
   const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const requestedTargetExecutablePath =
+    '\\\\?\\D:\\Games\\Official\\.\\game.exe';
   const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
   const prepared = officialPreparedAddonResult({
     status: 'already-current',
@@ -1898,9 +2409,14 @@ test('an expired official add-on startup wait remains definite-safe and never fa
     const launch = launcher.launch({
       processName: 'game.exe',
       pid: 4255,
-      executablePath: targetExecutablePath,
+      executablePath: requestedTargetExecutablePath,
     });
     await waitFor(() => execution.calls.length === 1);
+    assert.deepEqual(execution.calls[0].arguments, [
+      targetExecutablePath,
+      '--pid',
+      '4255',
+    ]);
     execution.calls[0].callback(
       Object.assign(new Error('existing installation'), { code: 183 }),
       `Found a matching process with PID 4255!\n` +
@@ -1915,7 +2431,7 @@ test('an expired official add-on startup wait remains definite-safe and never fa
     );
     await waitFor(() => execution.calls.length === 2);
     assert.deepEqual(execution.calls[1].arguments, [
-      'game.exe',
+      targetExecutablePath,
       '--pid',
       '4255',
       '--wait-for-official-addon',
@@ -2054,7 +2570,7 @@ test('a current add-on may finish loading during the bounded startup grace', asy
 
     await waitFor(() => execution.calls.length === 2);
     assert.deepEqual(execution.calls[1].arguments, [
-      'game.exe',
+      targetExecutablePath,
       '--pid',
       '4257',
       '--wait-for-official-addon',
@@ -2145,7 +2661,7 @@ test('concurrent launchers coordinate one same-process official add-on startup g
 
     await waitFor(() => execution.calls.length === 3);
     assert.deepEqual(execution.calls[2].arguments, [
-      'game.exe',
+      targetExecutablePath,
       '--pid',
       '4258',
       '--wait-for-official-addon',
@@ -2243,7 +2759,7 @@ test('a loaded ReShade host that rejected the current add-on is capability-incom
     );
     await waitFor(() => execution.calls.length === 2);
     assert.deepEqual(execution.calls[1].arguments, [
-      'game.exe',
+      targetExecutablePath,
       '--pid',
       '4256',
       '--wait-for-official-addon',
@@ -4625,10 +5141,89 @@ function createRuntime() {
   const runsRootDirectory = path.join(root, 'runs');
   mkdirSync(runtimeDirectory, { recursive: true });
   mkdirSync(runsRootDirectory, { recursive: true });
-  for (const artifact of artifacts) {
+  for (const artifact of artifacts.filter(
+    (fileName) =>
+      fileName !== 'electron_game_overlay_runtime.build.json' &&
+      fileName !== 'electron_game_overlay_runtime32.build.json',
+  )) {
     writeFileSync(path.join(runtimeDirectory, artifact), `fixture:${artifact}`);
   }
+  writeRuntimePackageBuildStamp(runtimeDirectory, {
+    manifestFileName: 'electron_game_overlay_runtime.build.json',
+    platform: 'win32-x64',
+    managerFileName: 'electron_game_overlay_reshade_manager.exe',
+    addonFileName: 'electron_game_overlay.addon64',
+    injectorFileName: 'inject.exe',
+    runtimeFileName: 'ReShade64.dll',
+    buildStampFileName: 'ReShade64.build.json',
+  });
+  writeRuntimePackageBuildStamp(runtimeDirectory, {
+    manifestFileName: 'electron_game_overlay_runtime32.build.json',
+    platform: 'win32-ia32',
+    managerFileName: 'electron_game_overlay_reshade_manager32.exe',
+    addonFileName: 'electron_game_overlay.addon32',
+    injectorFileName: 'inject32.exe',
+    runtimeFileName: 'ReShade32.dll',
+    buildStampFileName: 'ReShade32.build.json',
+  });
   return { root, runtimeDirectory, runsRootDirectory };
+}
+
+function writeRuntimePackageBuildStamp(runtimeDirectory, spec) {
+  const hash = (fileName) =>
+    createHash('sha256')
+      .update(readFileSync(path.join(runtimeDirectory, fileName)))
+      .digest('hex')
+      .toUpperCase();
+  writeFileSync(
+    path.join(runtimeDirectory, spec.manifestFileName),
+    JSON.stringify({
+      schemaVersion: 2,
+      kind: 'electron-game-overlay-runtime-build',
+      platform: spec.platform,
+      configuration: 'RelWithDebInfo',
+      addonBuildId: 'F2A88AD705204DBB8E18D86E7147A13C',
+      managerProtocolSchemaVersion: 1,
+      managerSourceSha256: 'A'.repeat(64),
+      managerSha256: hash(spec.managerFileName),
+      addonSha256: hash(spec.addonFileName),
+      injectorSha256: hash(spec.injectorFileName),
+      reshadeRuntimeSha256: hash(spec.runtimeFileName),
+      reshadeConfigSha256: hash('ReShade.ini'),
+      reshadeBuildStampSha256: hash(spec.buildStampFileName),
+    }),
+  );
+}
+
+function rewriteRuntimePackageBuildStamp(
+  runtimeDirectory,
+  manifestFileName,
+  rewrite,
+) {
+  const manifestPath = path.join(runtimeDirectory, manifestFileName);
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  rewrite(manifest);
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+}
+
+function prependDuplicateRuntimePackageBuildStampKey(
+  runtimeDirectory,
+  manifestFileName,
+  key,
+  rawKey = key,
+) {
+  const manifestPath = path.join(runtimeDirectory, manifestFileName);
+  const text = readFileSync(manifestPath, 'utf8');
+  const manifest = JSON.parse(text);
+  const marker = `"${key}":`;
+  const markerIndex = text.indexOf(marker);
+  assert.notEqual(markerIndex, -1);
+  writeFileSync(
+    manifestPath,
+    `${text.slice(0, markerIndex)}"${rawKey}":${JSON.stringify(
+      manifest[key],
+    )},${text.slice(markerIndex)}`,
+  );
 }
 
 function createConfig(fixture, overrides = {}) {
@@ -4887,6 +5482,32 @@ function delayRuntimeStaging(runsRootDirectory) {
       fsPromises.mkdir = originalMkdir;
       fsPromises.copyFile = originalCopyFile;
       fsPromises.link = originalLink;
+    },
+  };
+}
+
+function delayInjectorEvidenceWrite() {
+  const originalWriteFile = fsPromises.writeFile;
+  const entered = deferred();
+  const release = deferred();
+  let intercepted = false;
+  fsPromises.writeFile = async (destinationPath, ...args) => {
+    if (
+      !intercepted &&
+      path.basename(destinationPath) === 'inject.stdout.log'
+    ) {
+      intercepted = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalWriteFile(destinationPath, ...args);
+  };
+
+  return {
+    entered: entered.promise,
+    release: release.resolve,
+    restore() {
+      fsPromises.writeFile = originalWriteFile;
     },
   };
 }

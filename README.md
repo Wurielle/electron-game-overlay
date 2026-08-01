@@ -2,9 +2,10 @@
 
 This repository renders Electron offscreen windows inside Windows games through
 a maintained ReShade + Dear ImGui host. The active stack supports controlled
-D3D9, D3D10, D3D11, and D3D12 targets on Windows x64, ordered multi-window
-composition, focus and capture, caption dragging, and an interception mode that
-routes input to Electron while ReShade blocks the corresponding game input.
+D3D9, D3D10, D3D11, and D3D12 targets on Windows x64 plus controlled D3D9 and
+D3D10 targets on Windows x86, ordered multi-window composition, focus and
+capture, caption dragging, and an interception mode that routes input to
+Electron while ReShade blocks the corresponding game input.
 
 ## Production packages
 
@@ -17,10 +18,10 @@ routes input to Electron while ReShade blocks the corresponding game input.
   frame-processing, ordered scene, and input-routing engine. It exposes a
   versioned C ABI to the injected runtime.
 - [`libs/electron-game-overlay-runtime`](libs/electron-game-overlay-runtime/README.md)
-  is the Windows x64 injected host. It builds the pinned patched ReShade
-  runtime, injector, native target-local ReShade add-on manager,
-  `electron_game_overlay.addon64`, controlled D3D9/D3D10/D3D11/D3D12 hosts, and
-  human-facing acceptance launchers.
+  is the Windows injected host. It builds pinned patched x64 and x86 ReShade
+  runtimes, injectors, native target-local ReShade add-on managers,
+  `.addon64`/`.addon32` payloads, controlled hosts, and human-facing acceptance
+  launchers.
 - [`apps/client`](apps/client/README.md) is an SDK demo and acceptance client. It
   is not a second overlay implementation.
 
@@ -37,18 +38,25 @@ npm install
 npm run build
 ```
 
-On Windows x64, the SDK build compiles the production transport and injected
-runtime, then stages the immutable runtime assets under:
+On Windows x64, the SDK build compiles x64 and x86 production transport and
+injected-runtime payloads, then composes the immutable runtime assets under:
 
 ```text
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade
 ```
 
-The staged add-on is `electron_game_overlay.addon64`, and
-`electron_game_overlay_reshade_manager.exe` is the native transaction helper
-used for a verified existing official installation. Native builds require Rust,
-CMake, Git, and Visual Studio 2022 with the Desktop development with C++
-workload.
+The composite contains architecture-specific injectors, runtimes, add-ons,
+managers, build stamps, and strict schema-2 package manifests. The SDK validates
+both manifests against every mapped payload before making a private per-run
+copy, then validates that isolated copy again before injection. The x64 native
+transaction helper is used for a verified existing official installation;
+official x86 coexistence remains fail-closed. Native builds require Rust, CMake,
+Git, and Visual Studio 2022 with the Desktop development with C++ workload.
+Install Rust through rustup with both supported MSVC targets:
+
+```powershell
+rustup target add --toolchain stable x86_64-pc-windows-msvc i686-pc-windows-msvc
+```
 
 A clean target uses the repository's bundled, patched ReShade 6.7.3 host. When
 preflight detects any target-local x64 ReShade identity, that installation
@@ -235,12 +243,14 @@ project-runtime route. The official-ReShade Gun Frog launcher passed on July 31,
 effect. It is a narrow real-game coexistence proof, not compatibility with
 arbitrary proxy chains or public hosts.
 
-The controlled x64 D3D9 and D3D10 production-client gates each passed two fresh
-client/target cycles on August 1, 2026. They require the exact ReShade API hook,
-matching target-surface telemetry, a two-window Electron scene, intercepted and
-released input, and a post-scene resize with successful resource recreation.
-This is graphics-backend acceptance, not x86 acceptance: the installed Portal
-`hl2.exe` is PE32/x86 and still needs the separate Win32 runtime package.
+The controlled x64 and x86 D3D9/D3D10 production-client gates each passed two
+fresh client/target cycles on August 1, 2026. They require the exact ReShade API
+hook, matching target-surface telemetry, a two-window Electron scene,
+intercepted and released input, and a post-scene resize with successful resource
+recreation. The Win32 runs additionally prove the SDK's validated x64-to-x86
+injector handoff and packaged PE32 runtime/add-on/transport stack. The installed
+Portal `hl2.exe` remains unclaimed until the same lifecycle and input boundary
+passes in that real game.
 
 ## Input acceptance boundary
 

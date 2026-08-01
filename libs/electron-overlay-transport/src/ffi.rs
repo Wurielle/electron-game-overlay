@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn abi_layouts_are_stable_on_x64() {
+    fn abi_layouts_are_stable_on_supported_windows_architectures() {
         assert_eq!(std::mem::size_of::<EgoWindowFrameV1>(), 96);
         assert_eq!(std::mem::size_of::<EgoInputStateV1>(), 64);
         assert_eq!(std::mem::size_of::<EgoTargetSurfaceV1>(), 128);

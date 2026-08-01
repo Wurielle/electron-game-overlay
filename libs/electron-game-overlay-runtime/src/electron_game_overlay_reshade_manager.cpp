@@ -7,10 +7,8 @@
 // The helper accepts only that directory, a staged source, and exact hashes. It
 // owns exactly these names inside the directory:
 //
-//   electron_game_overlay.addon64
-//   .electron-game-overlay-addon.json
-//   .electron-game-overlay-addon.transaction.json
-//   .electron-game-overlay-addon.<32 hex nonce>.(addon|marker).(tmp|bak)
+//   electron_game_overlay.addon64 / electron_game_overlay.addon32
+//   architecture-specific marker, journal, and transaction temporary names
 //
 // It never mutates a ReShade DLL or INI path. Every command opens the exact
 // caller-supplied ReShade module read-only, verifies its hash and single-link
@@ -124,10 +122,19 @@
 
 namespace
 {
+#ifdef _WIN64
 constexpr wchar_t addon_leaf[] = L"electron_game_overlay.addon64";
 constexpr wchar_t marker_leaf[] = L".electron-game-overlay-addon.json";
 constexpr wchar_t journal_leaf[] =
     L".electron-game-overlay-addon.transaction.json";
+constexpr wchar_t transaction_prefix[] = L".electron-game-overlay-addon.";
+#else
+constexpr wchar_t addon_leaf[] = L"electron_game_overlay.addon32";
+constexpr wchar_t marker_leaf[] = L".electron-game-overlay-addon32.json";
+constexpr wchar_t journal_leaf[] =
+    L".electron-game-overlay-addon32.transaction.json";
+constexpr wchar_t transaction_prefix[] = L".electron-game-overlay-addon32.";
+#endif
 
 constexpr char result_kind[] =
     "electron-game-overlay-reshade-addon-manager-result";
@@ -1812,7 +1819,7 @@ std::wstring transaction_leaf(
     std::wstring_view role,
     std::wstring_view suffix)
 {
-    return L".electron-game-overlay-addon." + std::wstring(nonce) + L"." +
+    return std::wstring(transaction_prefix) + std::wstring(nonce) + L"." +
            std::wstring(role) + L"." + std::wstring(suffix);
 }
 

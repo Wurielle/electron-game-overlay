@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param()
+param(
+    [ValidateSet("x64", "x86")]
+    [string]$Architecture = "x64"
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -43,14 +46,37 @@ if (-not [Environment]::Is64BitOperatingSystem -or
 }
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
-$RuntimeDistribution = Join-Path $RepoRoot "libs\electron-game-overlay-runtime\dist\win32-x64"
+$ArchitectureConfig = if ($Architecture -eq "x86") {
+    [pscustomobject]@{
+        PackagePlatform = "win32-ia32"
+        RuntimeName = "ReShade32.dll"
+        BuildStampName = "ReShade32.build.json"
+        AddonName = "electron_game_overlay.addon32"
+        RuntimePlatform = "32-bit"
+    }
+}
+else {
+    [pscustomobject]@{
+        PackagePlatform = "win32-x64"
+        RuntimeName = "ReShade64.dll"
+        BuildStampName = "ReShade64.build.json"
+        AddonName = "electron_game_overlay.addon64"
+        RuntimePlatform = "64-bit"
+    }
+}
+$RuntimeDistribution = Join-Path `
+    $RepoRoot `
+    ("libs\electron-game-overlay-runtime\dist\" +
+        $ArchitectureConfig.PackagePlatform)
 $LibraryDistRoot = Join-Path $RepoRoot "libs\electron-game-overlay\dist"
 $LibraryEntry = Join-Path $LibraryDistRoot "index.js"
 $SdkRuntimeRoot = Join-Path $LibraryDistRoot "runtime"
-$PlatformRuntimeDirectory = Join-Path $SdkRuntimeRoot "win32-x64"
+$PlatformRuntimeDirectory = Join-Path `
+    $SdkRuntimeRoot `
+    "win32-x64"
 $DestinationDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "9CA4D5BAB1754B8B9FBDF3721DF8B458"
+$ExpectedAddonBuildId = "F2A88AD705204DBB8E18D86E7147A13C"
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
 $ExpectedPatchProvenance = [ordered]@{
     observerPatchSha256 =
@@ -93,8 +119,35 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-shared-runtime-hardening.patch"
     suppressSplashPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-suppress-splash.patch"
+    x86RuntimePatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-x86-runtime.patch"
+    x86TargetArchitectureDiagnosticPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-x86-target-architecture-diagnostic.patch"
+    injectorExactTargetPathPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-exact-target-path.patch"
 }
 $ExpectedArtifactNames = @(
+    $ArchitectureConfig.AddonName
+    "electron_game_overlay_reshade_manager.exe"
+    "electron_game_overlay_runtime.build.json"
+    "inject.exe"
+    "ReShade.ini"
+    $ArchitectureConfig.BuildStampName
+    $ArchitectureConfig.RuntimeName
+) | Sort-Object
+$DestinationArtifactNames = @{}
+foreach ($ArtifactName in $ExpectedArtifactNames) {
+    $DestinationArtifactNames[$ArtifactName] = $ArtifactName
+}
+if ($Architecture -eq "x86") {
+    $DestinationArtifactNames["inject.exe"] = "inject32.exe"
+    $DestinationArtifactNames["electron_game_overlay_reshade_manager.exe"] =
+        "electron_game_overlay_reshade_manager32.exe"
+    $DestinationArtifactNames["electron_game_overlay_runtime.build.json"] =
+        "electron_game_overlay_runtime32.build.json"
+    $DestinationArtifactNames["ReShade.ini"] = $null
+}
+$ExpectedX64DestinationNames = @(
     "electron_game_overlay.addon64"
     "electron_game_overlay_reshade_manager.exe"
     "electron_game_overlay_runtime.build.json"
@@ -102,7 +155,21 @@ $ExpectedArtifactNames = @(
     "ReShade.ini"
     "ReShade64.build.json"
     "ReShade64.dll"
-) | Sort-Object
+)
+$ExpectedX86DestinationNames = @(
+    "electron_game_overlay.addon32"
+    "electron_game_overlay_reshade_manager32.exe"
+    "electron_game_overlay_runtime32.build.json"
+    "inject32.exe"
+    "ReShade32.build.json"
+    "ReShade32.dll"
+)
+$ExpectedDestinationNames = if ($Architecture -eq "x86") {
+    @($ExpectedX64DestinationNames + $ExpectedX86DestinationNames | Sort-Object)
+}
+else {
+    @($ExpectedX64DestinationNames | Sort-Object)
+}
 
 if (-not (Test-Path -LiteralPath $LibraryEntry -PathType Leaf)) {
     throw "Build the electron-game-overlay TypeScript library before staging its runtime: $LibraryEntry"
@@ -138,17 +205,19 @@ foreach ($ArtifactName in $ExpectedArtifactNames) {
     ).Hash
 }
 
-$BuildStampPath = Join-Path $RuntimeDistribution "ReShade64.build.json"
+$BuildStampPath = Join-Path `
+    $RuntimeDistribution `
+    $ArchitectureConfig.BuildStampName
 try {
     $BuildStamp = Get-Content -Raw -LiteralPath $BuildStampPath | ConvertFrom-Json
 }
 catch {
     throw "The native runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 23 -or
+if ($BuildStamp.schemaVersion -ne 26 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
-    $BuildStamp.platform -ne "64-bit" -or
+    $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
     $BuildStamp.addonLevel -ne 2) {
     throw "The native runtime build stamp has unexpected provenance: $BuildStampPath"
 }
@@ -160,7 +229,7 @@ foreach ($PatchEntry in $ExpectedPatchProvenance.GetEnumerator()) {
 }
 Assert-Sha256Equal `
     -Expected ([string]$BuildStamp.runtimeSha256) `
-    -Actual $SourceHashes["ReShade64.dll"] `
+    -Actual $SourceHashes[$ArchitectureConfig.RuntimeName] `
     -Label "runtime distribution"
 Assert-Sha256Equal `
     -Expected ([string]$BuildStamp.injectorSha256) `
@@ -205,7 +274,7 @@ if (@(
     ).Count -ne 0 -or
     $PackageBuildStamp.schemaVersion -ne 2 -or
     $PackageBuildStamp.kind -ne "electron-game-overlay-runtime-build" -or
-    $PackageBuildStamp.platform -ne "win32-x64" -or
+    $PackageBuildStamp.platform -ne $ArchitectureConfig.PackagePlatform -or
     $PackageBuildStamp.configuration -ne "RelWithDebInfo" -or
     $PackageBuildStamp.addonBuildId -cne $ExpectedAddonBuildId -or
     ([string]$PackageBuildStamp.addonBuildId) -cnotmatch
@@ -230,7 +299,7 @@ Assert-Sha256Equal `
     -Label "ReShade add-on manager distribution"
 Assert-Sha256Equal `
     -Expected ([string]$PackageBuildStamp.addonSha256) `
-    -Actual $SourceHashes["electron_game_overlay.addon64"] `
+    -Actual $SourceHashes[$ArchitectureConfig.AddonName] `
     -Label "Electron Game Overlay add-on distribution"
 Assert-Sha256Equal `
     -Expected ([string]$PackageBuildStamp.injectorSha256) `
@@ -238,7 +307,7 @@ Assert-Sha256Equal `
     -Label "runtime package injector"
 Assert-Sha256Equal `
     -Expected ([string]$PackageBuildStamp.reshadeRuntimeSha256) `
-    -Actual $SourceHashes["ReShade64.dll"] `
+    -Actual $SourceHashes[$ArchitectureConfig.RuntimeName] `
     -Label "runtime package ReShade DLL"
 Assert-Sha256Equal `
     -Expected ([string]$PackageBuildStamp.reshadeConfigSha256) `
@@ -246,7 +315,7 @@ Assert-Sha256Equal `
     -Label "runtime package ReShade configuration"
 Assert-Sha256Equal `
     -Expected ([string]$PackageBuildStamp.reshadeBuildStampSha256) `
-    -Actual $SourceHashes["ReShade64.build.json"] `
+    -Actual $SourceHashes[$ArchitectureConfig.BuildStampName] `
     -Label "runtime package ReShade build stamp"
 
 $ResolvedSdkRuntimeRoot = [IO.Path]::GetFullPath($SdkRuntimeRoot)
@@ -271,14 +340,39 @@ if (-not $ResolvedDestinationDirectory.StartsWith(
     throw "Refusing to stage outside the SDK platform runtime: $ResolvedDestinationDirectory"
 }
 
-if (Test-Path -LiteralPath $ResolvedPlatformRuntimeDirectory) {
+if ($Architecture -eq "x64" -and
+    (Test-Path -LiteralPath $ResolvedPlatformRuntimeDirectory)) {
     Remove-Item -LiteralPath $ResolvedPlatformRuntimeDirectory -Recurse -Force
 }
 New-Item -ItemType Directory -Path $ResolvedDestinationDirectory -Force | Out-Null
 Assert-NotReparsePoint $ResolvedDestinationDirectory
 
+if ($Architecture -eq "x86") {
+    $CurrentDestinationNames = @(
+        Get-ChildItem -LiteralPath $ResolvedDestinationDirectory -File |
+            Select-Object -ExpandProperty Name |
+            Sort-Object
+    )
+    if (@(
+            Compare-Object `
+                (@($ExpectedX64DestinationNames | Sort-Object)) `
+                $CurrentDestinationNames
+        ).Count -ne 0) {
+        throw "Stage the x64 SDK runtime before composing the x86 payload."
+    }
+    $SharedConfigPath = Join-Path $ResolvedDestinationDirectory "ReShade.ini"
+    Assert-Sha256Equal `
+        -Expected ([string]$PackageBuildStamp.reshadeConfigSha256) `
+        -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $SharedConfigPath).Hash `
+        -Label "composed x86 runtime package ReShade configuration"
+}
+
 foreach ($ArtifactName in $ExpectedArtifactNames) {
-    $Destination = Join-Path $ResolvedDestinationDirectory $ArtifactName
+    $DestinationName = $DestinationArtifactNames[$ArtifactName]
+    if (-not $DestinationName) {
+        continue
+    }
+    $Destination = Join-Path $ResolvedDestinationDirectory $DestinationName
     Copy-Item `
         -LiteralPath (Join-Path $RuntimeDistribution $ArtifactName) `
         -Destination $Destination `
@@ -295,7 +389,7 @@ $ActualDestinationNames = @(
         Select-Object -ExpandProperty Name |
         Sort-Object
 )
-if (@(Compare-Object $ExpectedArtifactNames $ActualDestinationNames).Count -ne 0) {
+if (@(Compare-Object $ExpectedDestinationNames $ActualDestinationNames).Count -ne 0) {
     throw "The staged SDK runtime does not contain exactly the expected artifacts: $($ActualDestinationNames -join ', ')"
 }
 

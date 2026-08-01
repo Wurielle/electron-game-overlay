@@ -20,7 +20,8 @@
         "commands": [
           "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/clean-dist.ps1",
           "tsc --build tsconfig.lib.json",
-          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-game-overlay-runtime.ps1"
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-game-overlay-runtime.ps1 -Architecture x64",
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-game-overlay-runtime.ps1 -Architecture x86"
         ],
         "parallel": false
       }

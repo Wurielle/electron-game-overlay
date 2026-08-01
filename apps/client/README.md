@@ -9,19 +9,25 @@ npm run build
 ```
 
 On Windows x64 this first builds the `electron-game-overlay` SDK and stages its
-pinned patched ReShade runtime, injector, add-on, native target-local ReShade
-manager, configuration, and build stamps, then builds
+pinned patched x64/x86 ReShade runtimes, injectors, add-ons, native target-local
+ReShade managers, configuration, and build stamps, then builds
 this demo client. The relevant output is:
 
 ```text
 apps/client/dist/main/main.js
 apps/client/dist/process-watcher/index.cjs
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject.exe
+libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject32.exe
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.dll
+libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade32.dll
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.build.json
+libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade32.build.json
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay.addon64
+libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay.addon32
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_reshade_manager.exe
+libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_reshade_manager32.exe
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json
+libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json
 libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade.ini
 ```
 
@@ -37,6 +43,12 @@ attempted there instead. The public-host route has no version/hash allowlist:
 the add-on must register through public API 18 and obtain its exact Dear ImGui
 function table. The existing installation is always preserved, and clean
 targets continue to use the project-patched injected host.
+
+Install Rust through rustup with both transport targets before building:
+
+```powershell
+rustup target add --toolchain stable x86_64-pc-windows-msvc i686-pc-windows-msvc
+```
 
 The normal client uses the SDK's ReShade launcher. ReShade selects the graphics
 API inside the target, so there is no graphics-backend client option:
@@ -125,11 +137,10 @@ wait in order for prepared slots; detected targets never trigger reactive
 runtime staging in this default pool mode. Each successful consumption starts
 replacement preparation immediately. A failed preparation emits
 `STEAM_GAME_RUNTIME_PREPARE_FAILED` and retries with bounded backoff while
-queued targets remain recorded. Non-mutating artifacts are hard-linked into the
-directory when the filesystem permits, with portable copying as fallback.
-`ReShade64.dll`, `electron_game_overlay.addon64`, and `ReShade.ini` remain
-private copies because the injector adjusts payload ACLs and ReShade may update
-its configuration. Disposing unused prepared launchers removes their
+queued targets remain recorded. Every artifact is a private per-run copy. The
+SDK validates the x64 and x86 schema-2 package manifests against the packaged
+payload before staging, then repeats validation against the isolated snapshot
+before starting an injector. Disposing unused prepared launchers removes their
 directories. The SDK marks every isolated run as owned, but marks it reclaimable
 only after a definite-safe failure or an OS-confirmed target disconnect.
 Best-effort asynchronous sweeps after staging and retirement remove reclaimable

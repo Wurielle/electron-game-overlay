@@ -11,22 +11,27 @@ Run `nx build electron-game-overlay` to build the library.
 ## ReShade runtime and attachment
 
 `nx build electron-game-overlay` builds its native Nx dependencies, compiles the
-TypeScript SDK, and stages the
-patched Windows x64 ReShade runtime, injector, native target-local ReShade
-add-on manager, build stamps, Electron add-on, and configuration under
+TypeScript SDK, and stages patched Windows x64 and x86 ReShade runtimes,
+injectors, native target-local ReShade add-on managers, build stamps, Electron
+add-ons, and configuration under
 `dist/runtime/win32-x64/reshade`. Consumers call
 `parseReShadeLaunchConfig()`, create `ReShadeOverlayLauncher`, then arm an
 executable process name or path fragment with `launcher.attach(session,
-target)`. Each request stages a writable isolated run directory. Immutable
-artifacts are hard-linked when the source and run root share a filesystem, with
-copying as a portable fallback; `ReShade64.dll`,
-`electron_game_overlay.addon64`, and mutable `ReShade.ini` always receive
-private file records. The SDK
+target)`. Each request stages a writable isolated run directory with private
+copies of every runtime artifact. The co-located
+`electron_game_overlay_runtime.build.json` and
+`electron_game_overlay_runtime32.build.json` schema-2 manifests bind the x64
+and x86 managers, add-ons, injectors, runtimes, configuration, and ReShade build
+stamps. The SDK validates both source manifests at configuration time and the
+isolated copies again before starting an injector. The SDK
 waits for transport discovery, executes the injector without a shell, and
 requires one strict structured injector result, then resolves only after an add-on with that
 PID and the expected executable basename authenticates back to the session.
 ReShade selects the target graphics API; callers do not select a Direct3D backend.
-The staged add-on is `electron_game_overlay.addon64`.
+The staged add-ons are `electron_game_overlay.addon64` and
+`electron_game_overlay.addon32`. The x64 injector runs first and hands an exact
+PID/path to `inject32.exe` only after a strict pre-mutation architecture
+diagnostic.
 Pass `--reshade-overlay` exactly once to the Electron main process to opt in to
 the bundled runtime configuration.
 

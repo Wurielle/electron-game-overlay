@@ -219,6 +219,7 @@ type SharedInputRouter = Arc<Mutex<InputRouter>>;
 type SharedOutboundQueue = Arc<Mutex<OutboundQueue>>;
 type SharedInputOrder = Arc<Mutex<()>>;
 type SharedStackGeneration = Arc<AtomicU64>;
+type SharedPendingRaise = Arc<Mutex<Option<(u32, u64)>>>;
 type SharedTargetSurfaces = Arc<Mutex<RetainedTargetSurfaces>>;
 type SharedDrainRequests = Arc<Mutex<VecDeque<Arc<DrainRequest>>>>;
 
@@ -555,6 +556,7 @@ pub struct ElectronFrameBridge {
     transport_connected: Arc<AtomicBool>,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
+    pending_raise: SharedPendingRaise,
     drag: SharedDragState,
     window: usize,
     thread: Option<JoinHandle<()>>,
@@ -586,6 +588,8 @@ impl ElectronFrameBridge {
         let worker_input_order = Arc::clone(&input_order);
         let stack_generation = Arc::new(AtomicU64::new(0));
         let worker_stack_generation = Arc::clone(&stack_generation);
+        let pending_raise = SharedPendingRaise::default();
+        let worker_pending_raise = Arc::clone(&pending_raise);
         let drag = SharedDragState::default();
         let worker_drag = drag.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -604,6 +608,7 @@ impl ElectronFrameBridge {
                     worker_transport_connected,
                     worker_input_order,
                     worker_stack_generation,
+                    worker_pending_raise,
                     worker_drag,
                     ready_tx,
                     worker_startup,
@@ -639,6 +644,7 @@ impl ElectronFrameBridge {
             transport_connected,
             input_order,
             stack_generation,
+            pending_raise,
             drag,
             window,
             thread: Some(thread),
@@ -945,12 +951,16 @@ impl ElectronFrameBridge {
 
         if let Some((window_id, generation)) = raised_window {
             let bridge_window = HWND(self.window as *mut c_void);
+            self.pending_raise
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .replace((window_id, generation));
             if let Err(error) = unsafe {
                 PostMessageW(
                     Some(bridge_window),
                     WM_BRIDGE_RAISE_WINDOW,
-                    WPARAM(window_id as usize),
-                    LPARAM(generation as isize),
+                    WPARAM(0),
+                    LPARAM(0),
                 )
             } {
                 warn!(
@@ -1063,6 +1073,7 @@ fn run_bridge_thread(
     transport_connected: Arc<AtomicBool>,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
+    pending_raise: SharedPendingRaise,
     drag: SharedDragState,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
     startup: RuntimeStartupPublisher,
@@ -1109,17 +1120,18 @@ fn run_bridge_thread(
         transport_connected,
         input_order,
         stack_generation,
+        pending_raise,
         drag,
         startup,
     ));
     let state_ptr = Box::into_raw(state);
 
     unsafe {
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as usize as _);
         SetWindowLongPtrW(
             hwnd,
             GWLP_WNDPROC,
-            bridge_window_proc as *const () as usize as isize,
+            bridge_window_proc as *const () as usize as _,
         );
 
         SetTimer(Some(hwnd), CONNECT_TIMER_ID, CONNECT_RETRY_MILLIS, None);
@@ -1221,7 +1233,14 @@ unsafe extern "system" fn bridge_window_proc(
         }
         WM_BRIDGE_RAISE_WINDOW => {
             if let Some(state) = state_ptr.as_mut() {
-                state.raise_scene_window(wparam.0 as u32, lparam.0 as u64);
+                let pending_raise = state
+                    .pending_raise
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
+                if let Some((window_id, generation)) = pending_raise {
+                    state.raise_scene_window(window_id, generation);
+                }
             }
             return LRESULT(0);
         }
@@ -1303,6 +1322,7 @@ struct BridgeThreadState {
     transport_connected: Arc<AtomicBool>,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
+    pending_raise: SharedPendingRaise,
     drag: SharedDragState,
     startup: RuntimeStartupPublisher,
     outbound_diagnostics: Arc<OutboundDiagnostics>,
@@ -1326,6 +1346,7 @@ impl BridgeThreadState {
         transport_connected: Arc<AtomicBool>,
         input_order: SharedInputOrder,
         stack_generation: SharedStackGeneration,
+        pending_raise: SharedPendingRaise,
         drag: SharedDragState,
         startup: RuntimeStartupPublisher,
     ) -> Self {
@@ -1356,6 +1377,7 @@ impl BridgeThreadState {
             transport_connected,
             input_order,
             stack_generation,
+            pending_raise,
             drag,
             startup,
             outbound_diagnostics: Arc::new(OutboundDiagnostics::default()),
@@ -3763,6 +3785,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::new(Mutex::new(())),
             Arc::new(AtomicU64::new(0)),
+            SharedPendingRaise::default(),
             SharedDragState::default(),
             RuntimeStartupPublisher::default(),
         )
@@ -3788,6 +3811,7 @@ mod tests {
             transport_connected: Arc::new(AtomicBool::new(true)),
             input_order,
             stack_generation: Arc::new(AtomicU64::new(0)),
+            pending_raise: SharedPendingRaise::default(),
             drag: SharedDragState::default(),
             window: 0,
             thread: None,

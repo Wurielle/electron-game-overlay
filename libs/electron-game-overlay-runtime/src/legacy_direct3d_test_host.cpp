@@ -40,7 +40,6 @@ constexpr wchar_t kWindowClassName[] =
     L"ElectronGameOverlayD3D9TestHost";
 constexpr wchar_t kWindowTitle[] =
     L"Controlled D3D9 overlay test host";
-constexpr wchar_t kInjectedRuntimeName[] = L"ReShade64.dll";
 #else
 constexpr wchar_t kBackendName[] = L"D3D10";
 constexpr char kBackendMarker[] = "d3d10";
@@ -48,7 +47,12 @@ constexpr wchar_t kWindowClassName[] =
     L"ElectronGameOverlayD3D10TestHost";
 constexpr wchar_t kWindowTitle[] =
     L"Controlled D3D10 overlay test host";
+#endif
+
+#ifdef _WIN64
 constexpr wchar_t kInjectedRuntimeName[] = L"ReShade64.dll";
+#else
+constexpr wchar_t kInjectedRuntimeName[] = L"ReShade32.dll";
 #endif
 
 constexpr wchar_t kInjectedRuntimeWaitMarker[] =

@@ -15,15 +15,19 @@ npx nx build electron-game-overlay
 ```
 
 The build compiles the TypeScript SDK and its native dependencies, then stages
-the Windows x64 runtime under
+a composite x64/x86 runtime under
 `libs/electron-game-overlay/dist/runtime/win32-x64/reshade`. The staged set
-includes `inject.exe`, `ReShade64.dll`, `ReShade64.build.json`,
-`electron_game_overlay.addon64`,
-`electron_game_overlay_reshade_manager.exe`,
-`electron_game_overlay_runtime.build.json`, and `ReShade.ini`.
+includes `inject.exe`/`inject32.exe`, `ReShade64.dll`/`ReShade32.dll`, both
+ReShade build stamps, `.addon64`/`.addon32`, architecture-specific managers,
+`electron_game_overlay_runtime.build.json`,
+`electron_game_overlay_runtime32.build.json`, and the shared `ReShade.ini`.
+Both schema-2 package manifests are verified against their mapped payloads
+before staging and against the isolated per-run copies before injection.
 
-The native toolchain requires Rust, CMake, Git, and Visual Studio 2022 with the
-Desktop development with C++ workload. For clean targets, the runtime and add-on
+The native toolchain requires Rust via rustup with both
+`x86_64-pc-windows-msvc` and `i686-pc-windows-msvc` targets, CMake, Git, and
+Visual Studio 2022 with the Desktop development with C++ workload. For clean
+targets, the runtime and add-on
 are a pinned, patched ReShade 6.7.3 pair; do not replace the staged
 `ReShade64.dll` with a stock build. The separate existing-installation path can
 host the same add-on on any detected target-local x64 ReShade identity that can

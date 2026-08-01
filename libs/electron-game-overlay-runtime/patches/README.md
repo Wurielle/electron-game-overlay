@@ -297,11 +297,37 @@ later explicit full effect reloads. The runtime remains identified as a
 modified ReShade build in DLL metadata, exports, logs, and its About page; this
 patch does not claim official upstream signing.
 
+## `reshade-x86-runtime.patch`
+
+Makes the production injector implementation architecture-aware instead of
+assuming AMD64 PE headers, registry views, runtime/add-on names, and process
+environment layout. The Win32 build targets `ReShade32.dll` and
+`electron_game_overlay.addon32`, and bounds its position-independent remote
+loader with an ordered code-section end marker because x86 images do not carry
+the x64 unwind metadata used to measure that thunk.
+
+## `reshade-x86-target-architecture-diagnostic.patch`
+
+Emits the existing strict pre-mutation injector diagnostic with
+`target-architecture-mismatch`, the selected PID/path, and Windows error 706
+when a valid target belongs to the other architecture. The SDK accepts only
+that exact evidence before handing the same PID/path from `inject.exe` to
+`inject32.exe`; malformed, contradictory, or repeated mismatch results remain
+terminal.
+
+## `reshade-injector-exact-target-path.patch`
+
+Allows an exact-PID request to include the trusted absolute executable path and
+compares it with `QueryFullProcessImageNameW` before architecture handoff,
+native claim acquisition, or target mutation. Basename-only exact-PID requests
+remain supported, but SDK process-watcher lanes use the full path so PID reuse
+cannot silently select a different executable at another location.
+
 CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all twenty
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all twenty-three
 production-patch hashes, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache. Raw-input normalization reuses the existing
 normalized Win32 input path; it changes no published transport C ABI, transport

@@ -5,6 +5,16 @@ producer and an injected overlay runtime. It receives window frames and scene
 metadata, routes overlay input, and exposes the resulting state through both a
 Rust API and a stable C ABI for native rendering backends.
 
+## Build prerequisites
+
+Install Rust through rustup with both supported Windows MSVC targets. The local
+`rust-toolchain.toml` pins the stable minimal toolchain and requests the same
+target set for Cargo commands run from this package.
+
+```powershell
+rustup target add --toolchain stable x86_64-pc-windows-msvc i686-pc-windows-msvc
+```
+
 The C ABI exposes a monotonic producer-session epoch. Zero is initially
 dormant; every authenticated connection and disconnect advances it once, so odd
 epochs are active and even epochs are dormant. Native renderers must invalidate

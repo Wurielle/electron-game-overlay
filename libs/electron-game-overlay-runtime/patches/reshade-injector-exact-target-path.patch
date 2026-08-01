@@ -1,0 +1,21 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -3924,5 +3924,17 @@ int wmain(int argc, wchar_t *argv[])
+ 	if (use_exact_pid)
+ 	{
++		const bool exact_path_requested =
++			wcschr(argv[1], L'\\') != nullptr ||
++			wcschr(argv[1], L'/') != nullptr;
++		if (exact_path_requested &&
++			_wcsicmp(selected_image_path.c_str(), argv[1]) != 0)
++		{
++			wprintf(
++				L"\nTarget process executable path mismatch: PID %lu is '%s', expected '%s'.\n",
++				pid, selected_image_path.c_str(), argv[1]);
++			print_injection_not_started();
++			return ERROR_INVALID_NAME;
++		}
+ 		const wchar_t *actual_name =
+ 			wcsrchr(selected_image_path.c_str(), L'\\');
+ 		actual_name = actual_name != nullptr

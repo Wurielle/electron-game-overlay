@@ -3,10 +3,13 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "9CA4D5BAB1754B8B9FBDF3721DF8B458"
+    "F2A88AD705204DBB8E18D86E7147A13C"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "8218A8263F78145173F344FD4FDA7B019189ACBF7923C15EF38E75C0AEE54CB2"
+    "BCE49FAA997F42B6EF8E1DC6D6BEA224F3C74E647FD902373CDFE788705BC43D"
+)
+set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
+    "A7272D6E47308B3F3439E47027F118ED4F2428C7F761FDA89D9128B8752ABFA0"
 )
 
 option(
@@ -23,8 +26,14 @@ if(NOT MSVC)
     message(FATAL_ERROR "The Electron game overlay runtime is verified with MSVC only.")
 endif()
 
-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "The Electron game overlay runtime is x64-only.")
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(ELECTRON_GAME_OVERLAY_ADDON_SUFFIX ".addon64")
+    set(ELECTRON_TRANSPORT_RUST_TARGET "x86_64-pc-windows-msvc")
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(ELECTRON_GAME_OVERLAY_ADDON_SUFFIX ".addon32")
+    set(ELECTRON_TRANSPORT_RUST_TARGET "i686-pc-windows-msvc")
+else()
+    message(FATAL_ERROR "The Electron game overlay runtime requires x86 or x64.")
 endif()
 
 include(FetchContent)
@@ -89,6 +98,15 @@ set(RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH
 set(RESHAPE_SUPPRESS_SPLASH_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-suppress-splash.patch"
 )
+set(RESHAPE_X86_RUNTIME_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-x86-runtime.patch"
+)
+set(RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-x86-target-architecture-diagnostic.patch"
+)
+set(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-exact-target-path.patch"
+)
 set(RESHAPE_EXPECTED_PATCHED_FILES
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -130,6 +148,9 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
     "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
+    "${RESHAPE_X86_RUNTIME_PATCH}"
+    "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
+    "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -288,7 +309,90 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply twenty narrow pinned seams: the passive copied-input observer, raw-input
+# Peel the exact-target path proof first, then the architecture diagnostic and
+# architecture patch, from an existing fetched tree before migrating or
+# validating the historical stack below. They are reapplied in the opposite
+# order after those patches, so repeated configure runs and earlier trees remain
+# idempotent.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PRESENT_AT_ENTRY
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PRESENT_AT_ENTRY EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PEEL
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PEEL_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PEEL_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PEEL EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to peel the terminal exact-target path patch.\n"
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PEEL_OUTPUT}"
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PEEL_ERROR}"
+        )
+    endif()
+endif()
+
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PRESENT_AT_ENTRY
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PRESENT_AT_ENTRY EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PEEL
+        OUTPUT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PEEL_OUTPUT
+        ERROR_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PEEL_ERROR
+    )
+    if(NOT RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PEEL EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to peel the terminal target-architecture diagnostic patch.\n"
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PEEL_OUTPUT}"
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PEEL_ERROR}"
+        )
+    endif()
+endif()
+
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_X86_RUNTIME_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_PRESENT_AT_ENTRY
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(RESHAPE_X86_RUNTIME_PATCH_PRESENT_AT_ENTRY EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            "${RESHAPE_X86_RUNTIME_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_PEEL
+        OUTPUT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_PEEL_OUTPUT
+        ERROR_VARIABLE RESHAPE_X86_RUNTIME_PATCH_PEEL_ERROR
+    )
+    if(NOT RESHAPE_X86_RUNTIME_PATCH_PEEL EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to peel the terminal x86 runtime patch.\n"
+            "${RESHAPE_X86_RUNTIME_PATCH_PEEL_OUTPUT}"
+            "${RESHAPE_X86_RUNTIME_PATCH_PEEL_ERROR}"
+        )
+    endif()
+endif()
+
+# Apply twenty-three narrow pinned seams: the passive copied-input observer, raw-input
 # target normalization and pre-injection registration reconciliation, an injector
 # base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
@@ -369,7 +473,7 @@ if(NOT RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED EQUAL 0)
                     RESHAPE_MIGRATED_INJECTOR_CONTENT_SHA256)
 
                 if(RESHAPE_MIGRATED_INJECTOR_CONTENT_SHA256 STREQUAL
-                    RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
+                    RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256)
                     string(RANDOM LENGTH 16
                         ALPHABET "0123456789abcdef"
                         RESHAPE_INJECTOR_MIGRATION_SUFFIX)
@@ -1537,6 +1641,142 @@ if(NOT RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY EQUAL 0)
 endif()
 endif()
 
+# Apply the final architecture seam after the historical injector patch stack.
+# Keeping it terminal lets existing fetched trees migrate without rewriting the
+# already-audited x64 patches, while making both Win32 and x64 builds consume
+# the same target-width-aware injector source.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_X86_RUNTIME_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_X86_RUNTIME_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_X86_RUNTIME_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_X86_RUNTIME_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_X86_RUNTIME_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned x86 runtime patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_X86_RUNTIME_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_X86_RUNTIME_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_X86_RUNTIME_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_X86_RUNTIME_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_X86_RUNTIME_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to apply target-width-aware ReShade injector support.\n"
+            "${RESHAPE_X86_RUNTIME_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_X86_RUNTIME_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# Keep the architecture mismatch record separate from the target-width seam so
+# fetched trees built before this diagnostic can migrate without deleting their
+# pinned ReShade checkout. This is terminal over the x86 runtime patch.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned target-architecture diagnostic patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to add target-architecture mismatch diagnostics.\n"
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# Require an exact executable path whenever an exact-PID caller supplies one.
+# This closes the architecture hand-off identity window before the x86 injector
+# can claim or mutate a replacement process.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned exact-target path patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to require exact target paths for exact-PID injection.\n"
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and
 # native-host and production presets, before CMake generates build targets.
@@ -1566,7 +1806,7 @@ target_include_directories(native_input_gate_addon PRIVATE
 set_target_properties(native_input_gate_addon PROPERTIES
     OUTPUT_NAME "native_input_gate_addon"
     PREFIX ""
-    SUFFIX ".addon64"
+    SUFFIX "${ELECTRON_GAME_OVERLAY_ADDON_SUFFIX}"
 )
 
 add_executable(d3d9_overlay_test_host WIN32
@@ -1737,7 +1977,7 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
         "${CMAKE_CURRENT_SOURCE_DIR}/../../build/electron-overlay-transport/cargo"
     )
     set(ELECTRON_TRANSPORT_CARGO_LIBRARY
-        "${ELECTRON_TRANSPORT_CARGO_TARGET_DIR}/x86_64-pc-windows-msvc/release/electron_overlay_transport.lib"
+        "${ELECTRON_TRANSPORT_CARGO_TARGET_DIR}/${ELECTRON_TRANSPORT_RUST_TARGET}/release/electron_overlay_transport.lib"
     )
     set(ELECTRON_TRANSPORT_STAGING_DIR
         "${CMAKE_CURRENT_BINARY_DIR}/electron-overlay-transport"
@@ -1758,7 +1998,7 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
             --manifest-path "${ELECTRON_TRANSPORT_SOURCE_DIR}/Cargo.toml"
             --locked
             --release
-            --target x86_64-pc-windows-msvc
+            --target "${ELECTRON_TRANSPORT_RUST_TARGET}"
             --target-dir "${ELECTRON_TRANSPORT_CARGO_TARGET_DIR}"
         COMMAND "${CMAKE_COMMAND}" -E copy
             "${ELECTRON_TRANSPORT_CARGO_LIBRARY}"
@@ -1832,7 +2072,7 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
     set_target_properties(electron_game_overlay PROPERTIES
         OUTPUT_NAME "electron_game_overlay"
         PREFIX ""
-        SUFFIX ".addon64"
+        SUFFIX "${ELECTRON_GAME_OVERLAY_ADDON_SUFFIX}"
         MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
     )
 

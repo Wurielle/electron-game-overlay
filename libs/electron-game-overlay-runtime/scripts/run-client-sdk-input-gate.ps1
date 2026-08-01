@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("d3d9", "d3d10", "d3d11", "d3d12")]
     [string]$Backend,
+    [ValidateSet("x64", "x86")]
+    [string]$Architecture = "x64",
     [switch]$SkipBuild,
     [Parameter(DontShow = $true)]
     [switch]$FunctionsOnly,
@@ -28,11 +30,25 @@ if ($RawRegistrationTiming -eq "before-injection" -and $InputMode -eq "legacy") 
 if ($RawRegistrationTarget -ne "explicit-hwnd" -and $InputMode -eq "legacy") {
     throw "Raw registration target selection applies only to wm-input and raw-buffer modes."
 }
+if ($Architecture -eq "x86" -and $Backend -notin @("d3d9", "d3d10")) {
+    throw "The controlled x86 client/SDK gate currently supports d3d9 and d3d10 only."
+}
+if ($Architecture -eq "x86" -and $InputMode -ne "legacy") {
+    throw "The controlled x86 client/SDK gate currently supports legacy input mode only."
+}
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
 $BuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime"
-$ProductionBuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime-production"
+$ArchitectureSuffix = if ($Architecture -eq "x86") { "-x86" } else { "" }
+$ProductionBuildRoot = Join-Path $RepoRoot (
+    "build\electron-game-overlay-runtime-production$ArchitectureSuffix")
+$CMakePreset = if ($Architecture -eq "x86") {
+    "vs2022-x86-production"
+}
+else {
+    "vs2022-x64-production"
+}
 $OutputDirectory = Join-Path $ProductionBuildRoot "RelWithDebInfo"
 $BackendLabel = $Backend.ToUpperInvariant()
 $HostName = "${Backend}_overlay_test_host.exe"
@@ -76,7 +92,7 @@ else {
     ""
 }
 $RunDirectory = Join-Path $BuildRoot (
-    "client-sdk-$Backend-$InputMode$RegistrationTimingSuffix" +
+    "client-sdk-$Backend$ArchitectureSuffix-$InputMode$RegistrationTimingSuffix" +
     "$RegistrationTargetSuffix-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
 )
 $RegistrationTargetMarker = if ($RawRegistrationTarget -eq "null-focus") {
@@ -85,8 +101,10 @@ $RegistrationTargetMarker = if ($RawRegistrationTarget -eq "null-focus") {
 else {
     ""
 }
+$ArchitectureMarker = if ($Architecture -eq "x86") { "_X86" } else { "" }
+$ExpectedInjectorStartCount = if ($Architecture -eq "x86") { 2 } else { 1 }
 $ResultMarker = if ($InputMode -eq "legacy") {
-    "${BackendLabel}_REAL_CLIENT_SDK_GATE_PASS"
+    "${BackendLabel}${ArchitectureMarker}_REAL_CLIENT_SDK_GATE_PASS"
 }
 elseif ($RawRegistrationTiming -eq "before-injection") {
     "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_" +
@@ -112,8 +130,12 @@ function Get-MatchingClientProcesses {
 
 function Get-MatchingInjectors {
     @(
-        Get-CimInstance Win32_Process -Filter "Name='inject.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -like "*$HostName*" }
+        foreach ($InjectorName in @("inject.exe", "inject32.exe")) {
+            Get-CimInstance Win32_Process `
+                -Filter "Name='$InjectorName'" `
+                -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like "*$HostName*" }
+        }
     )
 }
 
@@ -1077,6 +1099,26 @@ function Invoke-ClientSdkAttempt {
             Set-Content `
                 -LiteralPath (Join-Path $AttemptDirectory "reshade-run-directory.txt") `
                 -Encoding UTF8
+        if ($Architecture -eq "x86") {
+            $InjectorEvidence = Get-Content -Raw -LiteralPath (
+                Join-Path $ReShadeRunDirectory "inject.stdout.log")
+            Assert-MarkerCount `
+                -Text $InjectorEvidence `
+                -Marker "=== x64 injector stdout ===" `
+                -Expected 1
+            Assert-MarkerCount `
+                -Text $InjectorEvidence `
+                -Marker '"code":"target-architecture-mismatch"' `
+                -Expected 1
+            Assert-MarkerCount `
+                -Text $InjectorEvidence `
+                -Marker "=== x86 injector stdout ===" `
+                -Expected 1
+            Assert-MarkerCount `
+                -Text $InjectorEvidence `
+                -Marker "ELECTRON_GAME_OVERLAY_INJECTOR_RESULT " `
+                -Expected 1
+        }
 
         Wait-ForReShadeMarker `
             -Path $ReShadeLog `
@@ -1322,10 +1364,22 @@ function Invoke-ClientSdkAttempt {
         if ($ActionEndIndex -lt $EnabledIndex) {
             throw "The final scripted status-field key release was not observed."
         }
+        $ActionStartMarker =
+            "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC mousedown " +
+            "target=hudhook-status-input-target"
+        $ActionStartIndex = $ClientLog.IndexOf(
+            $ActionStartMarker,
+            $EnabledIndex,
+            [StringComparison]::Ordinal
+        )
+        if ($ActionStartIndex -lt $EnabledIndex -or
+            $ActionStartIndex -ge $ActionEndIndex) {
+            throw "The first scripted status-field mouse press was not observed."
+        }
         $ActionEndExclusive = $ActionEndIndex + $ActionEndMarker.Length
         $InterceptedLog = $ClientLog.Substring(
-            $EnabledIndex,
-            $ActionEndExclusive - $EnabledIndex
+            $ActionStartIndex,
+            $ActionEndExclusive - $ActionStartIndex
         )
         Assert-MarkerCount `
             -Text $ClientLog `
@@ -1334,7 +1388,7 @@ function Invoke-ClientSdkAttempt {
         Assert-MarkerCount `
             -Text $ClientLog `
             -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
-            -Expected 1
+            -Expected $ExpectedInjectorStartCount
         Assert-MarkerCount `
             -Text $ClientLog `
             -Marker "RESHADE_CLIENT_TARGET_CONNECTED" `
@@ -1485,12 +1539,12 @@ function Invoke-ClientSdkAttempt {
             throw "The SDK run wrote an unexpected target-directory log: $TargetDirectoryLog"
         }
 
-        "${BackendLabel}_REAL_CLIENT_SDK_ATTEMPT_${Attempt}_PASS" |
+        "${BackendLabel}${ArchitectureMarker}_REAL_CLIENT_SDK_ATTEMPT_${Attempt}_PASS" |
             Set-Content `
                 -LiteralPath (Join-Path $AttemptDirectory "result.txt") `
                 -Encoding UTF8
         $AttemptPassed = $true
-        Write-Host "${BackendLabel}_REAL_CLIENT_SDK_ATTEMPT_${Attempt}_PASS"
+        Write-Host "${BackendLabel}${ArchitectureMarker}_REAL_CLIENT_SDK_ATTEMPT_${Attempt}_PASS"
         return [pscustomobject]@{
             Attempt = $Attempt
             UserData = $UserData
@@ -1572,7 +1626,7 @@ if (-not $SkipBuild) {
 
     Push-Location $RuntimeRoot
     try {
-        & cmake.exe --preset vs2022-x64-production
+        & cmake.exe --preset $CMakePreset
         if ($LASTEXITCODE -ne 0) {
             throw "CMake configure failed with exit code $LASTEXITCODE."
         }
@@ -1595,7 +1649,7 @@ if (-not (Test-Path -LiteralPath $BuiltHost -PathType Leaf)) {
 
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 Write-Host ""
-Write-Host "Production client/SDK $BackendLabel input gate"
+Write-Host "Production client/SDK $BackendLabel $Architecture input gate"
 if ($RawRegistrationTiming -eq "before-injection") {
     Write-Host "  - The host publishes its raw registration before the client and injector start."
 }

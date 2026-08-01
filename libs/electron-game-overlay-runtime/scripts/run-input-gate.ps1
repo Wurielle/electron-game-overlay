@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("d3d9", "d3d10", "d3d11", "d3d12")]
     [string]$Backend,
+    [ValidateSet("x64", "x86")]
+    [string]$Architecture = "x64",
     [switch]$NoLaunch
 )
 
@@ -10,17 +12,53 @@ $ErrorActionPreference = "Stop"
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
-$BuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime"
+$SharedBuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime"
+$BuildRoot = if ($Architecture -eq "x86") {
+    Join-Path $RepoRoot "build\electron-game-overlay-runtime-x86"
+}
+else {
+    $SharedBuildRoot
+}
 $OutputDirectory = Join-Path $BuildRoot "RelWithDebInfo"
-$Runtime = Join-Path $BuildRoot "_deps\reshade-src\bin\x64\Release\ReShade64.dll"
-$Addon = Join-Path $OutputDirectory "native_input_gate_addon.addon64"
+$Runtime = if ($Architecture -eq "x86") {
+    Join-Path $SharedBuildRoot "_deps\reshade-src\bin\Win32\Release\ReShade32.dll"
+}
+else {
+    Join-Path $SharedBuildRoot "_deps\reshade-src\bin\x64\Release\ReShade64.dll"
+}
+$AddonName = if ($Architecture -eq "x86") {
+    "native_input_gate_addon.addon32"
+}
+else {
+    "native_input_gate_addon.addon64"
+}
+$Addon = Join-Path $OutputDirectory $AddonName
 $Config = Join-Path $RuntimeRoot "config\ReShade.ini"
+if ($Architecture -eq "x86" -and $Backend -notin @("d3d9", "d3d10")) {
+    throw "The controlled x86 gate currently covers D3D9 and D3D10."
+}
 $BackendConfig = switch ($Backend) {
     "d3d9" {
-        [pscustomobject]@{ Preset = "relwithdebinfo-dx9"; ProxyName = "d3d9.dll" }
+        [pscustomobject]@{
+            Preset = if ($Architecture -eq "x86") {
+                "relwithdebinfo-x86-dx9"
+            }
+            else {
+                "relwithdebinfo-dx9"
+            }
+            ProxyName = "d3d9.dll"
+        }
     }
     "d3d10" {
-        [pscustomobject]@{ Preset = "relwithdebinfo-dx10"; ProxyName = "d3d10.dll" }
+        [pscustomobject]@{
+            Preset = if ($Architecture -eq "x86") {
+                "relwithdebinfo-x86-dx10"
+            }
+            else {
+                "relwithdebinfo-dx10"
+            }
+            ProxyName = "d3d10.dll"
+        }
     }
     "d3d11" {
         [pscustomobject]@{ Preset = "relwithdebinfo"; ProxyName = "d3d11.dll" }
@@ -33,11 +71,18 @@ $Preset = $BackendConfig.Preset
 $ProxyName = $BackendConfig.ProxyName
 $HostName = "${Backend}_overlay_test_host.exe"
 $BuiltHost = Join-Path $OutputDirectory $HostName
-$RunDirectory = Join-Path $BuildRoot "input-gate-$Backend"
+$RunDirectoryName = if ($Architecture -eq "x86") {
+    "input-gate-$Backend-x86"
+}
+else {
+    "input-gate-$Backend"
+}
+$RunDirectory = Join-Path $BuildRoot $RunDirectoryName
 
 Push-Location $RuntimeRoot
 try {
-    & cmake.exe --preset vs2022-x64
+    & cmake.exe --preset $(
+        if ($Architecture -eq "x86") { "vs2022-x86" } else { "vs2022-x64" })
     if ($LASTEXITCODE -ne 0) {
         throw "CMake configure failed with exit code $LASTEXITCODE."
     }
@@ -50,7 +95,8 @@ finally {
     Pop-Location
 }
 
-& (Join-Path $PSScriptRoot "build-reshade-runtime.ps1")
+& (Join-Path $PSScriptRoot "build-reshade-runtime.ps1") `
+    -Architecture $Architecture
 
 foreach ($RequiredFile in @($Runtime, $Addon, $Config, $BuiltHost)) {
     if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
@@ -82,7 +128,7 @@ New-Item -ItemType File -Path (Join-Path $RunDirectory "reshade-input-gate.enabl
 
 $RunHost = Join-Path $RunDirectory $HostName
 Write-Host ""
-Write-Host "ReShade-owned $Backend input gate"
+Write-Host "ReShade-owned $Architecture $Backend input gate"
 Write-Host "  1. Move/click with pass-through active; the title counters should change."
 Write-Host "  2. Press Ctrl+I; the panel must show RESHADE-OWNED."
 Write-Host "  3. Click, type, drag, and wheel in the probes; title counters must stop."
