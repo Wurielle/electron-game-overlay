@@ -7,6 +7,9 @@
 #include <type_traits>
 
 static_assert(EGO_ABI_VERSION == 1);
+static_assert(EGO_STATUS_TIMED_OUT == -8);
+static_assert(EGO_STATUS_NOT_CONNECTED == -9);
+static_assert(EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS == 1000);
 static_assert(std::is_standard_layout_v<ego_window_frame_v1>);
 static_assert(sizeof(ego_window_frame_v1) == 96);
 static_assert(offsetof(ego_window_frame_v1, state_revision) == 32);
@@ -40,6 +43,13 @@ bool expect_status(const char *operation, ego_status actual, ego_status expected
 bool is_boolean(uint32_t value)
 {
     return value <= 1;
+}
+
+bool is_terminal_drain_status(ego_status status)
+{
+    return status == EGO_STATUS_OK ||
+        status == EGO_STATUS_NOT_CONNECTED ||
+        status == EGO_STATUS_TIMED_OUT;
 }
 } // namespace
 
@@ -82,6 +92,35 @@ int main()
         std::fputs("ego_transport_create did not return a usable transport\n", stderr);
         if (transport != nullptr)
             ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+
+    if (!expect_status(
+            "ego_transport_drain with a null transport",
+            ego_transport_drain(nullptr, 1),
+            EGO_STATUS_INVALID_ARGUMENT) ||
+        !expect_status(
+            "ego_transport_drain with a zero timeout",
+            ego_transport_drain(transport, 0),
+            EGO_STATUS_INVALID_ARGUMENT) ||
+        !expect_status(
+            "ego_transport_drain above its timeout bound",
+            ego_transport_drain(
+                transport,
+                EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS + 1),
+            EGO_STATUS_INVALID_ARGUMENT))
+    {
+        ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+    const ego_status drain_status = ego_transport_drain(transport, 25);
+    if (!is_terminal_drain_status(drain_status))
+    {
+        std::fprintf(
+            stderr,
+            "ego_transport_drain returned unexpected terminal status %d\n",
+            static_cast<int>(drain_status));
+        ego_transport_destroy(transport);
         return EXIT_FAILURE;
     }
 

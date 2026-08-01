@@ -38,10 +38,10 @@ production-client evidence. Package publishing is intentionally excluded.
 Unchecked items below are post-POC compatibility or hardening work. They do not
 extend the current completion boundary by implication; broad real-game
 add-on/effect and proxy-chain coexistence beyond the controlled public-host
-fixtures, late post-swap-chain adoption, clean in-process unload, additional
-graphics/input APIs, multi-swap-chain policy, and physical mixed-monitor
-acceptance remain explicitly unsupported or deferred until chosen as a separate
-task.
+fixtures, late post-swap-chain adoption, arbitrary live-game ReShade unload,
+additional graphics/input APIs, multi-swap-chain policy, and physical
+mixed-monitor acceptance remain explicitly unsupported or deferred until
+chosen as a separate task.
 
 ### Completed promotion milestones
 
@@ -210,7 +210,17 @@ task.
     `build/electron-game-overlay-runtime/client-sdk-d3d12-session-deactivation-20260731-000709`.
     A target that has stopped presenting cannot complete this render-thread
     transition until its next ReShade callback.
-- [ ] Add clean in-process runtime/add-on unload behavior.
+- [x] Define the supported in-process runtime/add-on teardown boundary.
+  - Closing an SDK session deactivates the producer and retires its scene on the
+    render thread; normal final graphics-object or process teardown remains
+    ReShade-owned.
+  - Arbitrarily unloading a live ReShade runtime or add-on is unsupported by
+    design. Stock and public ReShade hosts do not provide a safe targeted
+    dynamic-unload contract while graphics wrappers, registered callbacks,
+    add-on private data, and resources can still reference the mapped modules.
+  - A future patched-host, add-on-only unload path is research work, not a POC
+    requirement, and must wait for explicit per-swap-chain resource/input
+    ownership.
 - [ ] Investigate the non-fatal ReShade reference-count warnings emitted during accepted shutdowns: `ID3D11Device3` in Gun Frog and D3D12 command-queue/device objects in PEAK. Keep this under resource retirement/unload hardening.
 - [ ] Carry process creation identity end to end through exact-PID requests and WMI lifecycle correlation.
   - The native Steam-path watcher's ignore-baseline now retains handles for exact process objects, so sequential launch/relaunch cannot skip a new process solely because Windows reused a baseline PID. Exact-PID selection and fallback-WMI create/delete correlation still use PID plus executable basename and need an equivalent creation nonce before stale lifecycle events are considered fully hardened.
@@ -247,7 +257,22 @@ task.
 - [ ] Add per-swap-chain production routing, cross-queue-safe texture
       retirement, explicit resource/input ownership, and a primary-surface
       policy for process-level FPS.
-- [ ] Make final target-surface removal a bounded graceful transport drain. OS-confirmed disconnect already clears retained SDK state, but destroying the final swap chain can close the socket before its explicit removal revision reaches Electron.
+- [x] Make final target-surface removal a bounded graceful transport drain.
+  - The last transport reference now detaches the bridge, waits at most 250 ms
+    for all previously queued packets (including the surface-removal revision)
+    to be written to the current socket, and then destroys the bridge. The wait
+    is outside the transport registry lock but serialized against a replacement
+    same-process bridge; timeout or disconnect is diagnostic-only and teardown
+    still proceeds.
+  - The D3D11 and D3D12 controlled gates destroy the final graphics surface and
+    require the public SDK surface to become null within two seconds while the
+    target process, target HWND, Electron producer, and attachment remain live.
+    August 1, 2026 evidence is under
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-target-surface-drain-20260801-080719`
+    (89.992 ms to SDK null) and
+    `build/electron-game-overlay-runtime/client-sdk-d3d12-target-surface-drain-20260801-080808`
+    (846.302 ms to SDK null). Both also assert that native teardown emitted no
+    final-drain failure warning.
 - [ ] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including buffered-record target ownership and raw-only text policy.
 - [ ] Extend the accepted `WM_POINTER` translation beyond primary mouse move/left click to secondary/X buttons, double-click semantics, pointer wheel, and explicit touch/pen policy, with duplicate-projection tests.
 - [ ] Harden observer ordering/recovery and per-swap-chain resource/input ownership for concurrent input pumps or multiple swap chains.

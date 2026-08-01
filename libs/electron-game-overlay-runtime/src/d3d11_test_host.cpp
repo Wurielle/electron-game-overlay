@@ -19,6 +19,10 @@ constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D11TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D11 overlay test host";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
+constexpr wchar_t kDestroyFinalSurfaceRequestMarker[] =
+    L"electron-game-overlay-destroy-final-surface.request";
+constexpr wchar_t kFinalSurfaceDestroyedAckMarker[] =
+    L"electron-game-overlay-final-surface-destroyed.ack";
 
 struct graphics_state
 {
@@ -31,6 +35,69 @@ struct graphics_state
 
 graphics_state g_graphics;
 input_oracle g_input_oracle;
+
+bool module_sibling_path(const wchar_t *name, std::wstring &path)
+{
+    path.assign(32'768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr,
+        path.data(),
+        static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= static_cast<DWORD>(path.size()))
+        return false;
+
+    path.resize(length);
+    const std::size_t separator = path.find_last_of(L"\\/");
+    if (separator == std::wstring::npos)
+        return false;
+    path.resize(separator + 1);
+    path += name;
+    return true;
+}
+
+bool marker_present(const wchar_t *name)
+{
+    std::wstring path;
+    if (!module_sibling_path(name, path))
+        return false;
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool publish_final_surface_destroyed_ack()
+{
+    std::wstring path;
+    if (!module_sibling_path(kFinalSurfaceDestroyedAckMarker, path))
+        return false;
+
+    const HANDLE file = CreateFileW(
+        path.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr,
+        CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+
+    constexpr char acknowledgement[] = "graphics-destroyed\n";
+    constexpr DWORD acknowledgement_size =
+        static_cast<DWORD>(sizeof(acknowledgement) - 1);
+    DWORD written = 0;
+    const bool succeeded =
+        WriteFile(
+            file,
+            acknowledgement,
+            acknowledgement_size,
+            &written,
+            nullptr) != FALSE &&
+        written == acknowledgement_size &&
+        FlushFileBuffers(file) != FALSE;
+    CloseHandle(file);
+    return succeeded;
+}
 
 bool enable_per_monitor_v2_awareness()
 {
@@ -67,17 +134,9 @@ bool enable_per_monitor_v2_awareness()
 
 bool wait_for_test_startup_barrier()
 {
-    wchar_t module_path[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH)
+    std::wstring marker;
+    if (!module_sibling_path(kStartupBarrierMarker, marker))
         return false;
-
-    std::wstring marker(module_path, length);
-    const std::size_t separator = marker.find_last_of(L"\\/");
-    if (separator == std::wstring::npos)
-        return false;
-    marker.resize(separator + 1);
-    marker += kStartupBarrierMarker;
     if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
         return true;
 
@@ -155,6 +214,19 @@ bool create_graphics_device()
     }
 
     return SUCCEEDED(result) && create_render_target();
+}
+
+void destroy_graphics_device()
+{
+    if (g_graphics.context != nullptr)
+    {
+        g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
+        g_graphics.context->Flush();
+    }
+    g_graphics.render_target.Reset();
+    g_graphics.swap_chain.Reset();
+    g_graphics.context.Reset();
+    g_graphics.device.Reset();
 }
 
 void resize_swap_chain(UINT width, UINT height)
@@ -292,9 +364,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 
     const auto start_time = std::chrono::steady_clock::now();
     MSG message = {};
+    bool final_surface_destroyed_for_test = false;
 
     while (message.message != WM_QUIT)
     {
+        if (!final_surface_destroyed_for_test &&
+            marker_present(kDestroyFinalSurfaceRequestMarker))
+        {
+            destroy_graphics_device();
+            final_surface_destroyed_for_test = true;
+            if (!publish_final_surface_destroyed_ack())
+            {
+                report_graphics_failure(
+                    L"Unable to publish the controlled final-surface destruction acknowledgement.");
+            }
+            continue;
+        }
+
         if (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
         {
             TranslateMessage(&message);
@@ -304,6 +390,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 
         if (g_graphics.render_target == nullptr)
         {
+            g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
             Sleep(10);
             continue;
         }
@@ -325,11 +412,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
     }
 
-    g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
-    g_graphics.render_target.Reset();
-    g_graphics.swap_chain.Reset();
-    g_graphics.context.Reset();
-    g_graphics.device.Reset();
+    destroy_graphics_device();
     g_input_oracle.shutdown();
 
     UnregisterClassW(kWindowClassName, instance);

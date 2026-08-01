@@ -22,6 +22,10 @@ constexpr wchar_t kWindowTitle[] = L"Controlled D3D12 overlay test host";
 constexpr wchar_t kInjectedRuntimeWaitMarker[] = L"reshade-injection-wait.enabled";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
+constexpr wchar_t kDestroyFinalSurfaceRequestMarker[] =
+    L"electron-game-overlay-destroy-final-surface.request";
+constexpr wchar_t kFinalSurfaceDestroyedAckMarker[] =
+    L"electron-game-overlay-final-surface-destroyed.ack";
 constexpr UINT kFrameCount = 2;
 constexpr DXGI_FORMAT kSwapChainFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -51,6 +55,69 @@ struct graphics_state
 
 graphics_state g_graphics;
 input_oracle g_input_oracle;
+
+bool module_sibling_path(const wchar_t *name, std::wstring &path)
+{
+    path.assign(32'768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr,
+        path.data(),
+        static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= static_cast<DWORD>(path.size()))
+        return false;
+
+    path.resize(length);
+    const std::size_t separator = path.find_last_of(L"\\/");
+    if (separator == std::wstring::npos)
+        return false;
+    path.resize(separator + 1);
+    path += name;
+    return true;
+}
+
+bool marker_present(const wchar_t *name)
+{
+    std::wstring path;
+    if (!module_sibling_path(name, path))
+        return false;
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool publish_final_surface_destroyed_ack()
+{
+    std::wstring path;
+    if (!module_sibling_path(kFinalSurfaceDestroyedAckMarker, path))
+        return false;
+
+    const HANDLE file = CreateFileW(
+        path.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr,
+        CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+
+    constexpr char acknowledgement[] = "graphics-destroyed\n";
+    constexpr DWORD acknowledgement_size =
+        static_cast<DWORD>(sizeof(acknowledgement) - 1);
+    DWORD written = 0;
+    const bool succeeded =
+        WriteFile(
+            file,
+            acknowledgement,
+            acknowledgement_size,
+            &written,
+            nullptr) != FALSE &&
+        written == acknowledgement_size &&
+        FlushFileBuffers(file) != FALSE;
+    CloseHandle(file);
+    return succeeded;
+}
 
 bool enable_per_monitor_v2_awareness()
 {
@@ -87,17 +154,9 @@ bool enable_per_monitor_v2_awareness()
 
 bool wait_for_test_startup_barrier()
 {
-    wchar_t module_path[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH)
+    std::wstring marker;
+    if (!module_sibling_path(kStartupBarrierMarker, marker))
         return false;
-
-    std::wstring marker(module_path, length);
-    const std::size_t separator = marker.find_last_of(L"\\/");
-    if (separator == std::wstring::npos)
-        return false;
-    marker.resize(separator + 1);
-    marker += kStartupBarrierMarker;
     if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
         return true;
 
@@ -119,17 +178,9 @@ bool wait_for_test_startup_barrier()
 
 bool wait_for_prearmed_injected_runtime()
 {
-    wchar_t module_path[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH)
+    std::wstring marker;
+    if (!module_sibling_path(kInjectedRuntimeWaitMarker, marker))
         return false;
-
-    std::wstring marker(module_path, length);
-    const std::size_t separator = marker.find_last_of(L"\\/");
-    if (separator == std::wstring::npos)
-        return false;
-    marker.resize(separator + 1);
-    marker += kInjectedRuntimeWaitMarker;
     if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
         return true;
 
@@ -631,13 +682,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     const auto start_time = std::chrono::steady_clock::now();
     MSG message = {};
     bool render_failed = false;
+    bool final_surface_destroyed_for_test = false;
 
     while (message.message != WM_QUIT)
     {
+        if (!final_surface_destroyed_for_test &&
+            marker_present(kDestroyFinalSurfaceRequestMarker))
+        {
+            destroy_graphics_device();
+            final_surface_destroyed_for_test = true;
+            if (!publish_final_surface_destroyed_ack())
+            {
+                report_graphics_failure(
+                    L"Unable to publish the controlled final-surface destruction acknowledgement.");
+                render_failed = true;
+            }
+            continue;
+        }
+
         if (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
         {
             TranslateMessage(&message);
             DispatchMessageW(&message);
+            continue;
+        }
+
+        if (g_graphics.swap_chain == nullptr)
+        {
+            g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
+            Sleep(10);
             continue;
         }
 

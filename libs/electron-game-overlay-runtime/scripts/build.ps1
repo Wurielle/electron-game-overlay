@@ -70,7 +70,7 @@ $PackageBuildStampPath = Join-Path $ProductionBuildRoot "electron_game_overlay_r
 $BuildReShadeScript = Join-Path $PSScriptRoot "build-reshade-runtime.ps1"
 $DistributionDirectory = Join-Path $RuntimeRoot "dist\win32-x64"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "35F42D2906734EBC86A250968E1EB0EE"
+$ExpectedAddonBuildId = "B1522329C5204D29A79F771CA37BA023"
 if ($ExpectedAddonBuildId -cnotmatch '^[0-9A-F]{32}$') {
     throw "The configured Electron Game Overlay add-on build ID is invalid."
 }

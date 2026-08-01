@@ -360,10 +360,13 @@ normalized into Electron events. Touch/pen, secondary/X pointer buttons,
 double-click semantics, pointer wheel, concurrent input pumps, multiple swap
 chains, and raw-only input/text therefore remain explicit runtime hardening.
 Target FPS is currently process-scoped and sampled per observed swap chain, so
-multi-swap-chain support also needs an explicit primary-surface policy. Final
-swap-chain destruction can race the asynchronous explicit surface-removal
-packet; OS-confirmed process disconnect still clears retained SDK target state,
-while bounded graceful transport draining remains a lifecycle hardening item.
+multi-swap-chain support also needs an explicit primary-surface policy. On final
+swap-chain destruction, the last transport reference now waits up to 250 ms for
+the explicit surface-removal revision and all earlier packets to be written to
+the current socket before destroying the bridge. D3D11 and D3D12 controlled
+gates prove that the public SDK clears its target surface while the target
+process, HWND, Electron producer, and attachment remain alive. A drain timeout
+or disconnect is reported without making graphics teardown unbounded.
 
 #### Overlay runtime issues to fix
 

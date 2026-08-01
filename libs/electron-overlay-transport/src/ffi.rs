@@ -10,15 +10,16 @@ use std::ffi::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
 use crate::{
     ElectronFrameBridge, ElectronScene, RuntimeDiagnostic, RuntimeDiagnosticCode, TargetSurface,
-    GRAPHICS_API_D3D10, GRAPHICS_API_D3D11, GRAPHICS_API_D3D12, GRAPHICS_API_D3D9,
-    GRAPHICS_API_OPENGL, GRAPHICS_API_UNKNOWN, GRAPHICS_API_VULKAN, TARGET_SURFACE_FOCUSED,
-    TARGET_SURFACE_FULLSCREEN, TARGET_SURFACE_MINIMIZED, TARGET_SURFACE_STATE_FLAGS,
-    TARGET_SURFACE_VISIBLE,
+    TransportDrainResult, GRAPHICS_API_D3D10, GRAPHICS_API_D3D11, GRAPHICS_API_D3D12,
+    GRAPHICS_API_D3D9, GRAPHICS_API_OPENGL, GRAPHICS_API_UNKNOWN, GRAPHICS_API_VULKAN,
+    TARGET_SURFACE_FOCUSED, TARGET_SURFACE_FULLSCREEN, TARGET_SURFACE_MINIMIZED,
+    TARGET_SURFACE_STATE_FLAGS, TARGET_SURFACE_VISIBLE,
 };
 
 pub const EGO_ABI_VERSION: u32 = 1;
@@ -31,6 +32,10 @@ pub const EGO_STATUS_INITIALIZATION_FAILED: i32 = -4;
 pub const EGO_STATUS_OUT_OF_RANGE: i32 = -5;
 pub const EGO_STATUS_INTERNAL_ERROR: i32 = -6;
 pub const EGO_STATUS_PANIC: i32 = -7;
+pub const EGO_STATUS_TIMED_OUT: i32 = -8;
+pub const EGO_STATUS_NOT_CONNECTED: i32 = -9;
+
+pub const EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS: u32 = 1_000;
 
 pub const EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION: u32 = 1;
 pub const EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY: u32 = 1;
@@ -530,6 +535,43 @@ pub unsafe extern "C" fn ego_transport_destroy(transport: *mut EgoTransport) -> 
     })
 }
 
+/// Waits for all outbound packets published before this call to be written to
+/// the current loopback socket, up to `timeout_ms`.
+///
+/// # Safety
+/// `transport` must remain live for the complete call and must not be destroyed
+/// concurrently. `timeout_ms` must be between 1 and
+/// [`EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS`] inclusive.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_drain(transport: *mut EgoTransport, timeout_ms: u32) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if timeout_ms == 0 || timeout_ms > EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                format!(
+                    "transport drain timeout must be between 1 and {EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS} milliseconds"
+                ),
+            ));
+        }
+
+        match transport
+            .bridge
+            .drain_outbound(Duration::from_millis(u64::from(timeout_ms)))
+        {
+            TransportDrainResult::Drained => Ok(()),
+            TransportDrainResult::NotConnected => Err(FfiError::new(
+                EGO_STATUS_NOT_CONNECTED,
+                "overlay transport is not connected",
+            )),
+            TransportDrainResult::TimedOut => Err(FfiError::new(
+                EGO_STATUS_TIMED_OUT,
+                format!("overlay transport did not drain within {timeout_ms} milliseconds"),
+            )),
+        }
+    })
+}
+
 /// # Safety
 /// `transport` must remain live for the call and `out_snapshot` must be
 /// writable. The returned snapshot has independent lifetime and must be
@@ -979,6 +1021,9 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(EgoTargetSurfaceV1, state_flags), 124);
         assert_eq!(ego_abi_version(), EGO_ABI_VERSION);
+        assert_eq!(EGO_STATUS_TIMED_OUT, -8);
+        assert_eq!(EGO_STATUS_NOT_CONNECTED, -9);
+        assert_eq!(EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS, 1_000);
         assert_eq!(EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION, 1);
         assert_eq!(EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY, 1);
         assert_eq!(EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTING_FAILED, 8);
@@ -1001,6 +1046,10 @@ mod tests {
     fn null_arguments_return_status_and_error_text() {
         let status = unsafe { ego_transport_destroy(ptr::null_mut()) };
         assert_eq!(status, EGO_STATUS_INVALID_ARGUMENT);
+        assert_eq!(
+            unsafe { ego_transport_drain(ptr::null_mut(), 1) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
 
         let mut epoch = u64::MAX;
         assert_eq!(
@@ -1200,6 +1249,23 @@ mod tests {
             EGO_STATUS_OK
         );
         assert!(!transport.is_null());
+
+        assert_eq!(
+            unsafe { ego_transport_drain(transport, 0) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { ego_transport_drain(transport, EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS + 1) },
+            EGO_STATUS_INVALID_ARGUMENT
+        );
+        let drain_status = unsafe { ego_transport_drain(transport, 25) };
+        assert!(
+            matches!(
+                drain_status,
+                EGO_STATUS_OK | EGO_STATUS_NOT_CONNECTED | EGO_STATUS_TIMED_OUT
+            ),
+            "transport drain returned an unexpected status {drain_status}"
+        );
 
         let surface = valid_target_surface();
         assert_eq!(

@@ -304,14 +304,15 @@ Pop-Location
 ```
 
 The ABI smoke validates layout, version rejection, immutable scene ownership,
-input-state metadata, the fixed runtime-diagnostic record, and
-create/acquire/release/destroy linkage. Runtime diagnostics use a dedicated
-bounded queue of 32 records and carry no free-form text, paths, handles, or
-producer-supplied PID. The add-on reports transport, swap-chain, and first-scene
-milestones plus guarded scene/frame/upload/input failures. It never publishes
-from `DllMain` or the input producer callback; input observations are emitted
-only by the ordered render-thread consumer. Failure codes have a native
-7.5-second per-code cooldown before the additional Node-side rate limit.
+input-state metadata, the fixed runtime-diagnostic record, bounded outbound
+drain argument/status handling, and create/acquire/release/drain/destroy
+linkage. Runtime diagnostics use a dedicated bounded queue of 32 records and
+carry no free-form text, paths, handles, or producer-supplied PID. The add-on
+reports transport, swap-chain, and first-scene milestones plus guarded
+scene/frame/upload/input failures. It never publishes from `DllMain` or the
+input producer callback; input observations are emitted only by the ordered
+render-thread consumer. Failure codes have a native 7.5-second per-code
+cooldown before the additional Node-side rate limit.
 
 Before authenticated IPC exists, the Rust bridge atomically preserves its last
 fixed startup state in
@@ -474,13 +475,15 @@ active graphics API, adopt the existing device or swap chain, load the add-on,
 or render the Electron scene. That route is unsupported. Probe evidence is under
 `build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
 
-## Run producer-session and independent-app lifecycle gates
+## Run producer-session, final-surface, and independent-app lifecycle gates
 
 Use the dedicated human-facing launchers:
 
 ```powershell
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-session-deactivation.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-session-deactivation.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-target-surface-drain.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-target-surface-drain.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-d3d12-client-sdk-two-app-two-target.ps1
 ```
 
@@ -493,6 +496,20 @@ deactivation, not unload. July 31, 2026 evidence is under
 `build/electron-game-overlay-runtime/client-sdk-d3d11-session-deactivation-20260731-000557`
 and
 `build/electron-game-overlay-runtime/client-sdk-d3d12-session-deactivation-20260731-000709`.
+
+The target-surface gates destroy the controlled host's final swap chain and
+graphics device while keeping its process and HWND alive. They require the
+public SDK surface to become null within two seconds without accepting process
+disconnect as success, and also prove that Electron and the attachment remain
+live. The runtime itself uses a bounded 250 ms socket write-completion barrier
+before destroying the final transport; this is not an application-level
+acknowledgement, and timeout or disconnect does not stall graphics teardown.
+August 1, 2026 evidence is under
+`build/electron-game-overlay-runtime/client-sdk-d3d11-target-surface-drain-20260801-080719`
+(89.992 ms to SDK null) and
+`build/electron-game-overlay-runtime/client-sdk-d3d12-target-surface-drain-20260801-080808`
+(846.302 ms to SDK null). Both also assert that native teardown emitted no
+final-drain failure warning.
 
 The two-app gate runs two independent Electron processes against separate
 exact-PID D3D11 and D3D12 targets. It proves distinct run directories,

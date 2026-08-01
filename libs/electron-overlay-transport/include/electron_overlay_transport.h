@@ -30,6 +30,10 @@ typedef int32_t ego_status;
 #define EGO_STATUS_OUT_OF_RANGE (-INT32_C(5))
 #define EGO_STATUS_INTERNAL_ERROR (-INT32_C(6))
 #define EGO_STATUS_PANIC (-INT32_C(7))
+#define EGO_STATUS_TIMED_OUT (-INT32_C(8))
+#define EGO_STATUS_NOT_CONNECTED (-INT32_C(9))
+
+#define EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS UINT32_C(1000)
 
 #define EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION UINT32_C(1)
 #define EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY UINT32_C(1)
@@ -139,6 +143,14 @@ ego_status EGO_CALL ego_transport_create(
     uint32_t abi_version,
     ego_transport **out_transport);
 ego_status EGO_CALL ego_transport_destroy(ego_transport *transport);
+/*
+ * Waits until packets published before this call are written to the current
+ * loopback socket. timeout_ms must be in [1,
+ * EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS]. This is not a host acknowledgement.
+ */
+ego_status EGO_CALL ego_transport_drain(
+    ego_transport *transport,
+    uint32_t timeout_ms);
 
 ego_status EGO_CALL ego_transport_acquire_scene(
     const ego_transport *transport,

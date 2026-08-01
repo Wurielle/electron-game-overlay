@@ -30,6 +30,9 @@ using namespace reshade::api;
 // accepted by capability: registration and the exact ImGui function table must
 // both succeed. ReShade's exported product version is deliberately not pinned.
 constexpr std::uint32_t public_reshade_api_version = 18;
+constexpr std::uint32_t final_transport_drain_timeout_ms = 250;
+static_assert(
+    final_transport_drain_timeout_ms <= EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS);
 
 HMODULE g_reshade_host_module = nullptr;
 HMODULE g_addon_module = nullptr;
@@ -868,12 +871,20 @@ struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
     bool official_hook_failure_reported = false;
 };
 
+// Serializes the zero-to-one and one-to-zero transport transitions without
+// holding the focus/input registry lock while the final socket drain waits.
+// A replacement swap chain therefore cannot connect a second same-process
+// bridge before the retiring bridge has delivered its final lifecycle state.
+std::mutex g_transport_lifecycle_mutex;
 std::mutex g_transport_mutex;
 ego_transport *g_transport = nullptr;
 std::uint32_t g_transport_references = 0;
 std::unordered_map<HWND, std::uint32_t> g_target_windows;
 
-void log_transport_error(const char *operation, ego_status status)
+void log_transport_failure(
+    reshade::log::level level,
+    const char *operation,
+    ego_status status)
 {
     char detail[512] = {};
     std::uint64_t required = 0;
@@ -899,7 +910,17 @@ void log_transport_error(const char *operation, ego_status status)
             operation,
             static_cast<int>(status));
     }
-    reshade::log::message(reshade::log::level::error, message);
+    reshade::log::message(level, message);
+}
+
+void log_transport_error(const char *operation, ego_status status)
+{
+    log_transport_failure(reshade::log::level::error, operation, status);
+}
+
+void log_transport_warning(const char *operation, ego_status status)
+{
+    log_transport_failure(reshade::log::level::warning, operation, status);
 }
 
 bool take_runtime_diagnostic_failure_publication(std::uint32_t code) noexcept
@@ -1522,6 +1543,7 @@ void shutdown_official_message_hooks(bool wait_for_callbacks) noexcept
 
 ego_transport *retain_transport(HWND window)
 {
+    const std::scoped_lock lifecycle_lock(g_transport_lifecycle_mutex);
     const std::scoped_lock lock(g_transport_mutex);
     if (g_transport == nullptr)
     {
@@ -1548,6 +1570,9 @@ ego_transport *retain_transport(HWND window)
 
 void release_transport(ego_transport *transport, HWND window)
 {
+    // Keep a new zero-to-one transition behind the bounded drain/destroy, but
+    // release the registry lock before waiting on the Rust/network workers.
+    const std::scoped_lock lifecycle_lock(g_transport_lifecycle_mutex);
     ego_transport *destroy = nullptr;
     {
         const std::scoped_lock lock(g_transport_mutex);
@@ -1576,6 +1601,12 @@ void release_transport(ego_transport *transport, HWND window)
 
     if (destroy != nullptr)
     {
+        const ego_status drain_status = ego_transport_drain(
+            destroy,
+            final_transport_drain_timeout_ms);
+        if (drain_status != EGO_STATUS_OK)
+            log_transport_warning("final outbound transport drain", drain_status);
+
         const ego_status status = ego_transport_destroy(destroy);
         if (status != EGO_STATUS_OK)
             log_transport_error("transport shutdown", status);

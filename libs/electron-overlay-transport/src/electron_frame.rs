@@ -13,9 +13,9 @@ use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -52,6 +52,7 @@ const CONNECT_TIMER_ID: usize = 1;
 const OUTBOUND_RETRY_TIMER_ID: usize = 2;
 const CONNECT_RETRY_MILLIS: u32 = 500;
 const OUTBOUND_RETRY_MILLIS: u32 = 250;
+const DRAIN_RETRY_MILLIS: u32 = 2;
 const CONNECT_TIMEOUT_MILLIS: u64 = 250;
 const NETWORK_IDLE_MILLIS: u64 = 2;
 const NETWORK_COMMAND_CAPACITY: usize = 256;
@@ -219,6 +220,128 @@ type SharedOutboundQueue = Arc<Mutex<OutboundQueue>>;
 type SharedInputOrder = Arc<Mutex<()>>;
 type SharedStackGeneration = Arc<AtomicU64>;
 type SharedTargetSurfaces = Arc<Mutex<RetainedTargetSurfaces>>;
+type SharedDrainRequests = Arc<Mutex<VecDeque<Arc<DrainRequest>>>>;
+
+/// Result of a bounded outbound transport drain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportDrainResult {
+    /// Every packet queued before the drain barrier was written to the socket.
+    Drained,
+    /// There was no live socket, or it disconnected before reaching the barrier.
+    NotConnected,
+    /// The barrier did not complete before the caller's deadline.
+    TimedOut,
+}
+
+#[derive(Default)]
+struct DrainRequestState {
+    result: Option<TransportDrainResult>,
+    submitted: bool,
+}
+
+struct DrainRequest {
+    state: Mutex<DrainRequestState>,
+    completed: Condvar,
+}
+
+impl DrainRequest {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(DrainRequestState::default()),
+            completed: Condvar::new(),
+        }
+    }
+
+    fn complete(&self, result: TransportDrainResult) {
+        let mut current = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.result.is_none() {
+            current.result = Some(result);
+            self.completed.notify_all();
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .result
+            .is_some()
+    }
+
+    fn is_submitted(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .submitted
+    }
+
+    fn mark_submitted(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .submitted = true;
+    }
+
+    fn wait_until(&self, deadline: Instant) -> TransportDrainResult {
+        let mut current = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if let Some(result) = current.result {
+                return result;
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                current.result = Some(TransportDrainResult::TimedOut);
+                self.completed.notify_all();
+                return TransportDrainResult::TimedOut;
+            }
+
+            let (next, wait) = self
+                .completed
+                .wait_timeout(current, deadline.saturating_duration_since(now))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            current = next;
+            if wait.timed_out() && current.result.is_none() {
+                current.result = Some(TransportDrainResult::TimedOut);
+                self.completed.notify_all();
+                return TransportDrainResult::TimedOut;
+            }
+        }
+    }
+}
+
+fn try_lock_until<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<MutexGuard<'_, T>> {
+    loop {
+        if Instant::now() >= deadline {
+            return None;
+        }
+
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => thread::yield_now(),
+        }
+    }
+}
+
+fn remove_drain_request_nonblocking(
+    requests: &SharedDrainRequests,
+    request: &Arc<DrainRequest>,
+) -> bool {
+    let mut requests = match requests.try_lock() {
+        Ok(requests) => requests,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return false,
+    };
+    requests.retain(|pending| !Arc::ptr_eq(pending, request));
+    true
+}
 
 const PRODUCER_SESSION_ACTIVE_BIT: u64 = 1;
 
@@ -428,6 +551,8 @@ pub struct ElectronFrameBridge {
     producer_session_epoch: Arc<AtomicU64>,
     outbound: SharedOutboundQueue,
     target_surfaces: SharedTargetSurfaces,
+    drain_requests: SharedDrainRequests,
+    transport_connected: Arc<AtomicBool>,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
@@ -453,6 +578,10 @@ impl ElectronFrameBridge {
         let worker_outbound = Arc::clone(&outbound);
         let target_surfaces = Arc::new(Mutex::new(RetainedTargetSurfaces::default()));
         let worker_target_surfaces = Arc::clone(&target_surfaces);
+        let drain_requests = Arc::new(Mutex::new(VecDeque::new()));
+        let worker_drain_requests = Arc::clone(&drain_requests);
+        let transport_connected = Arc::new(AtomicBool::new(false));
+        let worker_transport_connected = Arc::clone(&transport_connected);
         let input_order = Arc::new(Mutex::new(()));
         let worker_input_order = Arc::clone(&input_order);
         let stack_generation = Arc::new(AtomicU64::new(0));
@@ -471,6 +600,8 @@ impl ElectronFrameBridge {
                     worker_producer_session_epoch,
                     worker_outbound,
                     worker_target_surfaces,
+                    worker_drain_requests,
+                    worker_transport_connected,
                     worker_input_order,
                     worker_stack_generation,
                     worker_drag,
@@ -504,6 +635,8 @@ impl ElectronFrameBridge {
             producer_session_epoch,
             outbound,
             target_surfaces,
+            drain_requests,
+            transport_connected,
             input_order,
             stack_generation,
             drag,
@@ -563,6 +696,50 @@ impl ElectronFrameBridge {
     /// render callbacks.
     pub fn producer_session_epoch(&self) -> u64 {
         self.producer_session_epoch.load(Ordering::Acquire)
+    }
+
+    /// Waits until every outbound packet queued before this call has been
+    /// written to the current loopback socket, subject to `timeout`.
+    ///
+    /// This is a write-completion barrier, not an application-level
+    /// acknowledgement from Electron. A disconnect completes it conservatively
+    /// as [`TransportDrainResult::NotConnected`]. The request owns all of its
+    /// completion state, so a timeout cannot leave a borrowed pointer in either
+    /// worker queue.
+    pub fn drain_outbound(&self, timeout: Duration) -> TransportDrainResult {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        if !self.transport_connected.load(Ordering::Acquire) {
+            return TransportDrainResult::NotConnected;
+        }
+
+        let request = Arc::new(DrainRequest::new());
+        {
+            // This is the same ordering seam used by every outbound publisher.
+            // Once this lock is acquired, all messages published before the
+            // drain call are already visible in the outbound queue. The state
+            // worker drains that queue before handing off barrier requests;
+            // packets published concurrently after this point may be
+            // conservatively included in the same drain.
+            let Some(_order) = try_lock_until(&self.input_order, deadline) else {
+                return TransportDrainResult::TimedOut;
+            };
+            let Some(mut requests) = try_lock_until(&self.drain_requests, deadline) else {
+                return TransportDrainResult::TimedOut;
+            };
+            requests.push_back(Arc::clone(&request));
+        }
+        self.wake_outbound_worker();
+        let result = request.wait_until(deadline);
+        // The worker owns an independent Arc after submission, so removing a
+        // terminal request cannot create a borrowed-pointer hazard. Cleanup is
+        // deliberately best-effort: returning to the native teardown caller
+        // takes priority over waiting for the registry lock. The state thread
+        // removes any retained terminal entry during its next handoff or
+        // disconnect, and `DrainRequest::complete` cannot replace its result.
+        let _ = remove_drain_request_nonblocking(&self.drain_requests, &request);
+        result
     }
 
     /// Publishes whether the target game window is currently focused.
@@ -882,6 +1059,8 @@ fn run_bridge_thread(
     producer_session_epoch: Arc<AtomicU64>,
     outbound: SharedOutboundQueue,
     target_surfaces: SharedTargetSurfaces,
+    drain_requests: SharedDrainRequests,
+    transport_connected: Arc<AtomicBool>,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
@@ -926,6 +1105,8 @@ fn run_bridge_thread(
         producer_session_epoch,
         outbound,
         target_surfaces,
+        drain_requests,
+        transport_connected,
         input_order,
         stack_generation,
         drag,
@@ -1027,7 +1208,11 @@ unsafe extern "system" fn bridge_window_proc(
                     SetTimer(
                         Some(hwnd),
                         OUTBOUND_RETRY_TIMER_ID,
-                        OUTBOUND_RETRY_MILLIS,
+                        if state.has_pending_drains() {
+                            DRAIN_RETRY_MILLIS
+                        } else {
+                            OUTBOUND_RETRY_MILLIS
+                        },
                         None,
                     );
                 }
@@ -1065,10 +1250,22 @@ unsafe extern "system" fn bridge_window_proc(
 
 struct TcpTransport {
     generation: u64,
-    commands: mpsc::SyncSender<Vec<u8>>,
+    commands: mpsc::SyncSender<NetworkCommand>,
     stop: Arc<AtomicBool>,
     thread: JoinHandle<()>,
     authenticated: bool,
+}
+
+enum NetworkCommand {
+    Packet(Vec<u8>),
+    Drain(Arc<DrainRequest>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutboundHandoffResult {
+    Complete,
+    Backpressured,
+    Disconnected,
 }
 
 enum NetworkInbound {
@@ -1102,6 +1299,8 @@ struct BridgeThreadState {
     producer_session_epoch: Arc<AtomicU64>,
     outbound: SharedOutboundQueue,
     target_surfaces: SharedTargetSurfaces,
+    drain_requests: SharedDrainRequests,
+    transport_connected: Arc<AtomicBool>,
     input_order: SharedInputOrder,
     stack_generation: SharedStackGeneration,
     drag: SharedDragState,
@@ -1123,6 +1322,8 @@ impl BridgeThreadState {
         producer_session_epoch: Arc<AtomicU64>,
         outbound: SharedOutboundQueue,
         target_surfaces: SharedTargetSurfaces,
+        drain_requests: SharedDrainRequests,
+        transport_connected: Arc<AtomicBool>,
         input_order: SharedInputOrder,
         stack_generation: SharedStackGeneration,
         drag: SharedDragState,
@@ -1151,6 +1352,8 @@ impl BridgeThreadState {
             producer_session_epoch,
             outbound,
             target_surfaces,
+            drain_requests,
+            transport_connected,
             input_order,
             stack_generation,
             drag,
@@ -1269,6 +1472,7 @@ impl BridgeThreadState {
         };
 
         self.transport = Some(transport);
+        self.transport_connected.store(true, Ordering::Release);
         self.startup
             .publish(RuntimeStartupCode::NetworkWorkerStarted);
         self.replay_current_target_surfaces();
@@ -1305,6 +1509,8 @@ impl BridgeThreadState {
     }
 
     fn disconnect(&mut self) {
+        self.transport_connected.store(false, Ordering::Release);
+        self.complete_pending_drains(TransportDrainResult::NotConnected);
         if producer_session_is_active(self.producer_session_epoch.load(Ordering::Acquire)) {
             advance_producer_session_epoch(&self.producer_session_epoch, false);
         }
@@ -1333,6 +1539,24 @@ impl BridgeThreadState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+    }
+
+    fn complete_pending_drains(&self, result: TransportDrainResult) {
+        let mut requests = self
+            .drain_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for request in requests.drain(..) {
+            request.complete(result);
+        }
+    }
+
+    fn has_pending_drains(&self) -> bool {
+        self.drain_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|request| !request.is_complete())
     }
 
     unsafe fn drain_inbound(&mut self) {
@@ -1403,14 +1627,53 @@ impl BridgeThreadState {
     }
 
     unsafe fn flush_outbound(&mut self) -> bool {
-        let Some(commands) = self
+        let result = if let Some(commands) = self
             .transport
             .as_ref()
             .map(|transport| transport.commands.clone())
-        else {
-            return true;
+        {
+            self.handoff_outbound_commands(&commands, || {})
+        } else {
+            let input_order = Arc::clone(&self.input_order);
+            let _order = input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.complete_pending_drains(TransportDrainResult::NotConnected);
+            OutboundHandoffResult::Complete
         };
 
+        match result {
+            OutboundHandoffResult::Complete => true,
+            OutboundHandoffResult::Backpressured => false,
+            OutboundHandoffResult::Disconnected => {
+                self.disconnect();
+                let _ = KillTimer(Some(self.hwnd), OUTBOUND_RETRY_TIMER_ID);
+                SetTimer(
+                    Some(self.hwnd),
+                    CONNECT_TIMER_ID,
+                    CONNECT_RETRY_MILLIS,
+                    None,
+                );
+                true
+            }
+        }
+    }
+
+    fn handoff_outbound_commands(
+        &mut self,
+        commands: &mpsc::SyncSender<NetworkCommand>,
+        before_drain_handoff: impl FnOnce(),
+    ) -> OutboundHandoffResult {
+        // Publishers use this same guard while appending both packets and drain
+        // requests. Keep it across the complete packet/barrier handoff so a
+        // packet cannot enter the outbound queue after the empty observation
+        // but before an already-published drain is submitted. The guard is
+        // local to this method and is therefore always gone before the caller
+        // enters `disconnect`, which rebuilds input state under the same lock.
+        let input_order = Arc::clone(&self.input_order);
+        let _order = input_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             let Some(message) = self
                 .outbound
@@ -1418,7 +1681,7 @@ impl BridgeThreadState {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .pop_front()
             else {
-                return true;
+                break;
             };
             let (_, json) = outbound_message_payload(&message);
             let packet = match encode_json(&json) {
@@ -1429,32 +1692,73 @@ impl BridgeThreadState {
                 }
             };
 
-            match commands.try_send(packet) {
+            match commands.try_send(NetworkCommand::Packet(packet)) {
                 Ok(()) => self.outbound_diagnostics.record(&message),
-                Err(mpsc::TrySendError::Full(_)) => {
+                Err(mpsc::TrySendError::Full(NetworkCommand::Packet(_))) => {
                     self.outbound
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .push_front(message);
-                    return false;
+                    return OutboundHandoffResult::Backpressured;
                 }
-                Err(mpsc::TrySendError::Disconnected(_)) => {
+                Err(mpsc::TrySendError::Disconnected(NetworkCommand::Packet(_))) => {
                     // The worker may have written any prefix of this packet.
                     // Drop it and all worker-owned packets on reconnect so
                     // mouse/key events remain at-most-once.
                     warn!("Dropping outbound packet after Electron overlay transport failure");
-                    self.disconnect();
-                    let _ = KillTimer(Some(self.hwnd), OUTBOUND_RETRY_TIMER_ID);
-                    SetTimer(
-                        Some(self.hwnd),
-                        CONNECT_TIMER_ID,
-                        CONNECT_RETRY_MILLIS,
-                        None,
-                    );
-                    return true;
+                    return OutboundHandoffResult::Disconnected;
                 }
+                Err(
+                    mpsc::TrySendError::Full(NetworkCommand::Drain(_))
+                    | mpsc::TrySendError::Disconnected(NetworkCommand::Drain(_)),
+                ) => unreachable!("outbound packets are sent as packet commands"),
             }
         }
+
+        before_drain_handoff();
+        let mut requests = self
+            .drain_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut index = 0;
+        while index < requests.len() {
+            let request = Arc::clone(
+                requests
+                    .get(index)
+                    .expect("the outstanding drain index is in bounds"),
+            );
+            if request.is_complete() {
+                requests.remove(index);
+                continue;
+            }
+            if request.is_submitted() {
+                index += 1;
+                continue;
+            }
+
+            match commands.try_send(NetworkCommand::Drain(Arc::clone(&request))) {
+                Ok(()) => {
+                    // Keep the request registered until the worker completes it.
+                    // This lets state-thread disconnect finish a command accepted
+                    // during the worker's final receiver-drain window.
+                    request.mark_submitted();
+                    index += 1;
+                }
+                Err(mpsc::TrySendError::Full(NetworkCommand::Drain(_))) => {
+                    return OutboundHandoffResult::Backpressured;
+                }
+                Err(mpsc::TrySendError::Disconnected(NetworkCommand::Drain(request))) => {
+                    request.complete(TransportDrainResult::NotConnected);
+                    requests.remove(index);
+                    return OutboundHandoffResult::Disconnected;
+                }
+                Err(
+                    mpsc::TrySendError::Full(NetworkCommand::Packet(_))
+                    | mpsc::TrySendError::Disconnected(NetworkCommand::Packet(_)),
+                ) => unreachable!("drain barriers are sent as drain commands"),
+            }
+        }
+        OutboundHandoffResult::Complete
     }
 
     fn dispatch(&mut self, message_type: &str, json: &str) {
@@ -2632,11 +2936,11 @@ fn run_network_worker(
     generation: u64,
     mut stream: TcpStream,
     hello: Vec<u8>,
-    commands: mpsc::Receiver<Vec<u8>>,
+    commands: mpsc::Receiver<NetworkCommand>,
     inbound: mpsc::SyncSender<NetworkInbound>,
     stop: Arc<AtomicBool>,
 ) {
-    let mut writes = VecDeque::from([hello]);
+    let mut writes = VecDeque::from([NetworkCommand::Packet(hello)]);
     let mut write_offset = 0;
     let mut decoder = WireDecoder::default();
     let mut read_buffer = [0_u8; 64 * 1024];
@@ -2647,7 +2951,7 @@ fn run_network_worker(
 
         while writes.len() < NETWORK_COMMAND_CAPACITY {
             match commands.try_recv() {
-                Ok(packet) => writes.push_back(packet),
+                Ok(command) => writes.push_back(command),
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if stop.load(Ordering::Acquire) {
@@ -2659,7 +2963,7 @@ fn run_network_worker(
         }
 
         let mut made_progress = false;
-        match flush_pending_writes(&mut stream, &mut writes, &mut write_offset) {
+        match flush_pending_network_commands(&mut stream, &mut writes, &mut write_offset) {
             Ok(progress) => made_progress |= progress,
             Err(error) => break 'connected format!("socket write failed: {error}"),
         }
@@ -2698,6 +3002,7 @@ fn run_network_worker(
         }
     };
 
+    complete_unwritten_drains(&mut writes, &commands, TransportDrainResult::NotConnected);
     let _ = stream.shutdown(Shutdown::Both);
     if !stop.load(Ordering::Acquire) {
         let _ = publish_inbound(
@@ -2712,29 +3017,57 @@ fn run_network_worker(
     }
 }
 
-fn flush_pending_writes(
+fn flush_pending_network_commands(
     writer: &mut impl Write,
-    writes: &mut VecDeque<Vec<u8>>,
+    writes: &mut VecDeque<NetworkCommand>,
     write_offset: &mut usize,
 ) -> io::Result<bool> {
     let mut made_progress = false;
-    while let Some(packet) = writes.front() {
-        match writer.write(&packet[*write_offset..]) {
-            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
-            Ok(written) => {
-                made_progress = true;
-                *write_offset += written;
-                if *write_offset == packet.len() {
+    while let Some(command) = writes.front() {
+        match command {
+            NetworkCommand::Packet(packet) => match writer.write(&packet[*write_offset..]) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+                Ok(written) => {
+                    made_progress = true;
+                    *write_offset += written;
+                    if *write_offset != packet.len() {
+                        continue;
+                    }
                     writes.pop_front();
                     *write_offset = 0;
                 }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(made_progress)
+                }
+                Err(error) => return Err(error),
+            },
+            NetworkCommand::Drain(request) => {
+                debug_assert_eq!(*write_offset, 0);
+                request.complete(TransportDrainResult::Drained);
+                writes.pop_front();
+                made_progress = true;
             }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(made_progress),
-            Err(error) => return Err(error),
         }
     }
     Ok(made_progress)
+}
+
+fn complete_unwritten_drains(
+    writes: &mut VecDeque<NetworkCommand>,
+    commands: &mpsc::Receiver<NetworkCommand>,
+    result: TransportDrainResult,
+) {
+    for command in writes.drain(..) {
+        if let NetworkCommand::Drain(request) = command {
+            request.complete(result);
+        }
+    }
+    while let Ok(command) = commands.try_recv() {
+        if let NetworkCommand::Drain(request) = command {
+            request.complete(result);
+        }
+    }
 }
 
 fn publish_inbound(
@@ -3426,11 +3759,39 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             Arc::new(Mutex::new(OutboundQueue::new())),
             Arc::new(Mutex::new(RetainedTargetSurfaces::default())),
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(AtomicBool::new(false)),
             Arc::new(Mutex::new(())),
             Arc::new(AtomicU64::new(0)),
             SharedDragState::default(),
             RuntimeStartupPublisher::default(),
         )
+    }
+
+    fn test_frame_bridge(
+        input_order: SharedInputOrder,
+        drain_requests: SharedDrainRequests,
+    ) -> ElectronFrameBridge {
+        let input_router = Arc::new(Mutex::new(InputRouter::new()));
+        let interception = input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .atomic_interception_state();
+        ElectronFrameBridge {
+            scene: Arc::new(RwLock::new(Arc::new(ElectronScene::default()))),
+            input_router,
+            interception,
+            producer_session_epoch: Arc::new(AtomicU64::new(0)),
+            outbound: Arc::new(Mutex::new(OutboundQueue::new())),
+            target_surfaces: Arc::new(Mutex::new(RetainedTargetSurfaces::default())),
+            drain_requests,
+            transport_connected: Arc::new(AtomicBool::new(true)),
+            input_order,
+            stack_generation: Arc::new(AtomicU64::new(0)),
+            drag: SharedDragState::default(),
+            window: 0,
+            thread: None,
+        }
     }
 
     #[test]
@@ -3608,9 +3969,14 @@ mod tests {
     }
 
     #[test]
-    fn partial_nonblocking_writes_resume_without_duplicating_packet_bytes() {
+    fn partial_nonblocking_writes_complete_barrier_without_duplicating_packet_bytes() {
         let expected = [b"hello".as_slice(), b"input-event".as_slice()].concat();
-        let mut writes = VecDeque::from([b"hello".to_vec(), b"input-event".to_vec()]);
+        let drain = Arc::new(DrainRequest::new());
+        let mut writes = VecDeque::from([
+            NetworkCommand::Packet(b"hello".to_vec()),
+            NetworkCommand::Packet(b"input-event".to_vec()),
+            NetworkCommand::Drain(Arc::clone(&drain)),
+        ]);
         let mut offset = 0;
         let mut writer = PartialWriter {
             bytes: Vec::new(),
@@ -3618,11 +3984,254 @@ mod tests {
         };
 
         while !writes.is_empty() {
-            flush_pending_writes(&mut writer, &mut writes, &mut offset).unwrap();
+            flush_pending_network_commands(&mut writer, &mut writes, &mut offset).unwrap();
         }
 
         assert_eq!(offset, 0);
         assert_eq!(writer.bytes, expected);
+        assert_eq!(
+            drain.wait_until(Instant::now()),
+            TransportDrainResult::Drained
+        );
+    }
+
+    struct BlockedWriter;
+
+    impl Write for BlockedWriter {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::WouldBlock))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn blocked_packet_keeps_barrier_pending_until_bounded_timeout() {
+        let drain = Arc::new(DrainRequest::new());
+        let mut writes = VecDeque::from([
+            NetworkCommand::Packet(b"blocked".to_vec()),
+            NetworkCommand::Drain(Arc::clone(&drain)),
+        ]);
+        let mut offset = 0;
+
+        assert!(
+            !flush_pending_network_commands(&mut BlockedWriter, &mut writes, &mut offset).unwrap()
+        );
+        assert_eq!(writes.len(), 2);
+        assert_eq!(
+            drain.wait_until(Instant::now() + Duration::from_millis(5)),
+            TransportDrainResult::TimedOut
+        );
+
+        let mut writer = Vec::new();
+        flush_pending_network_commands(&mut writer, &mut writes, &mut offset).unwrap();
+        assert!(writes.is_empty());
+        assert_eq!(writer, b"blocked");
+        assert_eq!(
+            drain.wait_until(Instant::now()),
+            TransportDrainResult::TimedOut,
+            "late worker completion must not resurrect a timed-out request"
+        );
+    }
+
+    #[test]
+    fn disconnect_completes_queued_and_worker_owned_barriers() {
+        let pending = Arc::new(DrainRequest::new());
+        let queued = Arc::new(DrainRequest::new());
+        let mut writes = VecDeque::from([NetworkCommand::Drain(Arc::clone(&pending))]);
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(NetworkCommand::Drain(Arc::clone(&queued))).unwrap();
+
+        complete_unwritten_drains(&mut writes, &rx, TransportDrainResult::NotConnected);
+
+        assert!(writes.is_empty());
+        assert_eq!(
+            pending.wait_until(Instant::now()),
+            TransportDrainResult::NotConnected
+        );
+        assert_eq!(
+            queued.wait_until(Instant::now()),
+            TransportDrainResult::NotConnected
+        );
+    }
+
+    #[test]
+    fn ordered_handoff_cannot_overtake_a_pre_drain_packet() {
+        let mut state = test_bridge_state();
+        let input_order = Arc::clone(&state.input_order);
+        let outbound = Arc::clone(&state.outbound);
+        let drain_requests = Arc::clone(&state.drain_requests);
+        let expected_drain = Arc::new(DrainRequest::new());
+        let published_drain = Arc::clone(&expected_drain);
+        let (begin_tx, begin_rx) = mpsc::sync_channel(1);
+        let (attempt_tx, attempt_rx) = mpsc::sync_channel(1);
+        let (published_tx, published_rx) = mpsc::sync_channel(1);
+        let publisher = thread::spawn(move || {
+            begin_rx.recv().unwrap();
+            attempt_tx.send(()).unwrap();
+            let _order = input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            outbound
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(OutboundMessage::TargetSurfaceRemoved {
+                    surface_id: 44,
+                    revision: 8,
+                });
+            drain_requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push_back(published_drain);
+            published_tx.send(()).unwrap();
+        });
+        let (commands, command_rx) = mpsc::sync_channel(4);
+
+        assert_eq!(
+            state.handoff_outbound_commands(&commands, || {
+                begin_tx.send(()).unwrap();
+                attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+                assert_eq!(published_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+            }),
+            OutboundHandoffResult::Complete
+        );
+        assert!(matches!(
+            command_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        published_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        publisher.join().unwrap();
+
+        assert_eq!(
+            state.handoff_outbound_commands(&commands, || {}),
+            OutboundHandoffResult::Complete
+        );
+        assert!(matches!(
+            command_rx.recv().unwrap(),
+            NetworkCommand::Packet(_)
+        ));
+        let NetworkCommand::Drain(submitted) = command_rx.recv().unwrap() else {
+            panic!("the packet must be followed by its drain barrier");
+        };
+        assert!(Arc::ptr_eq(&submitted, &expected_drain));
+        assert!(expected_drain.is_submitted());
+        assert_eq!(
+            state
+                .drain_requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            1,
+            "a submitted request remains registered until terminal completion"
+        );
+
+        assert_eq!(
+            state.handoff_outbound_commands(&commands, || {}),
+            OutboundHandoffResult::Complete
+        );
+        assert!(matches!(
+            command_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        submitted.complete(TransportDrainResult::Drained);
+        assert_eq!(
+            expected_drain.wait_until(Instant::now()),
+            TransportDrainResult::Drained
+        );
+        assert_eq!(
+            state.handoff_outbound_commands(&commands, || {}),
+            OutboundHandoffResult::Complete
+        );
+        assert!(state
+            .drain_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty());
+    }
+
+    #[test]
+    fn state_disconnect_completes_a_submitted_worker_barrier() {
+        let mut state = test_bridge_state();
+        let request = Arc::new(DrainRequest::new());
+        state
+            .drain_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(Arc::clone(&request));
+        let (commands, command_rx) = mpsc::sync_channel(1);
+
+        assert_eq!(
+            state.handoff_outbound_commands(&commands, || {}),
+            OutboundHandoffResult::Complete
+        );
+        let NetworkCommand::Drain(worker_owned) = command_rx.recv().unwrap() else {
+            panic!("the worker must own the submitted drain command");
+        };
+        assert!(request.is_submitted());
+
+        state.complete_pending_drains(TransportDrainResult::NotConnected);
+        assert_eq!(
+            request.wait_until(Instant::now()),
+            TransportDrainResult::NotConnected
+        );
+        assert!(state
+            .drain_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty());
+        worker_owned.complete(TransportDrainResult::Drained);
+        assert_eq!(
+            request.wait_until(Instant::now()),
+            TransportDrainResult::NotConnected,
+            "late worker completion cannot replace disconnect"
+        );
+    }
+
+    #[test]
+    fn drain_deadline_includes_pre_queue_lock_contention() {
+        let input_order = Arc::new(Mutex::new(()));
+        let drain_requests = Arc::new(Mutex::new(VecDeque::new()));
+        let bridge = test_frame_bridge(Arc::clone(&input_order), drain_requests);
+        let (locked_tx, locked_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let holder = thread::spawn(move || {
+            let _guard = input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_millis(500));
+        });
+        locked_rx.recv().unwrap();
+
+        let started = Instant::now();
+        assert_eq!(
+            bridge.drain_outbound(Duration::from_millis(20)),
+            TransportDrainResult::TimedOut
+        );
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+        holder.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "the 20 ms drain waited {elapsed:?} for an untimed mutex"
+        );
+    }
+
+    #[test]
+    fn terminal_registry_cleanup_is_nonblocking() {
+        let request = Arc::new(DrainRequest::new());
+        request.complete(TransportDrainResult::TimedOut);
+        let requests = Arc::new(Mutex::new(VecDeque::from([Arc::clone(&request)])));
+        let guard = requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let started = Instant::now();
+        assert!(!remove_drain_request_nonblocking(&requests, &request));
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(guard.len(), 1);
     }
 
     #[test]
