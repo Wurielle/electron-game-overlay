@@ -65,7 +65,12 @@ explicitly unsupported or deferred until chosen as a separate task.
   - Preserve registration order, click-to-front, alpha hit testing, caption drag, pointer capture, focus-before-input, per-packet scale tags, and desired/active raster transitions.
   - D3D11 connects the real authenticated Electron producer, uploads both overlapping OSR windows, renders the ordered scene, and acknowledges ReShade-owned interception.
   - The pinned API-19 full-add-on observer copies input only after ReShade decides to block it. A bounded lock-free queue delivers exact legacy Win32 records to the shared Electron router. When Windows mouse-in-pointer is active, the add-on captures pointer ID/type/target/modifiers at the callback, sorts the global observer sequence, and only then converts the blocked primary mouse stream into that same single legacy route. Controlled click-to-front, text focus/input, and caption dragging passed while every game-side legacy/raw/polling/pointer oracle counter stayed frozen.
-  - Copied `WM_INPUT` and `GetRawInputBuffer` records are retained and counted; normalizing those raw records is deferred below rather than blocking the POC.
+  - The pinned private runtime also normalizes authoritative
+    `RIDEV_NOLEGACY` mouse/keyboard records from `WM_INPUT` and
+    `GetRawInputBuffer` into the same Electron route. Buffered records are
+    accepted only when one exact foreground raw-input registration owns the
+    primary window tree; missing or ambiguous ownership fails the Electron
+    projection open instead of assigning the record heuristically.
 - [x] Pass the same real Electron scene and exact legacy-input acceptance on D3D12.
   - D3D12 rendered both ordered Electron windows and passed exact click/focus/text and caption-drag routing while every host oracle counter remained frozen.
 - [x] Replace the active client's hudhook launcher/runtime selection with the ReShade host boundary and pass the real client/SDK Gun Frog input gate.
@@ -294,7 +299,30 @@ explicitly unsupported or deferred until chosen as a separate task.
     `build/electron-game-overlay-runtime/client-sdk-d3d12-target-surface-drain-20260801-080808`
     (846.302 ms to SDK null). Both also assert that native teardown emitted no
     final-drain failure warning.
-- [ ] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including buffered-record target ownership and raw-only text policy.
+- [x] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including bounded buffered-record target ownership and raw-only text policy.
+  - The pinned private runtime passed raw-only `RIDEV_NOLEGACY` click, wheel,
+    keyboard/text, duplicate-suppression, game-oracle freeze, release, and
+    cleanup gates on both graphics backends. Evidence is under
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-wm-input-20260801-122546`,
+    `client-sdk-d3d11-raw-buffer-20260801-122626`,
+    `client-sdk-d3d12-wm-input-20260801-122707`, and
+    `client-sdk-d3d12-raw-buffer-20260801-122823`.
+  - The refreshed legacy gates also passed under
+    `client-sdk-d3d11-legacy-20260801-122847` and
+    `client-sdk-d3d12-legacy-20260801-122902`, confirming that raw
+    normalization did not duplicate or regress the established legacy route.
+  - Official ReShade API-18 hosts can normalize copied `WM_INPUT` through the
+    public add-on path. They do not expose copied `GetRawInputBuffer` records,
+    so official-host buffered input remains deferred rather than being claimed
+    by this acceptance.
+- [ ] Harden raw-input ownership beyond the accepted single exact foreground registration.
+  - Cover registrations created before late injection, `hwndTarget = nullptr`,
+    multiple or sibling target HWND ambiguity, pre-held input and disarm
+    ownership completeness, mixed raw/legacy modifier state, the first relative
+    cursor seed, and the consumer-generation race.
+  - Add an ownership-safe official-host `GetRawInputBuffer` observation seam
+    only after its API-hook and coexistence boundary is proven; do not infer
+    buffered support from the accepted official `WM_INPUT` route.
 - [ ] Extend the accepted `WM_POINTER` translation beyond primary mouse move/left click to secondary/X buttons, double-click semantics, pointer wheel, and explicit touch/pen policy, with duplicate-projection tests.
 - [ ] Harden observer ordering/recovery plus concurrent input pumps, same-HWND owner promotion, distinct D3D12 queues, and broader swap-chain layouts.
 - [ ] Expand the compatibility matrix only from observed evidence: Vulkan/OpenGL, exclusive/fullscreen variants, gamepads, DirectInput/XInput/GameInput, and other backend-specific paths.

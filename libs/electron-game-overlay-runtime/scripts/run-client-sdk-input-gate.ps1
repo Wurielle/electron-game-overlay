@@ -5,7 +5,13 @@ param(
     [string]$Backend,
     [switch]$SkipBuild,
     [Parameter(DontShow = $true)]
-    [switch]$FunctionsOnly
+    [switch]$FunctionsOnly,
+    [Parameter(DontShow = $true)]
+    [ValidateSet("legacy", "wm-input", "raw-buffer")]
+    [string]$InputMode = "legacy",
+    [Parameter(DontShow = $true)]
+    [ValidateRange(1, 2)]
+    [int]$AttemptCountOverride = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,9 +27,14 @@ $HostTarget = "${Backend}_overlay_test_host"
 $BuiltHost = Join-Path $OutputDirectory $HostName
 $Electron = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
 $Nx = Join-Path $RepoRoot "node_modules\.bin\nx.cmd"
-$RunDirectory = Join-Path $BuildRoot "client-sdk-$Backend-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
-$ResultMarker = "${BackendLabel}_REAL_CLIENT_SDK_GATE_PASS"
-$AttemptCount = 2
+$RunDirectory = Join-Path $BuildRoot "client-sdk-$Backend-$InputMode-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+$ResultMarker = if ($InputMode -eq "legacy") {
+    "${BackendLabel}_REAL_CLIENT_SDK_GATE_PASS"
+}
+else {
+    "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_CLIENT_SDK_GATE_PASS"
+}
+$AttemptCount = $AttemptCountOverride
 
 function Get-MatchingClientProcesses {
     @(
@@ -255,6 +266,34 @@ function Assert-MarkerCount {
     }
 }
 
+function Assert-ExactLineCount {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Line,
+        [Parameter(Mandatory = $true)][int]$Expected
+    )
+
+    $Pattern = "(?m)^$([regex]::Escape($Line))\r?`$"
+    $Count = ([regex]::Matches($Text, $Pattern)).Count
+    if ($Count -ne $Expected) {
+        throw "Expected $Expected exact '$Line' line(s), found $Count."
+    }
+}
+
+function Assert-RegexCount {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][int]$Expected,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $Count = ([regex]::Matches($Text, $Pattern)).Count
+    if ($Count -ne $Expected) {
+        throw "Expected $Expected $Label event(s), found $Count."
+    }
+}
+
 function Assert-MarkerBetween {
     param(
         [Parameter(Mandatory = $true)][string]$Text,
@@ -314,6 +353,7 @@ namespace ReShadeClientSdkGate
         private const ushort VK_CONTROL = 0x11;
         private const ushort VK_I = 0x49;
         private const ushort VK_ESCAPE = 0x1B;
+        private const uint WM_CLOSE = 0x0010;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct POINT
@@ -393,6 +433,9 @@ namespace ReShadeClientSdkGate
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern int GetWindowText(IntPtr window, StringBuilder text, int maximum);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool PostMessage(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam);
+
         public static bool ActivateWindow(IntPtr window)
         {
             ShowWindow(window, SW_RESTORE);
@@ -428,6 +471,12 @@ namespace ReShadeClientSdkGate
         public static bool IsForegroundWindow(IntPtr window)
         {
             return GetForegroundWindow() == window;
+        }
+
+        public static void RequestClose(IntPtr window)
+        {
+            if (!PostMessage(window, WM_CLOSE, UIntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "PostMessage(WM_CLOSE) failed.");
         }
 
         public static string WindowTitle(IntPtr window)
@@ -520,6 +569,14 @@ namespace ReShadeClientSdkGate
             SendInputs(new [] {
                 KeyboardInput(VK_ESCAPE, (char)0, 0),
                 KeyboardInput(VK_ESCAPE, (char)0, KEYEVENTF_KEYUP)
+            });
+        }
+
+        public static void SendSpace()
+        {
+            SendInputs(new [] {
+                KeyboardInput(0x20, (char)0, 0),
+                KeyboardInput(0x20, (char)0, KEYEVENTF_KEYUP)
             });
         }
 
@@ -632,7 +689,10 @@ function Get-HostInputSnapshot {
     $Pattern = 'game input: move=(?<move>\d+) down=(?<down>\d+) ' +
         'up=(?<up>\d+) wheel=(?<wheel>\d+) key=(?<key>\d+) ' +
         'raw=(?<raw>\d+) ptr=(?<pointerUpdate>\d+)/(?<pointerDown>\d+)/(?<pointerUp>\d+) ' +
-        'poll-left=(?<pollLeft>\d+) cursor-change=(?<cursorChange>\d+) clip=(?<clip>on|off)$'
+        'poll-left=(?<pollLeft>\d+) cursor-change=(?<cursorChange>\d+) ' +
+        'raw-accepted=(?<rawMove>\d+)/(?<rawDown>\d+)/(?<rawUp>\d+)/(?<rawWheel>\d+)/(?<rawKeyDown>\d+)/(?<rawKeyUp>\d+) ' +
+        'buffer=(?<buffer>\d+) buffer-error=(?<bufferError>\d+) ' +
+        'mode=(?<mode>legacy|wm-input|raw-buffer) clip=(?<clip>on|off)$'
     $Match = [regex]::Match($Title, $Pattern)
     if (-not $Match.Success) {
         throw "Could not parse the controlled host input oracle: $Title"
@@ -651,6 +711,15 @@ function Get-HostInputSnapshot {
         PointerUp = [uint64]$Match.Groups['pointerUp'].Value
         PollLeft = [uint64]$Match.Groups['pollLeft'].Value
         CursorChange = [uint64]$Match.Groups['cursorChange'].Value
+        RawMove = [uint64]$Match.Groups['rawMove'].Value
+        RawDown = [uint64]$Match.Groups['rawDown'].Value
+        RawUp = [uint64]$Match.Groups['rawUp'].Value
+        RawWheel = [uint64]$Match.Groups['rawWheel'].Value
+        RawKeyDown = [uint64]$Match.Groups['rawKeyDown'].Value
+        RawKeyUp = [uint64]$Match.Groups['rawKeyUp'].Value
+        RawBuffer = [uint64]$Match.Groups['buffer'].Value
+        RawBufferError = [uint32]$Match.Groups['bufferError'].Value
+        Mode = $Match.Groups['mode'].Value
         Clip = $Match.Groups['clip'].Value
     }
 }
@@ -681,6 +750,31 @@ function Wait-ForReleasedMouseInput {
     throw "Released mouse move/down/up, raw input, and pointer input did not all resume."
 }
 
+function Wait-ForReleasedRawInput {
+    param(
+        [Parameter(Mandatory = $true)][IntPtr]$Window,
+        [Parameter(Mandatory = $true)]$Baseline,
+        [Parameter(Mandatory = $true)][DateTime]$Deadline
+    )
+
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        $Title = [ReShadeClientSdkGate.NativeInputMethods]::WindowTitle($Window)
+        if ($Title -and $Title.Contains("game input:")) {
+            $Current = Get-HostInputSnapshot -Title $Title
+            if ($Current.RawMove -gt $Baseline.RawMove -and
+                $Current.RawDown -gt $Baseline.RawDown -and
+                $Current.RawUp -gt $Baseline.RawUp -and
+                $Current.RawWheel -gt $Baseline.RawWheel -and
+                $Current.RawKeyDown -gt $Baseline.RawKeyDown -and
+                $Current.RawKeyUp -gt $Baseline.RawKeyUp) {
+                return $Current
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "Released raw mouse move/down/up/wheel and keyboard down/up did not all resume."
+}
+
 function Invoke-ClientSdkAttempt {
     param([Parameter(Mandatory = $true)][int]$Attempt)
 
@@ -698,9 +792,14 @@ function Invoke-ClientSdkAttempt {
 
     New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
     Copy-Item -LiteralPath $BuiltHost -Destination $TargetExecutablePath
+    $InputGateMarker = switch ($InputMode) {
+        "wm-input" { "reshade-raw-wm-input-gate.enabled" }
+        "raw-buffer" { "reshade-raw-buffer-input-gate.enabled" }
+        default { "reshade-input-gate.enabled" }
+    }
     New-Item `
         -ItemType File `
-        -Path (Join-Path $TargetDirectory "reshade-input-gate.enabled") `
+        -Path (Join-Path $TargetDirectory $InputGateMarker) `
         -Force | Out-Null
     New-Item `
         -ItemType File `
@@ -818,6 +917,13 @@ function Invoke-ClientSdkAttempt {
             -Window $HostWindow `
             -Deadline ([DateTime]::UtcNow.AddSeconds(8))
         $BaselineSnapshot = Get-HostInputSnapshot -Title $BaselineTitle
+        Write-Host "  baseline host input: $BaselineTitle"
+        if ($BaselineSnapshot.Mode -ne $InputMode) {
+            throw "The controlled host selected input mode '$($BaselineSnapshot.Mode)' instead of '$InputMode'."
+        }
+        if ($BaselineSnapshot.RawBufferError -ne 0) {
+            throw "GetRawInputBuffer failed with Win32 error $($BaselineSnapshot.RawBufferError)."
+        }
         if (-not $BaselineTitle.Contains("clip=off")) {
             throw "Cursor confinement remained active during interception: $BaselineTitle"
         }
@@ -840,7 +946,12 @@ function Invoke-ClientSdkAttempt {
         Start-Sleep -Milliseconds 100
         [ReShadeClientSdkGate.NativeInputMethods]::SendLeftClick()
         Start-Sleep -Milliseconds 150
-        [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("s$Attempt")
+        if ($InputMode -eq "legacy") {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("s$Attempt")
+        }
+        else {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendSpace()
+        }
 
         [void][ReShadeClientSdkGate.NativeInputMethods]::MoveMouseToClientPoint(
             $HostWindow,
@@ -850,9 +961,17 @@ function Invoke-ClientSdkAttempt {
         Start-Sleep -Milliseconds 100
         [ReShadeClientSdkGate.NativeInputMethods]::SendLeftClick()
         Start-Sleep -Milliseconds 150
-        [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("m$Attempt")
+        if ($InputMode -eq "legacy") {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("m$Attempt")
+        }
+        else {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendWheel(120)
+            [ReShadeClientSdkGate.NativeInputMethods]::SendSpace()
+        }
         Start-Sleep -Milliseconds 200
         [ReShadeClientSdkGate.NativeInputMethods]::SendEscape()
+        Start-Sleep -Milliseconds 250
+        Write-Host "  intercepted host input: $([ReShadeClientSdkGate.NativeInputMethods]::WindowTitle($HostWindow))"
         Wait-ForClientMarker `
             -Path $ClientStdout `
             -ClientProcess $ClientProcess `
@@ -891,7 +1010,12 @@ function Invoke-ClientSdkAttempt {
         Start-Sleep -Milliseconds 100
         [ReShadeClientSdkGate.NativeInputMethods]::SendLeftClick()
         Start-Sleep -Milliseconds 150
-        [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("d")
+        if ($InputMode -eq "legacy") {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("d")
+        }
+        else {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendSpace()
+        }
 
         [void][ReShadeClientSdkGate.NativeInputMethods]::MoveMouseToClientPoint(
             $HostWindow,
@@ -901,12 +1025,27 @@ function Invoke-ClientSdkAttempt {
         Start-Sleep -Milliseconds 100
         [ReShadeClientSdkGate.NativeInputMethods]::SendLeftClick()
         Start-Sleep -Milliseconds 150
-        [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("z")
+        if ($InputMode -eq "legacy") {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendUnicodeText("z")
+        }
+        else {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendSpace()
+        }
 
-        $ExpectedMainValue = "HUDHOOK_CLIENT_INPUT_VALUE value=m${Attempt}d"
-        $ExpectedStatusValue =
+        $ExpectedMainValue = if ($InputMode -eq "legacy") {
+            "HUDHOOK_CLIENT_INPUT_VALUE value=m${Attempt}d"
+        }
+        else {
+            "HUDHOOK_CLIENT_INPUT_VALUE value=  "
+        }
+        $ExpectedStatusValue = if ($InputMode -eq "legacy") {
             "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC input " +
-            "target=hudhook-status-input-target value=`"s${Attempt}z`""
+                "target=hudhook-status-input-target value=`"s${Attempt}z`""
+        }
+        else {
+            "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC input " +
+                "target=hudhook-status-input-target value=`"  `""
+        }
         Wait-ForClientMarker `
             -Path $ClientStdout `
             -ClientProcess $ClientProcess `
@@ -938,6 +1077,28 @@ function Invoke-ClientSdkAttempt {
         $DisabledMarker = "HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=false"
         Assert-MarkerCount -Text $ClientLog -Marker $EnabledMarker -Expected 1
         Assert-MarkerCount -Text $ClientLog -Marker $DisabledMarker -Expected 1
+        $EnabledIndex = $ClientLog.IndexOf($EnabledMarker, [StringComparison]::Ordinal)
+        $DisabledIndex = $ClientLog.IndexOf($DisabledMarker, [StringComparison]::Ordinal)
+        if ($EnabledIndex -lt 0 -or $DisabledIndex -le $EnabledIndex) {
+            throw "The interception acknowledgement markers are out of order."
+        }
+        $ActionEndMarker =
+            "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC keyup " +
+            "target=hudhook-status-input-target"
+        $ActionEndIndex = $ClientLog.LastIndexOf(
+            $ActionEndMarker,
+            $DisabledIndex,
+            $DisabledIndex - $EnabledIndex,
+            [StringComparison]::Ordinal
+        )
+        if ($ActionEndIndex -lt $EnabledIndex) {
+            throw "The final scripted status-field key release was not observed."
+        }
+        $ActionEndExclusive = $ActionEndIndex + $ActionEndMarker.Length
+        $InterceptedLog = $ClientLog.Substring(
+            $EnabledIndex,
+            $ActionEndExclusive - $EnabledIndex
+        )
         Assert-MarkerCount `
             -Text $ClientLog `
             -Marker "RESHADE_CLIENT_RUNTIME_STAGED" `
@@ -955,28 +1116,77 @@ function Invoke-ClientSdkAttempt {
             -Marker "RESHADE_CLIENT_INJECTOR_RETURNED" `
             -Expected 1
         Assert-MarkerCount `
-            -Text $ClientLog `
+            -Text $InterceptedLog `
             -Marker "HUDHOOK_CLIENT_INPUT_CLICKED" `
             -Expected 2
-        Assert-MarkerCount -Text $ClientLog -Marker $ExpectedMainValue -Expected 1
+        Assert-ExactLineCount -Text $InterceptedLog -Line $ExpectedMainValue -Expected 1
+        if ($InputMode -ne "legacy") {
+            Assert-ExactLineCount `
+                -Text $InterceptedLog `
+                -Line "HUDHOOK_CLIENT_INPUT_WHEEL deltaY=-120" `
+                -Expected 1
+        }
         Assert-MarkerCount `
-            -Text $ClientLog `
+            -Text $InterceptedLog `
             -Marker "HUDHOOK_CLIENT_INPUT_ESCAPE_FORWARDED" `
             -Expected 1
         $StatusClickMarker =
             "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC click " +
             "target=hudhook-status-input-target"
-        Assert-MarkerCount -Text $ClientLog -Marker $StatusClickMarker -Expected 2
-        Assert-MarkerCount -Text $ClientLog -Marker $ExpectedStatusValue -Expected 1
+        Assert-MarkerCount -Text $InterceptedLog -Marker $StatusClickMarker -Expected 2
+        Assert-ExactLineCount -Text $InterceptedLog -Line $ExpectedStatusValue -Expected 1
 
-        $EnabledIndex = $ClientLog.IndexOf($EnabledMarker, [StringComparison]::Ordinal)
-        $DisabledIndex = $ClientLog.IndexOf($DisabledMarker, [StringComparison]::Ordinal)
-        foreach ($Marker in @(
+        $MainKeyCount = if ($InputMode -eq "legacy") { 4 } else { 3 }
+        $StatusKeyCount = if ($InputMode -eq "legacy") { 3 } else { 2 }
+        $InputEventCount = if ($InputMode -eq "legacy") { 3 } else { 2 }
+        Assert-RegexCount `
+            -Text $InterceptedLog `
+            -Pattern '(?m)^HUDHOOK_CLIENT_INPUT_DIAGNOSTIC input target=hudhook-client-input-target value=.*\r?$' `
+            -Expected $InputEventCount `
+            -Label "main-field input"
+        Assert-RegexCount `
+            -Text $InterceptedLog `
+            -Pattern '(?m)^HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC input target=hudhook-status-input-target value=.*\r?$' `
+            -Expected $InputEventCount `
+            -Label "status-field input"
+        foreach ($MouseEvent in @("mousedown", "mouseup")) {
+            Assert-RegexCount `
+                -Text $InterceptedLog `
+                -Pattern "(?m)^HUDHOOK_CLIENT_INPUT_DIAGNOSTIC $MouseEvent target=hudhook-client-input-target @ -?\d+,-?\d+\r?`$" `
+                -Expected 2 `
+                -Label "main-field $MouseEvent"
+            Assert-RegexCount `
+                -Text $InterceptedLog `
+                -Pattern "(?m)^HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC $MouseEvent target=hudhook-status-input-target @ -?\d+,-?\d+\r?`$" `
+                -Expected 2 `
+                -Label "status-field $MouseEvent"
+        }
+        foreach ($KeyEvent in @("keydown", "keyup")) {
+            Assert-ExactLineCount `
+                -Text $InterceptedLog `
+                -Line "HUDHOOK_CLIENT_INPUT_DIAGNOSTIC $KeyEvent target=hudhook-client-input-target" `
+                -Expected $MainKeyCount
+            Assert-ExactLineCount `
+                -Text $InterceptedLog `
+                -Line "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC $KeyEvent target=hudhook-status-input-target" `
+                -Expected $StatusKeyCount
+            Assert-RegexCount `
+                -Text $InterceptedLog `
+                -Pattern "(?m)^HUDHOOK_CLIENT_(?:STATUS_)?INPUT_DIAGNOSTIC $KeyEvent target=[^ ]+\r?`$" `
+                -Expected ($MainKeyCount + $StatusKeyCount) `
+                -Label "total $KeyEvent"
+        }
+
+        $InterceptedMarkers = @(
                 $StatusClickMarker,
                 "HUDHOOK_CLIENT_INPUT_CLICKED",
                 $ExpectedMainValue,
                 "HUDHOOK_CLIENT_INPUT_ESCAPE_FORWARDED",
-                $ExpectedStatusValue)) {
+                $ExpectedStatusValue)
+        if ($InputMode -ne "legacy") {
+            $InterceptedMarkers += "HUDHOOK_CLIENT_INPUT_WHEEL deltaY=-120"
+        }
+        foreach ($Marker in $InterceptedMarkers) {
             Assert-MarkerBetween `
                 -Text $ClientLog `
                 -Marker $Marker `
@@ -995,16 +1205,38 @@ function Invoke-ClientSdkAttempt {
             650
         )
         [ReShadeClientSdkGate.NativeInputMethods]::SendLeftClick()
-        $ReleasedSnapshot = Wait-ForReleasedMouseInput `
-            -Window $HostWindow `
-            -Baseline $BaselineSnapshot `
-            -Deadline ([DateTime]::UtcNow.AddSeconds(8))
+        if ($InputMode -eq "legacy") {
+            $ReleasedSnapshot = Wait-ForReleasedMouseInput `
+                -Window $HostWindow `
+                -Baseline $BaselineSnapshot `
+                -Deadline ([DateTime]::UtcNow.AddSeconds(8))
+        }
+        else {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendWheel(120)
+            [ReShadeClientSdkGate.NativeInputMethods]::SendSpace()
+            $ReleasedSnapshot = Wait-ForReleasedRawInput `
+                -Window $HostWindow `
+                -Baseline $BaselineSnapshot `
+                -Deadline ([DateTime]::UtcNow.AddSeconds(8))
+            if ($InputMode -eq "raw-buffer" -and
+                $ReleasedSnapshot.RawBuffer -le $BaselineSnapshot.RawBuffer) {
+                throw "Released input did not traverse GetRawInputBuffer."
+            }
+            if ($ReleasedSnapshot.RawBufferError -ne 0) {
+                throw "GetRawInputBuffer failed with Win32 error $($ReleasedSnapshot.RawBufferError) after interception was released."
+            }
+        }
         $ReleasedTitle = $ReleasedSnapshot.Title
         if (-not $ReleasedTitle.Contains("clip=on")) {
             throw "Cursor confinement was not restored after release: $ReleasedTitle"
         }
 
-        [ReShadeClientSdkGate.NativeInputMethods]::SendEscape()
+        if ($InputMode -eq "legacy") {
+            [ReShadeClientSdkGate.NativeInputMethods]::SendEscape()
+        }
+        else {
+            [ReShadeClientSdkGate.NativeInputMethods]::RequestClose($HostWindow)
+        }
         if (-not $HostProcess.WaitForExit(10000)) {
             throw "Released Escape did not close the controlled host."
         }
@@ -1135,7 +1367,7 @@ Write-Host ""
 Write-Host "Production client/SDK $BackendLabel input gate"
 Write-Host "  - The client is armed before each controlled host launch."
 Write-Host "  - ReShade must select $BackendLabel from the target, not a client backend flag."
-Write-Host "  - Two fresh client/host cycles prove isolated cleanup and relaunch."
+Write-Host "  - $AttemptCount fresh client/host cycle(s) prove isolated cleanup and relaunch."
 Write-Host "  - Evidence is preserved in: $RunDirectory"
 Write-Host ""
 

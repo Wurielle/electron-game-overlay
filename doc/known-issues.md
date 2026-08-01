@@ -358,11 +358,33 @@ The Electron path does not rely on that sample: a pinned passive full-add-on
 observer copies already-blocked records into the project-owned bounded queue.
 Exact legacy window-message delivery and ordered primary `PT_MOUSE`
 `WM_POINTER` move/left-click translation are accepted on D3D11 and D3D12.
-Captured Ctrl/Shift state is preserved. Copied `WM_INPUT` and
-`GetRawInputBuffer` records are currently retained/countable but are not yet
-normalized into Electron events. Touch/pen, secondary/X pointer buttons,
-double-click semantics, pointer wheel, concurrent input pumps, same-HWND
-swap-chain ownership, distinct D3D12 queues, and raw-only input/text therefore
+Captured Ctrl/Shift state is preserved. The pinned private runtime now also
+normalizes authoritative `RIDEV_NOLEGACY` mouse/keyboard records copied from
+`WM_INPUT` and `GetRawInputBuffer`, including raw-only text, into the same
+ordered Electron route. D3D11 passed under
+`client-sdk-d3d11-wm-input-20260801-122546` and
+`client-sdk-d3d11-raw-buffer-20260801-122626`; D3D12 passed under
+`client-sdk-d3d12-wm-input-20260801-122707` and
+`client-sdk-d3d12-raw-buffer-20260801-122823`. Refreshed legacy acceptance under
+`client-sdk-d3d11-legacy-20260801-122847` and
+`client-sdk-d3d12-legacy-20260801-122902` rules out a regression or duplicate
+projection on the established path.
+
+Buffered raw input carries no HWND. The accepted private-runtime route therefore
+requires one exact valid foreground registration that resolves into the primary
+window tree. A missing or ambiguous owner fails the Electron projection open
+rather than assigning a buffered record heuristically. Registrations made before
+late injection, `hwndTarget = nullptr`, multiple or sibling target HWNDs,
+pre-held/disarm ownership completeness, mixed raw/legacy modifier state, the
+first relative cursor seed, and the consumer-generation race remain explicit
+hardening.
+
+An official ReShade API-18 host can normalize copied `WM_INPUT` through the
+public add-on path, but the public API exposes no copied `GetRawInputBuffer`
+callback. Official-host buffered input therefore remains unsupported until an
+ownership-safe add-on hook and coexistence boundary are proven. Touch/pen,
+secondary/X pointer buttons, double-click semantics, pointer wheel, concurrent
+input pumps, same-HWND swap-chain ownership, and distinct D3D12 queues also
 remain explicit runtime hardening. Same-HWND support specifically needs a pinned
 ReShade input-handler owner-promotion/clear patch; the public add-on API cannot
 safely perform that transfer during teardown.

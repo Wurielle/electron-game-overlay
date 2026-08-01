@@ -891,7 +891,7 @@ void destroy_graphics_device()
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
-    g_input_oracle.observe_window_message(window, message, w_param);
+    g_input_oracle.observe_window_message(window, message, w_param, l_param);
 
     switch (message)
     {
@@ -1159,7 +1159,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             continue;
         }
 
-        if (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        if (g_input_oracle.peek_next_message(message))
         {
             TranslateMessage(&message);
             DispatchMessageW(&message);

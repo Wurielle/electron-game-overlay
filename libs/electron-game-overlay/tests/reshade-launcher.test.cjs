@@ -110,7 +110,7 @@ const officialAddonSuccessFor = (
     runtimeModulePath,
     addonModulePath,
     addonAbi: 1,
-    addonBuildId: 'CDDCB683DA724B149BEA818760F10354',
+    addonBuildId: '2959553DBCEF4513BF4A587B7A29AA0C',
     reshadeBasePath: path.win32.dirname(runtimeModulePath),
     addonDirectoryPath: path.win32.dirname(addonModulePath),
     electronGameOverlayAddonDisabled: false,

@@ -21,6 +21,10 @@ $InjectorBasePathPatchHash =
 $PointerInputPatch = Join-Path $RuntimeRoot "patches\reshade-pointer-input-block.patch"
 $PointerInputPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $PointerInputPatch).Hash
+$RawInputNormalizationPatch =
+    Join-Path $RuntimeRoot "patches\reshade-raw-input-normalization.patch"
+$RawInputNormalizationPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $RawInputNormalizationPatch).Hash
 $InjectorExactPidPatch = Join-Path $RuntimeRoot "patches\reshade-injector-exact-pid.patch"
 $InjectorExactPidPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExactPidPatch).Hash
@@ -91,10 +95,10 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "include/reshade_events.hpp" = "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
     "source/addon_manager.cpp" = "28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp" = "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/input.cpp" = "4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
-    "source/input.hpp" = "C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
+    "source/input.cpp" = "FDA7ACA1A1060EBF0DC0F067D8E5E67A247884754C612CCB9163114BB1A691B1"
+    "source/input.hpp" = "658D0541E495F258970954C00A28912DEEDB07E3E541ED728AD824823B6C186D"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "2FD5C82AC601AECB839EFCE3F8F2FB191627D379EA697612AD91C76CBA4F166A"
+    "tools/injector.cpp" = "ED3A9EE426702DF7F643BAFA9F184321439078EF61E9384B984C577ABB39B801"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -110,14 +114,14 @@ function Get-NormalizedTextSha256([string]$Path) {
     }
 }
 
-function Test-GitPatchApplied([string]$Patch) {
+function Test-GitPatchApplied([string]$Patch, [int]$Strip = 1) {
     $PreviousErrorActionPreference = $ErrorActionPreference
     try {
         # A failed reverse check is expected on a clean or superseded cache.
         # Windows PowerShell otherwise promotes git's redirected stderr to a
         # terminating NativeCommandError while the script is in Stop mode.
         $ErrorActionPreference = "Continue"
-        & git.exe -C $ReShadeSource apply --reverse --check $Patch 2>$null
+        & git.exe -C $ReShadeSource apply "-p$Strip" --reverse --check $Patch 2>$null
         return $LASTEXITCODE -eq 0
     }
     finally {
@@ -142,6 +146,9 @@ function Test-ReShadePatchedSourceState {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
         }
+    }
+    if (-not (Test-GitPatchApplied $RawInputNormalizationPatch 2)) {
+        return $false
     }
 
     $SourceChanges = @(
@@ -194,11 +201,12 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 20 -and
+        return $Stamp.schemaVersion -eq 21 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
             $Stamp.pointerInputPatchSha256 -eq $PointerInputPatchHash -and
+            $Stamp.rawInputNormalizationPatchSha256 -eq $RawInputNormalizationPatchHash -and
             $Stamp.injectorExactPidPatchSha256 -eq $InjectorExactPidPatchHash -and
             $Stamp.injectorPathWatcherPatchSha256 -eq $InjectorPathWatcherPatchHash -and
             $Stamp.injectorPathWatcherIdentityPatchSha256 -eq $InjectorPathWatcherIdentityPatchHash -and
@@ -322,11 +330,12 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 20
+    schemaVersion = 21
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
     pointerInputPatchSha256 = $PointerInputPatchHash
+    rawInputNormalizationPatchSha256 = $RawInputNormalizationPatchHash
     injectorExactPidPatchSha256 = $InjectorExactPidPatchHash
     injectorPathWatcherPatchSha256 = $InjectorPathWatcherPatchHash
     injectorPathWatcherIdentityPatchSha256 = $InjectorPathWatcherIdentityPatchHash

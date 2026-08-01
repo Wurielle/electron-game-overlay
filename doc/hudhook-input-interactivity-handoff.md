@@ -27,9 +27,24 @@
 > the game. The production client and SDK subsequently passed that exact Gun
 > Frog boundary through the ReShade launcher on the process-name,
 > arm-before-launch path. The production path also passed two isolated
-> controlled D3D12 multi-window/lifecycle cycles. Raw-input normalization,
-> graceful disable/unload, post-render injection, deterministic pre-entry
-> guarantees, and other games remain hardening. A July 13 follow-up replaced
+> controlled D3D12 multi-window/lifecycle cycles. An August 1 production slice
+> then normalized authoritative `RIDEV_NOLEGACY` mouse/keyboard records from
+> both `WM_INPUT` and `GetRawInputBuffer` on the pinned private runtime. D3D11
+> passed under `client-sdk-d3d11-wm-input-20260801-122546` and
+> `client-sdk-d3d11-raw-buffer-20260801-122626`; D3D12 passed under
+> `client-sdk-d3d12-wm-input-20260801-122707` and
+> `client-sdk-d3d12-raw-buffer-20260801-122823`. Refreshed legacy gates under
+> `client-sdk-d3d11-legacy-20260801-122847` and
+> `client-sdk-d3d12-legacy-20260801-122902` remained duplicate-free. Official
+> ReShade API-18 hosts cover `WM_INPUT` only because the public add-on API does
+> not expose copied `GetRawInputBuffer` records. The accepted buffered route
+> requires one exact foreground registration and fails the Electron projection
+> open when ownership is missing or ambiguous. Registration before late
+> injection, null or multiple/sibling target HWNDs, pre-held/disarm ownership,
+> mixed raw/legacy modifiers, the first relative cursor seed, and the consumer
+> generation race remain later hardening, alongside graceful disable/unload,
+> post-render injection, deterministic pre-entry guarantees, and other games. A
+> July 13 follow-up replaced
 > the demo's one-second WMI creation path with a persistent native observer and
 > isolated exact-PID launchers. A preliminary PEAK run initialized through the
 > intercepted D3D12 path and rendered the Electron menu, but the original 5 ms
@@ -701,13 +716,16 @@ through the Windows MSVC developer shell.
   ReShade-aligned buffered raw-mouse neutralization are covered by implementation
   and automated tests.
   The retained hudhook path never passed its Gun Frog manual gate; the selected
-  ReShade host now has. Raw-keyboard-only text generation, DirectInput, XInput,
-  GameInput, and gamepads remain compatibility work.
+  ReShade host now has. Raw-keyboard-only text generation remains missing only
+  from this retained hudhook path; DirectInput, XInput, GameInput, and gamepads
+  remain compatibility work.
 - WndProc filtering alone does not guarantee game-UI suppression. If Gun Frog
   still reacts while `raw_buffer_calls` stays zero, or while raw records are
   masked, stop adding guessed detours and evaluate a ReShade add-on host.
-- Raw mouse is copied and translated synchronously. Raw keyboard is copied safely
-  and fed to ImGui, but Electron still depends on the legacy key/character stream.
+- In the retained hudhook path, raw mouse is copied and translated synchronously.
+  Raw keyboard is copied safely and fed to ImGui, but Electron still depends on
+  the legacy key/character stream. The selected private ReShade runtime has the
+  separately accepted raw-only keyboard/text route described above.
 - X1/X2 are intentionally swallowed during interception because Electron 16's
   public input API cannot represent them without turning them into false left clicks.
 - The local synchronous observer supplies per-message WndProc ownership. Move it

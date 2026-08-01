@@ -122,11 +122,17 @@ of the project runtime and is attempted as the public host for the uniquely
 named `electron_game_overlay.addon64`. There is no product-version or
 runtime-hash allowlist. The loaded add-on is compatible only if
 `ReShadeRegisterAddon` accepts public API 18 and the host returns the exact Dear
-  ImGui function table it was built against. A user-disabled Electron add-on
-  remains disabled. If the current add-on is present but has not loaded yet, the
-  SDK performs one bounded startup-grace inspection. If it remains unloaded, the
-  SDK reports `existing-reshade-addon-host-incompatible` instead of requesting
-  another restart or trying fallback injection. The SDK never replaces
+ImGui function table it was built against. In this official-host mode, the
+add-on can intercept queued foreground `WM_INPUT` and treats it as authoritative
+only when the exact source HWND has a current `RIDEV_NOLEGACY` registration.
+The current public-host path does not install the bundled runtime's
+`GetRawInputBuffer()` detour into an official runtime, so games that consume raw
+input only through that buffered API require the bundled patched host for
+complete interception. A user-disabled Electron add-on remains disabled. If the
+current add-on is present but has not loaded yet, the SDK performs one bounded
+startup-grace inspection. If it remains
+unloaded, the SDK reports `existing-reshade-addon-host-incompatible` instead of
+requesting another restart or trying fallback injection. The SDK never replaces
 or rewrites the existing ReShade runtime/proxy, INI, presets, effects, or foreign
 add-ons. Applicable global Vulkan/OpenXR ReShade layers are preserved and block
 fallback injection; they are not public-host integration paths.
@@ -461,6 +467,21 @@ confinement; released Escape closed each target normally. The runner emitted
 under `build/reshade-imgui-overlay/client-sdk-d3d12-20260713-083630`; current
 runs use `build/electron-game-overlay-runtime`.
 
+Dedicated production client/SDK raw-input launchers are available for both
+graphics backends:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-raw-input.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-raw-input.ps1
+```
+
+Each launcher runs isolated `RIDEV_NOLEGACY` mouse-and-keyboard cases for queued
+`WM_INPUT` and `GetRawInputBuffer()`. It requires normalized input to operate
+both Electron windows while the game oracle remains frozen, then releases
+interception and proves raw input resumes; the buffered case must also report a
+successful post-release buffer batch. These launchers exercise the bundled
+pinned runtime. Official ReShade integration covers the `WM_INPUT` case only.
+
 The restart/reinjection gate is available through:
 
 ```powershell
@@ -593,6 +614,18 @@ was active when the packet was routed. The SDK uses that optional
 so an already queued packet cannot be reinterpreted after a scale commit. A
 packet from a legacy payload has no tag and falls back to the receiving window's
 current active scale before `webContents.sendInputEvent()`.
+
+Inside the bundled pinned runtime, blocked foreground raw mouse and keyboard
+records from `WM_INPUT` and `GetRawInputBuffer()` are normalized into that same
+existing Win32 route. An exact successful `RIDEV_NOLEGACY` registration is the
+authority for each device class; without it, legacy messages remain
+authoritative. A raw-authoritative mouse stream also suppresses the matching
+mouse-in-pointer projection so one physical action is not delivered twice.
+Buffered records have no HWND, so routing requires exactly one foreground
+registration and a stable, exact target association. Any missing, multiple, or
+stale association fails open and leaves the record with the game. This is an
+internal runtime/add-on capability: it adds no Node API, transport wire field,
+or published transport C ABI entry.
 
 Before that packet reaches the session, the authenticated transport requires an
 exact fail-closed envelope: `type`, positive uint32 `windowId`, a Win32 `msg`

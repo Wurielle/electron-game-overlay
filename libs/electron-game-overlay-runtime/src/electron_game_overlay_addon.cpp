@@ -148,7 +148,7 @@ std::atomic<std::uint64_t> g_dropped_input_messages = 0;
 std::atomic<bool> g_input_recovery_pending = false;
 std::atomic_flag g_overflow_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_order_fault_logged = ATOMIC_FLAG_INIT;
-std::atomic_flag g_raw_deferred_logged = ATOMIC_FLAG_INIT;
+std::atomic_flag g_raw_rejected_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_route_error_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_target_surface_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_fps_logged = ATOMIC_FLAG_INIT;
@@ -159,9 +159,6 @@ std::array<std::atomic<std::uint64_t>, 9>
 std::atomic<std::uint64_t> g_target_surface_revision_sequence = 0;
 std::uint64_t g_last_input_sequence = 0;
 bool g_has_last_input_sequence = false;
-std::uint64_t g_deferred_raw_input_messages = 0;
-std::uint64_t g_deferred_raw_buffer_messages = 0;
-std::uint64_t g_deferred_window_raw_messages = 0;
 std::atomic<bool> g_pointer_route_reset_pending = false;
 
 struct ordered_pointer_state
@@ -172,6 +169,21 @@ struct ordered_pointer_state
 };
 
 ordered_pointer_state g_ordered_pointer_state = {};
+
+struct ordered_raw_input_state
+{
+    std::uintptr_t target_window = 0;
+    std::array<bool, 256> keys_down = {};
+    std::uint32_t mouse_buttons = 0;
+    std::int32_t client_x = 0;
+    std::int32_t client_y = 0;
+    std::int32_t last_os_x = 0;
+    std::int32_t last_os_y = 0;
+    bool has_client_point = false;
+    bool has_last_os_point = false;
+};
+
+ordered_raw_input_state g_ordered_raw_input_state = {};
 
 bool is_pointer_mouse_message(std::uint32_t message) noexcept
 {
@@ -244,10 +256,24 @@ void reset_ordered_pointer_state() noexcept
     g_ordered_pointer_state = {};
 }
 
+void reset_ordered_raw_input_state() noexcept
+{
+    g_ordered_raw_input_state = {};
+}
+
 bool translate_pointer_mouse_message(
     const queued_input_message &queued,
     input_message &message) noexcept
 {
+    if ((message.flags & static_cast<std::uint32_t>(
+                             input_message_flags::no_legacy)) != 0)
+    {
+        // A NOLEGACY raw mouse stream is authoritative for this target. Some
+        // games also enable mouse-in-pointer promotion, but projecting that
+        // second representation would duplicate every click.
+        return false;
+    }
+
     if (!is_pointer_mouse_message(message.message))
         return true;
     const bool is_mouse =
@@ -506,6 +532,110 @@ void mark_official_pointer_message(UINT message) noexcept
     }
 }
 
+constexpr std::uint32_t official_raw_no_legacy_keyboard = 1U << 0U;
+constexpr std::uint32_t official_raw_no_legacy_mouse = 1U << 1U;
+
+std::uint32_t official_raw_registration_flags(HWND source_window) noexcept
+{
+    struct registration_cache
+    {
+        HWND source_window = nullptr;
+        ULONGLONG sampled_at = 0;
+        std::uint32_t flags = 0;
+    };
+    thread_local registration_cache cache = {};
+
+    const ULONGLONG now = GetTickCount64();
+    if (cache.source_window == source_window &&
+        now - cache.sampled_at < 1000)
+    {
+        return cache.flags;
+    }
+
+    cache.source_window = source_window;
+    cache.sampled_at = now;
+    cache.flags = 0;
+    if (source_window == nullptr)
+        return 0;
+
+    std::array<RAWINPUTDEVICE, 64> devices = {};
+    UINT count = static_cast<UINT>(devices.size());
+    const UINT copied = GetRegisteredRawInputDevices(
+        devices.data(),
+        &count,
+        sizeof(RAWINPUTDEVICE));
+    if (copied == UINT_MAX || copied > devices.size())
+        return 0;
+
+    for (UINT index = 0; index < copied; ++index)
+    {
+        const RAWINPUTDEVICE &device = devices[index];
+        if (device.usUsagePage != 0x01 ||
+            device.hwndTarget != source_window ||
+            (device.dwFlags & RIDEV_NOLEGACY) == 0)
+        {
+            continue;
+        }
+        if (device.usUsage == 0x06)
+            cache.flags |= official_raw_no_legacy_keyboard;
+        else if (device.usUsage == 0x02)
+            cache.flags |= official_raw_no_legacy_mouse;
+    }
+    return cache.flags;
+}
+
+void capture_official_raw_keyboard_text(
+    input_message &message,
+    const RAWKEYBOARD &keyboard,
+    HWND source_window) noexcept
+{
+    struct ordered_keyboard_state
+    {
+        HWND source_window = nullptr;
+        std::array<BYTE, 256> keys = {};
+    };
+    thread_local ordered_keyboard_state state = {};
+
+    if (state.source_window != source_window)
+    {
+        state = {};
+        state.source_window = source_window;
+        static_cast<void>(GetKeyboardState(state.keys.data()));
+    }
+
+    const unsigned int virtual_key = keyboard.VKey;
+    if (virtual_key == 0 || virtual_key >= state.keys.size())
+        return;
+
+    const bool down = (keyboard.Flags & RI_KEY_BREAK) == 0;
+    state.keys[virtual_key] = down ? 0x80 : 0;
+    if (!down)
+        return;
+
+    WCHAR text[5] = {};
+    const int translated = ToUnicodeEx(
+        virtual_key,
+        keyboard.MakeCode,
+        state.keys.data(),
+        text,
+        4,
+        0x2,
+        GetKeyboardLayout(0));
+    if (translated == 0)
+        return;
+
+    const unsigned int text_length = static_cast<unsigned int>(
+        std::min(translated < 0 ? -translated : translated, 4));
+    message.text_length = static_cast<std::uint8_t>(text_length);
+    for (unsigned int index = 0; index < text_length; ++index)
+        message.text[index] = static_cast<std::uint16_t>(text[index]);
+    if (translated < 0)
+    {
+        message.flags |= static_cast<std::uint32_t>(
+            input_message_flags::dead_key);
+    }
+}
+
 void observe_official_window_message(
     const MSG &details,
     HWND route_window) noexcept
@@ -525,6 +655,13 @@ void observe_official_window_message(
     message.lparam = static_cast<std::int64_t>(details.lParam);
     message.flags =
         static_cast<std::uint32_t>(input_message_flags::foreground);
+    if (is_official_pointer_message(details.message) &&
+        (official_raw_registration_flags(details.hwnd) &
+         official_raw_no_legacy_mouse) != 0)
+    {
+        message.flags |= static_cast<std::uint32_t>(
+            input_message_flags::no_legacy);
+    }
     message.message = details.message;
     message.time = details.time;
     set_official_message_position(message, details, route_window);
@@ -563,8 +700,11 @@ void observe_official_raw_input(
     message.device_handle =
         reinterpret_cast<std::uintptr_t>(raw.header.hDevice);
     message.wparam = static_cast<std::uint64_t>(raw.header.wParam);
-    message.flags =
-        static_cast<std::uint32_t>(input_message_flags::foreground);
+    if (GET_RAWINPUT_CODE_WPARAM(raw.header.wParam) == RIM_INPUT)
+    {
+        message.flags = static_cast<std::uint32_t>(
+            input_message_flags::foreground);
+    }
     message.message = details.message;
     message.time = details.time;
     set_official_message_position(message, details, route_window);
@@ -588,6 +728,24 @@ void observe_official_raw_input(
         message.keyboard.message = raw.data.keyboard.Message;
         message.keyboard.extra_information =
             raw.data.keyboard.ExtraInformation;
+    }
+
+    const std::uint32_t registration_flags =
+        official_raw_registration_flags(details.hwnd);
+    const bool no_legacy = raw.header.dwType == RIM_TYPEMOUSE
+        ? (registration_flags & official_raw_no_legacy_mouse) != 0
+        : (registration_flags & official_raw_no_legacy_keyboard) != 0;
+    if (no_legacy)
+    {
+        message.flags |= static_cast<std::uint32_t>(
+            input_message_flags::no_legacy);
+        if (raw.header.dwType == RIM_TYPEKEYBOARD)
+        {
+            capture_official_raw_keyboard_text(
+                message,
+                raw.data.keyboard,
+                details.hwnd);
+        }
     }
     on_input_message(message);
 }
@@ -1609,8 +1767,403 @@ bool target_window_focused(HWND window) noexcept
     if (foreground == nullptr)
         return false;
 
-    const HWND root = GetAncestor(window, GA_ROOT);
-    return foreground == window || (root != nullptr && foreground == root);
+    return official_root_window(foreground) == official_root_window(window);
+}
+
+enum class raw_projection_result : std::uint8_t
+{
+    ignored,
+    routed,
+    failed,
+};
+
+bool route_normalized_input(
+    ego_transport *transport,
+    HWND target_window,
+    std::uint32_t message,
+    std::uint64_t wparam,
+    std::int64_t lparam) noexcept
+{
+    const ego_status status = ego_transport_route_window_message(
+        transport,
+        reinterpret_cast<std::uintptr_t>(target_window),
+        message,
+        wparam,
+        lparam);
+    if (status == EGO_STATUS_OK)
+        return true;
+
+    if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
+        log_transport_error("normalized raw input delivery", status);
+    publish_input_routing_failure(transport, status);
+    return false;
+}
+
+bool raw_target_owned_by_primary(HWND raw_target, HWND primary_target) noexcept
+{
+    if (raw_target == nullptr ||
+        primary_target == nullptr ||
+        IsWindow(raw_target) == FALSE ||
+        IsWindow(primary_target) == FALSE)
+    {
+        return false;
+    }
+    return official_root_window(raw_target) ==
+        official_root_window(primary_target);
+}
+
+std::int32_t saturating_coordinate_add(
+    std::int32_t value,
+    std::int32_t delta) noexcept
+{
+    return static_cast<std::int32_t>(std::clamp(
+        static_cast<std::int64_t>(value) + delta,
+        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()),
+        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())));
+}
+
+void clamp_raw_client_point(
+    HWND window,
+    std::int32_t &x,
+    std::int32_t &y) noexcept
+{
+    RECT client = {};
+    if (GetClientRect(window, &client) == FALSE ||
+        client.right <= client.left ||
+        client.bottom <= client.top)
+    {
+        return;
+    }
+    x = std::clamp(
+        x,
+        static_cast<std::int32_t>(client.left),
+        static_cast<std::int32_t>(client.right - 1));
+    y = std::clamp(
+        y,
+        static_cast<std::int32_t>(client.top),
+        static_cast<std::int32_t>(client.bottom - 1));
+}
+
+bool ordered_raw_key_down(std::uint32_t key) noexcept
+{
+    return key < g_ordered_raw_input_state.keys_down.size() &&
+        g_ordered_raw_input_state.keys_down[key];
+}
+
+std::uint32_t ordered_raw_mouse_key_state() noexcept
+{
+    std::uint32_t state = g_ordered_raw_input_state.mouse_buttons;
+    if (ordered_raw_key_down(VK_SHIFT) ||
+        ordered_raw_key_down(VK_LSHIFT) ||
+        ordered_raw_key_down(VK_RSHIFT))
+    {
+        state |= MK_SHIFT;
+    }
+    if (ordered_raw_key_down(VK_CONTROL) ||
+        ordered_raw_key_down(VK_LCONTROL) ||
+        ordered_raw_key_down(VK_RCONTROL))
+    {
+        state |= MK_CONTROL;
+    }
+    return state;
+}
+
+raw_projection_result project_raw_mouse(
+    ego_transport *transport,
+    const input_message &message,
+    HWND target) noexcept
+{
+    ordered_raw_input_state &state = g_ordered_raw_input_state;
+    const bool absolute =
+        (message.mouse.flags & MOUSE_MOVE_ABSOLUTE) != 0;
+    std::int32_t x = message.client_x;
+    std::int32_t y = message.client_y;
+    if (absolute)
+    {
+        const bool virtual_desktop =
+            (message.mouse.flags & MOUSE_VIRTUAL_DESKTOP) != 0;
+        const int screen_left = virtual_desktop
+            ? GetSystemMetrics(SM_XVIRTUALSCREEN)
+            : 0;
+        const int screen_top = virtual_desktop
+            ? GetSystemMetrics(SM_YVIRTUALSCREEN)
+            : 0;
+        const int screen_width = GetSystemMetrics(
+            virtual_desktop ? SM_CXVIRTUALSCREEN : SM_CXSCREEN);
+        const int screen_height = GetSystemMetrics(
+            virtual_desktop ? SM_CYVIRTUALSCREEN : SM_CYSCREEN);
+        if (screen_width > 0 && screen_height > 0)
+        {
+            constexpr std::int64_t absolute_range = 65'535;
+            const std::int64_t normalized_x = std::clamp<std::int64_t>(
+                message.mouse.last_x,
+                0,
+                absolute_range);
+            const std::int64_t normalized_y = std::clamp<std::int64_t>(
+                message.mouse.last_y,
+                0,
+                absolute_range);
+            POINT screen = {
+                screen_left + static_cast<LONG>(
+                    (normalized_x * (screen_width - 1) +
+                     absolute_range / 2) /
+                    absolute_range),
+                screen_top + static_cast<LONG>(
+                    (normalized_y * (screen_height - 1) +
+                     absolute_range / 2) /
+                    absolute_range),
+            };
+            if (ScreenToClient(target, &screen) != FALSE)
+            {
+                x = screen.x;
+                y = screen.y;
+            }
+        }
+    }
+    else if (message.source == input_message_source::raw_input_buffer)
+    {
+        const std::int32_t origin_x = state.has_client_point
+            ? state.client_x
+            : message.client_x;
+        const std::int32_t origin_y = state.has_client_point
+            ? state.client_y
+            : message.client_y;
+        x = saturating_coordinate_add(origin_x, message.mouse.last_x);
+        y = saturating_coordinate_add(origin_y, message.mouse.last_y);
+    }
+    else if (
+        state.has_client_point &&
+        state.has_last_os_point &&
+        message.client_x == state.last_os_x &&
+        message.client_y == state.last_os_y)
+    {
+        x = saturating_coordinate_add(state.client_x, message.mouse.last_x);
+        y = saturating_coordinate_add(state.client_y, message.mouse.last_y);
+    }
+    clamp_raw_client_point(target, x, y);
+    state.client_x = x;
+    state.client_y = y;
+    state.last_os_x = message.client_x;
+    state.last_os_y = message.client_y;
+    state.has_client_point = true;
+    state.has_last_os_point = true;
+
+    const std::int64_t client_point = encode_client_point(x, y);
+    bool routed = false;
+    if (!route_normalized_input(
+            transport,
+            target,
+            WM_MOUSEMOVE,
+            ordered_raw_mouse_key_state(),
+            client_point))
+    {
+        return raw_projection_result::failed;
+    }
+    routed = true;
+
+    struct button_projection
+    {
+        std::uint16_t flag;
+        std::uint32_t state_flag;
+        std::uint32_t message;
+        bool down;
+    };
+    constexpr button_projection buttons[] = {
+        { RI_MOUSE_LEFT_BUTTON_DOWN, MK_LBUTTON, WM_LBUTTONDOWN, true },
+        { RI_MOUSE_LEFT_BUTTON_UP, MK_LBUTTON, WM_LBUTTONUP, false },
+        { RI_MOUSE_RIGHT_BUTTON_DOWN, MK_RBUTTON, WM_RBUTTONDOWN, true },
+        { RI_MOUSE_RIGHT_BUTTON_UP, MK_RBUTTON, WM_RBUTTONUP, false },
+        { RI_MOUSE_MIDDLE_BUTTON_DOWN, MK_MBUTTON, WM_MBUTTONDOWN, true },
+        { RI_MOUSE_MIDDLE_BUTTON_UP, MK_MBUTTON, WM_MBUTTONUP, false },
+    };
+    for (const button_projection &button : buttons)
+    {
+        if ((message.mouse.button_flags & button.flag) == 0)
+            continue;
+        if (button.down)
+            state.mouse_buttons |= button.state_flag;
+        else
+            state.mouse_buttons &= ~button.state_flag;
+        if (!route_normalized_input(
+                transport,
+                target,
+                button.message,
+                ordered_raw_mouse_key_state(),
+                client_point))
+        {
+            return raw_projection_result::failed;
+        }
+    }
+
+    POINT screen = { x, y };
+    const bool has_screen_point = ClientToScreen(target, &screen) != FALSE;
+    const std::int64_t screen_point = encode_client_point(screen.x, screen.y);
+    const auto route_wheel = [&](std::uint16_t flag, std::uint32_t wheel_message) {
+        if ((message.mouse.button_flags & flag) == 0)
+            return true;
+        if (!has_screen_point)
+            return true;
+        const std::uint32_t wparam = ordered_raw_mouse_key_state() |
+            (static_cast<std::uint32_t>(message.mouse.button_data) << 16U);
+        return route_normalized_input(
+            transport,
+            target,
+            wheel_message,
+            wparam,
+            screen_point);
+    };
+    if (!route_wheel(RI_MOUSE_WHEEL, WM_MOUSEWHEEL) ||
+        !route_wheel(RI_MOUSE_HWHEEL, WM_MOUSEHWHEEL))
+    {
+        return raw_projection_result::failed;
+    }
+    return routed ? raw_projection_result::routed
+                  : raw_projection_result::ignored;
+}
+
+raw_projection_result project_raw_keyboard(
+    ego_transport *transport,
+    const input_message &message,
+    HWND target) noexcept
+{
+    const std::uint32_t key_message = message.keyboard.message;
+    const bool down = key_message == WM_KEYDOWN ||
+        key_message == WM_SYSKEYDOWN;
+    const bool up = key_message == WM_KEYUP ||
+        key_message == WM_SYSKEYUP;
+    const std::uint32_t virtual_key = message.keyboard.virtual_key;
+    if ((!down && !up) || virtual_key == 0 || virtual_key >= 0xFFU)
+        return raw_projection_result::ignored;
+    if (down == ((message.keyboard.flags & RI_KEY_BREAK) != 0))
+        return raw_projection_result::ignored;
+
+    ordered_raw_input_state &state = g_ordered_raw_input_state;
+    const bool repeated = down && state.keys_down[virtual_key];
+    state.keys_down[virtual_key] = down;
+
+    std::uint32_t lparam = 1U |
+        ((static_cast<std::uint32_t>(message.keyboard.make_code) & 0xFFU)
+         << 16U);
+    if ((message.keyboard.flags & RI_KEY_E0) != 0)
+        lparam |= 1U << 24U;
+    if (key_message == WM_SYSKEYDOWN || key_message == WM_SYSKEYUP)
+        lparam |= 1U << 29U;
+    if (repeated || up)
+        lparam |= 1U << 30U;
+    if (up)
+        lparam |= 1U << 31U;
+
+    if (!route_normalized_input(
+            transport,
+            target,
+            key_message,
+            virtual_key,
+            lparam))
+    {
+        return raw_projection_result::failed;
+    }
+
+    const bool dead_key = (message.flags & static_cast<std::uint32_t>(
+        input_message_flags::dead_key)) != 0;
+    if (down && !dead_key)
+    {
+        const std::uint32_t character_message = key_message == WM_SYSKEYDOWN
+            ? WM_SYSCHAR
+            : WM_CHAR;
+        const std::size_t text_length = std::min<std::size_t>(
+            message.text_length,
+            std::size(message.text));
+        for (std::size_t index = 0; index < text_length; ++index)
+        {
+            if (!route_normalized_input(
+                    transport,
+                    target,
+                    character_message,
+                    message.text[index],
+                    lparam))
+            {
+                return raw_projection_result::failed;
+            }
+        }
+    }
+    return raw_projection_result::routed;
+}
+
+raw_projection_result project_raw_input(
+    ego_transport *transport,
+    const input_message &message,
+    HWND primary_target) noexcept
+{
+    const bool no_legacy = (message.flags & static_cast<std::uint32_t>(
+        input_message_flags::no_legacy)) != 0;
+    if (!no_legacy)
+    {
+        if (message.source == input_message_source::raw_input_buffer &&
+            !g_raw_rejected_logged.test_and_set(std::memory_order_relaxed))
+        {
+            char diagnostic[256] = {};
+            sprintf_s(
+                diagnostic,
+                "Electron game overlay rejected buffered raw input without "
+                "an exact NOLEGACY registration (flags=0x%x, target=%p, "
+                "primary=%p).",
+                message.flags,
+                reinterpret_cast<void *>(message.target_window),
+                primary_target);
+            reshade::log::message(
+                reshade::log::level::warning,
+                diagnostic);
+        }
+        return raw_projection_result::ignored;
+    }
+
+    const bool foreground = (message.flags & static_cast<std::uint32_t>(
+        input_message_flags::foreground)) != 0;
+    const bool client_point_valid = (message.flags & static_cast<std::uint32_t>(
+        input_message_flags::client_point_valid)) != 0;
+    HWND const target = static_cast<HWND>(message.target_window);
+    if (!foreground ||
+        !raw_target_owned_by_primary(target, primary_target) ||
+        !target_window_focused(target) ||
+        (message.device_type == input_device_type::mouse &&
+         !client_point_valid))
+    {
+        if (!g_raw_rejected_logged.test_and_set(std::memory_order_relaxed))
+        {
+            char diagnostic[256] = {};
+            sprintf_s(
+                diagnostic,
+                "Electron game overlay rejected authoritative raw input "
+                "without an exact foreground target and client route "
+                "(source=%u, flags=0x%x, target=%p, primary=%p).",
+                static_cast<unsigned int>(message.source),
+                message.flags,
+                reinterpret_cast<void *>(message.target_window),
+                primary_target);
+            reshade::log::message(
+                reshade::log::level::warning,
+                diagnostic);
+        }
+        return raw_projection_result::ignored;
+    }
+
+    const std::uintptr_t target_identity =
+        reinterpret_cast<std::uintptr_t>(target);
+    if (g_ordered_raw_input_state.target_window != target_identity)
+    {
+        reset_ordered_raw_input_state();
+        g_ordered_raw_input_state.target_window = target_identity;
+    }
+
+    switch (message.device_type)
+    {
+    case input_device_type::mouse:
+        return project_raw_mouse(transport, message, target);
+    case input_device_type::keyboard:
+        return project_raw_keyboard(transport, message, target);
+    default:
+        return raw_projection_result::ignored;
+    }
 }
 
 struct input_consumer_release
@@ -1650,6 +2203,7 @@ bool reset_input_router(ego_transport *transport, HWND target_window)
     // reset harmless: its late publication is recognized and discarded.
     g_input_generation.fetch_add(1, std::memory_order_acq_rel);
     reset_ordered_pointer_state();
+    reset_ordered_raw_input_state();
     g_pointer_route_reset_pending.store(false, std::memory_order_release);
     discard_queued_input();
 
@@ -1712,7 +2266,10 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
     const input_consumer_release release_consumer;
 
     if (g_pointer_route_reset_pending.exchange(false, std::memory_order_acq_rel))
+    {
         reset_ordered_pointer_state();
+        reset_ordered_raw_input_state();
+    }
 
     if (!recover_dropped_input(transport, target_window))
         return;
@@ -1803,7 +2360,6 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
         case input_message_source::window_message:
             if (message.message == WM_INPUT)
             {
-                ++g_deferred_window_raw_messages;
                 break;
             }
             else
@@ -1826,28 +2382,23 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
             }
 
         case input_message_source::raw_input:
-            ++g_deferred_raw_input_messages;
-            break;
-
         case input_message_source::raw_input_buffer:
-            ++g_deferred_raw_buffer_messages;
+        {
+            const raw_projection_result result = project_raw_input(
+                transport,
+                message,
+                target_window);
+            if (result == raw_projection_result::failed)
+            {
+                static_cast<void>(reset_input_router(transport, target_window));
+                return;
+            }
             break;
+        }
 
         default:
             static_cast<void>(reset_input_router(transport, target_window));
             return;
-        }
-
-        if (message.source != input_message_source::window_message ||
-            message.message == WM_INPUT)
-        {
-            if (!g_raw_deferred_logged.test_and_set(std::memory_order_relaxed))
-            {
-                reshade::log::message(
-                    reshade::log::level::info,
-                    "Electron game overlay runtime is retaining and counting copied "
-                    "raw-input records; exact raw normalization is deferred.");
-            }
         }
 
         g_last_input_sequence = message.sequence;
@@ -1869,6 +2420,7 @@ void discard_dormant_input()
     // generation before competing for the consumer so a preempted producer
     // cannot republish a stale event into a later producer session.
     reset_ordered_pointer_state();
+    reset_ordered_raw_input_state();
     g_pointer_route_reset_pending.store(false, std::memory_order_release);
     discard_queued_input();
     g_dropped_input_messages.store(0, std::memory_order_release);

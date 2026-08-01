@@ -15,9 +15,34 @@ The Electron add-on publishes the POD and any synchronously captured pointer
 metadata to a bounded lock-free queue and performs routing later on the render
 callback, outside ReShade's input and window locks. Pointer down/up state is
 interpreted only after the single consumer sorts the global observer sequence.
-Legacy blocked window messages are routed exactly. Copied `WM_INPUT` and
-`GetRawInputBuffer` records are retained and counted; their normalization remains
-runtime hardening.
+Legacy blocked window messages are routed exactly. For `WM_INPUT`, the runtime
+copies the transient `RAWINPUT` payload before the callback and never exposes
+the `HRAWINPUT`. It mirrors mouse and keyboard registrations only after the real
+`RegisterRawInputDevices()` call succeeds. A raw device class becomes
+authoritative for Electron only when its exact source HWND is registered with
+`RIDEV_NOLEGACY`; otherwise the copied raw record is ignored and the legacy
+window-message route remains authoritative.
+
+The patch also normalizes blocked `GetRawInputBuffer()` records. Because a
+buffered record has no HWND, each device-class batch is eligible only when
+there is exactly one successful `RIDEV_NOLEGACY` registration on the calling
+thread under the foreground root, a blocking render input can be selected under
+that same root, and the registration generation remains unchanged. Mouse input
+also requires a valid client-space cursor position. No candidate, multiple
+candidates, a stale registration, background input, or an invalid mouse route
+is ambiguous and fails open: ReShade leaves that record unchanged for the game.
+Only records ReShade actually neutralizes are copied to the add-on.
+
+## `reshade-raw-input-normalization.patch`
+
+This is a terminal migration delta from the exact previous observer-plus-pointer
+input stack to the current raw-input implementation. A clean pinned ReShade
+checkout already receives the current implementation from
+`reshade-input-observer.patch`; this patch exists so an older ignored fetched
+tree can migrate without being deleted. Its authoring paths intentionally
+require `git apply -p2`. A reverse-applicable check means the fetched tree is
+already current; otherwise only the exact older final input state may apply it
+forward. Exact normalized source hashes verify the result.
 
 ## `reshade-injector-base-path.patch`
 
@@ -54,7 +79,10 @@ The Electron add-on converts the accepted primary pointer move/left-click stream
 into one legacy route after suppression and global sequence ordering. It carries
 pointer ID, target, type, and Ctrl/Shift state in the queued copy. Touch and pen
 remain unblocked/unconverted. Secondary/X buttons, double-click semantics, and
-pointer wheel normalization remain explicit runtime hardening.
+pointer wheel normalization remain explicit runtime hardening. If the exact
+target has an authoritative `RIDEV_NOLEGACY` raw-mouse registration, the raw
+stream owns the physical action and the corresponding promoted mouse-pointer
+copy is discarded to prevent duplicate Electron clicks.
 
 ## `reshade-injector-path-watcher.patch`
 
@@ -174,7 +202,13 @@ loaded it, then emits the structured `official-addon` result with the exact
 runtime and add-on module paths. The injector verifies the add-on ABI and build
 identity, while host-version compatibility is decided inside the add-on through
 public API-18 registration and the requested Dear ImGui function table. There is
-no ReShade product-version or runtime-hash allowlist.
+no ReShade product-version or runtime-hash allowlist. In this public-host mode,
+the add-on's same-thread message interception can copy, route, and suppress
+foreground `WM_INPUT` records and queries the exact source HWND's current
+`RIDEV_NOLEGACY` registration before treating raw input as authoritative. The
+current public-host add-on does not add the pinned runtime's
+`GetRawInputBuffer()` detour to an official host, so buffered-only raw-input
+consumers remain outside that compatibility boundary.
 
 ## `reshade-injector-global-layer-preflight.patch`
 
@@ -220,6 +254,8 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all seventeen
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all eighteen
 production-patch hashes, the full-add-on configuration, and runtime/injector
-hashes before accepting its cache.
+hashes before accepting its cache. Raw-input normalization reuses the existing
+normalized Win32 input path; it changes no published transport C ABI, transport
+wire schema, or public Node SDK API.

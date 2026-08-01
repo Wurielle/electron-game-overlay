@@ -18,15 +18,32 @@ connects the real multi-window Electron scene on both backends. ReShade's public
 `effect_runtime::block_input_next_frame()` remains the sole game-side blocking
 authority. A narrow pinned full-add-on observer copies input only after ReShade
 has decided to suppress it, allowing the project router to deliver the exact
-legacy Win32 records to Electron without a second suppression hook. An
-independent host oracle counts window messages, raw input, polling-visible
+legacy Win32 records to Electron without a second suppression hook. The pinned
+runtime also copies blocked foreground raw mouse and keyboard records from both
+queued `WM_INPUT` and direct `GetRawInputBuffer()` consumption. Only an exact
+successful `RIDEV_NOLEGACY` registration makes that device-class stream
+authoritative; otherwise the legacy window-message route remains authoritative
+and the raw copy is ignored to avoid duplicate Electron events.
+
+An independent host oracle counts window messages, raw input, polling-visible
 left-button state, Windows pointer messages, cursor movement, and cursor
 confinement. A second narrow patch closes ReShade's `WM_POINTER` gap for
 mouse-in-pointer applications. It restricts the new classification to `PT_MOUSE`
 and updates ReShade's managed mouse state for native ImGui. The add-on snapshots
 pointer metadata at the callback and, only after global sequence ordering on the
 single consumer, turns primary move/left-click records into the same Electron
-legacy route.
+legacy route. When the same target has an authoritative `RIDEV_NOLEGACY` raw
+mouse registration, that raw stream owns the physical action and the promoted
+mouse-pointer copy is discarded rather than delivered twice.
+
+`GetRawInputBuffer()` records contain no target HWND. The pinned runtime routes
+them only when it can prove exactly one successful `RIDEV_NOLEGACY`
+registration for that device class on the calling thread and foreground window
+root, select a blocking render input under that same root, and retain the same
+registration generation through consumption. Mouse records additionally
+require an exact client-space cursor route. Missing, multiple, stale, or
+otherwise ambiguous candidates fail open: the record is left unchanged for the
+game instead of being swallowed or sent to the wrong Electron window.
 
 Exact-PID SDK attachment uses a run-local rendezvous boundary. The injected
 transport prefers `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`; newly injected runtime
@@ -110,11 +127,16 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies seventeen
+downloads both into the ignored build directory, then applies eighteen
 production patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
-  and exposes a passive copied-input event after ReShade decides to block;
+  and exposes a passive copied-input event after ReShade decides to block. It
+  copies queued `WM_INPUT`, tracks successful raw-input registrations, and
+  normalizes unambiguous `GetRawInputBuffer()` records;
+- `reshade-raw-input-normalization.patch` migrates an exact older ignored
+  fetched-source cache to the current observer implementation. Clean pinned
+  source receives the same behavior directly from the observer patch;
 - `reshade-injector-base-path.patch` keeps injected configuration, add-ons, and
   logs in the isolated injector stage and removes the startup delay that missed
   early Unity swap-chain creation;
@@ -185,7 +207,16 @@ Dear ImGui function table; it enables the private input observer only in this
 repository's patched host. Do not replace the staged `ReShade64.dll` with a
 stock build; the bundled project runtime remains the pinned ReShade 6.7.3 build,
 while public-host compatibility is selected by capabilities rather than product
-version or file hash.
+version or file hash. An official host can route and suppress foreground raw
+input delivered through queued `WM_INPUT`, using the exact target's current
+`RIDEV_NOLEGACY` registration as authority. The current public-host add-on does
+not install the pinned runtime's `GetRawInputBuffer()` detour, so games that
+consume raw input only through that buffered API require the bundled patched
+runtime for complete interception.
+
+Raw-input normalization is internal to the runtime/add-on boundary. It reuses
+the existing normalized Win32 `game.input` route and does not change the
+published transport C ABI, transport wire schema, or public Node SDK API.
 
 ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is
 MIT-licensed. Preserve their notices if compiled binaries are redistributed.
@@ -199,7 +230,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-20 build stamp, the seventeen
+The launchers validate the cache against a schema-21 build stamp, the eighteen
 production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
 all nine patched source files, the full-add-on configuration, and the
 runtime/injector SHA-256 hashes. CMake performs the same commit, nine-path, and
@@ -393,6 +424,32 @@ proves the production client/public SDK path and ReShade's D3D12 selection for a
 cooperating target; it does not prove late injection or arbitrary fast-start
 D3D12 game timing. Client cleanup in this gate is forced teardown followed by a
 fresh launch, not producer-session deactivation or clean runtime/add-on unload.
+
+## Run the production client/SDK raw-input gates
+
+Use the dedicated human-facing launcher for each backend:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-raw-input.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-raw-input.ps1
+```
+
+Each launcher runs two isolated one-attempt production client/SDK cases. The
+first host registers raw mouse and keyboard with `RIDEV_NOLEGACY` and consumes
+them through queued `WM_INPUT`; the second consumes the same authoritative
+device classes through `GetRawInputBuffer()`. The runner drives both transported
+Electron windows, requires normalized click, keyboard, text, and wheel behavior
+while the complete game-side oracle remains frozen, then releases interception
+and proves raw input resumes. The buffered case additionally requires the
+host's buffer-batch counter to advance after release with no buffer error.
+
+The wrappers run `wm-input` followed by `raw-buffer`, reuse the first build for
+the second case, and print `D3D11_RAW_INPUT_CLIENT_SDK_GATE_PASS` or
+`D3D12_RAW_INPUT_CLIENT_SDK_GATE_PASS` only after both pass. `-SkipBuild` is
+available when the current client and native artifacts have already been built.
+These gates exercise the bundled pinned runtime; the official ReShade path has
+the `WM_INPUT` capability only and is not evidence for `GetRawInputBuffer()`
+consumers.
 
 ## Run the same-client restart/reinjection gate
 

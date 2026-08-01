@@ -3,10 +3,10 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "CDDCB683DA724B149BEA818760F10354"
+    "2959553DBCEF4513BF4A587B7A29AA0C"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "2FD5C82AC601AECB839EFCE3F8F2FB191627D379EA697612AD91C76CBA4F166A"
+    "ED3A9EE426702DF7F643BAFA9F184321439078EF61E9384B984C577ABB39B801"
 )
 
 option(
@@ -37,6 +37,9 @@ set(RESHAPE_SOURCE_PATCHES
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-pointer-input-block.patch"
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-exact-pid.patch"
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher.patch"
+)
+set(RESHAPE_RAW_INPUT_NORMALIZATION_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-raw-input-normalization.patch"
 )
 set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher-process-identity.patch"
@@ -97,13 +100,14 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "include/reshade_events.hpp=8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
     "source/addon_manager.cpp=28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/input.cpp=4C53B31266E281479348913E2911CB7182843CFCB6D4063B571BECECF3F5BB2F"
-    "source/input.hpp=C772470BC1AA003E3D6BD0C6E29B01CCE3B0F6CCF4F42E60B73EA9FCA6D12B2C"
+    "source/input.cpp=FDA7ACA1A1060EBF0DC0F067D8E5E67A247884754C612CCB9163114BB1A691B1"
+    "source/input.hpp=658D0541E495F258970954C00A28912DEEDB07E3E541ED728AD824823B6C186D"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
     "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
+    "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
     "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
     "${RESHAPE_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
@@ -276,8 +280,8 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply seventeen narrow pinned seams: the passive copied-input observer, an injector
-# base-path override, coverage for Windows' second mouse projection through
+# Apply eighteen narrow pinned seams: the passive copied-input observer, raw-input
+# target normalization, an injector base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
 # observation, loaded and inactive ReShade conflict preflight, official add-on
 # discovery, per-PID injection ownership, compatible shared-runtime registration
@@ -1380,6 +1384,51 @@ endif()
 # the complete lower patch stack in an existing fetched tree. Skipping lower
 # migration checks here avoids asking those superseded hunks to reverse through
 # the terminal injector changes.
+endif()
+
+# The observer patch now produces the current normalized raw-input tree on a
+# clean fetch. This terminal delta migrates an exact older fetched tree without
+# deleting user/build caches; on a clean tree it is already reverse-applicable.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply -p2 --reverse --check
+        "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply -p2 --check
+            "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned raw-input normalization patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply -p2 --whitespace=nowarn
+            "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to add raw-input target normalization to the pinned ReShade runtime.\n"
+            "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY_ERROR}"
+        )
+    endif()
 endif()
 
 # Fail configuration unless this FetchContent tree is exactly the pinned

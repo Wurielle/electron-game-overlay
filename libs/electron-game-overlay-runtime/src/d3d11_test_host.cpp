@@ -27,6 +27,7 @@ constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D11TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D11 overlay test host";
 constexpr wchar_t kSecondaryWindowTitle[] =
     L"Controlled D3D11 overlay test host B";
+constexpr wchar_t kInjectedRuntimeWaitMarker[] = L"reshade-injection-wait.enabled";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
 constexpr wchar_t kDestroyFinalSurfaceRequestMarker[] =
@@ -306,6 +307,35 @@ bool wait_for_test_startup_barrier()
     return false;
 }
 
+bool wait_for_prearmed_injected_runtime()
+{
+    std::wstring marker;
+    if (!module_sibling_path(kInjectedRuntimeWaitMarker, marker))
+        return false;
+    if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return true;
+
+    const ULONGLONG deadline = GetTickCount64() + 15'000;
+    while (GetTickCount64() < deadline)
+    {
+        if (GetModuleHandleW(L"ReShade64.dll") != nullptr)
+        {
+            // This deliberately fast host must let ReShade finish installing
+            // its D3D11 hooks after LoadLibrary publishes the module.
+            Sleep(750);
+            return true;
+        }
+        Sleep(10);
+    }
+
+    MessageBoxW(
+        nullptr,
+        L"The controlled host timed out waiting for the pre-armed ReShade runtime.",
+        kWindowTitle,
+        MB_OK | MB_ICONERROR);
+    return false;
+}
+
 void report_graphics_failure(const wchar_t *message)
 {
     OutputDebugStringW(message);
@@ -486,7 +516,7 @@ HRESULT render_surface(
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
-    g_input_oracle.observe_window_message(window, message, w_param);
+    g_input_oracle.observe_window_message(window, message, w_param, l_param);
 
     switch (message)
     {
@@ -563,6 +593,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     if (!enable_per_monitor_v2_awareness())
         return 1;
     if (!wait_for_test_startup_barrier())
+        return 1;
+    if (!wait_for_prearmed_injected_runtime())
         return 1;
 
     WNDCLASSEXW window_class = {};
@@ -714,7 +746,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             continue;
         }
 
-        if (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        if (g_input_oracle.peek_next_message(message))
         {
             TranslateMessage(&message);
             DispatchMessageW(&message);
