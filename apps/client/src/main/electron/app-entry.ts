@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   globalShortcut,
   ipcMain,
@@ -17,6 +18,11 @@ import {
   DEMO_CONTROL_OVERLAY_EXPANDED_SIZE,
 } from './example-overlay-windows';
 import type { OverlayWindowContext } from './example-overlay-windows';
+import {
+  CompatibilityRunRecorder,
+  resolveCompatibilityRunsRoot,
+  type CompatibilityRunMode,
+} from './compatibility-run-recorder';
 import {
   ElectronGameOverlay,
   isReShadeOperationError,
@@ -49,6 +55,8 @@ const DEMO_PRESENTATION_FLAG = '--demo-presentation';
 const AUTO_START_OVERLAY_MARKER = 'RESHADE_CLIENT_OVERLAY_SESSION_READY';
 const RESHADE_CONFIGURED_MARKER = 'RESHADE_CLIENT_CONFIGURED';
 const RESHADE_ATTACHMENT_STATE_MARKER = 'RESHADE_CLIENT_ATTACHMENT_STATE';
+const COMPATIBILITY_RUN_RECORDER_MARKER =
+  'ELECTRON_GAME_OVERLAY_COMPATIBILITY_RUN';
 const DEMO_STATE_CHANGED_CHANNEL = 'overlay:state-changed';
 
 type ReShadeAttachmentPhase = 'idle' | 'attaching' | 'connected';
@@ -79,6 +87,7 @@ class Application {
   private readonly reshadeLauncher: ReShadeOverlayLauncher | null;
   private readonly steamGameAutoAttacher: SteamGameAutoAttacher | null;
   private readonly inputInterceptShortcut: InputInterceptShortcut;
+  private compatibilityRunRecorder: CompatibilityRunRecorder | null = null;
   private reshadeAttachment: ReShadeAttachmentState = {
     phase: 'idle',
     processName: null,
@@ -109,7 +118,9 @@ class Application {
     this.reshadeLauncher = reshadeConfig
       ? new ReShadeOverlayLauncher(reshadeConfig)
       : null;
-    this.reshadeLauncher?.onEvent(logReShadeLauncherEvent);
+    this.reshadeLauncher?.onEvent((event) =>
+      this.handleReShadeLauncherEvent(event),
+    );
     const steamAutoAttachRequested = process.argv.includes(
       STEAM_AUTO_ATTACH_FLAG,
     );
@@ -126,7 +137,8 @@ class Application {
         ? new SteamGameAutoAttacher({
             session: this.overlaySession,
             reshadeConfig,
-            launcherEventHandler: logReShadeLauncherEvent,
+            launcherEventHandler: (event) =>
+              this.handleReShadeLauncherEvent(event),
             watcherFactory: () =>
               new ForkedProcessWatcher(
                 resolveProcessWatcherEntry(),
@@ -140,6 +152,10 @@ class Application {
       );
     }
     this.steamGameAutoAttacher?.onStateChange(() => {
+      const autoAttachState = this.steamGameAutoAttacher?.state;
+      if (autoAttachState) {
+        this.compatibilityRunRecorder?.recordAutoAttachState(autoAttachState);
+      }
       if (
         this.gunFrogInputProof &&
         this.steamGameAutoAttacher?.state.targets.some(
@@ -165,10 +181,12 @@ class Application {
     this.overlaySession.on('diagnostic', (diagnostic) => {
       this.handleOverlayDiagnostic(diagnostic);
     });
-    this.overlaySession.on('targetSurfaceChanged', () => {
+    this.overlaySession.on('targetSurfaceChanged', (surface) => {
+      this.compatibilityRunRecorder?.recordTargetSurface(surface);
       this.publishDemoState();
     });
-    this.overlaySession.on('targetSurfaceRemoved', () => {
+    this.overlaySession.on('targetSurfaceRemoved', (surface) => {
+      this.compatibilityRunRecorder?.recordTargetSurfaceRemoved(surface);
       this.publishDemoState();
     });
     this.overlaySession.on('nativeEvent', ({ event, payload }) => {
@@ -307,6 +325,7 @@ class Application {
   }
 
   public start() {
+    this.startCompatibilityRunRecorder();
     this.setupIpc();
     this.createMainWindow();
     this.setupSystemTray();
@@ -361,6 +380,8 @@ class Application {
       this.tray.destroy();
       this.tray = null;
     }
+    this.compatibilityRunRecorder?.close();
+    this.compatibilityRunRecorder = null;
   }
 
   public openLink(url: string) {
@@ -572,6 +593,7 @@ class Application {
       this.overlaySession.input.release();
     }
     this.inputInterceptRequested = intercept;
+    this.compatibilityRunRecorder?.recordInputRequested(intercept);
     this.syncDemoControlOverlay();
     this.refreshInputInterceptEffective();
     this.publishDemoState();
@@ -767,6 +789,7 @@ class Application {
   }
 
   private handleOverlayFps(payload: OverlayGraphicsFps) {
+    this.compatibilityRunRecorder?.recordFps(payload);
     const { targetSurface } = this.getDemoTargetSurfaceSnapshot();
     const acceptedTargetPid =
       this.getActiveAttachmentPid() ?? targetSurface?.pid ?? null;
@@ -789,6 +812,7 @@ class Application {
   }
 
   private handleOverlayDiagnostic(diagnostic: OverlayDiagnostic) {
+    this.compatibilityRunRecorder?.recordOverlayDiagnostic(diagnostic);
     this.latestOverlayDiagnostic = diagnostic;
     const marker =
       `OVERLAY_SESSION_DIAGNOSTIC source=${diagnostic.source} ` +
@@ -831,6 +855,7 @@ class Application {
   }
 
   private handleOverlayNativeEvent(event: string, payload: any) {
+    this.compatibilityRunRecorder?.recordNativeEvent(event, payload);
     if (event === 'game.window.focused') {
       this.keepDemoControlOverlayOnTop(payload);
       return;
@@ -870,6 +895,10 @@ class Application {
       ) {
         return;
       }
+      this.compatibilityRunRecorder?.recordInputAcknowledged(
+        pid,
+        payload.intercepting,
+      );
       this.refreshInputInterceptEffective();
       console.log(
         `HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=${payload.intercepting}`,
@@ -932,6 +961,7 @@ class Application {
       return;
     }
     this.inputInterceptEffective = effective;
+    this.compatibilityRunRecorder?.recordInputEffective(effective);
     this.publishDemoState();
   }
 
@@ -1019,6 +1049,7 @@ class Application {
     reason?: 'attach-failed' | 'attach-indeterminate' | 'target-disconnected',
   ) {
     this.reshadeAttachment = state;
+    this.compatibilityRunRecorder?.recordAttachmentState(state, reason);
     const diagnostic =
       state.diagnostic === null
         ? ''
@@ -1056,6 +1087,52 @@ class Application {
 
     this.gunFrogProofReadyLogged = true;
     console.log('HUDHOOK_CLIENT_GUN_FROG_PROOF_READY');
+  }
+
+  private startCompatibilityRunRecorder() {
+    if (!this.reshadeLauncher || this.compatibilityRunRecorder) {
+      return;
+    }
+
+    const mode: CompatibilityRunMode = this.steamGameAutoAttacher
+      ? 'steam-auto-attach'
+      : this.reshadeLauncher.config.autoTargetProcess
+        ? 'automatic-target'
+        : 'manual';
+    try {
+      const rootDirectory = resolveCompatibilityRunsRoot(
+        process.env.ELECTRON_GAME_OVERLAY_COMPATIBILITY_RUNS_DIR,
+        path.join(app.getPath('logs'), 'compatibility-runs'),
+      );
+      const recorder = new CompatibilityRunRecorder({
+        rootDirectory,
+        mode,
+        appVersion: app.getVersion(),
+        electronVersion: process.versions.electron,
+        onError: (error) => {
+          console.warn(
+            `${COMPATIBILITY_RUN_RECORDER_MARKER}_DISABLED detail=${JSON.stringify(error.message)}`,
+          );
+        },
+      });
+      this.compatibilityRunRecorder = recorder;
+      recorder.recordInputRequested(this.inputInterceptRequested);
+      recorder.recordInputEffective(this.inputInterceptEffective);
+      console.log(
+        `${COMPATIBILITY_RUN_RECORDER_MARKER}_STARTED events=${JSON.stringify(recorder.eventsPath)} summary=${JSON.stringify(recorder.summaryPath)}`,
+      );
+    } catch (error) {
+      console.warn(
+        `${COMPATIBILITY_RUN_RECORDER_MARKER}_DISABLED detail=${JSON.stringify(getErrorMessage(error))}`,
+      );
+    }
+  }
+
+  private handleReShadeLauncherEvent(
+    event: Parameters<typeof logReShadeLauncherEvent>[0],
+  ) {
+    logReShadeLauncherEvent(event);
+    this.compatibilityRunRecorder?.recordLauncherEvent(event);
   }
 }
 

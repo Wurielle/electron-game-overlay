@@ -84,6 +84,26 @@ canonicalizes and bounds the records; the current loopback transport supplies
 fixed redacted messages and never includes discovery tokens, raw packets,
 executable paths, stacks, or arbitrary remote error text.
 
+Every ReShade-enabled demo invocation also writes a compatibility evidence run
+under Electron's application log directory in `compatibility-runs`. Startup
+prints `ELECTRON_GAME_OVERLAY_COMPATIBILITY_RUN_STARTED` with the absolute
+`.events.jsonl` and `.summary.json` paths. The JSONL file is updated while the
+client runs; orderly client shutdown appends `run.finished` and finalizes the
+summary. Set `ELECTRON_GAME_OVERLAY_COMPATIBILITY_RUNS_DIR` to an absolute
+directory to override the location.
+At the next startup, completed evidence is retained for at most 14 days, 32
+runs, and 100 MiB. Active, interrupted, malformed, and unfamiliar files are
+preserved rather than guessed safe to delete.
+
+Evidence is split into independent per-PID lifetimes and records watcher,
+attachment, authenticated transport, graphics API/surface, FPS, diagnostic,
+input acknowledgement, release, and relaunch observations. It stores
+executable basenames and session-local surface/attempt references rather than
+raw input, typed text, credentials, full paths, HWNDs, monitor identifiers, or
+arbitrary error messages. The summary deliberately reports an inconclusive
+automated verdict: visible rendering, click blocking, drag/typing behavior, and
+the game's reaction still require a controlled oracle or a human test.
+
 The dock reads `session.targets.list()` and the typed FPS event. The main test
 window calls `followTarget({ area: 'render' })`, so target resize, display/DPI,
 and fullscreen changes resize its hidden Electron backing surface while the

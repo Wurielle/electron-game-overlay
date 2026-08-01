@@ -253,6 +253,20 @@ explicitly unsupported or deferred until chosen as a separate task.
 - [ ] Treat post-render attachment as unsupported unless existing-device/swap-chain adoption is implemented and proven. A controlled probe at plus three seconds loaded `ReShade64.dll` into already-rendering D3D11/D3D12 targets but produced no runtime, add-on, API-hook, or Electron-scene initialization.
 - [ ] Defer package publishing and installer work until repository-local SDK/client testing closes the remaining acceptance and hardening items.
 - [ ] Expand real-client compatibility through additional permitted games; do not infer other-game support from the accepted Gun Frog path or controlled hosts.
+- [x] Add durable, demo-only compatibility-run evidence for real-game testing.
+  - Every ReShade-enabled client invocation now writes a live structured JSONL
+    stream and an orderly-shutdown summary under Electron's log directory. The
+    evidence correlates independent PID lifetimes across watcher, launcher,
+    transport, surface/API, FPS, diagnostics, input acknowledgement, release,
+    recovery, and relaunch events without changing the public SDK.
+  - The recorder stores executable basenames and session-local references, not
+    credentials, raw input/text, full target paths, HWNDs, monitor identifiers,
+    or arbitrary errors. Its verdict remains explicitly inconclusive because
+    generic telemetry cannot prove visible quality or that a game did not also
+    react to a click.
+  - Completed evidence is pruned on later startup by age, count, and total byte
+    bounds. Active, interrupted, malformed, and unfamiliar records fail closed
+    and remain available for explicit future orphan recovery.
 - [ ] Run real physical/VM mixed-scale acceptance for target-follow placement; the contract and simulated cross-display tests are complete, but this machine still exposes only one 100% virtual display.
 - [x] Isolate production rendezvous and authentication for simultaneous exact-PID target processes.
   - Every exact-PID `attach()` now publishes `electron-overlay-transport-v1.targeted` before writing a unique token and expected PID into the consumed run directory. Revoking the credential leaves that marker in place, so a payload that initializes late fails closed instead of falling back globally; removing the staged run directory removes the marker with it. The injected transport resolves the adjacent route through `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`, with `RESHADE_BASE_PATH_OVERRIDE` as the injected-runtime fallback, rejects malformed credentials and target-PID mismatch, and pins the selected route. The Node listener validates token plus PID before publishing its scene and can retain multiple authenticated PIDs concurrently.
