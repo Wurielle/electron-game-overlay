@@ -51,7 +51,7 @@ after disposal.
 `session.close()` deactivates publication; it does not unload code from a live
 target. The mapped runtime observes the producer-session epoch change on its
 next ReShade overlay callback, releases interception, retires prior
-single-swap-chain scene textures, and remains dormant. If the target has stopped
+process-primary scene textures, and remains dormant. If the target has stopped
 presenting entirely, that render-thread transition waits until presentation
 resumes.
 
@@ -507,6 +507,12 @@ includes the authoritative process and surface IDs, target HWND, graphics API,
 render size, client and outer-window screen bounds, DPI, monitor/work-area
 bounds, focus, visibility, minimized state, and a fullscreen-like flag.
 
+At most one surface is advertised per target process. The first valid presenting
+swap chain becomes a stable primary; only it publishes surface/FPS telemetry,
+owns input, and composes the Electron scene. Resize preserves that ownership.
+Final primary destruction emits removal for the old surface identity, after
+which a remaining valid presenter may publish a new identity and FPS stream.
+
 ```ts
 session.on('targetSurfaceChanged', (surface) => {
   console.log(
@@ -525,8 +531,8 @@ const surfaces = session.targets.list();
 const exact = session.targets.get(surfaces[0].pid, surfaces[0].surfaceId);
 ```
 
-`fps` is sampled inside the injected render process; it is not an Electron
-paint-rate counter. Surface state survives a transient transport loss so a
+`fps` is sampled from the current process-primary render context; it is not an
+Electron paint-rate counter. Surface state survives a transient transport loss so a
 same-PID runtime can reauthenticate, and is cleared only by an authoritative
 surface removal or OS-confirmed process disconnect.
 
@@ -651,6 +657,9 @@ publishes the same overlay scene to each connected target. Two independent
 application processes have accepted concurrent operation against different
 exact-PID D3D11 and D3D12 targets. Independent simultaneous `OverlaySession`
 instances in one Electron process, multiple applications targeting the same
-PID, multiple swap chains, real physical/VM mixed-scale acceptance, unusual
+PID, same-HWND multi-swap-chain input ownership, distinct D3D12 direct queues,
+broader swap-chain layouts, real physical/VM mixed-scale acceptance, unusual
 exclusive-fullscreen paths, and Electron 42 OSR behavior remain follow-up work
-rather than current compatibility claims.
+rather than current compatibility claims. Distinct-HWND swap chains sharing one
+D3D11 device/context or one D3D12 device/direct queue have production-client
+primary/failover acceptance.

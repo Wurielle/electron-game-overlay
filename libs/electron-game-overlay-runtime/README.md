@@ -475,7 +475,7 @@ active graphics API, adopt the existing device or swap chain, load the add-on,
 or render the Electron scene. That route is unsupported. Probe evidence is under
 `build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
 
-## Run producer-session, final-surface, and independent-app lifecycle gates
+## Run producer-session, final-surface, multi-swap-chain, and independent-app lifecycle gates
 
 Use the dedicated human-facing launchers:
 
@@ -484,13 +484,15 @@ Use the dedicated human-facing launchers:
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-session-deactivation.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-target-surface-drain.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-target-surface-drain.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-multi-swapchain.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-multi-swapchain.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-d3d12-client-sdk-two-app-two-target.ps1
 ```
 
 The D3D11 and D3D12 gates close the public SDK session while the Electron
 producer and controlled target remain alive. On the next ReShade overlay
 callback, the monotonic epoch transition releases interception, clears the old
-scene, and retires both textures in each accepted single-swap-chain target.
+scene, and retires the active process-primary textures in each accepted target.
 ReShade and the Electron add-on remain mapped and dormant. This is session
 deactivation, not unload. July 31, 2026 evidence is under
 `build/electron-game-overlay-runtime/client-sdk-d3d11-session-deactivation-20260731-000557`
@@ -510,6 +512,24 @@ August 1, 2026 evidence is under
 `build/electron-game-overlay-runtime/client-sdk-d3d12-target-surface-drain-20260801-080808`
 (846.302 ms to SDK null). Both also assert that native teardown emitted no
 final-drain failure warning.
+
+The multi-swap-chain gates create two distinct HWND swap chains in one exact-PID
+target. D3D11 shares one device/context; D3D12 shares one device/direct queue.
+The first valid presenter stays process primary through resize. Only it advertises
+target-surface/FPS telemetry, owns input, and composes the Electron scene. The
+gate then destroys that swap chain while keeping both HWNDs, the shared graphics
+objects, process, producer, and attachment alive. It requires the surviving
+presenter to publish a different surface identity, sustained FPS, and a second
+exclusive compositor; intercepted Electron input must work while the game oracle
+remains frozen on both owners. Released input must then reach the promoted HWND.
+August 1, 2026 evidence is under
+`build/electron-game-overlay-runtime/client-sdk-d3d11-multi-swapchain-20260801-103555`
+(37.782 ms failover) and
+`build/electron-game-overlay-runtime/client-sdk-d3d12-multi-swapchain-20260801-103532`
+(51.518 ms failover). Both recorded FPS events `1 -> 4 -> 6` and interception
+acknowledgements `true -> false -> true -> false` without a target disconnect.
+Same-HWND input ownership, distinct D3D12 direct queues, and broader layouts are
+not claimed by these gates.
 
 The two-app gate runs two independent Electron processes against separate
 exact-PID D3D11 and D3D12 targets. It proves distinct run directories,
@@ -736,8 +756,8 @@ closed the host-switch milestone for this accepted target path.
   accepted Electron route covers primary mouse move/left click and preserves
   captured Ctrl/Shift state); touch and pen remain unconverted and fail open to
   the target;
-- multiple-swap-chain/render-queue ownership and cross-queue-safe texture
-  retirement;
+- same-HWND multi-swap-chain input ownership, distinct D3D12 direct queues, and
+  broader swap-chain layouts beyond the accepted shared-device/queue boundary;
 - clean in-process runtime/add-on unload, post-render injection or existing-device/
   swap-chain adoption, arbitrary proxy chains, real-game coexistence with
   arbitrary effect/add-on combinations, deterministic pre-entry injection,
@@ -763,8 +783,8 @@ Exact-PID near-process-creation support is implemented and has dedicated
 normal-start/pre-device D3D11/D3D12 gates with passing acceptance. Raw normalization,
 clean in-process unload, post-render attachment, arbitrary watcher latency,
 end-to-end process-creation correlation beyond the native watcher baseline,
-other games and APIs, and multiple-swap-chain hardening stay outside the
-accepted boundary. Package publishing is deferred
+other games and APIs, and same-HWND/distinct-queue/broader-layout
+multi-swap-chain hardening stay outside the accepted boundary. Package publishing is deferred
 while repository-local SDK/client testing continues. ReShade replaces the
 injected host, graphics lifecycle, ImGui ownership, and game-side input blocking
 rather than the Electron SDK contract.

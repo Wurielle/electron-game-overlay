@@ -107,9 +107,11 @@ pointer records are copied into a bounded queue and routed exactly after global
 sequence ordering rather than sampled at `Present`; two overlapping OSR windows
 passed click-to-front, text focus/input, and caption dragging while the game
 oracle remained frozen.
-Copied raw records, target-display/client-origin ownership, mixed-monitor
-acceptance, multiple-swapchain ownership, and safe GPU texture retirement
-remain open.
+Copied raw records, target-display/client-origin ownership, and mixed-monitor
+acceptance remain open. The active ReShade path now accepts stable primary
+ownership, per-swap-chain texture retirement, and failover for distinct HWNDs
+sharing one D3D11 device/context or one D3D12 device/direct queue. Same-HWND
+input ownership, distinct D3D12 queues, and broader layouts remain deferred.
 
 ## Original model (historical)
 
@@ -449,9 +451,9 @@ The implemented hudhook path is defined in [`hudhook-imgui-overlay-poc.md`](hudh
 7. Compose and route an ordered multi-window scene (complete); separately smoke-test the unchanged payload in one allowed offline D3D11 game or application.
 8. Add a backend-specific D3D12 payload and controlled D3D12 host, then repeat the Electron composition, input, and multi-window proof without expanding the acceptance scope. **Complete.**
 9. Integrate the proven hudhook path into the real client workflow and replace the old injection/transport dependencies needed to finish the POC. **Complete.**
-10. After the POC is complete, harden target-HWND display/client-origin ownership, backing-window/per-target geometry, real mixed-scale hardware/VM behavior, and deferred GPU texture retirement.
+10. After the POC is complete, harden target-HWND display/client-origin ownership, backing-window/per-target geometry, real mixed-scale hardware/VM behavior, and GPU texture retirement outside the accepted shared-device/queue boundary.
 
-The controlled D3D11 and D3D12 graphics paths, real-client integration, project-owned Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence was not an adoption gate for that completed hudhook-controlled milestone; the current host decision above supersedes its runtime selection after real-game input validation. Compatible project-runtime reuse and the initial official ReShade 6.7.3 public-host fixture have controlled evidence. The current public-host contract is version/hash agnostic and capability negotiated; active-host races, proxy combinations, capability-incompatible hosts, and broad real-game effect/add-on coexistence remain hardening. Target-display ownership, mixed-monitor acceptance, texture retirement, a production injector, and other geometry/DPI edge cases remain recorded post-POC hardening rather than blockers.
+The controlled D3D11 and D3D12 graphics paths, real-client integration, project-owned Electron transport, regular Win32 input, multi-window/z-order, uniform-scale, and producer-window/runtime transition criteria are complete. The implementation, runner modes, and diagnostics are in [`poc/hudhook-imgui-overlay`](../poc/hudhook-imgui-overlay/README.md), with acceptance records in [`hudhook-input-interactivity-handoff.md`](hudhook-input-interactivity-handoff.md) and [`hudhook-multiwindow-compositor-handoff.md`](hudhook-multiwindow-compositor-handoff.md). ReShade coexistence was not an adoption gate for that completed hudhook-controlled milestone; the current host decision above supersedes its runtime selection after real-game input validation. Compatible project-runtime reuse and the initial official ReShade 6.7.3 public-host fixture have controlled evidence. The current public-host contract is version/hash agnostic and capability negotiated; active-host races, proxy combinations, capability-incompatible hosts, and broad real-game effect/add-on coexistence remain hardening. Target-display ownership, mixed-monitor acceptance, texture retirement outside the accepted shared-device/queue boundary, a production injector, and other geometry/DPI edge cases remain recorded post-POC hardening rather than blockers.
 
 ## Research checklist for search agent
 
@@ -726,11 +728,14 @@ retired full-system polling loop. The bounded replacement passed both its idle
 resource gate and a short PEAK render/input rerun on July 28, 2026; the observer
 used 0.6% of one CPU core before launch and rounded to 0% in the in-game sample.
 That run had no readable temperature sensor and is not a thermal soak.
-Target-HWND/client-origin ownership, mixed monitors, multiple
-targets, texture retirement, broader game/API coverage, exact process-creation
-identity across PID reuse, arbitrary watcher latency, graceful disable/unload,
-capability-incompatible public hosts, and other proxy coexistence remain
-post-POC hardening. The compatible project-built ABI-1 host and a public API-18
+Target-HWND/client-origin ownership, mixed monitors, multiple targets,
+same-HWND or distinct-queue multi-swap-chain layouts, broader game/API coverage,
+exact process-creation identity across PID reuse, arbitrary watcher latency,
+graceful disable/unload, capability-incompatible public hosts, and other proxy
+coexistence remain post-POC hardening. Stable primary ownership and per-swap-chain
+texture retirement are accepted for distinct HWNDs sharing one D3D11
+device/context or one D3D12 device/direct queue. The compatible project-built
+ABI-1 host and a public API-18
 fixture are the controlled existing-host paths; every detected target-local x64
 ReShade identity is attempted, but only successful registration plus the exact
 ImGui table establishes compatibility. Post-render injection is unsupported

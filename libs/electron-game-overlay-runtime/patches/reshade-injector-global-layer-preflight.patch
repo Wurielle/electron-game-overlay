@@ -2001,7 +2001,7 @@ index aac609b..7f79c89 100644
 +		"ElectronGameOverlayReShadeAddonBuildId";
  	constexpr unsigned int supported_addon_abi = 1;
 +	constexpr char expected_addon_build_id[] =
-+		"B1522329C5204D29A79F771CA37BA023";
++		"CDDCB683DA724B149BEA818760F10354";
 +	static_assert(sizeof(expected_addon_build_id) == 33);
  	bool found_addon = false;
  

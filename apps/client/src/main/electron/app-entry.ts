@@ -23,7 +23,9 @@ import {
   ReShadeOverlayLauncher,
   type ElectronOverlayWindow,
   type OverlayDiagnostic,
+  type OverlayGraphicsFps,
   type OverlaySession,
+  type OverlayTargetSurface,
   type ReShadeDiagnostic,
   type ReShadeLaunchConfig,
   type ReShadeTarget,
@@ -68,6 +70,9 @@ class Application {
   private inputInterceptRequested = false;
   private inputInterceptEffective = false;
   private latestOverlayDiagnostic: OverlayDiagnostic | null = null;
+  private latestOverlayFps: number | null = null;
+  private overlayFpsEventCount = 0;
+  private advertisedTargetSurfaceIdentity: string | null = null;
   private readonly targetInputInterceptState = new TargetInputInterceptState();
   private overlay: ElectronGameOverlay;
   private overlaySession: OverlaySession;
@@ -155,7 +160,7 @@ class Application {
       this.markQuit = true;
     });
     this.overlaySession.on('fps', (payload) => {
-      this.handleOverlayFps(payload.fps);
+      this.handleOverlayFps(payload);
     });
     this.overlaySession.on('diagnostic', (diagnostic) => {
       this.handleOverlayDiagnostic(diagnostic);
@@ -688,7 +693,8 @@ class Application {
   }
 
   private getDemoState() {
-    const targetSurface = this.overlaySession.targets.list().at(-1) ?? null;
+    const { targetSurfaces, targetSurface } =
+      this.getDemoTargetSurfaceSnapshot();
     return {
       overlayStarted: this.overlayStarted,
       inputInterceptRequested: this.inputInterceptRequested,
@@ -705,6 +711,9 @@ class Application {
       attachment: this.reshadeAttachment,
       diagnostic: this.latestOverlayDiagnostic,
       targetSurface,
+      targetSurfaces,
+      latestOverlayFps: this.latestOverlayFps,
+      overlayFpsEventCount: this.overlayFpsEventCount,
       windows: {
         [AppWindows.demoControlOverlay]:
           this.overlayWindows.get(AppWindows.demoControlOverlay)?.visible ||
@@ -722,14 +731,59 @@ class Application {
     };
   }
 
-  private handleOverlayFps(fps: number) {
+  private getDemoTargetSurfaceSnapshot(): Readonly<{
+    targetSurfaces: readonly OverlayTargetSurface[];
+    targetSurface: OverlayTargetSurface | null;
+  }> {
+    const targetSurfaces = this.overlaySession.targets.list();
+    const activeAttachmentPid = this.getActiveAttachmentPid();
+    let targetSurface: OverlayTargetSurface | null = null;
+    for (let index = targetSurfaces.length - 1; index >= 0; index -= 1) {
+      const candidate = targetSurfaces[index];
+      if (
+        candidate &&
+        (activeAttachmentPid === null || candidate.pid === activeAttachmentPid)
+      ) {
+        targetSurface = candidate;
+        break;
+      }
+    }
+
+    const identity = targetSurface
+      ? `${targetSurface.pid}:${targetSurface.surfaceId}`
+      : null;
+    if (identity !== this.advertisedTargetSurfaceIdentity) {
+      this.advertisedTargetSurfaceIdentity = identity;
+      this.latestOverlayFps = null;
+    }
+
+    return { targetSurfaces, targetSurface };
+  }
+
+  private getActiveAttachmentPid(): number | null {
+    return this.reshadeAttachment.phase !== 'idle'
+      ? this.reshadeAttachment.pid
+      : null;
+  }
+
+  private handleOverlayFps(payload: OverlayGraphicsFps) {
+    const { targetSurface } = this.getDemoTargetSurfaceSnapshot();
+    const acceptedTargetPid =
+      this.getActiveAttachmentPid() ?? targetSurface?.pid ?? null;
+    if (payload.pid !== acceptedTargetPid) {
+      return;
+    }
+
+    this.latestOverlayFps = payload.fps;
+    this.overlayFpsEventCount += 1;
+    this.publishDemoState();
     for (const name of [
       AppWindows.demoControlOverlay,
       AppWindows.exampleStatusOverlay,
     ]) {
       const window = this.getWindow(name);
       if (window && !window.webContents.isDestroyed()) {
-        window.webContents.send('fps', fps);
+        window.webContents.send('fps', payload.fps);
       }
     }
   }

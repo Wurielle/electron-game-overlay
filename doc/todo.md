@@ -39,9 +39,9 @@ Unchecked items below are post-POC compatibility or hardening work. They do not
 extend the current completion boundary by implication; broad real-game
 add-on/effect and proxy-chain coexistence beyond the controlled public-host
 fixtures, late post-swap-chain adoption, arbitrary live-game ReShade unload,
-additional graphics/input APIs, multi-swap-chain policy, and physical
-mixed-monitor acceptance remain explicitly unsupported or deferred until
-chosen as a separate task.
+additional graphics/input APIs, same-HWND or distinct-D3D12-queue
+multi-swap-chain layouts, and physical mixed-monitor acceptance remain
+explicitly unsupported or deferred until chosen as a separate task.
 
 ### Completed promotion milestones
 
@@ -199,11 +199,11 @@ chosen as a separate task.
 - [ ] Define a supported coexistence strategy for targets using another proxy
       runtime.
 - [x] Add producer-session deactivation without unloading the runtime/add-on for
-      the accepted single-swap-chain path.
+      the active process-primary path.
   - Closing the SDK session advances a monotonic epoch. On the next ReShade
     overlay callback, native input fails open, the old scene is cleared, and its
-    two textures retire while the target and producer process remain alive and
-    the runtime/add-on remain mapped dormant.
+    process-primary textures retire while the target and producer process remain
+    alive and the runtime/add-on remain mapped dormant.
   - D3D11 and D3D12 passed on July 31, 2026 under
     `build/electron-game-overlay-runtime/client-sdk-d3d11-session-deactivation-20260731-000557`
     and
@@ -219,8 +219,8 @@ chosen as a separate task.
     dynamic-unload contract while graphics wrappers, registered callbacks,
     add-on private data, and resources can still reference the mapped modules.
   - A future patched-host, add-on-only unload path is research work, not a POC
-    requirement, and must wait for explicit per-swap-chain resource/input
-    ownership.
+    requirement. It still needs host-supported unload synchronization across
+    every live swap chain plus proof for the deferred same-HWND input-owner case.
 - [ ] Investigate the non-fatal ReShade reference-count warnings emitted during accepted shutdowns: `ID3D11Device3` in Gun Frog and D3D12 command-queue/device objects in PEAK. Keep this under resource retirement/unload hardening.
 - [ ] Carry process creation identity end to end through exact-PID requests and WMI lifecycle correlation.
   - The native Steam-path watcher's ignore-baseline now retains handles for exact process objects, so sequential launch/relaunch cannot skip a new process solely because Windows reused a baseline PID. Exact-PID selection and fallback-WMI create/delete correlation still use PID plus executable basename and need an equivalent creation nonce before stale lifecycle events are considered fully hardened.
@@ -250,13 +250,34 @@ chosen as a separate task.
     ports, and credentials. Scene/input state stayed isolated, and stopping app
     A did not disturb app B. Evidence is under
     `build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`.
-- [x] Retire producer-session textures on deactivation for the accepted
-      single-swap-chain path.
+- [x] Retire producer-session textures on deactivation for the active
+      process-primary path.
   - Both July 31 deactivation gates retired the complete two-window scene while
     leaving the runtime and add-on mapped dormant.
-- [ ] Add per-swap-chain production routing, cross-queue-safe texture
-      retirement, explicit resource/input ownership, and a primary-surface
-      policy for process-level FPS.
+- [x] Add bounded per-swap-chain production routing, texture retirement,
+      resource/input ownership, and a primary-surface policy for process-level
+      FPS.
+  - Within one target process, the first valid presenting swap chain becomes a
+    stable primary. Only that primary publishes target-surface/FPS telemetry,
+    owns input, and composes the Electron scene; resize preserves ownership.
+    Final primary destruction removes its surface, retires its exact texture
+    map, and allows a remaining valid presenter to claim primary with a new
+    surface identity and FPS stream.
+  - Production client/SDK gates accept two distinct HWNDs sharing one D3D11
+    device/context or one D3D12 device/direct queue. They prove exclusive
+    composition, intercepted Electron input plus frozen game input before and
+    after failover, sustained post-failover FPS, no target disconnect, and
+    released input restoration. August 1, 2026 evidence is under
+    `build/electron-game-overlay-runtime/client-sdk-d3d11-multi-swapchain-20260801-103555`
+    (37.782 ms failover) and
+    `build/electron-game-overlay-runtime/client-sdk-d3d12-multi-swapchain-20260801-103532`
+    (51.518 ms failover). Both recorded compositor counts `1 -> 2`, FPS event
+    counts `1 -> 4 -> 6`, and input acknowledgements
+    `true -> false -> true -> false` while both HWNDs and the process remained
+    alive.
+  - Same-HWND input ownership needs a pinned ReShade input-handler
+    owner-promotion/clear patch. Distinct D3D12 direct queues, broader swap-chain
+    layouts, and adversarial concurrent input pumps remain deferred.
 - [x] Make final target-surface removal a bounded graceful transport drain.
   - The last transport reference now detaches the bridge, waits at most 250 ms
     for all previously queued packets (including the surface-removal revision)
@@ -275,7 +296,7 @@ chosen as a separate task.
     final-drain failure warning.
 - [ ] Normalize copied `WM_INPUT` and `GetRawInputBuffer` mouse/keyboard records into the Electron router, including buffered-record target ownership and raw-only text policy.
 - [ ] Extend the accepted `WM_POINTER` translation beyond primary mouse move/left click to secondary/X buttons, double-click semantics, pointer wheel, and explicit touch/pen policy, with duplicate-projection tests.
-- [ ] Harden observer ordering/recovery and per-swap-chain resource/input ownership for concurrent input pumps or multiple swap chains.
+- [ ] Harden observer ordering/recovery plus concurrent input pumps, same-HWND owner promotion, distinct D3D12 queues, and broader swap-chain layouts.
 - [ ] Expand the compatibility matrix only from observed evidence: Vulkan/OpenGL, exclusive/fullscreen variants, gamepads, DirectInput/XInput/GameInput, and other backend-specific paths.
 - [ ] Keep competitive and anti-cheat-protected targets, anti-cheat bypasses, and VR outside the unsigned full-add-on runtime boundary.
 

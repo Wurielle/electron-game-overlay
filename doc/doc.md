@@ -117,6 +117,14 @@ work-area bounds, target state, and the selected graphics API. The SDK adds the
 authenticated PID and computes `dpi.scaleFactor`. FPS comes from the injected
 render context rather than Chromium paints.
 
+Each target process advertises at most one stable primary surface. The first
+valid presenting swap chain owns target telemetry, FPS sampling, input, and
+Electron composition until its final destruction; resize does not transfer
+ownership. Destruction removes that surface identity before a remaining valid
+presenter can publish its replacement. This is accepted for distinct HWNDs that
+share one D3D11 device/context or one D3D12 device/direct queue. Same-HWND input
+ownership, distinct D3D12 queues, and broader layouts remain deferred.
+
 Use target-follow mode for an Electron surface that must cover the game:
 
 ```ts
@@ -416,6 +424,8 @@ Use the dedicated launchers under
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-multi-swapchain.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-multi-swapchain.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\existing-reshade-installation-preflight.ps1

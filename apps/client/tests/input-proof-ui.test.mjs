@@ -300,7 +300,7 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(appEntry, /this\.syncDemoControlOverlay\(\)/);
   assert.match(appEntry, /for \(const window of this\.windows\.values\(\)\)/);
   assert.match(appEntry, /presentation: this\.demoPresentationEnabled/);
-  assert.match(appEntry, /this\.overlaySession\.targets\.list\(\)\.at\(-1\)/);
+  assert.match(appEntry, /this\.getDemoTargetSurfaceSnapshot\(\)/);
   assert.match(appEntry, /targetSurfaceChanged/);
   assert.match(appEntry, /targetSurfaceRemoved/);
   assert.match(appEntry, /ipcMain\.handle\('overlay:create-popup'/);
@@ -341,6 +341,27 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(controlOverlay, /surface\.graphicsApi/);
   assert.match(controlOverlay, /surface\?\.renderSize\?\.width/);
   assert.match(controlOverlay, /Ctrl\+I/);
+});
+
+test('the demo exposes deterministic target and FPS telemetry for native gates', () => {
+  const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
+
+  assert.match(appEntry, /type OverlayGraphicsFps/);
+  assert.match(appEntry, /type OverlayTargetSurface/);
+  assert.match(appEntry, /private latestOverlayFps: number \| null = null/);
+  assert.match(appEntry, /private overlayFpsEventCount = 0/);
+  assert.match(appEntry, /targetSurfaces,/);
+  assert.match(appEntry, /latestOverlayFps: this\.latestOverlayFps/);
+  assert.match(appEntry, /overlayFpsEventCount: this\.overlayFpsEventCount/);
+  assert.match(
+    appEntry,
+    /identity !== this\.advertisedTargetSurfaceIdentity[\s\S]{0,180}?this\.latestOverlayFps = null/,
+  );
+  assert.match(
+    appEntry,
+    /const acceptedTargetPid =[\s\S]{0,160}?payload\.pid !== acceptedTargetPid/,
+  );
+  assert.match(appEntry, /this\.overlayFpsEventCount \+= 1/);
 });
 
 function sourceSection(source, startMarker, endMarker) {

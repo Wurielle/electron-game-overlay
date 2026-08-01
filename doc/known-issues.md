@@ -261,7 +261,9 @@ SDK's `followTarget()` layout uses that physical geometry and has simulated
 cross-display/scale coverage. Real mixed-scale hardware or VM acceptance is
 still outstanding. The public `fullscreen` value is a geometry-derived signal
 that the client covers its monitor, not proof of DXGI exclusive-fullscreen
-state.
+state. Within one target process, only the stable primary swap chain advertises
+a surface and FPS stream; final primary destruction removes that identity before
+a remaining valid presenter can publish its replacement.
 
 For this project, **Steam-like** describes the behavior required inside an
 explicitly supported target: passive mode leaves game input unchanged; intercept
@@ -280,17 +282,19 @@ not supported by the current production runtime:
 - target/runtime integrity-level mismatch or an elevated target launched from
   a lower-integrity client;
 - x86 targets and VR runtimes (`reshade_overlay` is not invoked for VR);
-- Vulkan, OpenGL, D3D9, unusual/exclusive presentation paths, multiple swap
-  chains, and simultaneous rendered targets beyond the completed same-listener
-  credential-isolation and fail-closed route-selection tests until each has
-  explicit graphics acceptance;
+- Vulkan, OpenGL, D3D9, unusual/exclusive presentation paths, same-HWND
+  multi-swap-chain input ownership, distinct D3D12 direct queues, broader
+  multi-swap-chain layouts, and simultaneous rendered targets beyond the
+  completed same-listener credential-isolation and fail-closed route-selection
+  tests until each has explicit graphics acceptance;
 - public ReShade hosts that cannot register add-on API 18 or return the exact
   Dear ImGui function table, arbitrary coexistence with another proxy DLL, and
   real-game combinations of existing effects/foreign add-ons; the narrow paths
   described below do not imply general modded-game support;
-- real physical/VM mixed-scale target-follow acceptance, safe texture
-  retirement, or broader gamepad/DirectInput/XInput/GameInput handling until
-  their recorded acceptance work is complete.
+- real physical/VM mixed-scale target-follow acceptance, texture retirement
+  outside the accepted shared-device/queue multi-swap-chain boundary, or broader
+  gamepad/DirectInput/XInput/GameInput handling until their recorded acceptance
+  work is complete.
 
 The narrow shared-runtime foundation requires this project's private host ABI 1
 and an add-on gate that is still `OPEN`. Controlled target-local `dxgi.dll`
@@ -357,13 +361,25 @@ Exact legacy window-message delivery and ordered primary `PT_MOUSE`
 Captured Ctrl/Shift state is preserved. Copied `WM_INPUT` and
 `GetRawInputBuffer` records are currently retained/countable but are not yet
 normalized into Electron events. Touch/pen, secondary/X pointer buttons,
-double-click semantics, pointer wheel, concurrent input pumps, multiple swap
-chains, and raw-only input/text therefore remain explicit runtime hardening.
-Target FPS is currently process-scoped and sampled per observed swap chain, so
-multi-swap-chain support also needs an explicit primary-surface policy. On final
-swap-chain destruction, the last transport reference now waits up to 250 ms for
-the explicit surface-removal revision and all earlier packets to be written to
-the current socket before destroying the bridge. D3D11 and D3D12 controlled
+double-click semantics, pointer wheel, concurrent input pumps, same-HWND
+swap-chain ownership, distinct D3D12 queues, and raw-only input/text therefore
+remain explicit runtime hardening. Same-HWND support specifically needs a pinned
+ReShade input-handler owner-promotion/clear patch; the public add-on API cannot
+safely perform that transfer during teardown.
+
+Target FPS is process-scoped and sampled only from the stable primary swap chain.
+The accepted bounded policy uses the first valid presenter, preserves ownership
+through resize, and promotes a remaining presenter only after final primary
+destruction. Production client/SDK gates pass this for distinct HWNDs sharing one
+D3D11 device/context or one D3D12 device/direct queue, including primary-only
+composition, input blocking/interaction on both owners, replacement surface/FPS
+telemetry, and no process disconnect. Evidence is under
+`client-sdk-d3d11-multi-swapchain-20260801-103555` and
+`client-sdk-d3d12-multi-swapchain-20260801-103532` below the runtime build root.
+
+On final swap-chain destruction, the last transport reference waits up to 250 ms
+for the explicit surface-removal revision and all earlier packets to be written
+to the current socket before destroying the bridge. D3D11 and D3D12 controlled
 gates prove that the public SDK clears its target surface while the target
 process, HWND, Electron producer, and attachment remain alive. A drain timeout
 or disconnect is reported without making graphics teardown unbounded.
@@ -377,9 +393,10 @@ or disconnect is reported without making graphics teardown unbounded.
   - Source / likely cause: the production ReShade runtime proves controlled
     D3D11 and D3D12, but that does not establish every graphics API,
     presentation path, or launch timing a game can use, such as Vulkan, OpenGL,
-    unusual swap-chain modes, exclusive fullscreen behavior, multiple swap
-    chains, protected/anti-cheat processes, elevated integrity processes, or
-    arbitrary fast-start D3D12 games. Steam Overlay can appear universal because
+    unusual swap-chain modes, exclusive fullscreen behavior, deferred same-HWND
+    or distinct-queue multi-swap-chain layouts, protected/anti-cheat processes,
+    elevated integrity processes, or arbitrary fast-start D3D12 games. Steam
+    Overlay can appear universal because
     Steam owns the launcher/runtime integration, has broad backend support, and
     can carry a large compatibility database and per-game handling over time.
   - Current direction: let ReShade own the maintained graphics/input host rather than expanding private hudhook detours. Expose runtime and hook status through the SDK, fail clearly for unsupported or partially hooked targets, and add backends/presentation modes only with explicit acceptance evidence. Keep the compatibility matrix described above.

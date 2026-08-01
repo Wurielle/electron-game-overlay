@@ -835,16 +835,13 @@ struct electron_texture
     bool upload_failure_reported = false;
 };
 
-struct __declspec(uuid("c170f82c-00e6-4447-89aa-ca7fbb6fc081")) device_data
-{
-    std::mutex mutex;
-    std::unordered_map<std::uint32_t, electron_texture> textures;
-};
-
 struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
 {
+    std::mutex texture_mutex;
+    std::unordered_map<std::uint32_t, electron_texture> textures;
     ego_transport *transport = nullptr;
     HWND window = nullptr;
+    std::uint64_t ownership_token = 0;
     input_phase phase = input_phase::disabled;
     ego_target_surface_v1 last_target_surface = {};
     std::uint64_t target_surface_id = 0;
@@ -872,14 +869,15 @@ struct __declspec(uuid("f56d61dd-7b2b-4ad0-ab1b-9dc40f0efe4a")) swapchain_data
 };
 
 // Serializes the zero-to-one and one-to-zero transport transitions without
-// holding the focus/input registry lock while the final socket drain waits.
+// holding the transport registry lock while the final socket drain waits.
 // A replacement swap chain therefore cannot connect a second same-process
 // bridge before the retiring bridge has delivered its final lifecycle state.
 std::mutex g_transport_lifecycle_mutex;
 std::mutex g_transport_mutex;
 ego_transport *g_transport = nullptr;
 std::uint32_t g_transport_references = 0;
-std::unordered_map<HWND, std::uint32_t> g_target_windows;
+std::atomic<std::uint64_t> g_swapchain_ownership_token_sequence = 0;
+std::atomic<std::uint64_t> g_primary_swapchain_token = 0;
 
 void log_transport_failure(
     reshade::log::level level,
@@ -1251,12 +1249,6 @@ bool retain_official_hook_owner(swapchain_data &data) noexcept
         ++owner.references;
         data.official_hook_slot = index;
         data.official_hook_token = token;
-        std::uint64_t expected_primary = 0;
-        owner.primary_token.compare_exchange_strong(
-            expected_primary,
-            token,
-            std::memory_order_release,
-            std::memory_order_relaxed);
         return owner.hook_ready.load(std::memory_order_acquire);
     }
 
@@ -1293,7 +1285,7 @@ bool retain_official_hook_owner(swapchain_data &data) noexcept
             reinterpret_cast<std::uintptr_t>(data.window),
             std::memory_order_relaxed);
         owner.thread_id.store(thread_id, std::memory_order_relaxed);
-        owner.primary_token.store(token, std::memory_order_relaxed);
+        owner.primary_token.store(0, std::memory_order_relaxed);
         owner.phase.store(input_phase::disabled, std::memory_order_relaxed);
         owner.hook_ready.store(false, std::memory_order_relaxed);
         owner.subclass_ready.store(false, std::memory_order_relaxed);
@@ -1382,7 +1374,16 @@ bool claim_official_input_owner(swapchain_data &data) noexcept
             std::memory_order_acquire);
         primary = owner->primary_token.load(std::memory_order_acquire);
     }
-    return primary == data.official_hook_token;
+    if (primary != data.official_hook_token)
+        return false;
+
+    // The elected rendering owner may differ from the first swap chain that
+    // retained this root-window hook. Publish its exact route HWND before its
+    // enabled phase becomes visible to the hook callbacks.
+    owner->route_window.store(
+        reinterpret_cast<std::uintptr_t>(data.window),
+        std::memory_order_relaxed);
+    return true;
 }
 
 void publish_official_hook_phase(
@@ -1541,7 +1542,7 @@ void shutdown_official_message_hooks(bool wait_for_callbacks) noexcept
         &pinned_module);
 }
 
-ego_transport *retain_transport(HWND window)
+ego_transport *retain_transport()
 {
     const std::scoped_lock lifecycle_lock(g_transport_lifecycle_mutex);
     const std::scoped_lock lock(g_transport_mutex);
@@ -1563,12 +1564,10 @@ ego_transport *retain_transport(HWND window)
     }
 
     ++g_transport_references;
-    if (window != nullptr)
-        ++g_target_windows[window];
     return g_transport;
 }
 
-void release_transport(ego_transport *transport, HWND window)
+void release_transport(ego_transport *transport)
 {
     // Keep a new zero-to-one transition behind the bounded drain/destroy, but
     // release the registry lock before waiting on the Rust/network workers.
@@ -1576,17 +1575,6 @@ void release_transport(ego_transport *transport, HWND window)
     ego_transport *destroy = nullptr;
     {
         const std::scoped_lock lock(g_transport_mutex);
-        if (window != nullptr)
-        {
-            const auto entry = g_target_windows.find(window);
-            if (entry != g_target_windows.end())
-            {
-                if (entry->second <= 1)
-                    g_target_windows.erase(entry);
-                else
-                    --entry->second;
-            }
-        }
         if (transport == nullptr || transport != g_transport || g_transport_references == 0)
             return;
 
@@ -1595,7 +1583,6 @@ void release_transport(ego_transport *transport, HWND window)
         {
             destroy = g_transport;
             g_transport = nullptr;
-            g_target_windows.clear();
         }
     }
 
@@ -1613,21 +1600,17 @@ void release_transport(ego_transport *transport, HWND window)
     }
 }
 
-bool any_target_focused()
+bool target_window_focused(HWND window) noexcept
 {
+    if (window == nullptr || IsWindow(window) == FALSE)
+        return false;
+
     const HWND foreground = GetForegroundWindow();
     if (foreground == nullptr)
         return false;
 
-    const std::scoped_lock lock(g_transport_mutex);
-    for (const auto &[window, references] : g_target_windows)
-    {
-        static_cast<void>(references);
-        const HWND root = GetAncestor(window, GA_ROOT);
-        if (foreground == window || (root != nullptr && foreground == root))
-            return true;
-    }
-    return false;
+    const HWND root = GetAncestor(window, GA_ROOT);
+    return foreground == window || (root != nullptr && foreground == root);
 }
 
 struct input_consumer_release
@@ -1661,7 +1644,7 @@ void discard_queued_input()
     }
 }
 
-bool reset_input_router(ego_transport *transport)
+bool reset_input_router(ego_transport *transport, HWND target_window)
 {
     // Advancing the generation makes a producer that was preempted before this
     // reset harmless: its late publication is recognized and discarded.
@@ -1681,7 +1664,7 @@ bool reset_input_router(ego_transport *transport)
 
     const ego_status focus_status = ego_transport_set_target_focused(
         transport,
-        any_target_focused() ? 1U : 0U);
+        target_window_focused(target_window) ? 1U : 0U);
     if (focus_status != EGO_STATUS_OK)
     {
         log_transport_error("input-loss focus restore", focus_status);
@@ -1695,7 +1678,7 @@ bool reset_input_router(ego_transport *transport)
     return true;
 }
 
-bool recover_dropped_input(ego_transport *transport)
+bool recover_dropped_input(ego_transport *transport, HWND target_window)
 {
     const bool recovery_requested =
         g_input_recovery_pending.exchange(false, std::memory_order_acq_rel);
@@ -1710,7 +1693,7 @@ bool recover_dropped_input(ego_transport *transport)
             transport,
             EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET);
     }
-    if (!reset_input_router(transport))
+    if (!reset_input_router(transport, target_window))
         return false;
 
     // An overflow that raced the reset belongs to a newer generation. Leave it
@@ -1719,7 +1702,7 @@ bool recover_dropped_input(ego_transport *transport)
         g_dropped_input_messages.load(std::memory_order_acquire) == 0;
 }
 
-void drain_input_messages(ego_transport *transport)
+void drain_input_messages(ego_transport *transport, HWND target_window)
 {
     if (transport == nullptr ||
         g_input_consumer.test_and_set(std::memory_order_acquire))
@@ -1731,7 +1714,7 @@ void drain_input_messages(ego_transport *transport)
     if (g_pointer_route_reset_pending.exchange(false, std::memory_order_acq_rel))
         reset_ordered_pointer_state();
 
-    if (!recover_dropped_input(transport))
+    if (!recover_dropped_input(transport, target_window))
         return;
 
     std::size_t count = 0;
@@ -1746,7 +1729,7 @@ void drain_input_messages(ego_transport *transport)
     if (g_input_recovery_pending.load(std::memory_order_acquire) ||
         g_dropped_input_messages.load(std::memory_order_acquire) != 0)
     {
-        static_cast<void>(recover_dropped_input(transport));
+        static_cast<void>(recover_dropped_input(transport, target_window));
         return;
     }
 
@@ -1789,7 +1772,7 @@ void drain_input_messages(ego_transport *transport)
                 transport,
                 EGO_RUNTIME_DIAGNOSTIC_INPUT_ROUTER_RESET);
         }
-        static_cast<void>(reset_input_router(transport));
+        static_cast<void>(reset_input_router(transport, target_window));
         return;
     }
 
@@ -1801,7 +1784,7 @@ void drain_input_messages(ego_transport *transport)
         if (g_input_recovery_pending.load(std::memory_order_acquire) ||
             g_dropped_input_messages.load(std::memory_order_acquire) != 0)
         {
-            static_cast<void>(recover_dropped_input(transport));
+            static_cast<void>(recover_dropped_input(transport, target_window));
             return;
         }
 
@@ -1836,7 +1819,7 @@ void drain_input_messages(ego_transport *transport)
                     if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
                         log_transport_error("copied input delivery", status);
                     publish_input_routing_failure(transport, status);
-                    static_cast<void>(reset_input_router(transport));
+                    static_cast<void>(reset_input_router(transport, target_window));
                     return;
                 }
                 break;
@@ -1851,7 +1834,7 @@ void drain_input_messages(ego_transport *transport)
             break;
 
         default:
-            static_cast<void>(reset_input_router(transport));
+            static_cast<void>(reset_input_router(transport, target_window));
             return;
         }
 
@@ -1941,28 +1924,26 @@ void destroy_texture(device *device, electron_texture &texture)
     texture = {};
 }
 
-std::size_t retire_all_electron_textures(effect_runtime *runtime)
+std::size_t retire_all_electron_textures(
+    effect_runtime *runtime,
+    swapchain_data &data)
 {
     device *const device = runtime->get_device();
-    auto *const data = device->get_private_data<device_data>();
-    if (data == nullptr)
-        return 0;
-
-    const std::scoped_lock lock(data->mutex);
-    if (data->textures.empty())
+    const std::scoped_lock lock(data.texture_mutex);
+    if (data.textures.empty())
         return 0;
 
     // ReShade keeps the add-on and graphics device loaded after a producer
     // disconnect. Wait for prior draws once, then release every producer-owned
     // resource so the dormant add-on retains no Electron framebuffers.
-    const std::size_t retired_count = data->textures.size();
+    const std::size_t retired_count = data.textures.size();
     runtime->get_command_queue()->wait_idle();
-    for (auto &[window_id, texture] : data->textures)
+    for (auto &[window_id, texture] : data.textures)
     {
         static_cast<void>(window_id);
         destroy_texture(device, texture);
     }
-    data->textures.clear();
+    data.textures.clear();
     return retired_count;
 }
 
@@ -2168,6 +2149,62 @@ private:
     DPI_AWARENESS_CONTEXT previous_context_ = nullptr;
 };
 
+std::uint64_t next_swapchain_ownership_token() noexcept
+{
+    std::uint64_t current =
+        g_swapchain_ownership_token_sequence.load(std::memory_order_relaxed);
+    while (current != std::numeric_limits<std::uint64_t>::max())
+    {
+        const std::uint64_t next = current + 1;
+        if (g_swapchain_ownership_token_sequence.compare_exchange_weak(
+                current,
+                next,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed))
+        {
+            return next;
+        }
+    }
+    return 0;
+}
+
+bool owns_primary_swapchain(const swapchain_data &data) noexcept
+{
+    return data.ownership_token != 0 &&
+        g_primary_swapchain_token.load(std::memory_order_acquire) ==
+            data.ownership_token;
+}
+
+bool claim_primary_swapchain(const swapchain_data &data) noexcept
+{
+    if (data.ownership_token == 0)
+        return false;
+
+    std::uint64_t expected = 0;
+    if (g_primary_swapchain_token.compare_exchange_strong(
+            expected,
+            data.ownership_token,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire))
+    {
+        return true;
+    }
+    return expected == data.ownership_token;
+}
+
+void release_primary_swapchain(const swapchain_data &data) noexcept
+{
+    if (data.ownership_token == 0)
+        return;
+
+    std::uint64_t expected = data.ownership_token;
+    static_cast<void>(g_primary_swapchain_token.compare_exchange_strong(
+        expected,
+        0,
+        std::memory_order_release,
+        std::memory_order_relaxed));
+}
+
 std::uint64_t next_target_surface_revision() noexcept
 {
     std::uint64_t current =
@@ -2354,14 +2391,10 @@ bool capture_target_surface(
     return true;
 }
 
-void publish_target_surface(effect_runtime *runtime, swapchain_data &data)
+void publish_target_surface(
+    swapchain_data &data,
+    ego_target_surface_v1 surface)
 {
-    if (data.transport == nullptr)
-        return;
-
-    ego_target_surface_v1 surface = {};
-    if (!capture_target_surface(runtime, data, surface))
-        return;
     if (data.has_target_surface &&
         equivalent_target_surface(data.last_target_surface, surface))
     {
@@ -2404,6 +2437,40 @@ void publish_target_surface(effect_runtime *runtime, swapchain_data &data)
             surface.client_height);
         reshade::log::message(reshade::log::level::info, message);
     }
+}
+
+bool update_primary_target_surface(
+    effect_runtime *runtime,
+    swapchain_data &data)
+{
+    if (data.transport == nullptr)
+        return false;
+
+    ego_target_surface_v1 surface = {};
+    const bool captured = capture_target_surface(runtime, data, surface);
+    if (!owns_primary_swapchain(data))
+    {
+        // Offscreen and otherwise incomplete runtimes never reserve primary
+        // ownership. The first presenter with an exact usable target wins.
+        if (!captured || !claim_primary_swapchain(data))
+            return false;
+    }
+
+    // A transient geometry query failure does not transfer ownership. The
+    // stable owner continues rendering and will republish on a later frame.
+    if (captured)
+        publish_target_surface(data, surface);
+    return true;
+}
+
+HWND primary_target_window(const swapchain_data &data) noexcept
+{
+    if (data.has_target_surface && data.last_target_surface.target_hwnd != 0)
+    {
+        return reinterpret_cast<HWND>(static_cast<std::uintptr_t>(
+            data.last_target_surface.target_hwnd));
+    }
+    return data.window;
 }
 
 void remove_target_surface(swapchain_data &data)
@@ -2477,29 +2544,6 @@ void publish_render_fps(swapchain_data &data)
     }
 }
 
-void on_init_device(device *device)
-{
-    device->create_private_data<device_data>();
-}
-
-void on_destroy_device(device *device)
-{
-    auto *const data = device->get_private_data<device_data>();
-    if (data == nullptr)
-        return;
-
-    {
-        const std::scoped_lock lock(data->mutex);
-        for (auto &[window_id, texture] : data->textures)
-        {
-            static_cast<void>(window_id);
-            destroy_texture(device, texture);
-        }
-        data->textures.clear();
-    }
-    device->destroy_private_data<device_data>();
-}
-
 void on_init_swapchain(swapchain *swapchain, bool resize)
 {
     if (resize)
@@ -2507,7 +2551,8 @@ void on_init_swapchain(swapchain *swapchain, bool resize)
 
     auto *const data = swapchain->create_private_data<swapchain_data>();
     data->window = static_cast<HWND>(swapchain->get_hwnd());
-    data->transport = retain_transport(data->window);
+    data->ownership_token = next_swapchain_ownership_token();
+    data->transport = retain_transport();
     if (!g_has_private_input_observer &&
         !retain_official_hook_owner(*data))
     {
@@ -2531,11 +2576,15 @@ void on_destroy_swapchain(swapchain *swapchain, bool resize)
         return;
 
     ego_transport *const transport = data->transport;
-    const HWND window = data->window;
-    release_official_hook_owner(*data);
     remove_target_surface(*data);
+    release_official_hook_owner(*data);
+    // ReShade destroys the effect runtime (and the callback below retires its
+    // queue-owned resources) before this final non-resize swap-chain event.
+    // Publish zero only after every old-owner operation is complete so another
+    // presenter cannot promote during teardown.
+    release_primary_swapchain(*data);
     swapchain->destroy_private_data<swapchain_data>();
-    release_transport(transport, window);
+    release_transport(transport);
 }
 
 #if 0
@@ -2880,7 +2929,7 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
 
     ego_status status = ego_transport_set_target_focused(
         data.transport,
-        any_target_focused() ? 1U : 0U);
+        target_window_focused(primary_target_window(data)) ? 1U : 0U);
     if (status != EGO_STATUS_OK && status != data.last_focus_error)
     {
         data.last_focus_error = status;
@@ -2972,13 +3021,26 @@ bool producer_session_active(std::uint64_t epoch)
     return (epoch & EGO_SESSION_EPOCH_ACTIVE_BIT) != 0;
 }
 
-void deactivate_dormant_input(swapchain_data &data)
+void deactivate_input(swapchain_data &data, bool reset_imgui_cursor)
 {
     data.phase = input_phase::disabled;
     if (!g_has_private_input_observer)
         publish_official_hook_phase(data, input_phase::disabled);
 
     discard_dormant_input();
+
+    const ego_status focus_status =
+        ego_transport_set_target_focused(data.transport, 0);
+    if (focus_status != EGO_STATUS_OK && focus_status != data.last_focus_error)
+    {
+        data.last_focus_error = focus_status;
+        log_transport_error("dormant input blur", focus_status);
+        publish_input_routing_failure(data.transport, focus_status);
+    }
+    else if (focus_status == EGO_STATUS_OK)
+    {
+        data.last_focus_error = EGO_STATUS_OK;
+    }
 
     const ego_status status =
         ego_transport_apply_input_filter(data.transport, 0, 1);
@@ -2993,7 +3055,35 @@ void deactivate_dormant_input(swapchain_data &data)
         data.last_filter_error = EGO_STATUS_OK;
     }
 
-    ImGui::GetIO().MouseDrawCursor = false;
+    if (reset_imgui_cursor)
+        ImGui::GetIO().MouseDrawCursor = false;
+}
+
+void deactivate_dormant_input(swapchain_data &data)
+{
+    deactivate_input(data, true);
+}
+
+void deactivate_destroyed_runtime_input(swapchain_data &data)
+{
+    // ReShade fires destroy_effect_runtime after tearing down its ImGui device
+    // resources. Fail open without touching that context.
+    deactivate_input(data, false);
+}
+
+void on_destroy_effect_runtime(effect_runtime *runtime)
+{
+    auto *const data = runtime->get_private_data<swapchain_data>();
+    if (data == nullptr)
+        return;
+
+    if (owns_primary_swapchain(*data))
+        deactivate_destroyed_runtime_input(*data);
+
+    // This callback precedes both resize and final swap-chain destruction while
+    // the runtime's exact graphics queue is still available. Waiting here and
+    // retiring only this swap chain's map prevents cross-queue resource use.
+    static_cast<void>(retire_all_electron_textures(runtime, *data));
 }
 
 void log_official_pointer_sequence()
@@ -3058,17 +3148,11 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
     swapchain_state.last_scene_query_error = EGO_STATUS_OK;
 
     device *const device = runtime->get_device();
-    auto *const data = device->get_private_data<device_data>();
-    if (data == nullptr)
-    {
-        ego_scene_snapshot_release(snapshot);
-        return;
-    }
 
     std::unordered_set<std::uint32_t> active_windows;
     active_windows.reserve(static_cast<std::size_t>(window_count));
 
-    const std::scoped_lock lock(data->mutex);
+    const std::scoped_lock lock(swapchain_state.texture_mutex);
     ImDrawList *const draw_list = ImGui::GetBackgroundDrawList();
     std::uint64_t rendered_window_count = 0;
     bool frame_rejected = false;
@@ -3096,7 +3180,8 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
         }
 
         active_windows.insert(frame.window_id);
-        auto [entry, inserted] = data->textures.try_emplace(frame.window_id);
+        auto [entry, inserted] =
+            swapchain_state.textures.try_emplace(frame.window_id);
         electron_texture &texture = entry->second;
 
         if (inserted || texture.texture.handle == 0 ||
@@ -3140,7 +3225,8 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
 
     bool removed_texture = false;
     std::uint64_t removed_texture_count = 0;
-    for (auto iterator = data->textures.begin(); iterator != data->textures.end();)
+    for (auto iterator = swapchain_state.textures.begin();
+         iterator != swapchain_state.textures.end();)
     {
         if (active_windows.contains(iterator->first))
         {
@@ -3153,7 +3239,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
             removed_texture = true;
         }
         destroy_texture(device, iterator->second);
-        iterator = data->textures.erase(iterator);
+        iterator = swapchain_state.textures.erase(iterator);
         ++removed_texture_count;
     }
     swapchain_state.retired_session_textures += removed_texture_count;
@@ -3190,13 +3276,15 @@ void on_reshade_overlay(effect_runtime *runtime)
     if (data == nullptr)
         return;
 
-    publish_target_surface(runtime, *data);
+    if (!update_primary_target_surface(runtime, *data))
+        return;
+
     std::uint64_t session_epoch = 0;
     if (!transport_session_epoch(*data, session_epoch))
     {
         deactivate_dormant_input(*data);
         data->retired_session_textures +=
-            retire_all_electron_textures(runtime);
+            retire_all_electron_textures(runtime, *data);
         return;
     }
 
@@ -3229,7 +3317,7 @@ void on_reshade_overlay(effect_runtime *runtime)
         data->observed_session_epoch = session_epoch;
         deactivate_dormant_input(*data);
         data->retired_session_textures +=
-            retire_all_electron_textures(runtime);
+            retire_all_electron_textures(runtime, *data);
 
         if (!session_active &&
             data->has_observed_authenticated_session)
@@ -3276,14 +3364,14 @@ void on_reshade_overlay(effect_runtime *runtime)
         {
             deactivate_dormant_input(*data);
             data->retired_session_textures +=
-                retire_all_electron_textures(runtime);
+                retire_all_electron_textures(runtime, *data);
         }
         return;
     }
 
     publish_render_fps(*data);
     update_input_ownership(runtime, *data);
-    drain_input_messages(data->transport);
+    drain_input_messages(data->transport, primary_target_window(*data));
     log_official_pointer_sequence();
     compose_electron_scene(runtime, *data);
 }
@@ -3376,10 +3464,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         if (!register_compatible_addon(module))
             return FALSE;
 
-        reshade::register_event<reshade::addon_event::init_device>(on_init_device);
-        reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
         reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
+        reshade::register_event<reshade::addon_event::destroy_effect_runtime>(
+            on_destroy_effect_runtime);
         reshade::register_event<reshade::addon_event::reshade_overlay>(on_reshade_overlay);
         if (g_has_private_input_observer)
             reshade::register_event<reshade::addon_event::input_message>(on_input_message);

@@ -1,12 +1,18 @@
 #include <Windows.h>
+#include <shellapi.h>
 
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl/client.h>
 
+#include <cstdarg>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cwchar>
+#include <limits>
 #include <string>
 
 #include "input_oracle.hpp"
@@ -15,26 +21,170 @@ namespace
 {
 using Microsoft::WRL::ComPtr;
 
+#pragma comment(lib, "Shell32.lib")
+
 constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D11TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D11 overlay test host";
+constexpr wchar_t kSecondaryWindowTitle[] =
+    L"Controlled D3D11 overlay test host B";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
 constexpr wchar_t kDestroyFinalSurfaceRequestMarker[] =
     L"electron-game-overlay-destroy-final-surface.request";
+constexpr wchar_t kDestroyPrimarySurfaceRequestMarker[] =
+    L"electron-game-overlay-destroy-primary-surface.request";
 constexpr wchar_t kFinalSurfaceDestroyedAckMarker[] =
     L"electron-game-overlay-final-surface-destroyed.ack";
 
 struct graphics_state
 {
     HWND window = nullptr;
+    HWND secondary_window = nullptr;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGISwapChain> swap_chain;
     ComPtr<ID3D11RenderTargetView> render_target;
+    ComPtr<IDXGISwapChain> secondary_swap_chain;
+    ComPtr<ID3D11RenderTargetView> secondary_render_target;
+    std::uint64_t primary_present_count = 0;
+    std::uint64_t secondary_present_count = 0;
+};
+
+struct host_options
+{
+    bool multi_swapchain = false;
+    bool release_primary = false;
+    ULONGLONG release_primary_after_ms = 0;
 };
 
 graphics_state g_graphics;
 input_oracle g_input_oracle;
+
+void publish_stdout_marker(const char *format, ...)
+{
+    char marker[1024] = {};
+    va_list arguments;
+    va_start(arguments, format);
+    const int length = vsprintf_s(marker, format, arguments);
+    va_end(arguments);
+    if (length <= 0)
+        return;
+
+    std::size_t marker_length = static_cast<std::size_t>(length);
+    if (marker_length + 1 < sizeof(marker))
+    {
+        marker[marker_length++] = '\n';
+        marker[marker_length] = '\0';
+    }
+
+    const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (output != nullptr && output != INVALID_HANDLE_VALUE)
+    {
+        DWORD written = 0;
+        static_cast<void>(WriteFile(
+            output,
+            marker,
+            static_cast<DWORD>(marker_length),
+            &written,
+            nullptr));
+    }
+    OutputDebugStringA(marker);
+}
+
+bool parse_positive_milliseconds(
+    const wchar_t *text,
+    ULONGLONG &milliseconds) noexcept
+{
+    if (text == nullptr || *text == L'\0' || *text == L'-')
+        return false;
+
+    wchar_t *end = nullptr;
+    const unsigned long long parsed = std::wcstoull(text, &end, 10);
+    if (end == text || *end != L'\0' || parsed == 0 ||
+        parsed > static_cast<unsigned long long>(
+                     std::numeric_limits<std::int64_t>::max()))
+    {
+        return false;
+    }
+
+    milliseconds = static_cast<ULONGLONG>(parsed);
+    return true;
+}
+
+bool parse_host_options(host_options &options)
+{
+    int argument_count = 0;
+    wchar_t **const arguments =
+        CommandLineToArgvW(GetCommandLineW(), &argument_count);
+    if (arguments == nullptr)
+        return false;
+
+    constexpr wchar_t release_prefix[] = L"--release-primary-after-ms=";
+    constexpr std::size_t release_prefix_length =
+        (sizeof(release_prefix) / sizeof(release_prefix[0])) - 1;
+
+    bool valid = true;
+    for (int index = 1; index < argument_count; ++index)
+    {
+        const wchar_t *const argument = arguments[index];
+        if (std::wcscmp(argument, L"--multi-swapchain") == 0)
+        {
+            options.multi_swapchain = true;
+        }
+        else if (std::wcsncmp(
+                     argument,
+                     release_prefix,
+                     release_prefix_length) == 0)
+        {
+            valid = parse_positive_milliseconds(
+                argument + release_prefix_length,
+                options.release_primary_after_ms);
+            options.release_primary = valid;
+        }
+        else if (std::wcscmp(argument, L"--release-primary-after-ms") == 0)
+        {
+            valid = index + 1 < argument_count &&
+                parse_positive_milliseconds(
+                    arguments[++index],
+                    options.release_primary_after_ms);
+            options.release_primary = valid;
+        }
+
+        if (!valid)
+            break;
+    }
+
+    LocalFree(arguments);
+    return valid && (!options.release_primary || options.multi_swapchain);
+}
+
+bool activate_controlled_window(HWND window)
+{
+    if (window == nullptr || IsWindow(window) == FALSE)
+        return false;
+
+    const DWORD current_thread = GetCurrentThreadId();
+    const HWND previous_foreground = GetForegroundWindow();
+    const DWORD foreground_thread = previous_foreground != nullptr
+        ? GetWindowThreadProcessId(previous_foreground, nullptr)
+        : 0;
+    const bool attached_foreground = foreground_thread != 0 &&
+        foreground_thread != current_thread &&
+        AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+
+    ShowWindow(window, SW_RESTORE);
+    static_cast<void>(BringWindowToTop(window));
+    static_cast<void>(SetForegroundWindow(window));
+    static_cast<void>(SetActiveWindow(window));
+    static_cast<void>(SetFocus(window));
+
+    if (attached_foreground)
+        static_cast<void>(AttachThreadInput(
+            current_thread,
+            foreground_thread,
+            FALSE));
+    return GetForegroundWindow() == window;
+}
 
 bool module_sibling_path(const wchar_t *name, std::wstring &path)
 {
@@ -163,28 +313,40 @@ void report_graphics_failure(const wchar_t *message)
     PostQuitMessage(1);
 }
 
-bool create_render_target()
+DXGI_SWAP_CHAIN_DESC swap_chain_description(HWND window)
 {
+    DXGI_SWAP_CHAIN_DESC description = {};
+    description.BufferCount = 2;
+    description.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    description.OutputWindow = window;
+    description.SampleDesc.Count = 1;
+    description.Windowed = TRUE;
+    description.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    return description;
+}
+
+bool create_render_target(
+    IDXGISwapChain *swap_chain,
+    ComPtr<ID3D11RenderTargetView> &render_target)
+{
+    if (swap_chain == nullptr)
+        return false;
+
     ComPtr<ID3D11Texture2D> back_buffer;
-    if (FAILED(g_graphics.swap_chain->GetBuffer(0, IID_PPV_ARGS(&back_buffer))))
+    if (FAILED(swap_chain->GetBuffer(0, IID_PPV_ARGS(&back_buffer))))
         return false;
 
     return SUCCEEDED(g_graphics.device->CreateRenderTargetView(
         back_buffer.Get(),
         nullptr,
-        &g_graphics.render_target));
+        &render_target));
 }
 
 HRESULT create_device_with_driver(D3D_DRIVER_TYPE driver_type)
 {
-    DXGI_SWAP_CHAIN_DESC swap_chain_desc = {};
-    swap_chain_desc.BufferCount = 2;
-    swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.OutputWindow = g_graphics.window;
-    swap_chain_desc.SampleDesc.Count = 1;
-    swap_chain_desc.Windowed = TRUE;
-    swap_chain_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    DXGI_SWAP_CHAIN_DESC swap_chain_desc =
+        swap_chain_description(g_graphics.window);
 
     D3D_FEATURE_LEVEL feature_level = {};
     return D3D11CreateDeviceAndSwapChain(
@@ -213,7 +375,55 @@ bool create_graphics_device()
         result = create_device_with_driver(D3D_DRIVER_TYPE_WARP);
     }
 
-    return SUCCEEDED(result) && create_render_target();
+    return SUCCEEDED(result) && create_render_target(
+        g_graphics.swap_chain.Get(),
+        g_graphics.render_target);
+}
+
+bool create_secondary_swap_chain()
+{
+    if (g_graphics.device == nullptr ||
+        g_graphics.secondary_window == nullptr)
+    {
+        return false;
+    }
+
+    ComPtr<IDXGIDevice> dxgi_device;
+    if (FAILED(g_graphics.device.As(&dxgi_device)))
+        return false;
+
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(dxgi_device->GetAdapter(&adapter)))
+        return false;
+
+    ComPtr<IDXGIFactory> factory;
+    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory))))
+        return false;
+
+    DXGI_SWAP_CHAIN_DESC description =
+        swap_chain_description(g_graphics.secondary_window);
+    if (FAILED(factory->CreateSwapChain(
+            g_graphics.device.Get(),
+            &description,
+            &g_graphics.secondary_swap_chain)))
+    {
+        return false;
+    }
+
+    return create_render_target(
+        g_graphics.secondary_swap_chain.Get(),
+        g_graphics.secondary_render_target);
+}
+
+void destroy_primary_graphics()
+{
+    if (g_graphics.context != nullptr)
+    {
+        g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
+        g_graphics.context->Flush();
+    }
+    g_graphics.render_target.Reset();
+    g_graphics.swap_chain.Reset();
 }
 
 void destroy_graphics_device()
@@ -225,29 +435,53 @@ void destroy_graphics_device()
     }
     g_graphics.render_target.Reset();
     g_graphics.swap_chain.Reset();
+    g_graphics.secondary_render_target.Reset();
+    g_graphics.secondary_swap_chain.Reset();
     g_graphics.context.Reset();
     g_graphics.device.Reset();
 }
 
-void resize_swap_chain(UINT width, UINT height)
+void resize_swap_chain(
+    ComPtr<IDXGISwapChain> &swap_chain,
+    ComPtr<ID3D11RenderTargetView> &render_target,
+    UINT width,
+    UINT height)
 {
-    if (g_graphics.swap_chain == nullptr || width == 0 || height == 0)
+    if (swap_chain == nullptr || width == 0 || height == 0)
         return;
 
     g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
-    g_graphics.render_target.Reset();
+    render_target.Reset();
 
-    if (FAILED(g_graphics.swap_chain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
+    if (FAILED(swap_chain->ResizeBuffers(
+            0,
+            width,
+            height,
+            DXGI_FORMAT_UNKNOWN,
+            0)))
     {
         // DXGI keeps the old buffers on failure. Reacquire their RTV so all
         // resources have a valid lifetime while the controlled host exits.
-        create_render_target();
+        create_render_target(swap_chain.Get(), render_target);
         report_graphics_failure(L"IDXGISwapChain::ResizeBuffers failed.");
         return;
     }
 
-    if (!create_render_target())
+    if (!create_render_target(swap_chain.Get(), render_target))
         report_graphics_failure(L"Unable to recreate the D3D11 render target after a resize.");
+}
+
+HRESULT render_surface(
+    IDXGISwapChain *swap_chain,
+    ID3D11RenderTargetView *render_target,
+    const float clear_color[4])
+{
+    if (swap_chain == nullptr || render_target == nullptr)
+        return S_FALSE;
+
+    g_graphics.context->OMSetRenderTargets(1, &render_target, nullptr);
+    g_graphics.context->ClearRenderTargetView(render_target, clear_color);
+    return swap_chain->Present(1, 0);
 }
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
@@ -276,7 +510,24 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 
     case WM_SIZE:
         if (w_param != SIZE_MINIMIZED)
-            resize_swap_chain(LOWORD(l_param), HIWORD(l_param));
+        {
+            if (window == g_graphics.window)
+            {
+                resize_swap_chain(
+                    g_graphics.swap_chain,
+                    g_graphics.render_target,
+                    LOWORD(l_param),
+                    HIWORD(l_param));
+            }
+            else if (window == g_graphics.secondary_window)
+            {
+                resize_swap_chain(
+                    g_graphics.secondary_swap_chain,
+                    g_graphics.secondary_render_target,
+                    LOWORD(l_param),
+                    HIWORD(l_param));
+            }
+        }
         return 0;
 
     case WM_KEYDOWN:
@@ -299,6 +550,16 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 {
+    host_options options;
+    if (!parse_host_options(options))
+    {
+        constexpr wchar_t message[] =
+            L"Invalid controlled-host options. --release-primary-after-ms requires "
+            L"--multi-swapchain and a positive integer delay.";
+        OutputDebugStringW(message);
+        MessageBoxW(nullptr, message, kWindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
     if (!enable_per_monitor_v2_awareness())
         return 1;
     if (!wait_for_test_startup_barrier())
@@ -357,14 +618,86 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         return 1;
     }
 
+    if (options.multi_swapchain)
+    {
+        RECT secondary_window_rect = { 0, 0, 960, 540 };
+        if (!AdjustWindowRectExForDpi(
+                &secondary_window_rect,
+                WS_OVERLAPPEDWINDOW,
+                FALSE,
+                0,
+                initial_dpi))
+        {
+            report_graphics_failure(
+                L"Unable to calculate the secondary controlled-host window bounds.");
+            destroy_graphics_device();
+            DestroyWindow(g_graphics.window);
+            UnregisterClassW(kWindowClassName, instance);
+            return 1;
+        }
+
+        g_graphics.secondary_window = CreateWindowExW(
+            0,
+            kWindowClassName,
+            kSecondaryWindowTitle,
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            secondary_window_rect.right - secondary_window_rect.left,
+            secondary_window_rect.bottom - secondary_window_rect.top,
+            nullptr,
+            nullptr,
+            instance,
+            nullptr);
+        if (g_graphics.secondary_window == nullptr ||
+            !create_secondary_swap_chain())
+        {
+            report_graphics_failure(
+                L"Unable to create the secondary D3D11 swap chain.");
+            destroy_graphics_device();
+            if (g_graphics.secondary_window != nullptr)
+                DestroyWindow(g_graphics.secondary_window);
+            DestroyWindow(g_graphics.window);
+            UnregisterClassW(kWindowClassName, instance);
+            return 1;
+        }
+    }
+
     ShowWindow(g_graphics.window, show_command);
     UpdateWindow(g_graphics.window);
+    if (g_graphics.secondary_window != nullptr)
+    {
+        ShowWindow(g_graphics.secondary_window, SW_SHOWNOACTIVATE);
+        UpdateWindow(g_graphics.secondary_window);
+        const bool primary_foreground =
+            activate_controlled_window(g_graphics.window);
+        publish_stdout_marker(
+            "EGO_CONTROLLED_HOST_MULTI_SWAPCHAIN_READY backend=d3d11 "
+            "pid=%lu primaryHwnd=0x%llx secondaryHwnd=0x%llx "
+            "releasePrimaryAfterMs=%llu foregroundHwnd=0x%llx "
+            "primaryForeground=%s",
+            static_cast<unsigned long>(GetCurrentProcessId()),
+            static_cast<unsigned long long>(
+                reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+            static_cast<unsigned long long>(
+                reinterpret_cast<std::uintptr_t>(
+                    g_graphics.secondary_window)),
+            static_cast<unsigned long long>(
+                options.release_primary_after_ms),
+            static_cast<unsigned long long>(
+                reinterpret_cast<std::uintptr_t>(GetForegroundWindow())),
+            primary_foreground ? "true" : "false");
+    }
     if (!g_input_oracle.initialize(g_graphics.window))
         report_graphics_failure(L"Unable to initialize the controlled raw/pointer-input oracle.");
 
     const auto start_time = std::chrono::steady_clock::now();
     MSG message = {};
     bool final_surface_destroyed_for_test = false;
+    bool primary_released_for_test = false;
+    bool both_presenting_reported = false;
+    bool remaining_present_reported = false;
+    std::uint64_t secondary_presents_at_primary_release = 0;
 
     while (message.message != WM_QUIT)
     {
@@ -388,7 +721,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             continue;
         }
 
-        if (g_graphics.render_target == nullptr)
+        if (g_graphics.render_target == nullptr &&
+            g_graphics.secondary_render_target == nullptr)
         {
             g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
             Sleep(10);
@@ -398,22 +732,159 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         const float seconds = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - start_time)
                                   .count();
-        const float clear_color[4] = {
+        const float primary_clear_color[4] = {
             0.05f + 0.025f * (std::sin(seconds * 0.7f) + 1.0f),
             0.07f + 0.025f * (std::sin(seconds * 1.1f) + 1.0f),
             0.11f + 0.035f * (std::sin(seconds * 0.5f) + 1.0f),
             1.0f,
         };
+        const float secondary_clear_color[4] = {
+            0.11f + 0.035f * (std::sin(seconds * 0.4f) + 1.0f),
+            0.05f + 0.025f * (std::sin(seconds * 0.9f) + 1.0f),
+            0.07f + 0.025f * (std::sin(seconds * 1.3f) + 1.0f),
+            1.0f,
+        };
 
-        ID3D11RenderTargetView *const render_target = g_graphics.render_target.Get();
-        g_graphics.context->OMSetRenderTargets(1, &render_target, nullptr);
-        g_graphics.context->ClearRenderTargetView(render_target, clear_color);
-        g_graphics.swap_chain->Present(1, 0);
+        if (g_graphics.swap_chain != nullptr)
+        {
+            if (FAILED(render_surface(
+                    g_graphics.swap_chain.Get(),
+                    g_graphics.render_target.Get(),
+                    primary_clear_color)))
+            {
+                report_graphics_failure(
+                    L"The controlled D3D11 primary swap chain failed to present.");
+            }
+            else
+            {
+                ++g_graphics.primary_present_count;
+            }
+        }
+        if (g_graphics.secondary_swap_chain != nullptr)
+        {
+            if (FAILED(render_surface(
+                    g_graphics.secondary_swap_chain.Get(),
+                    g_graphics.secondary_render_target.Get(),
+                    secondary_clear_color)))
+            {
+                report_graphics_failure(
+                    L"The controlled D3D11 secondary swap chain failed to present.");
+            }
+            else
+            {
+                ++g_graphics.secondary_present_count;
+            }
+        }
+
+        if (options.multi_swapchain && !both_presenting_reported &&
+            g_graphics.primary_present_count != 0 &&
+            g_graphics.secondary_present_count != 0)
+        {
+            both_presenting_reported = true;
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_MULTI_SWAPCHAIN_PRESENTING backend=d3d11 "
+                "primaryPresentCount=%llu secondaryPresentCount=%llu "
+                "foregroundHwnd=0x%llx primaryForeground=%s",
+                static_cast<unsigned long long>(
+                    g_graphics.primary_present_count),
+                static_cast<unsigned long long>(
+                    g_graphics.secondary_present_count),
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(GetForegroundWindow())),
+                GetForegroundWindow() == g_graphics.window
+                    ? "true"
+                    : "false");
+        }
+
+        const auto elapsed_ms = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time)
+                                    .count();
+        const bool primary_release_marker_present =
+            options.multi_swapchain && !primary_released_for_test &&
+            marker_present(kDestroyPrimarySurfaceRequestMarker);
+        const bool primary_release_delay_elapsed =
+            !primary_released_for_test && options.release_primary &&
+            elapsed_ms >= static_cast<std::int64_t>(
+                options.release_primary_after_ms);
+        if (options.multi_swapchain && !primary_released_for_test &&
+            !final_surface_destroyed_for_test && both_presenting_reported &&
+            (primary_release_marker_present ||
+             primary_release_delay_elapsed))
+        {
+            secondary_presents_at_primary_release =
+                g_graphics.secondary_present_count;
+            destroy_primary_graphics();
+            const bool secondary_foreground =
+                activate_controlled_window(g_graphics.secondary_window);
+            primary_released_for_test = true;
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_PRIMARY_GRAPHICS_RELEASED backend=d3d11 "
+                "primaryHwnd=0x%llx secondaryHwnd=0x%llx "
+                "primaryPresentCount=%llu secondaryPresentCount=%llu "
+                "primaryHwndAlive=%s secondaryHwndAlive=%s "
+                "sharedDeviceAlive=%s sharedContextAlive=%s processAlive=true "
+                "foregroundHwnd=0x%llx secondaryForeground=%s trigger=%s",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(
+                        g_graphics.secondary_window)),
+                static_cast<unsigned long long>(
+                    g_graphics.primary_present_count),
+                static_cast<unsigned long long>(
+                    g_graphics.secondary_present_count),
+                IsWindow(g_graphics.window) != FALSE ? "true" : "false",
+                IsWindow(g_graphics.secondary_window) != FALSE
+                    ? "true"
+                    : "false",
+                g_graphics.device != nullptr ? "true" : "false",
+                g_graphics.context != nullptr ? "true" : "false",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(GetForegroundWindow())),
+                secondary_foreground ? "true" : "false",
+                primary_release_marker_present ? "request" : "delay");
+        }
+
+        if (primary_released_for_test && !remaining_present_reported &&
+            g_graphics.secondary_present_count >=
+                secondary_presents_at_primary_release + 3)
+        {
+            remaining_present_reported = true;
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_REMAINING_PRESENT backend=d3d11 "
+                "remaining=secondary hwnd=0x%llx presentCount=%llu "
+                "presentsAfterPrimaryRelease=%llu primarySwapchainAlive=false "
+                "secondarySwapchainAlive=true sharedDeviceAlive=true "
+                "sharedContextAlive=true processAlive=true "
+                "foregroundHwnd=0x%llx secondaryForeground=%s",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(
+                        g_graphics.secondary_window)),
+                static_cast<unsigned long long>(
+                    g_graphics.secondary_present_count),
+                static_cast<unsigned long long>(
+                    g_graphics.secondary_present_count -
+                    secondary_presents_at_primary_release),
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(GetForegroundWindow())),
+                GetForegroundWindow() == g_graphics.secondary_window
+                    ? "true"
+                    : "false");
+        }
         g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
     }
 
     destroy_graphics_device();
     g_input_oracle.shutdown();
+
+    if (g_graphics.secondary_window != nullptr &&
+        IsWindow(g_graphics.secondary_window) != FALSE)
+    {
+        DestroyWindow(g_graphics.secondary_window);
+    }
+    if (g_graphics.window != nullptr && IsWindow(g_graphics.window) != FALSE)
+        DestroyWindow(g_graphics.window);
 
     UnregisterClassW(kWindowClassName, instance);
     return static_cast<int>(message.wParam);
