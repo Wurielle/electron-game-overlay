@@ -11,10 +11,17 @@ param(
     [string]$InputMode = "legacy",
     [Parameter(DontShow = $true)]
     [ValidateRange(1, 2)]
-    [int]$AttemptCountOverride = 2
+    [int]$AttemptCountOverride = 2,
+    [Parameter(DontShow = $true)]
+    [ValidateSet("after-injection", "before-injection")]
+    [string]$RawRegistrationTiming = "after-injection"
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($RawRegistrationTiming -eq "before-injection" -and $InputMode -eq "legacy") {
+    throw "Raw registration timing applies only to wm-input and raw-buffer modes."
+}
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
@@ -27,9 +34,18 @@ $HostTarget = "${Backend}_overlay_test_host"
 $BuiltHost = Join-Path $OutputDirectory $HostName
 $Electron = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
 $Nx = Join-Path $RepoRoot "node_modules\.bin\nx.cmd"
-$RunDirectory = Join-Path $BuildRoot "client-sdk-$Backend-$InputMode-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+$RegistrationTimingSuffix = if ($RawRegistrationTiming -eq "before-injection") {
+    "-registration-before-injection"
+}
+else {
+    ""
+}
+$RunDirectory = Join-Path $BuildRoot "client-sdk-$Backend-$InputMode$RegistrationTimingSuffix-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
 $ResultMarker = if ($InputMode -eq "legacy") {
     "${BackendLabel}_REAL_CLIENT_SDK_GATE_PASS"
+}
+elseif ($RawRegistrationTiming -eq "before-injection") {
+    "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_REGISTRATION_BEFORE_INJECTION_CLIENT_SDK_GATE_PASS"
 }
 else {
     "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_CLIENT_SDK_GATE_PASS"
@@ -659,6 +675,29 @@ function Wait-ForHostWindow {
     throw "Timed out waiting for the controlled host window."
 }
 
+function Wait-ForRawRegistrationBeforeInjection {
+    param(
+        [Parameter(Mandatory = $true)][IntPtr]$Window,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$HostProcess,
+        [Parameter(Mandatory = $true)][DateTime]$Deadline
+    )
+
+    $ReadyMarker = "raw registration ready before injection"
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        $Title = [ReShadeClientSdkGate.NativeInputMethods]::WindowTitle($Window)
+        if ($Title -and $Title.Contains($ReadyMarker)) {
+            return $Title
+        }
+
+        $HostProcess.Refresh()
+        if ($HostProcess.HasExited) {
+            throw "The controlled host exited before publishing its pre-injection raw registration."
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "Timed out waiting for the controlled host's pre-injection raw registration."
+}
+
 function Wait-ForStableHostTitle {
     param(
         [Parameter(Mandatory = $true)][IntPtr]$Window,
@@ -788,6 +827,7 @@ function Invoke-ClientSdkAttempt {
     $ClientProcess = $null
     $HostProcess = $null
     $ReShadeRunDirectory = $null
+    $RegistrationReadyTitle = $null
     $AttemptPassed = $false
 
     New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
@@ -801,9 +841,15 @@ function Invoke-ClientSdkAttempt {
         -ItemType File `
         -Path (Join-Path $TargetDirectory $InputGateMarker) `
         -Force | Out-Null
+    $InjectionOrderMarker = if ($RawRegistrationTiming -eq "before-injection") {
+        "reshade-raw-registration-before-injection.enabled"
+    }
+    else {
+        "reshade-injection-wait.enabled"
+    }
     New-Item `
         -ItemType File `
-        -Path (Join-Path $TargetDirectory "reshade-injection-wait.enabled") `
+        -Path (Join-Path $TargetDirectory $InjectionOrderMarker) `
         -Force | Out-Null
 
     try {
@@ -815,6 +861,22 @@ function Invoke-ClientSdkAttempt {
             "--start-overlay-session",
             "`"--user-data-dir=$UserData`""
         )
+        $StartupDeadline = [DateTime]::UtcNow.AddSeconds(120)
+        if ($RawRegistrationTiming -eq "before-injection") {
+            $HostProcess = Start-Process `
+                -FilePath $TargetExecutablePath `
+                -WorkingDirectory $TargetDirectory `
+                -PassThru
+            $HostWindow = Wait-ForHostWindow `
+                -HostProcess $HostProcess `
+                -Deadline ([DateTime]::UtcNow.AddSeconds(20))
+            $RegistrationReadyTitle = Wait-ForRawRegistrationBeforeInjection `
+                -Window $HostWindow `
+                -HostProcess $HostProcess `
+                -Deadline ([DateTime]::UtcNow.AddSeconds(20))
+            Write-Host "  pre-injection registration: $RegistrationReadyTitle"
+        }
+
         $ClientProcess = Start-Process `
             -FilePath $Electron `
             -ArgumentList $ClientArguments `
@@ -824,20 +886,21 @@ function Invoke-ClientSdkAttempt {
             -RedirectStandardOutput $ClientStdout `
             -RedirectStandardError $ClientStderr
 
-        $StartupDeadline = [DateTime]::UtcNow.AddSeconds(120)
         Wait-ForClientMarker `
             -Path $ClientStdout `
             -ClientProcess $ClientProcess `
             -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
             -Deadline $StartupDeadline
 
-        $HostProcess = Start-Process `
-            -FilePath $TargetExecutablePath `
-            -WorkingDirectory $TargetDirectory `
-            -PassThru
-        $HostWindow = Wait-ForHostWindow `
-            -HostProcess $HostProcess `
-            -Deadline ([DateTime]::UtcNow.AddSeconds(20))
+        if ($RawRegistrationTiming -eq "after-injection") {
+            $HostProcess = Start-Process `
+                -FilePath $TargetExecutablePath `
+                -WorkingDirectory $TargetDirectory `
+                -PassThru
+            $HostWindow = Wait-ForHostWindow `
+                -HostProcess $HostProcess `
+                -Deadline ([DateTime]::UtcNow.AddSeconds(20))
+        }
 
         Wait-ForClientMarker `
             -Path $ClientStdout `
@@ -1269,6 +1332,8 @@ function Invoke-ClientSdkAttempt {
             ClientLog = $ClientStdout
             ReShadeLog = $ReShadeLog
             ReShadeRunDirectory = $ReShadeRunDirectory
+            RawRegistrationTiming = $RawRegistrationTiming
+            RegistrationReadyTitle = $RegistrationReadyTitle
             BaselineTitle = $BaselineTitle
             ReleasedTitle = $ReleasedTitle
         }
@@ -1365,7 +1430,12 @@ if (-not (Test-Path -LiteralPath $BuiltHost -PathType Leaf)) {
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 Write-Host ""
 Write-Host "Production client/SDK $BackendLabel input gate"
-Write-Host "  - The client is armed before each controlled host launch."
+if ($RawRegistrationTiming -eq "before-injection") {
+    Write-Host "  - The host publishes its raw registration before the client and injector start."
+}
+else {
+    Write-Host "  - The client is armed before each controlled host launch."
+}
 Write-Host "  - ReShade must select $BackendLabel from the target, not a client backend flag."
 Write-Host "  - $AttemptCount fresh client/host cycle(s) prove isolated cleanup and relaunch."
 Write-Host "  - Evidence is preserved in: $RunDirectory"

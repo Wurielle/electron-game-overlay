@@ -50,7 +50,7 @@ $SdkRuntimeRoot = Join-Path $LibraryDistRoot "runtime"
 $PlatformRuntimeDirectory = Join-Path $SdkRuntimeRoot "win32-x64"
 $DestinationDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "2959553DBCEF4513BF4A587B7A29AA0C"
+$ExpectedAddonBuildId = "35C07911C9EB418B9F439374A4191009"
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
 $ExpectedPatchProvenance = [ordered]@{
     observerPatchSha256 =
@@ -61,6 +61,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-pointer-input-block.patch"
     rawInputNormalizationPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-raw-input-normalization.patch"
+    rawInputRegistrationReconciliationPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-raw-input-registration-reconciliation.patch"
     injectorExactPidPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-exact-pid.patch"
     injectorPathWatcherPatchSha256 =
@@ -141,7 +143,7 @@ try {
 catch {
     throw "The native runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 21 -or
+if ($BuildStamp.schemaVersion -ne 22 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne "64-bit" -or

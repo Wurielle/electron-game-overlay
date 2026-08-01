@@ -14,6 +14,10 @@ public:
 
     bool initialize(HWND window)
     {
+        if (initialized_)
+            return initialization_succeeded_;
+
+        initialized_ = true;
         if (mode_ == input_gate_mode::disabled)
             return true;
 
@@ -32,7 +36,16 @@ public:
             EnableMouseInPointer(TRUE) != FALSE || IsMouseInPointerEnabled() != FALSE;
         if (GetForegroundWindow() == window || GetFocus() == window)
             apply_client_clip(window);
-        return raw_input_registered_ && mouse_in_pointer_enabled_;
+        initialization_succeeded_ =
+            raw_input_registered_ && mouse_in_pointer_enabled_;
+        return initialization_succeeded_;
+    }
+
+    bool registration_before_injection_requested() const
+    {
+        return raw_only() && marker_present(
+            executable_directory(),
+            L"reshade-raw-registration-before-injection.enabled");
     }
 
     void shutdown()
@@ -413,6 +426,8 @@ private:
     input_gate_mode mode_ = input_gate_mode::disabled;
     bool raw_input_registered_ = false;
     bool mouse_in_pointer_enabled_ = false;
+    bool initialized_ = false;
+    bool initialization_succeeded_ = true;
     std::array<std::uint64_t, (64 * 1024) / sizeof(std::uint64_t)>
         raw_buffer_storage_ = {};
 };

@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ExpectedAddonBuildId = "2959553DBCEF4513BF4A587B7A29AA0C"
+$ExpectedAddonBuildId = "35C07911C9EB418B9F439374A4191009"
 
 # Reuse the production client gate's window, input-oracle, coordinate, and
 # process-cleanup helpers without running that gate.

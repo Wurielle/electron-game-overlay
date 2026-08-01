@@ -28,6 +28,8 @@ constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D12TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D12 overlay test host";
 constexpr wchar_t kSecondaryWindowTitle[] =
     L"Controlled D3D12 overlay test host B";
+constexpr wchar_t kRawRegistrationReadyTitle[] =
+    L"Controlled D3D12 overlay test host | raw registration ready before injection";
 constexpr wchar_t kInjectedRuntimeWaitMarker[] = L"reshade-injection-wait.enabled";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
@@ -332,15 +334,11 @@ bool wait_for_test_startup_barrier()
     return false;
 }
 
-bool wait_for_prearmed_injected_runtime()
+bool wait_for_injected_runtime(
+    ULONGLONG timeout_milliseconds,
+    const wchar_t *timeout_message)
 {
-    std::wstring marker;
-    if (!module_sibling_path(kInjectedRuntimeWaitMarker, marker))
-        return false;
-    if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
-        return true;
-
-    const ULONGLONG deadline = GetTickCount64() + 15'000;
+    const ULONGLONG deadline = GetTickCount64() + timeout_milliseconds;
     while (GetTickCount64() < deadline)
     {
         if (GetModuleHandleW(L"ReShade64.dll") != nullptr)
@@ -356,10 +354,23 @@ bool wait_for_prearmed_injected_runtime()
 
     MessageBoxW(
         nullptr,
-        L"The controlled host timed out waiting for the pre-armed ReShade runtime.",
+        timeout_message,
         kWindowTitle,
         MB_OK | MB_ICONERROR);
     return false;
+}
+
+bool wait_for_prearmed_injected_runtime()
+{
+    std::wstring marker;
+    if (!module_sibling_path(kInjectedRuntimeWaitMarker, marker))
+        return false;
+    if (GetFileAttributesW(marker.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return true;
+
+    return wait_for_injected_runtime(
+        15'000,
+        L"The controlled host timed out waiting for the pre-armed ReShade runtime.");
 }
 
 void report_graphics_failure(const wchar_t *message)
@@ -1018,6 +1029,37 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     {
         UnregisterClassW(kWindowClassName, instance);
         return 1;
+    }
+
+    if (g_input_oracle.registration_before_injection_requested())
+    {
+        if (GetModuleHandleW(L"ReShade64.dll") != nullptr)
+        {
+            report_graphics_failure(
+                L"ReShade was already loaded before the controlled raw-input registration.");
+            DestroyWindow(g_graphics.window);
+            UnregisterClassW(kWindowClassName, instance);
+            return 1;
+        }
+        if (!g_input_oracle.initialize(g_graphics.window))
+        {
+            report_graphics_failure(
+                L"Unable to register controlled raw input before injection.");
+            DestroyWindow(g_graphics.window);
+            UnregisterClassW(kWindowClassName, instance);
+            return 1;
+        }
+        SetWindowTextW(g_graphics.window, kRawRegistrationReadyTitle);
+        ShowWindow(g_graphics.window, SW_SHOWNOACTIVATE);
+        UpdateWindow(g_graphics.window);
+        if (!wait_for_injected_runtime(
+                120'000,
+                L"The controlled host timed out waiting for ReShade after its raw-input registration."))
+        {
+            DestroyWindow(g_graphics.window);
+            UnregisterClassW(kWindowClassName, instance);
+            return 1;
+        }
     }
 
     RECT client_rect = {};

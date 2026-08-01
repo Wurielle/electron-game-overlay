@@ -21,7 +21,9 @@ the `HRAWINPUT`. It mirrors mouse and keyboard registrations only after the real
 `RegisterRawInputDevices()` call succeeds. A raw device class becomes
 authoritative for Electron only when its exact source HWND is registered with
 `RIDEV_NOLEGACY`; otherwise the copied raw record is ignored and the legacy
-window-message route remains authoritative.
+window-message route remains authoritative. The later registration-
+reconciliation patch replaces this base patch's incremental registration map
+with authoritative target-process snapshots.
 
 The patch also normalizes blocked `GetRawInputBuffer()` records. Because a
 buffered record has no HWND, each device-class batch is eligible only when
@@ -43,6 +45,32 @@ tree can migrate without being deleted. Its authoring paths intentionally
 require `git apply -p2`. A reverse-applicable check means the fetched tree is
 already current; otherwise only the exact older final input state may apply it
 forward. Exact normalized source hashes verify the result.
+
+## `reshade-raw-input-registration-reconciliation.patch`
+
+Seeds the pinned runtime's raw-input registration state from
+`GetRegisteredRawInputDevices()` before the first registered render HWND can
+route input. This recovers mouse and keyboard registrations created before late
+injection, which the runtime's `RegisterRawInputDevices()` hook could not have
+observed. Later registration calls are serialized with snapshot publication;
+an odd generation denotes an update in progress, and routing accepts a snapshot
+only while its authoritative even generation remains unchanged.
+
+An exact non-NULL target retains the established HWND route. A
+`hwndTarget = nullptr` registration is treated as Windows' focus-following
+registration: queued `WM_INPUT` accepts it only for the calling GUI thread's
+exact focused foreground HWND, and buffered input resolves it through that same
+thread focus before applying the existing foreground-root and single-owner
+checks. A transient Win32 query failure clears authority and can retry no more
+than once per second; stable unsupported or duplicate device-class state stays
+invalid until another hooked registration mutation triggers a new snapshot.
+Query failure, concurrent update state, missing focus, generation change, or
+ambiguous ownership fails open. In those cases the runtime neither neutralizes
+the raw record nor projects it into Electron.
+
+This is an internal pinned-runtime bookkeeping change. It does not change local
+add-on API 19, private host ABI 1, the published transport C ABI or wire schema,
+or the public Node SDK API.
 
 ## `reshade-injector-base-path.patch`
 
@@ -254,7 +282,7 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all eighteen
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all nineteen
 production-patch hashes, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache. Raw-input normalization reuses the existing
 normalized Win32 input path; it changes no published transport C ABI, transport

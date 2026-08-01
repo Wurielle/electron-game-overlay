@@ -30,20 +30,33 @@
 > controlled D3D12 multi-window/lifecycle cycles. An August 1 production slice
 > then normalized authoritative `RIDEV_NOLEGACY` mouse/keyboard records from
 > both `WM_INPUT` and `GetRawInputBuffer` on the pinned private runtime. D3D11
-> passed under `client-sdk-d3d11-wm-input-20260801-122546` and
-> `client-sdk-d3d11-raw-buffer-20260801-122626`; D3D12 passed under
-> `client-sdk-d3d12-wm-input-20260801-122707` and
-> `client-sdk-d3d12-raw-buffer-20260801-122823`. Refreshed legacy gates under
-> `client-sdk-d3d11-legacy-20260801-122847` and
-> `client-sdk-d3d12-legacy-20260801-122902` remained duplicate-free. Official
+> and D3D12 first passed the ordinary post-injection registration path. True
+> pre-injection registration then passed the complete interception/release gate
+> under
+> `client-sdk-d3d11-wm-input-registration-before-injection-20260801-153441`,
+> `client-sdk-d3d11-raw-buffer-registration-before-injection-20260801-153450`,
+> `client-sdk-d3d12-wm-input-registration-before-injection-20260801-153502`, and
+> `client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
+> The ordinary path remained duplicate-free in the subsequent D3D11 runs
+> `client-sdk-d3d11-wm-input-20260801-153534` and
+> `client-sdk-d3d11-raw-buffer-20260801-153543` and D3D12 runs
+> `client-sdk-d3d12-wm-input-20260801-153552` and
+> `client-sdk-d3d12-raw-buffer-20260801-153600`. Official
 > ReShade API-18 hosts cover `WM_INPUT` only because the public add-on API does
 > not expose copied `GetRawInputBuffer` records. The accepted buffered route
-> requires one exact foreground registration and fails the Electron projection
-> open when ownership is missing or ambiguous. Registration before late
-> injection, null or multiple/sibling target HWNDs, pre-held/disarm ownership,
-> mixed raw/legacy modifiers, the first relative cursor seed, and the consumer
-> generation race remain later hardening, alongside graceful disable/unload,
-> post-render injection, deterministic pre-entry guarantees, and other games. A
+> now seeds an authoritative target-process registration snapshot before input
+> routing. It accepts either one exact foreground registration or a NULL
+> focus-following registration resolved to the calling GUI thread's exact
+> focused foreground HWND. Transient snapshot-query failures retry at most once
+> per second; unsupported state waits for the next registration mutation.
+> Failure, update-in-progress state, generation change, or missing/ambiguous
+> ownership fails the Electron projection open. Multiple or sibling target HWND layouts, pre-held/disarm
+> ownership, mixed raw/legacy modifiers, the first relative cursor seed, and
+> concurrent registration churn remain later hardening, alongside graceful
+> disable/unload, post-render injection, deterministic pre-entry guarantees,
+> and other games. This internal reconciliation keeps local add-on API 19,
+> private host ABI 1, and the published transport/Node APIs unchanged. The
+> pinned runtime cache is now schema 22 across nineteen production patches. A
 > July 13 follow-up replaced
 > the demo's one-second WMI creation path with a persistent native observer and
 > isolated exact-PID launchers. A preliminary PEAK run initialized through the

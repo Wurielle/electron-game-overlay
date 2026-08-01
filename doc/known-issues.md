@@ -361,23 +361,37 @@ Exact legacy window-message delivery and ordered primary `PT_MOUSE`
 Captured Ctrl/Shift state is preserved. The pinned private runtime now also
 normalizes authoritative `RIDEV_NOLEGACY` mouse/keyboard records copied from
 `WM_INPUT` and `GetRawInputBuffer`, including raw-only text, into the same
-ordered Electron route. D3D11 passed under
-`client-sdk-d3d11-wm-input-20260801-122546` and
-`client-sdk-d3d11-raw-buffer-20260801-122626`; D3D12 passed under
-`client-sdk-d3d12-wm-input-20260801-122707` and
-`client-sdk-d3d12-raw-buffer-20260801-122823`. Refreshed legacy acceptance under
-`client-sdk-d3d11-legacy-20260801-122847` and
-`client-sdk-d3d12-legacy-20260801-122902` rules out a regression or duplicate
-projection on the established path.
+ordered Electron route. D3D11 passed true pre-injection registration under
+`client-sdk-d3d11-wm-input-registration-before-injection-20260801-153441`
+and
+`client-sdk-d3d11-raw-buffer-registration-before-injection-20260801-153450`;
+D3D12 passed under
+`client-sdk-d3d12-wm-input-registration-before-injection-20260801-153502`
+and
+`client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
+These hosts registered raw mouse and keyboard before the client or injector
+started and did not register them again after injection. Subsequent ordinary
+registration runs under `client-sdk-d3d11-wm-input-20260801-153534`,
+`client-sdk-d3d11-raw-buffer-20260801-153543`,
+`client-sdk-d3d12-wm-input-20260801-153552`, and
+`client-sdk-d3d12-raw-buffer-20260801-153600` rule out a regression on the
+established path.
 
-Buffered raw input carries no HWND. The accepted private-runtime route therefore
-requires one exact valid foreground registration that resolves into the primary
-window tree. A missing or ambiguous owner fails the Electron projection open
-rather than assigning a buffered record heuristically. Registrations made before
-late injection, `hwndTarget = nullptr`, multiple or sibling target HWNDs,
-pre-held/disarm ownership completeness, mixed raw/legacy modifier state, the
-first relative cursor seed, and the consumer-generation race remain explicit
-hardening.
+Buffered raw input carries no HWND. The accepted private-runtime route seeds an
+authoritative `GetRegisteredRawInputDevices()` snapshot before routing begins
+and refreshes it around later registration calls. It accepts one exact valid
+foreground registration in the primary window tree. It also supports
+`hwndTarget = nullptr` as a focus-following registration only when the calling
+GUI thread has one exact focused HWND in the current process and foreground
+root. Transient query failures retry no more than once per second; stable
+unsupported state remains fail-open until another registration mutation.
+Snapshot failure or update-in-progress state, a changed generation, missing
+focus, or missing/ambiguous ownership fails the Electron projection open rather
+than assigning or neutralizing a buffered record heuristically.
+Multiple or sibling target HWND layouts, pre-held/disarm ownership completeness,
+mixed raw/legacy modifier state, the first relative cursor seed, and concurrent
+registration churn remain explicit hardening; the controlled gates above do
+not claim those cases.
 
 An official ReShade API-18 host can normalize copied `WM_INPUT` through the
 public add-on path, but the public API exposes no copied `GetRawInputBuffer`

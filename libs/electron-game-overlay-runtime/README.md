@@ -23,7 +23,10 @@ runtime also copies blocked foreground raw mouse and keyboard records from both
 queued `WM_INPUT` and direct `GetRawInputBuffer()` consumption. Only an exact
 successful `RIDEV_NOLEGACY` registration makes that device-class stream
 authoritative; otherwise the legacy window-message route remains authoritative
-and the raw copy is ignored to avoid duplicate Electron events.
+and the raw copy is ignored to avoid duplicate Electron events. On late
+injection, the runtime seeds that authority from an exact
+`GetRegisteredRawInputDevices()` snapshot before input routing begins, then
+refreshes the snapshot transactionally around later registration calls.
 
 An independent host oracle counts window messages, raw input, polling-visible
 left-button state, Windows pointer messages, cursor movement, and cursor
@@ -37,13 +40,18 @@ mouse registration, that raw stream owns the physical action and the promoted
 mouse-pointer copy is discarded rather than delivered twice.
 
 `GetRawInputBuffer()` records contain no target HWND. The pinned runtime routes
-them only when it can prove exactly one successful `RIDEV_NOLEGACY`
-registration for that device class on the calling thread and foreground window
-root, select a blocking render input under that same root, and retain the same
-registration generation through consumption. Mouse records additionally
-require an exact client-space cursor route. Missing, multiple, stale, or
-otherwise ambiguous candidates fail open: the record is left unchanged for the
-game instead of being swallowed or sent to the wrong Electron window.
+them only when its current authoritative snapshot resolves exactly one
+successful `RIDEV_NOLEGACY` registration for that device class on the calling
+thread and foreground window root, selects a blocking render input under that
+same root, and retains the same even registration generation through
+consumption. An exact HWND registration uses that HWND. A
+`hwndTarget = nullptr` registration follows only the calling GUI thread's exact
+focused HWND when that HWND belongs to the current process/thread and its root
+is foreground. Mouse records additionally require an exact client-space cursor
+route. Snapshot failure or update-in-progress state, missing or multiple
+candidates, a stale generation, or an invalid mouse route fails open: the
+record is left unchanged for the game instead of being swallowed or sent to
+the wrong Electron window.
 
 Exact-PID SDK attachment uses a run-local rendezvous boundary. The injected
 transport prefers `ELECTRON_GAME_OVERLAY_RUN_DIRECTORY`; newly injected runtime
@@ -127,7 +135,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies eighteen
+downloads both into the ignored build directory, then applies nineteen
 production patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -137,6 +145,12 @@ production patches to the pinned ReShade revision:
 - `reshade-raw-input-normalization.patch` migrates an exact older ignored
   fetched-source cache to the current observer implementation. Clean pinned
   source receives the same behavior directly from the observer patch;
+- `reshade-raw-input-registration-reconciliation.patch` seeds raw-input
+  registration authority from the target process before the first routed input
+  and replaces incremental hook bookkeeping with serialized authoritative
+  snapshots. Exact-HWND and NULL focus-following registrations are supported;
+  transient query failures retry at most once per second, while unavailable,
+  malformed, changing, or ambiguous snapshot state fails open;
 - `reshade-injector-base-path.patch` keeps injected configuration, add-ons, and
   logs in the isolated injector stage and removes the startup delay that missed
   early Unity swap-chain creation;
@@ -216,7 +230,8 @@ runtime for complete interception.
 
 Raw-input normalization is internal to the runtime/add-on boundary. It reuses
 the existing normalized Win32 `game.input` route and does not change the
-published transport C ABI, transport wire schema, or public Node SDK API.
+local add-on API 19, private host ABI 1, published transport C ABI, transport
+wire schema, or public Node SDK API.
 
 ReShade's API headers are BSD-3-Clause/MIT dual-licensed and Dear ImGui is
 MIT-licensed. Preserve their notices if compiled binaries are redistributed.
@@ -230,7 +245,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-21 build stamp, the eighteen
+The launchers validate the cache against a schema-22 build stamp, the nineteen
 production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
 all nine patched source files, the full-add-on configuration, and the
 runtime/injector SHA-256 hashes. CMake performs the same commit, nine-path, and
@@ -450,6 +465,38 @@ available when the current client and native artifacts have already been built.
 These gates exercise the bundled pinned runtime; the official ReShade path has
 the `WM_INPUT` capability only and is not evidence for `GetRawInputBuffer()`
 consumers.
+
+## Run the raw-registration-before-injection gates
+
+Use the dedicated launcher for each backend:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-raw-registration-before-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-raw-registration-before-injection.ps1
+```
+
+These gates run the same `wm-input` and `raw-buffer` acceptance as the normal
+raw-input launchers, but reverse the startup order. The controlled host first
+asserts that ReShade is absent, creates its primary HWND, registers raw mouse
+and keyboard with `RIDEV_NOLEGACY`, and publishes a deterministic ready title.
+Only then does the runner start the production Electron client and injector.
+The host holds graphics initialization until `ReShade64.dll` arrives, proving
+that the runtime must recover a registration it could not observe through its
+`RegisterRawInputDevices` hook. The wrapper emits
+`D3D11_RAW_REGISTRATION_BEFORE_INJECTION_CLIENT_SDK_GATE_PASS` or
+`D3D12_RAW_REGISTRATION_BEFORE_INJECTION_CLIENT_SDK_GATE_PASS` only after both
+raw consumption modes complete the full interception and release proof.
+
+The true pre-injection cases passed on August 1, 2026. Evidence is under
+`build/electron-game-overlay-runtime/client-sdk-d3d11-wm-input-registration-before-injection-20260801-153441`,
+`client-sdk-d3d11-raw-buffer-registration-before-injection-20260801-153450`,
+`client-sdk-d3d12-wm-input-registration-before-injection-20260801-153502`, and
+`client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
+The ordinary post-injection registration path was then rerun to rule out a
+regression under `client-sdk-d3d11-wm-input-20260801-153534`,
+`client-sdk-d3d11-raw-buffer-20260801-153543`,
+`client-sdk-d3d12-wm-input-20260801-153552`, and
+`client-sdk-d3d12-raw-buffer-20260801-153600`.
 
 ## Run the same-client restart/reinjection gate
 

@@ -3,10 +3,10 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "2959553DBCEF4513BF4A587B7A29AA0C"
+    "35C07911C9EB418B9F439374A4191009"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "ED3A9EE426702DF7F643BAFA9F184321439078EF61E9384B984C577ABB39B801"
+    "E5610492B8580593DE0197FF9E4BC40C857425E4EDA86F35BDA3E4AE9A7B31AE"
 )
 
 option(
@@ -40,6 +40,9 @@ set(RESHAPE_SOURCE_PATCHES
 )
 set(RESHAPE_RAW_INPUT_NORMALIZATION_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-raw-input-normalization.patch"
+)
+set(RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-raw-input-registration-reconciliation.patch"
 )
 set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher-process-identity.patch"
@@ -100,14 +103,15 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "include/reshade_events.hpp=8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
     "source/addon_manager.cpp=28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/input.cpp=FDA7ACA1A1060EBF0DC0F067D8E5E67A247884754C612CCB9163114BB1A691B1"
-    "source/input.hpp=658D0541E495F258970954C00A28912DEEDB07E3E541ED728AD824823B6C186D"
+    "source/input.cpp=8E81894DC2A2CE12EBFCDF6E95E83B6488461AB86B93FA1EED2FB1A8BF278910"
+    "source/input.hpp=FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
     "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
 )
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
+    "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
     "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
     "${RESHAPE_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
@@ -280,8 +284,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply eighteen narrow pinned seams: the passive copied-input observer, raw-input
-# target normalization, an injector base-path override, coverage for Windows' second mouse projection through
+# Apply nineteen narrow pinned seams: the passive copied-input observer, raw-input
+# target normalization and pre-injection registration reconciliation, an injector
+# base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
 # observation, loaded and inactive ReShade conflict preflight, official add-on
 # discovery, per-PID injection ownership, compatible shared-runtime registration
@@ -1386,6 +1391,18 @@ endif()
 # the terminal injector changes.
 endif()
 
+# The reconciliation patch is terminal over the normalized raw-input stack.
+# Detect it first so an existing final tree does not have to reverse-check the
+# now-superseded normalization hunks through the reconciliation changes.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED EQUAL 0)
 # The observer patch now produces the current normalized raw-input tree on a
 # clean fetch. This terminal delta migrates an exact older fetched tree without
 # deleting user/build caches; on a clean tree it is already reverse-applicable.
@@ -1427,6 +1444,44 @@ if(NOT RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLIED EQUAL 0)
             "Unable to add raw-input target normalization to the pinned ReShade runtime.\n"
             "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY_OUTPUT}"
             "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+endif()
+
+# The observer patch and normalization migration establish the raw-input event
+# path. This terminal reconciliation layer seeds registrations that predate
+# injection and then mirrors each completed process-global registration call.
+if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned raw-input registration reconciliation patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to reconcile raw-input registrations in the pinned ReShade runtime.\n"
+            "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY_ERROR}"
         )
     endif()
 endif()

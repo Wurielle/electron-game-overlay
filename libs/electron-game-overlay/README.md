@@ -124,7 +124,8 @@ runtime-hash allowlist. The loaded add-on is compatible only if
 `ReShadeRegisterAddon` accepts public API 18 and the host returns the exact Dear
 ImGui function table it was built against. In this official-host mode, the
 add-on can intercept queued foreground `WM_INPUT` and treats it as authoritative
-only when the exact source HWND has a current `RIDEV_NOLEGACY` registration.
+only when the current `RIDEV_NOLEGACY` registration either targets the exact
+source HWND or is a null, focus-following registration that resolves to it.
 The current public-host path does not install the bundled runtime's
 `GetRawInputBuffer()` detour into an official runtime, so games that consume raw
 input only through that buffered API require the bundled patched host for
@@ -482,6 +483,15 @@ interception and proves raw input resumes; the buffered case must also report a
 successful post-release buffer batch. These launchers exercise the bundled
 pinned runtime. Official ReShade integration covers the `WM_INPUT` case only.
 
+The matching late-attachment launchers register raw input before the client,
+injector, or graphics runtime starts, then run the same queued and buffered
+proofs:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-raw-registration-before-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-raw-registration-before-injection.ps1
+```
+
 The restart/reinjection gate is available through:
 
 ```powershell
@@ -617,15 +627,20 @@ current active scale before `webContents.sendInputEvent()`.
 
 Inside the bundled pinned runtime, blocked foreground raw mouse and keyboard
 records from `WM_INPUT` and `GetRawInputBuffer()` are normalized into that same
-existing Win32 route. An exact successful `RIDEV_NOLEGACY` registration is the
-authority for each device class; without it, legacy messages remain
-authoritative. A raw-authoritative mouse stream also suppresses the matching
+existing Win32 route. The runtime seeds its process-global mirror from Windows
+when input capture first becomes safe, so a successful registration made before
+injection remains visible, and resnapshots after later registration calls. A
+complete `RIDEV_NOLEGACY` registration is the authority for each device class;
+without it, legacy messages remain authoritative. Both explicit HWND targets
+and null, focus-following targets are represented without confusing null with
+`RIDEV_REMOVE`. A raw-authoritative mouse stream also suppresses the matching
 mouse-in-pointer projection so one physical action is not delivered twice.
 Buffered records have no HWND, so routing requires exactly one foreground
-registration and a stable, exact target association. Any missing, multiple, or
-stale association fails open and leaves the record with the game. This is an
-internal runtime/add-on capability: it adds no Node API, transport wire field,
-or published transport C ABI entry.
+registration and a stable target resolved on the consuming thread. Any failed
+snapshot, missing, multiple, changing, background, or stale association fails
+open and leaves the record with the game. This is an internal runtime/add-on
+capability: it adds no Node API, transport wire field, or published transport C
+ABI entry.
 
 Before that packet reaches the session, the authenticated transport requires an
 exact fail-closed envelope: `type`, positive uint32 `windowId`, a Win32 `msg`

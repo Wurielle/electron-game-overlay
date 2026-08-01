@@ -540,19 +540,27 @@ std::uint32_t official_raw_registration_flags(HWND source_window) noexcept
     struct registration_cache
     {
         HWND source_window = nullptr;
+        HWND focus_window = nullptr;
+        HWND foreground_window = nullptr;
         ULONGLONG sampled_at = 0;
         std::uint32_t flags = 0;
     };
     thread_local registration_cache cache = {};
 
     const ULONGLONG now = GetTickCount64();
+    const HWND focus_window = GetFocus();
+    const HWND foreground_window = GetForegroundWindow();
     if (cache.source_window == source_window &&
+        cache.focus_window == focus_window &&
+        cache.foreground_window == foreground_window &&
         now - cache.sampled_at < 1000)
     {
         return cache.flags;
     }
 
     cache.source_window = source_window;
+    cache.focus_window = focus_window;
+    cache.foreground_window = foreground_window;
     cache.sampled_at = now;
     cache.flags = 0;
     if (source_window == nullptr)
@@ -571,10 +579,38 @@ std::uint32_t official_raw_registration_flags(HWND source_window) noexcept
     {
         const RAWINPUTDEVICE &device = devices[index];
         if (device.usUsagePage != 0x01 ||
-            device.hwndTarget != source_window ||
-            (device.dwFlags & RIDEV_NOLEGACY) == 0)
+            (device.dwFlags & RIDEV_EXMODEMASK) != RIDEV_NOLEGACY)
         {
             continue;
+        }
+        if (device.hwndTarget != source_window)
+        {
+            if (device.hwndTarget != nullptr)
+                continue;
+
+            DWORD source_process = 0;
+            if (GetWindowThreadProcessId(source_window, &source_process) !=
+                    GetCurrentThreadId() ||
+                source_process != GetCurrentProcessId() ||
+                focus_window != source_window)
+            {
+                continue;
+            }
+
+            const HWND foreground_ancestor = foreground_window != nullptr
+                ? GetAncestor(foreground_window, GA_ROOT)
+                : nullptr;
+            const HWND foreground_root = foreground_window != nullptr
+                ? (foreground_ancestor != nullptr
+                       ? foreground_ancestor
+                       : foreground_window)
+                : nullptr;
+            const HWND source_ancestor = GetAncestor(source_window, GA_ROOT);
+            const HWND source_root = source_ancestor != nullptr
+                ? source_ancestor
+                : source_window;
+            if (foreground_root == nullptr || foreground_root != source_root)
+                continue;
         }
         if (device.usUsage == 0x06)
             cache.flags |= official_raw_no_legacy_keyboard;

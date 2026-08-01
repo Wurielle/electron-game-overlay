@@ -315,11 +315,30 @@ explicitly unsupported or deferred until chosen as a separate task.
     public add-on path. They do not expose copied `GetRawInputBuffer` records,
     so official-host buffered input remains deferred rather than being claimed
     by this acceptance.
-- [ ] Harden raw-input ownership beyond the accepted single exact foreground registration.
-  - Cover registrations created before late injection, `hwndTarget = nullptr`,
-    multiple or sibling target HWND ambiguity, pre-held input and disarm
+- [ ] Harden raw-input ownership beyond the accepted authoritative snapshot route.
+  - True registrations created before injection now pass queued `WM_INPUT` and
+    `GetRawInputBuffer()` interception/release on both backends. Evidence is
+    under
+    `client-sdk-d3d11-wm-input-registration-before-injection-20260801-153441`,
+    `client-sdk-d3d11-raw-buffer-registration-before-injection-20260801-153450`,
+    `client-sdk-d3d12-wm-input-registration-before-injection-20260801-153502`,
+    and
+    `client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
+    Post-injection regression evidence is under D3D11 `153534`/`153543` and
+    D3D12 `153552`/`153600` for queued/buffered modes respectively.
+  - The seeded snapshot supports an exact HWND or `hwndTarget = nullptr`
+    resolved to the calling GUI thread's exact focused foreground HWND.
+    Transient snapshot-query failures retry at most once per second; stable
+    unsupported state waits for the next registration mutation. Failure, an
+    update-in-progress or changed generation, missing focus, and missing or
+    ambiguous ownership fail open. This internal seam
+    keeps add-on API 19, private host ABI 1, and public transport/Node APIs
+    unchanged; the pinned cache is schema 22 with nineteen production patches.
+  - Keep multiple or sibling target HWND layouts, pre-held input and disarm
     ownership completeness, mixed raw/legacy modifier state, the first relative
-    cursor seed, and the consumer-generation race.
+    cursor seed, and concurrent registration churn as explicit hardening until
+    separately exercised; the passing late-registration gate does not claim
+    them.
   - Add an ownership-safe official-host `GetRawInputBuffer` observation seam
     only after its API-hook and coexistence boundary is proven; do not infer
     buffered support from the accepted official `WM_INPUT` route.
