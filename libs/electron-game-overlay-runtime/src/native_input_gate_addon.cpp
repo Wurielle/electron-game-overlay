@@ -20,12 +20,6 @@ constexpr std::uint32_t kTextureWidth = 128;
 constexpr std::uint32_t kTextureHeight = 128;
 constexpr std::size_t kTextureChannels = 4;
 
-struct __declspec(uuid("99890b3d-b6ef-484d-9b49-eb65de7f9fc9")) device_data
-{
-    resource texture = {};
-    resource_view texture_view = {};
-};
-
 struct window_input_state
 {
     std::atomic<std::uint64_t> rendered_frames = 0;
@@ -41,6 +35,8 @@ struct __declspec(uuid("91913d40-2c94-439c-96f1-85f6666c5046")) swapchain_data
     explicit swapchain_data(std::shared_ptr<window_input_state> shared_state) : state(std::move(shared_state)) {}
 
     std::shared_ptr<window_input_state> state;
+    resource texture = {};
+    resource_view texture_view = {};
     char keyboard_probe[128] = {};
     std::uint64_t text_edit_count = 0;
     float drag_probe = 0.5f;
@@ -94,10 +90,18 @@ const char *api_name(device_api api)
     }
 }
 
-void on_init_device(device *device)
+void destroy_test_texture(device *device, swapchain_data &data)
 {
-    auto *const data = device->create_private_data<device_data>();
+    if (data.texture_view.handle != 0)
+        device->destroy_resource_view(data.texture_view);
+    if (data.texture.handle != 0)
+        device->destroy_resource(data.texture);
+    data.texture_view = {};
+    data.texture = {};
+}
 
+bool create_test_texture(device *device, swapchain_data &data)
+{
     subresource_data initial_data = {};
     initial_data.data = const_cast<std::uint8_t *>(kTestPattern.data());
     initial_data.row_pitch = kTextureWidth * kTextureChannels;
@@ -117,46 +121,49 @@ void on_init_device(device *device)
             texture_desc,
             &initial_data,
             resource_usage::shader_resource,
-            &data->texture))
+            &data.texture))
     {
         reshade::log::message(
             reshade::log::level::error,
             "Native input gate add-on failed to create its test texture.");
-        return;
+        return false;
     }
 
     if (!device->create_resource_view(
-            data->texture,
+            data.texture,
             resource_usage::shader_resource,
             resource_view_desc(format::r8g8b8a8_unorm),
-            &data->texture_view))
+            &data.texture_view))
     {
-        device->destroy_resource(data->texture);
-        data->texture = {};
+        destroy_test_texture(device, data);
 
         reshade::log::message(
             reshade::log::level::error,
             "Native input gate add-on failed to create its test texture view.");
-        return;
+        return false;
     }
 
     reshade::log::message(
         reshade::log::level::info,
         "Native input gate add-on initialized its GPU texture.");
+    return true;
 }
 
-void on_destroy_device(device *device)
+void on_init_effect_runtime(effect_runtime *runtime)
 {
-    auto *const data = device->get_private_data<device_data>();
+    auto *const data = runtime->get_private_data<swapchain_data>();
     if (data == nullptr)
         return;
 
-    if (data->texture_view.handle != 0)
-        device->destroy_resource_view(data->texture_view);
-    if (data->texture.handle != 0)
-        device->destroy_resource(data->texture);
+    device *const device = runtime->get_device();
+    static_cast<void>(create_test_texture(device, *data));
+}
 
-    device->destroy_private_data<device_data>();
+void on_destroy_effect_runtime(effect_runtime *runtime)
+{
+    auto *const data = runtime->get_private_data<swapchain_data>();
+    if (data != nullptr)
+        destroy_test_texture(runtime->get_device(), *data);
 }
 
 void on_init_swapchain(swapchain *swapchain, bool resize)
@@ -211,9 +218,8 @@ void on_destroy_swapchain(swapchain *swapchain, bool resize)
 void on_reshade_overlay(effect_runtime *runtime)
 {
     device *const device = runtime->get_device();
-    auto *const device_state = device->get_private_data<device_data>();
     auto *const swapchain_state = runtime->get_private_data<swapchain_data>();
-    if (device_state == nullptr || swapchain_state == nullptr || swapchain_state->state == nullptr)
+    if (swapchain_state == nullptr || swapchain_state->state == nullptr)
         return;
 
     const std::shared_ptr<window_input_state> input_state = swapchain_state->state;
@@ -368,10 +374,10 @@ void on_reshade_overlay(effect_runtime *runtime)
         }
         ImGui::Spacing();
 
-        if (device_state->texture_view.handle != 0)
+        if (swapchain_state->texture_view.handle != 0)
         {
             ImGui::Image(
-                device_state->texture_view.handle,
+                swapchain_state->texture_view.handle,
                 ImVec2(static_cast<float>(kTextureWidth), static_cast<float>(kTextureHeight)));
             ImGui::SameLine();
             ImGui::BeginGroup();
@@ -408,10 +414,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         if (!reshade::register_addon(module))
             return FALSE;
 
-        reshade::register_event<reshade::addon_event::init_device>(on_init_device);
-        reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
         reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
+        reshade::register_event<reshade::addon_event::init_effect_runtime>(on_init_effect_runtime);
+        reshade::register_event<reshade::addon_event::destroy_effect_runtime>(on_destroy_effect_runtime);
         reshade::register_event<reshade::addon_event::reshade_overlay>(on_reshade_overlay);
 
         reshade::log::message(

@@ -39,7 +39,7 @@ function table. The existing installation is always preserved, and clean
 targets continue to use the project-patched injected host.
 
 The normal client uses the SDK's ReShade launcher. ReShade selects the graphics
-API inside the target, so there is no D3D11/D3D12 client option:
+API inside the target, so there is no graphics-backend client option:
 
 ```powershell
 npm run dev

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("d3d11", "d3d12")]
+    [ValidateSet("d3d9", "d3d10", "d3d11", "d3d12")]
     [string]$Backend,
     [switch]$SkipBuild,
     [Parameter(DontShow = $true)]
@@ -38,6 +38,29 @@ $BackendLabel = $Backend.ToUpperInvariant()
 $HostName = "${Backend}_overlay_test_host.exe"
 $HostTarget = "${Backend}_overlay_test_host"
 $BuiltHost = Join-Path $OutputDirectory $HostName
+$ApiHookMarkers = @(switch ($Backend) {
+    "d3d9" {
+        "Redirecting Direct3DCreate9("
+        "Redirecting IDirect3D9::CreateDevice("
+    }
+    "d3d10" { "Redirecting D3D10CreateDeviceAndSwapChain(" }
+    "d3d11" { "Redirecting D3D11CreateDeviceAndSwapChain(" }
+    "d3d12" {
+        "Redirecting D3D12CreateDevice("
+        "Redirecting ID3D12Device::CreateCommandQueue("
+    }
+})
+$GraphicsApiMarker = switch ($Backend) {
+    "d3d9" { "API 0x9000" }
+    "d3d10" { "API 0xa000" }
+    "d3d11" { "API 0xb000" }
+    "d3d12" { "API 0xc000" }
+}
+$ResizeHookMarker = switch ($Backend) {
+    "d3d9" { "Redirecting IDirect3DDevice9::Reset(" }
+    "d3d10" { "Redirecting IDXGISwapChain::ResizeBuffers(" }
+    default { $null }
+}
 $Electron = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
 $Nx = Join-Path $RepoRoot "node_modules\.bin\nx.cmd"
 $RegistrationTimingSuffix = if ($RawRegistrationTiming -eq "before-injection") {
@@ -97,6 +120,8 @@ function Get-MatchingInjectors {
 function Get-MatchingHosts {
     @(
         foreach ($ControlledHostName in @(
+                "d3d9_overlay_test_host.exe",
+                "d3d10_overlay_test_host.exe",
                 "d3d11_overlay_test_host.exe",
                 "d3d12_overlay_test_host.exe")) {
             Get-CimInstance Win32_Process `
@@ -131,6 +156,18 @@ function Wait-ForClientMarker {
         if ($LogText.Contains("RESHADE_CLIENT_INJECTOR_FAILED") -or
             $LogText.Contains("ReShade attachment failed")) {
             throw "The client reported a ReShade attachment failure. Inspect $Path."
+        }
+        $ErrorPath = $Path -replace '\.stdout\.log$', '.stderr.log'
+        if ($ErrorPath -ne $Path -and
+            (Test-Path -LiteralPath $ErrorPath -PathType Leaf)) {
+            $ErrorText = Get-ClientLogText -Path $ErrorPath
+            if ($null -eq $ErrorText) {
+                $ErrorText = ""
+            }
+            if ($ErrorText.Contains("RESHADE_CLIENT_INJECTOR_FAILED") -or
+                $ErrorText.Contains("ReShade attachment failed")) {
+                throw "The client reported a ReShade attachment failure. Inspect $ErrorPath."
+            }
         }
         if ($LogText.Contains($Marker)) {
             return
@@ -393,12 +430,24 @@ namespace ReShadeClientSdkGate
         private const ushort VK_I = 0x49;
         private const ushort VK_ESCAPE = 0x1B;
         private const uint WM_CLOSE = 0x0010;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOZORDER = 0x0004;
+        private const uint SWP_NOACTIVATE = 0x0010;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct POINT
         {
             public int X;
             public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -475,6 +524,19 @@ namespace ReShadeClientSdkGate
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool PostMessage(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowRect(IntPtr window, out RECT rect);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(
+            IntPtr window,
+            IntPtr insertAfter,
+            int x,
+            int y,
+            int width,
+            int height,
+            uint flags);
+
         public static bool ActivateWindow(IntPtr window)
         {
             ShowWindow(window, SW_RESTORE);
@@ -516,6 +578,29 @@ namespace ReShadeClientSdkGate
         {
             if (!PostMessage(window, WM_CLOSE, UIntPtr.Zero, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "PostMessage(WM_CLOSE) failed.");
+        }
+
+        public static void ResizeWindowBy(IntPtr window, int widthDelta, int heightDelta)
+        {
+            RECT rect;
+            if (!GetWindowRect(window, out rect))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetWindowRect failed.");
+
+            int width = checked(rect.Right - rect.Left + widthDelta);
+            int height = checked(rect.Bottom - rect.Top + heightDelta);
+            if (width <= 0 || height <= 0)
+                throw new ArgumentOutOfRangeException("widthDelta");
+            if (!SetWindowPos(
+                    window,
+                    IntPtr.Zero,
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetWindowPos failed.");
+            }
         }
 
         public static string WindowTitle(IntPtr window)
@@ -998,10 +1083,10 @@ function Invoke-ClientSdkAttempt {
             -Marker "Electron game overlay runtime initialized its transport and input router." `
             -Deadline $StartupDeadline `
             -HostProcess $HostProcess
-        if ($Backend -eq "d3d12") {
+        foreach ($ApiHookMarker in $ApiHookMarkers) {
             Wait-ForReShadeMarker `
                 -Path $ReShadeLog `
-                -Marker "Redirecting ID3D12Device::CreateCommandQueue" `
+                -Marker $ApiHookMarker `
                 -Deadline $StartupDeadline `
                 -HostProcess $HostProcess
         }
@@ -1010,6 +1095,28 @@ function Invoke-ClientSdkAttempt {
             -Marker "rendered its first transported multi-window scene (2 window(s))." `
             -Deadline $StartupDeadline `
             -HostProcess $HostProcess
+        Wait-ForReShadeMarker `
+            -Path $ReShadeLog `
+            -Marker $GraphicsApiMarker `
+            -Deadline $StartupDeadline `
+            -HostProcess $HostProcess
+        if ($ResizeHookMarker) {
+            [ReShadeClientSdkGate.NativeInputMethods]::ResizeWindowBy(
+                $HostWindow,
+                64,
+                36
+            )
+            Wait-ForReShadeMarker `
+                -Path $ReShadeLog `
+                -Marker $ResizeHookMarker `
+                -Deadline $StartupDeadline `
+                -HostProcess $HostProcess
+            Start-Sleep -Milliseconds 500
+            $HostProcess.Refresh()
+            if ($HostProcess.HasExited) {
+                throw "The controlled host exited during the post-scene resize proof."
+            }
+        }
 
         if (-not [ReShadeClientSdkGate.NativeInputMethods]::ActivateWindow($HostWindow)) {
             throw "Could not make the controlled host the foreground window."
@@ -1369,7 +1476,7 @@ function Invoke-ClientSdkAttempt {
 
         $ReShadeFault = Select-String `
             -LiteralPath $ReShadeLog `
-            -Pattern "out of global sequence|router was reset|input.*(failed|error)|queue.*(failed|error)|FATAL" `
+            -Pattern "out of global sequence|router was reset|input.*(failed|error)|queue.*(failed|error)|IDirect3DDevice9::Reset failed|IDXGISwapChain::ResizeBuffers failed|FATAL" `
             -CaseSensitive:$false
         if ($ReShadeFault) {
             throw "ReShade reported an input/router fault: $($ReShadeFault.Line -join ' | ')"

@@ -273,16 +273,20 @@ keyboard activity, and restores normal input on release, focus loss, transport
 failure, or shutdown. It does not claim Steam's code signing, launcher ownership,
 anti-cheat relationships, compatibility database, or universal game coverage.
 
-The initial candidate envelope is Windows x64 with controlled D3D11 and D3D12
-hosts, followed by permitted offline/single-player applications. These cases are
-not supported by the current production runtime:
+The initial candidate envelope is Windows x64 with controlled D3D9, D3D10,
+D3D11, and D3D12 hosts, followed by permitted offline/single-player
+applications. D3D9 and D3D10 each passed two fresh production client/SDK cycles
+on August 1, 2026, including exact API-hook and target-surface evidence,
+multi-window Electron input, post-scene resize, release, and cleanup. These
+cases are not supported by the current production runtime:
 
 - competitive, anti-cheat-protected, protected, or otherwise restricted
   processes; no stealth or anti-cheat bypass work is in scope;
 - target/runtime integrity-level mismatch or an elevated target launched from
   a lower-integrity client;
-- x86 targets and VR runtimes (`reshade_overlay` is not invoked for VR);
-- Vulkan, OpenGL, D3D9, unusual/exclusive presentation paths, same-HWND
+- x86 targets and VR runtimes (`reshade_overlay` is not invoked for VR); the
+  installed Portal `hl2.exe` is PE32/x86 and remains outside the current package;
+- Vulkan, OpenGL, unusual/exclusive presentation paths, same-HWND
   multi-swap-chain input ownership, distinct D3D12 direct queues, broader
   multi-swap-chain layouts, and simultaneous rendered targets beyond the
   completed same-listener credential-isolation and fail-closed route-selection

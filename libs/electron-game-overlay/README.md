@@ -25,7 +25,7 @@ private file records. The SDK
 waits for transport discovery, executes the injector without a shell, and
 requires one strict structured injector result, then resolves only after an add-on with that
 PID and the expected executable basename authenticates back to the session.
-ReShade selects the target graphics API; callers do not select D3D11 or D3D12.
+ReShade selects the target graphics API; callers do not select a Direct3D backend.
 The staged add-on is `electron_game_overlay.addon64`.
 Pass `--reshade-overlay` exactly once to the Electron main process to opt in to
 the bundled runtime configuration.

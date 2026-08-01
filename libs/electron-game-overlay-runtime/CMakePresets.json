@@ -28,6 +28,20 @@
   ],
   "buildPresets": [
     {
+      "name": "relwithdebinfo-dx9",
+      "displayName": "RelWithDebInfo D3D9 host",
+      "configurePreset": "vs2022-x64",
+      "configuration": "RelWithDebInfo",
+      "targets": ["d3d9_overlay_test_host"]
+    },
+    {
+      "name": "relwithdebinfo-dx10",
+      "displayName": "RelWithDebInfo D3D10 host",
+      "configurePreset": "vs2022-x64",
+      "configuration": "RelWithDebInfo",
+      "targets": ["d3d10_overlay_test_host"]
+    },
+    {
       "name": "relwithdebinfo",
       "displayName": "RelWithDebInfo D3D11 host",
       "configurePreset": "vs2022-x64",

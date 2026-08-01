@@ -164,9 +164,9 @@ make `parseReShadeLaunchConfig()` return the bundled configuration. The optional
 and tests; an invalid or incomplete directory fails instead of silently falling
 back.
 
-For name-only selection, arm before the target starts. ReShade chooses D3D11 or
-D3D12 after it enters the target; there is no graphics-backend option in the
-application API.
+For name-only selection, arm before the target starts. ReShade chooses the
+graphics backend after it enters the target; there is no graphics-backend
+option in the application API.
 
 Every successful injector run must produce one strict structured result.
 `runtimeMode` is `injected-runtime` when the staged ReShade DLL was loaded, or

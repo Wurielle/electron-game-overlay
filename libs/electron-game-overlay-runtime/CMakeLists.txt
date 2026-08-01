@@ -1569,6 +1569,67 @@ set_target_properties(native_input_gate_addon PROPERTIES
     SUFFIX ".addon64"
 )
 
+add_executable(d3d9_overlay_test_host WIN32
+    src/legacy_direct3d_test_host.cpp
+    src/input_oracle.hpp
+)
+
+target_compile_features(d3d9_overlay_test_host PRIVATE cxx_std_20)
+target_compile_definitions(d3d9_overlay_test_host PRIVATE
+    EGO_CONTROLLED_D3D9
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+)
+target_compile_options(d3d9_overlay_test_host PRIVATE
+    /W4
+    /permissive-
+    /EHsc
+)
+target_link_libraries(d3d9_overlay_test_host PRIVATE
+    d3d9
+)
+
+add_custom_command(TARGET d3d9_overlay_test_host POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "$<TARGET_FILE:native_input_gate_addon>"
+        "$<TARGET_FILE_DIR:d3d9_overlay_test_host>"
+    COMMENT "Copying the ReShade add-on next to the controlled D3D9 host"
+)
+add_dependencies(d3d9_overlay_test_host native_input_gate_addon)
+
+add_executable(d3d10_overlay_test_host WIN32
+    src/legacy_direct3d_test_host.cpp
+    src/input_oracle.hpp
+)
+
+target_compile_features(d3d10_overlay_test_host PRIVATE cxx_std_20)
+target_compile_definitions(d3d10_overlay_test_host PRIVATE
+    EGO_CONTROLLED_D3D10
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+)
+target_compile_options(d3d10_overlay_test_host PRIVATE
+    /W4
+    /permissive-
+    /EHsc
+)
+target_link_libraries(d3d10_overlay_test_host PRIVATE
+    d3d10
+    dxgi
+)
+
+add_custom_command(TARGET d3d10_overlay_test_host POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "$<TARGET_FILE:native_input_gate_addon>"
+        "$<TARGET_FILE_DIR:d3d10_overlay_test_host>"
+    COMMENT "Copying the ReShade add-on next to the controlled D3D10 host"
+)
+add_dependencies(d3d10_overlay_test_host native_input_gate_addon)
+
 add_executable(d3d11_overlay_test_host WIN32
     src/d3d11_test_host.cpp
     src/input_oracle.hpp

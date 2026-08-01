@@ -29,7 +29,8 @@ acceptance evidence and are intentionally preserved as records.
 
 As of July 30, 2026, the library POC is ready for application testing through
 the public `electron-game-overlay` SDK within its documented boundary:
-near-process-creation injection, automatic D3D11/D3D12 host selection,
+near-process-creation injection, automatic controlled x64
+D3D9/D3D10/D3D11/D3D12 host selection,
 multi-window Electron rendering/input, target relaunch without restarting
 Electron, demo-owned Steam process observation, target-follow/FPS telemetry, and
 structured attachment/transport/runtime/producer diagnostics all have
@@ -73,6 +74,9 @@ explicitly unsupported or deferred until chosen as a separate task.
     projection open instead of assigning the record heuristically.
 - [x] Pass the same real Electron scene and exact legacy-input acceptance on D3D12.
   - D3D12 rendered both ordered Electron windows and passed exact click/focus/text and caption-drag routing while every host oracle counter remained frozen.
+- [x] Add and accept controlled x64 D3D9 and D3D10 production SDK paths.
+  - On August 1, 2026, both backends passed two fresh client/target cycles with exact ReShade hook markers, matching target-surface API telemetry, two transported Electron windows, interception/release, caption drag, text input, post-scene resize, normal exit, distinct isolated runtime directories, and no leftovers.
+  - The proxy-loaded native hosts also rendered and recreated their effect-runtime-owned test texture across D3D9 Reset and D3D10 ResizeBuffers without an error. This proves the legacy graphics backends on x64; it does not prove x86 packaging or Portal.
 - [x] Replace the active client's hudhook launcher/runtime selection with the ReShade host boundary and pass the real client/SDK Gun Frog input gate.
   - The production client now arms by executable process name before launch, lets ReShade select the graphics API, and keeps the public session/window/input surface plus Electron-owned Ctrl+I toggle stable.
   - `gun-frog-client-sdk.ps1` passed against PID 11104: all four aligned Electron controls stayed inside the overlay, Ctrl+I produced the negative acknowledgement, the identical released Quit position closed the game, and the runner persisted `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS` in the client-run `result.txt`.
@@ -102,6 +106,10 @@ explicitly unsupported or deferred until chosen as a separate task.
   - Controlled D3D11 and D3D12 scene runs on July 13, 2026 both published 1280×720 target telemetry, a nonzero injected FPS sample, rendered two transported Electron windows, acknowledged interception, and exited cleanly. Evidence is under `build/electron-game-overlay-runtime/electron-scene-d3d11-20260713-183425` and `build/electron-game-overlay-runtime/electron-scene-d3d12-20260713-183543`.
 
 ### Runtime compatibility and hardening
+
+- [ ] Add a complete Win32/x86 runtime package and accept Portal's D3D9 path.
+  - Build and stage an `i686-pc-windows-msvc` transport library, Win32 injector, `ReShade32.dll`, and `.addon32`, then select artifacts from the target PE architecture in the SDK and existing-ReShade manager path.
+  - The installed Portal `hl2.exe` is PE32/x86. Do not treat the accepted x64 D3D9 gate as Portal support until a real Portal launch, rendering, input interception/release, resize/device reset, relaunch, and cleanup pass.
 
 - [x] Add exact-PID loaded-runtime compatibility preflight and a strict structured injector result.
   - Before target mutation, the injector performs bounded module enumeration

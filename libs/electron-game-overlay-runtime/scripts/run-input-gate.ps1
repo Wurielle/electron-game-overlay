@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("d3d11", "d3d12")]
+    [ValidateSet("d3d9", "d3d10", "d3d11", "d3d12")]
     [string]$Backend,
     [switch]$NoLaunch
 )
@@ -15,8 +15,22 @@ $OutputDirectory = Join-Path $BuildRoot "RelWithDebInfo"
 $Runtime = Join-Path $BuildRoot "_deps\reshade-src\bin\x64\Release\ReShade64.dll"
 $Addon = Join-Path $OutputDirectory "native_input_gate_addon.addon64"
 $Config = Join-Path $RuntimeRoot "config\ReShade.ini"
-$Preset = if ($Backend -eq "d3d11") { "relwithdebinfo" } else { "relwithdebinfo-dx12" }
-$ProxyName = if ($Backend -eq "d3d11") { "d3d11.dll" } else { "dxgi.dll" }
+$BackendConfig = switch ($Backend) {
+    "d3d9" {
+        [pscustomobject]@{ Preset = "relwithdebinfo-dx9"; ProxyName = "d3d9.dll" }
+    }
+    "d3d10" {
+        [pscustomobject]@{ Preset = "relwithdebinfo-dx10"; ProxyName = "d3d10.dll" }
+    }
+    "d3d11" {
+        [pscustomobject]@{ Preset = "relwithdebinfo"; ProxyName = "d3d11.dll" }
+    }
+    "d3d12" {
+        [pscustomobject]@{ Preset = "relwithdebinfo-dx12"; ProxyName = "dxgi.dll" }
+    }
+}
+$Preset = $BackendConfig.Preset
+$ProxyName = $BackendConfig.ProxyName
 $HostName = "${Backend}_overlay_test_host.exe"
 $BuiltHost = Join-Path $OutputDirectory $HostName
 $RunDirectory = Join-Path $BuildRoot "input-gate-$Backend"

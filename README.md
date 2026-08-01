@@ -2,9 +2,9 @@
 
 This repository renders Electron offscreen windows inside Windows games through
 a maintained ReShade + Dear ImGui host. The active stack supports controlled
-D3D11 and D3D12 targets, ordered multi-window composition, focus and capture,
-caption dragging, and an interception mode that routes input to Electron while
-ReShade blocks the corresponding game input.
+D3D9, D3D10, D3D11, and D3D12 targets on Windows x64, ordered multi-window
+composition, focus and capture, caption dragging, and an interception mode that
+routes input to Electron while ReShade blocks the corresponding game input.
 
 ## Production packages
 
@@ -19,7 +19,7 @@ ReShade blocks the corresponding game input.
 - [`libs/electron-game-overlay-runtime`](libs/electron-game-overlay-runtime/README.md)
   is the Windows x64 injected host. It builds the pinned patched ReShade
   runtime, injector, native target-local ReShade add-on manager,
-  `electron_game_overlay.addon64`, controlled D3D11/D3D12 hosts, and
+  `electron_game_overlay.addon64`, controlled D3D9/D3D10/D3D11/D3D12 hosts, and
   human-facing acceptance launchers.
 - [`apps/client`](apps/client/README.md) is an SDK demo and acceptance client. It
   is not a second overlay implementation.
@@ -100,8 +100,9 @@ SDK injection for every detected executable whose normalized path contains
 up, and then launch the game. The client does not guess which executable owns
 rendering: bootstrap launchers, child renderers, helpers, and redistributables
 all receive one attempt. Whatever process initializes the overlay authenticates
-and renders without blocking later candidates. ReShade selects D3D11 or D3D12
-inside each process, so application code does not choose a graphics payload.
+and renders without blocking later candidates. ReShade selects the target's
+supported Direct3D API inside each process, so application code does not choose
+a graphics payload.
 Press **Ctrl+I** while a game is focused to toggle interception.
 
 The normal demo starts with one compact in-game information dock. It shows the
@@ -177,8 +178,12 @@ Every human-facing runtime case has its own launcher under
 `libs/electron-game-overlay-runtime/scripts/test-cases`:
 
 ```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-native-input-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-native-input-gate.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-native-input-gate.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-native-input-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-client-sdk.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-electron-scene.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-electron-scene.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk.ps1
@@ -230,6 +235,13 @@ project-runtime route. The official-ReShade Gun Frog launcher passed on July 31,
 effect. It is a narrow real-game coexistence proof, not compatibility with
 arbitrary proxy chains or public hosts.
 
+The controlled x64 D3D9 and D3D10 production-client gates each passed two fresh
+client/target cycles on August 1, 2026. They require the exact ReShade API hook,
+matching target-surface telemetry, a two-window Electron scene, intercepted and
+released input, and a post-scene resize with successful resource recreation.
+This is graphics-backend acceptance, not x86 acceptance: the installed Portal
+`hl2.exe` is PE32/x86 and still needs the separate Win32 runtime package.
+
 ## Input acceptance boundary
 
 Interception is accepted only when all of the following hold:
@@ -247,11 +259,12 @@ detected by a monotonic session epoch and fails open on the target's next
 ReShade overlay callback; a target that has stopped presenting entirely cannot
 complete that render-thread transition until presentation resumes.
 
-Controlled D3D11/D3D12 hosts and Gun Frog passed this boundary in July 2026,
-including Electron controls placed directly over four game menu controls. The
-game stayed unchanged during interception and received the same Quit position
-only after release. Exact-PID near-process-creation injection and same-client
-target restart also passed their dedicated gates.
+Controlled x64 D3D9 and D3D10 hosts passed this boundary in August 2026;
+controlled D3D11/D3D12 hosts and Gun Frog passed it in July 2026, including
+Electron controls placed directly over four game menu controls. The game stayed
+unchanged during interception and received the same Quit position only after
+release. Exact-PID near-process-creation injection and same-client target
+restart also passed their dedicated D3D11/D3D12 gates.
 
 These results do not establish arbitrary late injection, every game, Vulkan,
 OpenGL, unusual presentation paths, simultaneous arbitrary real-game

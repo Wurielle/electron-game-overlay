@@ -33,6 +33,8 @@
       "options": {
         "cwd": "libs/electron-game-overlay-runtime",
         "commands": [
+          "cmake.exe --build ../../build/electron-game-overlay-runtime --config RelWithDebInfo --target d3d9_overlay_test_host --parallel",
+          "cmake.exe --build ../../build/electron-game-overlay-runtime --config RelWithDebInfo --target d3d10_overlay_test_host --parallel",
           "cmake.exe --build ../../build/electron-game-overlay-runtime --config RelWithDebInfo --target d3d11_overlay_test_host --parallel",
           "cmake.exe --build ../../build/electron-game-overlay-runtime --config RelWithDebInfo --target d3d12_overlay_test_host --parallel"
         ],

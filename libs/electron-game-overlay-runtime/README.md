@@ -13,8 +13,9 @@ The original baseline proved two things inside the target render path:
 - an always-visible Dear ImGui diagnostics panel can be rendered while the main ReShade menu is closed;
 - a generated RGBA bitmap can be uploaded through ReShade's graphics-agnostic resource API and drawn with `ImGui::Image`.
 
-The current implementation adds controlled D3D11 and D3D12 input-gate hosts and
-connects the real multi-window Electron scene on both backends. ReShade's public
+The current implementation adds controlled D3D9, D3D10, D3D11, and D3D12
+input-gate hosts and connects the real multi-window Electron scene through the
+production SDK on all four backends. ReShade's public
 `effect_runtime::block_input_next_frame()` remains the sole game-side blocking
 authority. A narrow pinned full-add-on observer copies input only after ReShade
 has decided to suppress it, allowing the project router to deliver the exact
@@ -262,15 +263,18 @@ Extra edits inside an expected fetched-source file invalidate the build.
 Each human-facing backend has its own launcher:
 
 ```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-native-input-gate.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-native-input-gate.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-native-input-gate.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-native-input-gate.ps1
 ```
 
 The launchers build the host and add-on, build or reuse the pinned local ReShade
 runtime, and create an isolated directory under
-`build/electron-game-overlay-runtime/input-gate-d3d11` or
-`input-gate-d3d12`. D3D11 stages the runtime as `d3d11.dll`; D3D12 stages it as
-`dxgi.dll`. Both stage `ReShade.ini` with `[INPUT] InputProcessing=2`, the add-on,
+`build/electron-game-overlay-runtime/input-gate-d3d9`, `input-gate-d3d10`,
+`input-gate-d3d11`, or `input-gate-d3d12`. D3D9, D3D10, and D3D11 stage the
+runtime as `d3d9.dll`, `d3d10.dll`, and `d3d11.dll`; D3D12 stages it as
+`dxgi.dll`. All four stage `ReShade.ini` with `[INPUT] InputProcessing=2`, the add-on,
 and the `reshade-input-gate.enabled` marker that enables the controlled host
 oracle. The parameterized `scripts/run-input-gate.ps1` runner remains available
 for automation and supports `-NoLaunch`.
@@ -326,6 +330,22 @@ including `raw`, `poll-left`, and `ptr`. Releasing interception resumed all
 legacy/raw/pointer/polling/cursor counters and cursor confinement. This is the
 controlled proof for the Unity-style second mouse projection.
 
+### Accepted x64 legacy-API results: August 1, 2026
+
+The D3D9 and D3D10 proxy-loaded hosts rendered the native ImGui/texture probe,
+survived a live post-render resize, recreated their effect-runtime-owned test
+textures, produced no Reset/ResizeBuffers failure, and exited normally. The
+production client/SDK gate then passed twice on each backend with exact hook and
+target-surface API evidence, two transported Electron windows, input
+interception/release, caption drag, text input, post-scene resize, distinct
+isolated runtime directories, and no leftover target/client/injector process.
+The result markers are `D3D9_REAL_CLIENT_SDK_GATE_PASS` and
+`D3D10_REAL_CLIENT_SDK_GATE_PASS`.
+
+These are Windows x64 results. Portal's installed `hl2.exe` is PE32/x86 and is
+not covered until the runtime, injector, add-on, Rust transport library, and SDK
+artifact selection also support Win32.
+
 ReShade's managed ImGui context samples button and key state once per `Present`.
 Human-duration clicks, typing, dragging, and wheel input passed this controlled
 gate. An exact input edge that begins and ends entirely between two presentations
@@ -376,8 +396,8 @@ that occur before the add-on reaches the transport bridge, including add-on
 registration or graphics-hook initialization, still require the local
 `ReShade.log`.
 
-The generated `electron_game_overlay.addon64` has completed controlled D3D11
-and D3D12 live-producer runs: it connected the existing authenticated Node
+The generated `electron_game_overlay.addon64` has completed controlled D3D9,
+D3D10, D3D11, and D3D12 live-producer runs: it connected the existing authenticated Node
 transport, uploaded two overlapping real Electron OSR windows, rendered the
 transported scene, and returned the interception acknowledgement. ReShade-owned exact
 legacy mouse/keyboard records, plus the primary `PT_MOUSE` `WM_POINTER` stream
@@ -404,18 +424,21 @@ after using it, restart the case to intercept again. Producer evidence is writte
 evidence. The parameterized `scripts/run-electron-scene.ps1` remains available
 for automation and supports `-NoLaunch`.
 
-## Run the production client/SDK D3D12 gate
+## Run the production client/SDK D3D9, D3D10, and D3D12 gates
 
 Use the dedicated controlled production-client wrapper:
 
 ```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-client-sdk.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk.ps1
 ```
 
 It builds the real client, public SDK runtime, add-on, injector, and controlled
-D3D12 host. For each of two attempts it starts a fresh client with isolated user
+host. For each of two attempts it starts a fresh client with isolated user
 data, arms the SDK launcher by executable basename, starts the host, and verifies
-the exact connected PID and path. The runner requires a D3D12 command queue, the
+the exact connected PID and path. The runner requires the selected API's exact
+ReShade hook marker and target-surface telemetry, the
 transported two-window scene, and a positive interception acknowledgement before
 driving the status and main text fields. It also sends intercepted Escape, drags
 the main caption, clicks the field at its moved coordinates, and requires the
@@ -426,8 +449,11 @@ the host's legacy down/up, raw-input, and primary `PT_MOUSE` pointer counters an
 restore cursor confinement. Released Escape must then close the host normally.
 The runner force-cleans only that attempt's isolated Electron process tree,
 requires no host/client/injector leftovers, relaunches with a distinct ReShade
-run directory, and emits `D3D12_REAL_CLIENT_SDK_GATE_PASS` only after both cycles
-pass.
+run directory, and emits the selected backend's
+`D3D9_REAL_CLIENT_SDK_GATE_PASS`, `D3D10_REAL_CLIENT_SDK_GATE_PASS`, or
+`D3D12_REAL_CLIENT_SDK_GATE_PASS` marker only after both cycles pass. D3D9 and
+D3D10 additionally force a post-scene resize and reject Reset/ResizeBuffers
+failures.
 
 The gate passed on July 13, 2026 against target PIDs 17248 and 13528. Evidence is
 preserved under
@@ -438,10 +464,10 @@ per-attempt pass markers.
 
 The copied host has a test-only `reshade-injection-wait.enabled` marker. It gives
 the prearmed injector a bounded opportunity to load ReShade and install its
-graphics hooks before this deliberately fast controlled host creates D3D12. This
-proves the production client/public SDK path and ReShade's D3D12 selection for a
+graphics hooks before the deliberately fast controlled host creates its device. This
+proves the production client/public SDK path and ReShade's backend selection for a
 cooperating target; it does not prove late injection or arbitrary fast-start
-D3D12 game timing. Client cleanup in this gate is forced teardown followed by a
+game timing. Client cleanup in this gate is forced teardown followed by a
 fresh launch, not producer-session deactivation or clean runtime/add-on unload.
 
 ## Run the production client/SDK raw-input gates
