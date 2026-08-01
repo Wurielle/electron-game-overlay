@@ -72,6 +72,23 @@ This is an internal pinned-runtime bookkeeping change. It does not change local
 add-on API 19, private host ABI 1, the published transport C ABI or wire schema,
 or the public Node SDK API.
 
+## `reshade-raw-input-focus-following-root.patch`
+
+Layers exact device-class provenance over registration reconciliation. A queued
+record derived from `hwndTarget = nullptr` may select only the most recently
+rendered input manager under the focused source's normalized `GA_ROOT`; no
+candidate under that root fails open. The source and focused HWND must belong to
+the calling GUI thread and process, the root must be foreground, and queued raw
+input additionally requires `RIM_INPUT` plus exact focus. Promoted mouse pointer
+messages require a non-null focus under the same foreground root.
+
+The patch resolves `WM_INPUT`'s actual mouse/keyboard class from `RID_HEADER`
+before fallback selection. A NULL bit takes the root-constrained route, an exact
+source-HWND bit retains the established process-wide render fallback, and no bit
+for that class fails open before any input state is mutated. It is incremental
+over the preceding reconciliation patch so an exact schema-22 fetched tree can
+migrate without replacement.
+
 ## `reshade-injector-base-path.patch`
 
 Sets `RESHADE_BASE_PATH_OVERRIDE` inside the target to the injector directory
@@ -232,11 +249,13 @@ identity, while host-version compatibility is decided inside the add-on through
 public API-18 registration and the requested Dear ImGui function table. There is
 no ReShade product-version or runtime-hash allowlist. In this public-host mode,
 the add-on's same-thread message interception can copy, route, and suppress
-foreground `WM_INPUT` records and queries the exact source HWND's current
-`RIDEV_NOLEGACY` registration before treating raw input as authoritative. The
-current public-host add-on does not add the pinned runtime's
-`GetRawInputBuffer()` detour to an official host, so buffered-only raw-input
-consumers remain outside that compatibility boundary.
+foreground `WM_INPUT` records and requires either the exact source HWND's
+current `RIDEV_NOLEGACY` registration or a valid NULL focus-following
+registration resolved to that exact focused foreground HWND. The controlled
+NULL-target gates exercise only the bundled private runtime; official-host NULL
+routing remains ungated. The current public-host add-on does not add the pinned
+runtime's `GetRawInputBuffer()` detour to an official host, so buffered-only
+raw-input consumers remain outside that compatibility boundary.
 
 ## `reshade-injector-global-layer-preflight.patch`
 
@@ -282,7 +301,7 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all nineteen
+targets. `scripts/build-reshade-runtime.ps1` additionally validates all twenty
 production-patch hashes, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache. Raw-input normalization reuses the existing
 normalized Win32 input path; it changes no published transport C ABI, transport

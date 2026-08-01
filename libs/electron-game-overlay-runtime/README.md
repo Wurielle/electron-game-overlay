@@ -135,7 +135,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies nineteen
+downloads both into the ignored build directory, then applies twenty
 production patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -151,6 +151,10 @@ production patches to the pinned ReShade revision:
   snapshots. Exact-HWND and NULL focus-following registrations are supported;
   transient query failures retry at most once per second, while unavailable,
   malformed, changing, or ambiguous snapshot state fails open;
+- `reshade-raw-input-focus-following-root.patch` preserves exact device-class
+  provenance and constrains NULL focus-following input to a rendered window
+  under its focused foreground root. Explicit helper-HWND registrations retain
+  the established process-wide render fallback;
 - `reshade-injector-base-path.patch` keeps injected configuration, add-ons, and
   logs in the isolated injector stage and removes the startup delay that missed
   early Unity swap-chain creation;
@@ -245,7 +249,7 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1
 ```
 
-The launchers validate the cache against a schema-22 build stamp, the nineteen
+The launchers validate the cache against a schema-23 build stamp, the twenty
 production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
 all nine patched source files, the full-add-on configuration, and the
 runtime/injector SHA-256 hashes. CMake performs the same commit, nine-path, and
@@ -492,11 +496,37 @@ The true pre-injection cases passed on August 1, 2026. Evidence is under
 `client-sdk-d3d11-raw-buffer-registration-before-injection-20260801-153450`,
 `client-sdk-d3d12-wm-input-registration-before-injection-20260801-153502`, and
 `client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
-The ordinary post-injection registration path was then rerun to rule out a
-regression under `client-sdk-d3d11-wm-input-20260801-153534`,
-`client-sdk-d3d11-raw-buffer-20260801-153543`,
-`client-sdk-d3d12-wm-input-20260801-153552`, and
-`client-sdk-d3d12-raw-buffer-20260801-153600`.
+The ordinary post-injection registration path was rerun after the focused-root
+hardening under `client-sdk-d3d11-wm-input-20260801-162614`,
+`client-sdk-d3d11-raw-buffer-20260801-162623`,
+`client-sdk-d3d12-wm-input-20260801-162632`, and
+`client-sdk-d3d12-raw-buffer-20260801-162641`.
+
+## Run the NULL focus-following raw-registration gates
+
+Use the dedicated launcher for each backend:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-null-target-raw-registration.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-null-target-raw-registration.ps1
+```
+
+Each launcher runs queued and buffered raw input after the host registers mouse
+and keyboard before injection with `hwndTarget = NULL`. Acceptance requires the
+ready title to report `target=null-focus hwndTarget=NULL`, the stable oracle to
+report `target=null-focus raw-register=ok`, full Electron interaction while the
+game oracle remains frozen, and restored raw counters after release.
+
+The four private-runtime cases passed on August 1, 2026 under
+`client-sdk-d3d11-wm-input-registration-before-injection-null-target-20260801-162427`,
+`client-sdk-d3d11-raw-buffer-registration-before-injection-null-target-20260801-162509`,
+`client-sdk-d3d12-wm-input-registration-before-injection-null-target-20260801-162547`,
+and
+`client-sdk-d3d12-raw-buffer-registration-before-injection-null-target-20260801-162557`.
+They prove one primary HWND that remains focused and foreground, with
+registration, delivery, and rendering on the same GUI thread. Background
+rejection, focus transfer/reacquisition, another GUI thread, and multiple or
+sibling HWND ambiguity remain separate hardening cases.
 
 ## Run the same-client restart/reinjection gate
 

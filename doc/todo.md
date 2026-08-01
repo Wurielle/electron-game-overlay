@@ -324,21 +324,27 @@ explicitly unsupported or deferred until chosen as a separate task.
     `client-sdk-d3d12-wm-input-registration-before-injection-20260801-153502`,
     and
     `client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
-    Post-injection regression evidence is under D3D11 `153534`/`153543` and
-    D3D12 `153552`/`153600` for queued/buffered modes respectively.
+    Post-injection regression evidence after focused-root hardening is under
+    D3D11 `162614`/`162623` and D3D12 `162632`/`162641` for queued/buffered
+    modes respectively.
   - The seeded snapshot supports an exact HWND or `hwndTarget = nullptr`
     resolved to the calling GUI thread's exact focused foreground HWND.
+    Positive NULL-target interception/release passed under D3D11 queued/buffered
+    runs `162427`/`162509` and D3D12 runs `162547`/`162557`; each full evidence
+    name contains `registration-before-injection-null-target`. This acceptance
+    is limited to one continuously focused foreground primary HWND with
+    registration and delivery on the same GUI thread.
     Transient snapshot-query failures retry at most once per second; stable
     unsupported state waits for the next registration mutation. Failure, an
     update-in-progress or changed generation, missing focus, and missing or
     ambiguous ownership fail open. This internal seam
     keeps add-on API 19, private host ABI 1, and public transport/Node APIs
-    unchanged; the pinned cache is schema 22 with nineteen production patches.
-  - Keep multiple or sibling target HWND layouts, pre-held input and disarm
+    unchanged; the pinned cache is schema 23 with twenty production patches.
+  - Keep background rejection, focus loss/transfer/reacquisition, another GUI
+    thread, multiple or sibling target HWND layouts, pre-held input and disarm
     ownership completeness, mixed raw/legacy modifier state, the first relative
     cursor seed, and concurrent registration churn as explicit hardening until
-    separately exercised; the passing late-registration gate does not claim
-    them.
+    separately exercised; the passing positive gates do not claim them.
   - Add an ownership-safe official-host `GetRawInputBuffer` observation seam
     only after its API-hook and coexistence boundary is proven; do not infer
     buffered support from the accepted official `WM_INPUT` route.

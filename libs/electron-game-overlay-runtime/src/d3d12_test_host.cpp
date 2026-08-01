@@ -28,8 +28,6 @@ constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D12TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D12 overlay test host";
 constexpr wchar_t kSecondaryWindowTitle[] =
     L"Controlled D3D12 overlay test host B";
-constexpr wchar_t kRawRegistrationReadyTitle[] =
-    L"Controlled D3D12 overlay test host | raw registration ready before injection";
 constexpr wchar_t kInjectedRuntimeWaitMarker[] = L"reshade-injection-wait.enabled";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
@@ -1049,7 +1047,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             UnregisterClassW(kWindowClassName, instance);
             return 1;
         }
-        SetWindowTextW(g_graphics.window, kRawRegistrationReadyTitle);
+        const bool null_target =
+            g_input_oracle.raw_registration_uses_null_target();
+        wchar_t raw_registration_ready_title[256] = {};
+        swprintf_s(
+            raw_registration_ready_title,
+            L"%s | raw registration ready before injection | target=%s hwndTarget=%s",
+            kWindowTitle,
+            g_input_oracle.raw_registration_target_name(),
+            null_target ? L"NULL" : L"window");
+        SetWindowTextW(g_graphics.window, raw_registration_ready_title);
+        publish_stdout_marker(
+            "EGO_CONTROLLED_HOST_RAW_REGISTRATION_READY backend=d3d12 "
+            "pid=%lu windowHwnd=0x%llx target=%s hwndTarget=0x%llx "
+            "beforeInjection=true",
+            static_cast<unsigned long>(GetCurrentProcessId()),
+            static_cast<unsigned long long>(
+                reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+            null_target ? "null-focus" : "explicit-hwnd",
+            null_target
+                ? 0ULL
+                : static_cast<unsigned long long>(
+                      reinterpret_cast<std::uintptr_t>(g_graphics.window)));
         ShowWindow(g_graphics.window, SW_SHOWNOACTIVATE);
         UpdateWindow(g_graphics.window);
         if (!wait_for_injected_runtime(

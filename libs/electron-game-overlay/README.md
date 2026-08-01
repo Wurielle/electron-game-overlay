@@ -642,6 +642,19 @@ open and leaves the record with the game. This is an internal runtime/add-on
 capability: it adds no Node API, transport wire field, or published transport C
 ABI entry.
 
+The bundled private-runtime NULL focus-following route is accepted through the
+dedicated D3D11 and D3D12 launchers:
+
+```powershell
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-null-target-raw-registration.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-null-target-raw-registration.ps1
+```
+
+These prove queued and buffered input for one continuously focused foreground
+HWND on the registration/message-pump thread. They do not establish background,
+focus-transfer, cross-thread, or multi-HWND behavior, and they do not exercise
+the analogous official-host queued-`WM_INPUT` branch.
+
 Before that packet reaches the session, the authenticated transport requires an
 exact fail-closed envelope: `type`, positive uint32 `windowId`, a Win32 `msg`
 from the native producer's routable message set, uint32 `wparam`/`lparam`, and

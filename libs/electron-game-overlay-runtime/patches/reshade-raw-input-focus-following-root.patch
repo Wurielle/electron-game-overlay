@@ -1,0 +1,155 @@
+diff --git a/source/input.cpp b/source/input.cpp
+index 36c1991..c10db6d 100644
+--- a/source/input.cpp
++++ b/source/input.cpp
+@@ -193,22 +193,48 @@ static bool ensure_raw_input_registrations_seeded(bool wait_for_update = false)
+ 	return valid;
+ }
+ 
+-static unsigned int raw_input_registration_flags(HWND source_window, bool include_focus_following)
++static HWND normalized_root_window(HWND window)
+ {
++	if (window == nullptr)
++		return nullptr;
++	const HWND root = GetAncestor(window, GA_ROOT);
++	return root != nullptr ? root : window;
++}
++
++static unsigned int raw_input_registration_flags(
++	HWND source_window,
++	bool include_focus_following,
++	unsigned int &exact_flags,
++	unsigned int &focus_following_flags)
++{
++	exact_flags = 0;
++	focus_following_flags = 0;
+ 	const uint64_t generation = s_raw_input_registration_generation.load(std::memory_order_acquire);
+ 	if ((generation & 1) != 0 || !s_raw_input_registration_authority.load(std::memory_order_acquire))
+ 		return 0;
+ 
+ 	unsigned int flags = 0;
+ 	if (const auto exact = s_raw_input_windows.find(source_window); exact != s_raw_input_windows.end())
++	{
+ 		flags |= exact->second;
++		exact_flags = exact->second;
++	}
+ 
+ 	if (include_focus_following)
+ 	{
+ 		if (const auto focused = s_raw_input_windows.find(nullptr); focused != s_raw_input_windows.end())
++		{
+ 			flags |= focused->second;
++			focus_following_flags = focused->second;
++		}
+ 	}
+-	return generation == s_raw_input_registration_generation.load(std::memory_order_acquire) ? flags : 0;
++	if (generation != s_raw_input_registration_generation.load(std::memory_order_acquire))
++	{
++		exact_flags = 0;
++		focus_following_flags = 0;
++		return 0;
++	}
++	return flags;
+ }
+ 
+ static void add_input_message_flag(reshade::api::input_message &message, reshade::api::input_message_flags flag)
+@@ -222,8 +248,7 @@ static bool is_foreground_input_window(HWND window)
+ 		return false;
+ 
+ 	const HWND foreground = GetForegroundWindow();
+-	const HWND root = GetAncestor(window, GA_ROOT);
+-	return foreground == window || (root != nullptr && foreground == root);
++	return foreground == window || foreground == normalized_root_window(window);
+ }
+ 
+ #if RESHADE_ADDON >= 2
+@@ -368,14 +393,27 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 		GetWindowThreadProcessId(details.hwnd, &source_process) == GetCurrentThreadId() &&
+ 		source_process == GetCurrentProcessId();
+ 	bool include_focus_following = source_is_current_thread && is_foreground_input_window(details.hwnd);
+-	if (include_focus_following && details.message == WM_INPUT)
++	if (include_focus_following)
+ 	{
+ 		GUITHREADINFO thread_info = { sizeof(GUITHREADINFO) };
+-		include_focus_following = GET_RAWINPUT_CODE_WPARAM(details.wParam) == RIM_INPUT &&
++		DWORD focused_process = 0;
++		include_focus_following =
+ 			GetGUIThreadInfo(GetCurrentThreadId(), &thread_info) != FALSE &&
+-			thread_info.hwndFocus == details.hwnd;
++			thread_info.hwndFocus != nullptr &&
++			GetWindowThreadProcessId(thread_info.hwndFocus, &focused_process) == GetCurrentThreadId() &&
++			focused_process == GetCurrentProcessId() &&
++			normalized_root_window(thread_info.hwndFocus) == normalized_root_window(details.hwnd);
++		if (include_focus_following && details.message == WM_INPUT)
++			include_focus_following = GET_RAWINPUT_CODE_WPARAM(details.wParam) == RIM_INPUT &&
++				thread_info.hwndFocus == details.hwnd;
+ 	}
+-	const unsigned int raw_input_flags = raw_input_registration_flags(details.hwnd, include_focus_following);
++	unsigned int exact_raw_input_flags = 0;
++	unsigned int focus_following_raw_input_flags = 0;
++	const unsigned int raw_input_flags = raw_input_registration_flags(
++		details.hwnd,
++		include_focus_following,
++		exact_raw_input_flags,
++		focus_following_raw_input_flags);
+ 
+ 	if (input_window == s_windows.end())
+ 	{
+@@ -396,9 +434,54 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 	if (input_window == s_windows.end() &&
+ 		(raw_input_flags & (raw_input_registered_keyboard | raw_input_registered_mouse)) != 0)
+ 	{
+-		// Reroute this raw input message to the window with the most rendering
+-		input_window = std::max_element(s_windows.begin(), s_windows.end(),
+-			[](auto lhs, auto rhs) { return lhs.second.lock()->_frame_count < rhs.second.lock()->_frame_count; });
++		unsigned int message_registration_flag = is_keyboard_message
++			? raw_input_registered_keyboard
++			: (is_mouse_message ? raw_input_registered_mouse : 0);
++		if (details.message == WM_INPUT)
++		{
++			RAWINPUTHEADER raw_header = {};
++			UINT raw_header_size = sizeof(raw_header);
++			if (GetRawInputData(
++					reinterpret_cast<HRAWINPUT>(details.lParam),
++					RID_HEADER,
++					&raw_header,
++					&raw_header_size,
++					sizeof(raw_header)) != sizeof(raw_header))
++				return false;
++			message_registration_flag = raw_header.dwType == RIM_TYPEKEYBOARD
++				? raw_input_registered_keyboard
++				: (raw_header.dwType == RIM_TYPEMOUSE ? raw_input_registered_mouse : 0);
++			if (message_registration_flag == 0)
++				return false;
++		}
++
++		if (message_registration_flag != 0 &&
++			(focus_following_raw_input_flags & message_registration_flag) != 0)
++		{
++			// A focus-following registration belongs only to the focused source
++			// window tree. Never project it into an unrelated render root.
++			const HWND source_root = normalized_root_window(details.hwnd);
++			uint64_t best_frame_count = 0;
++			for (auto candidate = s_windows.begin(); candidate != s_windows.end(); ++candidate)
++			{
++				if (normalized_root_window(candidate->first) != source_root)
++					continue;
++				const std::shared_ptr<input> candidate_input = candidate->second.lock();
++				if (candidate_input == nullptr ||
++					(input_window != s_windows.end() && candidate_input->_frame_count <= best_frame_count))
++					continue;
++				input_window = candidate;
++				best_frame_count = candidate_input->_frame_count;
++			}
++		}
++		else if (message_registration_flag != 0 &&
++			(exact_raw_input_flags & message_registration_flag) != 0)
++		{
++			// Explicit raw-input helper HWNDs retain the established process-wide
++			// fallback to the window with the most rendering.
++			input_window = std::max_element(s_windows.begin(), s_windows.end(),
++				[](auto lhs, auto rhs) { return lhs.second.lock()->_frame_count < rhs.second.lock()->_frame_count; });
++		}
+ 	}
+ 
+ 	if (input_window == s_windows.end())

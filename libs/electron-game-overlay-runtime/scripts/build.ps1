@@ -70,7 +70,7 @@ $PackageBuildStampPath = Join-Path $ProductionBuildRoot "electron_game_overlay_r
 $BuildReShadeScript = Join-Path $PSScriptRoot "build-reshade-runtime.ps1"
 $DistributionDirectory = Join-Path $RuntimeRoot "dist\win32-x64"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "35C07911C9EB418B9F439374A4191009"
+$ExpectedAddonBuildId = "9CA4D5BAB1754B8B9FBDF3721DF8B458"
 if ($ExpectedAddonBuildId -cnotmatch '^[0-9A-F]{32}$') {
     throw "The configured Electron Game Overlay add-on build ID is invalid."
 }
@@ -85,6 +85,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-raw-input-normalization.patch"
     rawInputRegistrationReconciliationPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-raw-input-registration-reconciliation.patch"
+    rawInputFocusFollowingRootPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-raw-input-focus-following-root.patch"
     injectorExactPidPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-exact-pid.patch"
     injectorPathWatcherPatchSha256 =
@@ -192,7 +194,7 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 22 -or
+if ($BuildStamp.schemaVersion -ne 23 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne "64-bit" -or

@@ -10,7 +10,12 @@
 class input_oracle
 {
 public:
-    input_oracle() : mode_(detect_input_gate_mode()) {}
+    input_oracle()
+        : mode_(detect_input_gate_mode()),
+          raw_registration_null_target_requested_(
+              detect_raw_registration_null_target())
+    {
+    }
 
     bool initialize(HWND window)
     {
@@ -21,15 +26,18 @@ public:
         if (mode_ == input_gate_mode::disabled)
             return true;
 
+        const HWND registration_target =
+            raw_registration_uses_null_target() ? nullptr : window;
+
         RAWINPUTDEVICE devices[2] = {};
         devices[0].usUsagePage = 0x01;
         devices[0].usUsage = 0x02;
         devices[0].dwFlags = raw_only() ? RIDEV_NOLEGACY : 0;
-        devices[0].hwndTarget = window;
+        devices[0].hwndTarget = registration_target;
         devices[1].usUsagePage = 0x01;
         devices[1].usUsage = 0x06;
         devices[1].dwFlags = raw_only() ? RIDEV_NOLEGACY : 0;
-        devices[1].hwndTarget = window;
+        devices[1].hwndTarget = registration_target;
         raw_input_registered_ =
             RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE)) != FALSE;
         mouse_in_pointer_enabled_ =
@@ -46,6 +54,18 @@ public:
         return raw_only() && marker_present(
             executable_directory(),
             L"reshade-raw-registration-before-injection.enabled");
+    }
+
+    bool raw_registration_uses_null_target() const
+    {
+        return raw_only() && raw_registration_null_target_requested_;
+    }
+
+    const wchar_t *raw_registration_target_name() const
+    {
+        return raw_registration_uses_null_target()
+            ? L"null-focus"
+            : L"explicit-hwnd";
     }
 
     void shutdown()
@@ -188,7 +208,7 @@ public:
         wchar_t title[512] = {};
         swprintf_s(
             title,
-            L"%s | game input: move=%llu down=%llu up=%llu wheel=%llu key=%llu raw=%llu ptr=%llu/%llu/%llu poll-left=%llu cursor-change=%llu raw-accepted=%llu/%llu/%llu/%llu/%llu/%llu buffer=%llu buffer-error=%lu mode=%s clip=%s",
+            L"%s | game input: move=%llu down=%llu up=%llu wheel=%llu key=%llu raw=%llu ptr=%llu/%llu/%llu poll-left=%llu cursor-change=%llu raw-accepted=%llu/%llu/%llu/%llu/%llu/%llu buffer=%llu buffer-error=%lu mode=%s target=%s raw-register=%s clip=%s",
             base_title,
             static_cast<unsigned long long>(mouse_move_messages_),
             static_cast<unsigned long long>(left_button_down_messages_),
@@ -210,6 +230,8 @@ public:
             static_cast<unsigned long long>(raw_buffer_batches_),
             static_cast<unsigned long>(raw_buffer_error_),
             mode_name(),
+            raw_registration_target_name(),
+            raw_input_registered_ ? L"ok" : L"failed",
             clip_active ? L"on" : L"off");
         SetWindowTextW(window, title);
     }
@@ -258,6 +280,13 @@ private:
         if (marker_present(directory, L"reshade-input-gate.enabled"))
             return input_gate_mode::legacy;
         return input_gate_mode::disabled;
+    }
+
+    static bool detect_raw_registration_null_target()
+    {
+        return marker_present(
+            executable_directory(),
+            L"reshade-raw-registration-null-target.enabled");
     }
 
     bool raw_only() const
@@ -424,6 +453,7 @@ private:
     ULONGLONG last_title_update_ = 0;
     bool cursor_initialized_ = false;
     input_gate_mode mode_ = input_gate_mode::disabled;
+    bool raw_registration_null_target_requested_ = false;
     bool raw_input_registered_ = false;
     bool mouse_in_pointer_enabled_ = false;
     bool initialized_ = false;

@@ -37,11 +37,15 @@
 > `client-sdk-d3d11-raw-buffer-registration-before-injection-20260801-153450`,
 > `client-sdk-d3d12-wm-input-registration-before-injection-20260801-153502`, and
 > `client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
-> The ordinary path remained duplicate-free in the subsequent D3D11 runs
-> `client-sdk-d3d11-wm-input-20260801-153534` and
-> `client-sdk-d3d11-raw-buffer-20260801-153543` and D3D12 runs
-> `client-sdk-d3d12-wm-input-20260801-153552` and
-> `client-sdk-d3d12-raw-buffer-20260801-153600`. Official
+> NULL focus-following registrations then passed the same private-runtime gate
+> under D3D11 `wm-input`/`raw-buffer` runs `162427`/`162509` and D3D12 runs
+> `162547`/`162557`, with the full evidence names ending in
+> `registration-before-injection-null-target-<timestamp>`. The ordinary
+> explicit-HWND path remained duplicate-free after focused-root hardening in
+> the D3D11 runs `client-sdk-d3d11-wm-input-20260801-162614` and
+> `client-sdk-d3d11-raw-buffer-20260801-162623` and D3D12 runs
+> `client-sdk-d3d12-wm-input-20260801-162632` and
+> `client-sdk-d3d12-raw-buffer-20260801-162641`. Official
 > ReShade API-18 hosts cover `WM_INPUT` only because the public add-on API does
 > not expose copied `GetRawInputBuffer` records. The accepted buffered route
 > now seeds an authoritative target-process registration snapshot before input
@@ -50,13 +54,16 @@
 > focused foreground HWND. Transient snapshot-query failures retry at most once
 > per second; unsupported state waits for the next registration mutation.
 > Failure, update-in-progress state, generation change, or missing/ambiguous
-> ownership fails the Electron projection open. Multiple or sibling target HWND layouts, pre-held/disarm
-> ownership, mixed raw/legacy modifiers, the first relative cursor seed, and
+> ownership fails the Electron projection open. The NULL acceptance proves one
+> continuously focused foreground primary HWND on the registration/message-pump
+> thread. Background/focus transitions, another GUI thread, multiple or sibling
+> target HWND layouts, pre-held/disarm ownership, mixed raw/legacy modifiers,
+> the first relative cursor seed, and
 > concurrent registration churn remain later hardening, alongside graceful
 > disable/unload, post-render injection, deterministic pre-entry guarantees,
 > and other games. This internal reconciliation keeps local add-on API 19,
 > private host ABI 1, and the published transport/Node APIs unchanged. The
-> pinned runtime cache is now schema 22 across nineteen production patches. A
+> pinned runtime cache is now schema 23 across twenty production patches. A
 > July 13 follow-up replaced
 > the demo's one-second WMI creation path with a persistent native observer and
 > isolated exact-PID launchers. A preliminary PEAK run initialized through the

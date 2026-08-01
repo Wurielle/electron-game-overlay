@@ -3,10 +3,10 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "35C07911C9EB418B9F439374A4191009"
+    "9CA4D5BAB1754B8B9FBDF3721DF8B458"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "E5610492B8580593DE0197FF9E4BC40C857425E4EDA86F35BDA3E4AE9A7B31AE"
+    "8218A8263F78145173F344FD4FDA7B019189ACBF7923C15EF38E75C0AEE54CB2"
 )
 
 option(
@@ -43,6 +43,9 @@ set(RESHAPE_RAW_INPUT_NORMALIZATION_PATCH
 )
 set(RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-raw-input-registration-reconciliation.patch"
+)
+set(RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-raw-input-focus-following-root.patch"
 )
 set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-path-watcher-process-identity.patch"
@@ -103,7 +106,7 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "include/reshade_events.hpp=8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
     "source/addon_manager.cpp=28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/input.cpp=8E81894DC2A2CE12EBFCDF6E95E83B6488461AB86B93FA1EED2FB1A8BF278910"
+    "source/input.cpp=3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
     "source/input.hpp=FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
     "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
@@ -112,6 +115,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
     "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
+    "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH}"
     "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
     "${RESHAPE_PROCESS_OBSERVER_PATCH}"
     "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
@@ -284,7 +288,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Apply nineteen narrow pinned seams: the passive copied-input observer, raw-input
+# Apply twenty narrow pinned seams: the passive copied-input observer, raw-input
 # target normalization and pre-injection registration reconciliation, an injector
 # base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
@@ -1391,9 +1395,21 @@ endif()
 # the terminal injector changes.
 endif()
 
-# The reconciliation patch is terminal over the normalized raw-input stack.
-# Detect it first so an existing final tree does not have to reverse-check the
-# now-superseded normalization hunks through the reconciliation changes.
+# The focused-root patch is terminal over the raw-input stack. Detect it first
+# so an existing final tree does not have to reverse-check superseded lower
+# hunks. A tree from the previous build-stamp schema remains exactly at the
+# reconciliation layer and can accept this incremental patch directly.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLIED EQUAL 0)
+# The reconciliation patch is terminal over the lower normalized raw-input
+# stack. Detect it before asking superseded normalization hunks to reverse.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
         "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
@@ -1484,6 +1500,41 @@ if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED EQUAL 0)
             "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY_ERROR}"
         )
     endif()
+endif()
+
+# Constrain focus-following registrations to their focused foreground window
+# root while retaining the established process-wide explicit-HWND fallback.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --check
+        "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK
+    OUTPUT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK_OUTPUT
+    ERROR_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK_ERROR
+)
+if(NOT RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK EQUAL 0)
+    message(FATAL_ERROR
+        "Pinned raw-input focus-following root patch cannot migrate the ReShade patch stack.\n"
+        "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK_OUTPUT}"
+        "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK_ERROR}"
+    )
+endif()
+
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY
+    OUTPUT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY_OUTPUT
+    ERROR_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY_ERROR
+)
+if(NOT RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY EQUAL 0)
+    message(FATAL_ERROR
+        "Unable to constrain focus-following raw input to its source root.\n"
+        "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY_OUTPUT}"
+        "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY_ERROR}"
+    )
+endif()
 endif()
 
 # Fail configuration unless this FetchContent tree is exactly the pinned

@@ -29,6 +29,10 @@ $RawInputRegistrationReconciliationPatch =
     Join-Path $RuntimeRoot "patches\reshade-raw-input-registration-reconciliation.patch"
 $RawInputRegistrationReconciliationPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $RawInputRegistrationReconciliationPatch).Hash
+$RawInputFocusFollowingRootPatch =
+    Join-Path $RuntimeRoot "patches\reshade-raw-input-focus-following-root.patch"
+$RawInputFocusFollowingRootPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $RawInputFocusFollowingRootPatch).Hash
 $InjectorExactPidPatch = Join-Path $RuntimeRoot "patches\reshade-injector-exact-pid.patch"
 $InjectorExactPidPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExactPidPatch).Hash
@@ -99,10 +103,10 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "include/reshade_events.hpp" = "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
     "source/addon_manager.cpp" = "28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp" = "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/input.cpp" = "8E81894DC2A2CE12EBFCDF6E95E83B6488461AB86B93FA1EED2FB1A8BF278910"
+    "source/input.cpp" = "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
     "source/input.hpp" = "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "E5610492B8580593DE0197FF9E4BC40C857425E4EDA86F35BDA3E4AE9A7B31AE"
+    "tools/injector.cpp" = "8218A8263F78145173F344FD4FDA7B019189ACBF7923C15EF38E75C0AEE54CB2"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -143,7 +147,7 @@ function Test-ReShadePatchedSourceState {
     # tree. This terminal patch plus exact content hashes below proves that
     # complete ordered stack instead.
     foreach ($Patch in @(
-        $RawInputRegistrationReconciliationPatch,
+        $RawInputFocusFollowingRootPatch,
         $InjectorGlobalLayerPreflightPatch,
         $SuppressSplashPatch
     )) {
@@ -201,13 +205,14 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 22 -and
+        return $Stamp.schemaVersion -eq 23 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
             $Stamp.pointerInputPatchSha256 -eq $PointerInputPatchHash -and
             $Stamp.rawInputNormalizationPatchSha256 -eq $RawInputNormalizationPatchHash -and
             $Stamp.rawInputRegistrationReconciliationPatchSha256 -eq $RawInputRegistrationReconciliationPatchHash -and
+            $Stamp.rawInputFocusFollowingRootPatchSha256 -eq $RawInputFocusFollowingRootPatchHash -and
             $Stamp.injectorExactPidPatchSha256 -eq $InjectorExactPidPatchHash -and
             $Stamp.injectorPathWatcherPatchSha256 -eq $InjectorPathWatcherPatchHash -and
             $Stamp.injectorPathWatcherIdentityPatchSha256 -eq $InjectorPathWatcherIdentityPatchHash -and
@@ -331,13 +336,14 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 22
+    schemaVersion = 23
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
     pointerInputPatchSha256 = $PointerInputPatchHash
     rawInputNormalizationPatchSha256 = $RawInputNormalizationPatchHash
     rawInputRegistrationReconciliationPatchSha256 = $RawInputRegistrationReconciliationPatchHash
+    rawInputFocusFollowingRootPatchSha256 = $RawInputFocusFollowingRootPatchHash
     injectorExactPidPatchSha256 = $InjectorExactPidPatchHash
     injectorPathWatcherPatchSha256 = $InjectorPathWatcherPatchHash
     injectorPathWatcherIdentityPatchSha256 = $InjectorPathWatcherIdentityPatchHash

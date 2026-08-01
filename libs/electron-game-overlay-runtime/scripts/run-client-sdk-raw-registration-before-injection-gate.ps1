@@ -3,7 +3,10 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("d3d11", "d3d12")]
     [string]$Backend,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [Parameter(DontShow = $true)]
+    [ValidateSet("explicit-hwnd", "null-focus")]
+    [string]$RawRegistrationTarget = "explicit-hwnd"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,9 +18,19 @@ foreach ($Mode in @("wm-input", "raw-buffer")) {
         -Backend $Backend `
         -InputMode $Mode `
         -RawRegistrationTiming before-injection `
+        -RawRegistrationTarget $RawRegistrationTarget `
         -AttemptCountOverride 1 `
         -SkipBuild:($SkipBuild -or -not $First)
     $First = $false
 }
 
-Write-Host "$($Backend.ToUpperInvariant())_RAW_REGISTRATION_BEFORE_INJECTION_CLIENT_SDK_GATE_PASS"
+$TargetMarker = if ($RawRegistrationTarget -eq "null-focus") {
+    "NULL_TARGET_"
+}
+else {
+    ""
+}
+Write-Host (
+    "$($Backend.ToUpperInvariant())_${TargetMarker}" +
+    "RAW_REGISTRATION_BEFORE_INJECTION_CLIENT_SDK_GATE_PASS"
+)

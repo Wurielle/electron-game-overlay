@@ -14,13 +14,19 @@ param(
     [int]$AttemptCountOverride = 2,
     [Parameter(DontShow = $true)]
     [ValidateSet("after-injection", "before-injection")]
-    [string]$RawRegistrationTiming = "after-injection"
+    [string]$RawRegistrationTiming = "after-injection",
+    [Parameter(DontShow = $true)]
+    [ValidateSet("explicit-hwnd", "null-focus")]
+    [string]$RawRegistrationTarget = "explicit-hwnd"
 )
 
 $ErrorActionPreference = "Stop"
 
 if ($RawRegistrationTiming -eq "before-injection" -and $InputMode -eq "legacy") {
     throw "Raw registration timing applies only to wm-input and raw-buffer modes."
+}
+if ($RawRegistrationTarget -ne "explicit-hwnd" -and $InputMode -eq "legacy") {
+    throw "Raw registration target selection applies only to wm-input and raw-buffer modes."
 }
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -40,15 +46,32 @@ $RegistrationTimingSuffix = if ($RawRegistrationTiming -eq "before-injection") {
 else {
     ""
 }
-$RunDirectory = Join-Path $BuildRoot "client-sdk-$Backend-$InputMode$RegistrationTimingSuffix-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+$RegistrationTargetSuffix = if ($RawRegistrationTarget -eq "null-focus") {
+    "-null-target"
+}
+else {
+    ""
+}
+$RunDirectory = Join-Path $BuildRoot (
+    "client-sdk-$Backend-$InputMode$RegistrationTimingSuffix" +
+    "$RegistrationTargetSuffix-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+)
+$RegistrationTargetMarker = if ($RawRegistrationTarget -eq "null-focus") {
+    "NULL_TARGET_"
+}
+else {
+    ""
+}
 $ResultMarker = if ($InputMode -eq "legacy") {
     "${BackendLabel}_REAL_CLIENT_SDK_GATE_PASS"
 }
 elseif ($RawRegistrationTiming -eq "before-injection") {
-    "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_REGISTRATION_BEFORE_INJECTION_CLIENT_SDK_GATE_PASS"
+    "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_" +
+        "${RegistrationTargetMarker}REGISTRATION_BEFORE_INJECTION_CLIENT_SDK_GATE_PASS"
 }
 else {
-    "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_CLIENT_SDK_GATE_PASS"
+    "${BackendLabel}_$($InputMode.Replace('-', '_').ToUpperInvariant())_" +
+        "${RegistrationTargetMarker}CLIENT_SDK_GATE_PASS"
 }
 $AttemptCount = $AttemptCountOverride
 
@@ -731,7 +754,9 @@ function Get-HostInputSnapshot {
         'poll-left=(?<pollLeft>\d+) cursor-change=(?<cursorChange>\d+) ' +
         'raw-accepted=(?<rawMove>\d+)/(?<rawDown>\d+)/(?<rawUp>\d+)/(?<rawWheel>\d+)/(?<rawKeyDown>\d+)/(?<rawKeyUp>\d+) ' +
         'buffer=(?<buffer>\d+) buffer-error=(?<bufferError>\d+) ' +
-        'mode=(?<mode>legacy|wm-input|raw-buffer) clip=(?<clip>on|off)$'
+        'mode=(?<mode>legacy|wm-input|raw-buffer) ' +
+        'target=(?<target>explicit-hwnd|null-focus) ' +
+        'raw-register=(?<rawRegister>ok|failed) clip=(?<clip>on|off)$'
     $Match = [regex]::Match($Title, $Pattern)
     if (-not $Match.Success) {
         throw "Could not parse the controlled host input oracle: $Title"
@@ -759,6 +784,8 @@ function Get-HostInputSnapshot {
         RawBuffer = [uint64]$Match.Groups['buffer'].Value
         RawBufferError = [uint32]$Match.Groups['bufferError'].Value
         Mode = $Match.Groups['mode'].Value
+        RawRegistrationTarget = $Match.Groups['target'].Value
+        RawRegistration = $Match.Groups['rawRegister'].Value
         Clip = $Match.Groups['clip'].Value
     }
 }
@@ -851,6 +878,12 @@ function Invoke-ClientSdkAttempt {
         -ItemType File `
         -Path (Join-Path $TargetDirectory $InjectionOrderMarker) `
         -Force | Out-Null
+    if ($RawRegistrationTarget -eq "null-focus") {
+        New-Item `
+            -ItemType File `
+            -Path (Join-Path $TargetDirectory "reshade-raw-registration-null-target.enabled") `
+            -Force | Out-Null
+    }
 
     try {
         $ClientArguments = @(
@@ -874,6 +907,19 @@ function Invoke-ClientSdkAttempt {
                 -Window $HostWindow `
                 -HostProcess $HostProcess `
                 -Deadline ([DateTime]::UtcNow.AddSeconds(20))
+            $ExpectedReadyTarget = if ($RawRegistrationTarget -eq "null-focus") {
+                "target=null-focus hwndTarget=NULL"
+            }
+            else {
+                "target=explicit-hwnd hwndTarget=window"
+            }
+            if (-not $RegistrationReadyTitle.Contains($ExpectedReadyTarget)) {
+                throw (
+                    "The controlled host published the wrong pre-injection " +
+                    "registration target. Expected '$ExpectedReadyTarget': " +
+                    $RegistrationReadyTitle
+                )
+            }
             Write-Host "  pre-injection registration: $RegistrationReadyTitle"
         }
 
@@ -983,6 +1029,18 @@ function Invoke-ClientSdkAttempt {
         Write-Host "  baseline host input: $BaselineTitle"
         if ($BaselineSnapshot.Mode -ne $InputMode) {
             throw "The controlled host selected input mode '$($BaselineSnapshot.Mode)' instead of '$InputMode'."
+        }
+        if ($InputMode -ne "legacy" -and
+            $BaselineSnapshot.RawRegistrationTarget -ne $RawRegistrationTarget) {
+            throw (
+                "The controlled host registered raw input for " +
+                "'$($BaselineSnapshot.RawRegistrationTarget)' instead of " +
+                "'$RawRegistrationTarget'."
+            )
+        }
+        if ($InputMode -ne "legacy" -and
+            $BaselineSnapshot.RawRegistration -ne "ok") {
+            throw "The controlled host raw-input registration failed: $BaselineTitle"
         }
         if ($BaselineSnapshot.RawBufferError -ne 0) {
             throw "GetRawInputBuffer failed with Win32 error $($BaselineSnapshot.RawBufferError)."
@@ -1333,6 +1391,7 @@ function Invoke-ClientSdkAttempt {
             ReShadeLog = $ReShadeLog
             ReShadeRunDirectory = $ReShadeRunDirectory
             RawRegistrationTiming = $RawRegistrationTiming
+            RawRegistrationTarget = $RawRegistrationTarget
             RegistrationReadyTitle = $RegistrationReadyTitle
             BaselineTitle = $BaselineTitle
             ReleasedTitle = $ReleasedTitle
@@ -1435,6 +1494,9 @@ if ($RawRegistrationTiming -eq "before-injection") {
 }
 else {
     Write-Host "  - The client is armed before each controlled host launch."
+}
+if ($InputMode -ne "legacy") {
+    Write-Host "  - Raw mouse and keyboard registration target: $RawRegistrationTarget."
 }
 Write-Host "  - ReShade must select $BackendLabel from the target, not a client backend flag."
 Write-Host "  - $AttemptCount fresh client/host cycle(s) prove isolated cleanup and relaunch."

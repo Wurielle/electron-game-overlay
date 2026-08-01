@@ -371,11 +371,23 @@ and
 `client-sdk-d3d12-raw-buffer-registration-before-injection-20260801-153512`.
 These hosts registered raw mouse and keyboard before the client or injector
 started and did not register them again after injection. Subsequent ordinary
-registration runs under `client-sdk-d3d11-wm-input-20260801-153534`,
-`client-sdk-d3d11-raw-buffer-20260801-153543`,
-`client-sdk-d3d12-wm-input-20260801-153552`, and
-`client-sdk-d3d12-raw-buffer-20260801-153600` rule out a regression on the
+registration runs under `client-sdk-d3d11-wm-input-20260801-162614`,
+`client-sdk-d3d11-raw-buffer-20260801-162623`,
+`client-sdk-d3d12-wm-input-20260801-162632`, and
+`client-sdk-d3d12-raw-buffer-20260801-162641` rule out a regression on the
 established path.
+
+The same pre-injection gate passed with both device classes registered using
+`hwndTarget = nullptr` under
+`client-sdk-d3d11-wm-input-registration-before-injection-null-target-20260801-162427`,
+`client-sdk-d3d11-raw-buffer-registration-before-injection-null-target-20260801-162509`,
+`client-sdk-d3d12-wm-input-registration-before-injection-null-target-20260801-162547`,
+and
+`client-sdk-d3d12-raw-buffer-registration-before-injection-null-target-20260801-162557`.
+These prove one primary HWND that remains focused and foreground, with
+registration and delivery on the same GUI thread. They do not prove background
+rejection, focus loss/transfer/reacquisition, another GUI thread, or multiple
+and sibling HWND ambiguity.
 
 Buffered raw input carries no HWND. The accepted private-runtime route seeds an
 authoritative `GetRegisteredRawInputDevices()` snapshot before routing begins
@@ -388,10 +400,11 @@ unsupported state remains fail-open until another registration mutation.
 Snapshot failure or update-in-progress state, a changed generation, missing
 focus, or missing/ambiguous ownership fails the Electron projection open rather
 than assigning or neutralizing a buffered record heuristically.
-Multiple or sibling target HWND layouts, pre-held/disarm ownership completeness,
-mixed raw/legacy modifier state, the first relative cursor seed, and concurrent
-registration churn remain explicit hardening; the controlled gates above do
-not claim those cases.
+Multiple or sibling target HWND layouts, focus transitions, cross-thread
+registration/consumption, pre-held/disarm ownership completeness, mixed
+raw/legacy modifier state, the first relative cursor seed, and concurrent
+registration churn remain explicit hardening; the controlled gates above do not
+claim those cases.
 
 An official ReShade API-18 host can normalize copied `WM_INPUT` through the
 public add-on path, but the public API exposes no copied `GetRawInputBuffer`
