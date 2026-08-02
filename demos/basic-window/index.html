@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Basic overlay window</title>
+    <link rel="stylesheet" href="./assets/styles.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header>
+        <span class="eyebrow">Electron Game Overlay</span>
+        <h1>Basic window</h1>
+      </header>
+      <p data-status class="status">Starting the overlay session…</p>
+      <section>
+        <p>This button is rendered by Electron inside the game.</p>
+        <button type="button" data-count-up>
+          Clicked <strong data-count>0</strong> times
+        </button>
+      </section>
+      <small>Drag the title area to move this window.</small>
+      <a
+        class="attribution"
+        href="https://github.com/hiitiger/goverlay"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Powered by GOverlay
+      </a>
+    </main>
+    <script type="module" src="./renderer.ts"></script>
+  </body>
+</html>

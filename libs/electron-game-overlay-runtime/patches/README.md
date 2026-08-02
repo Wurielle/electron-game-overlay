@@ -110,6 +110,15 @@ failures that occur before a remote thread is created print the stable
 `ReShade injection not started.` line; its absence is deliberately not evidence
 that injection succeeded.
 
+## `reshade-injector-name-watcher-ready.patch`
+
+Adds the stable, flushed `ReShade process watcher armed.` line to the name-only
+prelaunch watcher immediately before it begins scanning. The Node launcher
+converts this native handshake into a distinct watcher-readiness event, so an
+application can launch its target only after the watcher can observe it. Exact-
+PID injection does not emit this marker; the path watcher retains its existing
+`ReShade path watcher armed.` marker.
+
 ## `reshade-pointer-input-block.patch`
 
 Adds client `WM_POINTERUPDATE`, `WM_POINTERDOWN`, `WM_POINTERUP`, enter/leave,
@@ -327,8 +336,8 @@ CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
 content for every patched file in each build tree before declaring native
-targets. `scripts/build-reshade-runtime.ps1` additionally validates all twenty-three
-production-patch hashes, the full-add-on configuration, and runtime/injector
+targets. `scripts/build-reshade-runtime.ps1` additionally validates every
+production-patch hash, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache. Raw-input normalization reuses the existing
 normalized Win32 input path; it changes no published transport C ABI, transport
 wire schema, or public Node SDK API.

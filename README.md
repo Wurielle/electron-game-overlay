@@ -1,297 +1,1262 @@
-# Electron game overlay
+# Electron Game Overlay
 
-This repository renders Electron offscreen windows inside Windows games through
-a maintained ReShade + Dear ImGui host. The active stack supports controlled
-D3D9, D3D10, D3D11, and D3D12 targets on Windows x64 plus controlled D3D9 and
-D3D10 targets on Windows x86, ordered multi-window composition, focus and
-capture, caption dragging, and an interception mode that routes input to
-Electron while ReShade blocks the corresponding game input.
+Render ordinary Electron interfaces inside Windows games through ReShade and
+Dear ImGui.
 
-## Production packages
+Electron windows remain normal HTML, CSS, and JavaScript applications. The SDK
+captures their offscreen Chromium frames, transports an ordered multi-window
+scene to the injected target, renders it on the game's swap chain, and returns
+intercepted input to the correct Electron web view.
 
-- [`libs/electron-game-overlay`](libs/electron-game-overlay/README.md) is the
-  public TypeScript SDK. It owns Electron window registration, offscreen frame
-  publication, input return, session state, target attachment, and runtime
-  staging.
-- [`libs/electron-overlay-transport`](libs/electron-overlay-transport/README.md)
-  is the backend-neutral Rust transport,
-  frame-processing, ordered scene, and input-routing engine. It exposes a
-  versioned C ABI to the injected runtime.
-- [`libs/electron-game-overlay-runtime`](libs/electron-game-overlay-runtime/README.md)
-  is the Windows injected host. It builds pinned patched x64 and x86 ReShade
-  runtimes, injectors, native target-local ReShade add-on managers,
-  `.addon64`/`.addon32` payloads, controlled hosts, and human-facing acceptance
-  launchers.
-- [`apps/client`](apps/client/README.md) is an SDK demo and acceptance client. It
-  is not a second overlay implementation.
+The package uses maintained Node and Electron APIs and does not load a native
+Node add-on. It is currently consumed from this repository and is not published
+to npm.
 
-The old native binary package and Node native add-on have been removed. The
-current SDK transport uses Node's maintained networking APIs and does not load a
-native Node add-on.
+## Compatibility
 
-## Build
+| Component                 | Current boundary                        |
+| ------------------------- | --------------------------------------- |
+| Host                      | Windows 10 or newer, x64                |
+| Electron                  | `>=39.1.0 <40`                          |
+| Target architectures      | x64 and x86/PE32                        |
+| Target graphics APIs      | Direct3D 9, 10, 11, and 12              |
+| Existing official ReShade | Fail-closed x64 integration             |
+| OpenGL, Vulkan, and VR    | Not accepted support claims             |
+| Anti-cheat                | Unsupported and explicitly out of scope |
 
-Install the JavaScript dependencies, then build the workspace:
+The packaged runtime implements D3D9, D3D10, D3D11, and D3D12 for both target
+architectures. Controlled end-to-end acceptance covers all four APIs on x64
+and D3D9/D3D10 on x86. Portal's PE32 `hl2.exe` also has a user-confirmed
+real-game D3D9 smoke test. That smoke test does not replace the controlled
+restart, resize, interception, and cleanup matrix.
 
-```powershell
-npm install
-npm run build
+Electron 40 and newer are intentionally outside the peer range. Their
+offscreen bitmap scaling behavior needs a separate raster/display-scale
+contract and mixed-DPI acceptance before support can be widened safely.
+
+## How it works
+
+```mermaid
+flowchart LR
+  Page["Electron HTML, CSS, and JavaScript"] --> OSR["Offscreen BrowserWindow"]
+  OSR --> Session["OverlaySession"]
+  Session --> Transport["Authenticated loopback transport"]
+  Transport --> Addon["Injected ReShade add-on"]
+  Addon --> ImGui["Dear ImGui compositor"]
+  ImGui --> Game["Game swap chain"]
+
+  GameInput["Game input"] --> Addon
+  Addon -->|"block game and route overlay input"| Transport
+  Transport --> Session
+  Session -->|"sendInputEvent()"| OSR
 ```
 
-On Windows x64, the SDK build compiles x64 and x86 production transport and
-injected-runtime payloads, then composes the immutable runtime assets under:
+The repository is split into four useful layers:
 
-```text
-libs/electron-game-overlay/dist/runtime/win32-x64/reshade
-```
+- [`libs/electron-game-overlay`](libs/electron-game-overlay) is the public
+  Electron/TypeScript SDK and runtime launcher.
+- [`libs/electron-overlay-transport`](libs/electron-overlay-transport) owns the
+  Rust scene, authentication, input routing, and versioned native ABI.
+- [`libs/electron-game-overlay-runtime`](libs/electron-game-overlay-runtime)
+  builds the x64/x86 ReShade hosts, add-ons, injectors, coexistence manager, and
+  controlled test hosts.
+- [`demos`](demos) contains small applications intended for SDK readers.
+  [`apps/client`](apps/client) is the larger validation client, not the
+  recommended place to learn the API.
 
-The composite contains architecture-specific injectors, runtimes, add-ons,
-managers, build stamps, and strict schema-2 package manifests. The SDK validates
-both manifests against every mapped payload before making a private per-run
-copy, then validates that isolated copy again before injection. The x64 native
-transaction helper is used for a verified existing official installation;
-official x86 coexistence remains fail-closed. Native builds require Rust, CMake,
-Git, and Visual Studio 2022 with the Desktop development with C++ workload.
-Install Rust through rustup with both supported MSVC targets:
+Each attachment gets an isolated writable run directory. Schema-versioned
+SHA-256 build manifests bind the architecture-specific injector, runtime,
+manager, add-on, configuration, and build stamps before staging and again
+before injection. A clean target uses that isolated runtime without copying
+proxy DLLs or configuration into the game directory.
+
+## Requirements and build
+
+Repository tooling requires Node.js `^20.19.0 || >=22.12.0` and npm. Native
+runtime builds additionally require:
+
+- Visual Studio 2022 with **Desktop development with C++**;
+- Rust through `rustup`;
+- CMake 3.24 or newer;
+- Git and internet access for the first native configure.
+
+TypeScript is intentionally held on the current 6.x line: TypeScript 7 can
+compile the sources directly, but Nx 23.1.1 cannot build its project graph with
+that compiler API yet. Electron 39 and `@types/node` 22 are likewise deliberate
+runtime-contract pins rather than missed dependency updates.
+
+Install both Rust targets:
 
 ```powershell
 rustup target add --toolchain stable x86_64-pc-windows-msvc i686-pc-windows-msvc
 ```
 
-A clean target uses the repository's bundled, patched ReShade 6.7.3 host. When
-preflight detects any target-local x64 ReShade identity, that installation
-suppresses fallback project-runtime injection and is attempted as the public
-host for the uniquely named Electron add-on. There is no product-version or
-runtime-hash allowlist. Compatibility is established only when the loaded
-add-on can call `ReShadeRegisterAddon` with public API 18 and obtain the exact
-Dear ImGui function table it was built against; the private input observer is
-  negotiated only with the repository's patched host. If a current add-on has
-  not loaded yet, the SDK gives the host one bounded, inspection-only startup
-  grace. A host that remains mapped without loading it is reported as
-  host-incompatible; a host that disappears during the wait reports
-  `target-official-addon-wait-expired`. Neither outcome can fall back to
-  injecting the project runtime.
-
-The launcher resolves the ReShade base path, add-on path, and `DisabledAddons`
-state from the exact target process and its configuration. It never replaces or
-rewrites the existing runtime/proxy, INI, presets, effects, or foreign add-ons.
-Only the native transaction helper may mutate the project's reserved add-on,
-marker, journal, and verified temporary/backup files. The runtime hash pins the
-exact inspected file through request verification, TOCTOU protection, and
-transaction recovery; it is not a compatibility decision. The ReShade hash in
-the ownership marker is provenance and is ignored for compatibility. Installing
-or updating the project-owned add-on requires a target restart; if the old
-add-on is mapped, maintenance is deferred until that exact target's exit is
-confirmed. A ReShade upgrade or other runtime-identity change does not
-automatically remove the owned add-on. Applicable global Vulkan/OpenXR ReShade
-layers are likewise preserved and block fallback injection.
-
-The native projects can also be addressed directly through Nx:
+Install dependencies and build the SDK:
 
 ```powershell
-npx nx build electron-overlay-transport
-npx nx build electron-game-overlay-runtime
+npm install
 npx nx build electron-game-overlay
 ```
 
-## Run the demo
+The built package is written to `libs/electron-game-overlay/dist`. Its staged
+Windows runtime is under
+`libs/electron-game-overlay/dist/runtime/win32-x64/reshade`.
 
-Start the Electron client with:
+Build both the SDK and validation client with:
 
 ```powershell
-npm run dev
+npm run build:all
 ```
 
-This demo command watches process creation and starts an independent exact-PID
-SDK injection for every detected executable whose normalized path contains
-`/steamapps/`. Start the demo first, let its overlay session and watcher come
-up, and then launch the game. The client does not guess which executable owns
-rendering: bootstrap launchers, child renderers, helpers, and redistributables
-all receive one attempt. Whatever process initializes the overlay authenticates
-and renders without blocking later candidates. ReShade selects the target's
-supported Direct3D API inside each process, so application code does not choose
-a graphics payload.
-Press **Ctrl+I** while a game is focused to toggle interception.
+## Minimal application
 
-The normal demo starts with one compact in-game information dock. It shows the
-shortcut, attachment, interception, injected graphics API/render resolution,
-and real render-process frame-rate state without opening all of the test windows
-at once. Enabling interception expands that same dock into a clickable menu for
-opening the target-following input playground, diagnostics strip, transparent
-popup, and video surface. The main playground uses the public `followTarget()`
-API and fills the reported game render surface. Releasing interception
-collapses the dock again.
+Create the SDK objects in Electron's main process. Name-based attachment must
+be armed before the target starts; an already-rendering device or swap chain is
+not adopted.
 
-Applications can inspect the same retained target state or follow it directly:
+```ts
+import { app } from 'electron';
+import path from 'node:path';
+import {
+  ElectronGameOverlay,
+  ReShadeOverlayLauncher,
+  isReShadeOperationError,
+  parseReShadeLaunchConfig,
+} from 'electron-game-overlay';
+
+app.disableHardwareAcceleration();
+
+const config = parseReShadeLaunchConfig(process.argv);
+if (!config) {
+  throw new Error('Start Electron with --reshade-overlay.');
+}
+
+const overlay = new ElectronGameOverlay();
+const session = overlay.createSession();
+const launcher = new ReShadeOverlayLauncher(config);
+
+app.on('before-quit', () => {
+  session.input.release();
+  launcher.dispose();
+  session.close();
+  overlay.dispose();
+});
+
+void app.whenReady().then(() => {
+  const overlayWindow = session.windows.create({
+    id: 'main-overlay',
+    name: 'Main overlay',
+    bounds: { x: 48, y: 48, width: 480, height: 280 },
+    captionHeight: 48,
+    dragBorder: 8,
+    transparent: true,
+    focusOnReady: true,
+    file: path.join(__dirname, 'renderer', 'index.html'),
+    browserWindow: {
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      skipTaskbar: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    },
+  });
+
+  overlayWindow.show();
+
+  session.on('diagnostic', (diagnostic) => {
+    console.log(diagnostic.source, diagnostic.code, diagnostic.message);
+  });
+
+  launcher.onEvent((event) => {
+    if (event.type === 'injector-watcher-ready') {
+      console.log('Injector watcher ready. Launch game.exe now.');
+    }
+  });
+
+  void launcher
+    .attach(session, { processName: 'game.exe' })
+    .then((result) => {
+      console.log(`Attached to ${result.processName}, PID ${result.pid}`);
+      console.log(`Runtime mode: ${result.runtimeMode}`);
+    })
+    .catch((error: unknown) => {
+      if (isReShadeOperationError(error)) {
+        console.error(
+          error.code,
+          error.stage,
+          error.retrySafety,
+          error.diagnostic.evidence,
+        );
+      } else {
+        console.error(error);
+      }
+    });
+});
+```
+
+Pass the explicit runtime opt-in exactly once:
+
+```powershell
+npx electron path\to\main.js --reshade-overlay
+```
+
+The repository demo runner adds this flag automatically.
+
+## Readable examples
+
+Every example keeps its own `main.ts`, `preload.ts`, `renderer.ts`,
+`index.html`, assets, and README together.
+
+| Example                                                            | Purpose                                           | Command                                                                                                     |
+| ------------------------------------------------------------------ | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [`basic-window`](demos/basic-window)                               | One offscreen Electron window                     | `npm run demo:basic-window -- --target-process=game.exe`                                                    |
+| [`exact-process-attachment`](demos/exact-process-attachment)       | Process-watcher PID/path handoff                  | `npm run demo:exact-process -- --target-process=game.exe --target-pid=1234 --target-path=C:\Games\game.exe` |
+| [`input-interception`](demos/input-interception)                   | App-owned shortcut and input policy               | `npm run demo:input -- --target-process=game.exe`                                                           |
+| [`multiple-windows`](demos/multiple-windows)                       | Independent window composition                    | `npm run demo:multiple-windows -- --target-process=game.exe`                                                |
+| [`target-follow-and-telemetry`](demos/target-follow-and-telemetry) | Geometry, DPI, API, FPS, and follow mode          | `npm run demo:target-follow -- --target-process=game.exe --target-pid=1234`                                 |
+| [`steam-auto-attach`](demos/steam-auto-attach)                     | One independent attempt per Steam-path executable | `npm run demo:steam-auto-attach`                                                                            |
+
+For name-based examples, start the demo, wait for its `Injector watcher ready`
+terminal message, and then launch the game. Exact-PID examples model an
+immediate process-watcher callback. Manually entering the PID of a game that is
+already rendering is not a supported late-attachment path.
+
+## Target attachment
+
+### Process name
+
+```ts
+await launcher.attach(session, { processName: 'game.exe' });
+```
+
+Arm this before the target starts. `processName` must be a valid executable
+basename.
+
+### Exact process
+
+```ts
+await launcher.attach(session, {
+  processName: observed.name,
+  pid: observed.pid,
+  executablePath: observed.path,
+});
+```
+
+Use this immediately after a trusted process watcher observes creation.
+
+- `pid` must be a positive uint32.
+- `executablePath` is optional, but is accepted only with an exact PID.
+- The path must be absolute and its basename must match `processName`.
+- A trusted path lets the SDK inspect a target-local ReShade installation
+  without guessing from an executable name.
+- Exact-PID injection is still timing-sensitive and must beat graphics
+  initialization.
+
+Call `launcher.prepare()` before detection to keep filesystem staging off the
+process-creation hot path. A launcher owns one target lifecycle. For overlapping
+processes, prepare one launcher per detected PID and share the session.
+
+When an authoritative process watcher observes deletion:
+
+```ts
+launcher.confirmTargetExited(pid);
+launcher.dispose();
+```
+
+Only call `confirmTargetExited()` after the operating system proves that exact
+PID exited.
+
+### Path target
+
+```ts
+const attachment = launcher.attach(session, {
+  pathContains: '\\steamapps\\',
+});
+
+// Launch the matching process only after injector-watcher-ready.
+const result = await attachment;
+```
+
+A path target arms the native watcher before process creation. Register the
+launcher event listener first, begin the attachment, wait for
+`injector-watcher-ready`, and only then launch the matching process. Processes
+already running when the path watcher takes its startup baseline are ignored.
+The fragment must contain a path separator. `excludedProcessNames` is available
+to specialized applications, but the Steam demo intentionally has no
+exclusions and attempts every detected `.exe` independently.
+
+### Runtime modes
+
+`ReShadeAttachResult.runtimeMode` identifies the selected host:
+
+- `injected-runtime`: the isolated project runtime was injected;
+- `existing-runtime`: a compatible already-loaded project runtime accepted the
+  add-on while its private registration gate was open;
+- `official-addon`: a detected official ReShade host loaded the project-owned
+  public add-on.
+
+The application never selects D3D9, D3D10, D3D11, or D3D12. ReShade selects
+the graphics API inside the target.
+
+## Overlay windows
+
+Create a new offscreen producer:
+
+```ts
+const overlayWindow = session.windows.create({
+  id: 'inventory',
+  name: 'Inventory',
+  bounds: { x: 40, y: 40, width: 600, height: 420 },
+  captionHeight: 44,
+  dragBorder: 8,
+  transparent: true,
+  file: absoluteHtmlPath,
+  browserWindow: {
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: absolutePreloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  },
+});
+```
+
+Or attach an existing `BrowserWindow`:
+
+```ts
+const existingBrowserWindow = new BrowserWindow({
+  show: false,
+  webPreferences: {
+    offscreen: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+  },
+});
+
+const overlayWindow = session.windows.attach(existingBrowserWindow, {
+  id: 'existing-window',
+  captionHeight: 44,
+  dragBorder: 8,
+  transparent: true,
+});
+```
+
+Manage the compositor surface through the returned wrapper:
+
+```ts
+overlayWindow.show();
+overlayWindow.hide();
+overlayWindow.setBounds({ x: 80, y: 80, width: 640, height: 360 });
+console.log(overlayWindow.getBounds());
+overlayWindow.focus();
+overlayWindow.blur();
+overlayWindow.onClose(() => console.log('wrapper closed'));
+overlayWindow.destroy();
+```
+
+Important semantics:
+
+- `show()` and `hide()` register or unregister the surface in the injected
+  compositor. They do not show a native desktop window.
+- `visible` means registered with the compositor.
+- Windows created by the SDK are forced to `offscreen: true`.
+- An attached window must have been constructed with
+  `webPreferences.offscreen: true`; Electron cannot enable offscreen rendering
+  after construction. `show()` invalidates its web contents once so an already
+  loaded page produces a fresh initial frame.
+- `focusOnReady` defaults to `false`.
+- Top-level `transparent` is compositor metadata. Configure the backing
+  `BrowserWindow` and page background for transparency as well.
+- Public bounds use Electron DIP. Scene geometry uses the window's content
+  rectangle converted to physical pixels.
+- Logical IDs and backing `BrowserWindow` instances must be unique within one
+  session; duplicate attachments are rejected.
+- Destroying an SDK-created wrapper closes its SDK-created `BrowserWindow`.
+  Destroying an attached wrapper releases SDK ownership without closing the
+  caller-owned window.
+
+### Follow a target
+
+```ts
+overlayWindow.followTarget();
+overlayWindow.followTarget({ area: 'render' });
+overlayWindow.followTarget({ pid, surfaceId, area: 'client' });
+overlayWindow.stopFollowingTarget();
+```
+
+`render` is the default and follows swap-chain dimensions. `client` follows
+the physical Win32 client rectangle. Without selectors, the most recently
+changed live surface is selected.
+
+The SDK places the backing window on the target display in Electron DIP and
+publishes a target-local physical rectangle to the compositor. Moves, resizes,
+DPI changes, monitor changes, and fullscreen transitions are reapplied. The
+previous raster remains active until Electron paints a frame matching the new
+scale and size. `stopFollowingTarget()` restores the content bounds captured
+when following began.
+
+## Input interception
+
+```ts
+session.input.intercept();
+session.input.release();
+```
+
+Interception is session-wide and becomes effective asynchronously at an
+injected render boundary. Observe the typed acknowledgement:
+
+```ts
+session.on('inputInterceptionChanged', ({ pid, intercepting }) => {
+  console.log(`PID ${pid}: ${intercepting ? 'intercepting' : 'released'}`);
+});
+```
+
+The SDK does not choose a global shortcut. Applications own that policy:
+
+```ts
+globalShortcut.register('CommandOrControl+I', () => {
+  intercepting ? session.input.release() : session.input.intercept();
+});
+```
+
+The validation client and input demo use Ctrl+I only as a demo convention.
+
+While interception is effective, supported mouse, keyboard, text, hover,
+wheel, focus, drag, and pointer-capture input is routed to Electron and blocked
+from the target. The hidden backing window does not take foreground ownership
+away from the game. Physical target coordinates are translated to Electron DIP
+with the scale active when the input packet was routed.
+
+Release input before shutdown. Producer loss and session deactivation fail open
+on the target's next ReShade overlay callback. If the target has stopped
+presenting, that render-thread transition waits until presentation resumes.
+
+Gamepads, DirectInput, XInput, GameInput, touch/pen policy, every pointer
+projection, and arbitrary engine-specific input APIs are not universal support
+claims.
+
+## Target telemetry and events
 
 ```ts
 session.on('targetSurfaceChanged', (surface) => {
-  console.log(surface.graphicsApi, surface.renderSize);
+  console.log(surface.pid, surface.graphicsApi, surface.renderSize);
+  console.log(surface.clientScreenBounds, surface.dpi.scaleFactor);
 });
-session.on('fps', ({ pid, fps }) => console.log(pid, fps));
+
+session.on('targetSurfaceRemoved', ({ pid, surfaceId }) => {
+  console.log('surface removed', pid, surfaceId);
+});
+
+session.on('fps', ({ pid, fps }) => {
+  console.log(`PID ${pid}: ${fps.toFixed(1)} FPS`);
+});
+
+const all = session.targets.list();
+const exact = session.targets.get(pid, surfaceId);
+```
+
+Target snapshots are immutable and include the authenticated PID, stable
+surface/HWND identities, revision, selected API, render dimensions, client and
+outer-window bounds, DPI, monitor/work area, focus, minimization, visibility,
+and fullscreen-like state.
+
+At most one primary surface is published per target process. The first valid
+presenting swap chain keeps telemetry, FPS, input, and composition ownership
+until final destruction. Resize preserves ownership. FPS is sampled from the
+primary target render context, not Electron's paint rate.
+
+Every subscription returns a removal function. Public session events are:
+
+| Event                      | Payload                       | Meaning                                                              |
+| -------------------------- | ----------------------------- | -------------------------------------------------------------------- |
+| `diagnostic`               | `OverlayDiagnostic`           | Bounded producer, transport, or runtime observation                  |
+| `fps`                      | `{ pid, fps }`                | Primary target render FPS                                            |
+| `targetConnected`          | `{ pid, executablePath }`     | Authenticated runtime connected                                      |
+| `targetTransportLost`      | `{ pid, executablePath }`     | Socket ended; process exit is not yet proven                         |
+| `targetDisconnected`       | `{ pid, executablePath }`     | Exact target PID is confirmed gone                                   |
+| `inputInterceptionChanged` | `{ pid, intercepting }`       | Target acknowledged input state                                      |
+| `windowFocused`            | `{ pid, windowId }`           | Returned input selected a window; `windowId: 0` clears overlay focus |
+| `targetSurfaceChanged`     | `OverlayTargetSurface`        | New or updated retained target snapshot                              |
+| `targetSurfaceRemoved`     | `OverlayTargetSurfaceRemoved` | Authoritative surface retirement                                     |
+
+Canonical target state and target-follow layout are updated before observers
+run. The native transport protocol is intentionally not exposed as an `any`
+event stream.
+
+## Diagnostics
+
+There are two diagnostic channels.
+
+### Attachment failures
+
+`ReShadeOverlayLauncher.attach()` rejects with `ReShadeOperationError` when a
+failure has a stable launcher diagnostic:
+
+```ts
+try {
+  await launcher.attach(session, target);
+} catch (error) {
+  if (!isReShadeOperationError(error)) throw error;
+
+  console.error(error.code);
+  console.error(error.stage);
+  console.error(error.retrySafety);
+  console.error(error.diagnostic);
+}
+```
+
+`retrySafety` is either:
+
+- `definite-safe`: retry cannot duplicate a loaded runtime or add-on payload;
+- `indeterminate`: the launcher cannot prove a retry is safe. The launcher
+  becomes `blocked` and must be disposed instead of reinjected.
+
+Evidence can include the isolated run directory, injector stdout/stderr,
+ReShade log, and the fixed pre-authentication startup record.
+
+### Session observations
+
+```ts
 session.on('diagnostic', (diagnostic) => {
-  console.log(diagnostic.source, diagnostic.code, diagnostic.pid);
+  console.log(
+    diagnostic.source,
+    diagnostic.severity,
+    diagnostic.code,
+    diagnostic.message,
+    diagnostic.pid,
+    diagnostic.context,
+  );
 });
-
-overlayWindow.followTarget({ area: 'render' });
 ```
 
-The demo's native Steam-path observer supplies each exact PID, executable
-basename, and canonical executable path; WMI is started only if that observer
-fails. The trusted path lets the SDK identify an adjacent target-local ReShade
-installation without guessing. Observation starts before
-the demo concurrently prepares a pool of four isolated SDK launchers. Creation
-events wait in order for prepared slots, and every successful consumption starts
-replacement preparation immediately. Preparation failures use bounded retry
-backoff instead of moving runtime staging onto a detected target's hot path.
-Native notification and injector startup still happen after ordinary
-unsuspended process creation, rather than through a `CREATE_SUSPENDED` launcher.
-Independent launchers remove the one-shot gap for overlapping and
-launcher/child process chains, but the controlled acceptance launchers remain
-the deterministic injection-before-device-creation proof through a cooperating
-pre-device startup barrier.
+`OverlayDiagnostic` is immutable, schema-versioned, structured-clone-safe, and
+rate-limited. Target packets cannot inject arbitrary human-readable errors,
+paths, stacks, or credentials into this channel.
 
-The demo uses the SDK's exact-PID target:
+Code families are:
+
+- `transport-*` and `target-*` for discovery, authorization, authentication,
+  packet validation, sockets, and process inspection;
+- `producer-*` for Electron window registration, frame publication, and input
+  forwarding;
+- `runtime-*` for injected startup, swap chains, scene rendering, upload, and
+  input routing.
+
+## Existing ReShade installations
+
+Clean targets use the pinned patched host from the isolated run directory and
+do not receive files in their game directory.
+
+When exact target identity reveals an existing target-local x64 ReShade:
+
+1. The existing identity suppresses fallback project-runtime injection.
+2. The SDK resolves its effective base path, add-on directory, and
+   `DisabledAddons` state from the exact target process.
+3. No product-version or runtime-hash allowlist is used.
+4. Compatibility is negotiated through public ReShade add-on API 18 and the
+   exact Dear ImGui function table expected by this add-on.
+5. A compatible host may load the uniquely named
+   `electron_game_overlay.addon64`.
+6. An incompatible or indeterminate host is preserved and fails closed.
+
+Future official ReShade versions can work if they continue satisfying that
+capability contract. An unsupported host is never replaced with the project
+runtime.
+
+The coexistence path does not replace or rewrite the existing runtime/proxy,
+`ReShade.ini`, presets, effects, or foreign add-ons. Only the native transaction
+manager can mutate the project-reserved add-on, ownership marker, journal, and
+verified temporary/backup files. Foreign, partial, disabled, or tampered
+reserved-name collisions are preserved.
+
+Installing or updating the owned add-on requires a target restart. Maintenance
+for a mapped add-on is deferred until the application confirms exact target
+exit. A ReShade hash change is provenance, not a compatibility rejection.
+
+Applicable global Vulkan/OpenXR ReShade layers are preserved and block fallback
+injection; they are not integration routes. Existing target-local x86 ReShade
+currently fails closed, while the clean-target x86 injected runtime remains
+supported.
+
+## Lifecycle and concurrency
+
+- One `ElectronGameOverlay` owns at most one live `OverlaySession`.
+- A second `createSession()` throws until the current session closes.
+- After `session.close()`, the same overlay can create another session.
+- `overlay.dispose()` closes the current session and permanently disposes that
+  overlay instance.
+- `session.start()` and `session.close()` are idempotent.
+- `session.whenReady()` starts as needed and resolves after transport discovery
+  is ready.
+- `onQuit()` runs at the start of closing; `onClose()` runs after teardown.
+- Exceptions from lifecycle observers are logged and cannot interrupt teardown.
+- Closing a session destroys SDK-created overlay windows, detaches wrappers
+  around caller-owned windows, releases authorizations, and stops publication.
+
+Closing a session does not unload mapped target code. The runtime becomes
+dormant after seeing the new producer-session epoch on a subsequent render
+callback. Target exit remains the supported DLL teardown.
+
+One session can publish its scene to multiple authenticated target PIDs by
+using separate launcher instances. Separate application processes have
+accepted operation against different target PIDs.
+
+Unsupported concurrency:
+
+- multiple live sessions on the process-wide default discovery endpoint;
+- multiple independent applications targeting the same PID;
+- multiple independently injected overlay runtimes inside one target.
+
+Same-PID multi-application support needs a broker that namespaces scenes,
+arbitrates input, and negotiates transport/runtime ownership. It is deliberately
+not part of the work documented here.
+
+## Public API reference
+
+The package root is `electron-game-overlay`. `OverlaySession` and
+`ElectronOverlayWindow` are factory-returned objects; applications should not
+construct them directly.
+
+### Runtime values
+
+#### `ElectronGameOverlay`
 
 ```ts
-await launcher.attach(session, {
-  processName: detectedProcess.processName,
-  pid: detectedProcess.pid,
-  executablePath: detectedProcess.filepath,
-});
+new ElectronGameOverlay()
+createSession(): OverlaySession
+dispose(): void
 ```
 
-Each detected PID receives a separate launcher, staged runtime, proof window,
-and cleanup lifecycle. The SDK's one-shot `pathContains` target remains
-available separately, but the demo does not use it for multi-process games.
-
-The SDK also accepts an exact PID:
+#### `OverlaySession`
 
 ```ts
-await launcher.attach(session, {
-  processName: detectedProcess.name,
-  pid: detectedProcess.pid,
-  executablePath: detectedProcess.filepath,
-});
+start(): void
+whenReady(): Promise<void>
+close(): void
+
+onQuit(handler: () => void): Disposable
+onClose(handler: () => void): Disposable
+on<Event extends OverlaySessionEventName>(
+  event: Event,
+  handler: OverlaySessionEventHandler<Event>,
+): Disposable
+
+input.intercept(): void
+input.release(): void
+
+windows.create(
+  options: CreateElectronOverlayWindowOptions,
+): ElectronOverlayWindow
+windows.attach(
+  window: Electron.BrowserWindow,
+  options?: AttachElectronOverlayWindowOptions,
+): ElectronOverlayWindow
+windows.get(id: string): ElectronOverlayWindow | null
+
+targets.list(): readonly OverlayTargetSurface[]
+targets.get(pid: number, surfaceId: string): OverlayTargetSurface | null
 ```
 
-Use exact PID targeting only when the caller can reach the process before
-graphics initialization starts. It is not post-render attachment. In a
-controlled probe, injecting after rendering had started loaded
-`ReShade64.dll` but did not adopt the existing device or swap chain.
+Target rendezvous authorization is internal launcher plumbing and is not a
+consumer API.
 
-## Acceptance launchers
+#### `ElectronOverlayWindow`
 
-Every human-facing runtime case has its own launcher under
-`libs/electron-game-overlay-runtime/scripts/test-cases`:
+Properties:
+
+```ts
+readonly id: string
+readonly name: string
+readonly nativeId: number
+readonly browserWindow: Electron.BrowserWindow
+readonly dragBorder: number
+readonly captionHeight: number
+readonly transparent: boolean
+readonly visible: boolean
+```
+
+Methods:
+
+```ts
+onClose(handler: () => void): Disposable
+show(): void
+hide(): void
+destroy(): void
+close(): void
+focus(): void
+blur(): void
+setBounds(bounds: Partial<Rect>): void
+getBounds(): Electron.Rectangle
+followTarget(options?: ElectronOverlayWindowFollowTargetOptions): void
+stopFollowingTarget(): void
+```
+
+#### `ReShadeOverlayLauncher`
+
+```ts
+new ReShadeOverlayLauncher(config: ReShadeLaunchConfig)
+
+readonly config: ReShadeLaunchConfig
+readonly hasRequestedInjection: boolean
+readonly state: ReShadeAttachmentState
+readonly runDirectory: string | null
+
+onEvent(handler: ReShadeLauncherEventHandler): Disposable
+prepare(): Promise<void>
+attach(
+  session: OverlaySession,
+  target: ReShadeTarget,
+): Promise<ReShadeAttachResult>
+confirmTargetExited(pid: number): boolean
+dispose(): void
+```
+
+Low-level injector launch/proof functions are internal. Applications use
+`attach()` so target authentication, disconnect, and retry safety are correlated
+with a session.
+
+#### `ReShadeOperationError`
+
+This `Error` subclass exposes:
+
+```ts
+readonly diagnostic: ReShadeDiagnostic
+readonly code: ReShadeDiagnosticCode
+readonly stage: ReShadeDiagnosticStage
+readonly retrySafety: ReShadeRetrySafety
+```
+
+Receive it from launcher operations and narrow unknown errors with
+`isReShadeOperationError()`.
+
+#### Functions
+
+```ts
+parseReShadeLaunchConfig(
+  argv: readonly string[],
+  options?: ReShadeLaunchConfigOptions,
+): ReShadeLaunchConfig | null
+
+defaultReShadeRuntimeDirectory(): string
+defaultReShadeRunsRootDirectory(): string
+isReShadeOperationError(
+  error: unknown,
+): error is ReShadeOperationError
+```
+
+`parseReShadeLaunchConfig()` returns `null` without `--reshade-overlay` and
+rejects duplicate opt-ins. It recognizes:
+
+- `--reshade-runtime-dir=<absolute-path>`;
+- `--reshade-auto-target-process=<valid.exe>`;
+- `--reshade-expected-target-pid=<positive-uint32>`.
+
+The expected PID option requires the auto-target option. Applications still
+decide when to call `attach()`.
+
+The two default-directory helpers resolve the staged package runtime and the
+writable temporary per-run root. Injector command construction is internal and
+is not exported from the package root.
+
+### Window and core types
+
+```ts
+type Disposable = () => void;
+
+type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type AttachElectronOverlayWindowOptions = {
+  id?: string;
+  name?: string;
+  bounds?: Partial<Rect>;
+  focusOnReady?: boolean;
+  dragBorder?: number;
+  captionHeight?: number;
+  transparent?: boolean;
+};
+
+type CreateElectronOverlayWindowOptions = AttachElectronOverlayWindowOptions & {
+  browserWindow?: Electron.BrowserWindowConstructorOptions;
+  url?: string;
+  file?: string;
+};
+
+type OverlayTargetFollowArea = 'render' | 'client';
+
+type ElectronOverlayWindowFollowTargetOptions = Readonly<{
+  pid?: number;
+  surfaceId?: string;
+  area?: OverlayTargetFollowArea;
+}>;
+```
+
+The internal option that carries `existingWindow` is intentionally not a root
+export; callers use the distinct `windows.create()` and `windows.attach()` APIs.
+
+### Target and telemetry types
+
+```ts
+type OverlayGraphicsApi =
+  'd3d9' | 'd3d10' | 'd3d11' | 'd3d12' | 'opengl' | 'vulkan' | 'unknown';
+
+type OverlayTargetSize = Readonly<{
+  width: number;
+  height: number;
+}>;
+
+type OverlayTargetRect = Readonly<Rect>;
+
+type OverlayTargetDpi = Readonly<{
+  x: number;
+  y: number;
+  scaleFactor: number;
+}>;
+
+type OverlayTargetMonitor = Readonly<{
+  id: string;
+  bounds: OverlayTargetRect;
+  workArea: OverlayTargetRect;
+}>;
+
+type OverlayTargetSurface = Readonly<{
+  pid: number;
+  surfaceId: string;
+  hwnd: string;
+  revision: number;
+  graphicsApi: OverlayGraphicsApi;
+  renderSize: OverlayTargetSize;
+  clientBounds: OverlayTargetRect;
+  clientScreenBounds: OverlayTargetRect;
+  windowScreenBounds: OverlayTargetRect;
+  dpi: OverlayTargetDpi;
+  monitor: OverlayTargetMonitor;
+  focused: boolean;
+  minimized: boolean;
+  visible: boolean;
+  fullscreen: boolean;
+}>;
+
+type OverlayTargetSurfaceRemoved = Readonly<{
+  pid: number;
+  surfaceId: string;
+  revision: number;
+}>;
+
+type OverlayGraphicsFps = Readonly<{
+  pid: number;
+  fps: number;
+}>;
+```
+
+`OverlayTargetDpi.scaleFactor` is derived from horizontal target DPI. OpenGL
+and Vulkan enum values are protocol vocabulary, not support claims.
+
+### Session event types
+
+```ts
+type OverlaySessionEventMap = {
+  diagnostic: OverlayDiagnostic;
+  fps: OverlayGraphicsFps;
+  targetConnected: {
+    pid: number;
+    executablePath: string;
+  };
+  targetTransportLost: {
+    pid: number;
+    executablePath: string;
+  };
+  targetDisconnected: {
+    pid: number;
+    executablePath: string;
+  };
+  inputInterceptionChanged: {
+    pid: number;
+    intercepting: boolean;
+  };
+  windowFocused: {
+    pid: number;
+    windowId: number;
+  };
+  targetSurfaceChanged: OverlayTargetSurface;
+  targetSurfaceRemoved: OverlayTargetSurfaceRemoved;
+};
+
+type OverlaySessionEventName = keyof OverlaySessionEventMap;
+
+type OverlaySessionEventHandler<Event extends OverlaySessionEventName> = (
+  payload: OverlaySessionEventMap[Event],
+) => void;
+```
+
+All typed lifecycle payloads are immutable snapshots.
+`windowFocused.windowId` is `0` when the target clears overlay focus; positive
+values identify Electron windows.
+
+### Session diagnostic types
+
+```ts
+type OverlayDiagnosticSource =
+  | 'electron-game-overlay'
+  | 'electron-overlay-transport'
+  | 'electron-game-overlay-runtime';
+
+type OverlayDiagnosticSeverity = 'info' | 'warning' | 'error';
+
+type OverlayDiagnosticContextValue = string | number | boolean | null;
+
+type OverlayDiagnostic = Readonly<{
+  schemaVersion: 1;
+  source: OverlayDiagnosticSource;
+  severity: OverlayDiagnosticSeverity;
+  code: OverlayDiagnosticCode;
+  message: string;
+  pid?: number;
+  context?: Readonly<Record<string, OverlayDiagnosticContextValue>>;
+}>;
+```
+
+`OverlayDiagnosticCode` is:
+
+```ts
+type OverlayDiagnosticCode =
+  | 'transport-ready'
+  | 'transport-listener-failed'
+  | 'transport-discovery-failed'
+  | 'target-authorized'
+  | 'target-authorization-failed'
+  | 'target-authentication-rejected'
+  | 'target-authenticated'
+  | 'target-packet-rejected'
+  | 'target-socket-error'
+  | 'target-process-inspection-failed'
+  | 'producer-window-registered'
+  | 'producer-window-publication-failed'
+  | 'producer-frame-publication-started'
+  | 'producer-frame-rejected'
+  | 'producer-frame-publication-failed'
+  | 'producer-input-forwarding-failed'
+  | 'runtime-ready'
+  | 'runtime-swapchain-ready'
+  | 'runtime-scene-query-failed'
+  | 'runtime-scene-rendering-started'
+  | 'runtime-frame-rejected'
+  | 'runtime-frame-upload-failed'
+  | 'runtime-input-router-reset'
+  | 'runtime-input-routing-failed';
+```
+
+### ReShade target and configuration types
+
+```ts
+type ReShadeProcessTarget = Readonly<{
+  processName: string;
+  pid?: number;
+  executablePath?: string;
+}>;
+
+type ReShadePathTarget = Readonly<{
+  pathContains: string;
+  excludedProcessNames?: readonly string[];
+}>;
+
+type ReShadeTarget = ReShadeProcessTarget | ReShadePathTarget;
+
+type ReShadeLaunchConfigOptions = Readonly<{
+  bundledRuntimeDirectory?: string;
+  runsRootDirectory?: string;
+}>;
+
+type ReShadeLaunchConfig = Readonly<{
+  runtimeDirectory: string;
+  runsRootDirectory: string;
+  injectorPath: string;
+  x86InjectorPath: string;
+  addonManagerPath: string;
+  x86AddonManagerPath: string;
+  runtimePath: string;
+  x86RuntimePath: string;
+  buildStampPath: string;
+  x86BuildStampPath: string;
+  packageBuildStampPath: string;
+  x86PackageBuildStampPath: string;
+  addonPath: string;
+  x86AddonPath: string;
+  configPath: string;
+  autoTargetProcess?: string;
+  expectedTargetPid?: number;
+}>;
+```
+
+Runtime and artifact paths are canonical absolute paths. `runsRootDirectory`
+is resolved to an absolute path and may be created later. Configuration parsing
+validates both architecture manifests and their mapped artifacts.
+
+### ReShade result types
+
+```ts
+type ReShadeRuntimeMode =
+  'injected-runtime' | 'existing-runtime' | 'official-addon';
+
+type ReShadeLaunchResult = Readonly<{
+  processName: string;
+  targetExecutablePath: string;
+  selectedPath?: string;
+  targetLabel: string;
+  injectorTargetPid: number;
+  runtimeMode: ReShadeRuntimeMode;
+  hostRuntimePath?: string;
+  addonModulePath?: string;
+  runDirectory: string;
+  injectorStdoutPath: string;
+  injectorStderrPath: string;
+  reshadeLogPath: string;
+  runtimeStartupPath?: string;
+}>;
+
+type ReShadeAttachResult = ReShadeLaunchResult & Readonly<{ pid: number }>;
+```
+
+Field meanings:
+
+- `targetExecutablePath` is the injector-verified selected executable;
+- `selectedPath` is present for native path-watcher selection;
+- `injectorTargetPid` comes from strict injector evidence;
+- `pid` is the authenticated target accepted by `attach()`;
+- `hostRuntimePath` is present for a reused compatible host;
+- `addonModulePath` is present in official-add-on mode;
+- `runtimeStartupPath` is omitted for official-host mode;
+- the run directory and log paths are retained as diagnostic evidence.
+
+### Launcher state, event, and diagnostic types
+
+```ts
+type ReShadeAttachmentState = 'idle' | 'attaching' | 'connected' | 'blocked';
+
+type ReShadeRetrySafety = 'definite-safe' | 'indeterminate';
+
+type ReShadeDiagnosticStage =
+  | 'runtime-staging'
+  | 'target-preflight'
+  | 'injector'
+  | 'runtime-initialization'
+  | 'lifecycle';
+
+type ReShadeDiagnosticEvidence = Readonly<{
+  runDirectory: string;
+  injectorStdoutPath: string;
+  injectorStderrPath: string;
+  reshadeLogPath: string;
+  runtimeStartupPath?: string;
+}>;
+
+type ReShadeDiagnostic = Readonly<{
+  schemaVersion: 1;
+  source: 'electron-game-overlay';
+  severity: 'error';
+  stage: ReShadeDiagnosticStage;
+  code: ReShadeDiagnosticCode;
+  retrySafety: ReShadeRetrySafety;
+  message: string;
+  targetLabel?: string;
+  pid?: number;
+  targetExecutablePath?: string;
+  modulePath?: string;
+  addonPath?: string;
+  windowsErrorCode?: number;
+  runtimeStartupCode?: ReShadeRuntimeStartupCode;
+  evidence?: ReShadeDiagnosticEvidence;
+}>;
+```
+
+`ReShadeDiagnosticCode` is:
+
+```ts
+type ReShadeDiagnosticCode =
+  | 'runtime-staging-failed'
+  | 'official-addon-startup-grace-coordinated'
+  | 'target-injection-already-claimed'
+  | 'target-injection-claim-failed'
+  | 'target-official-addon-wait-expired'
+  | 'target-existing-reshade-installation'
+  | 'target-existing-reshade-global-layer'
+  | 'target-global-reshade-layer-inspection-failed'
+  | 'existing-reshade-addon-preparation-failed'
+  | 'existing-reshade-addon-conflict'
+  | 'existing-reshade-addon-disabled'
+  | 'existing-reshade-addon-host-incompatible'
+  | 'existing-reshade-addon-maintenance-deferred'
+  | 'existing-reshade-addon-restart-required'
+  | 'target-runtime-conflict'
+  | 'target-architecture-mismatch'
+  | 'target-runtime-incompatible'
+  | 'target-runtime-reuse-too-late'
+  | 'target-runtime-reuse-raced'
+  | 'target-module-inspection-failed'
+  | 'existing-runtime-addon-load-failed'
+  | 'injector-start-failed'
+  | 'injector-evidence-write-failed'
+  | 'injector-failed'
+  | 'injector-result-invalid'
+  | 'target-rendezvous-authorization-failed'
+  | 'runtime-initialization-timeout'
+  | 'target-disconnected'
+  | 'session-closed'
+  | 'operation-cancelled';
+```
+
+`ReShadeRuntimeStartupCode` is:
+
+```ts
+type ReShadeRuntimeStartupCode =
+  | 'bridge-thread-create-failed'
+  | 'bridge-thread-started'
+  | 'bridge-window-create-failed'
+  | 'bridge-window-ready'
+  | 'discovery-not-ready'
+  | 'discovery-document-invalid'
+  | 'discovery-version-mismatch'
+  | 'discovery-target-mismatch'
+  | 'loopback-connect-failed'
+  | 'loopback-configuration-failed'
+  | 'process-hello-build-failed'
+  | 'network-worker-start-failed'
+  | 'network-worker-started'
+  | 'network-connection-lost'
+  | 'bridge-message-pump-failed'
+  | 'not-observed'
+  | 'invalid-record'
+  | 'pid-mismatch'
+  | 'pid-unavailable';
+```
+
+`ReShadeLauncherEvent` is a discriminated union:
+
+```ts
+type ReShadeLauncherEvent =
+  | { type: 'runtime-staged'; runDirectory: string }
+  | {
+      type: 'target-rendezvous-authorized';
+      targetLabel: string;
+      pid: number;
+      discoveryPath: string;
+    }
+  | {
+      type: 'injector-started';
+      invocation: {
+        executable: string;
+        arguments: readonly string[];
+        targetLabel: string;
+        workingDirectory: string;
+      };
+    }
+  | {
+      type: 'injector-watcher-ready';
+      invocation: {
+        executable: string;
+        arguments: readonly string[];
+        targetLabel: string;
+        workingDirectory: string;
+      };
+    }
+  | { type: 'injector-returned'; result: ReShadeLaunchResult }
+  | { type: 'injector-failed'; diagnostic: ReShadeDiagnostic }
+  | {
+      type: 'target-connected';
+      targetLabel: string;
+      pid: number;
+      path: string;
+    }
+  | {
+      type: 'target-disconnected';
+      targetLabel: string;
+      pid: number;
+      path?: string;
+    };
+
+type ReShadeLauncherEventHandler = (event: ReShadeLauncherEvent) => void;
+```
+
+Events and nested records are immutable in the actual exported types. Listener
+failures do not alter launcher state. `injector-started` is emitted from the
+child process `spawn` event: it means only that the injector process exists.
+`injector-watcher-ready` is emitted for name-only and path targets after the
+SDK observes the native watcher's armed marker on stdout. It is the signal to
+launch a name-only or path-matched target; exact-PID launches never emit it.
+Neither event means that a target has connected or that injection succeeded.
+
+## Limitations and safety
+
+- Injection must beat target graphics-device/swap-chain creation. General
+  adoption after a game is already rendering is unsupported.
+- Anti-cheat-protected and competitive targets are outside the safety boundary.
+- The unsigned runtime can be blocked by target or security software.
+- Vulkan, OpenGL, VR, unusual exclusive-fullscreen paths, and arbitrary
+  presentation layouts are not accepted claims.
+- Same-HWND multi-swap-chain input ownership and distinct D3D12 direct queues
+  remain limited cases.
+- Gamepad and engine-specific input APIs are not universally intercepted.
+- Existing official-ReShade integration is x64 only.
+- Arbitrary proxy chains, effects, add-on combinations, and modded-game layouts
+  are not guaranteed, even though existing installations are preserved
+  fail-closed.
+- Runtime/add-on code is not cleanly unloaded while the target remains alive.
+- Multiple independent applications targeting the same PID are unsupported.
+- Electron 40 and newer are outside the current OSR/DPI contract.
+- The package is not yet published.
+
+Do not use this runtime to bypass anti-cheat controls. Restrict it to controlled
+hosts or offline/single-player applications you are authorized to modify.
+
+## Development and testing
+
+Type-check and test the SDK, demos, and validation client:
 
 ```powershell
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-native-input-gate.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-native-input-gate.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-native-input-gate.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-native-input-gate.ps1
+npx nx run electron-game-overlay:test
+npm run demo:typecheck
+npx nx run client:typecheck
+npx nx run client:test
+```
+
+Every human-facing native runtime test has its own launcher under
+`libs/electron-game-overlay-runtime/scripts/test-cases`. For example:
+
+```powershell
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-client-sdk.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-client-sdk.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-electron-scene.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-electron-scene.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-session-deactivation.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-session-deactivation.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-d3d12-client-sdk-two-app-two-target.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-shared-runtime.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-shared-runtime.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\existing-reshade-installation-preflight.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\global-reshade-layer-preflight.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\reshade-addon-manager.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-official-reshade-addon-preflight.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-x86-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-x86-client-sdk.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-existing-reshade-installation.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-official-reshade-addon.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-electron-scene.ps1
-.\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\gun-frog-client-sdk-official-reshade-coexistence.ps1
 ```
 
-New runs are written under `build/electron-game-overlay-runtime`. Dated
-`build/reshade-imgui-overlay/...` paths in the documentation are historical
-acceptance evidence produced before the runtime was promoted and renamed; they
-are intentionally preserved as evidence paths, not current build instructions.
+Current evidence is written under `build/electron-game-overlay-runtime`.
+Controlled hosts prove deterministic process-start ordering, scene composition,
+input interception/release, telemetry, resize, restart, x86 handoff, and
+cleanup. Real-game smoke tests complement those gates without automatically
+broadening the compatibility claim.
 
-The deterministic D3D11 and D3D12 exact-PID gates start the target normally but
-hold controlled device creation behind a marker, then inject through the real
-frontend before releasing that marker. The shared-runtime variants start with a
-compatible target-local `dxgi.dll` proxy already loaded and prove that the SDK
-registers only its staged add-on without replacing the proxy or its
-configuration. The existing-installation gates prove that the injector performs
-no target mutation when an inactive ReShade installation is present. The
-official-add-on gates exercise a caller-supplied target-local x64 ReShade
-fixture through the public capability-negotiation path and assert that the
-project runtime is not loaded. The session-deactivation variants close the
-public SDK session while the target and producer process remain alive. A
-monotonic producer-session epoch makes the target dormant on its next ReShade
-overlay callback, releases input, and retires the prior single-swap-chain scene
-textures without unloading ReShade or the add-on. The two-app launcher proves
-independent Electron processes against separate exact-PID D3D11 and D3D12
-targets, including isolated credentials, scenes, input, and teardown. The D3D12
-client gate exercises two fresh target/client cycles, and the reinjection gate
-keeps one Electron client alive while the controlled target exits and restarts.
-The normal Gun Frog gate covers the process-name, arm-before-launch
-project-runtime route. The official-ReShade Gun Frog launcher passed on July 31,
-2026 with a stock host, a pristine foreign API-18 add-on, and one enabled benign
-effect. It is a narrow real-game coexistence proof, not compatibility with
-arbitrary proxy chains or public hosts.
+## License
 
-The controlled x64 and x86 D3D9/D3D10 production-client gates each passed two
-fresh client/target cycles on August 1, 2026. They require the exact ReShade API
-hook, matching target-surface telemetry, a two-window Electron scene,
-intercepted and released input, and a post-scene resize with successful resource
-recreation. The Win32 runs additionally prove the SDK's validated x64-to-x86
-injector handoff and packaged PE32 runtime/add-on/transport stack. The installed
-Portal `hl2.exe` remains unclaimed until the same lifecycle and input boundary
-passes in that real game.
-
-## Input acceptance boundary
-
-Interception is accepted only when all of the following hold:
-
-- the visible Electron overlay receives hover, click, drag, wheel, keyboard,
-  text, focus, and pointer-capture behavior;
-- the target does not observe the same message, raw, polling, or primary
-  mouse-pointer activity;
-- target cursor confinement or recentering does not prevent overlay use;
-- release, target exit, transport failure, or shutdown restores safe game
-  input.
-
-Explicit release is acknowledged on a rendering frame. Producer loss is
-detected by a monotonic session epoch and fails open on the target's next
-ReShade overlay callback; a target that has stopped presenting entirely cannot
-complete that render-thread transition until presentation resumes.
-
-Controlled x64 D3D9 and D3D10 hosts passed this boundary in August 2026;
-controlled D3D11/D3D12 hosts and Gun Frog passed it in July 2026, including
-Electron controls placed directly over four game menu controls. The game stayed
-unchanged during interception and received the same Quit position only after
-release. Exact-PID near-process-creation injection and same-client target
-restart also passed their dedicated D3D11/D3D12 gates.
-
-These results do not establish arbitrary late injection, every game, Vulkan,
-OpenGL, unusual presentation paths, simultaneous arbitrary real-game
-acceptance, anti-cheat compatibility, or VR. Use the unsigned full add-on
-runtime only with the included controlled hosts or an offline/single-player
-application you are allowed to modify. Do not use it to bypass anti-cheat
-controls.
-
-## Historical hudhook experiment
-
-The retained [`poc/hudhook-imgui-overlay`](poc/hudhook-imgui-overlay/README.md)
-records the earlier compositor, transport, DPI, and input-routing work. Its
-standalone controlled-host regressions remain runnable, but it is not part of
-the production build or staged SDK runtime. The retired real-client entries
-remain as launchers that explain their replacement. All named cases remain under
-[`poc/hudhook-imgui-overlay/scripts/test-cases`](poc/hudhook-imgui-overlay/scripts/test-cases/README.md).
-
-See the [SDK usage guide](doc/doc.md), [known issues](doc/known-issues.md), and
-[runtime README](libs/electron-game-overlay-runtime/README.md) for the current
-contract and supported envelope.
+See [`LICENSE`](LICENSE). The repository license is GPLv3 with the additional
+terms stated there, including its UI attribution requirement. The package is
+not MIT-licensed despite historical package metadata that previously said so.

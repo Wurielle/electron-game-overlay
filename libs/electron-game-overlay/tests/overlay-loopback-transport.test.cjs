@@ -15,7 +15,10 @@ const {
   encodeJsonTransportPacket,
 } = require('../dist/lib/overlay-loopback-transport.js');
 const { ElectronGameOverlay } = require('../dist/lib/electron-game-overlay.js');
-const { OverlaySession } = require('../dist/lib/overlay-session.js');
+const {
+  createOverlaySession,
+  OverlaySession,
+} = require('../dist/lib/overlay-session.js');
 const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
 
 const TOKEN = 'ab'.repeat(32);
@@ -720,7 +723,7 @@ test('Electron input dispatch failure does not disconnect the authenticated targ
     tokenFactory: () => TOKEN,
     isProcessAlive: () => true,
   });
-  const session = new OverlaySession(transport);
+  const session = createOverlaySession(transport);
   const diagnostics = [];
   const delivered = [];
   const warnings = [];

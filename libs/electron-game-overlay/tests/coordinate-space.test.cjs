@@ -10,7 +10,7 @@ const {
 
 const scaleMatrix = [1, 1.25, 1.5, 2];
 
-test('DIP extents use Electron 16 OSR floor sizing', () => {
+test('DIP extents use the supported Electron OSR floor sizing', () => {
   const cases = [
     { dip: 0, physical: [0, 0, 0, 0] },
     { dip: 0.9, physical: [0, 1, 1, 1] },

@@ -106,11 +106,3 @@ For transport development, the producer can be started without a target:
 Interactive modes require an injected target to connect within their timeout.
 Only one producer/target rendezvous may be active at a time. Stop a producer-only
 launch with Ctrl+C.
-
-## Historical hudhook reuse
-
-The retained `poc/hudhook-imgui-overlay` launchers reuse this producer for
-historical regression testing. Their dedicated cases remain under
-`poc/hudhook-imgui-overlay/scripts/test-cases`; they are not production build
-inputs. The old `HUDHOOK_` marker names are intentionally stable so those
-recorded gates remain comparable.

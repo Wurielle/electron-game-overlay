@@ -19,9 +19,11 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  acceptReShadeTargetConnection,
   ReShadeOperationError,
   ReShadeOverlayLauncher,
   buildReShadeInvocation,
+  launchReShadeOverlay,
   defaultReShadeRunsRootDirectory,
   defaultReShadeRuntimeDirectory,
   isReShadeOperationError,
@@ -683,7 +685,8 @@ test('exact-PID targets are identity-distinct and compatible with a matching con
 
   try {
     assert.throws(
-      () => launcher.launch({ processName: 'game.exe', pid: 4243 }),
+      () =>
+        launchReShadeOverlay(launcher, { processName: 'game.exe', pid: 4243 }),
       /pid=4243 conflicts with configured expected target pid=4242/,
     );
     assert.throws(
@@ -698,14 +701,18 @@ test('exact-PID targets are identity-distinct and compatible with a matching con
     assert.equal(launcher.runDirectory, null);
     assert.equal(execution.calls.length, 0);
 
-    const request = launcher.launch({ processName: 'game.exe', pid: 4242 });
+    const request = launchReShadeOverlay(launcher, {
+      processName: 'game.exe',
+      pid: 4242,
+    });
     assert.equal(
-      launcher.launch({ processName: 'game.exe', pid: 4242 }),
+      launchReShadeOverlay(launcher, { processName: 'game.exe', pid: 4242 }),
       request,
       'the same name/PID identity should share its active launch request',
     );
     assert.throws(
-      () => launcher.launch({ processName: 'game.exe', pid: 4241 }),
+      () =>
+        launchReShadeOverlay(launcher, { processName: 'game.exe', pid: 4241 }),
       /conflicts with configured expected target pid=4242/,
     );
     await waitFor(() => execution.calls.length === 1);
@@ -718,8 +725,8 @@ test('exact-PID targets are identity-distinct and compatible with a matching con
     const result = await request;
     assert.equal(result.targetLabel, 'process:game.exe:pid:4242');
     assert.equal(result.injectorTargetPid, 4242);
-    assert.equal(launcher.acceptTargetConnection(4241), false);
-    assert.equal(launcher.acceptTargetConnection(4242), true);
+    assert.equal(acceptReShadeTargetConnection(launcher, 4241), false);
+    assert.equal(acceptReShadeTargetConnection(launcher, 4242), true);
   } finally {
     launcher.dispose();
     execution.restore();
@@ -784,7 +791,10 @@ test('exact-PID stdout mismatch remains indeterminate and blocks retry', async (
   });
 
   try {
-    const request = launcher.launch({ processName: 'game.exe', pid: 5001 });
+    const request = launchReShadeOverlay(launcher, {
+      processName: 'game.exe',
+      pid: 5001,
+    });
     await waitFor(() => execution.calls.length === 1);
     const runDirectory = execution.calls[0].options.cwd;
     execution.calls[0].callback(null, injectorSuccessFor(5002, 'game.exe'), '');
@@ -804,7 +814,7 @@ test('exact-PID stdout mismatch remains indeterminate and blocks retry', async (
       'an indeterminate injection result must not become reclaimable',
     );
     await assert.rejects(
-      launcher.launch({ processName: 'game.exe', pid: 5001 }),
+      launchReShadeOverlay(launcher, { processName: 'game.exe', pid: 5001 }),
       /outcome is indeterminate/,
     );
   } finally {
@@ -825,7 +835,7 @@ test('exact-PID pre-injection failure proof returns to idle after the child spaw
 
   try {
     const target = { processName: 'game.exe', pid: 6001 };
-    const failed = launcher.launch(target);
+    const failed = launchReShadeOverlay(launcher, target);
     await waitFor(() => execution.calls.length === 1);
     const failure = Object.assign(new Error('exact target validation failed'), {
       code: 1,
@@ -838,11 +848,11 @@ test('exact-PID pre-injection failure proof returns to idle after the child spaw
     await assert.rejects(failed, /exact target validation failed/);
     assert.equal(launcher.state, 'idle');
 
-    const retry = launcher.launch(target);
+    const retry = launchReShadeOverlay(launcher, target);
     await waitFor(() => execution.calls.length === 2);
     execution.calls[1].callback(null, injectorSuccessFor(6001, 'game.exe'), '');
     await retry;
-    assert.equal(launcher.acceptTargetConnection(6001), true);
+    assert.equal(acceptReShadeTargetConnection(launcher, 6001), true);
   } finally {
     launcher.dispose();
     console.error = originalError;
@@ -857,7 +867,10 @@ test('a successful x64 injection never starts the x86 injector', async () => {
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
 
   try {
-    const request = launcher.launch({ processName: 'game.exe', pid: 6051 });
+    const request = launchReShadeOverlay(launcher, {
+      processName: 'game.exe',
+      pid: 6051,
+    });
     await waitFor(() => execution.calls.length === 1);
     assert.equal(path.basename(execution.calls[0].executable), 'inject.exe');
     execution.calls[0].callback(null, injectorSuccessFor(6051, 'game.exe'), '');
@@ -880,7 +893,9 @@ test('a validated x64 architecture mismatch hands the exact target to x86 once',
     '\\\\?\\C:\\Steam\\steamapps\\common\\Example\\.\\game.exe';
 
   try {
-    const request = launcher.launch({ pathContains: '\\steamapps\\' });
+    const request = launchReShadeOverlay(launcher, {
+      pathContains: '\\steamapps\\',
+    });
     await waitFor(() => execution.calls.length === 1);
     assert.deepEqual(execution.calls[0].arguments, [
       '--path-contains',
@@ -939,7 +954,9 @@ test('a confirmed path-target exit during architecture handoff prevents the x86 
   const targetExecutablePath = 'C:\\Steam\\steamapps\\common\\Exited\\game.exe';
 
   try {
-    const request = launcher.launch({ pathContains: '\\steamapps\\' });
+    const request = launchReShadeOverlay(launcher, {
+      pathContains: '\\steamapps\\',
+    });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(
       Object.assign(new Error('wrong injector architecture'), { code: 706 }),
@@ -979,7 +996,7 @@ test('x86 fallback accepts a compatible existing runtime after loading addon32',
   const runtimeModulePath = 'C:\\game\\ReShade32.dll';
 
   try {
-    const request = launcher.launch({
+    const request = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 6063,
       executablePath: targetExecutablePath,
@@ -1050,7 +1067,7 @@ test('malformed or mismatched architecture diagnostics cannot start x86', async 
       const originalError = console.error;
       console.error = () => undefined;
       try {
-        const request = launcher.launch(scenario.target);
+        const request = launchReShadeOverlay(launcher, scenario.target);
         await waitFor(() => execution.calls.length === 1);
         execution.calls[0].callback(
           Object.assign(new Error('wrong injector architecture'), {
@@ -1079,7 +1096,10 @@ test('a markerless x86 architecture mismatch is terminal and cannot loop', async
   console.error = () => undefined;
 
   try {
-    const request = launcher.launch({ processName: 'game.exe', pid: 6081 });
+    const request = launchReShadeOverlay(launcher, {
+      processName: 'game.exe',
+      pid: 6081,
+    });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(
       Object.assign(new Error('wrong injector architecture'), { code: 706 }),
@@ -1267,7 +1287,7 @@ test('structured target preflight failures expose stable diagnostics and remain 
           'a definite preflight rejection must release exact-PID rendezvous authorization',
         );
 
-        const retry = launcher.launch(target);
+        const retry = launchReShadeOverlay(launcher, target);
         await waitFor(() => execution.calls.length === 2);
         execution.calls[1].callback(
           null,
@@ -1275,7 +1295,7 @@ test('structured target preflight failures expose stable diagnostics and remain 
           '',
         );
         await retry;
-        assert.equal(launcher.acceptTargetConnection(6101), true);
+        assert.equal(acceptReShadeTargetConnection(launcher, 6101), true);
       } finally {
         launcher.dispose();
         console.error = originalError;
@@ -1295,7 +1315,7 @@ test('existing-runtime add-on load failure is post-mutation and blocks retry', a
 
   try {
     const target = { processName: 'game.exe', pid: 6151 };
-    const request = launcher.launch(target);
+    const request = launchReShadeOverlay(launcher, target);
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(
       Object.assign(new Error('remote add-on load failed'), { code: 1114 }),
@@ -1325,7 +1345,10 @@ test('existing-runtime add-on load failure is post-mutation and blocks retry', a
       return true;
     });
     assert.equal(launcher.state, 'blocked');
-    await assert.rejects(launcher.launch(target), /outcome is indeterminate/);
+    await assert.rejects(
+      launchReShadeOverlay(launcher, target),
+      /outcome is indeterminate/,
+    );
   } finally {
     launcher.dispose();
     console.error = originalError;
@@ -1377,7 +1400,7 @@ test('malformed or contradictory injector diagnostic records cannot claim safe p
       const originalError = console.error;
       console.error = () => undefined;
       try {
-        const request = launcher.launch({
+        const request = launchReShadeOverlay(launcher, {
           processName: 'game.exe',
           pid: 6201,
         });
@@ -1432,7 +1455,7 @@ test('pre-injection proof cannot make legacy or contradictory output retry-safe'
       console.error = () => undefined;
       console.log = () => undefined;
       try {
-        const request = launcher.launch(scenario.target);
+        const request = launchReShadeOverlay(launcher, scenario.target);
         await waitFor(() => execution.calls.length === 1);
         execution.calls[0].callback(
           Object.assign(new Error('ambiguous injector failure'), { code: 1 }),
@@ -1461,12 +1484,14 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
 
   try {
     assert.equal(launcher.state, 'idle');
-    const request = launcher.launch({ processName: 'Gun Frog.exe' });
+    const request = launchReShadeOverlay(launcher, {
+      processName: 'Gun Frog.exe',
+    });
     assert.equal(launcher.state, 'attaching');
-    assert.equal(launcher.acceptTargetConnection(7), false);
+    assert.equal(acceptReShadeTargetConnection(launcher, 7), false);
     assert.equal(launcher.state, 'attaching');
     assert.equal(
-      launcher.launch({ processName: 'Gun Frog.exe' }),
+      launchReShadeOverlay(launcher, { processName: 'Gun Frog.exe' }),
       request,
       'the same active target should share its launch request',
     );
@@ -1481,6 +1506,9 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
     assert.equal(call.options.timeout, 120_000);
     assert.equal(call.options.maxBuffer, 64 * 1024);
     assert.equal(call.options.encoding, 'utf8');
+    call.emitStdout(
+      'ReShade process watcher armed.\nReShade path watcher armed.\n',
+    );
 
     const runDirectory = call.options.cwd;
     assert.equal(path.dirname(runDirectory), fixture.runsRootDirectory);
@@ -1543,11 +1571,11 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
     assert.ok(Object.isFrozen(events[1].invocation));
     assert.ok(Object.isFrozen(events[1].invocation.arguments));
     assert.ok(Object.isFrozen(events[2].result));
-    assert.equal(launcher.acceptTargetConnection(4242), true);
+    assert.equal(acceptReShadeTargetConnection(launcher, 4242), true);
     assert.equal(launcher.state, 'connected');
-    assert.equal(launcher.acceptTargetConnection(4242), false);
+    assert.equal(acceptReShadeTargetConnection(launcher, 4242), false);
     await assert.rejects(
-      launcher.launch({ processName: 'Gun Frog.exe' }),
+      launchReShadeOverlay(launcher, { processName: 'Gun Frog.exe' }),
       /already connected/,
     );
     await assert.rejects(
@@ -1555,6 +1583,64 @@ test('launch stages the exact runtime, materializes configured PID, and preserve
         processName: 'Gun Frog.exe',
       }),
       /already connected/,
+    );
+  } finally {
+    unsubscribe();
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+test('name watcher readiness is emitted once after a split native marker', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const events = [];
+  const unsubscribe = launcher.onEvent((event) => events.push(event));
+
+  try {
+    const request = launchReShadeOverlay(launcher, {
+      processName: 'Gun Frog.exe',
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const call = execution.calls[0];
+    call.emitStdout('ignored prefix\nReShade process wat');
+    assert.equal(
+      events.some((event) => event.type === 'injector-watcher-ready'),
+      false,
+    );
+    call.emitStdout(Buffer.from('cher armed.\n'));
+    call.emitStdout('ReShade process watcher armed.\n');
+
+    const readyEvents = events.filter(
+      (event) => event.type === 'injector-watcher-ready',
+    );
+    assert.equal(readyEvents.length, 1);
+    assert.deepEqual(readyEvents[0], {
+      type: 'injector-watcher-ready',
+      invocation: {
+        executable: call.executable,
+        arguments: ['Gun Frog.exe'],
+        targetLabel: 'process:Gun Frog.exe',
+        workingDirectory: call.options.cwd,
+      },
+    });
+    assert.ok(Object.isFrozen(readyEvents[0]));
+
+    call.callback(
+      null,
+      `ReShade process watcher armed.\n${injectorSuccess}`,
+      '',
+    );
+    await request;
+    assert.deepEqual(
+      events.map((event) => event.type),
+      [
+        'runtime-staged',
+        'injector-started',
+        'injector-watcher-ready',
+        'injector-returned',
+      ],
     );
   } finally {
     unsubscribe();
@@ -1690,7 +1776,7 @@ test('a loaded stale official add-on is refused until it can be updated and rest
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'Gun Frog.exe',
       pid: 4259,
       executablePath: targetExecutablePath,
@@ -1741,7 +1827,7 @@ test('a foreign official-host add-on collision is preserved without scheduling m
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'Gun Frog.exe',
       pid: 4265,
       executablePath: targetExecutablePath,
@@ -1789,7 +1875,7 @@ test('a target-effective DisabledAddons opt-out refuses a loaded official add-on
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'Gun Frog.exe',
       pid: 4260,
       executablePath: targetExecutablePath,
@@ -1842,7 +1928,7 @@ test('an inactive recognized official install is prepared once and requires a ta
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4254,
       executablePath: targetExecutablePath,
@@ -1929,7 +2015,7 @@ test('an arbitrary ReShade identity never schedules automatic owned add-on remov
   console.log = (...values) => maintenanceLogs.push(values.join(' '));
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4266,
       executablePath: targetExecutablePath,
@@ -2038,7 +2124,7 @@ test('a mapped official add-on update retries only after confirmed target exit a
   console.log = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4261,
       executablePath: targetExecutablePath,
@@ -2144,7 +2230,7 @@ test('a confirmed exit that races manager failure survives immediate launcher di
   console.log = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'racing-game.exe',
       pid: 4263,
       executablePath: targetExecutablePath,
@@ -2213,7 +2299,7 @@ test('disposal before exit proof cannot claim that delayed maintenance was queue
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'disposed-game.exe',
       pid: 4267,
       executablePath: targetExecutablePath,
@@ -2274,7 +2360,7 @@ test('disposing before target exit abandons deferred maintenance and retires its
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'abandoned-game.exe',
       pid: 4264,
       executablePath: targetExecutablePath,
@@ -2349,7 +2435,7 @@ test('official add-on preparation requires the exact normal native preflight exi
       console.error = () => undefined;
 
       try {
-        const launch = launcher.launch({
+        const launch = launchReShadeOverlay(launcher, {
           processName: 'game.exe',
           pid: 4254,
           executablePath: targetExecutablePath,
@@ -2406,7 +2492,7 @@ test('an expired official add-on startup wait remains definite-safe and never fa
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4255,
       executablePath: requestedTargetExecutablePath,
@@ -2487,7 +2573,7 @@ test('the SDK rejects a mutating result from the inspection-only official add-on
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4265,
       executablePath: targetExecutablePath,
@@ -2549,7 +2635,7 @@ test('a current add-on may finish loading during the bounded startup grace', asy
   );
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4257,
       executablePath: targetExecutablePath,
@@ -2591,7 +2677,7 @@ test('a current add-on may finish loading during the bounded startup grace', asy
     assert.equal(result.runtimeMode, 'official-addon');
     assert.equal(result.hostRuntimePath, hostRuntimePath);
     assert.equal(result.addonModulePath, addonModulePath);
-    assert.equal(launcher.acceptTargetConnection(4257), true);
+    assert.equal(acceptReShadeTargetConnection(launcher, 4257), true);
   } finally {
     launcher.dispose();
     inspectionStub.restore();
@@ -2633,11 +2719,11 @@ test('concurrent launchers coordinate one same-process official add-on startup g
       pid: 4258,
       executablePath: targetExecutablePath,
     };
-    const firstLaunch = firstLauncher.launch(target).then(
+    const firstLaunch = launchReShadeOverlay(firstLauncher, target).then(
       (value) => ({ status: 'fulfilled', value }),
       (reason) => ({ status: 'rejected', reason }),
     );
-    const secondLaunch = secondLauncher.launch(target).then(
+    const secondLaunch = launchReShadeOverlay(secondLauncher, target).then(
       (value) => ({ status: 'fulfilled', value }),
       (reason) => ({ status: 'rejected', reason }),
     );
@@ -2709,8 +2795,8 @@ test('concurrent launchers coordinate one same-process official add-on startup g
       1,
     );
     assert.equal(
-      firstLauncher.acceptTargetConnection(4258) ||
-        secondLauncher.acceptTargetConnection(4258),
+      acceptReShadeTargetConnection(firstLauncher, 4258) ||
+        acceptReShadeTargetConnection(secondLauncher, 4258),
       true,
     );
   } finally {
@@ -2738,7 +2824,7 @@ test('a loaded ReShade host that rejected the current add-on is capability-incom
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4256,
       executablePath: targetExecutablePath,
@@ -2813,7 +2899,7 @@ test('a user-disabled official add-on is preserved and reported without a restar
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4256,
       executablePath: targetExecutablePath,
@@ -2867,7 +2953,7 @@ test('an arbitrary existing ReShade identity is prepared and requires one restar
   console.error = () => undefined;
 
   try {
-    const launch = launcher.launch({
+    const launch = launchReShadeOverlay(launcher, {
       processName: 'game.exe',
       pid: 4257,
       executablePath: targetExecutablePath,
@@ -3091,7 +3177,7 @@ test('structured injector results reject malformed and contradictory runtime met
       const originalError = console.error;
       console.error = () => undefined;
       try {
-        const request = launcher.launch({
+        const request = launchReShadeOverlay(launcher, {
           processName: 'game.exe',
           pid: 4262,
         });
@@ -3136,7 +3222,7 @@ test('prepare stages once without injection and the next launch consumes that ex
       preparedDirectories[0],
     );
 
-    const request = launcher.launch({
+    const request = launchReShadeOverlay(launcher, {
       processName: 'Gun Frog.exe',
       pid: 4242,
     });
@@ -3435,6 +3521,8 @@ test('path watcher is prearmed without an injector timeout and pins the selected
     'D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe';
   const originalLog = console.log;
   const originalWarn = console.warn;
+  const events = [];
+  const unsubscribe = launcher.onEvent((event) => events.push(event));
   console.log = () => undefined;
   console.warn = () => undefined;
 
@@ -3449,6 +3537,19 @@ test('path watcher is prearmed without an injector timeout and pins the selected
     ]);
     assert.equal(execution.calls[0].options.timeout, 0);
     assert.match(path.basename(execution.calls[0].options.cwd), /^path-watch-/);
+    execution.calls[0].emitStdout('ReShade path watcher ar');
+    execution.calls[0].emitStdout(Buffer.from('med.\n'));
+    execution.calls[0].emitStdout('ReShade path watcher armed.\n');
+    const readyEvents = events.filter(
+      (event) => event.type === 'injector-watcher-ready',
+    );
+    assert.equal(readyEvents.length, 1);
+    assert.deepEqual(readyEvents[0].invocation.arguments, [
+      '--path-contains',
+      '\\steamapps\\',
+      '--exclude-name',
+      'UnityCrashHandler64.exe',
+    ]);
 
     sessionHarness.emitNative('game.process', {
       pid: 9300,
@@ -3488,6 +3589,7 @@ test('path watcher is prearmed without an injector timeout and pins the selected
       existsSync(path.join(result.runDirectory, runReclaimableMarkerFileName)),
     );
   } finally {
+    unsubscribe();
     launcher.dispose();
     console.log = originalLog;
     console.warn = originalWarn;
@@ -3543,7 +3645,7 @@ test('path watcher pre-mutation proof is retry-safe', async () => {
 
   try {
     const target = { pathContains: '\\steamapps\\' };
-    const failed = launcher.launch(target);
+    const failed = launchReShadeOverlay(launcher, target);
     await waitFor(() => execution.calls.length === 1);
     const runDirectory = execution.calls[0].options.cwd;
     execution.calls[0].callback(
@@ -3587,7 +3689,9 @@ test('successful low-level path launch opens a PID-pinned bounded proof window',
   };
 
   try {
-    const request = launcher.launch({ pathContains: '\\steamapps\\' });
+    const request = launchReShadeOverlay(launcher, {
+      pathContains: '\\steamapps\\',
+    });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(
       null,
@@ -3598,8 +3702,8 @@ test('successful low-level path launch opens a PID-pinned bounded proof window',
 
     assert.equal(result.injectorTargetPid, 9401);
     assert.equal(typeof proofTimerCallback, 'function');
-    assert.equal(launcher.acceptTargetConnection(9402), false);
-    assert.equal(launcher.acceptTargetConnection(9401), true);
+    assert.equal(acceptReShadeTargetConnection(launcher, 9402), false);
+    assert.equal(acceptReShadeTargetConnection(launcher, 9401), true);
     assert.equal(launcher.state, 'connected');
   } finally {
     launcher.dispose();
@@ -3690,7 +3794,7 @@ test('missing low-level connection proof stays conservatively latched', async ()
   };
 
   try {
-    const request = launcher.launch({ processName: 'game.exe' });
+    const request = launchReShadeOverlay(launcher, { processName: 'game.exe' });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(null, injectorSuccessFor(4242, 'game.exe'), '');
     await request;
@@ -3699,9 +3803,9 @@ test('missing low-level connection proof stays conservatively latched', async ()
 
     proofTimerCallback();
     assert.equal(launcher.state, 'attaching');
-    assert.equal(launcher.acceptTargetConnection(4242), false);
+    assert.equal(acceptReShadeTargetConnection(launcher, 4242), false);
     await assert.rejects(
-      launcher.launch({ processName: 'game.exe' }),
+      launchReShadeOverlay(launcher, { processName: 'game.exe' }),
       /awaiting target connection/,
     );
     await assert.rejects(
@@ -3726,7 +3830,7 @@ test('launch rejects a false-positive injector return and keeps its evidence', a
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
 
   try {
-    const request = launcher.launch({ processName: 'game.exe' });
+    const request = launchReShadeOverlay(launcher, { processName: 'game.exe' });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(
       null,
@@ -3750,7 +3854,7 @@ test('launch rejects a false-positive injector return and keeps its evidence', a
     );
     assert.equal(launcher.state, 'blocked');
     await assert.rejects(
-      launcher.launch({ processName: 'game.exe' }),
+      launchReShadeOverlay(launcher, { processName: 'game.exe' }),
       /outcome is indeterminate/,
     );
     await assert.rejects(
@@ -3774,7 +3878,7 @@ test('legacy success marker without a structured result blocks retries', async (
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
 
   try {
-    const request = launcher.launch({ processName: 'game.exe' });
+    const request = launchReShadeOverlay(launcher, { processName: 'game.exe' });
     await waitFor(() => execution.calls.length === 1);
     execution.calls[0].callback(null, 'Injecting ReShade ... Succeeded!\n', '');
     await assert.rejects(
@@ -3783,7 +3887,7 @@ test('legacy success marker without a structured result blocks retries', async (
     );
     assert.equal(launcher.state, 'blocked');
     await assert.rejects(
-      launcher.launch({ processName: 'game.exe' }),
+      launchReShadeOverlay(launcher, { processName: 'game.exe' }),
       /outcome is indeterminate/,
     );
   } finally {
@@ -3801,7 +3905,9 @@ test('ambiguous injector callback and expected-PID mismatch block retries', asyn
     const originalError = console.error;
     console.error = () => undefined;
     try {
-      const request = launcher.launch({ processName: 'game.exe' });
+      const request = launchReShadeOverlay(launcher, {
+        processName: 'game.exe',
+      });
       await waitFor(() => execution.calls.length === 1);
       const callbackError = Object.assign(new Error('late callback failure'), {
         code: 'ETIMEDOUT',
@@ -3817,7 +3923,7 @@ test('ambiguous injector callback and expected-PID mismatch block retries', asyn
       );
       assert.equal(launcher.state, 'blocked');
       await assert.rejects(
-        launcher.launch({ processName: 'game.exe' }),
+        launchReShadeOverlay(launcher, { processName: 'game.exe' }),
         /outcome is indeterminate/,
       );
     } finally {
@@ -3836,7 +3942,9 @@ test('ambiguous injector callback and expected-PID mismatch block retries', asyn
     const originalError = console.error;
     console.error = () => undefined;
     try {
-      const request = launcher.launch({ processName: 'game.exe' });
+      const request = launchReShadeOverlay(launcher, {
+        processName: 'game.exe',
+      });
       await waitFor(() => execution.calls.length === 1);
       execution.calls[0].callback(
         null,
@@ -3983,7 +4091,7 @@ test('connection-proof timeout after successful injection blocks retries', async
     assert.equal(sessionHarness.nativeHandlerCount, 0);
     assert.equal(sessionHarness.closeHandlerCount, 0);
     await assert.rejects(
-      launcher.launch({ processName: 'game.exe' }),
+      launchReShadeOverlay(launcher, { processName: 'game.exe' }),
       /outcome is indeterminate/,
     );
   } finally {
@@ -4478,7 +4586,7 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
     assert.equal(sharedAttachment, attachment);
     assert.equal(launcher.state, 'attaching');
     await assert.rejects(
-      launcher.launch({ processName: 'Gun Frog.exe' }),
+      launchReShadeOverlay(launcher, { processName: 'Gun Frog.exe' }),
       /attachment is already active/,
     );
     await flushMicrotasks();
@@ -5033,13 +5141,13 @@ test('timeout, session close, and dispose cannot spawn after delayed staging', a
       if (scenario === 'dispose') {
         assert.match(outcome.error.message, /disposed before attachment/);
         await assert.rejects(
-          launcher.launch({ processName: 'game.exe' }),
+          launchReShadeOverlay(launcher, { processName: 'game.exe' }),
           /launcher is disposed/,
         );
       } else {
         assert.equal(launcher.state, 'blocked');
         await assert.rejects(
-          launcher.launch({ processName: 'game.exe' }),
+          launchReShadeOverlay(launcher, { processName: 'game.exe' }),
           /outcome is indeterminate/,
         );
       }
@@ -5393,7 +5501,9 @@ function stubExecFile({ autoSpawn = true } = {}) {
   const calls = [];
 
   childProcess.execFile = (executable, args, options, callback) => {
+    const stdout = new EventEmitter();
     const child = Object.assign(new EventEmitter(), {
+      stdout,
       exitCode: null,
       signalCode: null,
       killed: false,
@@ -5416,6 +5526,9 @@ function stubExecFile({ autoSpawn = true } = {}) {
       callback,
       child,
       spawn,
+      emitStdout(chunk) {
+        stdout.emit('data', chunk);
+      },
     });
     if (autoSpawn) {
       queueMicrotask(spawn);
@@ -5526,7 +5639,7 @@ function createSessionHarness(
   ready = Promise.resolve(),
   authorizeTargetOverride,
 ) {
-  const nativeHandlers = new Set();
+  const lifecycleHandlers = new Map();
   const closeHandlers = new Set();
   const targetAuthorizations = [];
   let closed = false;
@@ -5561,9 +5674,20 @@ function createSessionHarness(
         };
       },
       on(event, handler) {
-        assert.equal(event, 'nativeEvent');
-        nativeHandlers.add(handler);
-        return () => nativeHandlers.delete(handler);
+        assert.ok(
+          [
+            'targetConnected',
+            'targetTransportLost',
+            'targetDisconnected',
+          ].includes(event),
+        );
+        let handlers = lifecycleHandlers.get(event);
+        if (!handlers) {
+          handlers = new Set();
+          lifecycleHandlers.set(event, handlers);
+        }
+        handlers.add(handler);
+        return () => handlers.delete(handler);
       },
       onClose(handler) {
         if (closed) {
@@ -5575,8 +5699,19 @@ function createSessionHarness(
       },
     },
     emitNative(event, payload) {
-      for (const handler of Array.from(nativeHandlers)) {
-        handler({ event, payload });
+      const typedEvent = {
+        'game.process': 'targetConnected',
+        'game.process.transport-lost': 'targetTransportLost',
+        'game.process.disconnected': 'targetDisconnected',
+      }[event];
+      assert.ok(typedEvent, `unexpected lifecycle event ${event}`);
+      for (const handler of Array.from(
+        lifecycleHandlers.get(typedEvent) ?? [],
+      )) {
+        handler({
+          pid: payload.pid,
+          executablePath: payload.path ?? 'C:\\Games\\unknown.exe',
+        });
       }
     },
     close() {
@@ -5589,7 +5724,11 @@ function createSessionHarness(
       }
     },
     get nativeHandlerCount() {
-      return nativeHandlers.size;
+      return Array.from(lifecycleHandlers.values()).some(
+        (handlers) => handlers.size > 0,
+      )
+        ? 1
+        : 0;
     },
     get closeHandlerCount() {
       return closeHandlers.size;

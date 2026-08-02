@@ -1,37 +1,46 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
-<head>
-    <meta charset="UTF-8">
+  <head>
+    <meta charset="UTF-8" />
     <title>Example Video Overlay</title>
-</head>
+  </head>
 
-<body style="background:transparent; overflow:hidden">
-    <video width="480" height="270" id='video'>
-    </video>
+  <body style="background: transparent; overflow: hidden">
+    <video width="480" height="270" id="video"></video>
     <script>
-        const video = document.getElementById('video')
+      const video = document.getElementById('video');
 
-        video.onended = function () {
-            window.close();
-        };
+      video.onended = function () {
+        window.close();
+      };
 
-        video.addEventListener('loadeddata', function () {
-            video.play();
-        });
+      video.addEventListener('loadeddata', function () {
+        video.play();
+      });
 
+      video.onerror = function () {
+        alert('The example video overlay failed to load.');
+        window.close();
+      };
 
-        video.onerror = function () {
-            alert('The example video overlay failed to load.');
-            window.close();
-        };
+      video.load();
 
-        video.load();
-
-        var videoNum = 1;
-        var filename = 'assets/' + videoNum + '.webm';
-        video.src = filename;
+      var videoNum = 1;
+      var filename = 'assets/' + videoNum + '.webm';
+      video.src = filename;
     </script>
-</body>
-
+    <a
+      href="https://github.com/hiitiger/goverlay"
+      target="_blank"
+      rel="noopener noreferrer"
+      style="
+        position: fixed;
+        right: 10px;
+        bottom: 6px;
+        color: #9ca3af;
+        font-size: 9px;
+      "
+      >Powered by GOverlay</a
+    >
+  </body>
 </html>

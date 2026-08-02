@@ -6,7 +6,38 @@ import type {
   Rect,
 } from './types.js';
 
+const ELECTRON_OVERLAY_WINDOW_CONSTRUCTION_TOKEN = Symbol(
+  'ElectronOverlayWindow construction token',
+);
+
+let constructElectronOverlayWindow:
+  | ((
+      bridge: OverlayWindowBridge,
+      options: ElectronOverlayWindowOptions,
+    ) => ElectronOverlayWindow)
+  | undefined;
+
+/** @internal */
+export function createElectronOverlayWindow(
+  bridge: OverlayWindowBridge,
+  options: ElectronOverlayWindowOptions,
+): ElectronOverlayWindow {
+  if (!constructElectronOverlayWindow) {
+    throw new Error('ElectronOverlayWindow construction is not initialized');
+  }
+  return constructElectronOverlayWindow(bridge, options);
+}
+
 export class ElectronOverlayWindow {
+  static {
+    constructElectronOverlayWindow = (bridge, options) =>
+      new ElectronOverlayWindow(
+        ELECTRON_OVERLAY_WINDOW_CONSTRUCTION_TOKEN,
+        bridge,
+        options,
+      );
+  }
+
   public readonly id: string;
   public readonly name: string;
   public readonly nativeId: number;
@@ -17,13 +48,44 @@ export class ElectronOverlayWindow {
 
   private registered = false;
   private destroyed = false;
+  private readonly ownsBrowserWindow: boolean;
   private readonly focusOnReady: boolean;
   private readonly closeHandlers = new Set<() => void>();
+  private readonly handlePaint = (
+    _event: Electron.Event,
+    _dirty: Electron.Rectangle,
+    image: Electron.NativeImage,
+  ) => {
+    this.bridge.sendFrame(this, image);
+  };
+  private readonly handleReadyToShow = () => {
+    if (this.focusOnReady) {
+      this.focus();
+    }
+  };
+  private readonly handleWindowGeometryChanged = () => {
+    if (this.registered) {
+      this.bridge.syncWindowGeometry(this);
+    }
+  };
+  private readonly handleBrowserWindowClosed = () => {
+    const failure = this.finalizeDestroy(false);
+    if (failure) {
+      this.reportTeardownFailure(failure.error);
+    }
+  };
 
-  constructor(
+  private constructor(
+    constructionToken: symbol,
     private readonly bridge: OverlayWindowBridge,
     options: ElectronOverlayWindowOptions,
   ) {
+    if (constructionToken !== ELECTRON_OVERLAY_WINDOW_CONSTRUCTION_TOKEN) {
+      throw new TypeError(
+        'ElectronOverlayWindow instances are created by OverlaySession.windows',
+      );
+    }
+    this.ownsBrowserWindow = options.existingWindow === undefined;
     this.browserWindow =
       options.existingWindow ||
       new BrowserWindow(getBrowserWindowOptions(options));
@@ -72,6 +134,16 @@ export class ElectronOverlayWindow {
 
     this.bridge.registerWindow(this);
     this.registered = true;
+    if (!this.browserWindow.webContents.isDestroyed()) {
+      try {
+        this.browserWindow.webContents.invalidate();
+      } catch (error) {
+        console.warn(
+          `Cannot request the initial Electron overlay frame for window ${this.nativeId}`,
+          error,
+        );
+      }
+    }
   }
 
   public hide() {
@@ -84,17 +156,9 @@ export class ElectronOverlayWindow {
   }
 
   public destroy() {
-    if (this.destroyed) {
-      return;
-    }
-
-    this.hide();
-    this.destroyed = true;
-    this.bridge.removeWindow(this);
-    this.emitClose();
-
-    if (!this.browserWindow.isDestroyed()) {
-      this.browserWindow.close();
+    const failure = this.finalizeDestroy(this.ownsBrowserWindow);
+    if (failure) {
+      throw failure.error;
     }
   }
 
@@ -142,41 +206,82 @@ export class ElectronOverlayWindow {
   }
 
   private bindBrowserWindow() {
-    this.browserWindow.webContents.on(
-      'paint',
-      (event, dirty, image: Electron.NativeImage) => {
-        this.bridge.sendFrame(this, image);
-      },
+    this.browserWindow.webContents.on('paint', this.handlePaint);
+    this.browserWindow.on('ready-to-show', this.handleReadyToShow);
+    this.browserWindow.on('move', this.handleWindowGeometryChanged);
+    this.browserWindow.on('resize', this.handleWindowGeometryChanged);
+    this.browserWindow.on('closed', this.handleBrowserWindowClosed);
+  }
+
+  private unbindBrowserWindow() {
+    this.browserWindow.removeListener('closed', this.handleBrowserWindowClosed);
+    this.browserWindow.webContents.removeListener('paint', this.handlePaint);
+    this.browserWindow.removeListener('ready-to-show', this.handleReadyToShow);
+    this.browserWindow.removeListener('move', this.handleWindowGeometryChanged);
+    this.browserWindow.removeListener(
+      'resize',
+      this.handleWindowGeometryChanged,
     );
+  }
 
-    this.browserWindow.on('ready-to-show', () => {
-      if (this.focusOnReady) {
-        this.focus();
-      }
-    });
+  private finalizeDestroy(destroyOwnedBrowserWindow: boolean) {
+    if (this.destroyed) {
+      return undefined;
+    }
 
-    const syncWindowGeometry = () => {
-      if (this.registered) {
-        this.bridge.syncWindowGeometry(this);
+    const wasRegistered = this.registered;
+    this.registered = false;
+    this.destroyed = true;
+    let failure: { error: unknown } | undefined;
+    const attempt = (operation: () => void) => {
+      try {
+        operation();
+      } catch (error) {
+        failure ??= { error };
       }
     };
 
-    this.browserWindow.on('move', syncWindowGeometry);
-    this.browserWindow.on('resize', syncWindowGeometry);
+    attempt(() => this.unbindBrowserWindow());
+    if (wasRegistered) {
+      attempt(() => this.bridge.unregisterWindow(this));
+    }
+    attempt(() => this.bridge.removeWindow(this));
+    if (destroyOwnedBrowserWindow) {
+      attempt(() => {
+        if (!this.browserWindow.isDestroyed()) {
+          this.browserWindow.destroy();
+        }
+      });
+    }
+    this.emitClose();
+    return failure;
+  }
 
-    this.browserWindow.on('closed', () => {
-      this.hide();
-      this.destroyed = true;
-      this.bridge.removeWindow(this);
-      this.emitClose();
-    });
+  private reportTeardownFailure(error: unknown) {
+    try {
+      console.error(
+        `Electron overlay window ${this.nativeId} teardown failed`,
+        error,
+      );
+    } catch {
+      // A diagnostic sink must not break Electron's closed event.
+    }
   }
 
   private emitClose() {
-    for (const handler of this.closeHandlers) {
-      handler();
-    }
+    const handlers = Array.from(this.closeHandlers);
     this.closeHandlers.clear();
+    for (const handler of handlers) {
+      try {
+        handler();
+      } catch (error) {
+        try {
+          console.error('Electron overlay window close handler failed', error);
+        } catch {
+          // A diagnostic sink must not break window teardown.
+        }
+      }
+    }
   }
 }
 

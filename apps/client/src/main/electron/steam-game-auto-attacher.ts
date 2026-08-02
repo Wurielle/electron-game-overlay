@@ -28,10 +28,7 @@ export type ProcessWatcherEvent = Readonly<{
 }>;
 
 export type ProcessWatcherStatus =
-  | 'starting'
-  | 'running'
-  | 'failed'
-  | 'stopped';
+  'starting' | 'running' | 'failed' | 'stopped';
 
 export type ProcessWatcherHandlers = Readonly<{
   onEvent: (event: ProcessWatcherEvent) => void;
@@ -215,17 +212,11 @@ export type SteamGameAutoAttachState = Readonly<{
   targets: readonly SteamGameTargetState[];
 }>;
 
-type OverlaySessionForAttachment = Pick<
-  OverlaySession,
-  'on' | 'onClose' | 'whenReady'
-> &
-  Partial<Pick<OverlaySession, 'authorizeTarget'>>;
-
 export type ReShadeLauncherForSteamTarget = Readonly<{
   prepare(): Promise<void>;
   onEvent?(handler: ReShadeLauncherEventHandler): () => void;
   attach(
-    session: OverlaySessionForAttachment,
+    session: OverlaySession,
     target: ReShadeTarget,
   ): Promise<ReShadeAttachResult>;
   confirmTargetExited?(pid: number): boolean;
@@ -239,7 +230,7 @@ export type ReShadeLauncherFactory = (
 ) => ReShadeLauncherForSteamTarget;
 
 type SteamGameAutoAttacherOptions = Readonly<{
-  session: OverlaySessionForAttachment;
+  session: OverlaySession;
   reshadeConfig: ReShadeLaunchConfig;
   watcherFactory: ProcessWatcherFactory;
   launcherFactory?: ReShadeLauncherFactory;
@@ -291,7 +282,7 @@ export class SteamGameAutoAttacher {
     number,
     Set<ReShadeLauncherForSteamTarget>
   >();
-  private removeSessionListener: (() => void) | null = null;
+  private readonly removeSessionListeners: Array<() => void> = [];
   private watcherStatusValue: ProcessWatcherStatus = 'stopped';
   private watcherErrorValue: string | null = null;
   private started = false;
@@ -381,27 +372,16 @@ export class SteamGameAutoAttacher {
     this.started = true;
     this.watcherStatusValue = 'starting';
     this.watcherErrorValue = null;
-    this.removeSessionListener = this.options.session.on(
-      'nativeEvent',
-      ({ event, payload }) => {
-        if (!isRecord(payload) || !isValidPid(payload.pid)) {
-          return;
+    this.removeSessionListeners.push(
+      this.options.session.on('targetConnected', ({ pid, executablePath }) => {
+        const entry = this.targetEntries.get(pid);
+        if (entry) {
+          this.connectTarget(entry, executablePath);
         }
-        const pid = payload.pid;
-        if (event === 'game.process') {
-          const entry = this.targetEntries.get(pid);
-          if (entry) {
-            this.connectTarget(
-              entry,
-              typeof payload.path === 'string' ? payload.path : '',
-            );
-          }
-          return;
-        }
-        if (event === 'game.process.disconnected') {
-          queueMicrotask(() => this.removeTarget(pid));
-        }
-      },
+      }),
+      this.options.session.on('targetDisconnected', ({ pid }) => {
+        queueMicrotask(() => this.removeTarget(pid));
+      }),
     );
     this.publishState();
 
@@ -419,8 +399,9 @@ export class SteamGameAutoAttacher {
     }
     this.disposed = true;
     this.started = false;
-    this.removeSessionListener?.();
-    this.removeSessionListener = null;
+    for (const removeListener of this.removeSessionListeners.splice(0)) {
+      removeListener();
+    }
 
     const watcher = this.watcher;
     this.watcher = null;

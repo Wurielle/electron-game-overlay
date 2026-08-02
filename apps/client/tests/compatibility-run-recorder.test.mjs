@@ -168,6 +168,15 @@ test('launcher, surface, FPS, diagnostic, and input evidence is structured and s
       },
     });
     recorder.recordLauncherEvent({
+      type: 'injector-watcher-ready',
+      invocation: {
+        executable: 'C:\\secret\\inject.exe',
+        arguments: ['Example.exe'],
+        targetLabel: 'process:Example.exe',
+        workingDirectory: 'C:\\Users\\Someone\\AppData\\Local\\Temp\\attempt-a',
+      },
+    });
+    recorder.recordLauncherEvent({
       type: 'injector-returned',
       result: {
         processName: 'Example.exe',
@@ -219,6 +228,15 @@ test('launcher, surface, FPS, diagnostic, and input evidence is structured and s
       events.find((event) => event.type === 'attachment.runtime-staged').data
         .attemptId,
       'attempt-0001',
+    );
+    assert.deepEqual(
+      events.find((event) => event.type === 'attachment.injector-watcher-ready')
+        .data,
+      {
+        attemptId: 'attempt-0001',
+        targetLabel: 'Example.exe',
+        strategy: 'name',
+      },
     );
     const summary = readSummary(recorder.summaryPath);
     const target = summary.targets[0];

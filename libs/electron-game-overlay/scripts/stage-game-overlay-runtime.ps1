@@ -125,6 +125,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-x86-target-architecture-diagnostic.patch"
     injectorExactTargetPathPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-exact-target-path.patch"
+    injectorNameWatcherReadyPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-name-watcher-ready.patch"
 }
 $ExpectedArtifactNames = @(
     $ArchitectureConfig.AddonName
@@ -201,7 +203,7 @@ foreach ($ArtifactName in $ExpectedArtifactNames) {
     $Source = Join-Path $RuntimeDistribution $ArtifactName
     Assert-NotReparsePoint $Source
     $SourceHashes[$ArtifactName] = (
-        Get-FileHash -Algorithm SHA256 -LiteralPath $Source
+        Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Source
     ).Hash
 }
 
@@ -214,7 +216,7 @@ try {
 catch {
     throw "The native runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 26 -or
+if ($BuildStamp.schemaVersion -ne 27 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -223,7 +225,7 @@ if ($BuildStamp.schemaVersion -ne 26 -or
 }
 foreach ($PatchEntry in $ExpectedPatchProvenance.GetEnumerator()) {
     Assert-Sha256Equal `
-        -Expected (Get-FileHash -Algorithm SHA256 -LiteralPath $PatchEntry.Value).Hash `
+        -Expected (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $PatchEntry.Value).Hash `
         -Actual ([string]$BuildStamp.($PatchEntry.Key)) `
         -Label "native runtime $($PatchEntry.Key) provenance"
 }
@@ -291,7 +293,7 @@ if (-not (Test-Path -LiteralPath $ManagerSourcePath -PathType Leaf)) {
 Assert-NotReparsePoint $ManagerSourcePath
 Assert-Sha256Equal `
     -Expected ([string]$PackageBuildStamp.managerSourceSha256) `
-    -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $ManagerSourcePath).Hash `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ManagerSourcePath).Hash `
     -Label "ReShade add-on manager source provenance"
 Assert-Sha256Equal `
     -Expected ([string]$PackageBuildStamp.managerSha256) `
@@ -363,7 +365,7 @@ if ($Architecture -eq "x86") {
     $SharedConfigPath = Join-Path $ResolvedDestinationDirectory "ReShade.ini"
     Assert-Sha256Equal `
         -Expected ([string]$PackageBuildStamp.reshadeConfigSha256) `
-        -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $SharedConfigPath).Hash `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $SharedConfigPath).Hash `
         -Label "composed x86 runtime package ReShade configuration"
 }
 
@@ -380,7 +382,7 @@ foreach ($ArtifactName in $ExpectedArtifactNames) {
     Assert-NotReparsePoint $Destination
     Assert-Sha256Equal `
         -Expected $SourceHashes[$ArtifactName] `
-        -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash `
+        -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Destination).Hash `
         -Label $Destination
 }
 

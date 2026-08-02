@@ -1,0 +1,147 @@
+:root {
+  color: #f8fafc;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+}
+body {
+  padding: 12px;
+}
+.panel {
+  min-height: 100%;
+  padding: 21px;
+  overflow: hidden;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  border-radius: 18px;
+  background: rgba(5, 16, 28, 0.95);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.eyebrow {
+  color: #7dd3fc;
+  font:
+    700 11px/1 ui-monospace,
+    Consolas,
+    monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+h1 {
+  margin: 7px 0 0;
+  font-size: 25px;
+}
+.count {
+  flex: none;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.15);
+  color: #bae6fd;
+  font-size: 11px;
+}
+.count b {
+  font-size: 14px;
+}
+.watcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+.watcher > span:first-child {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 12px #38bdf8;
+}
+.contract {
+  margin: 0 0 13px;
+  color: #64748b;
+  font-size: 11px;
+}
+code {
+  color: #bae6fd;
+  font:
+    11px/1.45 ui-monospace,
+    Consolas,
+    monospace;
+  overflow-wrap: anywhere;
+}
+.targets {
+  display: grid;
+  max-height: 282px;
+  gap: 9px;
+  overflow-y: auto;
+}
+.targets:has(.target) .empty {
+  display: none;
+}
+.empty {
+  padding: 25px 10px;
+  border: 1px dashed #334155;
+  border-radius: 10px;
+  color: #64748b;
+  text-align: center;
+  font-size: 12px;
+}
+.target {
+  padding: 11px 12px;
+  border: 1px solid #1e3a5f;
+  border-left: 3px solid #38bdf8;
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.76);
+}
+.target[data-phase='connected'] {
+  border-left-color: #34d399;
+}
+.target[data-phase='failed'] {
+  border-left-color: #fb7185;
+}
+.target > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.target strong {
+  font-size: 13px;
+}
+.target span {
+  color: #94a3b8;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.target code {
+  display: block;
+  margin-top: 5px;
+  color: #64748b;
+}
+.target p {
+  margin: 6px 0 0;
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
+.attribution {
+  position: fixed;
+  right: 29px;
+  bottom: 8px;
+  color: #7dd3fc;
+  font-size: 9px;
+  opacity: 0.65;
+}

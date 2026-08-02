@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildElectronDevArguments } from '../src/main/dev-launch.ts';
+import { buildElectronDevArguments } from '../src/main/dev-launch.mts';
 
 const require = createRequire(import.meta.url);
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));

@@ -58,8 +58,8 @@ explicitly unsupported or deferred until chosen as a separate task.
   - `libs/electron-overlay-transport` owns `electron_wire.rs`,
     `electron_frame.rs`, `electron_input.rs`, ordered scene/router semantics,
     and premultiplied-BGRA conversion. It builds as both an `rlib` and a Windows
-    static library; the retained hudhook POC consumes the same crate instead of
-    duplicate modules.
+    static library. The former hudhook POC consumed that same crate instead of
+    duplicate modules before the production ReShade path superseded it.
 - [x] Finish the narrow, versioned C ABI and ReShade-linked smoke target for that engine.
   - Immutable scene/name/RGBA pointers are leased by explicit snapshots, every fallible Rust export contains panics and returns fixed status codes, and the native layout/link/lifecycle smoke passes. The proven native-only D3D11/D3D12 gate targets remain independent of Cargo.
 - [x] Port multi-window ReShade texture composition and exact legacy Electron input return on D3D11.
@@ -107,11 +107,15 @@ explicitly unsupported or deferred until chosen as a separate task.
 
 ### Runtime compatibility and hardening
 
-- [ ] Add a complete Win32/x86 runtime package and accept Portal's D3D9 path.
+- [x] Add a complete Win32/x86 runtime package and accept Portal's D3D9 path.
   - The package now builds and stages an `i686-pc-windows-msvc` transport library, Win32 injector, `ReShade32.dll`, `.addon32`, and an architecture-isolated manager. Controlled D3D9 and D3D10 exact-PID injection gates rendered their first ImGui frame.
   - The production SDK validates the x64 mismatch record, pins its reported PID/path, retries exactly once through the staged x86 injector, and preserves both injectors' evidence. Two fresh D3D9 and D3D10 client/SDK cycles passed rendering, Electron input, host-input interception/release, resize, relaunch, and cleanup on August 1, 2026.
   - A compatible already-loaded project runtime can be reused after the Win32 injector loads and validates `.addon32`. Official ReShade hosting and inactive target-local installation management on x86 remain fail-closed until their manager/coexistence paths have architecture-specific acceptance.
-  - The installed Portal `hl2.exe` is PE32/x86. Do not treat the accepted controlled x86 D3D9 gate as Portal support until a real Portal launch, rendering, input interception/release, resize/device reset, relaunch, and cleanup pass.
+  - The installed Portal `hl2.exe` is PE32/x86, and the user confirmed the
+    overlay works in a real Portal D3D9 run. That completes the Portal smoke
+    goal, but it is not part of the recorded controlled-host matrix and does
+    not independently prove the full resize/device-reset, relaunch, and cleanup
+    sequence exercised by the controlled x86 D3D9/D3D10 gates.
 
 - [x] Add exact-PID loaded-runtime compatibility preflight and a strict structured injector result.
   - Before target mutation, the injector performs bounded module enumeration
@@ -195,13 +199,13 @@ explicitly unsupported or deferred until chosen as a separate task.
     arbitrary real-game effect/add-on coexistence.
 - [ ] Expand existing-ReShade coexistence evidence beyond controlled fixtures.
   - [x] Accept one real Gun Frog combination with a stock ReShade host, the
-    pristine API-18 FPS Limiter add-on, and one enabled benign effect. On July
-    31, 2026, the production Steam auto-attacher connected in
-    `official-addon` mode, all four intercepted Electron buttons left the game
-    menu unchanged, released Quit closed the game, and cleanup restored the
-    original clean directory with byte/attribute/timestamp proof. Evidence is
-    under
-    `build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20260731-002038-058ec1a0`.
+        pristine API-18 FPS Limiter add-on, and one enabled benign effect. On July
+        31, 2026, the production Steam auto-attacher connected in
+        `official-addon` mode, all four intercepted Electron buttons left the game
+        menu unchanged, released Quit closed the game, and cleanup restored the
+        original clean directory with byte/attribute/timestamp proof. Evidence is
+        under
+        `build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20260731-002038-058ec1a0`.
   - Build a coexistence matrix for real games with existing presets, effects,
     and foreign add-ons, including ordering, input ownership, shutdown, and
     upgrade behavior. Do not infer these outcomes from the controlled fixture.
@@ -430,10 +434,10 @@ they are not the active production-host roadmap.
 
 - [x] Replace direct SDK launcher console markers with typed lifecycle events.
   - `ReShadeOverlayLauncher.onEvent()` publishes immutable `runtime-staged`,
-    `target-rendezvous-authorized`, `injector-started`, `injector-returned`,
-    `injector-failed`, `target-connected`, and `target-disconnected` records.
-    Handler failures are isolated and the subscription returns an idempotent
-    unsubscribe function.
+    `target-rendezvous-authorized`, `injector-started`,
+    `injector-watcher-ready`, `injector-returned`, `injector-failed`,
+    `target-connected`, and `target-disconnected` records. Handler failures are
+    isolated and the subscription returns an idempotent unsubscribe function.
   - The old SDK marker constants and direct lifecycle marker output are gone.
     Stable markers retained by demos and test runners are client-owned
     formatting over these events.

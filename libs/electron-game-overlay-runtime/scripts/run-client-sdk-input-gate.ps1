@@ -19,7 +19,9 @@ param(
     [string]$RawRegistrationTiming = "after-injection",
     [Parameter(DontShow = $true)]
     [ValidateSet("explicit-hwnd", "null-focus")]
-    [string]$RawRegistrationTarget = "explicit-hwnd"
+    [string]$RawRegistrationTarget = "explicit-hwnd",
+    [Parameter(DontShow = $true)]
+    [string]$ElectronExecutable
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,7 +79,12 @@ $ResizeHookMarker = switch ($Backend) {
     "d3d10" { "Redirecting IDXGISwapChain::ResizeBuffers(" }
     default { $null }
 }
-$Electron = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
+$Electron = if ([string]::IsNullOrWhiteSpace($ElectronExecutable)) {
+    Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
+}
+else {
+    (Resolve-Path -LiteralPath $ElectronExecutable).Path
+}
 $Nx = Join-Path $RepoRoot "node_modules\.bin\nx.cmd"
 $RegistrationTimingSuffix = if ($RawRegistrationTiming -eq "before-injection") {
     "-registration-before-injection"

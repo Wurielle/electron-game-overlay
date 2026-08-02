@@ -58,6 +58,7 @@ const RESHADE_ATTACHMENT_STATE_MARKER = 'RESHADE_CLIENT_ATTACHMENT_STATE';
 const COMPATIBILITY_RUN_RECORDER_MARKER =
   'ELECTRON_GAME_OVERLAY_COMPATIBILITY_RUN';
 const DEMO_STATE_CHANGED_CHANNEL = 'overlay:state-changed';
+const GOVERLAY_PROJECT_URL = 'https://github.com/hiitiger/goverlay';
 
 type ReShadeAttachmentPhase = 'idle' | 'attaching' | 'connected';
 
@@ -189,8 +190,27 @@ class Application {
       this.compatibilityRunRecorder?.recordTargetSurfaceRemoved(surface);
       this.publishDemoState();
     });
-    this.overlaySession.on('nativeEvent', ({ event, payload }) => {
-      this.handleOverlayNativeEvent(event, payload);
+    this.overlaySession.on('targetConnected', ({ pid, executablePath }) => {
+      this.handleOverlayTargetConnected(pid, executablePath);
+    });
+    this.overlaySession.on('targetTransportLost', ({ pid, executablePath }) => {
+      this.handleOverlayTargetTransportLost(pid, executablePath);
+    });
+    this.overlaySession.on('targetDisconnected', ({ pid, executablePath }) => {
+      this.handleOverlayTargetDisconnected(pid, executablePath);
+    });
+    this.overlaySession.on(
+      'inputInterceptionChanged',
+      ({ pid, intercepting }) => {
+        this.handleOverlayInputInterceptionChanged(pid, intercepting);
+      },
+    );
+    this.overlaySession.on('windowFocused', ({ pid, windowId }) => {
+      this.compatibilityRunRecorder?.recordNativeEvent('game.window.focused', {
+        pid,
+        focusWindowId: windowId,
+      });
+      this.keepDemoControlOverlayOnTop(windowId);
     });
   }
 
@@ -384,10 +404,6 @@ class Application {
     this.compatibilityRunRecorder = null;
   }
 
-  public openLink(url: string) {
-    shell.openExternal(url);
-  }
-
   private createWindow(
     name: string,
     option: Electron.BrowserWindowConstructorOptions,
@@ -397,9 +413,17 @@ class Application {
     window.on('closed', () => {
       this.windows.delete(name);
     });
-    window.webContents.on('new-window', (e, url) => {
-      e.preventDefault();
-      shell.openExternal(url);
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      if (url === GOVERLAY_PROJECT_URL) {
+        void shell.openExternal(url);
+      }
+      return { action: 'deny' };
+    });
+    window.webContents.on('will-navigate', (event, url) => {
+      event.preventDefault();
+      if (url === GOVERLAY_PROJECT_URL) {
+        void shell.openExternal(url);
+      }
     });
 
     if (global.DEBUG) {
@@ -643,9 +667,7 @@ class Application {
       const overlayWindow = this.ensureExampleOverlayWindow(name);
       overlayWindow.show();
       if (name !== AppWindows.demoControlOverlay) {
-        this.keepDemoControlOverlayOnTop({
-          focusWindowId: overlayWindow.nativeId,
-        });
+        this.keepDemoControlOverlayOnTop(overlayWindow.nativeId);
       }
     } else {
       this.overlayWindows.get(name)?.hide();
@@ -854,75 +876,66 @@ class Application {
     };
   }
 
-  private handleOverlayNativeEvent(event: string, payload: any) {
-    this.compatibilityRunRecorder?.recordNativeEvent(event, payload);
-    if (event === 'game.window.focused') {
-      this.keepDemoControlOverlayOnTop(payload);
-      return;
-    }
-
-    if (event === 'game.process') {
-      this.latestOverlayDiagnostic = null;
-      const pid = getNativeEventPid(payload);
-      if (pid !== null) {
-        this.targetInputInterceptState.connect(pid);
-        this.refreshInputInterceptEffective();
-      }
-      this.handleReShadeTargetReconnected(payload);
-      return;
-    }
-
-    if (event === 'game.process.transport-lost') {
-      this.handleTargetTransportEnded(payload);
-      this.handleReShadeTargetTransportLost(payload);
-      return;
-    }
-
-    if (event === 'game.process.disconnected') {
-      this.handleTargetTransportEnded(payload);
-      this.handleReShadeTargetDisconnected(payload);
-      return;
-    }
-
-    if (
-      event === 'game.input.intercept' &&
-      typeof payload?.intercepting === 'boolean' &&
-      getNativeEventPid(payload) !== null
-    ) {
-      const pid = getNativeEventPid(payload) as number;
-      if (
-        !this.targetInputInterceptState.acknowledge(pid, payload.intercepting)
-      ) {
-        return;
-      }
-      this.compatibilityRunRecorder?.recordInputAcknowledged(
-        pid,
-        payload.intercepting,
-      );
-      this.refreshInputInterceptEffective();
-      console.log(
-        `HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=${payload.intercepting}`,
-      );
-      this.maybeLogGunFrogProofReady();
-    }
+  private handleOverlayTargetConnected(pid: number, executablePath: string) {
+    this.compatibilityRunRecorder?.recordNativeEvent('game.process', {
+      pid,
+      path: executablePath,
+    });
+    this.latestOverlayDiagnostic = null;
+    this.targetInputInterceptState.connect(pid);
+    this.refreshInputInterceptEffective();
+    this.handleReShadeTargetReconnected(pid);
   }
 
-  private keepDemoControlOverlayOnTop(payload: any) {
+  private handleOverlayTargetTransportLost(
+    pid: number,
+    executablePath: string,
+  ) {
+    this.compatibilityRunRecorder?.recordNativeEvent(
+      'game.process.transport-lost',
+      { pid, path: executablePath },
+    );
+    this.handleTargetTransportEnded(pid);
+    this.handleReShadeTargetTransportLost(pid);
+  }
+
+  private handleOverlayTargetDisconnected(pid: number, executablePath: string) {
+    this.compatibilityRunRecorder?.recordNativeEvent(
+      'game.process.disconnected',
+      { pid, path: executablePath },
+    );
+    this.handleTargetTransportEnded(pid);
+    this.handleReShadeTargetDisconnected(pid);
+  }
+
+  private handleOverlayInputInterceptionChanged(
+    pid: number,
+    intercepting: boolean,
+  ) {
+    if (!this.targetInputInterceptState.acknowledge(pid, intercepting)) {
+      return;
+    }
+    this.compatibilityRunRecorder?.recordInputAcknowledged(pid, intercepting);
+    this.refreshInputInterceptEffective();
+    console.log(
+      `HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=${intercepting}`,
+    );
+    this.maybeLogGunFrogProofReady();
+  }
+
+  private keepDemoControlOverlayOnTop(focusWindowId: number) {
     if (
       !this.demoPresentationEnabled ||
       this.demoControlRaiseQueued ||
-      !Number.isSafeInteger(payload?.focusWindowId) ||
-      payload.focusWindowId <= 0
+      !Number.isSafeInteger(focusWindowId) ||
+      focusWindowId <= 0
     ) {
       return;
     }
     const controlOverlay = this.overlayWindows.get(
       AppWindows.demoControlOverlay,
     );
-    if (
-      !controlOverlay?.visible ||
-      payload.focusWindowId === controlOverlay.nativeId
-    ) {
+    if (!controlOverlay?.visible || focusWindowId === controlOverlay.nativeId) {
       return;
     }
 
@@ -944,11 +957,7 @@ class Application {
     });
   }
 
-  private handleTargetTransportEnded(payload: any) {
-    const pid = getNativeEventPid(payload);
-    if (pid === null) {
-      return;
-    }
+  private handleTargetTransportEnded(pid: number) {
     this.targetInputInterceptState.disconnect(pid);
     this.refreshInputInterceptEffective();
   }
@@ -965,12 +974,10 @@ class Application {
     this.publishDemoState();
   }
 
-  private handleReShadeTargetReconnected(payload: any) {
+  private handleReShadeTargetReconnected(pid: number) {
     if (
-      !Number.isSafeInteger(payload?.pid) ||
-      payload.pid <= 0 ||
       this.reshadeAttachment.phase !== 'connected' ||
-      this.reshadeAttachment.pid !== payload.pid
+      this.reshadeAttachment.pid !== pid
     ) {
       return;
     }
@@ -978,14 +985,10 @@ class Application {
     this.markGunFrogTargetConnected();
   }
 
-  private handleReShadeTargetTransportLost(payload: any) {
-    if (!Number.isSafeInteger(payload?.pid) || payload.pid <= 0) {
-      return;
-    }
-
+  private handleReShadeTargetTransportLost(pid: number) {
     if (
       this.reshadeAttachment.phase === 'connected' &&
-      this.reshadeAttachment.pid !== payload.pid
+      this.reshadeAttachment.pid !== pid
     ) {
       return;
     }
@@ -1004,12 +1007,7 @@ class Application {
     this.publishDemoState();
   }
 
-  private handleReShadeTargetDisconnected(payload: any) {
-    if (!Number.isSafeInteger(payload?.pid) || payload.pid <= 0) {
-      return;
-    }
-
-    const disconnectedPid = payload.pid as number;
+  private handleReShadeTargetDisconnected(disconnectedPid: number) {
     if (
       this.reshadeAttachment.phase !== 'connected' ||
       this.reshadeAttachment.pid !== disconnectedPid
@@ -1142,12 +1140,6 @@ function getErrorMessage(error: unknown) {
 
 function getReShadeDiagnostic(error: unknown): ReShadeDiagnostic | null {
   return isReShadeOperationError(error) ? error.diagnostic : null;
-}
-
-function getNativeEventPid(payload: any): number | null {
-  return Number.isSafeInteger(payload?.pid) && payload.pid > 0
-    ? (payload.pid as number)
-    : null;
 }
 
 function normalizeOptionalTargetPid(pid: unknown): number | undefined {

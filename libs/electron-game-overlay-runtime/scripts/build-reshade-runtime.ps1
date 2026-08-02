@@ -120,6 +120,10 @@ $InjectorExactTargetPathPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-exact-target-path.patch"
 $InjectorExactTargetPathPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorExactTargetPathPatch).Hash
+$InjectorNameWatcherReadyPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
+$InjectorNameWatcherReadyPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorNameWatcherReadyPatch).Hash
 $ExpectedPatchedFiles = @(
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -140,7 +144,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/input.cpp" = "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
     "source/input.hpp" = "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "BCE49FAA997F42B6EF8E1DC6D6BEA224F3C74E647FD902373CDFE788705BC43D"
+    "tools/injector.cpp" = "B6F4CCF164AB75CBD9D55AEF3EC4191E89A533F703B20D7A04BCD2EF534E2FCD"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -185,7 +189,8 @@ function Test-ReShadePatchedSourceState {
         $SuppressSplashPatch,
         $X86RuntimePatch,
         $X86TargetArchitectureDiagnosticPatch,
-        $InjectorExactTargetPathPatch
+        $InjectorExactTargetPathPatch,
+        $InjectorNameWatcherReadyPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -239,9 +244,9 @@ function Test-RuntimeBuildCache {
 
     try {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
-        $RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
-        $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 26 -and
+        $RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
+        $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
+        return $Stamp.schemaVersion -eq 27 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -266,6 +271,7 @@ function Test-RuntimeBuildCache {
             $Stamp.x86RuntimePatchSha256 -eq $X86RuntimePatchHash -and
             $Stamp.x86TargetArchitectureDiagnosticPatchSha256 -eq $X86TargetArchitectureDiagnosticPatchHash -and
             $Stamp.injectorExactTargetPathPatchSha256 -eq $InjectorExactTargetPathPatchHash -and
+            $Stamp.injectorNameWatcherReadyPatchSha256 -eq $InjectorNameWatcherReadyPatchHash -and
             $Stamp.configuration -eq "Release" -and
             $Stamp.platform -eq $ArchitectureConfig.RuntimePlatform -and
             $Stamp.addonLevel -eq 2 -and
@@ -372,10 +378,10 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
     throw "ReShade injector build completed without producing $Injector."
 }
 
-$RuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash
-$InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
+$RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
+$InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 26
+    schemaVersion = 27
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -400,6 +406,7 @@ $InjectorHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Injector).Hash
     x86RuntimePatchSha256 = $X86RuntimePatchHash
     x86TargetArchitectureDiagnosticPatchSha256 = $X86TargetArchitectureDiagnosticPatchHash
     injectorExactTargetPathPatchSha256 = $InjectorExactTargetPathPatchHash
+    injectorNameWatcherReadyPatchSha256 = $InjectorNameWatcherReadyPatchHash
     configuration = "Release"
     platform = $ArchitectureConfig.RuntimePlatform
     addonLevel = 2

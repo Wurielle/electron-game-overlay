@@ -30,9 +30,7 @@ const MAX_COMPLETED_RUN_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_COMPLETED_RUN_BYTES = 100 * 1024 * 1024;
 
 export type CompatibilityRunMode =
-  | 'steam-auto-attach'
-  | 'automatic-target'
-  | 'manual';
+  'steam-auto-attach' | 'automatic-target' | 'manual';
 
 export type CompatibilityAutoAttachTarget = Readonly<{
   pid: number;
@@ -298,10 +296,20 @@ export class CompatibilityRunRecorder {
               event.invocation.workingDirectory,
             ),
             targetLabel: safeTargetLabel(event.invocation.targetLabel),
-            strategy: pid === null ? 'path' : 'exact-pid',
+            strategy: invocationStrategy(event.invocation.arguments),
           },
           target,
         );
+        return;
+      }
+      case 'injector-watcher-ready': {
+        this.record('attachment.injector-watcher-ready', {
+          attemptId: this.attemptReferenceForDirectory(
+            event.invocation.workingDirectory,
+          ),
+          targetLabel: safeTargetLabel(event.invocation.targetLabel),
+          strategy: invocationStrategy(event.invocation.arguments),
+        });
         return;
       }
       case 'injector-returned': {
@@ -1142,6 +1150,15 @@ function pidFromInvocationArguments(
   }
   const pid = Number(arguments_[pidFlagIndex + 1]);
   return isValidPid(pid) ? pid : null;
+}
+
+function invocationStrategy(
+  arguments_: readonly string[],
+): 'exact-pid' | 'name' | 'path' {
+  if (arguments_[0] === '--path-contains') {
+    return 'path';
+  }
+  return pidFromInvocationArguments(arguments_) === null ? 'name' : 'exact-pid';
 }
 
 function safeTargetLabel(value: string): string | null {

@@ -23,7 +23,6 @@ pnpm-debug.log*
 # CMake / native build output
 /build/
 /libs/electron-overlay-transport/target/
-/poc/hudhook-imgui-overlay/target/
 
 # Electron client generated build output
 /apps/client/dist/

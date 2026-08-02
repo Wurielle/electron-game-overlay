@@ -35,12 +35,12 @@ Clean targets use the repository's pinned, patched ReShade 6.7.3 host. Every
 detected target-local x64 ReShade identity instead suppresses fallback
 project-runtime injection and is attempted with the uniquely named Electron
 add-on. There is no product-version or runtime-hash allowlist: compatibility is
-  established only when `ReShadeRegisterAddon` accepts public API 18 and the host
-  returns the exact Dear ImGui function table. The bounded startup grace is
-  inspection-only: a mapped host that still does not load the current add-on is
-  reported as host-incompatible, while a host that disappears during the wait
-  reports `target-official-addon-wait-expired`. Neither case can fall back to
-  project-runtime injection.
+established only when `ReShadeRegisterAddon` accepts public API 18 and the host
+returns the exact Dear ImGui function table. The bounded startup grace is
+inspection-only: a mapped host that still does not load the current add-on is
+reported as host-incompatible, while a host that disappears during the wait
+reports `target-official-addon-wait-expired`. Neither case can fall back to
+project-runtime injection.
 
 Target-effective paths and `DisabledAddons` are resolved from the exact target
 process and configuration, and a user disable is honored. The existing
@@ -278,19 +278,23 @@ D3D11, and D3D12 hosts plus Windows x86 with controlled D3D9 and D3D10 hosts,
 followed by permitted offline/single-player applications. D3D9 and D3D10 each
 passed two fresh production client/SDK cycles per accepted architecture on
 August 1, 2026, including exact API-hook and target-surface evidence,
-multi-window Electron input, post-scene resize, release, and cleanup. These
-cases are not supported by the current production runtime:
+multi-window Electron input, post-scene resize, release, and cleanup. The user
+also confirmed the overlay works in a real Portal D3D9 run (`hl2.exe`,
+PE32/x86). That is real-game smoke evidence, not a recorded controlled-host
+matrix pass, and it does not independently establish Portal's complete
+resize/device-reset, relaunch, and cleanup behavior. These cases are not
+supported by the current production runtime:
 
 - competitive, anti-cheat-protected, protected, or otherwise restricted
   processes; no stealth or anti-cheat bypass work is in scope;
 - target/runtime integrity-level mismatch or an elevated target launched from
   a lower-integrity client;
-- real x86 titles beyond the controlled D3D9/D3D10 hosts, x86 official ReShade
-  hosting and inactive-installation management, and VR runtimes
-  (`reshade_overlay` is not invoked for VR); compatible already-loaded project
-  runtimes can be reused through the accepted `.addon32` path, but
-  the installed Portal `hl2.exe` is PE32/x86 and remains outside the accepted
-  real-game matrix;
+- real x86 titles beyond the controlled D3D9/D3D10 hosts and the
+  user-confirmed Portal smoke run, x86 official ReShade hosting and
+  inactive-installation management, and VR runtimes (`reshade_overlay` is not
+  invoked for VR); compatible already-loaded project runtimes can be reused
+  through the accepted `.addon32` path, while x86 official ReShade paths remain
+  fail-closed;
 - Vulkan, OpenGL, unusual/exclusive presentation paths, same-HWND
   multi-swap-chain input ownership, distinct D3D12 direct queues, broader
   multi-swap-chain layouts, and simultaneous rendered targets beyond the

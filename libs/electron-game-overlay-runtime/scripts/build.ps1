@@ -151,6 +151,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-x86-target-architecture-diagnostic.patch"
     injectorExactTargetPathPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-exact-target-path.patch"
+    injectorNameWatcherReadyPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
 }
 
 $CMake = Resolve-Executable "cmake.exe"
@@ -223,7 +225,7 @@ foreach ($Artifact in $Artifacts) {
     }
     Assert-NotReparsePoint $Artifact.Source
     $SourceHashes[$Artifact.Name] = (
-        Get-FileHash -Algorithm SHA256 -LiteralPath $Artifact.Source
+        Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Artifact.Source
     ).Hash
 }
 
@@ -236,7 +238,7 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 26 -or
+if ($BuildStamp.schemaVersion -ne 27 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -245,7 +247,7 @@ if ($BuildStamp.schemaVersion -ne 26 -or
 }
 foreach ($PatchEntry in $ExpectedPatchProvenance.GetEnumerator()) {
     Assert-Sha256Equal `
-        -Expected (Get-FileHash -Algorithm SHA256 -LiteralPath $PatchEntry.Value).Hash `
+        -Expected (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $PatchEntry.Value).Hash `
         -Actual ([string]$BuildStamp.($PatchEntry.Key)) `
         -Label "ReShade $($PatchEntry.Key) provenance"
 }
@@ -270,7 +272,7 @@ $PackageBuildStamp = [ordered]@{
     addonBuildId = $ExpectedAddonBuildId
     managerProtocolSchemaVersion = 1
     managerSourceSha256 = (
-        Get-FileHash -Algorithm SHA256 -LiteralPath $ManagerSourcePath
+        Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ManagerSourcePath
     ).Hash
     managerSha256 = $SourceHashes["electron_game_overlay_reshade_manager.exe"]
     addonSha256 = $SourceHashes[$ArchitectureConfig.AddonName]
@@ -289,7 +291,7 @@ $Artifacts += [pscustomobject]@{
     Name = "electron_game_overlay_runtime.build.json"
 }
 $SourceHashes["electron_game_overlay_runtime.build.json"] = (
-    Get-FileHash -Algorithm SHA256 -LiteralPath $PackageBuildStampPath
+    Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $PackageBuildStampPath
 ).Hash
 
 $ResolvedRuntimeRoot = [IO.Path]::GetFullPath($RuntimeRoot)
@@ -321,7 +323,7 @@ foreach ($Artifact in $Artifacts) {
     Assert-NotReparsePoint $Destination
     Assert-Sha256Equal `
         -Expected $SourceHashes[$Artifact.Name] `
-        -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash `
+        -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Destination).Hash `
         -Label $Destination
 }
 

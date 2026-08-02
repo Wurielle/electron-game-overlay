@@ -45,6 +45,7 @@ test('demo launcher logging preserves the controlled-gate lifecycle markers', ()
       discoveryPath: 'C:\\runtime\\overlay-transport.json',
     },
     { type: 'injector-started', invocation },
+    { type: 'injector-watcher-ready', invocation },
     { type: 'injector-returned', result },
     {
       type: 'target-connected',
@@ -67,6 +68,7 @@ test('demo launcher logging preserves the controlled-gate lifecycle markers', ()
     'RESHADE_CLIENT_RUNTIME_STAGED directory="C:\\\\runtime"',
     'RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED pid=42 path="C:\\\\runtime\\\\overlay-transport.json"',
     'RESHADE_CLIENT_INJECTOR_STARTED target="game.exe" arguments=["game.exe","--pid","42"]',
+    'RESHADE_CLIENT_INJECTOR_WATCHER_READY target="game.exe" arguments=["game.exe","--pid","42"]',
     'RESHADE_CLIENT_INJECTOR_RETURNED target="game.exe"',
     'RESHADE_CLIENT_TARGET_CONNECTED pid=42',
     'RESHADE_CLIENT_TARGET_DISCONNECTED pid=42',

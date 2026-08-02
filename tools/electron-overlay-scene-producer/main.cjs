@@ -180,7 +180,7 @@ let overlay = null;
 let session = null;
 let overlayWindow = null;
 let frontOverlayWindow = null;
-let disposeNativeEvent = null;
+const disposeSessionEvents = [];
 let cleanupStarted = false;
 let pageLoaded = false;
 let frontPageLoaded = false;
@@ -235,9 +235,8 @@ function cleanup(reason) {
 
   targetConnectionTimeout = null;
 
-  if (disposeNativeEvent) {
-    disposeNativeEvent();
-    disposeNativeEvent = null;
+  for (const disposeEvent of disposeSessionEvents.splice(0)) {
+    disposeEvent();
   }
 
   cleanupStarted = true;
@@ -352,28 +351,29 @@ function maybeStartLifecycleSequence() {
   }
 }
 
-function handleNativeEvent({ event, payload }) {
-  if (event === 'game.process' && !targetConnected) {
-    targetConnected = true;
-    clearTargetConnectionTimeout();
-    const targetPid = Number.isInteger(payload?.pid) ? payload.pid : 'unknown';
-    console.log(
-      `${
-        MULTIWINDOW_PROOF
-          ? MULTIWINDOW_TARGET_CONNECTED_MARKER
-          : TARGET_CONNECTED_MARKER
-      } pid=${targetPid}`,
-    );
-    maybeStartLifecycleSequence();
+function handleTargetConnected({ pid }) {
+  if (targetConnected) {
     return;
   }
+  targetConnected = true;
+  clearTargetConnectionTimeout();
+  console.log(
+    `${
+      MULTIWINDOW_PROOF
+        ? MULTIWINDOW_TARGET_CONNECTED_MARKER
+        : TARGET_CONNECTED_MARKER
+    } pid=${pid}`,
+  );
+  maybeStartLifecycleSequence();
+}
 
-  if (!INPUT_PROOF || event !== 'game.input.intercept') {
+function handleInputInterceptionChanged({ intercepting }) {
+  if (!INPUT_PROOF) {
     return;
   }
 
   if (
-    payload?.intercepting === true &&
+    intercepting === true &&
     inputInterceptRequested &&
     !inputInterceptEnabled
   ) {
@@ -404,7 +404,7 @@ function handleNativeEvent({ event, payload }) {
   }
 
   if (
-    payload?.intercepting === false &&
+    intercepting === false &&
     (MANUAL_INPUT_PROOF || MANUAL_MULTIWINDOW_PROOF) &&
     inputInterceptRequested &&
     inputInterceptEnabled &&
@@ -420,7 +420,7 @@ function handleNativeEvent({ event, payload }) {
   }
 
   if (
-    payload?.intercepting === false &&
+    intercepting === false &&
     inputReleaseRequested &&
     !inputReleaseAcknowledged
   ) {
@@ -1022,9 +1022,8 @@ function applyMultiwindowCommand(command, source) {
         clearTimeout(timer);
       }
       lifecycleTimers.clear();
-      if (disposeNativeEvent) {
-        disposeNativeEvent();
-        disposeNativeEvent = null;
+      for (const disposeEvent of disposeSessionEvents.splice(0)) {
+        disposeEvent();
       }
       session.close();
       session = null;
@@ -1310,7 +1309,10 @@ async function createDemo() {
     }
   }
   session = overlay.createSession();
-  disposeNativeEvent = session.on('nativeEvent', handleNativeEvent);
+  disposeSessionEvents.push(
+    session.on('targetConnected', handleTargetConnected),
+    session.on('inputInterceptionChanged', handleInputInterceptionChanged),
+  );
   session.start();
 
   overlayWindow = session.windows.create({
@@ -1344,9 +1346,14 @@ async function createDemo() {
   const browserWindow = overlayWindow.browserWindow;
   browserWindow.webContents.setFrameRate(FRAME_RATE);
 
-  browserWindow.webContents.on('console-message', (event, level, message) => {
-    forwardProofConsoleMessage(message);
-  });
+  browserWindow.webContents.on(
+    'console-message',
+    (event, _level, legacyMessage) => {
+      const message =
+        typeof event?.message === 'string' ? event.message : legacyMessage;
+      forwardProofConsoleMessage(message);
+    },
+  );
 
   browserWindow.webContents.on('did-finish-load', () => {
     pageLoaded = true;
@@ -1403,7 +1410,7 @@ async function createDemo() {
   // the complete physical bitmap.
   browserWindow.webContents.on('paint', (event, dirtyRect, image) => {
     const size = image.getSize();
-    const byteLength = image.getBitmap().length;
+    const byteLength = image.toBitmap().length;
     const expectedByteLength =
       EXPECTED_BACK_FRAME_WIDTH * EXPECTED_BACK_FRAME_HEIGHT * 4;
 
@@ -1487,7 +1494,9 @@ async function createDemo() {
     frontBrowserWindow.webContents.setFrameRate(FRAME_RATE);
     frontBrowserWindow.webContents.on(
       'console-message',
-      (event, level, message) => {
+      (event, _level, legacyMessage) => {
+        const message =
+          typeof event?.message === 'string' ? event.message : legacyMessage;
         forwardProofConsoleMessage(message);
       },
     );
@@ -1516,7 +1525,7 @@ async function createDemo() {
     bindRendererFailureHandlers(frontBrowserWindow, 'front');
     frontBrowserWindow.webContents.on('paint', (event, dirtyRect, image) => {
       const size = image.getSize();
-      const byteLength = image.getBitmap().length;
+      const byteLength = image.toBitmap().length;
       const expectedByteLength =
         EXPECTED_FRONT_FRAME_WIDTH * EXPECTED_FRONT_FRAME_HEIGHT * 4;
 

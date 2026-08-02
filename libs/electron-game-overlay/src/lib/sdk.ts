@@ -4,7 +4,6 @@ export { OverlaySession } from './overlay-session.js';
 export {
   ReShadeOperationError,
   ReShadeOverlayLauncher,
-  buildReShadeInvocation,
   defaultReShadeRunsRootDirectory,
   defaultReShadeRuntimeDirectory,
   isReShadeOperationError,
@@ -17,7 +16,6 @@ export type {
   ReShadeDiagnosticCode,
   ReShadeDiagnosticEvidence,
   ReShadeDiagnosticStage,
-  ReShadeInvocation,
   ReShadeLaunchConfig,
   ReShadeLaunchConfigOptions,
   ReShadeLaunchResult,
@@ -35,7 +33,6 @@ export type {
   CreateElectronOverlayWindowOptions,
   Disposable,
   ElectronOverlayWindowFollowTargetOptions,
-  ElectronOverlayWindowOptions,
   OverlayDiagnostic,
   OverlayDiagnosticCode,
   OverlayDiagnosticContextValue,

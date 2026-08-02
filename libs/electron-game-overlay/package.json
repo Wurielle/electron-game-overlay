@@ -2,6 +2,7 @@
   "name": "electron-game-overlay",
   "version": "0.0.1",
   "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
   "type": "commonjs",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -17,9 +18,9 @@
     }
   },
   "dependencies": {
-    "tslib": "^2.3.0"
+    "tslib": "^2.8.1"
   },
   "peerDependencies": {
-    "electron": "16.0.10"
+    "electron": ">=39.1.0 <40"
   }
 }

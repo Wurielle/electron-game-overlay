@@ -6,7 +6,7 @@ set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
     "F2A88AD705204DBB8E18D86E7147A13C"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "BCE49FAA997F42B6EF8E1DC6D6BEA224F3C74E647FD902373CDFE788705BC43D"
+    "B6F4CCF164AB75CBD9D55AEF3EC4191E89A533F703B20D7A04BCD2EF534E2FCD"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
     "A7272D6E47308B3F3439E47027F118ED4F2428C7F761FDA89D9128B8752ABFA0"
@@ -107,6 +107,9 @@ set(RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH
 set(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-exact-target-path.patch"
 )
+set(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-name-watcher-ready.patch"
+)
 set(RESHAPE_EXPECTED_PATCHED_FILES
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -151,6 +154,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_X86_RUNTIME_PATCH}"
     "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
     "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
+    "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -309,11 +313,37 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Peel the exact-target path proof first, then the architecture diagnostic and
-# architecture patch, from an existing fetched tree before migrating or
-# validating the historical stack below. They are reapplied in the opposite
-# order after those patches, so repeated configure runs and earlier trees remain
-# idempotent.
+# Peel the watcher-readiness marker and exact-target path proof first, then the
+# architecture diagnostic and architecture patch, from an existing fetched
+# tree before migrating or validating the historical stack below. They are
+# reapplied in the opposite order after those patches, so repeated configure
+# runs and earlier trees remain idempotent.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PRESENT_AT_ENTRY
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PRESENT_AT_ENTRY EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PEEL
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PEEL_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PEEL_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PEEL EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to peel the terminal name-watcher readiness patch.\n"
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PEEL_OUTPUT}"
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PEEL_ERROR}"
+        )
+    endif()
+endif()
+
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
         "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
@@ -392,7 +422,7 @@ if(RESHAPE_X86_RUNTIME_PATCH_PRESENT_AT_ENTRY EQUAL 0)
     endif()
 endif()
 
-# Apply twenty-three narrow pinned seams: the passive copied-input observer, raw-input
+# Apply twenty-four narrow pinned seams: the passive copied-input observer, raw-input
 # target normalization and pre-injection registration reconciliation, an injector
 # base-path override, coverage for Windows' second mouse projection through
 # WM_POINTER, exact-PID targeting, one-shot and persistent prearmed path
@@ -1773,6 +1803,51 @@ if(NOT RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLIED EQUAL 0)
             "Unable to require exact target paths for exact-PID injection.\n"
             "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY_OUTPUT}"
             "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY_ERROR}"
+        )
+    endif()
+endif()
+
+# Emit a stable, flushed marker only after the name-only injector has entered
+# its watcher branch. SDK consumers use this terminal seam to launch a process
+# without racing the native watcher's first scan.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLIED
+    OUTPUT_QUIET
+    ERROR_QUIET
+)
+if(NOT RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --check
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_CHECK
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_CHECK_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_CHECK_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Pinned name-watcher readiness patch cannot migrate the ReShade patch stack.\n"
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_CHECK_OUTPUT}"
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_CHECK_ERROR}"
+        )
+    endif()
+
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY
+        OUTPUT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY_ERROR
+    )
+    if(NOT RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Unable to add the native name-watcher readiness marker.\n"
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY_OUTPUT}"
+            "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY_ERROR}"
         )
     endif()
 endif()

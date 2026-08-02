@@ -2,9 +2,14 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  createElectronOverlayWindow,
   ElectronOverlayWindow,
 } = require('../dist/lib/electron-overlay-window.js');
-const { OverlaySession } = require('../dist/lib/overlay-session.js');
+const {
+  authorizeOverlaySessionTarget,
+  createOverlaySession,
+  OverlaySession,
+} = require('../dist/lib/overlay-session.js');
 const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
 
 const deferred = () => {
@@ -65,7 +70,7 @@ function createHarness() {
   const nativeOverlay = {
     translateInputEvent: () => ({ ...translatedEvent }),
   };
-  const session = new OverlaySession(nativeOverlay);
+  const session = createOverlaySession(nativeOverlay);
   const webContents = {
     focus: () => calls.push('webContents.focus'),
     isDestroyed: () => false,
@@ -130,33 +135,89 @@ function forwardInput(session) {
 
 function createOverlayWindowFocusHarness(focusOnReady) {
   const windowHandlers = new Map();
+  const webContentsHandlers = new Map();
   const focusCalls = [];
+  const removedWindows = [];
+  let closeCalls = 0;
+  let destroyCalls = 0;
+  let browserWindowDestroyed = false;
+  let invalidateCalls = 0;
   const browserWindow = {
     id: 41,
     webContents: {
-      on() {},
+      on(event, handler) {
+        webContentsHandlers.set(event, handler);
+      },
+      removeListener(event, handler) {
+        if (webContentsHandlers.get(event) === handler) {
+          webContentsHandlers.delete(event);
+        }
+      },
+      isDestroyed() {
+        return browserWindowDestroyed;
+      },
+      isOffscreen() {
+        return true;
+      },
+      invalidate() {
+        invalidateCalls += 1;
+      },
     },
     on(event, handler) {
       windowHandlers.set(event, handler);
     },
+    removeListener(event, handler) {
+      if (windowHandlers.get(event) === handler) {
+        windowHandlers.delete(event);
+      }
+    },
     focusOnWebView() {
       focusCalls.push('focus');
+    },
+    isDestroyed() {
+      return browserWindowDestroyed;
+    },
+    close() {
+      closeCalls += 1;
+    },
+    destroy() {
+      destroyCalls += 1;
+      browserWindowDestroyed = true;
     },
   };
   const bridge = {
     registerWindow() {},
     unregisterWindow() {},
-    removeWindow() {},
+    removeWindow(window) {
+      removedWindows.push(window);
+    },
     syncWindowGeometry() {},
     followTarget() {},
     stopFollowingTarget() {},
     sendFrame() {},
   };
-  const window = new ElectronOverlayWindow(bridge, {
+  const window = createElectronOverlayWindow(bridge, {
     existingWindow: browserWindow,
     ...(focusOnReady === undefined ? {} : { focusOnReady }),
   });
-  return { focusCalls, window, windowHandlers };
+  return {
+    browserWindow,
+    get closeCalls() {
+      return closeCalls;
+    },
+    get destroyCalls() {
+      return destroyCalls;
+    },
+    get invalidateCalls() {
+      return invalidateCalls;
+    },
+    focusCalls,
+    bridge,
+    removedWindows,
+    window,
+    windowHandlers,
+    webContentsHandlers,
+  };
 }
 
 function createProducerPublicationHarness(overlayOverrides = {}) {
@@ -174,7 +235,7 @@ function createProducerPublicationHarness(overlayOverrides = {}) {
     },
     ...overlayOverrides,
   };
-  const session = new OverlaySession(overlay);
+  const session = createOverlaySession(overlay);
   session.started = true;
   session.electronScreen = {
     getDisplayMatching: () => ({
@@ -226,6 +287,240 @@ test('does not focus a ready overlay window unless explicitly requested', () => 
   const focusedHarness = createOverlayWindowFocusHarness(true);
   focusedHarness.windowHandlers.get('ready-to-show')();
   assert.deepEqual(focusedHarness.focusCalls, ['focus']);
+});
+
+test('closing an attached overlay wrapper preserves its caller-owned BrowserWindow', () => {
+  const harness = createOverlayWindowFocusHarness();
+
+  harness.window.destroy();
+
+  assert.equal(harness.closeCalls, 0);
+  assert.equal(harness.destroyCalls, 0);
+  assert.equal(harness.browserWindow.isDestroyed(), false);
+});
+
+test('attaching a BrowserWindow requires offscreen rendering at construction', () => {
+  let startCalls = 0;
+  const session = createOverlaySession({
+    start() {
+      startCalls += 1;
+    },
+  });
+  const harness = createOverlayWindowFocusHarness();
+  harness.browserWindow.webContents.isOffscreen = () => false;
+
+  assert.throws(
+    () => session.windows.attach(harness.browserWindow, { id: 'onscreen' }),
+    /webPreferences\.offscreen: true/,
+  );
+  assert.equal(startCalls, 0);
+  assert.equal(session.started, false);
+  assert.equal(session.windows.get('onscreen'), null);
+  assert.equal(harness.webContentsHandlers.size, 1);
+  assert.equal(harness.windowHandlers.size, 4);
+});
+
+test('show requests a fresh frame and destroy detaches caller-owned window listeners', () => {
+  const harness = createOverlayWindowFocusHarness();
+
+  harness.window.show();
+  assert.equal(harness.invalidateCalls, 1);
+  assert.equal(harness.webContentsHandlers.size, 1);
+  assert.equal(harness.windowHandlers.size, 4);
+
+  harness.window.destroy();
+  assert.equal(harness.webContentsHandlers.size, 0);
+  assert.equal(harness.windowHandlers.size, 0);
+
+  const replacement = createElectronOverlayWindow(harness.bridge, {
+    existingWindow: harness.browserWindow,
+    id: 'replacement',
+  });
+  assert.equal(harness.webContentsHandlers.size, 1);
+  assert.equal(harness.windowHandlers.size, 4);
+  harness.windowHandlers.get('closed')();
+  assert.deepEqual(harness.removedWindows, [harness.window, replacement]);
+});
+
+test('duplicate logical and native window identities are rejected without losing the first wrapper', () => {
+  const session = createOverlaySession({});
+  session.started = true;
+  const firstHarness = createOverlayWindowFocusHarness();
+  const secondHarness = createOverlayWindowFocusHarness();
+  secondHarness.browserWindow.id = 42;
+
+  const first = session.windows.attach(firstHarness.browserWindow, {
+    id: 'shared-id',
+  });
+  assert.throws(
+    () =>
+      session.windows.attach(secondHarness.browserWindow, { id: 'shared-id' }),
+    /already exists/,
+  );
+  assert.throws(
+    () => session.windows.attach(firstHarness.browserWindow, { id: 'other' }),
+    /already attached/,
+  );
+  assert.equal(session.windows.get('shared-id'), first);
+  assert.equal(firstHarness.closeCalls, 0);
+  assert.equal(secondHarness.closeCalls, 0);
+
+  const replacement = { id: 'replacement', nativeId: first.nativeId };
+  session.windowsById.set(replacement.id, replacement);
+  session.windowsByNativeId.set(replacement.nativeId, replacement);
+  session.removeWindow(first);
+  assert.equal(
+    session.windowsByNativeId.get(replacement.nativeId),
+    replacement,
+  );
+  assert.equal(session.windowsById.get(replacement.id), replacement);
+
+  const derivedIdSession = createOverlaySession({});
+  derivedIdSession.started = true;
+  const derivedFirstHarness = createOverlayWindowFocusHarness();
+  const derivedSecondHarness = createOverlayWindowFocusHarness();
+  derivedSecondHarness.browserWindow.id = 42;
+  const derivedFirst = derivedIdSession.windows.attach(
+    derivedFirstHarness.browserWindow,
+    { id: '42' },
+  );
+  assert.throws(
+    () => derivedIdSession.windows.attach(derivedSecondHarness.browserWindow),
+    /conflicts with an existing window/,
+  );
+  assert.equal(derivedIdSession.windows.get('42'), derivedFirst);
+});
+
+test('throwing lifecycle observers and a cancelable close cannot interrupt owned window or session teardown', () => {
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    const windowHarness = createOverlayWindowFocusHarness();
+    windowHarness.window.ownsBrowserWindow = true;
+    windowHarness.window.onClose(() => {
+      throw new Error('window observer failed');
+    });
+    assert.doesNotThrow(() => windowHarness.window.destroy());
+    assert.equal(windowHarness.closeCalls, 0);
+    assert.equal(windowHarness.destroyCalls, 1);
+    assert.equal(windowHarness.browserWindow.isDestroyed(), true);
+
+    const calls = [];
+    const session = createOverlaySession({
+      stop() {
+        calls.push('stop');
+      },
+    });
+    session.started = true;
+    session.windowsById.set('window', {
+      destroy() {
+        calls.push('destroy');
+      },
+    });
+    session.targetAuthorizationReleases.add(() => calls.push('release'));
+    session.onQuit(() => {
+      throw new Error('quit observer failed');
+    });
+    session.onClose(() => {
+      throw new Error('close observer failed');
+    });
+
+    assert.doesNotThrow(() => session.close());
+    assert.equal(session.closed, true);
+    assert.deepEqual(calls, ['destroy', 'release', 'stop']);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test('window teardown completes after native unregister fails', () => {
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    const ownedHarness = createOverlayWindowFocusHarness();
+    ownedHarness.window.ownsBrowserWindow = true;
+    ownedHarness.window.show();
+    ownedHarness.bridge.unregisterWindow = () => {
+      throw new Error('native unregister failed');
+    };
+    let ownedCloseCalls = 0;
+    ownedHarness.window.onClose(() => {
+      ownedCloseCalls += 1;
+    });
+
+    assert.throws(
+      () => ownedHarness.window.destroy(),
+      /native unregister failed/,
+    );
+    assert.equal(ownedHarness.window.visible, false);
+    assert.equal(ownedHarness.destroyCalls, 1);
+    assert.equal(ownedCloseCalls, 1);
+    assert.deepEqual(ownedHarness.removedWindows, [ownedHarness.window]);
+    assert.equal(ownedHarness.webContentsHandlers.size, 0);
+    assert.equal(ownedHarness.windowHandlers.size, 0);
+
+    const attachedHarness = createOverlayWindowFocusHarness();
+    attachedHarness.window.show();
+    attachedHarness.bridge.unregisterWindow = () => {
+      throw new Error('native unregister failed');
+    };
+    const closed = attachedHarness.windowHandlers.get('closed');
+
+    assert.doesNotThrow(() => closed());
+    assert.equal(attachedHarness.window.visible, false);
+    assert.equal(attachedHarness.destroyCalls, 0);
+    assert.deepEqual(attachedHarness.removedWindows, [attachedHarness.window]);
+    assert.equal(attachedHarness.webContentsHandlers.size, 0);
+    assert.equal(attachedHarness.windowHandlers.size, 0);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test('session teardown rejects reentrant windows and contains cleanup failures', () => {
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    let stopCalls = 0;
+    const session = createOverlaySession({
+      stop() {
+        stopCalls += 1;
+        throw new Error('backend stop failed');
+      },
+    });
+    session.started = true;
+
+    const ownedHarness = createOverlayWindowFocusHarness();
+    ownedHarness.window.ownsBrowserWindow = true;
+    ownedHarness.window.show();
+    ownedHarness.bridge.unregisterWindow = () => {
+      throw new Error('native unregister failed');
+    };
+    const lateHarness = createOverlayWindowFocusHarness();
+    let lateWindowError;
+    ownedHarness.window.onClose(() => {
+      try {
+        session.windows.attach(lateHarness.browserWindow, { id: 'late' });
+      } catch (error) {
+        lateWindowError = error;
+      }
+    });
+    session.windowsById.set(ownedHarness.window.id, ownedHarness.window);
+    session.targetAuthorizationReleases.add(() => {
+      throw new Error('authorization release failed');
+    });
+
+    assert.doesNotThrow(() => session.close());
+    assert.equal(session.closed, true);
+    assert.equal(session.started, false);
+    assert.equal(stopCalls, 1);
+    assert.equal(ownedHarness.destroyCalls, 1);
+    assert.match(lateWindowError.message, /session is closing/);
+    assert.equal(session.windows.get('late'), null);
+    assert.equal(session.targetAuthorizationReleases.size, 0);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test('focuses the target page immediately before input dispatch without native focus', () => {
@@ -320,7 +615,7 @@ test('contains input dispatch failures and keeps forwarding later events', async
 });
 
 test('retains immutable target surfaces and typed FPS until confirmed process exit', () => {
-  const session = new OverlaySession({});
+  const session = createOverlaySession({});
   const changed = [];
   const removed = [];
   const fps = [];
@@ -352,21 +647,102 @@ test('retains immutable target surfaces and typed FPS until confirmed process ex
   assert.deepEqual(fps, [{ pid: 4321, fps: 59.875 }]);
   assert.ok(Object.isFrozen(fps[0]));
 
-  session.handleEvent('game.process.transport-lost', { pid: 4321 });
+  session.handleEvent('game.process.transport-lost', {
+    pid: 4321,
+    path: 'C:\\Games\\example.exe',
+  });
   assert.equal(
     session.targets.get(4321, '0x1234'),
     retained,
     'transient socket loss must retain the last authoritative surface',
   );
 
-  session.handleEvent('game.process.disconnected', { pid: 4321 });
+  session.handleEvent('game.process.disconnected', {
+    pid: 4321,
+    path: 'C:\\Games\\example.exe',
+  });
   assert.equal(session.targets.get(4321, '0x1234'), null);
   assert.deepEqual(removed, [{ pid: 4321, surfaceId: '0x1234', revision: 1 }]);
   assert.ok(Object.isFrozen(removed[0]));
 });
 
+test('validates raw lifecycle packets and emits immutable typed events', () => {
+  const session = createOverlaySession({});
+  const observed = [];
+  for (const event of [
+    'targetConnected',
+    'targetTransportLost',
+    'targetDisconnected',
+    'inputInterceptionChanged',
+    'windowFocused',
+  ]) {
+    session.on(event, (payload) => observed.push({ event, payload }));
+  }
+
+  session.handleEvent('game.process', {
+    pid: 4321,
+    path: 'C:\\Games\\example.exe',
+  });
+  session.handleEvent('game.process.transport-lost', { pid: 4321 });
+  session.handleEvent('game.input.intercept', {
+    pid: 4321,
+    intercepting: true,
+  });
+  const originalWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    session.handleEvent('game.window.focused', {
+      pid: 4321,
+      focusWindowId: 0,
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  session.handleEvent('game.process.disconnected', { pid: 4321 });
+
+  assert.deepEqual(observed, [
+    {
+      event: 'targetConnected',
+      payload: { pid: 4321, executablePath: 'C:\\Games\\example.exe' },
+    },
+    {
+      event: 'targetTransportLost',
+      payload: { pid: 4321, executablePath: 'C:\\Games\\example.exe' },
+    },
+    {
+      event: 'inputInterceptionChanged',
+      payload: { pid: 4321, intercepting: true },
+    },
+    {
+      event: 'windowFocused',
+      payload: { pid: 4321, windowId: 0 },
+    },
+    {
+      event: 'targetDisconnected',
+      payload: { pid: 4321, executablePath: 'C:\\Games\\example.exe' },
+    },
+  ]);
+  assert.equal(
+    observed.every(({ payload }) => Object.isFrozen(payload)),
+    true,
+  );
+
+  session.handleEvent('game.process', { pid: 0, path: 'bad.exe' });
+  session.handleEvent('game.process.transport-lost', { pid: 4321 });
+  session.handleEvent('game.input.intercept', {
+    pid: 4321,
+    intercepting: 'yes',
+  });
+  session.handleEvent('game.window.focused', {
+    pid: 4321,
+    focusWindowId: -1,
+  });
+  session.handleEvent('game.process.disconnected', { pid: 4321 });
+  assert.equal(observed.length, 5);
+});
+
 test('consumer event failures cannot corrupt telemetry or interrupt internal updates', (t) => {
-  const session = new OverlaySession({});
+  const session = createOverlaySession({});
   const warnings = [];
   const typedRevisions = [];
   const originalWarn = console.warn;
@@ -385,9 +761,8 @@ test('consumer event failures cannot corrupt telemetry or interrupt internal upd
   session.on('targetSurfaceChanged', ({ revision }) => {
     typedRevisions.push(revision);
   });
-  session.on('nativeEvent', ({ payload }) => {
-    payload.revision = 999;
-    throw new Error('native listener failure');
+  session.on('targetSurfaceChanged', () => {
+    throw new Error('second typed listener failure');
   });
 
   assert.doesNotThrow(() => {
@@ -400,7 +775,7 @@ test('consumer event failures cannot corrupt telemetry or interrupt internal upd
 });
 
 test('emits canonical immutable diagnostics and isolates consumer failures', (t) => {
-  const session = new OverlaySession({});
+  const session = createOverlaySession({});
   const warnings = [];
   const diagnostics = [];
   const originalWarn = console.warn;
@@ -506,7 +881,7 @@ test('binds diagnostic observation before backend startup without re-entry', () 
     },
     stop() {},
   };
-  const session = new OverlaySession(overlay);
+  const session = createOverlaySession(overlay);
   session.electronScreen = {
     on() {},
     removeListener() {},
@@ -544,7 +919,7 @@ test('rolls back session startup state when the backend throws', () => {
       stops += 1;
     },
   };
-  const session = new OverlaySession(overlay);
+  const session = createOverlaySession(overlay);
   session.electronScreen = {
     on() {},
     removeListener() {},
@@ -580,13 +955,43 @@ test('does not start a backend after callback registration closes the session', 
       calls.push('stop');
     },
   };
-  const session = new OverlaySession(overlay);
+  const session = createOverlaySession(overlay);
   session.on('diagnostic', () => session.close());
 
   session.start();
 
   assert.deepEqual(calls, ['event-callback', 'diagnostic-callback', 'stop']);
   assert.throws(() => session.start(), /session is closed/);
+});
+
+test('stops once when a backend startup event closes the session synchronously', () => {
+  const calls = [];
+  let publishDiagnostic;
+  const overlay = {
+    setEventCallback() {},
+    setDiagnosticCallback(callback) {
+      publishDiagnostic = callback;
+    },
+    start() {
+      calls.push('start');
+      publishDiagnostic({
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        code: 'transport-ready',
+        context: { port: 4242 },
+      });
+    },
+    stop() {
+      calls.push('stop');
+    },
+  };
+  const session = createOverlaySession(overlay);
+  session.on('diagnostic', () => session.close());
+
+  session.start();
+
+  assert.equal(session.closed, true);
+  assert.deepEqual(calls, ['start', 'stop']);
 });
 
 test('removes partial screen bindings and stops after screen setup fails', () => {
@@ -600,7 +1005,7 @@ test('removes partial screen bindings and stops after screen setup fails', () =>
       calls.push('stop');
     },
   };
-  const session = new OverlaySession(overlay);
+  const session = createOverlaySession(overlay);
   session.electronScreen = {
     on(event) {
       calls.push(`on:${event}`);
@@ -626,7 +1031,7 @@ test('removes partial screen bindings and stops after screen setup fails', () =>
 });
 
 test('surface removal honors revisions and causes the default selector to fall back', () => {
-  const session = new OverlaySession({});
+  const session = createOverlaySession({});
   session.handleEvent('game.target.surface', targetSurface());
   session.handleEvent(
     'game.target.surface',
@@ -671,13 +1076,14 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
       return () => calls.push('release');
     },
   };
-  const session = new OverlaySession(overlay);
+  const session = createOverlaySession(overlay);
   session.electronScreen = {
     on() {},
     removeListener() {},
   };
 
-  const release = await session.authorizeTarget(
+  const release = await authorizeOverlaySessionTarget(
+    session,
     4321,
     'C:\\overlay-runs\\target\\electron-overlay-transport-v1.json',
     'C:\\games\\exact-target.exe',
@@ -695,14 +1101,15 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
   release();
   assert.equal(calls.at(-1), 'release');
 
-  const legacySession = new OverlaySession({
+  const legacySession = createOverlaySession({
     start() {},
     stop() {},
     setEventCallback() {},
     whenReady: () => Promise.resolve(),
   });
   legacySession.electronScreen = session.electronScreen;
-  const legacyRelease = await legacySession.authorizeTarget(
+  const legacyRelease = await authorizeOverlaySessionTarget(
+    legacySession,
     4322,
     'C:\\overlay-runs\\legacy\\electron-overlay-transport-v1.json',
   );
@@ -712,7 +1119,7 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
 
 test('session close revokes active and late target authorizations', async () => {
   const activeCalls = [];
-  const activeSession = new OverlaySession({
+  const activeSession = createOverlaySession({
     start() {},
     stop() {},
     setEventCallback() {},
@@ -723,7 +1130,8 @@ test('session close revokes active and late target authorizations', async () => 
     on() {},
     removeListener() {},
   };
-  const activeRelease = await activeSession.authorizeTarget(
+  const activeRelease = await authorizeOverlaySessionTarget(
+    activeSession,
     5001,
     'C:\\overlay-runs\\active\\electron-overlay-transport-v1.json',
   );
@@ -733,7 +1141,7 @@ test('session close revokes active and late target authorizations', async () => 
 
   const readiness = deferred();
   let readinessAuthorizationCalled = false;
-  const readinessSession = new OverlaySession({
+  const readinessSession = createOverlaySession({
     start() {},
     stop() {},
     setEventCallback() {},
@@ -744,7 +1152,8 @@ test('session close revokes active and late target authorizations', async () => 
     },
   });
   readinessSession.electronScreen = activeSession.electronScreen;
-  const readinessAuthorization = readinessSession.authorizeTarget(
+  const readinessAuthorization = authorizeOverlaySessionTarget(
+    readinessSession,
     5002,
     'C:\\overlay-runs\\readiness\\electron-overlay-transport-v1.json',
   );
@@ -756,7 +1165,7 @@ test('session close revokes active and late target authorizations', async () => 
   const backend = deferred();
   let backendAuthorizationCalled = false;
   let lateReleaseCount = 0;
-  const backendSession = new OverlaySession({
+  const backendSession = createOverlaySession({
     start() {},
     stop() {},
     setEventCallback() {},
@@ -767,7 +1176,8 @@ test('session close revokes active and late target authorizations', async () => 
     },
   });
   backendSession.electronScreen = activeSession.electronScreen;
-  const backendAuthorization = backendSession.authorizeTarget(
+  const backendAuthorization = authorizeOverlaySessionTarget(
+    backendSession,
     5003,
     'C:\\overlay-runs\\backend\\electron-overlay-transport-v1.json',
   );
@@ -843,7 +1253,7 @@ test('target following moves the backing window in DIP but commits local physica
     transparent: true,
     visible: true,
   };
-  const session = new OverlaySession(overlay);
+  const session = createOverlaySession(overlay);
   session.electronScreen = fakeScreen;
   session.windowsById.set(window.id, window);
   session.windowsByNativeId.set(window.nativeId, window);
@@ -887,7 +1297,7 @@ test('target following moves the backing window in DIP but commits local physica
 
   session.sendFrame(window, {
     getSize: () => ({ width: 1920, height: 1080 }),
-    getBitmap: () => Buffer.from([1, 2, 3, 4]),
+    toBitmap: () => Buffer.from([1, 2, 3, 4]),
   });
   assert.deepEqual(boundsUpdates.at(-1), {
     id: 7,
@@ -926,7 +1336,7 @@ test('target following moves the backing window in DIP but commits local physica
 
   session.sendFrame(window, {
     getSize: () => ({ width: 640, height: 360 }),
-    getBitmap: () => Buffer.from([5, 6, 7, 8]),
+    toBitmap: () => Buffer.from([5, 6, 7, 8]),
   });
   assert.deepEqual(boundsUpdates.at(-1).details.rect, {
     x: 10,
@@ -952,7 +1362,7 @@ test('publishes asynchronous producer milestones after window and first-frame su
   harness.session.registerWindow(harness.window);
   harness.session.sendFrame(harness.window, {
     getSize: () => ({ width: 640, height: 360 }),
-    getBitmap: () => Buffer.from([1, 2, 3, 4]),
+    toBitmap: () => Buffer.from([1, 2, 3, 4]),
   });
   assert.deepEqual(diagnostics, [], 'producer delivery must not re-enter show');
 
@@ -973,7 +1383,7 @@ test('publishes asynchronous producer milestones after window and first-frame su
 
   harness.session.sendFrame(harness.window, {
     getSize: () => ({ width: 640, height: 360 }),
-    getBitmap: () => Buffer.from([5, 6, 7, 8]),
+    toBitmap: () => Buffer.from([5, 6, 7, 8]),
   });
   await Promise.resolve();
   assert.equal(
@@ -1038,7 +1448,7 @@ test('frame transport rejection is contained and does not claim publication', as
   assert.doesNotThrow(() => {
     harness.session.sendFrame(harness.window, {
       getSize: () => ({ width: 640, height: 360 }),
-      getBitmap: () => Buffer.from([1, 2, 3, 4]),
+      toBitmap: () => Buffer.from([1, 2, 3, 4]),
     });
   });
   await Promise.resolve();
@@ -1056,7 +1466,7 @@ test('frame transport rejection is contained and does not claim publication', as
 });
 
 test('producer diagnostic delivery is bounded and rate limited per window code', async () => {
-  const session = new OverlaySession({});
+  const session = createOverlaySession({});
   const diagnostics = [];
   session.on('diagnostic', (diagnostic) => diagnostics.push(diagnostic));
 
@@ -1078,7 +1488,7 @@ test('producer diagnostic delivery is bounded and rate limited per window code',
 });
 
 test('input diagnostic cooldowns are isolated and retired per target PID', async () => {
-  const session = new OverlaySession({});
+  const session = createOverlaySession({});
   const diagnostics = [];
   session.on('diagnostic', (diagnostic) => diagnostics.push(diagnostic));
   const publish = (pid) =>
@@ -1097,7 +1507,10 @@ test('input diagnostic cooldowns are isolated and retired per target PID', async
     [5001, 5002],
   );
 
-  session.handleEvent('game.process.disconnected', { pid: 5001 });
+  session.handleEvent('game.process.disconnected', {
+    pid: 5001,
+    path: 'C:\\Games\\example.exe',
+  });
   assert.equal(publish(5001), true);
   await Promise.resolve();
   assert.deepEqual(

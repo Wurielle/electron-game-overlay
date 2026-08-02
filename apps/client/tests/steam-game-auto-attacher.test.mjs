@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { ReShadeOperationError } from 'electron-game-overlay';
+import { createReShadeOperationError } from '../../../libs/electron-game-overlay/dist/lib/reshade-launcher.js';
 import {
   ForkedProcessWatcher,
   isSteamAppsProcessPath,
@@ -222,7 +223,7 @@ test('an exact-PID winner keeps the target connected when the prearmed attempt l
   launchers[1].connect(info.pid, info.filepath);
   await flushMicrotasks();
   launchers[0].fail(
-    new ReShadeOperationError({
+    createReShadeOperationError({
       stage: 'target-preflight',
       code: 'target-injection-already-claimed',
       retrySafety: 'definite-safe',
@@ -294,7 +295,7 @@ test('a connected path-first target stays connected when its independent runtime
   });
 
   launchers[2].fail(
-    new ReShadeOperationError({
+    createReShadeOperationError({
       stage: 'target-preflight',
       code: 'target-runtime-reuse-too-late',
       retrySafety: 'definite-safe',
@@ -363,7 +364,7 @@ test('existing-runtime reuse failures remain visible with their SDK retry safety
       await flushMicrotasks();
       assert.equal(launchers.length, 2);
 
-      const failure = new ReShadeOperationError({
+      const failure = createReShadeOperationError({
         stage: scenario.stage,
         code: scenario.code,
         retrySafety: scenario.retrySafety,
@@ -417,7 +418,7 @@ test('deferred official add-on maintenance keeps the exact launcher until target
       await flushMicrotasks();
 
       launchers[0].fail(
-        new ReShadeOperationError({
+        createReShadeOperationError({
           stage: 'target-preflight',
           code,
           retrySafety: 'definite-safe',
@@ -477,7 +478,7 @@ test('official add-on failures without deferred work dispose their launchers imm
       watcher.create(processInfo(pid, filepath));
       await flushMicrotasks();
       launchers[0].fail(
-        new ReShadeOperationError({
+        createReShadeOperationError({
           stage: 'target-preflight',
           code,
           retrySafety: 'definite-safe',
@@ -519,7 +520,7 @@ test('a prearmed maintenance failure also reaches its launcher at the observed p
   watcher.ready();
   await flushMicrotasks();
   launchers[0].fail(
-    new ReShadeOperationError({
+    createReShadeOperationError({
       stage: 'target-preflight',
       code: 'existing-reshade-addon-maintenance-deferred',
       retrySafety: 'definite-safe',
@@ -586,7 +587,7 @@ test('the prearmed lane rearms only after a retry-safe failure or its blocked ta
       assert.equal(launchers.length, 2);
 
       launchers[0].fail(
-        new ReShadeOperationError({
+        createReShadeOperationError({
           stage:
             scenario.retrySafety === 'definite-safe'
               ? 'target-preflight'
@@ -656,7 +657,7 @@ test('a target exit observed before an indeterminate path result still releases 
   watcher.delete(info);
   await flushMicrotasks();
   launchers[0].fail(
-    new ReShadeOperationError({
+    createReShadeOperationError({
       stage: 'runtime-initialization',
       code: 'existing-runtime-addon-load-failed',
       retrySafety: 'indeterminate',
@@ -704,7 +705,7 @@ test('an exact startup-grace loser waits for its prearmed owner outcome', async 
   assert.equal(launchers.length, 2);
 
   launchers[1].fail(
-    new ReShadeOperationError({
+    createReShadeOperationError({
       stage: 'target-preflight',
       code: 'official-addon-startup-grace-coordinated',
       retrySafety: 'definite-safe',
@@ -1317,7 +1318,7 @@ test('a late overlay handshake promotes an already attempted PID', async () => {
   autoAttacher.start();
   watcher.create(processInfo(2501, filepath));
   await flushMicrotasks();
-  const initializationFailure = new ReShadeOperationError({
+  const initializationFailure = createReShadeOperationError({
     stage: 'runtime-initialization',
     code: 'runtime-initialization-timeout',
     retrySafety: 'indeterminate',
@@ -1429,12 +1430,16 @@ function createFakeChildProcess() {
 }
 
 class FakeOverlaySession {
-  handlers = new Set();
+  handlers = new Map();
 
   on(event, handler) {
-    assert.equal(event, 'nativeEvent');
-    this.handlers.add(handler);
-    return () => this.handlers.delete(handler);
+    let handlers = this.handlers.get(event);
+    if (!handlers) {
+      handlers = new Set();
+      this.handlers.set(event, handlers);
+    }
+    handlers.add(handler);
+    return () => handlers.delete(handler);
   }
 
   onClose() {
@@ -1446,8 +1451,17 @@ class FakeOverlaySession {
   }
 
   emitNative(event, payload) {
-    for (const handler of this.handlers) {
-      handler({ event, payload });
+    const typedEvent = {
+      'game.process': 'targetConnected',
+      'game.process.transport-lost': 'targetTransportLost',
+      'game.process.disconnected': 'targetDisconnected',
+    }[event];
+    assert.ok(typedEvent, `unexpected lifecycle event ${event}`);
+    for (const handler of this.handlers.get(typedEvent) ?? []) {
+      handler({
+        pid: payload.pid,
+        executablePath: payload.path ?? 'C:\\Games\\unknown.exe',
+      });
     }
   }
 }
@@ -1484,21 +1498,15 @@ class FakeLauncher {
     assert.ok(session);
     this.state = 'attaching';
     this.target = target;
-    this.removeSessionListener = session.on(
-      'nativeEvent',
-      ({ event, payload }) => {
-        if (
-          event !== 'game.process.disconnected' ||
-          payload?.pid !== this.connectedPid
-        ) {
-          return;
-        }
-        this.state = 'idle';
-        this.connectedPid = null;
-        this.removeSessionListener?.();
-        this.removeSessionListener = undefined;
-      },
-    );
+    this.removeSessionListener = session.on('targetDisconnected', ({ pid }) => {
+      if (pid !== this.connectedPid) {
+        return;
+      }
+      this.state = 'idle';
+      this.connectedPid = null;
+      this.removeSessionListener?.();
+      this.removeSessionListener = undefined;
+    });
     return this.promise;
   }
 

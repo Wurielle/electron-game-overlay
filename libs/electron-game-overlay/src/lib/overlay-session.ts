@@ -4,7 +4,10 @@ import {
   normalizeOverlayDiagnosticErrorCode,
   parseOverlayDiagnostic,
 } from './diagnostic.js';
-import { ElectronOverlayWindow } from './electron-overlay-window.js';
+import {
+  createElectronOverlayWindow,
+  ElectronOverlayWindow,
+} from './electron-overlay-window.js';
 import { type NativeOverlay } from './native.js';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
 import {
@@ -64,13 +67,62 @@ type OverlayScreen = Pick<
   'getDisplayMatching' | 'on' | 'removeListener' | 'screenToDipRect'
 >;
 
+const OVERLAY_SESSION_CONSTRUCTION_TOKEN = Symbol(
+  'OverlaySession construction token',
+);
+
+type TargetAuthorizer = (
+  pid: number,
+  discoveryPath: string,
+  expectedExecutablePath?: string,
+) => Promise<Disposable>;
+
+let constructOverlaySession:
+  ((overlay: NativeOverlay) => OverlaySession) | undefined;
+const targetAuthorizers = new WeakMap<OverlaySession, TargetAuthorizer>();
+
+/** @internal */
+export function createOverlaySession(overlay: NativeOverlay): OverlaySession {
+  if (!constructOverlaySession) {
+    throw new Error('OverlaySession construction is not initialized');
+  }
+  return constructOverlaySession(overlay);
+}
+
+/** @internal */
+export function authorizeOverlaySessionTarget(
+  session: OverlaySession,
+  pid: number,
+  discoveryPath: string,
+  expectedExecutablePath?: string,
+): Promise<Disposable> {
+  const testHarness = session as unknown as {
+    authorizeTarget?: TargetAuthorizer;
+  };
+  const authorizeTarget =
+    targetAuthorizers.get(session) ??
+    (typeof testHarness.authorizeTarget === 'function'
+      ? testHarness.authorizeTarget.bind(session)
+      : undefined);
+  if (!authorizeTarget) {
+    return Promise.reject(new TypeError('invalid OverlaySession instance'));
+  }
+  return authorizeTarget(pid, discoveryPath, expectedExecutablePath);
+}
+
 export class OverlaySession {
+  static {
+    constructOverlaySession = (overlay) =>
+      new OverlaySession(OVERLAY_SESSION_CONSTRUCTION_TOKEN, overlay);
+  }
+
   private readonly windowsById = new Map<string, ElectronOverlayWindow>();
   private readonly electronScreen: OverlayScreen = screen;
   private readonly windowsByNativeId = new Map<number, ElectronOverlayWindow>();
   private readonly windowScaleStates = new Map<number, WindowScaleState>();
   private readonly publishedWindowGeometry = new Map<number, WindowGeometry>();
   private readonly targetSurfaces = new Map<string, OverlayTargetSurface>();
+  private readonly targetExecutablePaths = new Map<number, string>();
   private readonly targetFollowOptions = new Map<
     number,
     ElectronOverlayWindowFollowTargetOptions
@@ -149,11 +201,26 @@ export class OverlaySession {
     this.reconcileAllWindowScales();
   };
 
-  constructor(private readonly overlay: NativeOverlay) {}
+  private constructor(
+    constructionToken: symbol,
+    private readonly overlay: NativeOverlay,
+  ) {
+    if (constructionToken !== OVERLAY_SESSION_CONSTRUCTION_TOKEN) {
+      throw new TypeError(
+        'OverlaySession instances are created by ElectronGameOverlay.createSession()',
+      );
+    }
+    targetAuthorizers.set(this, (pid, discoveryPath, expectedExecutablePath) =>
+      this.#authorizeTarget(pid, discoveryPath, expectedExecutablePath),
+    );
+  }
 
   public start() {
     if (this.closed) {
       throw new Error('the overlay session is closed');
+    }
+    if (this.quitting) {
+      throw new Error('the overlay session is closing');
     }
     if (this.started) {
       return;
@@ -162,7 +229,7 @@ export class OverlaySession {
     this.started = true;
     let backendStartAttempted = false;
     try {
-      this.overlay.setEventCallback((event: string, payload: any) => {
+      this.overlay.setEventCallback((event: string, payload: unknown) => {
         this.handleEvent(event, payload);
       });
       this.overlay.setDiagnosticCallback?.((diagnostic: unknown) => {
@@ -174,7 +241,6 @@ export class OverlaySession {
       backendStartAttempted = true;
       this.overlay.start();
       if (this.closed || !this.started) {
-        this.overlay.stop();
         return;
       }
       this.bindScreenEvents();
@@ -188,7 +254,7 @@ export class OverlaySession {
           cleanupError,
         );
       }
-      if (backendStartAttempted) {
+      if (backendStartAttempted && !this.closed) {
         try {
           this.overlay.stop();
         } catch (cleanupError) {
@@ -211,12 +277,7 @@ export class OverlaySession {
     return this.overlay.whenReady().then(() => undefined);
   }
 
-  /**
-   * Publishes a target-specific transport credential before exact-PID
-   * injection. Backends without targeted rendezvous retain their existing
-   * global discovery behavior.
-   */
-  public async authorizeTarget(
+  async #authorizeTarget(
     pid: number,
     discoveryPath: string,
     expectedExecutablePath?: string,
@@ -281,21 +342,36 @@ export class OverlaySession {
   }
 
   public close() {
-    if (this.closed) {
+    if (this.closed || this.quitting) {
       return;
     }
 
     this.emitQuit();
-    this.unbindScreenEvents();
+    try {
+      this.unbindScreenEvents();
+    } catch (error) {
+      this.reportLifecycleCleanupFailure(
+        'remove Electron screen listeners',
+        error,
+      );
+    }
 
     for (const window of Array.from(this.windowsById.values())) {
-      window.destroy();
+      try {
+        window.destroy();
+      } catch (error) {
+        this.reportLifecycleCleanupFailure(
+          `destroy overlay window ${window.nativeId}`,
+          error,
+        );
+      }
     }
     this.windowsById.clear();
     this.windowsByNativeId.clear();
     this.windowScaleStates.clear();
     this.publishedWindowGeometry.clear();
     this.targetSurfaces.clear();
+    this.targetExecutablePaths.clear();
     this.targetFollowOptions.clear();
     this.targetFollowRestoreBounds.clear();
     this.unmatchedFrameDiagnostics.clear();
@@ -313,15 +389,22 @@ export class OverlaySession {
       try {
         release();
       } catch (error) {
-        console.error(
-          `Unable to release an overlay target authorization: ${String(error)}`,
+        this.reportLifecycleCleanupFailure(
+          'release an overlay target authorization',
+          error,
         );
       }
     }
+    this.targetAuthorizationReleases.clear();
 
     if (this.started) {
-      this.overlay.stop();
-      this.started = false;
+      try {
+        this.overlay.stop();
+      } catch (error) {
+        this.reportLifecycleCleanupFailure('stop the overlay backend', error);
+      } finally {
+        this.started = false;
+      }
     }
 
     this.closed = true;
@@ -330,7 +413,7 @@ export class OverlaySession {
 
   public onQuit(handler: () => void) {
     if (this.quitting) {
-      handler();
+      this.invokeLifecycleHandler('quit', handler);
       return () => {};
     }
 
@@ -343,7 +426,7 @@ export class OverlaySession {
 
   public onClose(handler: () => void) {
     if (this.closed) {
-      handler();
+      this.invokeLifecycleHandler('close', handler);
       return () => {};
     }
 
@@ -376,8 +459,42 @@ export class OverlaySession {
   }
 
   private createWindow(options: ElectronOverlayWindowOptions) {
+    if (
+      options.existingWindow &&
+      !options.existingWindow.webContents.isOffscreen()
+    ) {
+      throw new TypeError(
+        'an attached BrowserWindow must be created with webPreferences.offscreen: true',
+      );
+    }
+    const requestedId = options.id || options.name;
+    if (requestedId && this.windowsById.has(requestedId)) {
+      throw new Error(
+        `an overlay window with id "${requestedId}" already exists`,
+      );
+    }
+    if (
+      options.existingWindow &&
+      this.windowsByNativeId.has(options.existingWindow.id)
+    ) {
+      throw new Error(
+        `BrowserWindow ${options.existingWindow.id} is already attached to this overlay session`,
+      );
+    }
     this.ensureStarted();
-    const overlayWindow = new ElectronOverlayWindow(this.windowBridge, options);
+    const overlayWindow = createElectronOverlayWindow(
+      this.windowBridge,
+      options,
+    );
+    if (
+      this.windowsById.has(overlayWindow.id) ||
+      this.windowsByNativeId.has(overlayWindow.nativeId)
+    ) {
+      overlayWindow.destroy();
+      throw new Error(
+        `overlay window ${overlayWindow.id} conflicts with an existing window in this session`,
+      );
+    }
     this.windowsById.set(overlayWindow.id, overlayWindow);
     this.windowsByNativeId.set(overlayWindow.nativeId, overlayWindow);
     return overlayWindow;
@@ -550,7 +667,12 @@ export class OverlaySession {
 
   private removeWindow(window: ElectronOverlayWindow) {
     this.cancelAmbiguousCapture(window);
-    this.windowsById.delete(window.id);
+    if (this.windowsById.get(window.id) === window) {
+      this.windowsById.delete(window.id);
+    }
+    if (this.windowsByNativeId.get(window.nativeId) !== window) {
+      return;
+    }
     this.windowsByNativeId.delete(window.nativeId);
     this.windowScaleStates.delete(window.nativeId);
     this.publishedWindowGeometry.delete(window.nativeId);
@@ -649,7 +771,7 @@ export class OverlaySession {
 
     let bitmap: Buffer;
     try {
-      bitmap = image.getBitmap();
+      bitmap = image.toBitmap();
     } catch (error) {
       this.reportFramePublicationFailure(window, 'bitmap', error);
       return;
@@ -754,19 +876,50 @@ export class OverlaySession {
     return webContents;
   }
 
-  private handleEvent(event: string, payload: any) {
-    if (event === 'game.input') {
+  private handleEvent(event: string, payload: unknown) {
+    if (event === 'game.process') {
+      const target = parseTargetLifecycleEvent(payload);
+      if (target) {
+        this.targetExecutablePaths.set(target.pid, target.executablePath);
+        this.emitEvent('targetConnected', target);
+      }
+    } else if (event === 'game.input') {
       this.forwardGameInput(payload);
     } else if (event === 'game.target.surface') {
       this.retainTargetSurface(payload);
     } else if (event === 'game.target.surface.removed') {
       this.removeTargetSurface(payload);
+    } else if (event === 'game.process.transport-lost') {
+      const target = parseTargetLifecycleEvent(
+        payload,
+        this.targetExecutablePaths,
+      );
+      if (target) {
+        this.emitEvent('targetTransportLost', target);
+      }
     } else if (event === 'game.process.disconnected') {
-      this.removeTargetSurfacesForProcess(payload?.pid);
-      this.clearProducerDiagnosticStateForProcess(payload?.pid);
+      const target = parseTargetLifecycleEvent(
+        payload,
+        this.targetExecutablePaths,
+      );
+      if (!target) {
+        return;
+      }
+      this.removeTargetSurfacesForProcess(target.pid);
+      this.clearProducerDiagnosticStateForProcess(target.pid);
+      this.targetExecutablePaths.delete(target.pid);
+      this.emitEvent('targetDisconnected', target);
+    } else if (event === 'game.input.intercept') {
+      const state = parseInputInterceptionEvent(payload);
+      if (state) {
+        this.emitEvent('inputInterceptionChanged', state);
+      }
     } else if (event === 'game.window.focused') {
-      const pid = payload?.pid;
-      const focusWindowId = payload?.focusWindowId;
+      const focus = parseWindowFocusedEvent(payload);
+      if (!focus) {
+        return;
+      }
+      const { pid, windowId: focusWindowId } = focus;
       let diagnosticFocusWindowId = this.windowsByNativeId.has(focusWindowId)
         ? focusWindowId
         : 0;
@@ -811,23 +964,13 @@ export class OverlaySession {
           error,
         );
       }
-      this.emitEvent('windowFocused', {
-        windowId: focusWindowId,
-      });
+      this.emitEvent('windowFocused', focus);
     } else if (event === 'game.graphics.fps') {
       const fps = parseOverlayGraphicsFps(payload);
       if (fps) {
         this.emitEvent('fps', fps);
       }
     }
-
-    // Public observers run only after canonical state and layout have been
-    // updated, so a consumer cannot mutate the raw payload out from under the
-    // SDK's parsers or interrupt an internal target-follow transition.
-    this.emitEvent('nativeEvent', {
-      event,
-      payload,
-    });
   }
 
   private handleDiagnostic(payload: unknown) {
@@ -930,16 +1073,39 @@ export class OverlaySession {
     }
 
     this.quitting = true;
-    for (const handler of this.quitHandlers) {
-      handler();
+    const handlers = Array.from(this.quitHandlers);
+    this.quitHandlers.clear();
+    for (const handler of handlers) {
+      this.invokeLifecycleHandler('quit', handler);
     }
   }
 
   private emitClose() {
-    for (const handler of this.closeHandlers) {
-      handler();
-    }
+    const handlers = Array.from(this.closeHandlers);
     this.closeHandlers.clear();
+    for (const handler of handlers) {
+      this.invokeLifecycleHandler('close', handler);
+    }
+  }
+
+  private invokeLifecycleHandler(kind: 'quit' | 'close', handler: () => void) {
+    try {
+      handler();
+    } catch (error) {
+      try {
+        console.error(`Electron overlay session ${kind} handler failed`, error);
+      } catch {
+        // A diagnostic sink must not break session teardown.
+      }
+    }
+  }
+
+  private reportLifecycleCleanupFailure(operation: string, error: unknown) {
+    try {
+      console.error(`Unable to ${operation} during overlay teardown`, error);
+    } catch {
+      // A diagnostic sink must not break session teardown.
+    }
   }
 
   private bindScreenEvents() {
@@ -1521,6 +1687,12 @@ export class OverlaySession {
   }
 
   private ensureStarted() {
+    if (this.closed) {
+      throw new Error('the overlay session is closed');
+    }
+    if (this.quitting) {
+      throw new Error('the overlay session is closing');
+    }
     if (!this.started) {
       this.start();
     }
@@ -1542,6 +1714,74 @@ function producerDiagnosticErrorCode(
     }
   }
   return normalizeOverlayDiagnosticErrorCode(candidate);
+}
+
+function parseTargetLifecycleEvent(
+  payload: unknown,
+  knownExecutablePaths?: ReadonlyMap<number, string>,
+): OverlaySessionEventMap['targetConnected'] | null {
+  if (!isEventRecord(payload) || !isValidTargetPid(payload.pid)) {
+    return null;
+  }
+  const executablePath =
+    typeof payload.path === 'string' &&
+    payload.path.length > 0 &&
+    !payload.path.includes('\0')
+      ? payload.path
+      : knownExecutablePaths?.get(payload.pid);
+  if (!executablePath) {
+    return null;
+  }
+  return Object.freeze({ pid: payload.pid, executablePath });
+}
+
+function parseInputInterceptionEvent(
+  payload: unknown,
+): OverlaySessionEventMap['inputInterceptionChanged'] | null {
+  if (
+    !isEventRecord(payload) ||
+    !isValidTargetPid(payload.pid) ||
+    typeof payload.intercepting !== 'boolean'
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    pid: payload.pid,
+    intercepting: payload.intercepting,
+  });
+}
+
+function parseWindowFocusedEvent(
+  payload: unknown,
+): OverlaySessionEventMap['windowFocused'] | null {
+  if (
+    !isEventRecord(payload) ||
+    !isValidTargetPid(payload.pid) ||
+    !Number.isSafeInteger(payload.focusWindowId) ||
+    (payload.focusWindowId as number) < 0 ||
+    (payload.focusWindowId as number) > 0xffffffff
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    pid: payload.pid,
+    windowId: payload.focusWindowId as number,
+  });
+}
+
+function isEventRecord(payload: unknown): payload is Record<string, unknown> {
+  return (
+    typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+  );
+}
+
+function isValidTargetPid(pid: unknown): pid is number {
+  return (
+    typeof pid === 'number' &&
+    Number.isSafeInteger(pid) &&
+    pid > 0 &&
+    pid <= 0xffffffff
+  );
 }
 
 type DesiredRasterSnapshot = {

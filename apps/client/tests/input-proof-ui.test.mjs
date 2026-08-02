@@ -107,8 +107,8 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   assert.match(appEntry, /phase: ReShadeAttachmentPhase/);
   assert.match(appEntry, /'idle' \| 'attaching' \| 'connected'/);
   assert.match(appEntry, /RESHADE_CLIENT_ATTACHMENT_STATE/);
-  assert.match(appEntry, /event === 'game\.process\.transport-lost'/);
-  assert.match(appEntry, /event === 'game\.process\.disconnected'/);
+  assert.match(appEntry, /this\.overlaySession\.on\('targetTransportLost'/);
+  assert.match(appEntry, /this\.overlaySession\.on\('targetDisconnected'/);
   assert.doesNotMatch(appEntry, /PendingReShadeConnection/);
   assert.doesNotMatch(appEntry, /basename\(payload\.path\)/);
   assert.match(appEntry, /this\.reshadeLauncher\.state === 'idle'/);
@@ -129,7 +129,7 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
   );
   assert.match(appEntry, /\+\+this\.reshadeAttachmentAttempt/);
   assert.match(appEntry, /new TargetInputInterceptState\(\)/);
-  assert.match(appEntry, /this\.handleTargetTransportEnded\(payload\)/);
+  assert.match(appEntry, /this\.handleTargetTransportEnded\(pid\)/);
   assert.match(appEntry, /attachment: this\.reshadeAttachment/);
 
   const reconnectHandler = sourceSection(
@@ -138,10 +138,7 @@ test('the client exposes a restart-safe ReShade attachment lifecycle', () => {
     'private handleReShadeTargetTransportLost',
   );
   assert.match(reconnectHandler, /phase !== 'connected'/);
-  assert.match(
-    reconnectHandler,
-    /this\.reshadeAttachment\.pid !== payload\.pid/,
-  );
+  assert.match(reconnectHandler, /this\.reshadeAttachment\.pid !== pid/);
   assert.match(reconnectHandler, /this\.markGunFrogTargetConnected\(\)/);
 
   const transportLostHandler = sourceSection(
@@ -214,7 +211,7 @@ test('the client retains and displays bounded session diagnostics', () => {
 
 test('the demo prearms Steam injection and still attempts every detected executable by exact PID', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
-  const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
+  const devLaunch = readClientFile('src', 'main', 'dev-launch.mts');
   const renderer = readClientFile('src', 'renderer', 'main.ts');
   const watcher = readClientFile('process-watcher', 'index.cjs');
   const autoAttacher = readClientFile(
@@ -261,7 +258,7 @@ test('the demo prearms Steam injection and still attempts every detected executa
 
 test('the normal demo presents an always-visible Ctrl+I dock and an interception menu', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
-  const devLaunch = readClientFile('src', 'main', 'dev-launch.ts');
+  const devLaunch = readClientFile('src', 'main', 'dev-launch.mts');
   const windowNames = readClientFile(
     'src',
     'main',
@@ -304,8 +301,8 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(appEntry, /targetSurfaceChanged/);
   assert.match(appEntry, /targetSurfaceRemoved/);
   assert.match(appEntry, /ipcMain\.handle\('overlay:create-popup'/);
-  assert.match(appEntry, /event === 'game\.window\.focused'/);
-  assert.match(appEntry, /this\.keepDemoControlOverlayOnTop\(payload\)/);
+  assert.match(appEntry, /this\.overlaySession\.on\('windowFocused'/);
+  assert.match(appEntry, /this\.keepDemoControlOverlayOnTop\(windowId\)/);
   assert.match(
     appEntry,
     /current\.hide\(\);[\s\S]{0,80}?current\.show\(\);[\s\S]{0,100}?webContents\.invalidate\(\)/,

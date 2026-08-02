@@ -1,7 +1,9 @@
-import type {
-  ReShadeInvocation,
+import type { ReShadeLauncherEvent } from 'electron-game-overlay';
+
+type InjectorStartedEvent = Extract<
   ReShadeLauncherEvent,
-} from 'electron-game-overlay';
+  Readonly<{ type: 'injector-started' }>
+>;
 
 export type ReShadeLauncherLogger = Readonly<Pick<Console, 'error' | 'log'>>;
 
@@ -25,6 +27,11 @@ export function logReShadeLauncherEvent(
         `RESHADE_CLIENT_INJECTOR_STARTED target=${JSON.stringify(targetDescriptionFor(event.invocation))} arguments=${JSON.stringify(event.invocation.arguments)}`,
       );
       return;
+    case 'injector-watcher-ready':
+      logger.log(
+        `RESHADE_CLIENT_INJECTOR_WATCHER_READY target=${JSON.stringify(targetDescriptionFor(event.invocation))} arguments=${JSON.stringify(event.invocation.arguments)}`,
+      );
+      return;
     case 'injector-returned':
       logger.log(
         `RESHADE_CLIENT_INJECTOR_RETURNED target=${JSON.stringify(event.result.processName)}`,
@@ -43,7 +50,9 @@ export function logReShadeLauncherEvent(
   }
 }
 
-function targetDescriptionFor(invocation: ReShadeInvocation): string {
+function targetDescriptionFor(
+  invocation: InjectorStartedEvent['invocation'],
+): string {
   const [firstArgument, pathFragment, ...remainingArguments] =
     invocation.arguments;
   if (firstArgument !== '--path-contains') {

@@ -74,7 +74,11 @@ function logInputProofTarget(
 }
 
 function forwardHudhookInputDiagnostics(window: Electron.BrowserWindow) {
-  window.webContents.on('console-message', (_event, _level, message) => {
+  window.webContents.on('console-message', (event, _level, legacyMessage) => {
+    const eventMessage = (event as Electron.Event & { message?: unknown })
+      .message;
+    const message =
+      typeof eventMessage === 'string' ? eventMessage : legacyMessage;
     if (message.startsWith(HUDHOOK_CLIENT_INPUT_MARKER)) {
       console.log(message);
     }
@@ -265,7 +269,7 @@ export function createExampleStatusOverlayWindow(
   const options: Electron.BrowserWindowConstructorOptions = {
     x: context.gunFrogInputProof ? 800 : context.demoPresentation ? 440 : 100,
     y: context.gunFrogInputProof ? 100 : context.demoPresentation ? 400 : 200,
-    height: 50,
+    height: 64,
     width: 200,
     frame: false,
     show: false,

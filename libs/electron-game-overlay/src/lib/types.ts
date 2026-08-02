@@ -55,13 +55,26 @@ export type OverlayDiagnostic = Readonly<{
 export type OverlaySessionEventMap = {
   diagnostic: OverlayDiagnostic;
   fps: OverlayGraphicsFps;
-  nativeEvent: {
-    event: string;
-    payload: any;
-  };
-  windowFocused: {
+  targetConnected: Readonly<{
+    pid: number;
+    executablePath: string;
+  }>;
+  targetTransportLost: Readonly<{
+    pid: number;
+    executablePath: string;
+  }>;
+  targetDisconnected: Readonly<{
+    pid: number;
+    executablePath: string;
+  }>;
+  inputInterceptionChanged: Readonly<{
+    pid: number;
+    intercepting: boolean;
+  }>;
+  windowFocused: Readonly<{
+    pid: number;
     windowId: number;
-  };
+  }>;
   targetSurfaceChanged: OverlayTargetSurface;
   targetSurfaceRemoved: OverlayTargetSurfaceRemoved;
 };
@@ -79,13 +92,7 @@ export type Rect = {
 };
 
 export type OverlayGraphicsApi =
-  | 'd3d9'
-  | 'd3d10'
-  | 'd3d11'
-  | 'd3d12'
-  | 'opengl'
-  | 'vulkan'
-  | 'unknown';
+  'd3d9' | 'd3d10' | 'd3d11' | 'd3d12' | 'opengl' | 'vulkan' | 'unknown';
 
 export type OverlayTargetSize = Readonly<{
   width: number;
@@ -155,6 +162,10 @@ export type ElectronOverlayWindowBaseOptions = {
   transparent?: boolean;
 };
 
+/**
+ * Presentation options for a caller-owned BrowserWindow. Closing the overlay
+ * wrapper unregisters it without closing the attached BrowserWindow.
+ */
 export type AttachElectronOverlayWindowOptions =
   ElectronOverlayWindowBaseOptions;
 

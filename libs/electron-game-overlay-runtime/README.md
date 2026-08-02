@@ -147,7 +147,7 @@ The build pins:
 - Dear ImGui `v1.92.5-docking`, the exact ABI version expected by that ReShade release.
 
 No ReShade or ImGui source is checked into version control. The first configure
-downloads both into the ignored build directory, then applies twenty-three
+downloads both into the ignored build directory, then applies an ordered stack of
 production patches to the pinned ReShade revision:
 
 - `reshade-input-observer.patch` advances the local full-add-on ABI to API 19
@@ -177,6 +177,9 @@ production patches to the pinned ReShade revision:
 - `reshade-injector-exact-pid.patch` adds strict `--pid <uint32>` targeting,
   verifies the opened process image basename before remote mutation, and emits a
   stable safe-retry marker when no remote injection thread was created.
+- `reshade-injector-name-watcher-ready.patch` flushes a stable readiness marker
+  after the name-only injector enters its watcher branch. The SDK converts this
+  handshake into `injector-watcher-ready`; exact-PID attachment never emits it.
 - `reshade-injector-path-watcher.patch` adds a one-shot prelaunch watcher for
   normalized, case-insensitive executable-path fragments. It ignores processes
   already present when armed and accepts repeatable executable-basename
@@ -262,8 +265,8 @@ To build the pinned ReShade full-add-on runtime explicitly:
 .\libs\electron-game-overlay-runtime\scripts\build-reshade-runtime.ps1 -Architecture x86
 ```
 
-The launchers validate the cache against a schema-26 build stamp, the twenty-three
-production-patch SHA-256 hashes, the pinned commit, exact normalized contents of
+The launchers validate the cache against a schema-27 build stamp, every
+production-patch SHA-256 hash, the pinned commit, exact normalized contents of
 all nine patched source files, the full-add-on configuration, and the
 runtime/injector SHA-256 hashes. CMake performs the same commit, nine-path, and
 normalized-content check
@@ -370,8 +373,9 @@ The result markers are `D3D9_REAL_CLIENT_SDK_GATE_PASS` and
 
 These are Windows x64 real-client results. The package now also contains a
 Win32 injector, `ReShade32.dll`, `.addon32`, the i686 Rust transport, and SDK
-architecture handoff. Portal remains unclaimed until its real PE32 `hl2.exe`
-passes launch, rendering, interception/release, reset, relaunch, and cleanup.
+architecture handoff. Portal's real PE32 `hl2.exe` has a user-confirmed D3D9
+smoke test. That observation does not claim the controlled reset, relaunch, and
+cleanup matrix described below.
 
 ### Accepted controlled x86 results: August 1, 2026
 
@@ -754,13 +758,13 @@ injection and is attempted with the uniquely named
 `electron_game_overlay.addon64`. There is no version/hash allowlist.
 `DisabledAddons` is authoritative: if the user disabled this add-on, the
 launcher leaves that decision intact and refuses attachment. Compatibility is
-  established only after the add-on loads: `ReShadeRegisterAddon` must accept
-  public API 18 and `ReShadeGetImGuiFunctionTable` must return the exact Dear ImGui
-  table requested by the add-on. A current add-on that has not loaded yet receives
-  one bounded, inspection-only startup grace. A host that remains mapped without
-  loading it reports `existing-reshade-addon-host-incompatible`; one that
-  disappears during the wait reports `target-official-addon-wait-expired`.
-  Neither result permits a repeated restart or fallback injection.
+established only after the add-on loads: `ReShadeRegisterAddon` must accept
+public API 18 and `ReShadeGetImGuiFunctionTable` must return the exact Dear ImGui
+table requested by the add-on. A current add-on that has not loaded yet receives
+one bounded, inspection-only startup grace. A host that remains mapped without
+loading it reports `existing-reshade-addon-host-incompatible`; one that
+disappears during the wait reports `target-official-addon-wait-expired`.
+Neither result permits a repeated restart or fallback injection.
 
 No coexistence path replaces or rewrites the existing ReShade runtime/proxy,
 INI, presets, effects, or foreign add-ons. A public host that cannot complete
@@ -788,11 +792,11 @@ At the SDK boundary,
 `existing-reshade-addon-maintenance-deferred` means an install or update is
 queued behind exact-target exit proof.
 `existing-reshade-addon-restart-required` means this attempt installed or
-  updated the on-disk add-on after the current process started, so a new process is
-  needed and no maintenance is queued. If the already-current add-on remains
-  unloaded after the bounded startup grace, the result is host-incompatible
-  instead. Conflict and preparation-failure diagnostics also schedule no automatic
-  change.
+updated the on-disk add-on after the current process started, so a new process is
+needed and no maintenance is queued. If the already-current add-on remains
+unloaded after the bounded startup grace, the result is host-incompatible
+instead. Conflict and preparation-failure diagnostics also schedule no automatic
+change.
 
 The controlled launchers for this boundary are:
 

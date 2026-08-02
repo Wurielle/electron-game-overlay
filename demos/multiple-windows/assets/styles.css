@@ -1,0 +1,101 @@
+:root {
+  color: #f8fafc;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.panel {
+  width: 100%;
+  height: 100%;
+  padding: 19px 22px;
+  border: 1px solid rgb(167 139 250 / 55%);
+  border-radius: 17px;
+  background: rgb(17 15 35 / 95%);
+  box-shadow: 0 18px 54px rgb(0 0 0 / 45%);
+}
+
+[data-panel='telemetry'] .panel {
+  border-color: rgb(45 212 191 / 55%);
+  background: rgb(10 28 31 / 95%);
+}
+
+header {
+  height: 60px;
+  cursor: move;
+}
+
+.eyebrow {
+  color: #a78bfa;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+[data-panel='telemetry'] .eyebrow {
+  color: #5eead4;
+}
+
+h1 {
+  margin: 3px 0 0;
+  font-size: 23px;
+}
+
+p {
+  margin: 8px 0;
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.status {
+  min-height: 20px;
+  color: #ddd6fe;
+}
+
+[data-panel='telemetry'] .status {
+  color: #99f6e4;
+}
+
+button {
+  margin-top: 8px;
+  padding: 9px 13px;
+  border: 0;
+  border-radius: 9px;
+  color: #241252;
+  background: #c4b5fd;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+[data-panel='telemetry'] button {
+  color: #042f2e;
+  background: #5eead4;
+}
+
+.attribution {
+  position: fixed;
+  right: 25px;
+  bottom: 8px;
+  color: #c4b5fd;
+  font-size: 9px;
+  opacity: 0.65;
+}

@@ -1,5 +1,5 @@
 import { createNativeOverlay, type NativeOverlay } from './native.js';
-import { OverlaySession } from './overlay-session.js';
+import { createOverlaySession, OverlaySession } from './overlay-session.js';
 
 export class ElectronGameOverlay {
   private readonly nativeOverlay: NativeOverlay;
@@ -20,7 +20,7 @@ export class ElectronGameOverlay {
       );
     }
 
-    const session = new OverlaySession(this.nativeOverlay);
+    const session = createOverlaySession(this.nativeOverlay);
     this.activeSession = session;
     session.onClose(() => {
       if (this.activeSession === session) {

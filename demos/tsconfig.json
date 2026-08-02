@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "lib": ["es2022", "dom"],
+    "moduleDetection": "force",
+    "noEmit": true,
+    "types": ["node", "electron"]
+  },
+  "include": ["./**/*.ts", "./**/*.mts"],
+  "exclude": ["./dist"]
+}
