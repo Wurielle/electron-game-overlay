@@ -1,3 +1,5 @@
+import { markDemoRendererReady } from '../renderer-ready';
+
 type DemoState = Readonly<{
   phase: string;
   target: string;
@@ -39,5 +41,6 @@ intercept.addEventListener('click', async () => {
 
 exactProcessDemo.onState(render);
 void exactProcessDemo.getState().then(render);
+markDemoRendererReady();
 
 export {};

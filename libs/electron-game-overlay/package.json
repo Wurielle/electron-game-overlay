@@ -2,7 +2,7 @@
   "name": "electron-game-overlay",
   "version": "0.0.1",
   "private": true,
-  "license": "SEE LICENSE IN ../../LICENSE",
+  "license": "GPL-3.0-only",
   "type": "commonjs",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

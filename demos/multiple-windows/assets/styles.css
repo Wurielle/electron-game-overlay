@@ -90,12 +90,3 @@ button {
   color: #042f2e;
   background: #5eead4;
 }
-
-.attribution {
-  position: fixed;
-  right: 25px;
-  bottom: 8px;
-  color: #c4b5fd;
-  font-size: 9px;
-  opacity: 0.65;
-}

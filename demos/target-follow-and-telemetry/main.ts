@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { app, ipcMain, shell } from 'electron';
+import { app, ipcMain } from 'electron';
 import {
   ElectronGameOverlay,
   isReShadeOperationError,
@@ -9,6 +9,8 @@ import {
   type OverlayTargetFollowArea,
   type OverlayTargetSurface,
 } from 'electron-game-overlay';
+import { markDemoSmokeWatcherReady } from '../demo-smoke';
+import { observeRenderer } from '../runtime-diagnostics';
 
 type FollowMode = OverlayTargetFollowArea | 'stopped';
 type DemoState = {
@@ -20,11 +22,15 @@ type DemoState = {
   surface: OverlayTargetSurface | null;
   events: string[];
 };
-const GOVERLAY_PROJECT_URL = 'https://github.com/hiitiger/goverlay';
-
 const processName = requiredArgument('--target-process');
-const pid = positivePid(requiredArgument('--target-pid'));
+const pidArgument = optionalArgument('--target-pid');
+let targetPid = pidArgument ? positivePid(pidArgument) : null;
 const executablePath = optionalArgument('--target-path');
+if (executablePath && !targetPid) {
+  console.warn(
+    '--target-path is ignored unless --target-pid is also supplied.',
+  );
+}
 const reshadeConfig = parseReShadeLaunchConfig(process.argv);
 if (!reshadeConfig) {
   throw new Error('This demo must be launched with --reshade-overlay.');
@@ -35,24 +41,34 @@ app.disableHardwareAcceleration();
 const overlay = new ElectronGameOverlay();
 const session = overlay.createSession();
 const launcher = new ReShadeOverlayLauncher(reshadeConfig);
-const preparedRuntime = launcher.prepare();
 let overlayWindow: ElectronOverlayWindow | null = null;
+let disposed = false;
 let state: DemoState = {
   phase: 'starting',
-  target: `${processName} (pid ${pid})`,
+  target: targetPid
+    ? `${processName} (pid ${targetPid})`
+    : `${processName} (name watcher)`,
   detail: 'Starting the authenticated overlay transport',
-  followMode: 'render',
+  followMode: targetPid ? 'render' : 'stopped',
   fps: null,
   surface: null,
   events: [],
 };
 
-launcher.onEvent((event) => recordEvent(`launcher: ${event.type}`));
+launcher.onEvent((event) => {
+  recordEvent(`launcher: ${event.type}`);
+  if (event.type === 'injector-watcher-ready') {
+    if (!targetPid) {
+      console.log(`Injector watcher ready. Launch ${processName} now.`);
+    }
+    markDemoSmokeWatcherReady();
+  }
+});
 session.on('fps', (sample) => {
-  if (sample.pid === pid) updateState({ fps: sample.fps });
+  if (sample.pid === targetPid) updateState({ fps: sample.fps });
 });
 session.on('targetSurfaceChanged', (surface) => {
-  if (surface.pid === pid) {
+  if (surface.pid === targetPid) {
     updateState({ surface });
     recordEvent(
       `surface revision ${surface.revision} (${surface.graphicsApi})`,
@@ -60,7 +76,7 @@ session.on('targetSurfaceChanged', (surface) => {
   }
 });
 session.on('targetSurfaceRemoved', (removed) => {
-  if (removed.pid === pid) {
+  if (removed.pid === targetPid) {
     updateState({ surface: null });
     recordEvent(`surface ${removed.surfaceId} removed`);
   }
@@ -78,12 +94,12 @@ session.on('diagnostic', (diagnostic) =>
 
 ipcMain.handle('demo:get-state', () => snapshot());
 ipcMain.handle('demo:set-follow-mode', (_event, value: unknown) => {
-  if (!overlayWindow) return snapshot();
+  if (!overlayWindow || !targetPid) return snapshot();
   if (value === 'stopped') {
     overlayWindow.stopFollowingTarget();
     updateState({ followMode: 'stopped' });
   } else if (value === 'render' || value === 'client') {
-    overlayWindow.followTarget({ pid, area: value });
+    overlayWindow.followTarget({ pid: targetPid, area: value });
     updateState({ followMode: value });
   }
   return snapshot();
@@ -95,8 +111,10 @@ void app
   .whenReady()
   .then(start)
   .catch((error) => {
+    if (disposed) return;
     console.error(error);
-    app.exit(1);
+    process.exitCode = 1;
+    app.quit();
   });
 
 async function start(): Promise<void> {
@@ -116,30 +134,46 @@ async function start(): Promise<void> {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        backgroundThrottling: false,
       },
     },
   });
-  routeProjectLinkExternally(overlayWindow);
-  overlayWindow.followTarget({ pid, area: 'render' });
+  observeRenderer(overlayWindow.browserWindow, 'target-follow-and-telemetry');
+  blockRendererNavigation(overlayWindow);
+  if (targetPid) {
+    overlayWindow.followTarget({ pid: targetPid, area: 'render' });
+  }
   overlayWindow.show();
 
   updateState({
     phase: 'attaching',
     detail: 'Injecting and waiting for the exact target to authenticate',
   });
-  await Promise.all([session.whenReady(), preparedRuntime]);
+  await Promise.all([session.whenReady(), launcher.prepare()]);
+  if (disposed) return;
 
   try {
     const result = await launcher.attach(session, {
       processName,
-      pid,
-      ...(executablePath ? { executablePath } : {}),
+      ...(targetPid ? { pid: targetPid } : {}),
+      ...(targetPid && executablePath ? { executablePath } : {}),
     });
+    if (disposed) return;
+    console.log(
+      `Demo connected to ${result.processName} (PID ${result.pid}) through ${result.runtimeMode}.`,
+    );
+    targetPid = result.pid;
+    overlayWindow.followTarget({ pid: targetPid, area: 'render' });
+    const surface = session.targets.list().find(({ pid }) => pid === targetPid);
     updateState({
       phase: 'connected',
+      target: `${processName} (pid ${targetPid})`,
       detail: `Connected through ${result.runtimeMode}; following render bounds`,
+      followMode: 'render',
+      surface: surface ?? null,
     });
   } catch (error) {
+    if (disposed) return;
     const detail = isReShadeOperationError(error)
       ? `${error.diagnostic.code}: ${error.message}`
       : error instanceof Error
@@ -150,15 +184,13 @@ async function start(): Promise<void> {
   }
 }
 
-function routeProjectLinkExternally(window: ElectronOverlayWindow): void {
-  window.browserWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url === GOVERLAY_PROJECT_URL) void shell.openExternal(url);
-    return { action: 'deny' };
-  });
-  window.browserWindow.webContents.on('will-navigate', (event, url) => {
-    event.preventDefault();
-    if (url === GOVERLAY_PROJECT_URL) void shell.openExternal(url);
-  });
+function blockRendererNavigation(window: ElectronOverlayWindow): void {
+  window.browserWindow.webContents.setWindowOpenHandler(() => ({
+    action: 'deny',
+  }));
+  window.browserWindow.webContents.on('will-navigate', (event) =>
+    event.preventDefault(),
+  );
 }
 
 function recordEvent(message: string): void {
@@ -168,7 +200,12 @@ function recordEvent(message: string): void {
 
 function updateState(changes: Partial<DemoState>): void {
   state = { ...state, ...changes };
-  overlayWindow?.browserWindow.webContents.send('demo:state', snapshot());
+  const browserWindow = overlayWindow?.browserWindow;
+  if (!browserWindow || browserWindow.isDestroyed()) return;
+  const webContents = browserWindow.webContents;
+  if (!webContents.isDestroyed()) {
+    webContents.send('demo:state', snapshot());
+  }
 }
 
 function snapshot(): DemoState {
@@ -176,6 +213,8 @@ function snapshot(): DemoState {
 }
 
 function dispose(): void {
+  if (disposed) return;
+  disposed = true;
   launcher.dispose();
   session.close();
   overlay.dispose();

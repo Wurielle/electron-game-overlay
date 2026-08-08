@@ -4,7 +4,6 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
-  shell,
   Tray,
 } from 'electron';
 import * as path from 'path';
@@ -58,7 +57,6 @@ const RESHADE_ATTACHMENT_STATE_MARKER = 'RESHADE_CLIENT_ATTACHMENT_STATE';
 const COMPATIBILITY_RUN_RECORDER_MARKER =
   'ELECTRON_GAME_OVERLAY_COMPATIBILITY_RUN';
 const DEMO_STATE_CHANGED_CHANNEL = 'overlay:state-changed';
-const GOVERLAY_PROJECT_URL = 'https://github.com/hiitiger/goverlay';
 
 type ReShadeAttachmentPhase = 'idle' | 'attaching' | 'connected';
 
@@ -413,17 +411,9 @@ class Application {
     window.on('closed', () => {
       this.windows.delete(name);
     });
-    window.webContents.setWindowOpenHandler(({ url }) => {
-      if (url === GOVERLAY_PROJECT_URL) {
-        void shell.openExternal(url);
-      }
-      return { action: 'deny' };
-    });
-    window.webContents.on('will-navigate', (event, url) => {
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('will-navigate', (event) => {
       event.preventDefault();
-      if (url === GOVERLAY_PROJECT_URL) {
-        void shell.openExternal(url);
-      }
     });
 
     if (global.DEBUG) {

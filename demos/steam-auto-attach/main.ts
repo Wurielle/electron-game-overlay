@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
-import { app, ipcMain, shell } from 'electron';
+import { app, ipcMain } from 'electron';
 import {
   ElectronGameOverlay,
   isReShadeOperationError,
@@ -9,6 +9,8 @@ import {
   type ElectronOverlayWindow,
   type ReShadeLaunchConfig,
 } from 'electron-game-overlay';
+import { markDemoSmokeWatcherReady } from '../demo-smoke';
+import { observeRenderer } from '../runtime-diagnostics';
 
 type TargetPhase = 'attaching' | 'connected' | 'failed';
 type TargetState = Readonly<{
@@ -26,8 +28,6 @@ type WatcherMessage =
   | { type: 'ready' }
   | { type: 'creation' | 'deletion'; values: unknown[] }
   | { type: 'error'; detail: string };
-const GOVERLAY_PROJECT_URL = 'https://github.com/hiitiger/goverlay';
-
 const parsedConfig = parseReShadeLaunchConfig(process.argv);
 if (!parsedConfig) {
   throw new Error('This demo must be launched with --reshade-overlay.');
@@ -42,6 +42,7 @@ const liveTargets = new Map<number, LiveTarget>();
 let overlayWindow: ElectronOverlayWindow | null = null;
 let watcher: ChildProcess | null = null;
 let watcherStatus = 'starting';
+let disposed = false;
 
 session.on('diagnostic', (diagnostic) => console.log('[session]', diagnostic));
 ipcMain.handle('demo:get-state', () => snapshot());
@@ -52,8 +53,10 @@ void app
   .whenReady()
   .then(start)
   .catch((error) => {
+    if (disposed) return;
     console.error(error);
-    app.exit(1);
+    process.exitCode = 1;
+    app.quit();
   });
 
 async function start(): Promise<void> {
@@ -74,28 +77,30 @@ async function start(): Promise<void> {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        backgroundThrottling: false,
       },
     },
   });
-  routeProjectLinkExternally(overlayWindow);
+  observeRenderer(overlayWindow.browserWindow, 'steam-auto-attach');
+  blockRendererNavigation(overlayWindow);
   overlayWindow.show();
   await session.whenReady();
+  if (disposed) return;
   startProcessWatcher();
   publishState();
 }
 
-function routeProjectLinkExternally(window: ElectronOverlayWindow): void {
-  window.browserWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url === GOVERLAY_PROJECT_URL) void shell.openExternal(url);
-    return { action: 'deny' };
-  });
-  window.browserWindow.webContents.on('will-navigate', (event, url) => {
-    event.preventDefault();
-    if (url === GOVERLAY_PROJECT_URL) void shell.openExternal(url);
-  });
+function blockRendererNavigation(window: ElectronOverlayWindow): void {
+  window.browserWindow.webContents.setWindowOpenHandler(() => ({
+    action: 'deny',
+  }));
+  window.browserWindow.webContents.on('will-navigate', (event) =>
+    event.preventDefault(),
+  );
 }
 
 function startProcessWatcher(): void {
+  if (disposed) return;
   const environment = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
   watcher = spawn(
     process.execPath,
@@ -115,6 +120,7 @@ function startProcessWatcher(): void {
   );
   watcher.on('message', (message) => handleWatcherMessage(message));
   watcher.on('error', (error) => {
+    if (disposed) return;
     watcherStatus = `failed: ${error.message}`;
     publishState();
   });
@@ -128,9 +134,12 @@ function startProcessWatcher(): void {
 }
 
 function handleWatcherMessage(message: unknown): void {
+  if (disposed) return;
   if (!isWatcherMessage(message)) return;
   if (message.type === 'ready') {
     watcherStatus = 'watching creation and deletion events';
+    console.log('Steam process watcher ready. Launch a Steam game now.');
+    markDemoSmokeWatcherReady();
     publishState();
     return;
   }
@@ -165,6 +174,7 @@ function attachTarget(
   processName: string,
   executablePath: string,
 ): void {
+  if (disposed) return;
   // A PID is the only deduplication key. Every distinct live Steam executable
   // receives an independent launcher and attachment attempt.
   if (liveTargets.has(pid)) return;
@@ -188,6 +198,9 @@ function attachTarget(
     .attach(session, { processName, pid, executablePath })
     .then((result) => {
       if (liveTargets.get(pid) !== target) return;
+      console.log(
+        `[pid ${pid}] connected to ${result.processName} through ${result.runtimeMode}`,
+      );
       target.state = Object.freeze({
         ...target.state,
         phase: 'connected',
@@ -223,7 +236,11 @@ function releaseTarget(pid: number): void {
 }
 
 function publishState(): void {
-  overlayWindow?.browserWindow.webContents.send('demo:state', snapshot());
+  const browserWindow = overlayWindow?.browserWindow;
+  if (!browserWindow || browserWindow.isDestroyed()) return;
+  const webContents = browserWindow.webContents;
+  if (webContents.isDestroyed()) return;
+  webContents.send('demo:state', snapshot());
 }
 
 function snapshot(): Readonly<{
@@ -241,6 +258,8 @@ function snapshot(): Readonly<{
 }
 
 function dispose(): void {
+  if (disposed) return;
+  disposed = true;
   const child = watcher;
   watcher = null;
   if (child?.connected) child.send({ type: 'shutdown' });

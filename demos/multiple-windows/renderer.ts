@@ -1,3 +1,5 @@
+import { markDemoRendererReady } from '../renderer-ready';
+
 type MultipleWindowsDemoApi = {
   getStatus(): Promise<string>;
   onStatus(listener: (status: string) => void): () => void;
@@ -40,3 +42,5 @@ action.addEventListener('click', () => {
   actions += 1;
   action.textContent = `${panelName === 'telemetry' ? 'Pings' : 'Actions'}: ${actions}`;
 });
+
+markDemoRendererReady();

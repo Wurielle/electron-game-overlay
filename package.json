@@ -2,7 +2,7 @@
   "name": "gelectron",
   "version": "1.0.1",
   "main": "./apps/client/dist/main/main.js",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "GPL-3.0-only",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
@@ -15,12 +15,14 @@
     "dev:gun-frog": "nx run client:dev --args=\"--mode=gun-frog\"",
     "typecheck": "nx run client:typecheck",
     "build:all": "nx run-many -t build --projects=electron-game-overlay,client",
+    "demo:prepare": "nx run electron-game-overlay:build",
     "demo:basic-window": "node demos/scripts/run-demo.mjs basic-window",
     "demo:exact-process": "node demos/scripts/run-demo.mjs exact-process-attachment",
     "demo:input": "node demos/scripts/run-demo.mjs input-interception",
     "demo:multiple-windows": "node demos/scripts/run-demo.mjs multiple-windows",
     "demo:target-follow": "node demos/scripts/run-demo.mjs target-follow-and-telemetry",
     "demo:steam-auto-attach": "node demos/scripts/run-demo.mjs steam-auto-attach",
+    "demo:smoke": "node demos/scripts/smoke-demos.mjs",
     "demo:typecheck": "tsc --project demos/tsconfig.json"
   },
   "devDependencies": {

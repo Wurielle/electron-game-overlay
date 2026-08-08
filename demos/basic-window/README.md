@@ -7,15 +7,16 @@ bundled ReShade runtime for a newly launched target process.
 From the repository root, run the demo first:
 
 ```powershell
-npm run demo:basic-window -- --target-process="game.exe"
+npm run demo:basic-window
 ```
 
-Wait for `Injector watcher ready. Launch game.exe now.` in the terminal, then
-launch the game. This confirms the native name watcher is armed, not merely that
-its child process was created. Name-only attachment is a prearmed operation; it
-does not adopt a process that is already rendering. If a process watcher gives
-you an exact PID near process creation, see `../exact-process-attachment`
-instead.
+This defaults to `Gun Frog.exe`. To use another game, append
+`-- --target-process="game.exe"`. Wait for the corresponding `Injector watcher
+ready` message in the terminal, then launch the game. This confirms the native
+name watcher is armed, not merely that its child process was created. Name-only
+attachment is a prearmed operation; it does not adopt a process that is already
+rendering. If a process watcher gives you an exact PID near process creation,
+see `../exact-process-attachment` instead.
 
 Read the files in this order:
 

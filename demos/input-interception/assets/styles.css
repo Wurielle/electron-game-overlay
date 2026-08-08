@@ -106,12 +106,3 @@ small {
   color: #64748b;
   line-height: 1.4;
 }
-
-.attribution {
-  position: fixed;
-  right: 28px;
-  bottom: 9px;
-  color: #5eead4;
-  font-size: 9px;
-  opacity: 0.65;
-}

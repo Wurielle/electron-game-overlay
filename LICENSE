@@ -1,16 +1,6 @@
-Copyright(c) lushang@outlook.com
+SPDX-License-Identifier: GPL-3.0-only
 
-GOverlay is an Open Source Software that is licensed under GPLv3 (GNU General Public License Version 3) with Additional Terms.
+This project is licensed under the GNU General Public License, version 3 only.
+You may obtain a copy of the license at:
 
-# 
-GPLv3 (GNU General Public License Version 3) with Additional Terms
-
-GOverlay is licensed under the terms of the GPLv3 (GNU General Public License Version 3) license with additional terms listed below according to section 7 of GPLv3 (GNU General Public License Version 3) license. Please see http://www.gnu.org/licenses/gpl-3.0.html for the license text.
-
-### Additional Terms
-In addition to the terms listed by GPLv3 (GNU General Public License Version 3) license, the following additional terms must be agreed to use the software. If you are using this software, it is implied that you agree to these additional terms.
-
-1. All copies of the Software in Executable and Source Code form must, as a form of attribution to the original author, include on each user interface screen "Powered by GOverlay" clickable text/image link to project site. 
-
-2. You can use part or all of the GOverlay source code so long as that work complies with the Additional Term # 1 above.
-
+https://www.gnu.org/licenses/gpl-3.0.html

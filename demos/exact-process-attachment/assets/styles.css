@@ -117,12 +117,3 @@ button:focus-visible {
   color: #64748b;
   font-size: 11px;
 }
-
-.attribution {
-  position: fixed;
-  right: 28px;
-  bottom: 9px;
-  color: #5eead4;
-  font-size: 9px;
-  opacity: 0.65;
-}

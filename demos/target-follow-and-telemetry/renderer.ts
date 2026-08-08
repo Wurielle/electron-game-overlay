@@ -1,3 +1,5 @@
+import { markDemoRendererReady } from '../renderer-ready';
+
 type FollowMode = 'render' | 'client' | 'stopped';
 type Surface = Readonly<{
   surfaceId: string;
@@ -77,5 +79,6 @@ for (const button of buttons) {
 
 targetFollowDemo.onState(render);
 void targetFollowDemo.getState().then(render);
+markDemoRendererReady();
 
 export {};

@@ -213,14 +213,34 @@ The repository demo runner adds this flag automatically.
 Every example keeps its own `main.ts`, `preload.ts`, `renderer.ts`,
 `index.html`, assets, and README together.
 
-| Example                                                            | Purpose                                           | Command                                                                                                     |
-| ------------------------------------------------------------------ | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| [`basic-window`](demos/basic-window)                               | One offscreen Electron window                     | `npm run demo:basic-window -- --target-process=game.exe`                                                    |
-| [`exact-process-attachment`](demos/exact-process-attachment)       | Process-watcher PID/path handoff                  | `npm run demo:exact-process -- --target-process=game.exe --target-pid=1234 --target-path=C:\Games\game.exe` |
-| [`input-interception`](demos/input-interception)                   | App-owned shortcut and input policy               | `npm run demo:input -- --target-process=game.exe`                                                           |
-| [`multiple-windows`](demos/multiple-windows)                       | Independent window composition                    | `npm run demo:multiple-windows -- --target-process=game.exe`                                                |
-| [`target-follow-and-telemetry`](demos/target-follow-and-telemetry) | Geometry, DPI, API, FPS, and follow mode          | `npm run demo:target-follow -- --target-process=game.exe --target-pid=1234`                                 |
-| [`steam-auto-attach`](demos/steam-auto-attach)                     | One independent attempt per Steam-path executable | `npm run demo:steam-auto-attach`                                                                            |
+| Example                                                            | Purpose                                           | Command                          |
+| ------------------------------------------------------------------ | ------------------------------------------------- | -------------------------------- |
+| [`basic-window`](demos/basic-window)                               | One offscreen Electron window                     | `npm run demo:basic-window`      |
+| [`exact-process-attachment`](demos/exact-process-attachment)       | Process-watcher PID/path handoff                  | `npm run demo:exact-process`     |
+| [`input-interception`](demos/input-interception)                   | App-owned shortcut and input policy               | `npm run demo:input`             |
+| [`multiple-windows`](demos/multiple-windows)                       | Independent window composition                    | `npm run demo:multiple-windows`  |
+| [`target-follow-and-telemetry`](demos/target-follow-and-telemetry) | Geometry, DPI, API, FPS, and follow mode          | `npm run demo:target-follow`     |
+| [`steam-auto-attach`](demos/steam-auto-attach)                     | One independent attempt per Steam-path executable | `npm run demo:steam-auto-attach` |
+
+Prepare the native demo runtime once after installing dependencies:
+
+```powershell
+npm run demo:prepare
+```
+
+The individual launchers then preserve that staged runtime and rebuild only the
+SDK TypeScript and selected Electron example. Run the preparation command again
+after changing native runtime sources.
+
+To launch every example sequentially with isolated Electron profiles and no
+real target, run `npm run demo:smoke`. It verifies each main process, preload,
+renderer bundle, overlay transport, and process watcher, including both windows
+in the multiple-window example.
+
+The five single-target commands default to `Gun Frog.exe` so they can be
+launched without parameters. Append `-- --target-process="game.exe"` to choose
+another target. Exact-PID examples additionally accept `--target-pid` and
+`--target-path`; without them they use the prearmed name-watcher path.
 
 For name-based examples, start the demo, wait for its `Injector watcher ready`
 terminal message, and then launch the game. Exact-PID examples model an
@@ -1257,6 +1277,4 @@ broadening the compatibility claim.
 
 ## License
 
-See [`LICENSE`](LICENSE). The repository license is GPLv3 with the additional
-terms stated there, including its UI attribution requirement. The package is
-not MIT-licensed despite historical package metadata that previously said so.
+See [`LICENSE`](LICENSE). The repository is licensed under GPLv3 only.

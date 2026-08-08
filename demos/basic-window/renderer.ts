@@ -1,3 +1,5 @@
+import { markDemoRendererReady } from '../renderer-ready';
+
 type BasicWindowDemoApi = {
   getStatus(): Promise<string>;
   onStatus(listener: (status: string) => void): () => void;
@@ -26,3 +28,5 @@ countButton.addEventListener('click', () => {
   count += 1;
   counterElement.textContent = String(count);
 });
+
+markDemoRendererReady();

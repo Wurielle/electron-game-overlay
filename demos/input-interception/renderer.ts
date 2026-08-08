@@ -1,3 +1,5 @@
+import { markDemoRendererReady } from '../renderer-ready';
+
 type DemoState = Readonly<{
   attachment: string;
   intercepting: boolean;
@@ -36,3 +38,4 @@ const render = (state: DemoState) => {
 void demo.getState().then(render);
 demo.onState(render);
 toggle.addEventListener('click', () => void demo.toggle().then(render));
+markDemoRendererReady();

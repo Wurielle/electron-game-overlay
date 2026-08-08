@@ -1,3 +1,5 @@
+import { markDemoRendererReady } from '../renderer-ready';
+
 type TargetState = Readonly<{
   pid: number;
   processName: string;
@@ -51,5 +53,6 @@ function render(state: DemoState): void {
 
 steamAutoAttachDemo.onState(render);
 void steamAutoAttachDemo.getState().then(render);
+markDemoRendererReady();
 
 export {};
