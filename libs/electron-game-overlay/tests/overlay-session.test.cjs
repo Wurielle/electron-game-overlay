@@ -538,6 +538,60 @@ test('focuses the target page immediately before input dispatch without native f
   ]);
 });
 
+test('focus events affect only BrowserWindows owned by the overlay session', () => {
+  const session = createOverlaySession({});
+  const calls = [];
+  const foreignCalls = [];
+  const createWindow = (nativeId, name) => ({
+    nativeId,
+    visible: true,
+    browserWindow: {
+      id: nativeId,
+      blurWebView: () => calls.push(`${name}.blur`),
+      focusOnWebView: () => calls.push(`${name}.focus`),
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+      },
+    },
+  });
+  const first = createWindow(7, 'first');
+  const fallback = createWindow(8, 'fallback');
+  const foreign = {
+    id: 99,
+    blurWebView: () => foreignCalls.push('foreign.blur'),
+    focusOnWebView: () => foreignCalls.push('foreign.focus'),
+  };
+
+  session.windowsByNativeId.set(first.nativeId, first);
+  session.windowsById.set('first', first);
+  // Keep the session-owned wrapper only in the secondary index to exercise
+  // the safe compatibility lookup without consulting Electron's global list.
+  session.windowsById.set('fallback', fallback);
+
+  session.handleEvent('game.window.focused', {
+    pid: 4321,
+    focusWindowId: fallback.nativeId,
+  });
+
+  assert.deepEqual(calls, ['first.blur', 'fallback.blur', 'fallback.focus']);
+  assert.deepEqual(foreignCalls, []);
+
+  session.handleEvent('game.window.focused', {
+    pid: 4321,
+    focusWindowId: foreign.id,
+  });
+
+  assert.deepEqual(calls, [
+    'first.blur',
+    'fallback.blur',
+    'fallback.focus',
+    'first.blur',
+    'fallback.blur',
+  ]);
+  assert.deepEqual(foreignCalls, []);
+});
+
 test('reasserts OSR page focus for every forwarded input event', (t) => {
   const harness = createHarness();
   const warnings = [];
@@ -1071,8 +1125,19 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
     stop() {},
     setEventCallback() {},
     whenReady: async () => calls.push('ready'),
-    authorizeTarget: async (pid, discoveryPath, expectedExecutablePath) => {
-      calls.push(['authorize', pid, discoveryPath, expectedExecutablePath]);
+    authorizeTarget: async (
+      pid,
+      discoveryPath,
+      expectedExecutablePath,
+      runtimeProvider,
+    ) => {
+      calls.push([
+        'authorize',
+        pid,
+        discoveryPath,
+        expectedExecutablePath,
+        runtimeProvider,
+      ]);
       return () => calls.push('release');
     },
   };
@@ -1082,11 +1147,17 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
     removeListener() {},
   };
 
+  const runtimeProvider = {
+    runtimeGeneration: 9,
+    targetTransportMin: 1,
+    targetTransportMax: 3,
+  };
   const release = await authorizeOverlaySessionTarget(
     session,
     4321,
     'C:\\overlay-runs\\target\\electron-overlay-transport-v1.json',
     'C:\\games\\exact-target.exe',
+    runtimeProvider,
   );
   assert.deepEqual(calls, [
     'start',
@@ -1096,8 +1167,11 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
       4321,
       'C:\\overlay-runs\\target\\electron-overlay-transport-v1.json',
       'C:\\games\\exact-target.exe',
+      runtimeProvider,
     ],
   ]);
+  assert.equal(release.disposition, 'injection-owner');
+  assert.equal(release.target, undefined);
   release();
   assert.equal(calls.at(-1), 'release');
 
@@ -1115,6 +1189,133 @@ test('exact-target authorization delegates after readiness and has a legacy no-o
   );
   assert.equal(typeof legacyRelease, 'function');
   legacyRelease();
+});
+
+test('exact-target authorization preserves broker join metadata on its callable lease', async () => {
+  const calls = [];
+  const target = {
+    pid: 4321,
+    executablePath: 'C:\\games\\shared.exe',
+    discoveryPath:
+      'C:\\overlay-runs\\owner\\electron-overlay-transport-v1.json',
+  };
+  const session = createOverlaySession({
+    start() {},
+    stop() {},
+    setEventCallback() {},
+    whenReady: () => Promise.resolve(),
+    authorizeTarget: async () => ({
+      disposition: 'joined-existing',
+      target,
+      release: () => calls.push('backend-release'),
+    }),
+  });
+  session.electronScreen = {
+    on() {},
+    removeListener() {},
+  };
+
+  const authorization = await authorizeOverlaySessionTarget(
+    session,
+    target.pid,
+    target.discoveryPath,
+    target.executablePath,
+  );
+  assert.equal(typeof authorization, 'function');
+  assert.equal(authorization.disposition, 'joined-existing');
+  assert.deepEqual(authorization.target, target);
+  session.close();
+  authorization();
+  assert.deepEqual(calls, ['backend-release']);
+});
+
+test('an abort racing a resolved backend authorization releases it instead of returning ownership', async () => {
+  const controller = new AbortController();
+  const cancellation = new Error('authorization canceled at settlement');
+  let releaseCount = 0;
+  const session = createOverlaySession({
+    start() {},
+    stop() {},
+    setEventCallback() {},
+    whenReady: () => Promise.resolve(),
+    authorizeTarget: async (
+      _pid,
+      _discoveryPath,
+      _expectedExecutablePath,
+      _runtimeProvider,
+      signal,
+    ) => {
+      assert.equal(signal, controller.signal);
+      controller.abort(cancellation);
+      return {
+        disposition: 'injection-owner',
+        release: () => {
+          ++releaseCount;
+        },
+      };
+    },
+  });
+  session.electronScreen = {
+    on() {},
+    removeListener() {},
+  };
+
+  await assert.rejects(
+    authorizeOverlaySessionTarget(
+      session,
+      4999,
+      'C:\\overlay-runs\\abort-race\\electron-overlay-transport-v1.json',
+      undefined,
+      undefined,
+      controller.signal,
+    ),
+    (error) => error === cancellation,
+  );
+  assert.equal(releaseCount, 1);
+  session.close();
+});
+
+test('target authorization aborts while backend readiness is pending', async () => {
+  const readiness = deferred();
+  const controller = new AbortController();
+  const cancellation = new Error('authorization canceled before readiness');
+  let authorizeCalls = 0;
+  const session = createOverlaySession({
+    start() {},
+    stop() {},
+    setEventCallback() {},
+    whenReady: () => readiness.promise,
+    authorizeTarget: async () => {
+      ++authorizeCalls;
+      return () => undefined;
+    },
+  });
+  session.electronScreen = {
+    on() {},
+    removeListener() {},
+  };
+
+  const pending = authorizeOverlaySessionTarget(
+    session,
+    4998,
+    'C:\\overlay-runs\\abort-before-ready\\electron-overlay-transport-v1.json',
+    undefined,
+    undefined,
+    controller.signal,
+  );
+  controller.abort(cancellation);
+  await Promise.race([
+    assert.rejects(pending, (error) => error === cancellation),
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error('readiness cancellation was not prompt')),
+        250,
+      ),
+    ),
+  ]);
+  assert.equal(authorizeCalls, 0);
+  readiness.resolve();
+  session.close();
 });
 
 test('session close revokes active and late target authorizations', async () => {

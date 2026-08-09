@@ -34,7 +34,9 @@ D3D9/D3D10/D3D11/D3D12 host selection,
 multi-window Electron rendering/input, target relaunch without restarting
 Electron, demo-owned Steam process observation, target-follow/FPS telemetry, and
 structured attachment/transport/runtime/producer diagnostics all have
-production-client evidence. Package publishing is intentionally excluded.
+production-client evidence. Independent exact-PID applications can also share
+one target runtime through the per-user broker. Package publishing is
+intentionally excluded.
 
 Unchecked items below are post-POC compatibility or hardening work. They do not
 extend the current completion boundary by implication; broad real-game
@@ -575,19 +577,67 @@ they are not the active production-host roadmap.
   - DLL logging options: write to `OutputDebugString` for DebugView/Visual Studio, write rotating log files under a configurable temp/app-data directory, or send diagnostic IPC messages back to the host when the IPC link is available. Before IPC is connected, the DLL should still log locally so early injection/hook failures are not lost.
   - Possible API shape: `new GameOverlay({ logger, logLevel, diagnostics: true })`, `session.on("diagnostic", event => ...)`, and a stable diagnostic event schema with `layer`, `code`, `severity`, `message`, `context`, and optional `windowsErrorCode`.
   - Agent workflow goal: when a user reports "nothing appears", logs should show whether the failure is asset copy, injection launch, DLL load, IPC connect, graphics hook, window registration, frame upload, or game compatibility.
-- [ ] Low priority: support multiple independent applications targeting the
-      same game process.
-  - Keep one ReShade runtime and one Electron overlay add-on inside each target;
-    do not solve this by injecting one copy per application.
-  - Add a per-user broker that multiplexes independently authenticated
-    application sessions into the target, namespaces window identities, merges
-    scene ordering, arbitrates focus and input ownership, reference-counts
-    interception, and retires an application cleanly after disconnect or crash.
-  - Define broker/add-on protocol-version negotiation so applications shipping
-    different SDK versions cannot replace or downgrade one another's runtime.
-  - Until this exists, different applications may target different processes,
-    but concurrent independent sessions for the same PID remain unsupported and
-    should fail closed.
-  - The different-PID case has accepted two-app/two-target evidence under
-    `build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`;
-    it does not reduce the same-PID broker requirement.
+- [x] Support multiple independent applications targeting the same exact-PID
+      game process.
+  - A standalone per-user protocol-v1 broker owns one target transport and one
+    ReShade runtime/add-on per PID. It elects one injection owner, releases
+    compatible followers as `shared-runtime`, namespaces colliding local window
+    IDs, merges scenes, routes input/focus only to the owning application, and
+    combines interception requests with logical OR semantics.
+  - Compatible SDK package versions negotiate a permanently frozen v1 required
+    capability set. Optional messages use the broker/client supported-capability
+    intersection. Legacy name/path rendezvous remains an explicitly exclusive
+    fallback; same-PID sharing requires exact PID.
+  - Exact-PID requests advertise metadata from their validated staged runtime
+    manifests. A 50-millisecond cohort elects the highest generation that can
+    speak target transport v1; package semver is informational, modern ties use
+    a stable per-lease identity, legacy ties use arrival order, and omitted
+    metadata defaults to generation and transport v1. A later generation joins
+    the frozen runtime until target exit.
+  - Route publication freezes ownership. A definite pre-publication failure may
+    re-elect; an owner lost after publication leaves a retained authorization
+    that can authenticate or retire only on definitive PID exit. It never
+    permits a second injection on an indeterminate timeout or disconnect.
+  - A stable per-user write-ahead claim records `intent`, `publishing`, and
+    `published` phases plus exact route credentials. It survives all
+    application and broker process crashes, permits only exact-lease recovery
+    of an unconsumed intent, and otherwise lets a replacement broker republish
+    the pinned route without reopening injection. Schema 1 and its path are
+    frozen parts of the v1 compatibility family; additive fields are accepted,
+    unknown schemas fail closed, and cleanup after `publishing` requires
+    definitive target exit. Only an exact unconsumed `intent` can roll back
+    earlier.
+  - Target hosts survive a zero-application interval until authoritative target
+    exit. Application crash cleanup removes only that member. Broker loss emits
+    transport loss, republishes retained state, and retries settled target
+    authorization without resolving the launcher twice or reinjecting merely
+    because the broker restarted.
+  - Unit coverage exercises independent version labels, colliding IDs,
+    input/focus isolation, interception arbitration, pre-route owner election,
+    incompatible-peer isolation, transport loss/reauthentication, retained
+    cross-app z-order under reverse reconnect order, broker restart, target
+    exit, and idle retirement. The exclusive legacy lane uses an atomic
+    crash-releasing named-pipe ownership lock. Controlled D3D11 acceptance uses
+    two real Electron processes and one injected target, force-kills one app,
+    and proves the survivor remains rendered and interactive. The final
+    latest-source run passed with no residual processes or broker pipes on
+    August 9, 2026; local evidence is under
+    `build/electron-game-overlay-runtime/client-sdk-two-app-one-target-20260809-155206`.
+  - The earlier different-PID case remains recorded under
+    `build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`.
+- [ ] Harden the same-PID broker beyond its trusted same-user baseline.
+  - Verify client process identity, install an explicit per-user pipe ACL, and
+    never run the broker elevated relative to clients.
+  - Add per-client window/frame/queue budgets and disconnect slow consumers.
+  - Add bounded stalled-owner diagnostics while preserving the launcher's
+    120-second initialization budget. Never promote a waiter once target-route
+    publication may have been observed.
+  - Carry process-creation identity through broker target leases so PID reuse
+    cannot inherit a retained host.
+  - Before any breaking broker/target-wire major, add a protocol-independent
+    per-user arbiter keyed by PID plus process-creation identity. Separate major
+    pipe names are not sufficient because they could both inject one process.
+  - Ship a dedicated broker executable if packaged clients need Electron's
+    RunAsNode fuse disabled, and add tarball/install acceptance when publishing
+    enters scope. Preserve golden raw-v1 fixtures and test oldest-v1/latest
+    released packages in both broker startup orders.

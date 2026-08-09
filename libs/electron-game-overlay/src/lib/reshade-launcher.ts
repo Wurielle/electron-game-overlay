@@ -24,9 +24,12 @@ import {
 } from './existing-reshade-installation.js';
 import { OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME } from './overlay-loopback-transport.js';
 import {
+  authorizeOverlaySessionGlobalTarget,
   authorizeOverlaySessionTarget,
+  type OverlaySessionTargetAuthorization,
   type OverlaySession,
 } from './overlay-session.js';
+import type { NativeRuntimeProviderMetadata } from './native.js';
 
 const RESHADE_OPT_IN_FLAG = '--reshade-overlay';
 const RESHADE_RUNTIME_DIRECTORY_OPTION = '--reshade-runtime-dir';
@@ -60,7 +63,11 @@ const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH = 706;
 const OFFICIAL_ADDON_BUILD_ID = 'F2A88AD705204DBB8E18D86E7147A13C';
-const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 2;
+const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 3;
+// Schema 2 shipped before provider metadata. Keep accepting it permanently as
+// generation 1 / target transport 1 so copied runtime-directory overrides do
+// not acquire the version of the SDK process that happens to load them.
+const LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 2;
 const RUNTIME_PACKAGE_BUILD_STAMP_KIND = 'electron-game-overlay-runtime-build';
 const RUNTIME_PACKAGE_BUILD_CONFIGURATION = 'RelWithDebInfo';
 const RUNTIME_PACKAGE_MANAGER_PROTOCOL_SCHEMA_VERSION = 1;
@@ -127,7 +134,7 @@ const RUNTIME_ARTIFACTS = Object.freeze([
   CONFIG_FILE_NAME,
 ] as const);
 
-const RUNTIME_PACKAGE_BUILD_STAMP_KEYS = Object.freeze([
+const LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_KEYS = Object.freeze([
   'schemaVersion',
   'kind',
   'platform',
@@ -143,6 +150,20 @@ const RUNTIME_PACKAGE_BUILD_STAMP_KEYS = Object.freeze([
   'reshadeBuildStampSha256',
 ] as const);
 
+const RUNTIME_PACKAGE_BUILD_STAMP_KEYS = Object.freeze([
+  ...LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_KEYS,
+  'runtimeGeneration',
+  'targetTransportMin',
+  'targetTransportMax',
+] as const);
+
+const LEGACY_RUNTIME_PROVIDER_METADATA: NativeRuntimeProviderMetadata =
+  Object.freeze({
+    runtimeGeneration: 1,
+    targetTransportMin: 1,
+    targetTransportMax: 1,
+  });
+
 type RuntimePackageBuildStampHashKey =
   | 'managerSha256'
   | 'addonSha256'
@@ -151,8 +172,7 @@ type RuntimePackageBuildStampHashKey =
   | 'reshadeConfigSha256'
   | 'reshadeBuildStampSha256';
 
-type RuntimePackageBuildStamp = Readonly<{
-  schemaVersion: 2;
+type RuntimePackageBuildStampCommon = Readonly<{
   kind: typeof RUNTIME_PACKAGE_BUILD_STAMP_KIND;
   platform: 'win32-x64' | 'win32-ia32';
   configuration: typeof RUNTIME_PACKAGE_BUILD_CONFIGURATION;
@@ -166,6 +186,19 @@ type RuntimePackageBuildStamp = Readonly<{
   reshadeConfigSha256: string;
   reshadeBuildStampSha256: string;
 }>;
+
+type RuntimePackageBuildStamp =
+  | (RuntimePackageBuildStampCommon &
+      Readonly<{
+        schemaVersion: 2;
+      }>)
+  | (RuntimePackageBuildStampCommon &
+      Readonly<{
+        schemaVersion: 3;
+        runtimeGeneration: number;
+        targetTransportMin: number;
+        targetTransportMax: number;
+      }>);
 
 type RuntimePackageBuildStampSpec = Readonly<{
   label: string;
@@ -298,7 +331,11 @@ export type ReShadeInvocation = Readonly<{
 }>;
 
 export type ReShadeRuntimeMode =
-  'injected-runtime' | 'existing-runtime' | 'official-addon';
+  | 'injected-runtime'
+  | 'existing-runtime'
+  | 'official-addon'
+  /** An already-running broker-owned target joined without another injection. */
+  | 'shared-runtime';
 
 export type ReShadeRuntimeStartupCode =
   | ReShadeRuntimeStartupRecordCode
@@ -332,6 +369,7 @@ type StagedRuntime = Readonly<{
   runId: string;
   runsRootDirectory: string;
   runDirectory: string;
+  runtimeProvider: NativeRuntimeProviderMetadata;
   injectorPath: string;
   addonManagerPath: string;
   injectorStdoutPath: string;
@@ -719,8 +757,10 @@ type ReShadeTargetConnection = Readonly<{
 type TargetRendezvousAuthorizer = (
   runDirectory: string,
   pid: number,
-  expectedExecutablePath?: string,
-) => Promise<() => void>;
+  expectedExecutablePath: string | undefined,
+  runtimeProvider: NativeRuntimeProviderMetadata,
+  signal: AbortSignal,
+) => Promise<OverlaySessionTargetAuthorization>;
 
 type ConnectedTarget = ReShadeTargetConnection &
   Readonly<{
@@ -992,6 +1032,7 @@ export class ReShadeOverlayLauncher {
   private readonly eventHandlers = new Set<ReShadeLauncherEventHandler>();
   private activeChild: ChildProcess | null = null;
   private activeRequest: Promise<ReShadeLaunchResult> | null = null;
+  private activeLaunchAbortController: AbortController | null = null;
   private activeTargetLabel: string | null = null;
   private activeAttach: {
     targetLabel: string;
@@ -1016,6 +1057,7 @@ export class ReShadeOverlayLauncher {
     StagedRuntime
   >();
   private releaseTargetAuthorization: (() => void) | null = null;
+  private releaseGlobalTargetAuthorization: (() => void) | null = null;
   private launchGeneration = 0;
   private disposed = false;
 
@@ -1323,11 +1365,14 @@ export class ReShadeOverlayLauncher {
     this.activeTargetLabel = targetLabel;
 
     const launchGeneration = ++this.launchGeneration;
+    const launchAbortController = new AbortController();
+    this.activeLaunchAbortController = launchAbortController;
     const request = this.performLaunch(
       launchTarget,
       targetLabel,
       expectedTargetPid,
       launchGeneration,
+      launchAbortController.signal,
       authorizeTarget,
     )
       .then((result) => {
@@ -1355,6 +1400,9 @@ export class ReShadeOverlayLauncher {
       if (this.activeRequest === request) {
         this.activeRequest = null;
         this.activeTargetLabel = null;
+      }
+      if (this.activeLaunchAbortController === launchAbortController) {
+        this.activeLaunchAbortController = null;
       }
     };
     request.then(clearActiveRequest, clearActiveRequest);
@@ -1709,16 +1757,42 @@ export class ReShadeOverlayLauncher {
       startProofTimer();
     }
 
+    if (expectedTargetPid === undefined) {
+      const releaseGlobalTarget =
+        await authorizeOverlaySessionGlobalTarget(session);
+      if (
+        this.disposed ||
+        this.attachmentState !== 'attaching' ||
+        this.attachmentTargetLabel !== targetLabel
+      ) {
+        releaseGlobalTarget();
+        throw new Error(
+          'the ReShade attachment stopped before its untargeted rendezvous was ready',
+        );
+      }
+      if (this.releaseGlobalTargetAuthorization) {
+        releaseGlobalTarget();
+        throw new Error(
+          'an untargeted ReShade rendezvous is already authorized',
+        );
+      }
+      this.releaseGlobalTargetAuthorization = releaseGlobalTarget;
+    }
+
     const targetRendezvousAuthorizer: TargetRendezvousAuthorizer = (
       runDirectory,
       pid,
       expectedExecutablePath,
+      runtimeProvider,
+      signal,
     ) =>
       authorizeOverlaySessionTarget(
         session,
         pid,
         path.join(runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME),
         expectedExecutablePath,
+        runtimeProvider,
+        signal,
       );
     let launch: Promise<ReShadeLaunchResult> | undefined;
     try {
@@ -1774,6 +1848,7 @@ export class ReShadeOverlayLauncher {
     targetLabel: string,
     expectedTargetPid: number | undefined,
     launchGeneration: number,
+    authorizationSignal: AbortSignal,
     authorizeTarget?: TargetRendezvousAuthorizer,
   ): Promise<ReShadeLaunchResult> {
     await waitForExistingReShadeMaintenance(target);
@@ -1782,7 +1857,8 @@ export class ReShadeOverlayLauncher {
     this.preparedRuntime = null;
     const staged = await (preparedRuntime ??
       this.stageRuntime(targetStageName(target)));
-    let newTargetAuthorization: (() => void) | undefined;
+    let newTargetAuthorization: OverlaySessionTargetAuthorization | undefined;
+    let installedTargetAuthorization = false;
     try {
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
       if (expectedTargetPid !== undefined && authorizeTarget) {
@@ -1790,27 +1866,58 @@ export class ReShadeOverlayLauncher {
           staged.runDirectory,
           expectedTargetPid,
           isPathTarget(target) ? undefined : target.executablePath,
+          staged.runtimeProvider,
+          authorizationSignal,
         );
         this.assertLaunchCanSpawn(targetLabel, launchGeneration);
         if (this.releaseTargetAuthorization) {
           throw new Error('a ReShade target rendezvous is already authorized');
         }
         this.releaseTargetAuthorization = newTargetAuthorization;
+        installedTargetAuthorization = true;
+        const targetAuthorization = newTargetAuthorization;
         newTargetAuthorization = undefined;
+        const authorizedDiscoveryPath =
+          targetAuthorization.target?.discoveryPath ??
+          path.join(staged.runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME);
         this.emitEvent(
           Object.freeze({
             type: 'target-rendezvous-authorized',
             targetLabel,
             pid: expectedTargetPid,
-            discoveryPath: path.join(
-              staged.runDirectory,
-              OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME,
-            ),
+            discoveryPath: authorizedDiscoveryPath,
           }),
         );
+        if (targetAuthorization.disposition === 'joined-existing') {
+          const connectedTarget = targetAuthorization.target;
+          if (
+            !connectedTarget ||
+            connectedTarget.pid !== expectedTargetPid ||
+            !connectedTarget.discoveryPath
+          ) {
+            throw new Error(
+              'the broker joined an existing target without its authenticated runtime rendezvous',
+            );
+          }
+          if (!targetPathMatches(connectedTarget.executablePath, target)) {
+            throw new Error(
+              'the broker joined an existing target with an unexpected executable path',
+            );
+          }
+          const result = sharedRuntimeLaunchResult(
+            target,
+            targetLabel,
+            connectedTarget,
+          );
+          await removeStagedRuntime(staged);
+          return result;
+        }
       }
     } catch (error) {
       newTargetAuthorization?.();
+      if (installedTargetAuthorization) {
+        this.clearTargetAuthorization();
+      }
       await removeStagedRuntime(staged).catch(() => undefined);
       throw error;
     }
@@ -1844,6 +1951,8 @@ export class ReShadeOverlayLauncher {
                   staged.runDirectory,
                   result.injectorTargetPid,
                   result.selectedPath,
+                  staged.runtimeProvider,
+                  authorizationSignal,
                 );
                 this.assertLaunchCanSpawn(targetLabel, launchGeneration);
                 if (this.releaseTargetAuthorization) {
@@ -1853,6 +1962,7 @@ export class ReShadeOverlayLauncher {
                 }
                 this.releaseTargetAuthorization = selectedTargetAuthorization;
                 selectedTargetAuthorization = undefined;
+                this.clearGlobalTargetAuthorization();
                 this.emitEvent(
                   Object.freeze({
                     type: 'target-rendezvous-authorized',
@@ -2122,7 +2232,7 @@ export class ReShadeOverlayLauncher {
         throw failedStaging.reason;
       }
 
-      await validateRuntimePackageBuildStamps(
+      const runtimeProvider = await validateRuntimePackageBuildStamps(
         new Map<string, string>(
           RUNTIME_ARTIFACTS.map((fileName) => [
             fileName,
@@ -2142,6 +2252,7 @@ export class ReShadeOverlayLauncher {
         runId,
         runsRootDirectory,
         runDirectory: createdRunDirectory,
+        runtimeProvider,
         injectorPath: path.join(createdRunDirectory, INJECTOR_FILE_NAME),
         addonManagerPath: path.join(
           createdRunDirectory,
@@ -3232,6 +3343,13 @@ export class ReShadeOverlayLauncher {
     const release = this.releaseTargetAuthorization;
     this.releaseTargetAuthorization = null;
     release?.();
+    this.clearGlobalTargetAuthorization();
+  }
+
+  private clearGlobalTargetAuthorization(): void {
+    const release = this.releaseGlobalTargetAuthorization;
+    this.releaseGlobalTargetAuthorization = null;
+    release?.();
   }
 
   private closeTargetProofWindow(): void {
@@ -3288,6 +3406,10 @@ export class ReShadeOverlayLauncher {
   }
 
   private invalidateActiveLaunch(): void {
+    this.activeLaunchAbortController?.abort(
+      new Error('the ReShade target authorization was canceled'),
+    );
+    this.activeLaunchAbortController = null;
     this.launchGeneration += 1;
     this.stopActiveChild();
   }
@@ -3573,8 +3695,8 @@ function hasNodeErrorCode(error: unknown, code: string): boolean {
 
 function validateRuntimePackageBuildStampsSync(
   artifactPaths: ReadonlyMap<string, string>,
-): void {
-  for (const spec of RUNTIME_PACKAGE_BUILD_STAMP_SPECS) {
+): NativeRuntimeProviderMetadata {
+  const runtimeProviders = RUNTIME_PACKAGE_BUILD_STAMP_SPECS.map((spec) => {
     const manifestPath = runtimeArtifactPath(
       artifactPaths,
       spec.manifestFileName,
@@ -3593,13 +3715,15 @@ function validateRuntimePackageBuildStampsSync(
         spec,
       );
     }
-  }
+    return runtimeProviderForBuildStamp(manifest);
+  });
+  return commonRuntimeProviderMetadata(runtimeProviders);
 }
 
 async function validateRuntimePackageBuildStamps(
   artifactPaths: ReadonlyMap<string, string>,
-): Promise<void> {
-  await Promise.all(
+): Promise<NativeRuntimeProviderMetadata> {
+  const runtimeProviders = await Promise.all(
     RUNTIME_PACKAGE_BUILD_STAMP_SPECS.map(async (spec) => {
       const manifestPath = runtimeArtifactPath(
         artifactPaths,
@@ -3623,8 +3747,45 @@ async function validateRuntimePackageBuildStamps(
           );
         }),
       );
+      return runtimeProviderForBuildStamp(manifest);
     }),
   );
+  return commonRuntimeProviderMetadata(runtimeProviders);
+}
+
+function runtimeProviderForBuildStamp(
+  manifest: RuntimePackageBuildStamp,
+): NativeRuntimeProviderMetadata {
+  return manifest.schemaVersion ===
+    LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION
+    ? LEGACY_RUNTIME_PROVIDER_METADATA
+    : Object.freeze({
+        runtimeGeneration: manifest.runtimeGeneration,
+        targetTransportMin: manifest.targetTransportMin,
+        targetTransportMax: manifest.targetTransportMax,
+      });
+}
+
+function commonRuntimeProviderMetadata(
+  providers: readonly NativeRuntimeProviderMetadata[],
+): NativeRuntimeProviderMetadata {
+  const first = providers[0];
+  if (!first) {
+    throw new Error('runtime package provider metadata is unavailable');
+  }
+  if (
+    providers.some(
+      (provider) =>
+        provider.runtimeGeneration !== first.runtimeGeneration ||
+        provider.targetTransportMin !== first.targetTransportMin ||
+        provider.targetTransportMax !== first.targetTransportMax,
+    )
+  ) {
+    throw new Error(
+      'x64 and x86 runtime package build stamps declare different runtime provider metadata',
+    );
+  }
+  return Object.freeze({ ...first });
 }
 
 function runtimeArtifactPath(
@@ -3654,9 +3815,6 @@ function parseRuntimePackageBuildStamp(
   const decodedText = Buffer.from(bytes).toString('utf8');
   const text =
     decodedText.charCodeAt(0) === 0xfeff ? decodedText.slice(1) : decodedText;
-  if (!hasCanonicalRuntimePackageBuildStampKeys(text)) {
-    throw new Error(`${spec.label} does not match schema version 2`);
-  }
 
   let parsed: unknown;
   try {
@@ -3664,16 +3822,23 @@ function parseRuntimePackageBuildStamp(
   } catch {
     throw new Error(`${spec.label} is not valid JSON`);
   }
-  if (
-    !isJsonRecord(parsed) ||
-    !hasExactObjectKeys(parsed, RUNTIME_PACKAGE_BUILD_STAMP_KEYS)
-  ) {
-    throw new Error(`${spec.label} does not match schema version 2`);
+  if (!isJsonRecord(parsed)) {
+    throw new Error(`${spec.label} does not match schema version 2 or 3`);
   }
-
   const candidate = parsed as Record<string, unknown>;
-  if (candidate.schemaVersion !== RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION) {
-    throw new Error(`${spec.label} does not match schema version 2`);
+  const expectedKeys =
+    candidate.schemaVersion ===
+    LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION
+      ? LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_KEYS
+      : candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION
+        ? RUNTIME_PACKAGE_BUILD_STAMP_KEYS
+        : undefined;
+  if (
+    !expectedKeys ||
+    !hasCanonicalRuntimePackageBuildStampKeys(text, expectedKeys) ||
+    !hasExactObjectKeys(candidate, expectedKeys)
+  ) {
+    throw new Error(`${spec.label} does not match schema version 2 or 3`);
   }
   if (candidate.platform !== spec.platform) {
     throw new Error(
@@ -3691,6 +3856,11 @@ function parseRuntimePackageBuildStamp(
     candidate.addonBuildId !== OFFICIAL_ADDON_BUILD_ID ||
     candidate.managerProtocolSchemaVersion !==
       RUNTIME_PACKAGE_MANAGER_PROTOCOL_SCHEMA_VERSION ||
+    (candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION &&
+      (!isPositiveUint32(candidate.runtimeGeneration) ||
+        !isPositiveUint32(candidate.targetTransportMin) ||
+        !isPositiveUint32(candidate.targetTransportMax) ||
+        candidate.targetTransportMin > candidate.targetTransportMax)) ||
     typeof candidate.addonBuildId !== 'string' ||
     !/^[0-9A-F]{32}$/.test(candidate.addonBuildId) ||
     hashKeys.some(
@@ -3705,7 +3875,10 @@ function parseRuntimePackageBuildStamp(
   return candidate as RuntimePackageBuildStamp;
 }
 
-function hasCanonicalRuntimePackageBuildStampKeys(text: string): boolean {
+function hasCanonicalRuntimePackageBuildStampKeys(
+  text: string,
+  keys: readonly string[],
+): boolean {
   // Production manifests contain only fixed ASCII strings and hexadecimal
   // values, so no JSON escape is necessary. Reject escapes before parsing to
   // prevent an encoded property name from aliasing a literal schema key.
@@ -3715,10 +3888,19 @@ function hasCanonicalRuntimePackageBuildStampKeys(text: string): boolean {
   const rawKeys = [...text.matchAll(/"([^"]*)"\s*:/g)]
     .map((match) => match[1])
     .sort();
-  const expectedKeys = [...RUNTIME_PACKAGE_BUILD_STAMP_KEYS].sort();
+  const expectedKeys = [...keys].sort();
   return (
     rawKeys.length === expectedKeys.length &&
     rawKeys.every((key, index) => key === expectedKeys[index])
+  );
+}
+
+function isPositiveUint32(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= 0xffffffff
   );
 }
 
@@ -4137,6 +4319,33 @@ function targetLabelFor(target: ReShadeTarget): string {
           ? []
           : [`path:${normalizeExecutablePathIdentity(target.executablePath)}`]),
       ].join(':');
+}
+
+function sharedRuntimeLaunchResult(
+  target: ReShadeTarget,
+  targetLabel: string,
+  connection: NonNullable<OverlaySessionTargetAuthorization['target']>,
+): ReShadeLaunchResult {
+  const discoveryPath = connection.discoveryPath;
+  if (!discoveryPath) {
+    throw new Error('the shared target rendezvous path is unavailable');
+  }
+  const runDirectory = path.dirname(discoveryPath);
+  const targetExecutablePath = connection.executablePath;
+  return Object.freeze({
+    processName: isPathTarget(target)
+      ? path.win32.basename(targetExecutablePath)
+      : target.processName,
+    targetExecutablePath,
+    targetLabel,
+    injectorTargetPid: connection.pid,
+    runtimeMode: 'shared-runtime',
+    runDirectory,
+    injectorStdoutPath: path.join(runDirectory, INJECTOR_STDOUT_FILE_NAME),
+    injectorStderrPath: path.join(runDirectory, INJECTOR_STDERR_FILE_NAME),
+    reshadeLogPath: path.join(runDirectory, RESHADE_LOG_FILE_NAME),
+    runtimeStartupPath: path.join(runDirectory, RUNTIME_STARTUP_FILE_NAME),
+  });
 }
 
 function effectiveExpectedTargetPid(

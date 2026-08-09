@@ -21,6 +21,7 @@ to npm.
 | Target architectures      | x64 and x86/PE32                        |
 | Target graphics APIs      | Direct3D 9, 10, 11, and 12              |
 | Existing official ReShade | Fail-closed x64 integration             |
+| Same-PID applications     | Exact-PID broker protocol v1            |
 | OpenGL, Vulkan, and VR    | Not accepted support claims             |
 | Anti-cheat                | Unsupported and explicitly out of scope |
 
@@ -38,17 +39,20 @@ contract and mixed-DPI acceptance before support can be widened safely.
 
 ```mermaid
 flowchart LR
-  Page["Electron HTML, CSS, and JavaScript"] --> OSR["Offscreen BrowserWindow"]
-  OSR --> Session["OverlaySession"]
-  Session --> Transport["Authenticated loopback transport"]
+  PageA["Application A: Electron windows"] --> SessionA["OverlaySession A"]
+  PageB["Application B: Electron windows"] --> SessionB["OverlaySession B"]
+  SessionA --> Broker["Per-user overlay broker"]
+  SessionB --> Broker
+  Broker --> Transport["One authenticated target transport per PID"]
   Transport --> Addon["Injected ReShade add-on"]
   Addon --> ImGui["Dear ImGui compositor"]
   ImGui --> Game["Game swap chain"]
 
   GameInput["Game input"] --> Addon
   Addon -->|"block game and route overlay input"| Transport
-  Transport --> Session
-  Session -->|"sendInputEvent()"| OSR
+  Transport --> Broker
+  Broker -->|"owning application only"| SessionA
+  Broker -->|"owning application only"| SessionB
 ```
 
 The repository is split into four useful layers:
@@ -69,6 +73,12 @@ SHA-256 build manifests bind the architecture-specific injector, runtime,
 manager, add-on, configuration, and build stamps before staging and again
 before injection. A clean target uses that isolated runtime without copying
 proxy DLLs or configuration into the game directory.
+
+Exact-PID attachments rendezvous through a versioned per-user broker. The
+broker briefly collects independently starting providers, selects the highest
+compatible staged runtime generation, maps every application's local window
+IDs into one target scene, and lets compatible applications join the
+already-running target without injecting another runtime.
 
 ## Requirements and build
 
@@ -277,6 +287,14 @@ Use this immediately after a trusted process watcher observes creation.
   without guessing from an executable name.
 - Exact-PID injection is still timing-sensitive and must beat graphics
   initialization.
+- Exact PID is also the required path when independent applications may attach
+  to the same process. Name-only and path-watcher attachment remain exclusive
+  pre-creation compatibility paths.
+
+Applications do not coordinate with one another directly. Each independently
+calls `attach()` with the same trusted PID/path. Exactly one application owns
+target initialization and reports the selected non-shared host mode;
+compatible followers report `shared-runtime` after the target authenticates.
 
 Call `launcher.prepare()` before detection to keep filesystem staging off the
 process-creation hot path. A launcher owns one target lifecycle. For overlapping
@@ -319,7 +337,9 @@ exclusions and attempts every detected `.exe` independently.
 - `existing-runtime`: a compatible already-loaded project runtime accepted the
   add-on while its private registration gate was open;
 - `official-addon`: a detected official ReShade host loaded the project-owned
-  public add-on.
+  public add-on;
+- `shared-runtime`: another compatible application already owns the target
+  runtime, so this launcher joined it without starting an injector.
 
 The application never selects D3D9, D3D10, D3D11, or D3D12. ReShade selects
 the graphics API inside the target.
@@ -629,18 +649,75 @@ dormant after seeing the new producer-session epoch on a subsequent render
 callback. Target exit remains the supported DLL teardown.
 
 One session can publish its scene to multiple authenticated target PIDs by
-using separate launcher instances. Separate application processes have
-accepted operation against different target PIDs.
+using separate launcher instances. Multiple independent application processes
+can also target one exact PID:
 
-Unsupported concurrency:
+- during a 50-millisecond initial cohort, the highest staged runtime generation
+  that still speaks target transport v1 becomes the injection owner; modern
+  ties use a stable lease identity so restart order cannot change the winner,
+  legacy ties use arrival order, and package semver is not used;
+- later members wait for authenticated target proof, then receive
+  `runtimeMode: "shared-runtime"` without running another injector;
+- local Electron `BrowserWindow` IDs are namespaced by the broker, so ID
+  collisions between applications are safe;
+- broker-issued aggregate order tokens preserve cross-application z-order when
+  compatible applications reconnect after a broker restart;
+- each input packet and focus notification returns only to the application that
+  owns the target window; other applications receive focus ID `0`;
+- target interception is enabled while **any** member requests it and is
+  released only after every member releases or disconnects;
+- an application disconnect or crash removes only its windows and interception
+  reference. Other applications and the target transport remain live;
+- an authenticated target remains available across a zero-application gap and
+  is retired on authoritative target exit. An otherwise idle broker exits
+  after 30 seconds.
 
-- multiple live sessions on the process-wide default discovery endpoint;
-- multiple independent applications targeting the same PID;
-- multiple independently injected overlay runtimes inside one target.
+The broker pipe is stable per Windows process-token account and protocol major;
+mutable `TEMP`, `USERPROFILE`, and domain environment variables do not split
+the singleton. SDK package versions in the v1 compatibility family can coexist
+when they preserve the frozen protocol semantics, required capability baseline,
+recovery-claim schema, and target-transport-v1 fallback. New features remain
+optional and activate only when both the running broker and client advertise
+support. The already-running broker is retained; a newcomer cannot replace or
+downgrade it.
 
-Same-PID multi-application support needs a broker that namespaces scenes,
-arbitrates input, and negotiates transport/runtime ownership. It is deliberately
-not part of the work documented here.
+Runtime-provider metadata comes from the validated staged x64/x86 manifests,
+including when a custom runtime directory is selected. A newer provider that
+arrives after target-route publication joins the existing runtime until that
+game process exits. Once publication starts, the broker never promotes a
+second injector merely because the owner disconnects or times out; it waits for
+runtime authentication or definitive process exit. These rules prevent a
+same-PID double injection.
+
+Before route publication, the broker writes a process-crash-persistent claim at
+a stable per-user path. Once that claim reaches `publishing`, any replacement
+broker treats the route as possibly consumed: it may republish only the pinned
+route with fresh replacement-broker credentials so an already-mapped runtime
+can reconnect, never authorize a new injector. This remains true if every
+original application and the broker exit;
+a fresh compatible application can recover the shared runtime. Once
+publication is armed, claims and their route evidence are cleared only after
+definitive target exit. An exact unconsumed `intent` is the sole exception and
+is rolled back if that authorization attempt fails before arming publication.
+
+This forward-compatibility guarantee applies to every release that keeps the
+v1 fallback contract. Recovery-claim schema-1 fields may be extended only
+additively; unknown schemas fail closed for a live PID. A future breaking
+broker, claim, or target-wire major first needs a protocol-independent PID plus
+process-creation-identity arbiter; separate major pipe names alone are not safe.
+
+Same-PID sharing requires an exact-PID target. The legacy name-only/path-watch
+rendezvous is protected by an atomic, crash-releasing named-pipe ownership lock,
+remains intentionally exclusive, and reports an error if another application
+owns it. SDK releases from before the broker protocol cannot share one PID with
+broker-aware releases. Injecting multiple independent runtimes into one target
+remains unsupported.
+
+The standalone broker is started through the current Electron executable with
+`ELECTRON_RUN_AS_NODE=1`. Packaged applications must keep Electron's RunAsNode
+fuse enabled until a dedicated broker executable is provided. Maintainer-level
+state, recovery, and versioning invariants are recorded in
+[`doc/multi-application-broker.md`](doc/multi-application-broker.md).
 
 ## Public API reference
 
@@ -1031,7 +1108,7 @@ validates both architecture manifests and their mapped artifacts.
 
 ```ts
 type ReShadeRuntimeMode =
-  'injected-runtime' | 'existing-runtime' | 'official-addon';
+  'injected-runtime' | 'existing-runtime' | 'official-addon' | 'shared-runtime';
 
 type ReShadeLaunchResult = Readonly<{
   processName: string;
@@ -1054,13 +1131,21 @@ type ReShadeAttachResult = ReShadeLaunchResult & Readonly<{ pid: number }>;
 
 Field meanings:
 
-- `targetExecutablePath` is the injector-verified selected executable;
+- `targetExecutablePath` is the injector-verified selected executable for
+  non-shared modes and the broker-authenticated target executable for
+  `shared-runtime`;
 - `selectedPath` is present for native path-watcher selection;
-- `injectorTargetPid` comes from strict injector evidence;
+- `injectorTargetPid` comes from strict injector evidence for non-shared modes
+  and the broker-authenticated target PID for `shared-runtime`;
 - `pid` is the authenticated target accepted by `attach()`;
 - `hostRuntimePath` is present for a reused compatible host;
 - `addonModulePath` is present in official-add-on mode;
 - `runtimeStartupPath` is omitted for official-host mode;
+- `shared-runtime` reuses the injection owner's authenticated run-directory
+  evidence and does not start an injector in the joining application;
+- for a joining launcher, `result.runDirectory` identifies that owner's
+  evidence directory while `launcher.runDirectory` remains `null` because the
+  joining launcher owns no staged runtime;
 - the run directory and log paths are retained as diagnostic evidence.
 
 ### Launcher state, event, and diagnostic types
@@ -1236,7 +1321,13 @@ Neither event means that a target has connected or that injection succeeded.
   are not guaranteed, even though existing installations are preserved
   fail-closed.
 - Runtime/add-on code is not cleanly unloaded while the target remains alive.
-- Multiple independent applications targeting the same PID are unsupported.
+- Same-PID multi-application sharing requires exact-PID attachment and
+  membership in the frozen broker/target-transport v1 compatibility family.
+- Applications running as the same Windows user are inside the broker trust
+  boundary. Do not run the broker elevated relative to its clients.
+- Per-client broker memory/queue quotas, peer-PID verification, tighter Windows
+  pipe ACLs, process-creation identity, and stalled-owner diagnostics remain
+  hardening work. A stalled owner is never replaced after route publication.
 - Electron 40 and newer are outside the current OSR/DPI contract.
 - The package is not yet published.
 
@@ -1262,6 +1353,7 @@ Every human-facing native runtime test has its own launcher under
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-client-sdk.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-process-start-injection.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-process-start-injection.ps1
+.\libs\electron-game-overlay-runtime\scripts\test-cases\d3d11-client-sdk-two-app-one-target.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d9-x86-client-sdk.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d10-x86-client-sdk.ps1
 .\libs\electron-game-overlay-runtime\scripts\test-cases\d3d12-client-sdk-reinjection.ps1

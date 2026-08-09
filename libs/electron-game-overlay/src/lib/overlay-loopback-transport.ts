@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import {
   InputEventTranslator,
@@ -18,6 +18,7 @@ import {
 } from './diagnostic.js';
 import type {
   NativeOverlay,
+  NativeRuntimeProviderMetadata,
   NativeOverlayWindowDetails,
   NativeOverlayWindowGeometry,
 } from './native.js';
@@ -39,6 +40,10 @@ export const OVERLAY_TRANSPORT_TARGET_DISCOVERY_FILE_PREFIX =
   'electron-overlay-transport-v1.pid-';
 export const OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME =
   'electron-overlay-transport-v1.targeted';
+export const OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_PREFIX =
+  'electron-overlay-transport-v1.pid-';
+export const OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_SUFFIX =
+  '.recovery.json';
 export const MAX_JSON_BODY_BYTES = 1024 * 1024;
 export const MAX_FRAME_BODY_BYTES = 256 * 1024 * 1024;
 
@@ -71,11 +76,48 @@ export interface OverlayDiscoveryRecord {
   targetPid?: number;
 }
 
+export type OverlayTargetRecoveryClaim = Readonly<{
+  schemaVersion: 1;
+  targetPid: number;
+  discoveryPath: string;
+  staticDiscoveryPath: string;
+  expectedExecutablePath?: string;
+  leaseId?: string;
+  phase: 'intent' | 'publishing' | 'published';
+  record: OverlayDiscoveryRecord;
+  /** The last committed endpoint while a replacement endpoint is published. */
+  previousRecord?: OverlayDiscoveryRecord;
+}>;
+
+/** @internal Broker-only context for durable target-route ownership. */
+export type OverlayTargetRouteAuthorizationContext = Readonly<{
+  leaseId?: string;
+  /** A committed route can be serviced by another compatible provider. */
+  allowPublishedClaimTakeover?: boolean;
+}>;
+
+export type OverlayTargetAuthorizationPublicationPhase =
+  | 'recovery-claim-published'
+  | 'recovery-claim-armed'
+  | 'static-discovery-published'
+  | 'route-intent-published'
+  | 'run-discovery-published'
+  | 'recovery-claim-committed';
+
 export interface OverlayLoopbackTransportOptions {
   discoveryPath?: string;
   tokenFactory?: () => string;
   isProcessAlive?: (pid: number) => boolean;
   processExitPollIntervalMs?: number;
+  /** @internal Deterministic fault barrier used by publication-order tests. */
+  targetAuthorizationPublicationHook?: (
+    phase: OverlayTargetAuthorizationPublicationPhase,
+    claim: OverlayTargetRecoveryClaim,
+  ) => void | Promise<void>;
+  /** @internal Fault injection immediately before a claim replacement. */
+  targetRecoveryClaimWriteHook?: (
+    claim: OverlayTargetRecoveryClaim,
+  ) => void | Promise<void>;
 }
 
 interface JsonObject {
@@ -234,9 +276,9 @@ interface TargetAuthorization {
   staticDiscoveryEndpointReservation: DiscoveryEndpointReservation;
   routeIntentPath: string;
   record: OverlayDiscoveryRecord;
+  recoveryClaim: OverlayTargetRecoveryClaim;
   references: number;
   generation: number;
-  published: boolean;
 }
 
 interface DiagnosticRateState {
@@ -273,6 +315,148 @@ export function defaultOverlayTargetDiscoveryPath(pid: number): string {
     DISCOVERY_DIRECTORY_NAME,
     `${OVERLAY_TRANSPORT_TARGET_DISCOVERY_FILE_PREFIX}${pid}.json`,
   );
+}
+
+export function defaultOverlayTargetRecoveryClaimPath(pid: number): string {
+  assertProcessPid(pid);
+  return join(
+    userInfo().homedir,
+    `.${DISCOVERY_DIRECTORY_NAME}`,
+    'broker-v1',
+    `${OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_PREFIX}${pid}${OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_SUFFIX}`,
+  );
+}
+
+/**
+ * Reads the durable write-ahead route claim for an exact PID. Missing claims
+ * return undefined; malformed or unreadable claims fail closed by throwing.
+ */
+export function readOverlayTargetRecoveryClaim(
+  pid: number,
+): OverlayTargetRecoveryClaim | undefined {
+  assertProcessPid(pid);
+  const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+  let contents: string;
+  try {
+    contents = readFileSync(claimPath, 'utf8');
+  } catch (error) {
+    if (isErrnoException(error, 'ENOENT')) {
+      return undefined;
+    }
+    throw new Error(
+      `Unable to read overlay target recovery claim ${claimPath}: ${formatUnknownError(error)}`,
+    );
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(contents);
+  } catch (error) {
+    throw new Error(
+      `Overlay target recovery claim ${claimPath} is malformed: ${formatUnknownError(error)}`,
+    );
+  }
+  const claim = parseOverlayTargetRecoveryClaim(value, pid);
+  if (!claim) {
+    throw new Error(
+      `Overlay target recovery claim ${claimPath} has an invalid schema`,
+    );
+  }
+  return claim;
+}
+
+/**
+ * Returns true once a route may have been consumed. A committed claim is
+ * irreversible; during publication an exact atomic credential is sufficient
+ * proof even if the broker died before committing the final phase.
+ */
+export function overlayTargetRecoveryClaimMayHaveBeenConsumed(
+  claim: OverlayTargetRecoveryClaim,
+): boolean {
+  if (claim.phase === 'publishing' || claim.phase === 'published') {
+    return true;
+  }
+  const records = [claim.record, claim.previousRecord].filter(
+    (record): record is OverlayDiscoveryRecord => record !== undefined,
+  );
+  return (
+    discoveryPathMatchesAnyRecord(claim.discoveryPath, records) ||
+    discoveryPathMatchesAnyRecord(claim.staticDiscoveryPath, records)
+  );
+}
+
+/** Removes exact route evidence only after the caller proved target exit. */
+export function clearOverlayTargetRecoveryClaimForExitedPid(pid: number): void {
+  assertProcessPid(pid);
+  let claim: OverlayTargetRecoveryClaim | undefined;
+  try {
+    claim = readOverlayTargetRecoveryClaim(pid);
+  } catch {
+    // A malformed deterministic claim must not outlive a definitively dead PID.
+    try {
+      unlinkSync(defaultOverlayTargetRecoveryClaimPath(pid));
+    } catch {
+      // The malformed claim may already have disappeared.
+    }
+    removeAnyTargetBoundDiscoveryForExitedPid(
+      defaultOverlayTargetDiscoveryPath(pid),
+      pid,
+    );
+    return;
+  }
+  if (!claim) {
+    removeAnyTargetBoundDiscoveryForExitedPid(
+      defaultOverlayTargetDiscoveryPath(pid),
+      pid,
+    );
+    return;
+  }
+  const records = [claim.record, claim.previousRecord].filter(
+    (record): record is OverlayDiscoveryRecord => record !== undefined,
+  );
+  for (const record of records) {
+    removeDiscoveryRecordIfOwnedSync(claim.discoveryPath, record);
+    removeDiscoveryRecordIfOwnedSync(
+      join(
+        dirname(claim.discoveryPath),
+        OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+      ),
+      record,
+    );
+    removeDiscoveryRecordIfOwnedSync(claim.staticDiscoveryPath, record);
+  }
+  removeAnyTargetBoundDiscoveryForExitedPid(claim.discoveryPath, pid);
+  removeAnyTargetBoundDiscoveryForExitedPid(
+    join(
+      dirname(claim.discoveryPath),
+      OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+    ),
+    pid,
+  );
+  removeAnyTargetBoundDiscoveryForExitedPid(claim.staticDiscoveryPath, pid);
+  removeOverlayTargetRecoveryClaimIfOwned(pid, claim);
+}
+
+/** Removes the sidecar only when it still exactly matches the observed claim. */
+export function removeOverlayTargetRecoveryClaimIfOwned(
+  pid: number,
+  claim: OverlayTargetRecoveryClaim,
+): void {
+  assertProcessPid(pid);
+  if (claim.targetPid !== pid) {
+    return;
+  }
+  try {
+    const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+    const current = parseOverlayTargetRecoveryClaim(
+      JSON.parse(readFileSync(claimPath, 'utf8')),
+      pid,
+    );
+    if (current && recoveryClaimsEqual(current, claim)) {
+      unlinkSync(claimPath);
+    }
+  } catch {
+    // The claim may already be gone or atomically replaced by a new owner.
+  }
 }
 
 export function encodeJsonTransportPacket(value: JsonObject): Buffer {
@@ -341,6 +525,163 @@ function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function parseOverlayTargetDiscoveryRecord(
+  value: unknown,
+  targetPid: number,
+): OverlayDiscoveryRecord | undefined {
+  if (
+    !isJsonObject(value) ||
+    value.version !== OVERLAY_TRANSPORT_PROTOCOL_VERSION ||
+    !Number.isSafeInteger(value.pid) ||
+    (value.pid as number) <= 0 ||
+    (value.pid as number) > 0x7fff_ffff ||
+    !Number.isSafeInteger(value.port) ||
+    (value.port as number) <= 0 ||
+    (value.port as number) > 65_535 ||
+    typeof value.token !== 'string' ||
+    !isValidToken(value.token) ||
+    value.targetPid !== targetPid
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    version: 1,
+    pid: value.pid as number,
+    port: value.port as number,
+    token: value.token,
+    targetPid,
+  });
+}
+
+function parseOverlayTargetRecoveryClaim(
+  value: unknown,
+  targetPid: number,
+): OverlayTargetRecoveryClaim | undefined {
+  if (
+    !isJsonObject(value) ||
+    value.schemaVersion !== 1 ||
+    value.targetPid !== targetPid ||
+    typeof value.discoveryPath !== 'string' ||
+    value.discoveryPath.includes('\0') ||
+    !isAbsolute(value.discoveryPath) ||
+    basename(resolve(value.discoveryPath)).toLowerCase() !==
+      OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME.toLowerCase() ||
+    typeof value.staticDiscoveryPath !== 'string' ||
+    value.staticDiscoveryPath.includes('\0') ||
+    !isAbsolute(value.staticDiscoveryPath) ||
+    basename(resolve(value.staticDiscoveryPath)).toLowerCase() !==
+      `${OVERLAY_TRANSPORT_TARGET_DISCOVERY_FILE_PREFIX}${targetPid}.json`.toLowerCase() ||
+    (value.expectedExecutablePath !== undefined &&
+      (typeof value.expectedExecutablePath !== 'string' ||
+        value.expectedExecutablePath.includes('\0') ||
+        !win32.isAbsolute(value.expectedExecutablePath))) ||
+    (value.leaseId !== undefined && !isValidRecoveryLeaseId(value.leaseId)) ||
+    (value.phase !== 'intent' &&
+      value.phase !== 'publishing' &&
+      value.phase !== 'published')
+  ) {
+    return undefined;
+  }
+  const record = parseOverlayTargetDiscoveryRecord(value.record, targetPid);
+  const previousRecord =
+    value.previousRecord === undefined
+      ? undefined
+      : parseOverlayTargetDiscoveryRecord(value.previousRecord, targetPid);
+  if (
+    !record ||
+    (value.previousRecord !== undefined && !previousRecord) ||
+    (value.phase === 'published' && value.previousRecord !== undefined)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    targetPid,
+    discoveryPath: resolve(value.discoveryPath),
+    staticDiscoveryPath: resolve(value.staticDiscoveryPath),
+    ...(value.expectedExecutablePath === undefined
+      ? {}
+      : { expectedExecutablePath: value.expectedExecutablePath }),
+    ...(value.leaseId === undefined ? {} : { leaseId: value.leaseId }),
+    phase: value.phase,
+    record,
+    ...(previousRecord === undefined ? {} : { previousRecord }),
+  });
+}
+
+function isValidRecoveryLeaseId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 128 &&
+    !value.includes('\0')
+  );
+}
+
+function recoveryClaimsEqual(
+  left: OverlayTargetRecoveryClaim,
+  right: OverlayTargetRecoveryClaim,
+): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.targetPid === right.targetPid &&
+    normalizeExecutablePathIdentity(left.discoveryPath) ===
+      normalizeExecutablePathIdentity(right.discoveryPath) &&
+    normalizeExecutablePathIdentity(left.staticDiscoveryPath) ===
+      normalizeExecutablePathIdentity(right.staticDiscoveryPath) &&
+    normalizeOptionalExecutablePathIdentity(left.expectedExecutablePath) ===
+      normalizeOptionalExecutablePathIdentity(right.expectedExecutablePath) &&
+    left.leaseId === right.leaseId &&
+    left.phase === right.phase &&
+    isOwnedDiscoveryRecord(left.record, right.record) &&
+    ((left.previousRecord === undefined &&
+      right.previousRecord === undefined) ||
+      (left.previousRecord !== undefined &&
+        right.previousRecord !== undefined &&
+        isOwnedDiscoveryRecord(left.previousRecord, right.previousRecord)))
+  );
+}
+
+function discoveryPathMatchesAnyRecord(
+  discoveryPath: string,
+  records: readonly OverlayDiscoveryRecord[],
+): boolean {
+  try {
+    const value: unknown = JSON.parse(readFileSync(discoveryPath, 'utf8'));
+    return records.some((record) => isOwnedDiscoveryRecord(value, record));
+  } catch {
+    return false;
+  }
+}
+
+function removeDiscoveryRecordIfOwnedSync(
+  discoveryPath: string,
+  record: OverlayDiscoveryRecord,
+): void {
+  try {
+    const value: unknown = JSON.parse(readFileSync(discoveryPath, 'utf8'));
+    if (isOwnedDiscoveryRecord(value, record)) {
+      unlinkSync(discoveryPath);
+    }
+  } catch {
+    // The route may already be absent or replaced by another exact record.
+  }
+}
+
+function removeAnyTargetBoundDiscoveryForExitedPid(
+  discoveryPath: string,
+  pid: number,
+): void {
+  try {
+    const value: unknown = JSON.parse(readFileSync(discoveryPath, 'utf8'));
+    if (parseOverlayTargetDiscoveryRecord(value, pid)) {
+      unlinkSync(discoveryPath);
+    }
+  } catch {
+    // The deterministic route may already be absent or malformed.
+  }
+}
+
 function isOwnedDiscoveryRecord(
   value: unknown,
   record: OverlayDiscoveryRecord,
@@ -405,6 +746,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private readonly tokenFactory: () => string;
   private readonly isProcessAlive: (pid: number) => boolean;
   private readonly processExitPollIntervalMs: number;
+  private readonly targetAuthorizationPublicationHook:
+    | OverlayLoopbackTransportOptions['targetAuthorizationPublicationHook']
+    | undefined;
+  private readonly targetRecoveryClaimWriteHook:
+    OverlayLoopbackTransportOptions['targetRecoveryClaimWriteHook'] | undefined;
   private readonly issuedTokens = new Set<string>();
   private readonly targetAuthorizationsByPid = new Map<
     number,
@@ -440,16 +786,14 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private server: Server | undefined;
   private callback: ((event: string, ...args: any[]) => void) | undefined;
   private diagnosticCallback:
-    | ((diagnostic: OverlayDiagnostic) => void)
-    | undefined;
+    ((diagnostic: OverlayDiagnostic) => void) | undefined;
   private inputIntercept: boolean | undefined;
   private token: string | undefined;
   private discoveryRecord: OverlayDiscoveryRecord | undefined;
   private readyPromise: Promise<OverlayDiscoveryRecord> | undefined;
   private rejectReady: ((reason: Error) => void) | undefined;
   private discoveryEndpointReservation:
-    | DiscoveryEndpointReservation
-    | undefined;
+    DiscoveryEndpointReservation | undefined;
   private generation = 0;
 
   constructor(options: OverlayLoopbackTransportOptions = {}) {
@@ -460,6 +804,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.processExitPollIntervalMs =
       options.processExitPollIntervalMs ??
       DEFAULT_PROCESS_EXIT_POLL_INTERVAL_MS;
+    this.targetAuthorizationPublicationHook =
+      options.targetAuthorizationPublicationHook;
+    this.targetRecoveryClaimWriteHook = options.targetRecoveryClaimWriteHook;
     if (
       !Number.isSafeInteger(this.processExitPollIntervalMs) ||
       this.processExitPollIntervalMs < MIN_PROCESS_EXIT_POLL_INTERVAL_MS ||
@@ -579,6 +926,8 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     pid: number,
     discoveryPath: string,
     expectedExecutablePath?: string,
+    runtimeProviderOrRouteContext?:
+      NativeRuntimeProviderMetadata | OverlayTargetRouteAuthorizationContext,
   ): Promise<() => void> {
     assertProcessPid(pid);
     if (typeof discoveryPath !== 'string' || !isAbsolute(discoveryPath)) {
@@ -597,6 +946,18 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       expectedExecutablePath === undefined
         ? undefined
         : normalizeExecutablePathIdentity(expectedExecutablePath);
+    const routeContext =
+      isJsonObject(runtimeProviderOrRouteContext) &&
+      ('leaseId' in runtimeProviderOrRouteContext ||
+        'allowPublishedClaimTakeover' in runtimeProviderOrRouteContext)
+        ? (runtimeProviderOrRouteContext as OverlayTargetRouteAuthorizationContext)
+        : undefined;
+    if (
+      routeContext?.leaseId !== undefined &&
+      !isValidRecoveryLeaseId(routeContext.leaseId)
+    ) {
+      throw new TypeError('Overlay target route lease ID is invalid');
+    }
     const resolvedDiscoveryPath = resolve(discoveryPath);
     if (
       basename(resolvedDiscoveryPath).toLowerCase() !==
@@ -644,6 +1005,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
           resolvedDiscoveryPath,
           discoveryPathKey,
           normalizedExpectedExecutablePath,
+          routeContext,
           readyRecord,
           generation,
         );
@@ -742,23 +1104,6 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       this.removeDiscoveryIfOwnedSync(this.discoveryPath, priorRecord);
     }
     for (const authorization of priorTargetAuthorizations) {
-      if (!authorization.published) {
-        continue;
-      }
-      this.removeDiscoveryIfOwnedSync(
-        authorization.discoveryPath,
-        authorization.record,
-      );
-      this.removeDiscoveryIfOwnedSync(
-        authorization.staticDiscoveryPath,
-        authorization.record,
-      );
-      if (authorization.references === 0) {
-        this.removeDiscoveryIfOwnedSync(
-          authorization.routeIntentPath,
-          authorization.record,
-        );
-      }
       this.releaseDiscoveryEndpoint(
         authorization.staticDiscoveryEndpointReservation,
       );
@@ -835,6 +1180,26 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.windows.delete(windowId);
     this.latestFrames.delete(windowId);
     this.broadcastWindowBarrierPacket(windowId, packet);
+  }
+
+  /**
+   * Moves an existing window to the end of the retained snapshot without
+   * emitting a second window command. The broker uses this when the target
+   * reports a focus/raise so reconnects preserve the aggregate scene order.
+   */
+  public raiseWindowForSnapshot(windowId: number): void {
+    assertPositiveUnsigned32(windowId, 'windowId');
+    const window = this.windows.get(windowId);
+    if (!window) {
+      return;
+    }
+    this.windows.delete(windowId);
+    this.windows.set(windowId, window);
+    const frame = this.latestFrames.get(windowId);
+    if (frame) {
+      this.latestFrames.delete(windowId);
+      this.latestFrames.set(windowId, frame);
+    }
   }
 
   public sendWindowBounds(
@@ -979,6 +1344,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     discoveryPath: string,
     discoveryPathKey: string,
     expectedExecutablePath: string | undefined,
+    routeContext: OverlayTargetRouteAuthorizationContext | undefined,
     readyRecord: OverlayDiscoveryRecord,
     generation: number,
   ): Promise<TargetAuthorization> {
@@ -989,18 +1355,73 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         `Overlay target discovery path is already authorized for PID ${pathAuthorization.pid}`,
       );
     }
-    const staticDiscoveryPath = defaultOverlayTargetDiscoveryPath(pid);
+    const priorClaim = readOverlayTargetRecoveryClaim(pid);
+    const staticDiscoveryPath =
+      priorClaim?.staticDiscoveryPath ?? defaultOverlayTargetDiscoveryPath(pid);
     const staticDiscoveryEndpointReservation =
       this.reserveTargetDiscoveryEndpoint(staticDiscoveryPath);
     let authorization: TargetAuthorization | undefined;
+    let rollbackPriorIntentClaim: OverlayTargetRecoveryClaim | undefined;
+    let rollbackPublishedIntentClaim: OverlayTargetRecoveryClaim | undefined;
 
     try {
+      const priorMayHaveBeenConsumed =
+        priorClaim !== undefined &&
+        overlayTargetRecoveryClaimMayHaveBeenConsumed(priorClaim);
+      if (priorClaim) {
+        if (
+          normalizeExecutablePathIdentity(priorClaim.discoveryPath) !==
+            normalizeExecutablePathIdentity(discoveryPath) ||
+          normalizeOptionalExecutablePathIdentity(
+            priorClaim.expectedExecutablePath,
+          ) !== normalizeOptionalExecutablePathIdentity(expectedExecutablePath)
+        ) {
+          throw new Error(
+            `Overlay target PID ${pid} has a durable claim for another route`,
+          );
+        }
+        const matchingLease = priorClaim.leaseId === routeContext?.leaseId;
+        if (
+          !matchingLease &&
+          !(
+            priorMayHaveBeenConsumed &&
+            routeContext?.allowPublishedClaimTakeover === true
+          )
+        ) {
+          throw new Error(
+            `Overlay target PID ${pid} recovery requires the claimed lease`,
+          );
+        }
+        if (priorClaim.phase === 'intent' && !priorMayHaveBeenConsumed) {
+          rollbackPriorIntentClaim = priorClaim;
+        }
+      }
       const token = this.allocateToken();
       const record: OverlayDiscoveryRecord = {
         ...readyRecord,
         token,
         targetPid: pid,
       };
+      const previousRecord = priorClaim
+        ? selectPublishedRecoveryRecord(priorClaim)
+        : undefined;
+      let publishingClaim: OverlayTargetRecoveryClaim = Object.freeze({
+        schemaVersion: 1,
+        targetPid: pid,
+        discoveryPath,
+        staticDiscoveryPath,
+        ...(expectedExecutablePath === undefined
+          ? {}
+          : { expectedExecutablePath }),
+        ...(priorClaim?.leaseId !== undefined
+          ? { leaseId: priorClaim.leaseId }
+          : routeContext?.leaseId === undefined
+            ? {}
+            : { leaseId: routeContext.leaseId }),
+        phase: priorMayHaveBeenConsumed ? 'publishing' : 'intent',
+        record,
+        ...(previousRecord === undefined ? {} : { previousRecord }),
+      });
       authorization = {
         pid,
         ...(expectedExecutablePath === undefined
@@ -1015,9 +1436,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
           OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
         ),
         record,
+        recoveryClaim: publishingClaim,
         references: 0,
         generation,
-        published: false,
       };
       this.targetAuthorizationsByPid.set(pid, authorization);
       this.targetAuthorizationsByDiscoveryPath.set(
@@ -1025,31 +1446,80 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         authorization,
       );
 
-      await this.publishDiscovery(authorization.routeIntentPath, record);
-      await this.publishDiscovery(discoveryPath, record);
-      if (
-        generation !== this.generation ||
-        this.discoveryRecord !== readyRecord ||
-        !this.server
-      ) {
-        throw new Error(
-          'Overlay transport stopped before target authorization',
-        );
+      await this.publishTargetRecoveryClaim(publishingClaim);
+      if (publishingClaim.phase === 'intent') {
+        rollbackPublishedIntentClaim = publishingClaim;
       }
-      await this.publishDiscovery(staticDiscoveryPath, record);
-      if (
-        generation !== this.generation ||
-        this.discoveryRecord !== readyRecord ||
-        !this.server
-      ) {
-        throw new Error(
-          'Overlay transport stopped before target authorization',
-        );
-      }
-      authorization.published = true;
+      await this.runTargetAuthorizationPublicationHook(
+        'recovery-claim-published',
+        publishingClaim,
+      );
+      this.assertTargetAuthorizationActive(generation, readyRecord);
 
+      if (publishingClaim.phase === 'intent') {
+        const armedClaim: OverlayTargetRecoveryClaim = Object.freeze({
+          ...publishingClaim,
+          phase: 'publishing',
+        });
+        await this.publishTargetRecoveryClaim(armedClaim);
+        rollbackPriorIntentClaim = undefined;
+        rollbackPublishedIntentClaim = undefined;
+        publishingClaim = armedClaim;
+        authorization.recoveryClaim = armedClaim;
+        await this.runTargetAuthorizationPublicationHook(
+          'recovery-claim-armed',
+          publishingClaim,
+        );
+        this.assertTargetAuthorizationActive(generation, readyRecord);
+      }
+
+      await this.publishDiscovery(staticDiscoveryPath, record);
+      await this.runTargetAuthorizationPublicationHook(
+        'static-discovery-published',
+        publishingClaim,
+      );
+      this.assertTargetAuthorizationActive(generation, readyRecord);
+
+      await this.publishDiscovery(authorization.routeIntentPath, record);
+      await this.runTargetAuthorizationPublicationHook(
+        'route-intent-published',
+        publishingClaim,
+      );
+      this.assertTargetAuthorizationActive(generation, readyRecord);
+
+      await this.publishDiscovery(discoveryPath, record);
+      await this.runTargetAuthorizationPublicationHook(
+        'run-discovery-published',
+        publishingClaim,
+      );
+      this.assertTargetAuthorizationActive(generation, readyRecord);
+
+      const committedClaim: OverlayTargetRecoveryClaim = Object.freeze({
+        schemaVersion: 1,
+        targetPid: pid,
+        discoveryPath,
+        staticDiscoveryPath,
+        ...(expectedExecutablePath === undefined
+          ? {}
+          : { expectedExecutablePath }),
+        ...(publishingClaim.leaseId === undefined
+          ? {}
+          : { leaseId: publishingClaim.leaseId }),
+        phase: 'published',
+        record,
+      });
+      await this.publishTargetRecoveryClaim(committedClaim);
+      authorization.recoveryClaim = committedClaim;
+      await this.runTargetAuthorizationPublicationHook(
+        'recovery-claim-committed',
+        committedClaim,
+      );
+      this.assertTargetAuthorizationActive(generation, readyRecord);
       const existingClient = this.activeClientsByPid.get(pid);
-      if (existingClient) {
+      if (
+        existingClient &&
+        existingClient.targetAuthorization !== authorization
+      ) {
         existingClient.authenticated = false;
         existingClient.inputTranslator?.reset();
         this.activeClientsByPid.delete(pid);
@@ -1066,6 +1536,27 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       });
       return authorization;
     } catch (error) {
+      const authenticatedClient = this.activeClientsByPid.get(pid);
+      if (
+        authorization &&
+        authenticatedClient?.authenticated &&
+        authenticatedClient.targetAuthorization === authorization
+      ) {
+        this.publishDiagnostic({
+          code: 'target-authorized',
+          pid,
+        });
+        return authorization;
+      }
+      if (rollbackPublishedIntentClaim) {
+        removeOverlayTargetRecoveryClaimIfOwned(
+          pid,
+          rollbackPublishedIntentClaim,
+        );
+      }
+      if (rollbackPriorIntentClaim) {
+        removeOverlayTargetRecoveryClaimIfOwned(pid, rollbackPriorIntentClaim);
+      }
       if (generation === this.generation) {
         this.publishDiagnostic({
           code: 'target-authorization-failed',
@@ -1083,18 +1574,6 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         ) {
           this.targetAuthorizationsByDiscoveryPath.delete(discoveryPathKey);
         }
-        await this.removeDiscoveryIfOwned(
-          authorization.discoveryPath,
-          authorization.record,
-        );
-        await this.removeDiscoveryIfOwned(
-          authorization.staticDiscoveryPath,
-          authorization.record,
-        );
-        await this.removeDiscoveryIfOwned(
-          authorization.routeIntentPath,
-          authorization.record,
-        );
       }
       this.releaseDiscoveryEndpoint(staticDiscoveryEndpointReservation);
       throw error;
@@ -1124,14 +1603,6 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         authorization.discoveryPathKey,
       );
     }
-    this.removeDiscoveryIfOwnedSync(
-      authorization.discoveryPath,
-      authorization.record,
-    );
-    this.removeDiscoveryIfOwnedSync(
-      authorization.staticDiscoveryPath,
-      authorization.record,
-    );
     this.releaseDiscoveryEndpoint(
       authorization.staticDiscoveryEndpointReservation,
     );
@@ -1209,6 +1680,46 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     } catch (error) {
       await unlink(temporaryPath).catch(() => undefined);
       throw error;
+    }
+  }
+
+  private async publishTargetRecoveryClaim(
+    claim: OverlayTargetRecoveryClaim,
+  ): Promise<void> {
+    await this.targetRecoveryClaimWriteHook?.(claim);
+    const claimPath = defaultOverlayTargetRecoveryClaimPath(claim.targetPid);
+    await mkdir(dirname(claimPath), { recursive: true });
+    const temporaryPath = `${claimPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      await writeFile(temporaryPath, JSON.stringify(claim), {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+      await rename(temporaryPath, claimPath);
+    } catch (error) {
+      await unlink(temporaryPath).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async runTargetAuthorizationPublicationHook(
+    phase: OverlayTargetAuthorizationPublicationPhase,
+    claim: OverlayTargetRecoveryClaim,
+  ): Promise<void> {
+    await this.targetAuthorizationPublicationHook?.(phase, claim);
+  }
+
+  private assertTargetAuthorizationActive(
+    generation: number,
+    readyRecord: OverlayDiscoveryRecord,
+  ): void {
+    if (
+      generation !== this.generation ||
+      this.discoveryRecord !== readyRecord ||
+      !this.server
+    ) {
+      throw new Error('Overlay transport stopped before target authorization');
     }
   }
 
@@ -1668,6 +2179,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
     if (!alive) {
       this.processExitWatchesByPid.delete(watch.pid);
+      clearOverlayTargetRecoveryClaimForExitedPid(watch.pid);
       this.emitLifecycleEvent('game.process.disconnected', {
         pid: watch.pid,
         path: watch.path,
@@ -1753,4 +2265,55 @@ function normalizeExecutablePathIdentity(value: string): string {
     normalized = normalized.slice('\\\\?\\'.length);
   }
   return normalized;
+}
+
+function normalizeOptionalExecutablePathIdentity(
+  value: string | undefined,
+): string | undefined {
+  return value === undefined
+    ? undefined
+    : normalizeExecutablePathIdentity(value);
+}
+
+function selectPublishedRecoveryRecord(
+  claim: OverlayTargetRecoveryClaim,
+): OverlayDiscoveryRecord | undefined {
+  const records = [claim.record, claim.previousRecord].filter(
+    (record): record is OverlayDiscoveryRecord => record !== undefined,
+  );
+  for (const record of records) {
+    if (
+      discoveryPathMatchesAnyRecord(claim.discoveryPath, [record]) ||
+      discoveryPathMatchesAnyRecord(claim.staticDiscoveryPath, [record]) ||
+      discoveryPathMatchesAnyRecord(
+        join(
+          dirname(claim.discoveryPath),
+          OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+        ),
+        [record],
+      )
+    ) {
+      return record;
+    }
+  }
+  if (claim.phase === 'publishing') {
+    return claim.previousRecord ?? claim.record;
+  }
+  return claim.phase === 'published' ? claim.record : undefined;
+}
+
+function isErrnoException(
+  error: unknown,
+  code: string,
+): error is NodeJS.ErrnoException {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === code
+  );
+}
+
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

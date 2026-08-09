@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
+const { mkdir, mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,9 +10,13 @@ const {
   OverlayLoopbackTransport,
   MAX_JSON_BODY_BYTES,
   OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  clearOverlayTargetRecoveryClaimForExitedPid,
   defaultOverlayTargetDiscoveryPath,
+  defaultOverlayTargetRecoveryClaimPath,
   encodeFrameTransportPacket,
   encodeJsonTransportPacket,
+  overlayTargetRecoveryClaimMayHaveBeenConsumed,
+  readOverlayTargetRecoveryClaim,
 } = require('../dist/lib/overlay-loopback-transport.js');
 const { ElectronGameOverlay } = require('../dist/lib/electron-game-overlay.js');
 const {
@@ -36,6 +40,61 @@ test('the static target discovery path is deterministic per PID', () => {
     () => defaultOverlayTargetDiscoveryPath(0),
     /positive uint32 integer/,
   );
+  assert.equal(
+    defaultOverlayTargetRecoveryClaimPath(0xfffffffe),
+    path.join(
+      os.userInfo().homedir,
+      '.electron-game-overlay',
+      'broker-v1',
+      'electron-overlay-transport-v1.pid-4294967294.recovery.json',
+    ),
+  );
+});
+
+test('recovery claims accept additive fields and reject unknown schemas fail closed', async (t) => {
+  const pid = 0xffffe001;
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+  const discoveryPath = path.join(
+    os.tmpdir(),
+    'overlay-claim-schema',
+    'electron-overlay-transport-v1.json',
+  );
+  const claim = {
+    schemaVersion: 1,
+    targetPid: pid,
+    discoveryPath,
+    staticDiscoveryPath: defaultOverlayTargetDiscoveryPath(pid),
+    leaseId: 'schema-test-lease',
+    phase: 'intent',
+    record: {
+      version: 1,
+      pid: 71,
+      port: 47001,
+      token: 'ab'.repeat(32),
+      targetPid: pid,
+    },
+    additiveFutureField: { ignored: true },
+  };
+  t.after(() => clearOverlayTargetRecoveryClaimForExitedPid(pid));
+  await mkdir(path.dirname(claimPath), { recursive: true });
+  await writeFile(claimPath, JSON.stringify(claim), 'utf8');
+  assert.deepEqual(readOverlayTargetRecoveryClaim(pid), {
+    schemaVersion: 1,
+    targetPid: pid,
+    discoveryPath: path.resolve(discoveryPath),
+    staticDiscoveryPath: path.resolve(claim.staticDiscoveryPath),
+    leaseId: claim.leaseId,
+    phase: 'intent',
+    record: claim.record,
+  });
+
+  await writeFile(
+    claimPath,
+    JSON.stringify({ ...claim, schemaVersion: 99 }),
+    'utf8',
+  );
+  assert.throws(() => readOverlayTargetRecoveryClaim(pid), /invalid schema/i);
 });
 
 const overlayWindow = (name, x = 0) => ({
@@ -876,6 +935,8 @@ test('invalid authentication is closed without receiving a snapshot', async (t) 
 });
 
 test('run-local credentials isolate simultaneous exact-PID targets', async (t) => {
+  clearOverlayTargetRecoveryClaimForExitedPid(4101);
+  clearOverlayTargetRecoveryClaimForExitedPid(4102);
   const tempDirectory = await mkdtemp(
     path.join(os.tmpdir(), 'overlay-target-auth-test-'),
   );
@@ -898,8 +959,8 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
       socket.destroy();
     }
     transport.stop();
-    await rm(firstStaticDiscoveryPath, { force: true });
-    await rm(secondStaticDiscoveryPath, { force: true });
+    clearOverlayTargetRecoveryClaimForExitedPid(4101);
+    clearOverlayTargetRecoveryClaimForExitedPid(4102);
     await rm(tempDirectory, { recursive: true, force: true });
   });
 
@@ -1062,13 +1123,10 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
   );
   releaseFirst();
   await reauthenticatedFirstClosed;
-  await assert.rejects(
-    readFile(firstPath, 'utf8'),
-    (error) => error.code === 'ENOENT',
-  );
-  await assert.rejects(
-    readFile(firstStaticDiscoveryPath, 'utf8'),
-    (error) => error.code === 'ENOENT',
+  assert.deepEqual(JSON.parse(await readFile(firstPath, 'utf8')), firstRecord);
+  assert.deepEqual(
+    JSON.parse(await readFile(firstStaticDiscoveryPath, 'utf8')),
+    firstRecord,
   );
   assert.deepEqual(
     JSON.parse(await readFile(firstRouteIntentPath, 'utf8')),
@@ -1084,13 +1142,13 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
   );
   releaseSecond();
   await secondSocketClosed;
-  await assert.rejects(
-    readFile(secondPath, 'utf8'),
-    (error) => error.code === 'ENOENT',
+  assert.deepEqual(
+    JSON.parse(await readFile(secondPath, 'utf8')),
+    secondRecord,
   );
-  await assert.rejects(
-    readFile(secondStaticDiscoveryPath, 'utf8'),
-    (error) => error.code === 'ENOENT',
+  assert.deepEqual(
+    JSON.parse(await readFile(secondStaticDiscoveryPath, 'utf8')),
+    secondRecord,
   );
   assert.deepEqual(
     JSON.parse(await readFile(secondRouteIntentPath, 'utf8')),
@@ -1099,6 +1157,7 @@ test('run-local credentials isolate simultaneous exact-PID targets', async (t) =
 });
 
 test('exact executable authorization rejects a reused PID before sending overlay state', async (t) => {
+  clearOverlayTargetRecoveryClaimForExitedPid(4201);
   const tempDirectory = await mkdtemp(
     path.join(os.tmpdir(), 'overlay-target-path-auth-test-'),
   );
@@ -1125,7 +1184,7 @@ test('exact executable authorization rejects a reused PID before sending overlay
       socket.destroy();
     }
     transport.stop();
-    await rm(staticDiscoveryPath, { force: true });
+    clearOverlayTargetRecoveryClaimForExitedPid(4201);
     await rm(tempDirectory, { recursive: true, force: true });
   });
 
@@ -1202,7 +1261,7 @@ test('exact executable authorization rejects a reused PID before sending overlay
   release();
 });
 
-test('target discovery cleanup preserves replacements and stop removes owned mirrors', async (t) => {
+test('target route claims survive release and stop while preserving foreign replacements', async (t) => {
   const tempDirectory = await mkdtemp(
     path.join(os.tmpdir(), 'overlay-target-cleanup-test-'),
   );
@@ -1218,6 +1277,8 @@ test('target discovery cleanup preserves replacements and stop removes owned mir
   });
   const replacedPid = 0xfffffff0;
   const stoppedPid = 0xfffffff1;
+  clearOverlayTargetRecoveryClaimForExitedPid(replacedPid);
+  clearOverlayTargetRecoveryClaimForExitedPid(stoppedPid);
   const replacedPath = path.join(
     tempDirectory,
     'replaced-run',
@@ -1232,8 +1293,9 @@ test('target discovery cleanup preserves replacements and stop removes owned mir
   const stoppedStaticPath = defaultOverlayTargetDiscoveryPath(stoppedPid);
   t.after(async () => {
     transport.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(replacedPid);
+    clearOverlayTargetRecoveryClaimForExitedPid(stoppedPid);
     await rm(replacedStaticPath, { force: true });
-    await rm(stoppedStaticPath, { force: true });
     await rm(tempDirectory, { recursive: true, force: true });
   });
 
@@ -1269,13 +1331,13 @@ test('target discovery cleanup preserves replacements and stop removes owned mir
   );
 
   transport.stop();
-  await assert.rejects(
-    readFile(stoppedPath, 'utf8'),
-    (error) => error.code === 'ENOENT',
+  assert.deepEqual(
+    JSON.parse(await readFile(stoppedPath, 'utf8')),
+    stoppedRecord,
   );
-  await assert.rejects(
-    readFile(stoppedStaticPath, 'utf8'),
-    (error) => error.code === 'ENOENT',
+  assert.deepEqual(
+    JSON.parse(await readFile(stoppedStaticPath, 'utf8')),
+    stoppedRecord,
   );
   staleRelease();
   assert.deepEqual(
@@ -1288,94 +1350,478 @@ test('target discovery cleanup preserves replacements and stop removes owned mir
   );
 });
 
-test('stopping a pending target publication keeps its static endpoint reserved until cleanup', async (t) => {
+for (const [index, phase] of [
+  'recovery-claim-published',
+  'recovery-claim-armed',
+  'static-discovery-published',
+  'route-intent-published',
+  'run-discovery-published',
+  'recovery-claim-committed',
+].entries()) {
+  test(`target publication fails closed after ${phase}`, async (t) => {
+    const tempDirectory = await mkdtemp(
+      path.join(os.tmpdir(), `overlay-target-wal-${index}-`),
+    );
+    const pid = 0xfffff000 + index;
+    const discoveryPath = path.join(
+      tempDirectory,
+      'run',
+      'electron-overlay-transport-v1.json',
+    );
+    const ownerLease = `owner-${index}`;
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    const first = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-a', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = [
+          '70'.repeat(32),
+          `${index + 1}`.repeat(64).slice(0, 64),
+        ];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+      targetAuthorizationPublicationHook(candidatePhase) {
+        if (candidatePhase === phase) {
+          throw new Error(`fault after ${phase}`);
+        }
+      },
+    });
+    const second = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-b', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = [
+          '80'.repeat(32),
+          `${index + 7}`.repeat(64).slice(0, 64),
+        ];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+    });
+    t.after(async () => {
+      first.stop();
+      second.stop();
+      clearOverlayTargetRecoveryClaimForExitedPid(pid);
+      await rm(tempDirectory, { recursive: true, force: true });
+    });
+
+    first.start();
+    await first.whenReady();
+    await assert.rejects(
+      first.authorizeTarget(pid, discoveryPath, undefined, {
+        leaseId: ownerLease,
+      }),
+      new RegExp(`fault after ${phase}`),
+    );
+    first.stop();
+
+    const interruptedClaim = readOverlayTargetRecoveryClaim(pid);
+    const caughtIntentWasRolledBack = phase === 'recovery-claim-published';
+    assert.equal(interruptedClaim === undefined, caughtIntentWasRolledBack);
+    const mayHaveBeenConsumed = interruptedClaim
+      ? overlayTargetRecoveryClaimMayHaveBeenConsumed(interruptedClaim)
+      : false;
+    assert.equal(mayHaveBeenConsumed, !caughtIntentWasRolledBack);
+
+    second.start();
+    await second.whenReady();
+    if (interruptedClaim && !mayHaveBeenConsumed) {
+      await assert.rejects(
+        second.authorizeTarget(pid, discoveryPath, undefined, {
+          leaseId: 'another-lease',
+          allowPublishedClaimTakeover: true,
+        }),
+        /recovery requires the claimed lease/i,
+      );
+    }
+    const release = await second.authorizeTarget(
+      pid,
+      discoveryPath,
+      undefined,
+      interruptedClaim === undefined
+        ? { leaseId: 'another-lease' }
+        : mayHaveBeenConsumed
+          ? {
+              leaseId: 'another-lease',
+              allowPublishedClaimTakeover: true,
+            }
+          : { leaseId: ownerLease },
+    );
+    const recoveredClaim = readOverlayTargetRecoveryClaim(pid);
+    assert.equal(recoveredClaim.phase, 'published');
+    assert.equal(
+      recoveredClaim.leaseId,
+      interruptedClaim === undefined ? 'another-lease' : ownerLease,
+    );
+    assert.equal(recoveredClaim.discoveryPath, path.resolve(discoveryPath));
+    release();
+    second.stop();
+    assert.ok(readOverlayTargetRecoveryClaim(pid));
+  });
+}
+
+test('failed intent replacements roll back the authoritative safe intent for a new lease', async (t) => {
+  for (const [index, failure] of ['arm-write', 'replacement-write'].entries()) {
+    const pid = 0xffffd000 + index;
+    const tempDirectory = await mkdtemp(
+      path.join(os.tmpdir(), `overlay-intent-rollback-${index}-`),
+    );
+    const discoveryPath = path.join(
+      tempDirectory,
+      'run',
+      'electron-overlay-transport-v1.json',
+    );
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    if (failure === 'replacement-write') {
+      const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+      await mkdir(path.dirname(claimPath), { recursive: true });
+      await writeFile(
+        claimPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          targetPid: pid,
+          discoveryPath,
+          staticDiscoveryPath: defaultOverlayTargetDiscoveryPath(pid),
+          leaseId: 'original-lease',
+          phase: 'intent',
+          record: {
+            version: 1,
+            pid: 81,
+            port: 48001,
+            token: '45'.repeat(32),
+            targetPid: pid,
+          },
+        }),
+        'utf8',
+      );
+    }
+    const failing = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-a', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = ['46'.repeat(32), '47'.repeat(32)];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+      targetRecoveryClaimWriteHook(claim) {
+        if (
+          (failure === 'arm-write' && claim.phase === 'publishing') ||
+          (failure === 'replacement-write' && claim.phase === 'intent')
+        ) {
+          throw new Error(failure);
+        }
+      },
+    });
+    const replacement = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-b', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = ['48'.repeat(32), '49'.repeat(32)];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+    });
+    try {
+      failing.start();
+      await failing.whenReady();
+      if (failure === 'replacement-write') {
+        const ownedIntent = readOverlayTargetRecoveryClaim(pid);
+        await assert.rejects(
+          failing.authorizeTarget(pid, discoveryPath, undefined, {
+            leaseId: 'wrong-lease',
+          }),
+          /recovery requires the claimed lease/i,
+        );
+        assert.deepEqual(readOverlayTargetRecoveryClaim(pid), ownedIntent);
+      }
+      await assert.rejects(
+        failing.authorizeTarget(pid, discoveryPath, undefined, {
+          leaseId: 'original-lease',
+        }),
+        new RegExp(failure),
+      );
+      assert.equal(readOverlayTargetRecoveryClaim(pid), undefined);
+      failing.stop();
+
+      replacement.start();
+      await replacement.whenReady();
+      const release = await replacement.authorizeTarget(
+        pid,
+        discoveryPath,
+        undefined,
+        { leaseId: 'new-lease' },
+      );
+      assert.equal(readOverlayTargetRecoveryClaim(pid).leaseId, 'new-lease');
+      release();
+    } finally {
+      failing.stop();
+      replacement.stop();
+      clearOverlayTargetRecoveryClaimForExitedPid(pid);
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('a stopped publisher cannot roll back a replacement broker claim', async (t) => {
+  const pid = 0xffffd050;
   const tempDirectory = await mkdtemp(
-    path.join(os.tmpdir(), 'overlay-target-stop-race-test-'),
+    path.join(os.tmpdir(), 'overlay-intent-replacement-race-'),
   );
-  const globalPath = path.join(tempDirectory, 'global', 'transport.json');
   const discoveryPath = path.join(
     tempDirectory,
     'run',
     'electron-overlay-transport-v1.json',
   );
-  const pid = 0xfffffff2;
-  const staticDiscoveryPath = defaultOverlayTargetDiscoveryPath(pid);
-  const firstTokens = ['70'.repeat(32), '71'.repeat(32)];
-  const secondTokens = ['80'.repeat(32), '81'.repeat(32)];
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  let markIntentPublished;
+  const intentPublished = new Promise((resolve) => {
+    markIntentPublished = resolve;
+  });
+  let resumeStoppedPublisher;
+  const stoppedPublisherMayResume = new Promise((resolve) => {
+    resumeStoppedPublisher = resolve;
+  });
   const first = new OverlayLoopbackTransport({
-    discoveryPath: globalPath,
-    tokenFactory: () => {
-      const token = firstTokens.shift();
-      assert.ok(token, 'first transport token supply exhausted');
-      return token;
-    },
+    discoveryPath: path.join(tempDirectory, 'global-a', 'transport.json'),
+    tokenFactory: (() => {
+      const tokens = ['60'.repeat(32), '61'.repeat(32)];
+      return () => tokens.shift();
+    })(),
     isProcessAlive: () => true,
+    async targetAuthorizationPublicationHook(phase) {
+      if (phase === 'recovery-claim-published') {
+        markIntentPublished();
+        await stoppedPublisherMayResume;
+        throw new Error('stopped publisher resumed');
+      }
+    },
   });
   const second = new OverlayLoopbackTransport({
-    discoveryPath: globalPath,
-    tokenFactory: () => {
-      const token = secondTokens.shift();
-      assert.ok(token, 'second transport token supply exhausted');
-      return token;
-    },
+    discoveryPath: path.join(tempDirectory, 'global-b', 'transport.json'),
+    tokenFactory: (() => {
+      const tokens = ['62'.repeat(32), '63'.repeat(32)];
+      return () => tokens.shift();
+    })(),
     isProcessAlive: () => true,
   });
   t.after(async () => {
+    resumeStoppedPublisher?.();
     first.stop();
     second.stop();
-    await rm(staticDiscoveryPath, { force: true });
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
     await rm(tempDirectory, { recursive: true, force: true });
   });
 
   first.start();
   await first.whenReady();
-  const publishDiscovery = first.publishDiscovery.bind(first);
-  let continueStaticPublication;
-  const staticPublicationMayContinue = new Promise((resolve) => {
-    continueStaticPublication = resolve;
+  const interrupted = first.authorizeTarget(pid, discoveryPath, undefined, {
+    leaseId: 'shared-lease',
   });
-  let markStaticPublicationEntered;
-  const staticPublicationEntered = new Promise((resolve) => {
-    markStaticPublicationEntered = resolve;
-  });
-  first.publishDiscovery = async (candidatePath, record) => {
-    if (
-      path.resolve(candidatePath).toLowerCase() ===
-      path.resolve(staticDiscoveryPath).toLowerCase()
-    ) {
-      markStaticPublicationEntered();
-      await staticPublicationMayContinue;
-    }
-    await publishDiscovery(candidatePath, record);
-  };
+  await intentPublished;
+  first.stop();
 
-  const interruptedAuthorization = first.authorizeTarget(pid, discoveryPath);
-  await staticPublicationEntered;
+  second.start();
+  await second.whenReady();
+  const release = await second.authorizeTarget(pid, discoveryPath, undefined, {
+    leaseId: 'shared-lease',
+  });
+  const replacementClaim = readOverlayTargetRecoveryClaim(pid);
+  assert.equal(replacementClaim.phase, 'published');
+  resumeStoppedPublisher();
+  await assert.rejects(interrupted, /stopped publisher resumed/);
+  assert.deepEqual(readOverlayTargetRecoveryClaim(pid), replacementClaim);
+  release();
+});
+
+test('definitive exit clears mixed credentials after repeated partial takeovers', async (t) => {
+  const pid = 0xffffd100;
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-double-interruption-'),
+  );
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  const routePath = path.join(
+    path.dirname(discoveryPath),
+    OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  );
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  const makeTransport = (name, tokens, faultPhase) =>
+    new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, name, 'transport.json'),
+      tokenFactory: () => tokens.shift(),
+      isProcessAlive: () => true,
+      targetAuthorizationPublicationHook(phase) {
+        if (phase === faultPhase) {
+          throw new Error(`interrupt ${name}`);
+        }
+      },
+    });
+  const first = makeTransport('first', ['50'.repeat(32), '51'.repeat(32)]);
+  const second = makeTransport(
+    'second',
+    ['52'.repeat(32), '53'.repeat(32)],
+    'static-discovery-published',
+  );
+  const third = makeTransport(
+    'third',
+    ['54'.repeat(32), '55'.repeat(32)],
+    'recovery-claim-published',
+  );
+  t.after(async () => {
+    first.stop();
+    second.stop();
+    third.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  first.start();
+  await first.whenReady();
+  const release = await first.authorizeTarget(pid, discoveryPath, undefined, {
+    leaseId: 'original-lease',
+  });
+  const firstRunRecord = JSON.parse(await readFile(discoveryPath, 'utf8'));
+  release();
   first.stop();
 
   second.start();
   await second.whenReady();
   await assert.rejects(
-    second.authorizeTarget(pid, discoveryPath),
-    /target discovery endpoint is already active/i,
+    second.authorizeTarget(pid, discoveryPath, undefined, {
+      leaseId: 'provider-two',
+      allowPublishedClaimTakeover: true,
+    }),
+    /interrupt second/,
+  );
+  second.stop();
+  const secondStaticRecord = JSON.parse(
+    await readFile(defaultOverlayTargetDiscoveryPath(pid), 'utf8'),
+  );
+  assert.notEqual(secondStaticRecord.token, firstRunRecord.token);
+  assert.equal(
+    JSON.parse(await readFile(discoveryPath, 'utf8')).token,
+    firstRunRecord.token,
+  );
+  assert.equal(
+    JSON.parse(await readFile(routePath, 'utf8')).token,
+    firstRunRecord.token,
   );
 
-  continueStaticPublication();
+  third.start();
+  await third.whenReady();
   await assert.rejects(
-    interruptedAuthorization,
-    /transport stopped before target authorization/i,
+    third.authorizeTarget(pid, discoveryPath, undefined, {
+      leaseId: 'provider-three',
+      allowPublishedClaimTakeover: true,
+    }),
+    /interrupt third/,
   );
-  await assert.rejects(
-    readFile(staticDiscoveryPath, 'utf8'),
-    (error) => error.code === 'ENOENT',
-  );
+  third.stop();
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  for (const candidatePath of [
+    discoveryPath,
+    routePath,
+    defaultOverlayTargetDiscoveryPath(pid),
+    defaultOverlayTargetRecoveryClaimPath(pid),
+  ]) {
+    await assert.rejects(
+      readFile(candidatePath, 'utf8'),
+      (error) => error.code === 'ENOENT',
+    );
+  }
+});
 
-  const release = await second.authorizeTarget(pid, discoveryPath);
-  const record = JSON.parse(await readFile(discoveryPath, 'utf8'));
-  assert.deepEqual(
-    JSON.parse(await readFile(staticDiscoveryPath, 'utf8')),
-    record,
+test('authentication during a final claim-write failure preserves target reconnect authorization', async (t) => {
+  const pid = 0xffffd200;
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-final-claim-auth-race-'),
   );
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  let markFinalClaimWrite;
+  const finalClaimWriteEntered = new Promise((resolve) => {
+    markFinalClaimWrite = resolve;
+  });
+  let resumeFinalClaimWrite;
+  const finalClaimWriteMayResume = new Promise((resolve) => {
+    resumeFinalClaimWrite = resolve;
+  });
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: (() => {
+      const tokens = ['70'.repeat(32), '71'.repeat(32)];
+      return () => tokens.shift();
+    })(),
+    isProcessAlive: () => true,
+    async targetRecoveryClaimWriteHook(claim) {
+      if (claim.phase === 'published') {
+        markFinalClaimWrite();
+        await finalClaimWriteMayResume;
+        throw new Error('final claim write failed');
+      }
+    },
+  });
+  const events = [];
+  const sockets = [];
+  t.after(async () => {
+    resumeFinalClaimWrite?.();
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+  transport.setEventCallback((event, payload) =>
+    events.push({ event, payload }),
+  );
+  transport.start();
+  const globalRecord = await transport.whenReady();
+  const pendingAuthorization = transport.authorizeTarget(
+    pid,
+    discoveryPath,
+    'C:\\Games\\ClaimRace.exe',
+    { leaseId: 'claim-race-lease' },
+  );
+  await finalClaimWriteEntered;
+  const targetRecord = JSON.parse(await readFile(discoveryPath, 'utf8'));
+  const authenticate = async () => {
+    const socket = await connect(globalRecord.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: targetRecord.token,
+        pid,
+        path: 'C:\\Games\\ClaimRace.exe',
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+
+  const firstSocket = await authenticate();
+  await waitFor(() => events.some(({ event }) => event === 'game.process'));
+  resumeFinalClaimWrite();
+  const release = await pendingAuthorization;
+  assert.equal(readOverlayTargetRecoveryClaim(pid).phase, 'publishing');
+
+  const firstClosed = new Promise((resolve) =>
+    firstSocket.once('close', resolve),
+  );
+  firstSocket.destroy();
+  await firstClosed;
+  await waitFor(() =>
+    events.some(({ event }) => event === 'game.process.transport-lost'),
+  );
+  const secondSocket = await authenticate();
+  assert.equal(secondSocket.destroyed, false);
   release();
 });
 

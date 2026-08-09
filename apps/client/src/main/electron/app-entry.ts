@@ -51,6 +51,7 @@ const AUTO_START_OVERLAY_FLAG = '--start-overlay-session';
 const GUN_FROG_INPUT_PROOF_FLAG = '--gun-frog-input-proof';
 const STEAM_AUTO_ATTACH_FLAG = '--steam-auto-attach';
 const DEMO_PRESENTATION_FLAG = '--demo-presentation';
+const SAME_PID_ACCEPTANCE_TEST_FLAG = '--same-pid-acceptance-test';
 const AUTO_START_OVERLAY_MARKER = 'RESHADE_CLIENT_OVERLAY_SESSION_READY';
 const RESHADE_CONFIGURED_MARKER = 'RESHADE_CLIENT_CONFIGURED';
 const RESHADE_ATTACHMENT_STATE_MARKER = 'RESHADE_CLIENT_ATTACHMENT_STATE';
@@ -465,6 +466,31 @@ class Application {
       this.publishDemoState();
       return this.getDemoState();
     });
+
+    if (process.argv.includes(SAME_PID_ACCEPTANCE_TEST_FLAG)) {
+      ipcMain.handle(
+        'overlay:test-configure-window',
+        (event, name: string, x: number, y: number) => {
+          if (
+            (name !== AppWindows.exampleMainOverlay &&
+              name !== AppWindows.exampleStatusOverlay) ||
+            !Number.isSafeInteger(x) ||
+            !Number.isSafeInteger(y)
+          ) {
+            throw new TypeError('Invalid same-PID acceptance window request');
+          }
+          const overlayWindow = this.overlayWindows.get(name);
+          if (!overlayWindow) {
+            throw new Error(`Overlay window is unavailable: ${name}`);
+          }
+          overlayWindow.setBounds({ x, y });
+          return {
+            windowId: overlayWindow.browserWindow.id,
+            bounds: overlayWindow.browserWindow.getContentBounds(),
+          };
+        },
+      );
+    }
 
     ipcMain.on('start', () => {
       this.startOverlaySession();

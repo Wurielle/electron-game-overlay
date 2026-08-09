@@ -1,4 +1,4 @@
-import { BrowserWindow, screen } from 'electron';
+import { screen } from 'electron';
 import { physicalInputToDip } from './coordinate-space.js';
 import {
   normalizeOverlayDiagnosticErrorCode,
@@ -8,7 +8,13 @@ import {
   createElectronOverlayWindow,
   ElectronOverlayWindow,
 } from './electron-overlay-window.js';
-import { type NativeOverlay } from './native.js';
+import type {
+  NativeOverlay,
+  NativeRuntimeProviderMetadata,
+  NativeTargetAuthorization,
+  NativeTargetAuthorizationDisposition,
+  NativeTargetConnection,
+} from './native.js';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
 import {
   getTargetFollowPhysicalBounds,
@@ -71,15 +77,29 @@ const OVERLAY_SESSION_CONSTRUCTION_TOKEN = Symbol(
   'OverlaySession construction token',
 );
 
+/** @internal */
+export type OverlaySessionTargetAuthorization = Disposable &
+  Readonly<{
+    disposition: NativeTargetAuthorizationDisposition;
+    target?: NativeTargetConnection;
+  }>;
+
 type TargetAuthorizer = (
   pid: number,
   discoveryPath: string,
   expectedExecutablePath?: string,
-) => Promise<Disposable>;
+  runtimeProvider?: NativeRuntimeProviderMetadata,
+  signal?: AbortSignal,
+) => Promise<Disposable | OverlaySessionTargetAuthorization>;
+type GlobalTargetAuthorizer = () => Promise<Disposable>;
 
 let constructOverlaySession:
   ((overlay: NativeOverlay) => OverlaySession) | undefined;
 const targetAuthorizers = new WeakMap<OverlaySession, TargetAuthorizer>();
+const globalTargetAuthorizers = new WeakMap<
+  OverlaySession,
+  GlobalTargetAuthorizer
+>();
 
 /** @internal */
 export function createOverlaySession(overlay: NativeOverlay): OverlaySession {
@@ -90,12 +110,14 @@ export function createOverlaySession(overlay: NativeOverlay): OverlaySession {
 }
 
 /** @internal */
-export function authorizeOverlaySessionTarget(
+export async function authorizeOverlaySessionTarget(
   session: OverlaySession,
   pid: number,
   discoveryPath: string,
   expectedExecutablePath?: string,
-): Promise<Disposable> {
+  runtimeProvider?: NativeRuntimeProviderMetadata,
+  signal?: AbortSignal,
+): Promise<OverlaySessionTargetAuthorization> {
   const testHarness = session as unknown as {
     authorizeTarget?: TargetAuthorizer;
   };
@@ -105,9 +127,98 @@ export function authorizeOverlaySessionTarget(
       ? testHarness.authorizeTarget.bind(session)
       : undefined);
   if (!authorizeTarget) {
-    return Promise.reject(new TypeError('invalid OverlaySession instance'));
+    throw new TypeError('invalid OverlaySession instance');
   }
-  return authorizeTarget(pid, discoveryPath, expectedExecutablePath);
+  return normalizeSessionTargetAuthorization(
+    await authorizeTarget(
+      pid,
+      discoveryPath,
+      expectedExecutablePath,
+      runtimeProvider,
+      signal,
+    ),
+  );
+}
+
+/** @internal */
+export async function authorizeOverlaySessionGlobalTarget(
+  session: OverlaySession,
+): Promise<Disposable> {
+  const testHarness = session as unknown as {
+    authorizeGlobalTarget?: GlobalTargetAuthorizer;
+  };
+  const authorizeTarget =
+    globalTargetAuthorizers.get(session) ??
+    (typeof testHarness.authorizeGlobalTarget === 'function'
+      ? testHarness.authorizeGlobalTarget.bind(session)
+      : undefined);
+  if (!authorizeTarget) {
+    throw new TypeError('invalid OverlaySession instance');
+  }
+  return authorizeTarget();
+}
+
+function createSessionTargetAuthorization(
+  release: Disposable,
+  disposition: NativeTargetAuthorizationDisposition,
+  target?: NativeTargetConnection,
+): OverlaySessionTargetAuthorization {
+  return Object.assign(release, {
+    disposition,
+    ...(target === undefined ? {} : { target }),
+  });
+}
+
+function normalizeSessionTargetAuthorization(
+  authorization: Disposable | NativeTargetAuthorization,
+): OverlaySessionTargetAuthorization {
+  if (typeof authorization === 'function') {
+    const enriched =
+      authorization as Partial<OverlaySessionTargetAuthorization>;
+    return createSessionTargetAuthorization(
+      authorization,
+      enriched.disposition === 'joined-existing'
+        ? 'joined-existing'
+        : 'injection-owner',
+      enriched.target,
+    );
+  }
+  return createSessionTargetAuthorization(
+    authorization.release,
+    authorization.disposition,
+    authorization.target,
+  );
+}
+
+async function waitForAbortable<T>(
+  operation: PromiseLike<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) {
+    return await operation;
+  }
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    }
+  });
+  try {
+    return await Promise.race([Promise.resolve(operation), aborted]);
+  } finally {
+    if (onAbort) {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
 }
 
 export class OverlaySession {
@@ -210,9 +321,18 @@ export class OverlaySession {
         'OverlaySession instances are created by ElectronGameOverlay.createSession()',
       );
     }
-    targetAuthorizers.set(this, (pid, discoveryPath, expectedExecutablePath) =>
-      this.#authorizeTarget(pid, discoveryPath, expectedExecutablePath),
+    targetAuthorizers.set(
+      this,
+      (pid, discoveryPath, expectedExecutablePath, runtimeProvider, signal) =>
+        this.#authorizeTarget(
+          pid,
+          discoveryPath,
+          expectedExecutablePath,
+          runtimeProvider,
+          signal,
+        ),
     );
+    globalTargetAuthorizers.set(this, () => this.#authorizeGlobalTarget());
   }
 
   public start() {
@@ -281,7 +401,9 @@ export class OverlaySession {
     pid: number,
     discoveryPath: string,
     expectedExecutablePath?: string,
-  ): Promise<Disposable> {
+    runtimeProvider?: NativeRuntimeProviderMetadata,
+    signal?: AbortSignal,
+  ): Promise<OverlaySessionTargetAuthorization> {
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
       throw new RangeError(
         'the overlay target PID must be a positive uint32 integer',
@@ -290,6 +412,7 @@ export class OverlaySession {
     if (this.closed) {
       throw new Error('the overlay session is closed');
     }
+    signal?.throwIfAborted();
     if (typeof discoveryPath !== 'string' || discoveryPath.length === 0) {
       throw new TypeError(
         'the overlay target discovery path must be a non-empty string',
@@ -307,27 +430,73 @@ export class OverlaySession {
     }
 
     this.ensureStarted();
+    await waitForAbortable(this.overlay.whenReady(), signal);
+    if (this.closed) {
+      throw new Error('the overlay session is closed');
+    }
+    signal?.throwIfAborted();
+
+    const backendAuthorization = await this.overlay.authorizeTarget?.(
+      pid,
+      discoveryPath,
+      expectedExecutablePath,
+      runtimeProvider,
+      signal,
+    );
+    if (!backendAuthorization) {
+      if (this.closed) {
+        throw new Error('the overlay session is closed');
+      }
+      return createSessionTargetAuthorization(
+        () => undefined,
+        'injection-owner',
+      );
+    }
+    const normalized =
+      normalizeSessionTargetAuthorization(backendAuthorization);
+    if (signal?.aborted) {
+      normalized();
+      signal.throwIfAborted();
+    }
+    if (this.closed) {
+      normalized();
+      throw new Error('the overlay session is closed');
+    }
+
+    let released = false;
+    const release = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.targetAuthorizationReleases.delete(release);
+      normalized();
+    };
+    this.targetAuthorizationReleases.add(release);
+    return createSessionTargetAuthorization(
+      release,
+      normalized.disposition,
+      normalized.target,
+    );
+  }
+
+  async #authorizeGlobalTarget(): Promise<Disposable> {
+    if (this.closed) {
+      throw new Error('the overlay session is closed');
+    }
+    this.ensureStarted();
     await this.overlay.whenReady();
     if (this.closed) {
       throw new Error('the overlay session is closed');
     }
-
-    const backendRelease = await this.overlay.authorizeTarget?.(
-      pid,
-      discoveryPath,
-      expectedExecutablePath,
-    );
+    const backendRelease = await this.overlay.authorizeGlobalTarget?.();
     if (!backendRelease) {
-      if (this.closed) {
-        throw new Error('the overlay session is closed');
-      }
       return () => undefined;
     }
     if (this.closed) {
       backendRelease();
       throw new Error('the overlay session is closed');
     }
-
     let released = false;
     const release = () => {
       if (released) {
@@ -924,37 +1093,27 @@ export class OverlaySession {
         ? focusWindowId
         : 0;
 
-      let browserWindows: Electron.BrowserWindow[] = [];
-      try {
-        browserWindows = BrowserWindow.getAllWindows();
-      } catch (error) {
-        this.reportInputForwardingFailure(
-          pid,
-          diagnosticFocusWindowId,
-          'blur',
-          error,
-        );
+      const sessionWindows = new Set(this.windowsByNativeId.values());
+      for (const window of this.windowsById.values()) {
+        sessionWindows.add(window);
       }
-      for (const browserWindow of browserWindows) {
+      for (const window of sessionWindows) {
         try {
-          browserWindow.blurWebView();
+          window.browserWindow.blurWebView();
         } catch (error) {
           this.reportInputForwardingFailure(pid, 0, 'blur', error);
         }
       }
 
       try {
-        const overlayWindow = this.windowsByNativeId.get(focusWindowId);
+        const overlayWindow =
+          this.windowsByNativeId.get(focusWindowId) ??
+          Array.from(sessionWindows).find(
+            (window) => window.nativeId === focusWindowId,
+          );
         if (overlayWindow) {
+          diagnosticFocusWindowId = overlayWindow.nativeId;
           this.focusInputWebContents(overlayWindow);
-        } else {
-          // Retain compatibility with focus events for BrowserWindows that are
-          // not present in this session's registered-window map.
-          const fallbackWindow = BrowserWindow.fromId(focusWindowId);
-          if (fallbackWindow) {
-            diagnosticFocusWindowId = fallbackWindow.id;
-            fallbackWindow.focusOnWebView();
-          }
         }
       } catch (error) {
         this.reportInputForwardingFailure(

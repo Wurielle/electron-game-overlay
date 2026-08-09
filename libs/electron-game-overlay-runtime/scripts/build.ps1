@@ -101,6 +101,12 @@ $DistributionDirectory = Join-Path `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "F2A88AD705204DBB8E18D86E7147A13C"
+# Bump only when the mapped runtime provider changes, never for package semver.
+$RuntimeGeneration = 1
+# Protocol-family v1 providers must always retain literal transport v1 in their
+# advertised range; backwards-compatible releases may raise only the maximum.
+$TargetTransportMin = 1
+$TargetTransportMax = 1
 if ($ExpectedAddonBuildId -cnotmatch '^[0-9A-F]{32}$') {
     throw "The configured Electron Game Overlay add-on build ID is invalid."
 }
@@ -265,12 +271,15 @@ if (-not (Test-Path -LiteralPath $ManagerSourcePath -PathType Leaf)) {
 }
 Assert-NotReparsePoint $ManagerSourcePath
 $PackageBuildStamp = [ordered]@{
-    schemaVersion = 2
+    schemaVersion = 3
     kind = "electron-game-overlay-runtime-build"
     platform = $ArchitectureConfig.PackagePlatform
     configuration = "RelWithDebInfo"
     addonBuildId = $ExpectedAddonBuildId
     managerProtocolSchemaVersion = 1
+    runtimeGeneration = $RuntimeGeneration
+    targetTransportMin = $TargetTransportMin
+    targetTransportMax = $TargetTransportMax
     managerSourceSha256 = (
         Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ManagerSourcePath
     ).Hash

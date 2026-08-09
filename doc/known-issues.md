@@ -4,6 +4,46 @@ Since we need to inject a dll into an existing game process, it will definitely 
 
 known issues:
 
+### Same-PID multi-application boundary
+
+Independent applications can share one target only when every participant uses
+an exact-PID attachment and belongs to the frozen broker protocol/target
+transport v1 compatibility family. The broker selects the highest compatible
+staged runtime generation seen in its 50-millisecond initial cohort; a newer
+provider arriving after route publication joins that runtime until target exit.
+Package semver does not order providers. Name-only and path-watcher rendezvous
+are preserved as an exclusive legacy lane because no exact PID exists when they
+are armed. SDK versions from before the broker cannot join a broker-owned
+target.
+
+"Future-version compatible" means that a release retains v1 framing and
+semantics, does not expand the frozen required capability baseline, preserves
+the additive recovery-claim schema-1 contract, and still ships a
+target-transport-v1 fallback. Optional behavior is enabled only through the
+broker/client capability intersection. A breaking major cannot safely coexist
+merely by using another pipe name; it first needs a shared cross-major PID plus
+process-creation-identity arbiter.
+
+Route ownership is recorded before publication in a stable per-user claim that
+survives application and broker process crashes. A replacement broker can
+republish only the pinned route with fresh broker credentials and wait for the
+existing runtime; it cannot authorize another injector once publication may
+have begun. From the
+`publishing` phase onward, the claim is removed only after definitive target
+exit; an exact unconsumed `intent` may still be rolled back before that point.
+Until process-creation identity is carried alongside PID, an old claim can
+still be confused with an unusually fast PID reuse if no broker observed the
+intervening exit.
+
+The current broker trust boundary is the Windows user account. It does not yet
+verify the hello PID against the named-pipe peer, apply a custom pipe ACL, or
+enforce per-client scene/queue memory quotas. It must not run elevated relative
+to clients. Process-creation identity, bounded stalled-owner diagnostics, a
+dedicated non-RunAsNode broker binary, and package-install acceptance remain
+hardening work. See
+[`multi-application-broker.md`](multi-application-broker.md) for the internal
+state and versioning contract.
+
 ### Current ReShade migration support envelope
 
 The bundled production Windows runtime uses the project's pinned ReShade 6.7.3

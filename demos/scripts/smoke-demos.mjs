@@ -14,6 +14,7 @@ const DEMOS = Object.freeze([
 const scriptsDirectory = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(scriptsDirectory, '..', '..');
 const runner = path.join(scriptsDirectory, 'run-demo.mjs');
+const smokeBrokerPipe = `\\\\.\\pipe\\electron-game-overlay-demo-smoke-${process.pid}-${randomUUID().replaceAll('-', '')}`;
 let activeChild = null;
 let interrupted = false;
 
@@ -39,6 +40,7 @@ async function smokeDemo(demo) {
     cwd: workspaceRoot,
     env: {
       ...process.env,
+      ELECTRON_GAME_OVERLAY_BROKER_PIPE: smokeBrokerPipe,
       ELECTRON_GAME_OVERLAY_DEMO_SMOKE: '1',
       ELECTRON_GAME_OVERLAY_DEMO_TARGET_PROCESS: impossibleTarget,
     },

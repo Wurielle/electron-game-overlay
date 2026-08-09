@@ -417,7 +417,7 @@ test('startup parsing validates both architecture package manifests and payload 
 
     assert.throws(
       () => createConfig(fixture),
-      /x86 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+      /x86 Electron Game Overlay runtime package build stamp does not match schema version 2 or 3/,
     );
   });
 
@@ -431,7 +431,7 @@ test('startup parsing validates both architecture package manifests and payload 
 
     assert.throws(
       () => createConfig(fixture),
-      /x64 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+      /x64 Electron Game Overlay runtime package build stamp does not match schema version 2 or 3/,
     );
   });
 
@@ -446,7 +446,7 @@ test('startup parsing validates both architecture package manifests and payload 
 
     assert.throws(
       () => createConfig(fixture),
-      /x86 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+      /x86 Electron Game Overlay runtime package build stamp does not match schema version 2 or 3/,
     );
   });
 
@@ -456,13 +456,13 @@ test('startup parsing validates both architecture package manifests and payload 
       fixture.runtimeDirectory,
       'electron_game_overlay_runtime.build.json',
       (manifest) => {
-        manifest.schemaVersion = 3;
+        manifest.schemaVersion = 4;
       },
     );
 
     assert.throws(
       () => createConfig(fixture),
-      /x64 Electron Game Overlay runtime package build stamp does not match schema version 2/,
+      /x64 Electron Game Overlay runtime package build stamp does not match schema version 2 or 3/,
     );
   });
 
@@ -479,6 +479,60 @@ test('startup parsing validates both architecture package manifests and payload 
     assert.throws(
       () => createConfig(fixture),
       /x86 Electron Game Overlay runtime package build stamp declares platform "win32-x64"; expected win32-ia32/,
+    );
+  });
+
+  await t.test('accepts legacy schema-2 manifests as generation one', () => {
+    const fixture = createRuntime();
+    for (const manifestFileName of [
+      'electron_game_overlay_runtime.build.json',
+      'electron_game_overlay_runtime32.build.json',
+    ]) {
+      rewriteRuntimePackageBuildStamp(
+        fixture.runtimeDirectory,
+        manifestFileName,
+        (manifest) => {
+          manifest.schemaVersion = 2;
+          delete manifest.runtimeGeneration;
+          delete manifest.targetTransportMin;
+          delete manifest.targetTransportMax;
+        },
+      );
+    }
+
+    assert.doesNotThrow(() => createConfig(fixture));
+  });
+
+  await t.test('rejects different x64 and x86 provider metadata', () => {
+    const fixture = createRuntime();
+    rewriteRuntimePackageBuildStamp(
+      fixture.runtimeDirectory,
+      'electron_game_overlay_runtime32.build.json',
+      (manifest) => {
+        manifest.runtimeGeneration = 2;
+      },
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x64 and x86 runtime package build stamps declare different runtime provider metadata/,
+    );
+  });
+
+  await t.test('rejects an invalid target transport range', () => {
+    const fixture = createRuntime();
+    rewriteRuntimePackageBuildStamp(
+      fixture.runtimeDirectory,
+      'electron_game_overlay_runtime.build.json',
+      (manifest) => {
+        manifest.targetTransportMin = 2;
+        manifest.targetTransportMax = 1;
+      },
+    );
+
+    assert.throws(
+      () => createConfig(fixture),
+      /x64 Electron Game Overlay runtime package build stamp has unexpected provenance/,
     );
   });
 });
@@ -505,6 +559,46 @@ test('staged payloads are revalidated before injector execution', async () => {
       return true;
     });
     assert.deepEqual(await fsPromises.readdir(fixture.runsRootDirectory), []);
+  } finally {
+    launcher.dispose();
+  }
+});
+
+test('a staged legacy schema-2 override authorizes as generation one', async () => {
+  const fixture = createRuntime();
+  for (const manifestFileName of [
+    'electron_game_overlay_runtime.build.json',
+    'electron_game_overlay_runtime32.build.json',
+  ]) {
+    rewriteRuntimePackageBuildStamp(
+      fixture.runtimeDirectory,
+      manifestFileName,
+      (manifest) => {
+        manifest.schemaVersion = 2;
+        delete manifest.runtimeGeneration;
+        delete manifest.targetTransportMin;
+        delete manifest.targetTransportMax;
+      },
+    );
+  }
+  const sessionHarness = createSessionHarness(Promise.resolve(), () => {
+    throw new Error('intentional authorization stop');
+  });
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+
+  try {
+    await assert.rejects(
+      launcher.attach(sessionHarness.session, {
+        processName: 'legacy.exe',
+        pid: 4201,
+      }),
+      /intentional authorization stop/,
+    );
+    assert.deepEqual(sessionHarness.targetAuthorizations[0].runtimeProvider, {
+      runtimeGeneration: 1,
+      targetTransportMin: 1,
+      targetTransportMax: 1,
+    });
   } finally {
     launcher.dispose();
   }
@@ -3039,8 +3133,15 @@ test('path-selected official add-ons publish exact-PID discovery before acceptin
         'electron-overlay-transport-v1.json',
       ),
       expectedExecutablePath: targetExecutablePath,
+      runtimeProvider: {
+        runtimeGeneration: 1,
+        targetTransportMin: 1,
+        targetTransportMax: 1,
+      },
+      signal: sessionHarness.targetAuthorizations[0].signal,
       releaseCount: 0,
     });
+    assert.equal(sessionHarness.targetAuthorizations[0].signal.aborted, false);
     sessionHarness.emitNative('game.process', {
       pid: 4258,
       path: targetExecutablePath,
@@ -4039,6 +4140,48 @@ test('target authorization failure prevents injection and removes the staged run
   }
 });
 
+test('disposing while target authorization waits aborts the hidden lease and removes the staged run', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const sessionHarness = createSessionHarness(
+    Promise.resolve(),
+    (authorization) =>
+      new Promise((_, reject) => {
+        const { signal } = authorization;
+        assert.ok(signal);
+        const rejectCanceled = () => reject(signal.reason);
+        signal.addEventListener('abort', rejectCanceled, { once: true });
+        if (signal.aborted) {
+          rejectCanceled();
+        }
+      }),
+  );
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+
+  try {
+    const attachment = launcher.attach(sessionHarness.session, {
+      processName: 'game.exe',
+      pid: 9151,
+    });
+    await waitFor(() => sessionHarness.targetAuthorizations.length === 1);
+    assert.equal(readdirSync(fixture.runsRootDirectory).length, 1);
+
+    launcher.dispose();
+    const outcome = await settleWithin(attachment, 250);
+    assert.equal(outcome.status, 'rejected');
+    assert.match(outcome.error.message, /disposed before attachment/);
+    assert.equal(sessionHarness.targetAuthorizations[0].signal.aborted, true);
+    await waitFor(
+      () => readdirSync(fixture.runsRootDirectory).length === 0,
+      1_000,
+    );
+    assert.equal(execution.calls.length, 0);
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
 test('connection-proof timeout after successful injection blocks retries', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
@@ -4565,6 +4708,93 @@ test('a stale timeout reader cannot block a same-target retry after a definite-s
   }
 });
 
+test('attach joins a broker-owned exact target without starting another injector', async () => {
+  const fixture = createRuntime();
+  const execution = stubExecFile();
+  const pid = 4242;
+  const targetPath = 'C:\\games\\Gun Frog.exe';
+  const ownerRunDirectory = path.join(
+    fixture.runsRootDirectory,
+    'broker-owner',
+  );
+  let sessionHarness;
+  sessionHarness = createSessionHarness(Promise.resolve(), async () => {
+    sessionHarness.emitNative('game.process', {
+      pid,
+      path: targetPath,
+    });
+    return {
+      disposition: 'joined-existing',
+      target: {
+        pid,
+        executablePath: targetPath,
+        discoveryPath: path.join(
+          ownerRunDirectory,
+          'electron-overlay-transport-v1.json',
+        ),
+      },
+      release() {},
+    };
+  });
+  const launcher = new ReShadeOverlayLauncher(
+    createConfig(fixture, { expectedTargetPid: pid }),
+  );
+  const events = [];
+  const unsubscribe = launcher.onEvent((event) => events.push(event));
+  let stagedRunDirectory;
+  launcher.onEvent((event) => {
+    if (event.type === 'runtime-staged') {
+      stagedRunDirectory = event.runDirectory;
+    }
+  });
+
+  try {
+    const result = await launcher.attach(sessionHarness.session, {
+      processName: 'Gun Frog.exe',
+      pid,
+      executablePath: targetPath,
+    });
+    assert.equal(execution.calls.length, 0);
+    assert.equal(result.runtimeMode, 'shared-runtime');
+    assert.equal(result.pid, pid);
+    assert.equal(result.injectorTargetPid, pid);
+    assert.equal(result.targetExecutablePath, targetPath);
+    assert.equal(result.selectedPath, undefined);
+    assert.equal(result.runDirectory, ownerRunDirectory);
+    assert.equal(
+      result.injectorStdoutPath,
+      path.join(ownerRunDirectory, 'inject.stdout.log'),
+    );
+    assert.equal(launcher.runDirectory, null);
+    assert.deepEqual(
+      events.find((event) => event.type === 'target-rendezvous-authorized'),
+      {
+        type: 'target-rendezvous-authorized',
+        targetLabel: result.targetLabel,
+        pid,
+        discoveryPath: path.join(
+          ownerRunDirectory,
+          'electron-overlay-transport-v1.json',
+        ),
+      },
+    );
+    assert.ok(stagedRunDirectory);
+    assert.equal(existsSync(stagedRunDirectory), false);
+    assert.equal(launcher.state, 'connected');
+
+    sessionHarness.emitNative('game.process.disconnected', {
+      pid,
+      path: targetPath,
+    });
+    assert.equal(launcher.state, 'idle');
+    assert.equal(sessionHarness.targetAuthorizations[0].releaseCount, 1);
+  } finally {
+    unsubscribe();
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
 test('attach requires matching path and PID, rejects live duplicates, and cleans up on disconnect', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
@@ -4698,9 +4928,30 @@ test('attach requires matching path and PID, rejects live duplicates, and cleans
 
 test('attach correlates exact-PID candidates, identity, reauthentication, and terminal exit', async () => {
   const fixture = createRuntime();
+  for (const manifestFileName of [
+    'electron_game_overlay_runtime.build.json',
+    'electron_game_overlay_runtime32.build.json',
+  ]) {
+    rewriteRuntimePackageBuildStamp(
+      fixture.runtimeDirectory,
+      manifestFileName,
+      (manifest) => {
+        manifest.runtimeGeneration = 9;
+        manifest.targetTransportMax = 3;
+      },
+    );
+  }
   const execution = stubExecFile();
   const sessionHarness = createSessionHarness();
-  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const bundledConfig = parseReShadeLaunchConfig(
+    ['electron.exe', '--reshade-overlay'],
+    {
+      bundledRuntimeDirectory: fixture.runtimeDirectory,
+      runsRootDirectory: fixture.runsRootDirectory,
+    },
+  );
+  assert.ok(bundledConfig);
+  const launcher = new ReShadeOverlayLauncher(bundledConfig);
   const originalLog = console.log;
   console.log = () => undefined;
 
@@ -4718,6 +4969,11 @@ test('attach correlates exact-PID candidates, identity, reauthentication, and te
     await waitFor(() => execution.calls.length === 1);
     assert.equal(sessionHarness.targetAuthorizations.length, 1);
     assert.equal(sessionHarness.targetAuthorizations[0].pid, 7301);
+    assert.deepEqual(sessionHarness.targetAuthorizations[0].runtimeProvider, {
+      runtimeGeneration: 9,
+      targetTransportMin: 1,
+      targetTransportMax: 3,
+    });
     assert.equal(
       sessionHarness.targetAuthorizations[0].discoveryPath,
       path.join(
@@ -5286,12 +5542,15 @@ function writeRuntimePackageBuildStamp(runtimeDirectory, spec) {
   writeFileSync(
     path.join(runtimeDirectory, spec.manifestFileName),
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'electron-game-overlay-runtime-build',
       platform: spec.platform,
       configuration: 'RelWithDebInfo',
       addonBuildId: 'F2A88AD705204DBB8E18D86E7147A13C',
       managerProtocolSchemaVersion: 1,
+      runtimeGeneration: 1,
+      targetTransportMin: 1,
+      targetTransportMax: 1,
       managerSourceSha256: 'A'.repeat(64),
       managerSha256: hash(spec.managerFileName),
       addonSha256: hash(spec.addonFileName),
@@ -5652,7 +5911,13 @@ function createSessionHarness(
         }
         return ready;
       },
-      async authorizeTarget(pid, discoveryPath, expectedExecutablePath) {
+      async authorizeTarget(
+        pid,
+        discoveryPath,
+        expectedExecutablePath,
+        runtimeProvider,
+        signal,
+      ) {
         if (closed) {
           throw new Error('the overlay session is closed');
         }
@@ -5662,16 +5927,40 @@ function createSessionHarness(
           ...(expectedExecutablePath === undefined
             ? {}
             : { expectedExecutablePath }),
+          ...(runtimeProvider === undefined ? {} : { runtimeProvider }),
+          ...(signal === undefined ? {} : { signal }),
           releaseCount: 0,
         };
         targetAuthorizations.push(authorization);
-        const releaseOverride = authorizeTargetOverride
+        const authorizationOverride = authorizeTargetOverride
           ? await authorizeTargetOverride(authorization)
           : undefined;
-        return () => {
+        const releaseOverride =
+          typeof authorizationOverride === 'function'
+            ? authorizationOverride
+            : authorizationOverride?.release;
+        const release = () => {
           ++authorization.releaseCount;
           releaseOverride?.();
         };
+        if (
+          authorizationOverride &&
+          typeof authorizationOverride === 'object'
+        ) {
+          return Object.assign(release, {
+            disposition: authorizationOverride.disposition,
+            ...(authorizationOverride.target === undefined
+              ? {}
+              : { target: authorizationOverride.target }),
+          });
+        }
+        return release;
+      },
+      async authorizeGlobalTarget() {
+        if (closed) {
+          throw new Error('the overlay session is closed');
+        }
+        return () => undefined;
       },
       on(event, handler) {
         assert.ok(

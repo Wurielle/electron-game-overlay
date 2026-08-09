@@ -126,12 +126,14 @@ npx nx build electron-game-overlay-runtime
 
 That target builds the transport dependency, pinned ReShade runtime/injector,
 production add-on, native target-local ReShade add-on manager, and ABI smoke.
-Each architecture distribution contains a schema-2
+Each architecture distribution contains a schema-3
 `electron_game_overlay_runtime.build.json` that binds its artifacts to their
-source and content hashes. Composite SDK staging retains the x64 manifest under
-that name and the x86 manifest as
+source and content hashes and declares its runtime generation plus target
+transport range. Composite SDK staging retains the x64 manifest under that name
+and the x86 manifest as
 `electron_game_overlay_runtime32.build.json`; the shared `ReShade.ini` must
-match both manifests. To configure only the native controlled-host tree
+match both manifests. The SDK still accepts copied schema-2 packages as runtime
+generation 1 with target transport 1. To configure only the native controlled-host tree
 directly:
 
 ```powershell
@@ -746,7 +748,16 @@ rendezvous paths, ports, and credentials; isolated scene and input state; and
 that stopping one app/target does not disturb the other. July 31, 2026 evidence
 is under
 `build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`.
-Concurrent independent applications targeting the same PID remain unsupported.
+
+The same-PID two-app gate runs two independent Electron processes against one
+exact-PID D3D11 target through the per-user protocol-v1 broker. It requires one
+injection owner plus one `shared-runtime` follower, colliding app-local window
+IDs rendered together, isolated input ownership, logical-OR interception, and
+continued rendering and interaction after the owner application is force-killed.
+August 9, 2026 evidence is under
+`build/electron-game-overlay-runtime/client-sdk-two-app-one-target-20260809-155206`.
+All participating SDK releases must preserve the frozen broker and target
+transport v1 fallback described in the root README.
 
 ## Existing target-local ReShade coexistence
 

@@ -77,6 +77,11 @@ $PlatformRuntimeDirectory = Join-Path `
 $DestinationDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "F2A88AD705204DBB8E18D86E7147A13C"
+# Keep these exact mirrors of the runtime build manifest. Protocol-family v1
+# must retain literal target transport v1 as its advertised minimum.
+$ExpectedRuntimeGeneration = 1
+$ExpectedTargetTransportMin = 1
+$ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
 $ExpectedPatchProvenance = [ordered]@{
     observerPatchSha256 =
@@ -262,7 +267,10 @@ $ExpectedPackageBuildStampProperties = @(
     "reshadeBuildStampSha256"
     "reshadeConfigSha256"
     "reshadeRuntimeSha256"
+    "runtimeGeneration"
     "schemaVersion"
+    "targetTransportMax"
+    "targetTransportMin"
 ) | Sort-Object
 $ActualPackageBuildStampProperties = @(
     $PackageBuildStamp.PSObject.Properties |
@@ -274,14 +282,17 @@ if (@(
             $ExpectedPackageBuildStampProperties `
             $ActualPackageBuildStampProperties
     ).Count -ne 0 -or
-    $PackageBuildStamp.schemaVersion -ne 2 -or
+    $PackageBuildStamp.schemaVersion -ne 3 -or
     $PackageBuildStamp.kind -ne "electron-game-overlay-runtime-build" -or
     $PackageBuildStamp.platform -ne $ArchitectureConfig.PackagePlatform -or
     $PackageBuildStamp.configuration -ne "RelWithDebInfo" -or
     $PackageBuildStamp.addonBuildId -cne $ExpectedAddonBuildId -or
     ([string]$PackageBuildStamp.addonBuildId) -cnotmatch
         '^[0-9A-F]{32}$' -or
-    $PackageBuildStamp.managerProtocolSchemaVersion -ne 1) {
+    $PackageBuildStamp.managerProtocolSchemaVersion -ne 1 -or
+    $PackageBuildStamp.runtimeGeneration -ne $ExpectedRuntimeGeneration -or
+    $PackageBuildStamp.targetTransportMin -ne $ExpectedTargetTransportMin -or
+    $PackageBuildStamp.targetTransportMax -ne $ExpectedTargetTransportMax) {
     throw "The Electron Game Overlay runtime build stamp has unexpected provenance: $PackageBuildStampPath"
 }
 $ManagerSourcePath = Join-Path `

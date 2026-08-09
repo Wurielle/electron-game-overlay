@@ -1,4 +1,4 @@
-import { OverlayLoopbackTransport } from './overlay-loopback-transport.js';
+import { OverlayBrokerClient } from './overlay-broker-client.js';
 import type { NativeInputMessage } from './input-translation.js';
 import type { Disposable } from './types.js';
 
@@ -31,6 +31,29 @@ export interface NativeOverlayWindowGeometry {
   rasterChanged?: boolean;
 }
 
+export type NativeTargetAuthorizationDisposition =
+  'injection-owner' | 'joined-existing';
+
+export type NativeTargetConnection = Readonly<{
+  pid: number;
+  executablePath: string;
+  /** The broker-owned rendezvous used by the runtime already in this target. */
+  discoveryPath?: string;
+}>;
+
+export type NativeTargetAuthorization = Readonly<{
+  release: Disposable;
+  disposition: NativeTargetAuthorizationDisposition;
+  target?: NativeTargetConnection;
+}>;
+
+/** Metadata for the exact runtime artifacts offered by one target lease. */
+export type NativeRuntimeProviderMetadata = Readonly<{
+  runtimeGeneration: number;
+  targetTransportMin: number;
+  targetTransportMax: number;
+}>;
+
 export interface NativeOverlay {
   start(): void;
   whenReady(): Promise<unknown>;
@@ -38,7 +61,11 @@ export interface NativeOverlay {
     pid: number,
     discoveryPath: string,
     expectedExecutablePath?: string,
-  ): Promise<Disposable>;
+    runtimeProvider?: NativeRuntimeProviderMetadata,
+    signal?: AbortSignal,
+  ): Promise<Disposable | NativeTargetAuthorization>;
+  /** @internal Legacy untargeted rendezvous for pre-creation name/path watchers. */
+  authorizeGlobalTarget?(): Promise<Disposable>;
   stop(): void;
   setDiagnosticCallback?(callback: (diagnostic: unknown) => void): void;
   setEventCallback(callback: (event: string, ...args: any[]) => void): void;
@@ -59,5 +86,5 @@ export interface NativeOverlay {
 }
 
 export function createNativeOverlay(): NativeOverlay {
-  return new OverlayLoopbackTransport();
+  return new OverlayBrokerClient();
 }
