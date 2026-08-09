@@ -2,34 +2,67 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const ts = require('typescript');
 
 const packageRoot = path.resolve(__dirname, '..');
 const workspaceRoot = path.resolve(packageRoot, '..', '..');
 
 const read = (...segments) => readFileSync(path.join(...segments), 'utf8');
 
-test('the root README names every package-root SDK export', () => {
-  const sdkSource = read(packageRoot, 'src', 'lib', 'sdk.ts');
+test('consumer docs point to the canonical TypeScript declarations', () => {
   const readme = read(workspaceRoot, 'README.md');
-  const exportedNames = Array.from(
-    sdkSource.matchAll(/export(?:\s+type)?\s*\{([\s\S]*?)\}\s*from/g),
-    (match) => match[1],
-  )
-    .flatMap((block) => block.split(','))
-    .map((entry) =>
-      entry
-        .trim()
-        .split(/\s+as\s+/)
-        .at(-1),
+  const packageJson = JSON.parse(read(packageRoot, 'package.json'));
+
+  assert.equal(packageJson.types, './dist/index.d.ts');
+  assert.match(readme, /## API map/);
+  assert.match(
+    readme,
+    /exported TypeScript\s+declarations are the API source of truth/,
+  );
+  assert.match(readme, /libs\/electron-game-overlay\/src\/lib\/sdk\.ts/);
+  assert.doesNotMatch(readme, /## Public API reference/);
+});
+
+test('every package-root export has declaration-site documentation', () => {
+  const configPath = path.join(packageRoot, 'tsconfig.lib.json');
+  const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+  assert.equal(configFile.error, undefined);
+
+  const config = ts.parseJsonConfigFileContent(
+    configFile.config,
+    ts.sys,
+    packageRoot,
+    undefined,
+    configPath,
+  );
+  assert.deepEqual(config.errors, []);
+
+  const program = ts.createProgram(config.fileNames, config.options);
+  const checker = program.getTypeChecker();
+  const sdkSource = program.getSourceFile(
+    path.join(packageRoot, 'src', 'lib', 'sdk.ts'),
+  );
+  assert.ok(sdkSource, 'expected the package SDK entry point');
+
+  const moduleSymbol = checker.getSymbolAtLocation(sdkSource);
+  assert.ok(moduleSymbol, 'expected a symbol for the package SDK entry point');
+
+  const undocumented = checker
+    .getExportsOfModule(moduleSymbol)
+    .map((symbol) =>
+      symbol.flags & ts.SymbolFlags.Alias
+        ? checker.getAliasedSymbol(symbol)
+        : symbol,
     )
-    .filter(Boolean)
+    .filter(
+      (symbol) =>
+        ts.displayPartsToString(symbol.getDocumentationComment(checker)).trim()
+          .length === 0,
+    )
+    .map((symbol) => symbol.getName())
     .sort();
 
-  assert.ok(exportedNames.length > 0, 'expected package-root exports');
-  const missing = exportedNames.filter(
-    (name) => !new RegExp(`\\b${escapeRegExp(name)}\\b`).test(readme),
-  );
-  assert.deepEqual(missing, []);
+  assert.deepEqual(undocumented, []);
 });
 
 test('emitted declarations expose the typed consumer API only', () => {
@@ -68,7 +101,3 @@ test('emitted declarations expose the typed consumer API only', () => {
   assert.doesNotMatch(types, /\bnativeEvent\b/);
   assert.doesNotMatch(types, /\bany\b/);
 });
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}

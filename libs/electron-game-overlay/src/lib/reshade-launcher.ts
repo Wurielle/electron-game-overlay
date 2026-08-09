@@ -273,8 +273,14 @@ const RUNTIME_PACKAGE_BUILD_STAMP_SPECS: readonly RuntimePackageBuildStampSpec[]
     }),
   ]);
 
+/** Selects a target by executable name, optionally with an exact identity. */
 export type ReShadeProcessTarget = Readonly<{
+  /** Windows executable basename, including the `.exe` extension. */
   processName: string;
+  /**
+   * Exact process identifier supplied near process creation. When omitted, the
+   * launcher arms a name watcher and must be started before the target.
+   */
   pid?: number;
   /**
    * Canonical executable path observed by a trusted process watcher. When
@@ -285,11 +291,15 @@ export type ReShadeProcessTarget = Readonly<{
   executablePath?: string;
 }>;
 
+/** Selects the first newly created executable whose full path contains a fragment. */
 export type ReShadePathTarget = Readonly<{
+  /** Case-insensitive path fragment containing at least one path separator. */
   pathContains: string;
+  /** Executable basenames ignored by this watcher. */
   excludedProcessNames?: readonly string[];
 }>;
 
+/** Target selector accepted by {@link ReShadeOverlayLauncher.attach}. */
 export type ReShadeTarget = ReShadeProcessTarget | ReShadePathTarget;
 
 type ExactReShadeProcessTarget = ReShadeProcessTarget &
@@ -298,45 +308,76 @@ type ExactReShadeProcessTarget = ReShadeProcessTarget &
     executablePath: string;
   }>;
 
+/** Validated runtime paths and optional startup hints used by a launcher. */
 export type ReShadeLaunchConfig = Readonly<{
+  /** Canonical directory containing the packaged runtime artifacts. */
   runtimeDirectory: string;
+  /** Writable parent directory for isolated per-attachment runs. */
   runsRootDirectory: string;
+  /** Canonical x64 injector path. */
   injectorPath: string;
+  /** Canonical x86 injector path. */
   x86InjectorPath: string;
+  /** Canonical x64 official-ReShade add-on manager path. */
   addonManagerPath: string;
+  /** Canonical x86 official-ReShade add-on manager path. */
   x86AddonManagerPath: string;
+  /** Canonical packaged x64 ReShade runtime path. */
   runtimePath: string;
+  /** Canonical packaged x86 ReShade runtime path. */
   x86RuntimePath: string;
+  /** Canonical x64 runtime build-stamp path. */
   buildStampPath: string;
+  /** Canonical x86 runtime build-stamp path. */
   x86BuildStampPath: string;
+  /** Canonical x64 package-manifest path. */
   packageBuildStampPath: string;
+  /** Canonical x86 package-manifest path. */
   x86PackageBuildStampPath: string;
+  /** Canonical x64 Electron Game Overlay add-on path. */
   addonPath: string;
+  /** Canonical x86 Electron Game Overlay add-on path. */
   x86AddonPath: string;
+  /** Canonical packaged ReShade configuration path. */
   configPath: string;
+  /** Process name parsed from `--reshade-auto-target-process`, if supplied. */
   autoTargetProcess?: string;
+  /** Exact PID parsed from `--reshade-expected-target-pid`, if supplied. */
   expectedTargetPid?: number;
 }>;
 
+/** Programmatic overrides for {@link parseReShadeLaunchConfig}. */
 export type ReShadeLaunchConfigOptions = Readonly<{
+  /** Absolute packaged-runtime directory used when argv has no override. */
   bundledRuntimeDirectory?: string;
+  /** Absolute writable directory used for isolated attachment runs. */
   runsRootDirectory?: string;
 }>;
 
+/** Injector child-process command exposed by launcher lifecycle events. */
 export type ReShadeInvocation = Readonly<{
+  /** Absolute injector executable path. */
   executable: string;
+  /** Validated command-line arguments passed to the injector. */
   arguments: readonly string[];
+  /** Stable description of the selected target. */
   targetLabel: string;
+  /** Isolated run directory used as the child-process working directory. */
   workingDirectory: string;
 }>;
 
+/** Describes how the overlay code was hosted inside a target. */
 export type ReShadeRuntimeMode =
+  /** The packaged isolated ReShade runtime was injected into a clean target. */
   | 'injected-runtime'
+  /** An already-loaded compatible project runtime accepted the add-on. */
   | 'existing-runtime'
+  /** A compatible official ReShade installation loaded the public add-on. */
   | 'official-addon'
   /** An already-running broker-owned target joined without another injection. */
   | 'shared-runtime';
 
+/** Runtime startup observation attached to initialization diagnostics. */
 export type ReShadeRuntimeStartupCode =
   | ReShadeRuntimeStartupRecordCode
   | 'not-observed'
@@ -344,24 +385,40 @@ export type ReShadeRuntimeStartupCode =
   | 'pid-mismatch'
   | 'pid-unavailable';
 
+/** Evidence and target identity returned after an injector operation. */
 export type ReShadeLaunchResult = Readonly<{
+  /** Selected executable basename. */
   processName: string;
+  /** Canonical path of the executable selected by the injector. */
   targetExecutablePath: string;
+  /** Path reported by a watcher before canonical target inspection, if any. */
   selectedPath?: string;
+  /** Stable description of the requested target selector. */
   targetLabel: string;
+  /** Exact process identifier selected by the injector. */
   injectorTargetPid: number;
+  /** Mechanism that hosts this application's overlay add-on. */
   runtimeMode: ReShadeRuntimeMode;
+  /** Existing ReShade host module used for integration, when applicable. */
   hostRuntimePath?: string;
+  /** Add-on module loaded by an existing ReShade host, when applicable. */
   addonModulePath?: string;
+  /** Isolated attachment run directory. */
   runDirectory: string;
+  /** Preserved injector standard-output log. */
   injectorStdoutPath: string;
+  /** Preserved injector standard-error log. */
   injectorStderrPath: string;
+  /** ReShade log path associated with this run. */
   reshadeLogPath: string;
+  /** Fixed startup-observation record path, when available. */
   runtimeStartupPath?: string;
 }>;
 
+/** Successful authenticated attachment, including the connected target PID. */
 export type ReShadeAttachResult = ReShadeLaunchResult &
   Readonly<{
+    /** Authenticated target process identifier. */
     pid: number;
   }>;
 
@@ -502,16 +559,29 @@ const isExistingReShadeOwnershipConflict = (
     error.code === 'ownership-marker-invalid' ||
     error.code === 'file-changed');
 
+/** Current lifecycle state of a {@link ReShadeOverlayLauncher}. */
 export type ReShadeAttachmentState =
-  'idle' | 'attaching' | 'connected' | 'blocked';
+  /** No attachment is active and a new target may be requested. */
+  | 'idle'
+  /** Runtime staging, injection, or target authentication is in progress. */
+  | 'attaching'
+  /** The requested target authenticated and remains connected. */
+  | 'connected'
+  /** A result was indeterminate, so this launcher cannot safely retry. */
+  | 'blocked';
 
 /**
  * `definite-safe` means a retry cannot duplicate a loaded ReShade runtime or
  * add-on payload. It does not promise that no bounded remote coordination,
  * allocation, or loader thread was attempted.
  */
-export type ReShadeRetrySafety = 'definite-safe' | 'indeterminate';
+export type ReShadeRetrySafety =
+  /** The launcher proved that another attempt cannot duplicate target code. */
+  | 'definite-safe'
+  /** The launcher cannot prove that another attempt is safe. */
+  | 'indeterminate';
 
+/** Launcher stage in which an attachment failure occurred. */
 export type ReShadeDiagnosticStage =
   | 'runtime-staging'
   | 'target-preflight'
@@ -519,6 +589,7 @@ export type ReShadeDiagnosticStage =
   | 'runtime-initialization'
   | 'lifecycle';
 
+/** Stable machine-readable attachment failure code. */
 export type ReShadeDiagnosticCode =
   | 'runtime-staging-failed'
   | 'official-addon-startup-grace-coordinated'
@@ -551,72 +622,118 @@ export type ReShadeDiagnosticCode =
   | 'session-closed'
   | 'operation-cancelled';
 
+/** Preserved files useful for diagnosing an attachment failure. */
 export type ReShadeDiagnosticEvidence = Readonly<{
+  /** Isolated attachment run directory. */
   runDirectory: string;
+  /** Preserved injector standard-output log. */
   injectorStdoutPath: string;
+  /** Preserved injector standard-error log. */
   injectorStderrPath: string;
+  /** ReShade log path associated with the failed operation. */
   reshadeLogPath: string;
+  /** Fixed startup-observation record path, when available. */
   runtimeStartupPath?: string;
 }>;
 
+/** Immutable structured failure produced by a launcher operation. */
 export type ReShadeDiagnostic = Readonly<{
+  /** Diagnostic schema version. */
   schemaVersion: 1;
+  /** Package that produced the diagnostic. */
   source: 'electron-game-overlay';
+  /** Launcher failures are always errors. */
   severity: 'error';
+  /** Lifecycle stage that failed. */
   stage: ReShadeDiagnosticStage;
+  /** Stable code intended for programmatic handling. */
   code: ReShadeDiagnosticCode;
+  /** Whether another injection attempt is known not to duplicate target code. */
   retrySafety: ReShadeRetrySafety;
+  /** Human-readable description intended for logs and diagnostics UI. */
   message: string;
+  /** Stable description of the requested target selector, when known. */
   targetLabel?: string;
+  /** Exact target process identifier, when known. */
   pid?: number;
+  /** Canonical target executable path, when known. */
   targetExecutablePath?: string;
+  /** Conflicting or inspected ReShade module path, when applicable. */
   modulePath?: string;
+  /** Project add-on path involved in the failure, when applicable. */
   addonPath?: string;
+  /** Native Windows error code, when an operating-system operation failed. */
   windowsErrorCode?: number;
+  /** Last bounded runtime startup observation, when available. */
   runtimeStartupCode?: ReShadeRuntimeStartupCode;
+  /** Preserved filesystem evidence for the operation, when available. */
   evidence?: ReShadeDiagnosticEvidence;
 }>;
 
+/** Immutable lifecycle event emitted by {@link ReShadeOverlayLauncher.onEvent}. */
 export type ReShadeLauncherEvent =
   | Readonly<{
+      /** An isolated runtime is ready for an attachment attempt. */
       type: 'runtime-staged';
+      /** Isolated run directory. */
       runDirectory: string;
     }>
   | Readonly<{
+      /** An exact target was authorized to authenticate to the session. */
       type: 'target-rendezvous-authorized';
+      /** Stable description of the requested target selector. */
       targetLabel: string;
+      /** Authorized target process identifier. */
       pid: number;
+      /** Private discovery document used by the target runtime. */
       discoveryPath: string;
     }>
   | Readonly<{
+      /** The injector child process was created. */
       type: 'injector-started';
+      /** Command used to start the injector. */
       invocation: ReShadeInvocation;
     }>
   | Readonly<{
+      /** A name or path watcher is armed and the target may now be launched. */
       type: 'injector-watcher-ready';
+      /** Command used to start the watcher. */
       invocation: ReShadeInvocation;
     }>
   | Readonly<{
+      /** The injector completed and supplied validated target evidence. */
       type: 'injector-returned';
+      /** Validated injector result. */
       result: ReShadeLaunchResult;
     }>
   | Readonly<{
+      /** The injector or its preflight failed. */
       type: 'injector-failed';
+      /** Structured failure details. */
       diagnostic: ReShadeDiagnostic;
     }>
   | Readonly<{
+      /** The selected target authenticated to the overlay session. */
       type: 'target-connected';
+      /** Stable description of the requested target selector. */
       targetLabel: string;
+      /** Authenticated target process identifier. */
       pid: number;
+      /** Canonical authenticated executable path. */
       path: string;
     }>
   | Readonly<{
+      /** The selected exact target was confirmed to have exited. */
       type: 'target-disconnected';
+      /** Stable description of the requested target selector. */
       targetLabel: string;
+      /** Disconnected target process identifier. */
       pid: number;
+      /** Last authenticated executable path, when available. */
       path?: string;
     }>;
 
+/** Observer accepted by {@link ReShadeOverlayLauncher.onEvent}. */
 export type ReShadeLauncherEventHandler = (event: ReShadeLauncherEvent) => void;
 
 type ReShadeDiagnosticInput = Omit<
@@ -641,6 +758,11 @@ export function createReShadeOperationError(
   return constructReShadeOperationError(input);
 }
 
+/**
+ * Structured error returned for attachment failures with stable diagnostics.
+ * Instances are created by launcher operations and can be narrowed with
+ * {@link isReShadeOperationError}.
+ */
 export class ReShadeOperationError extends Error {
   static {
     constructReShadeOperationError = (input) =>
@@ -650,9 +772,13 @@ export class ReShadeOperationError extends Error {
       );
   }
 
+  /** Complete immutable diagnostic for the failed operation. */
   public readonly diagnostic: ReShadeDiagnostic;
+  /** Stable failure code mirrored from {@link diagnostic}. */
   public readonly code: ReShadeDiagnosticCode;
+  /** Failed lifecycle stage mirrored from {@link diagnostic}. */
   public readonly stage: ReShadeDiagnosticStage;
+  /** Retry classification mirrored from {@link diagnostic}. */
   public readonly retrySafety: ReShadeRetrySafety;
 
   private constructor(
@@ -674,6 +800,7 @@ export class ReShadeOperationError extends Error {
   }
 }
 
+/** Narrows an unknown value to a launcher-produced operation error. */
 export function isReShadeOperationError(
   error: unknown,
 ): error is ReShadeOperationError {
@@ -768,16 +895,30 @@ type ConnectedTarget = ReShadeTargetConnection &
     removeListeners: () => void;
   }>;
 
-/** Returns the patched ReShade runtime directory staged by the SDK build. */
+/** Returns the packaged runtime-artifact directory staged by the SDK build. */
 export function defaultReShadeRuntimeDirectory(): string {
   return path.resolve(__dirname, '..', 'runtime', 'win32-x64', 'reshade');
 }
 
-/** Returns the writable root used for preserved per-attachment runtime copies. */
+/** Returns the writable root used for isolated per-attachment runtime copies. */
 export function defaultReShadeRunsRootDirectory(): string {
   return path.join(tmpdir(), 'electron-game-overlay', 'reshade-runs');
 }
 
+/**
+ * Parses and validates the SDK's explicit `--reshade-overlay` startup opt-in,
+ * runtime overrides, and optional target hints.
+ *
+ * Returns `null` when the opt-in flag is absent. A returned configuration has
+ * canonical artifact paths and verified package manifests and can be passed to
+ * {@link ReShadeOverlayLauncher}.
+ *
+ * Recognized arguments are `--reshade-overlay`,
+ * `--reshade-runtime-dir=<absolute-path>`,
+ * `--reshade-auto-target-process=<name.exe>`, and
+ * `--reshade-expected-target-pid=<positive uint32>`. The PID hint requires the
+ * process-name hint. Parsing configuration never starts an attachment.
+ */
 export function parseReShadeLaunchConfig(
   argv: readonly string[],
   options: ReShadeLaunchConfigOptions = {},
@@ -1021,6 +1162,11 @@ export function acceptReShadeTargetConnection(
   return proveReShadeTargetConnection(launcher, pid);
 }
 
+/**
+ * Stages the overlay runtime and manages one target attachment lifecycle.
+ * Create a separate launcher for each concurrently targeted process while
+ * sharing the application's {@link OverlaySession}.
+ */
 export class ReShadeOverlayLauncher {
   static {
     requestReShadeOverlayLaunch = (launcher, target) =>
@@ -1061,23 +1207,31 @@ export class ReShadeOverlayLauncher {
   private launchGeneration = 0;
   private disposed = false;
 
-  constructor(public readonly config: ReShadeLaunchConfig) {}
+  /** Creates a launcher from a validated runtime configuration. */
+  constructor(
+    /** Validated runtime configuration used for every operation. */
+    public readonly config: ReShadeLaunchConfig,
+  ) {}
 
+  /** Whether this launcher currently has a non-idle target lifecycle. */
   public get hasRequestedInjection(): boolean {
     return this.attachmentState !== 'idle';
   }
 
+  /** Current attachment lifecycle state. */
   public get state(): ReShadeAttachmentState {
     return this.attachmentState;
   }
 
+  /** Most recently staged isolated run directory, or `null` before staging. */
   public get runDirectory(): string | null {
     return this.latestRunDirectory;
   }
 
   /**
    * Subscribes to immutable launcher lifecycle events. Observer failures are
-   * isolated from attachment state and operation results.
+   * isolated from attachment state and operation results. The returned
+   * function removes the subscription.
    */
   public onEvent(handler: ReShadeLauncherEventHandler): () => void {
     if (typeof handler !== 'function') {
@@ -1099,7 +1253,8 @@ export class ReShadeOverlayLauncher {
   /**
    * Stages an isolated runtime before a target is detected. The next launch
    * consumes it, keeping filesystem work out of latency-sensitive process
-   * startup without changing the exact-PID injection contract.
+   * startup without changing the exact-PID injection contract. Concurrent
+   * calls share the same preparation operation.
    */
   public prepare(): Promise<void> {
     if (this.disposed) {
@@ -1140,6 +1295,8 @@ export class ReShadeOverlayLauncher {
    * Applies an external, authoritative process-exit observation to a connected
    * attachment or an attaching exact-PID target. This closes the ordering gap
    * when a process watcher observes termination before the overlay transport.
+   * Returns whether the observation changed launcher or deferred-maintenance
+   * state.
    */
   public confirmTargetExited(pid: number): boolean {
     if (!isValidProcessPid(pid)) {
@@ -1195,7 +1352,8 @@ export class ReShadeOverlayLauncher {
 
   /**
    * Waits for transport discovery, arms the staged ReShade injector, and then
-   * requires the injected add-on to authenticate back to this producer.
+   * requires the injected add-on to authenticate back to this producer. The
+   * promise resolves only after the exact selected target authenticates.
    */
   public attach(
     session: OverlaySession,
@@ -1409,6 +1567,10 @@ export class ReShadeOverlayLauncher {
     return request;
   }
 
+  /**
+   * Cancels pending work, releases target authorization, and removes unused
+   * staged files. Repeated calls have no effect.
+   */
   public dispose(): void {
     if (this.disposed) {
       return;

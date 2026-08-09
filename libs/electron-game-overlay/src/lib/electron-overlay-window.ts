@@ -28,6 +28,11 @@ export function createElectronOverlayWindow(
   return constructElectronOverlayWindow(bridge, options);
 }
 
+/**
+ * Controls one offscreen Electron window published to the game compositor.
+ * Instances are returned by {@link OverlaySession.windows}; they cannot be
+ * constructed directly.
+ */
 export class ElectronOverlayWindow {
   static {
     constructElectronOverlayWindow = (bridge, options) =>
@@ -38,12 +43,19 @@ export class ElectronOverlayWindow {
       );
   }
 
+  /** Session-local logical identifier supplied through the window options. */
   public readonly id: string;
+  /** Human-readable compositor name, defaulting to {@link id}. */
   public readonly name: string;
+  /** Electron's numeric identifier for the backing `BrowserWindow`. */
   public readonly nativeId: number;
+  /** The offscreen `BrowserWindow` whose painted frames are published. */
   public readonly browserWindow: Electron.BrowserWindow;
+  /** Draggable border thickness in Electron device-independent pixels. */
   public readonly dragBorder: number;
+  /** Draggable caption height in Electron device-independent pixels. */
   public readonly captionHeight: number;
+  /** Whether transparent pixels allow input to reach a lower overlay window. */
   public readonly transparent: boolean;
 
   private registered = false;
@@ -110,10 +122,15 @@ export class ElectronOverlayWindow {
     this.bindBrowserWindow();
   }
 
+  /** Whether this window is currently registered with the game compositor. */
   public get visible() {
     return this.registered && !this.destroyed;
   }
 
+  /**
+   * Subscribes to wrapper teardown. If already destroyed, invokes the handler
+   * immediately. The returned function removes the subscription.
+   */
   public onClose(handler: () => void) {
     if (this.destroyed) {
       handler();
@@ -127,6 +144,7 @@ export class ElectronOverlayWindow {
     };
   }
 
+  /** Registers the window with the compositor and requests an initial frame. */
   public show() {
     if (this.destroyed || this.registered) {
       return;
@@ -146,6 +164,7 @@ export class ElectronOverlayWindow {
     }
   }
 
+  /** Unregisters the window without destroying its backing `BrowserWindow`. */
   public hide() {
     if (!this.registered) {
       return;
@@ -155,6 +174,10 @@ export class ElectronOverlayWindow {
     this.registered = false;
   }
 
+  /**
+   * Removes the wrapper from its session. A BrowserWindow created by the SDK is
+   * also destroyed; a caller-owned attached BrowserWindow is left open.
+   */
   public destroy() {
     const failure = this.finalizeDestroy(this.ownsBrowserWindow);
     if (failure) {
@@ -162,18 +185,22 @@ export class ElectronOverlayWindow {
     }
   }
 
+  /** Alias for {@link destroy}. */
   public close() {
     this.destroy();
   }
 
+  /** Gives the backing offscreen web view overlay-input focus. */
   public focus() {
     this.browserWindow.focusOnWebView();
   }
 
+  /** Removes overlay-input focus from the backing offscreen web view. */
   public blur() {
     this.browserWindow.blurWebView();
   }
 
+  /** Updates any subset of the window bounds in Electron DIP coordinates. */
   public setBounds(bounds: Partial<Rect>) {
     const current = this.browserWindow.getBounds();
     this.browserWindow.setBounds({
@@ -186,11 +213,16 @@ export class ElectronOverlayWindow {
     }
   }
 
+  /** Returns the current window bounds in Electron DIP coordinates. */
   public getBounds() {
     return this.browserWindow.getBounds();
   }
 
-  /** Keeps this window's OSR surface sized to a live injected render target. */
+  /**
+   * Keeps the offscreen surface sized and positioned from a live injected
+   * render target. Selection defaults to the most recently changed surface and
+   * the render area.
+   */
   public followTarget(options: ElectronOverlayWindowFollowTargetOptions = {}) {
     if (this.destroyed) {
       return;
@@ -198,6 +230,7 @@ export class ElectronOverlayWindow {
     this.bridge.followTarget(this, options);
   }
 
+  /** Stops target following and restores the bounds captured when it began. */
   public stopFollowingTarget() {
     if (this.destroyed) {
       return;

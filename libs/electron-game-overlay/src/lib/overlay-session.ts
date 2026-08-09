@@ -221,6 +221,10 @@ async function waitForAbortable<T>(
   }
 }
 
+/**
+ * Owns overlay windows, target observations, and input policy for one producer
+ * session. Create instances through {@link ElectronGameOverlay.createSession}.
+ */
 export class OverlaySession {
   static {
     constructOverlaySession = (overlay) =>
@@ -264,12 +268,29 @@ export class OverlaySession {
   private quitting = false;
   private closed = false;
 
-  public readonly input = {
+  /** Session-wide input-interception controls. */
+  public readonly input: {
+    /** Requests that connected targets block game input and route it here. */
+    intercept(): void;
+    /** Releases this session's interception request on connected targets. */
+    release(): void;
+  } = {
     intercept: () => this.setInputIntercept(true),
     release: () => this.setInputIntercept(false),
   };
 
-  public readonly windows = {
+  /** Creates, attaches, and looks up Electron overlay windows. */
+  public readonly windows: {
+    /** Creates an SDK-owned offscreen `BrowserWindow` and wrapper. */
+    create(options: CreateElectronOverlayWindowOptions): ElectronOverlayWindow;
+    /** Attaches a caller-owned `BrowserWindow` created with offscreen rendering. */
+    attach(
+      window: Electron.BrowserWindow,
+      options?: AttachElectronOverlayWindowOptions,
+    ): ElectronOverlayWindow;
+    /** Returns a session window by logical ID, or `null` when it is absent. */
+    get(id: string): ElectronOverlayWindow | null;
+  } = {
     create: (options: CreateElectronOverlayWindowOptions) =>
       this.createWindow(options),
     attach: (
@@ -283,7 +304,13 @@ export class OverlaySession {
     get: (id: string) => this.getWindow(id),
   };
 
-  public readonly targets = {
+  /** Read-only snapshots of render surfaces reported by connected targets. */
+  public readonly targets: {
+    /** Returns all currently retained target surfaces. */
+    list(): readonly OverlayTargetSurface[];
+    /** Returns one retained surface, or `null` when it is absent. */
+    get(pid: number, surfaceId: string): OverlayTargetSurface | null;
+  } = {
     list: (): readonly OverlayTargetSurface[] =>
       Object.freeze(Array.from(this.targetSurfaces.values())),
     get: (pid: number, surfaceId: string): OverlayTargetSurface | null =>
@@ -335,6 +362,10 @@ export class OverlaySession {
     globalTargetAuthorizers.set(this, () => this.#authorizeGlobalTarget());
   }
 
+  /**
+   * Starts the producer transport. This is idempotent and is normally invoked
+   * automatically by the first operation that needs the transport.
+   */
   public start() {
     if (this.closed) {
       throw new Error('the overlay session is closed');
@@ -388,7 +419,7 @@ export class OverlaySession {
     }
   }
 
-  /** Resolves after the authenticated overlay transport is ready for a runtime. */
+  /** Resolves once transport discovery is ready to accept a target runtime. */
   public whenReady(): Promise<void> {
     if (this.closed) {
       return Promise.reject(new Error('the overlay session is closed'));
@@ -510,6 +541,10 @@ export class OverlaySession {
     return release;
   }
 
+  /**
+   * Tears down windows, subscriptions, target authorizations, and transport
+   * state. Repeated calls have no effect.
+   */
   public close() {
     if (this.closed || this.quitting) {
       return;
@@ -580,6 +615,10 @@ export class OverlaySession {
     this.emitClose();
   }
 
+  /**
+   * Subscribes to the beginning of session teardown. The returned function
+   * removes the subscription.
+   */
   public onQuit(handler: () => void) {
     if (this.quitting) {
       this.invokeLifecycleHandler('quit', handler);
@@ -593,6 +632,10 @@ export class OverlaySession {
     };
   }
 
+  /**
+   * Subscribes to completion of session teardown. The returned function removes
+   * the subscription.
+   */
   public onClose(handler: () => void) {
     if (this.closed) {
       this.invokeLifecycleHandler('close', handler);
@@ -606,6 +649,10 @@ export class OverlaySession {
     };
   }
 
+  /**
+   * Subscribes to a typed session event. The returned function removes the
+   * subscription.
+   */
   public on<Event extends OverlaySessionEventName>(
     event: Event,
     handler: OverlaySessionEventHandler<Event>,
