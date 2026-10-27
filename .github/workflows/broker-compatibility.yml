@@ -46,7 +46,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force test-results | Out-Null
           $tests = @(Get-ChildItem libs/electron-game-overlay/tests/*.test.cjs | ForEach-Object FullName)
-          & node --test --test-reporter=junit --test-reporter-destination=test-results/broker.xml @tests
+          & node --test --test-timeout=120000 --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/broker.xml @tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check independently built base and updated SDK interoperability
         env:
@@ -95,7 +95,7 @@ jobs:
       - name: Prepare Windows Rust targets
         run: rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
       - name: Build native runtimes and packaged SDK
-        run: node node_modules/nx/bin/nx.js run electron-game-overlay:build
+        run: npm exec --yes=false -- nx run electron-game-overlay:build
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: electron-game-overlay-windows-sdk
