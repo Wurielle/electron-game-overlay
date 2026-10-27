@@ -471,10 +471,27 @@ The SDK guarantees that compatible applications:
   releases or disconnects;
 - keep working when another participating application exits or crashes.
 
-The first compatible broker remains in charge for that target lifecycle. SDK
-versions can coexist when they retain the protocol-v1 compatibility contract;
-new optional behavior is used only when both sides support it. Versions from
-before broker support cannot join a broker-owned target.
+Multi-application, multi-version coexistence is a fundamental library contract,
+not a same-version convenience. Broker/bootstrap code must remain small and
+stable, and new releases must preserve backward-compatible client APIs and the
+shared ownership rules.
+
+Today the first compatible broker remains in charge. For each exact target PID,
+the bounded initial election selects the highest eligible compatible runtime
+generation registered before the cutoff, not the highest npm version label.
+Once target-route publication may have begun, the selected ownership stays
+pinned for that target lifecycle. Later arrivals, including newer versions,
+join the selected runtime instead of injecting another one. New optional
+behavior is used only when both sides support it. Versions from before broker
+support cannot join a broker-owned target.
+
+**Planned, not implemented:** optional advance registration in one shared
+installed-implementation registry will let the first bootstrap discover and
+start the highest eligible registered broker implementation even before the app
+that supplied it starts. This is an additional reliability path, not a required
+installation step: ordinary runtime registration/join must still work when the
+catalog is absent or stale. It does not remove the early graphics-attachment
+deadline or permit replacing a committed owner during a live game.
 
 The broker currently starts through the application's Electron executable with
 `ELECTRON_RUN_AS_NODE=1`. Packaged applications using exact-PID attachment must
@@ -486,7 +503,10 @@ so those legacy modes remain exclusive. Use an application process watcher and
 exact-PID attachment whenever overlap is possible.
 
 See [`doc/multi-application-broker.md`](doc/multi-application-broker.md) for the
-internal election, recovery, and versioning design.
+mandatory compatibility contract, current election/recovery design, planned
+advance-registration behavior, and required regression coverage. The
+500-app/500-version scenario expresses the design goal; it is not a tested
+capacity guarantee.
 
 ## Existing ReShade installations
 

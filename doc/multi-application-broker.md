@@ -1,10 +1,54 @@
 # Same-PID multi-application broker
 
-This document records the internal ownership contract that lets independent
-Electron applications use `electron-game-overlay` against one target PID. The
-consumer API does not expose the broker: every application still creates its
-own `ElectronGameOverlay`, `OverlaySession`, windows, and
+This is the canonical compatibility and ownership contract for independent
+Electron applications using `electron-game-overlay` (EGO) against one target
+PID. The consumer API does not expose the broker: every application still
+creates its own `ElectronGameOverlay`, `OverlaySession`, windows, and
 `ReShadeOverlayLauncher`.
+
+## Product contract: preserve across releases
+
+Independent applications must be able to use different EGO versions against the
+same game without coordinating upgrades or competing to inject separate
+runtimes. New releases must preserve interoperability with older releases in
+the shared-broker architecture, not require all applications to carry the same
+package version. The permanent v1 baseline below is part of that commitment;
+versions predating this architecture are not retroactively made broker-aware.
+
+The scenario of 500 applications carrying 500 versions expresses the design
+goal: one shared target communication/runtime ownership path, isolated member
+windows and input, and surviving applications unaffected by another member's
+exit or crash. It is not measured capacity, a promise of arbitrary resource
+availability, or proof that those package combinations have been tested.
+
+Keep the broker/bootstrap core small, focused, and rarely changing. Its stable
+responsibilities are discovery, singleton/target ownership, compatibility
+negotiation, scene/input routing, and recovery. Application UI, business logic,
+game-specific policy, and evolving renderer features belong outside that core.
+New functionality must not require rewriting the coordination foundation or
+silently narrowing backward compatibility.
+
+Keep three roles distinct:
+
+- The **bootstrap** finds or starts the shared broker. Optional advance
+  discovery described below is planned work, not an existing public API.
+- The **broker** coordinates application members and owns the shared target
+  communication path. Today the first compatible running broker stays in
+  charge; selecting a newer broker from an installed catalog is not implemented.
+- The **runtime provider** supplies the validated native artifacts and performs
+  the elected attachment. Its explicit compatible runtime generation, not npm
+  semver alone, determines priority in the current bounded target election.
+
+The highest eligible compatible provider registered before the election cutoff
+wins. It need not be the first application to start. After target-route
+publication may have begun, a later newer version joins the selected runtime;
+hot takeover and live native-runtime replacement are not requirements. This
+freeze is a safety invariant, not a failure to prefer the newest eligible
+candidate within the election window.
+
+The following current-design sections describe implemented behavior, not a
+blanket acceptance claim. The later advance-registration section specifies
+required future behavior and explicitly unresolved design details.
 
 ## Invariants
 
@@ -156,11 +200,126 @@ therefore coexist in either startup order if they preserve the frozen v1
 contract and a v1-capable runtime fallback. SDK versions predating the broker
 cannot participate.
 
+"Newest" is evaluated among eligible candidates known before the bounded
+selection cutoff, not all installed packages or applications that might start
+later. The optional catalog below is intended to make candidates discoverable
+in advance; it must not reopen committed target ownership.
+
 A future release that cannot preserve protocol and target transport v1 is a
 different compatibility family. A new pipe name alone is unsafe because two
 broker majors could inject the same PID. Such a release must first add a
 protocol-independent per-user arbiter keyed by PID plus process-creation
 identity; until then, a breaking broker/target-wire major must not ship.
+That arbiter is a safety prerequisite, not an exception to the product contract:
+it prevents competing injectors but does not itself make old clients work. Any
+future internal protocol family must still retain an adapter or fallback that
+preserves older participating clients' interoperability. A new npm major or a
+separate pipe name never authorizes replacing coexistence with rejection of
+older applications.
+
+## Optional advance registration: required design, not implemented
+
+Advance registration is an additional discovery failsafe. An app may register
+its installed EGO implementation ahead of startup so an older app starting first
+does not hide a newer available implementation merely because the supplying app
+has not started. It must remain optional: no mandatory global installation,
+pre-registration ceremony, or registry edit is required to use ordinary
+startup registration and joining.
+
+The intended flow is:
+
+1. An opting-in application records its installed implementation, validated
+   selection/compatibility metadata, and a usable launch location in one shared
+   catalog for the supported user scope. Do not create a separate discovery
+   catalog per EGO version.
+2. With no compatible broker already running, the first invoked bootstrap reads
+   valid entries and starts the highest eligible compatible registered broker
+   implementation, even if its supplying application is not running. This must
+   start the shared service, not the supplying application's UI/business logic.
+3. With no usable catalog or candidate, ordinary runtime discovery/election
+   remains available using implementations supplied by starting applications.
+   An unregistered application can still register and join a compatible owner.
+4. Applications register their live sessions with that shared service. Selecting
+   a broker implementation and electing native artifacts for an exact target
+   remain distinct operations; advance-discovered providers must have a defined
+   way to participate without relying on their original app being awake.
+5. Existing committed broker/target ownership wins over catalog changes or a
+   later higher version. Discovery and recovery must preserve the same pinned
+   route and no-second-injection rules as ordinary startup.
+
+This removes dependence on application startup order for discovering an already
+registered implementation. It does not guarantee that registration makes an
+app's UI ready, remove the pre-graphics native attachment deadline, or promise
+that unsupported targets, invalid installations, or OS failures cannot fail.
+Errors must remain actionable without compromising another app's live session.
+
+### Registry and fallback constraints
+
+- The optional installed-implementation catalog is **not** a target discovery
+  credential, the existing per-PID recovery claim, or the authority to inject.
+  Its presence does not prove that a broker owns a game, and its absence never
+  revokes a possibly consumed ownership claim.
+- Missing, stale, removed, moved, unreadable, or malformed catalog entries alone
+  must not make ordinary startup fail. Ignore unusable discovery candidates or
+  use the normal registration path, while still honoring live owners and
+  existing recovery evidence.
+- Concurrent registrations and first starters need atomic catalog updates and
+  crash-safe singleton arbitration. The shared file is discovery data, not a
+  file-existence lock or an instruction to spawn competing brokers.
+- Validate candidate identity, compatibility, launchability, and permitted
+  trust scope before loading code. Never execute arbitrary registry strings as
+  shell commands or use this mechanism to escalate a client's privileges.
+- A failed candidate may yield only with proof that target-route publication
+  has not started, after safely releasing its singleton ownership. Any target
+  intent must still be the exact authoritative, pre-consumable intent. The
+  `publishing` phase is already beyond that boundary, even before the final
+  route file appears. Retain existing target recovery claims; a timeout or
+  uncertain mutation cannot authorize another injector before authoritative
+  target exit.
+- Preserve the catalog's eventual backward-compatible schema and selection
+  semantics just as carefully as the wire protocol. Define broker selection
+  ordering separately from native artifact generation; an npm version label
+  alone is not proof of compatibility or suitability.
+
+The registry location, exact schema/API, trusted launch format, broker-version
+ordering, registration/unregistration lifecycle, candidate-host requirements,
+and fallback implementation are not yet specified or shipped. Define these and
+their compatibility/migration rules before claiming registry support. Do not
+publish sample configuration or method names as if an API already exists.
+
+## Required change and release evidence
+
+Documentation is not a substitute for behavior verification. Changes to broker
+discovery, election, protocol, recovery, or shared routing must retain the
+following regression coverage, with planned registry cases added when that path
+is implemented:
+
+- Independently built old/new compatible SDKs in both startup orders; late
+  arrival of a higher generation after commitment must not replace the owner.
+  Changing version strings on the same implementation is not sufficient.
+- Highest eligible candidate selection within the bounded window, deterministic
+  ties, and safe rejection of incompatible candidates without excluding older
+  compatible clients.
+- One target runtime/communication owner under simultaneous starts, ownership
+  freeze, transport loss, broker restart, and possibly consumed authorization.
+- Per-app scene/input isolation, retained ordering, interception arbitration,
+  member exit/crash, and continued operation of surviving applications.
+- Optional pre-registration with the selected implementation's supplying app
+  stopped; a valid compatible service must be launchable independently.
+- Absent/stale/corrupt/unavailable catalogs, unregistered clients, concurrent
+  catalog updates, and safe pre-publication fallback. None may silently bypass
+  committed ownership or require developers to register in advance.
+- Frozen raw-v1 message/recovery fixtures plus actual mixed-package acceptance
+  as releases become available. Additive features must preserve old readers and
+  negotiate optional capabilities rather than expand the required baseline.
+- Bounded resource/slow-consumer behavior as client and scene counts grow. Keep
+  synthetic many-client stress, independently built mixed-version packages,
+  and real Windows/native acceptance distinct; do not turn a simulated count
+  into a 500-app/500-version capacity claim.
+
+For each change, state which gates ran, which boundaries were controlled, and
+what remains unverified. Existing source/tests and historical Windows runs do
+not establish that the planned registry or every future version already works.
 
 ## Legacy attachment lane
 
