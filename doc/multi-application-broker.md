@@ -2,7 +2,7 @@
 
 This is the canonical compatibility and ownership contract for independent
 Electron applications using `electron-game-overlay` (EGO) against one target
-PID. The consumer API does not expose the broker: every application still
+PID. The overlay-consumer API does not expose a broker instance: every application still
 creates its own `ElectronGameOverlay`, `OverlaySession`, windows, and
 `ReShadeOverlayLauncher`.
 
@@ -30,11 +30,13 @@ silently narrowing backward compatibility.
 
 Keep three roles distinct:
 
-- The **bootstrap** finds or starts the shared broker. Optional advance
-  discovery described below is planned work, not an existing public API.
+- The **bootstrap** finds or starts the shared broker. It uses the stable
+  per-user catalog format for optional advance discovery and the calling SDK's
+  bundled distribution for ordinary unregistered startup.
 - The **broker** coordinates application members and owns the shared target
   communication path. Today the first compatible running broker stays in
-  charge; selecting a newer broker from an installed catalog is not implemented.
+  charge; implementation selection happens before starting a replacement service,
+  never by hot-replacing a live owner.
 - The **runtime provider** supplies the validated native artifacts and performs
   the elected attachment. Its explicit compatible runtime generation, not npm
   semver alone, determines priority in the current bounded target election.
@@ -46,9 +48,9 @@ hot takeover and live native-runtime replacement are not requirements. This
 freeze is a safety invariant, not a failure to prefer the newest eligible
 candidate within the election window.
 
-The following current-design sections describe implemented behavior, not a
-blanket acceptance claim. The later advance-registration section specifies
-required future behavior and explicitly unresolved design details.
+The following sections describe the implementation contract, not a blanket
+Windows/native acceptance or capacity claim. Keep the verification boundaries
+in the release-evidence section explicit.
 
 ## Invariants
 
@@ -59,8 +61,8 @@ required future behavior and explicitly unresolved design details.
   exact PID.
 - One process-crash-persistent write-ahead claim under the same user's home
   directory pins the exact target route and lease for each live PID.
-- One application is elected injection owner from a bounded cohort before any
-  target route is published.
+- One runtime provider, either a live application or the cached standalone
+  implementation, is elected injection owner before any target route is published.
 - The target contains one ReShade runtime and one Electron overlay add-on, not
   one copy per application.
 - Every application keeps its own local window IDs. Only the broker allocates
@@ -78,6 +80,11 @@ required future behavior and explicitly unresolved design details.
 
 ## Attachment sequence
 
+Before this sequence, the SDK joins an existing compatible service or bootstraps
+an eligible standalone distribution. A valid cached native provider prepares
+its first run before the standalone listener opens, without starting an
+application UI.
+
 1. Each SDK client connects to the stable per-user v1 pipe and sends its
    protocol range, frozen required capabilities, optional supported
    capabilities, package version, and process ID.
@@ -91,7 +98,8 @@ required future behavior and explicitly unresolved design details.
 3. Before returning `injection-owner`, the broker records an `intent`, arms it
    as `publishing`, atomically publishes the pinned broker-owned rendezvous,
    and commits it as `published`. The selected application then performs
-   normal injection.
+   normal injection, or the elected cached provider performs it through the
+   same ReShade attachment engine.
 4. Other exact-PID authorizations wait. They are not allowed to inject while
    ownership is unresolved.
 5. The injected target authenticates once and emits `game.process` with its
@@ -106,6 +114,18 @@ A late member joining an already-authenticated target receives the retained
 process, target-surface, FPS, and interception snapshot before its
 authorization resolves. A member arriving during `game.process.transport-lost`
 waits for runtime reauthentication; it is never given stale connected proof.
+
+The cached native candidate is offered synchronously to the same bounded
+cohort as application providers; slow staging cannot make its advertisement
+arrive after election. An optional executable-path field is not required from
+old v1 clients. If absent, the elected cached provider must resolve the exact
+process image through an authoritative read-only OS query during preparation,
+before route publication. Reject a caller whose supplied executable constraint
+conflicts with that image. Cached injection requires at least one active external
+caller that accepts the image; a PID-only legacy caller satisfies that condition.
+The internal provider itself is not an application request. Failure to prove
+identity may permit pre-publication fallback, never guessed paths or another
+injector after commitment.
 
 ## Failure and recovery
 
@@ -143,6 +163,11 @@ waits for runtime reauthentication; it is never given stale connected proof.
   original launcher authorization twice, changes aggregate order based on
   reconnect order, or starts another injector merely because processes
   restarted.
+- If cached attachment fails after its grant, pending callers receive a
+  correlated failure rather than waiting indefinitely. The broker retains the
+  possibly consumed claim and pinned route. It does not re-elect an injector;
+  authentication arriving later may still establish the existing runtime so
+  subsequent callers can join it.
 - Recovery claims and route-ownership evidence are retained across graceful
   broker shutdown too. Endpoint credentials may rotate only through the pinned
   route's write-ahead transaction; the ownership evidence is removed only
@@ -217,16 +242,15 @@ preserves older participating clients' interoperability. A new npm major or a
 separate pipe name never authorizes replacing coexistence with rejection of
 older applications.
 
-## Optional advance registration: required design, not implemented
+## Optional advance registration
 
 Advance registration is an additional discovery failsafe. An app may register
-its installed EGO implementation ahead of startup so an older app starting first
-does not hide a newer available implementation merely because the supplying app
-has not started. It must remain optional: no mandatory global installation,
-pre-registration ceremony, or registry edit is required to use ordinary
-startup registration and joining.
+its installed EGO implementation ahead of startup so another catalog-aware SDK
+can discover it while the supplying app is stopped. It remains optional: no
+mandatory global installation, pre-registration ceremony, or registry edit is
+required to use ordinary startup registration and joining.
 
-The intended flow is:
+The discovery flow is:
 
 1. An opting-in application records its installed implementation, validated
    selection/compatibility metadata, and a usable launch location in one shared
@@ -269,30 +293,117 @@ Errors must remain actionable without compromising another app's live session.
 - Validate candidate identity, compatibility, launchability, and permitted
   trust scope before loading code. Never execute arbitrary registry strings as
   shell commands or use this mechanism to escalate a client's privileges.
-- A failed candidate may yield only with proof that target-route publication
-  has not started, after safely releasing its singleton ownership. Any target
-  intent must still be the exact authoritative, pre-consumable intent. The
-  `publishing` phase is already beyond that boundary, even before the final
-  route file appears. Retain existing target recovery claims; a timeout or
-  uncertain mutation cannot authorize another injector before authoritative
-  target exit.
-- Preserve the catalog's eventual backward-compatible schema and selection
+- A failed native attachment candidate may yield to another injector only with
+  proof that target-route publication has not started and its unconsumed target
+  authorization can be safely abandoned. Only the exact, still-authoritative
+  pre-consumable intent may be rolled back for that purpose. The `publishing`
+  phase is already beyond that boundary, even before the final route file
+  appears. Retain existing target recovery claims; a timeout or uncertain
+  mutation cannot authorize another injector before authoritative target exit.
+- Preserve the catalog's backward-compatible schema and selection
   semantics just as carefully as the wire protocol. Define broker selection
   ordering separately from native artifact generation; an npm version label
   alone is not proof of compatibility or suitability.
 
-The registry location, exact schema/API, trusted launch format, broker-version
-ordering, registration/unregistration lifecycle, candidate-host requirements,
-and fallback implementation are not yet specified or shipped. Define these and
-their compatibility/migration rules before claiming registry support. Do not
-publish sample configuration or method names as if an API already exists.
+### Application and installer API
+
+The Node-only `electron-game-overlay/broker` entry point exports
+`registerOverlayBrokerInstallation(options?)` and
+`unregisterOverlayBrokerInstallation(registrationId, options?)`.
+Registration returns an opaque installation-registration identity; persist it
+for uninstall. It copies a validated independent distribution into the per-user
+cache and publishes discovery metadata without opening a service listener or
+starting the supplying application's UI. The standalone executable also exposes
+`--register`, `--unregister <registrationId>`, and `--help`, so installer setup
+does not need a separate Node.js or Electron runtime.
+
+Use the intended user's account for registration. A system-wide installer
+running as another account does not register on behalf of every Windows user.
+Keep registration ownership distinct from content identity: equal payloads may
+share cached bytes, but removing one app's registration must retain another
+app's registration for those bytes.
+
+Stable versions are eligible by default. Registering a prerelease requires
+`{ allowPrerelease: true }`; selecting one during ordinary SDK startup requires
+`new ElectronGameOverlay({ allowPrereleaseBroker: true })`. Registration alone
+does not opt unrelated clients into preview selection. An already-running
+compatible owner always wins over this preference.
+
+Unregistration removes discovery, not running services or game ownership.
+Cached files are retained conservatively so an update or uninstall cannot
+remove dependencies still in use. Do not delete cache directories or target
+claims merely because the supplying app has exited. This is not a background
+cache-management or installation-service framework.
+
+### Distribution and bootstrap baseline
+
+The generated standalone distribution lives in
+`dist/broker/<platform>-<architecture>`; Windows x64 hosts use `win32-x64`.
+Keep its complete file tree intact and unpack it onto the real filesystem when
+using ASAR packaging. `broker-manifest.json` schema 1 records the implementation
+version, broker protocol range, platform, architecture, fixed executable name,
+and relative payload paths with byte sizes and SHA-256 digests. The manifest
+excludes itself. The executable embeds Node.js 26.12.1; the adjacent service
+modules, tslib and its notices, Node/project licenses, and both native target
+architectures are part of the sealed distribution. No catalog entry supplies
+an arbitrary command line or asks another application's Electron to host it.
+
+The catalog is `catalog.json` under the account-token home directory's
+`.electron-game-overlay/broker-v1` namespace. Use the supported setup API rather
+than hand-editing it. Schema 1 has an `entries` array:
+
+- `id` is the lowercase SHA-256 content identity of the normalized validated
+  distribution manifest. Equal distributions share this identity and cache.
+- `registrationId` is the lowercase SHA-256 of the canonical source directory,
+  case-folded on Windows. It is the return value used for owner-specific
+  unregistration. It remains stable when that installation updates its payload.
+- `rankingVersion` is an optional implementation-version hint written from the
+  validated manifest. It permits ranking a large snapshot without opening every
+  payload. It supplies no launch path or execution authority; the selected
+  manifest must match the hint and content identity and pass full validation.
+
+Legacy entries containing only `id`, or `id` plus `registrationId`, remain
+readable. Deduplicate content across the complete admitted snapshot before
+expensive reads; do not exclude owners after an arbitrary registration prefix.
+Legacy manifest lookups remain subject to the actual metadata deadline.
+
+Discovery ignores unusable optional catalogs and retains ordinary own-bundle
+fallback. Catalog mutation is stricter: only a missing file initializes an empty
+document. Registration/unregistration refuse unsupported, malformed, oversized
+or unreadable existing documents rather than overwriting them. Schema-1 writes
+preserve safe additive document and other-owner entry fields. Publication is
+atomic, not a guarantee of power-loss durability.
+
+The catalog and standalone manifest are compatibility contracts for catalog-aware
+bootstraps: preserve existing meanings, tolerate safe additive fields, and never
+add a new required field to the frozen baseline.
+Hashes detect damaged or changed payloads; they are not publisher signatures or
+protection against malicious software running as the same user.
+
+Pre-catalog POC SDKs can still join through frozen broker v1, but their old
+bootstrap code cannot retroactively consult this catalog. Do not confuse those
+mixed-wire compatibility tests with proof that old POC launchers implement
+advance discovery. From the catalog-aware baseline onward, every compatible
+bootstrap must preserve this discovery path.
+
+Coordinator startup is not native-injection ownership. An OS-released launch
+mutex limits concurrent starts, and the fixed v1 listener selects one running
+coordinator. A crashed launcher or stale advisory startup record must not make
+ordinary startup permanently unavailable. A replacement compatible coordinator
+still has to adopt every durable target claim; it cannot reinterpret its own
+restart as permission to inject again. Shared startup requires proven medium
+Windows integrity and rejects elevated or unknown-integrity callers before
+executing per-user cached code. Cross-user or cross-integrity delegation is not
+supported. The direct no-argument executable entry repeats the integrity check
+before loading service/native-provider modules; it cannot rely solely on an
+SDK launcher having checked. Help and copy/write-only setup do not start that
+service and remain usable in their documented current-account context.
 
 ## Required change and release evidence
 
 Documentation is not a substitute for behavior verification. Changes to broker
 discovery, election, protocol, recovery, or shared routing must retain the
-following regression coverage, with planned registry cases added when that path
-is implemented:
+following regression coverage, including the optional registry path:
 
 - Independently built old/new compatible SDKs in both startup orders; late
   arrival of a higher generation after commitment must not replace the owner.
@@ -319,7 +430,36 @@ is implemented:
 
 For each change, state which gates ran, which boundaries were controlled, and
 what remains unverified. Existing source/tests and historical Windows runs do
-not establish that the planned registry or every future version already works.
+not establish that every future package combination or Windows/native target
+already works.
+
+## Resource bounds and backpressure
+
+The broker uses fixed admission bounds, not a performance scheduler:
+
+- The frozen v1 JSON body limit remains 1 MiB. Broker-wide window metadata is
+  admitted conservatively so any retained aggregate scene can still fit an
+  `overlay.init` snapshot, including its target-global IDs. Rejected changes do
+  not replace previously accepted metadata.
+- Retained frame packets have a 256 MiB aggregate budget across broker clients,
+  and each loopback transport scene has the same retained-frame ceiling.
+  Framing bytes count toward that budget. Admission precedes retaining or
+  copying new frame pixels; closing a window or client releases its share.
+- Each peer's unsent packet queue has a 258 MiB ceiling, allowing a maximum
+  frame plus v1 initialization/control data. Only still-unsent frames for the
+  same window in the same control-free segment can replace one another.
+  Control messages remain ordered and are never silently discarded to make
+  room for a frame.
+- If a queue cannot remain within its bound, its write-error path closes that
+  connection and releases its resources. Other peers and the target ownership
+  claim remain intact. Target-side queue overflow reports a normalized
+  `ENOBUFS` diagnostic and permits reauthentication to the existing route,
+  never another injection merely because the connection closed.
+
+These are bounds on specific retained and queued structures, not a total RSS,
+GPU-memory, throughput, or 500-application capacity guarantee. There is no
+adaptive throttling, per-app performance score, fairness scheduler, or
+busy-client timeout policy.
 
 ## Legacy attachment lane
 
@@ -340,10 +480,9 @@ remain explicit hardening rather than accepted feature claims:
   pipe ACL;
 - carry target process-creation identity in addition to PID/path and use it for
   any future cross-protocol-major target arbiter;
-- cap per-client windows, retained frame bytes, and outbound queue bytes;
-- add bounded stalled-owner diagnostics without ever promoting another
-  injector after route publication;
-- ship a dedicated broker executable for Electron packages that disable the
-  RunAsNode fuse;
+- add per-client quotas only if concrete usage justifies them; the current
+  broker-wide admission and per-peer queue bounds are described above;
+- add further stalled-owner diagnostics only where needed, without ever
+  promoting another injector after route publication;
 - add tarball/install acceptance and oldest-v1/latest package matrices in both
   startup orders when package publishing begins.

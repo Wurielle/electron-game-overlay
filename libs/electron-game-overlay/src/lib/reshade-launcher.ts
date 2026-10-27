@@ -27,9 +27,10 @@ import {
   authorizeOverlaySessionGlobalTarget,
   authorizeOverlaySessionTarget,
   type OverlaySessionTargetAuthorization,
-  type OverlaySession,
-} from './overlay-session.js';
+  type ReShadeAttachmentSession,
+} from './overlay-session-authorization.js';
 import type { NativeRuntimeProviderMetadata } from './native.js';
+import type { OverlaySession } from './overlay-session.js';
 
 const RESHADE_OPT_IN_FLAG = '--reshade-overlay';
 const RESHADE_RUNTIME_DIRECTORY_OPTION = '--reshade-runtime-dir';
@@ -340,6 +341,8 @@ export type ReShadeLaunchConfig = Readonly<{
   x86AddonPath: string;
   /** Canonical packaged ReShade configuration path. */
   configPath: string;
+  /** Provider metadata validated against both packaged architectures. */
+  runtimeProvider?: NativeRuntimeProviderMetadata;
   /** Process name parsed from `--reshade-auto-target-process`, if supplied. */
   autoTargetProcess?: string;
   /** Exact PID parsed from `--reshade-expected-target-pid`, if supplied. */
@@ -922,7 +925,10 @@ export function defaultReShadeRunsRootDirectory(): string {
 export function parseReShadeLaunchConfig(
   argv: readonly string[],
   options: ReShadeLaunchConfigOptions = {},
-): ReShadeLaunchConfig | null {
+):
+  | (ReShadeLaunchConfig &
+      Readonly<{ runtimeProvider: NativeRuntimeProviderMetadata }>)
+  | null {
   const optInCount = argv.filter(
     (argument) => argument === RESHADE_OPT_IN_FLAG,
   ).length;
@@ -1052,7 +1058,7 @@ export function parseReShadeLaunchConfig(
     }
   }
 
-  validateRuntimePackageBuildStampsSync(
+  const runtimeProvider = validateRuntimePackageBuildStampsSync(
     new Map<string, string>([
       [INJECTOR_FILE_NAME, injectorPath],
       [X86_INJECTOR_FILE_NAME, x86InjectorPath],
@@ -1072,6 +1078,7 @@ export function parseReShadeLaunchConfig(
 
   return Object.freeze({
     runtimeDirectory,
+    runtimeProvider,
     runsRootDirectory: path.resolve(requestedRunsRoot),
     injectorPath,
     x86InjectorPath,
@@ -1127,6 +1134,25 @@ export function buildReShadeInvocation(
   });
 }
 
+let requestReShadeOverlayAttachment:
+  | ((
+      launcher: ReShadeOverlayLauncher,
+      session: ReShadeAttachmentSession,
+      target: ReShadeTarget,
+    ) => Promise<ReShadeAttachResult>)
+  | undefined;
+
+/** @internal */
+export function attachReShadeOverlay(
+  launcher: ReShadeOverlayLauncher,
+  session: ReShadeAttachmentSession,
+  target: ReShadeTarget,
+): Promise<ReShadeAttachResult> {
+  if (!requestReShadeOverlayAttachment)
+    throw new Error('ReShade attachment plumbing is not initialized');
+  return requestReShadeOverlayAttachment(launcher, session, target);
+}
+
 let requestReShadeOverlayLaunch:
   | ((
       launcher: ReShadeOverlayLauncher,
@@ -1169,6 +1195,8 @@ export function acceptReShadeTargetConnection(
  */
 export class ReShadeOverlayLauncher {
   static {
+    requestReShadeOverlayAttachment = (launcher, session, target) =>
+      launcher.#attach(session, target);
     requestReShadeOverlayLaunch = (launcher, target) =>
       launcher.#requestLaunch(target);
     proveReShadeTargetConnection = (launcher, pid) =>
@@ -1357,6 +1385,13 @@ export class ReShadeOverlayLauncher {
    */
   public attach(
     session: OverlaySession,
+    target: ReShadeTarget,
+  ): Promise<ReShadeAttachResult> {
+    return this.#attach(session, target);
+  }
+
+  #attach(
+    session: ReShadeAttachmentSession,
     target: ReShadeTarget,
   ): Promise<ReShadeAttachResult> {
     if (this.disposed) {
@@ -1619,7 +1654,7 @@ export class ReShadeOverlayLauncher {
   }
 
   private async performAttach(
-    session: OverlaySession,
+    session: ReShadeAttachmentSession,
     target: ReShadeTarget,
     expectedTargetPid: number | undefined,
     cancellation: Promise<never>,

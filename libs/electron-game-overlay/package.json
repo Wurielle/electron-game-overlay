@@ -15,6 +15,12 @@
       "require": "./dist/index.js",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./broker": {
+      "types": "./dist/broker.d.ts",
+      "require": "./dist/broker.js",
+      "import": "./dist/broker.js",
+      "default": "./dist/broker.js"
     }
   },
   "dependencies": {

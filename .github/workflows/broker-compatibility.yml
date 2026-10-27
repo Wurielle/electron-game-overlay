@@ -1,0 +1,103 @@
+name: Broker compatibility
+
+on:
+  pull_request:
+    branches: [feat/overlay-pocs]
+  workflow_dispatch:
+    inputs:
+      compatibility-ref:
+        description: Frozen broker-v1 source revision for mixed-package tests
+        type: string
+        required: true
+        default: a2cdfd42ae639168773191f5e69fca468b020e13
+
+permissions:
+  contents: read
+
+concurrency:
+  group: broker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-tests:
+    name: Windows SDK and standalone broker tests
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      NX_DAEMON: 'false'
+      NX_NO_CLOUD: 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare Electron dependency without launching the application
+        run: node node_modules/electron/install.js
+      - name: Compile SDK
+        run: node node_modules/typescript/bin/tsc --build libs/electron-game-overlay/tsconfig.lib.json
+      - name: Run SDK tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          $tests = @(Get-ChildItem libs/electron-game-overlay/tests/*.test.cjs | ForEach-Object FullName)
+          & node --test --test-reporter=junit --test-reporter-destination=test-results/broker.xml @tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check independently built base and updated SDK interoperability
+        env:
+          COMPATIBILITY_BASE_REF: ${{ inputs.compatibility-ref || 'a2cdfd42ae639168773191f5e69fca468b020e13' }}
+          EGO_MIXED_ACCEPTANCE_EVIDENCE: test-results/mixed-packages.json
+        shell: pwsh
+        run: |
+          $baseline = Join-Path $env:RUNNER_TEMP 'ego-broker-baseline'
+          & git worktree add --detach $baseline $env:COMPATIBILITY_BASE_REF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Junction -Path (Join-Path $baseline 'node_modules') -Target (Join-Path $PWD 'node_modules') | Out-Null
+          & node node_modules/typescript/bin/tsc --build (Join-Path $baseline 'libs/electron-game-overlay/tsconfig.lib.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node libs/electron-game-overlay/tests/broker-mixed-package.acceptance.cjs (Join-Path $baseline 'libs/electron-game-overlay/dist')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check demo and client types
+        run: |
+          node node_modules/typescript/bin/tsc --project demos/tsconfig.json --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: broker-test-results
+          path: test-results/
+          if-no-files-found: error
+
+  packaged-broker:
+    name: Windows production broker distribution
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      NX_DAEMON: 'false'
+      NX_NO_CLOUD: 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare Windows Rust targets
+        run: rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
+      - name: Build native runtimes and packaged SDK
+        run: node node_modules/nx/bin/nx.js run electron-game-overlay:build
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: electron-game-overlay-windows-sdk
+          path: libs/electron-game-overlay/dist/
+          if-no-files-found: error

@@ -36,6 +36,11 @@ import {
   BackpressurePacketQueue,
   OverlayLoopbackTransport,
 } from './overlay-loopback-transport.js';
+import {
+  ensureOverlayBrokerRunning,
+  assertOverlayBrokerPrivilege,
+} from './overlay-broker-bootstrap.js';
+import type { OverlayBrokerInstallationOptions } from './overlay-broker-installation.js';
 import type { OverlayDiagnostic, Disposable } from './types.js';
 
 const SDK_VERSION = '0.0.1';
@@ -63,8 +68,12 @@ export interface OverlayBrokerClientOptions {
   /** @internal Inclusive test override for target-transport compatibility. */
   targetTransportMax?: number;
   connectTimeoutMs?: number;
+  /** @internal Fixture-only JavaScript entry; production always launches a standalone executable. */
   brokerEntryPath?: string;
+  /** @internal Fixture-only spawn boundary. */
   spawnBroker?: () => void;
+  /** @internal Isolated standalone distribution/cache settings for acceptance fixtures. */
+  brokerInstallation?: OverlayBrokerInstallationOptions;
 }
 
 type RetainedWindow = {
@@ -109,7 +118,10 @@ export class OverlayBrokerClient implements NativeOverlay {
   private readonly targetTransportMin: number;
   private readonly targetTransportMax: number;
   private readonly connectTimeoutMs: number;
-  private readonly brokerEntryPath: string;
+  private readonly brokerEntryPath: string | undefined;
+  private readonly brokerInstallation:
+    OverlayBrokerInstallationOptions | undefined;
+  private brokerBootstrap: Promise<void> | undefined;
   private readonly spawnBrokerOverride: (() => void) | undefined;
   private readonly clientInstanceId = randomBytes(12).toString('hex');
   private readonly windows = new Map<number, RetainedWindow>();
@@ -167,9 +179,8 @@ export class OverlayBrokerClient implements NativeOverlay {
       options.targetTransportMax ?? OVERLAY_BROKER_TARGET_TRANSPORT_MAX;
     this.connectTimeoutMs =
       options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-    this.brokerEntryPath =
-      options.brokerEntryPath ??
-      path.join(__dirname, 'overlay-broker-entry.js');
+    this.brokerEntryPath = options.brokerEntryPath;
+    this.brokerInstallation = options.brokerInstallation;
     this.spawnBrokerOverride = options.spawnBroker;
     if (
       !Number.isSafeInteger(this.connectTimeoutMs) ||
@@ -208,7 +219,21 @@ export class OverlayBrokerClient implements NativeOverlay {
       this.rejectReady = reject;
     });
     void this.readyPromise.catch(() => undefined);
-    this.scheduleConnection(generation, 0);
+    if (this.brokerEntryPath !== undefined || this.spawnBrokerOverride) {
+      this.scheduleConnection(generation, 0);
+    } else {
+      void assertOverlayBrokerPrivilege().then(
+        () => {
+          this.scheduleConnection(generation, 0);
+        },
+        (error: unknown) => {
+          if (this.started && generation === this.generation)
+            this.failFatal(
+              asError(error, 'Shared overlay broker privilege check failed'),
+            );
+        },
+      );
+    }
   }
 
   public whenReady(): Promise<unknown> {
@@ -1156,7 +1181,11 @@ export class OverlayBrokerClient implements NativeOverlay {
 
   private trySpawnBroker(): void {
     const now = Date.now();
-    if (!this.started || now < this.nextBrokerSpawnAttemptAt) {
+    if (
+      !this.started ||
+      this.brokerBootstrap ||
+      now < this.nextBrokerSpawnAttemptAt
+    ) {
       return;
     }
     const retryDelay = Math.min(
@@ -1170,6 +1199,38 @@ export class OverlayBrokerClient implements NativeOverlay {
     try {
       if (this.spawnBrokerOverride) {
         this.spawnBrokerOverride();
+        return;
+      }
+      if (this.brokerEntryPath === undefined) {
+        const generation = this.generation;
+        const bootstrap = ensureOverlayBrokerRunning({
+          ...this.brokerInstallation,
+          pipePath: this.pipePath,
+          timeoutMs: this.initialReady
+            ? this.connectTimeoutMs
+            : Math.max(1, this.startupDeadline - Date.now()),
+        });
+        this.brokerBootstrap = bootstrap;
+        void bootstrap.then(
+          () => {
+            if (this.brokerBootstrap === bootstrap)
+              this.brokerBootstrap = undefined;
+          },
+          (error: unknown) => {
+            if (this.brokerBootstrap === bootstrap)
+              this.brokerBootstrap = undefined;
+            if (
+              this.started &&
+              generation === this.generation &&
+              !this.initialReady &&
+              Date.now() >= this.startupDeadline
+            ) {
+              this.failFatal(
+                asError(error, 'Unable to start standalone overlay broker'),
+              );
+            }
+          },
+        );
         return;
       }
       if (!existsSync(this.brokerEntryPath)) {

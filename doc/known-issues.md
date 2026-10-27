@@ -36,11 +36,19 @@ still be confused with an unusually fast PID reuse if no broker observed the
 intervening exit.
 
 The current broker trust boundary is the Windows user account. It does not yet
-verify the hello PID against the named-pipe peer, apply a custom pipe ACL, or
-enforce per-client scene/queue memory quotas. It must not run elevated relative
-to clients. Process-creation identity, bounded stalled-owner diagnostics, a
-dedicated non-RunAsNode broker binary, and package-install acceptance remain
-hardening work. See
+verify the hello PID against the named-pipe peer or apply a custom pipe ACL.
+Standalone startup rejects elevated or unknown-integrity callers; cross-user or
+cross-integrity delegation is unsupported. The standalone broker no longer
+depends on Electron's RunAsNode fuse. Optional registration and independent
+cached distributions do not remove the pre-graphics attachment deadline.
+
+Broker-wide metadata/frame admission and per-peer pending-queue limits provide
+basic memory/backpressure protection, not per-app scheduling or a total process
+memory guarantee. More elaborate quotas are deferred unless concrete usage
+justifies them. Process-creation identity, further stalled-owner diagnostics,
+and published-package install acceptance remain hardening work. Controlled
+broker tests and a production package build are not real-game native acceptance.
+See
 [`multi-application-broker.md`](multi-application-broker.md) for the internal
 state and versioning contract.
 

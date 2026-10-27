@@ -379,6 +379,8 @@ export class BrokerPacketDecoder {
         );
       }
     }
+    // Detach once per batch so a tiny unfinished tail cannot pin consumed frames.
+    if (packets.length > 0) this.buffer = Buffer.from(this.buffer);
     return packets;
   }
 }

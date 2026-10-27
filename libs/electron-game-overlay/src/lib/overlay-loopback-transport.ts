@@ -46,6 +46,11 @@ export const OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_SUFFIX =
   '.recovery.json';
 export const MAX_JSON_BODY_BYTES = 1024 * 1024;
 export const MAX_FRAME_BODY_BYTES = 256 * 1024 * 1024;
+/** Aggregate retained frame packets per scene (including framing bytes). */
+export const MAX_RETAINED_FRAME_BYTES = 256 * 1024 * 1024;
+/** Per-peer unsent bytes; permits a maximum frame plus a v1 init and control. */
+export const MAX_PENDING_PACKET_BYTES =
+  MAX_FRAME_BODY_BYTES + 2 * MAX_JSON_BODY_BYTES;
 
 const PACKET_KIND_JSON = 1;
 const PACKET_KIND_FRAME = 2;
@@ -166,11 +171,24 @@ interface QueuedPacket {
 export class BackpressurePacketQueue {
   private blocked = false;
   private readonly pending: QueuedPacket[] = [];
+  private pendingBytes = 0;
+  private overflowed = false;
 
   constructor(
     private readonly sink: PacketSink,
     private readonly onWriteError: (error: unknown) => void = () => undefined,
-  ) {}
+    private readonly maxPendingBytes: number = MAX_PENDING_PACKET_BYTES,
+  ) {
+    if (
+      !Number.isSafeInteger(maxPendingBytes) ||
+      maxPendingBytes < 1 ||
+      maxPendingBytes > MAX_PENDING_PACKET_BYTES
+    ) {
+      throw new RangeError(
+        `maxPendingBytes must be an integer between 1 and ${MAX_PENDING_PACKET_BYTES}`,
+      );
+    }
+  }
 
   public sendControl(packet: Buffer): void {
     this.send({ packet });
@@ -183,6 +201,7 @@ export class BackpressurePacketQueue {
   public dropPendingFrames(windowId: number): void {
     for (let index = this.pending.length - 1; index >= 0; index -= 1) {
       if (this.pending[index]?.frameWindowId === windowId) {
+        this.pendingBytes -= this.pending[index]!.packet.byteLength;
         this.pending.splice(index, 1);
       }
     }
@@ -196,9 +215,13 @@ export class BackpressurePacketQueue {
   public clear(): void {
     this.blocked = false;
     this.pending.length = 0;
+    this.pendingBytes = 0;
   }
 
   private send(entry: QueuedPacket): void {
+    if (this.overflowed) {
+      return;
+    }
     if (!this.blocked && this.pending.length === 0) {
       const accepted = this.write(entry.packet);
       if (accepted !== undefined) {
@@ -214,18 +237,45 @@ export class BackpressurePacketQueue {
           break;
         }
         if (candidate.frameWindowId === entry.frameWindowId) {
+          if (!this.admit(entry.packet.byteLength - candidate.packet.byteLength)) {
+            return;
+          }
+          this.pendingBytes +=
+            entry.packet.byteLength - candidate.packet.byteLength;
           this.pending[index] = entry;
           return;
         }
       }
     }
-    this.pending.push(entry);
+    if (this.admit(entry.packet.byteLength)) {
+      this.pendingBytes += entry.packet.byteLength;
+      this.pending.push(entry);
+    }
+  }
+
+  private admit(additionalBytes: number): boolean {
+    const attemptedBytes = this.pendingBytes + additionalBytes;
+    if (attemptedBytes <= this.maxPendingBytes) {
+      return true;
+    }
+    this.clear();
+    this.overflowed = true;
+    this.onWriteError(
+      Object.assign(
+        new RangeError(
+          `Overlay pending queue requires ${attemptedBytes} bytes; limit is ${this.maxPendingBytes} bytes`,
+        ),
+        { code: 'ERR_OVERLAY_QUEUE_LIMIT' },
+      ),
+    );
+    return false;
   }
 
   private flush(): void {
     while (!this.blocked && this.pending.length > 0) {
       const entry = this.pending.shift();
       if (entry) {
+        this.pendingBytes -= entry.packet.byteLength;
         const accepted = this.write(entry.packet);
         if (accepted === undefined) {
           return;
@@ -702,7 +752,11 @@ function errorCodeContext(
   if (!isJsonObject(error)) {
     return undefined;
   }
-  const errorCode = normalizeOverlayDiagnosticErrorCode(error.code);
+  // Keep the frozen diagnostic vocabulary: a full application queue is the
+  // same resource condition as an OS send-buffer exhaustion.
+  const errorCode = normalizeOverlayDiagnosticErrorCode(
+    error.code === 'ERR_OVERLAY_QUEUE_LIMIT' ? 'ENOBUFS' : error.code,
+  );
   return errorCode === undefined ? undefined : { errorCode };
 }
 
@@ -1165,10 +1219,23 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         : {}),
     };
     const packet = encodeJsonTransportPacket(message);
+    this.assertSnapshotFits(windowId, message);
     this.windows.delete(windowId);
     this.windows.set(windowId, message);
     this.latestFrames.delete(windowId);
     this.broadcastWindowBarrierPacket(windowId, packet);
+  }
+
+  private assertSnapshotFits(windowId: number, replacement: WindowMessage): void {
+    const windows = Array.from(this.windows.values()).filter(
+      (window) => window.windowId !== windowId,
+    );
+    windows.push(replacement);
+    // v1 requires a complete init, not a sequence of partial snapshots.
+    encodeJsonTransportPacket({
+      type: 'overlay.init',
+      windows: windows.map(cloneWindowMetadata),
+    });
   }
 
   public closeWindow(windowId: number): void {
@@ -1228,6 +1295,16 @@ export class OverlayLoopbackTransport implements NativeOverlay {
 
     const window = this.windows.get(windowId);
     if (window) {
+      this.assertSnapshotFits(windowId, {
+        ...window,
+        rect: { ...details.rect },
+        ...(details.caption !== undefined
+          ? { caption: { ...details.caption } }
+          : {}),
+        ...(details.scaleFactorMicros !== undefined
+          ? { scaleFactorMicros: details.scaleFactorMicros }
+          : {}),
+      });
       window.rect = { ...details.rect };
       if (details.caption !== undefined) {
         window.caption = { ...details.caption };
@@ -1253,6 +1330,18 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   ): boolean {
     if (!this.windows.has(windowId)) {
       return false;
+    }
+    let retainedBytes =
+      PACKET_PREFIX_BYTES + FRAME_HEADER_BYTES + buffer.byteLength;
+    for (const [id, frame] of this.latestFrames) {
+      if (id !== windowId) {
+        retainedBytes += frame.byteLength;
+      }
+    }
+    if (retainedBytes > MAX_RETAINED_FRAME_BYTES) {
+      throw new RangeError(
+        `Overlay retained frames require ${retainedBytes} bytes; limit is ${MAX_RETAINED_FRAME_BYTES} bytes`,
+      );
     }
     const packet = encodeFrameTransportPacket(windowId, width, height, buffer);
     this.latestFrames.set(windowId, packet);

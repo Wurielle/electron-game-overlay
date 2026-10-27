@@ -85,6 +85,10 @@ export interface NativeOverlay {
   translateInputEvent(event: NativeInputMessage): any;
 }
 
-export function createNativeOverlay(): NativeOverlay {
-  return new OverlayBrokerClient();
+export function createNativeOverlay(
+  allowPrereleaseBroker = false,
+): NativeOverlay {
+  return allowPrereleaseBroker
+    ? new OverlayBrokerClient({ brokerInstallation: { allowPrerelease: true } })
+    : new OverlayBrokerClient();
 }

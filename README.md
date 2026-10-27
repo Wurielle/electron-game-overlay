@@ -54,10 +54,11 @@ scrolling, dragging, and normal DOM events continue to work in the overlay.
 
 Independent applications attaching to the same exact PID share one injected
 runtime automatically. Their windows and input remain isolated by application;
-the broker is an implementation detail and has no public API.
+applications do not create or manage a broker instance.
 
 ## Try a demo
 
+On Windows, use Node.js **26.12.1** and the [native build prerequisites](#build-and-test).
 Install the workspace and prepare the runtime once:
 
 ```powershell
@@ -476,34 +477,81 @@ not a same-version convenience. Broker/bootstrap code must remain small and
 stable, and new releases must preserve backward-compatible client APIs and the
 shared ownership rules.
 
-Today the first compatible broker remains in charge. For each exact target PID,
-the bounded initial election selects the highest eligible compatible runtime
-generation registered before the cutoff, not the highest npm version label.
-Once target-route publication may have begun, the selected ownership stays
-pinned for that target lifecycle. Later arrivals, including newer versions,
-join the selected runtime instead of injecting another one. New optional
-behavior is used only when both sides support it. Versions from before broker
-support cannot join a broker-owned target.
+The first compatible running broker remains in charge. Before a service starts,
+the bootstrap can select a newer compatible implementation from the optional
+per-user catalog. For each exact target PID, the bounded initial election then
+selects the highest eligible compatible **native runtime generation**, not the
+highest npm version label. Broker implementation selection and native-provider
+election are separate operations.
 
-**Planned, not implemented:** optional advance registration in one shared
-installed-implementation registry will let the first bootstrap discover and
-start the highest eligible registered broker implementation even before the app
-that supplied it starts. This is an additional reliability path, not a required
-installation step: ordinary runtime registration/join must still work when the
-catalog is absent or stale. It does not remove the early graphics-attachment
-deadline or permit replacing a committed owner during a live game.
+Once target-route publication may have begun, ownership stays pinned for that
+target lifecycle. Later arrivals, including newer versions, join the selected
+runtime instead of injecting another one. New optional behavior is used only
+when both sides support it. Versions from before broker support cannot join a
+broker-owned target.
 
-The broker currently starts through the application's Electron executable with
-`ELECTRON_RUN_AS_NODE=1`. Packaged applications using exact-PID attachment must
-keep Electron's RunAsNode fuse enabled until the project ships a dedicated
-broker executable.
+The broker is a standalone executable with its own pinned runtime. It does not
+use the application's Electron executable, open its UI, or require Electron's
+RunAsNode fuse. Keep the complete generated `dist/broker/win32-x64` distribution,
+not just its `.exe`, in the packaged application; its manifest covers the service
+modules, licenses, and native assets as well as the executable. Keep
+`electron-game-overlay` external in the main-process bundler, as the validation
+client does, so the SDK's relative asset paths remain valid. In an ASAR-based
+package, unpack the broker distribution onto the real filesystem. Retain the
+SDK's ordinary `dist/runtime` assets too: an application can still be elected
+as a live native provider.
+
+### Optional advance registration
+
+Registration lets another app discover the implementation even while its
+supplying app is stopped. It is **not required**: ordinary startup can use its
+own bundled distribution when there is no usable catalog. Stale or malformed
+optional entries must not alone disable normal startup. This does not remove
+the early graphics-attachment deadline or permit replacing an active owner.
+
+Installer or main-process setup code can register without creating a session:
+
+```ts
+import {
+  registerOverlayBrokerInstallation,
+} from 'electron-game-overlay/broker';
+
+const registrationId = await registerOverlayBrokerInstallation();
+// Persist this opaque ID in the application's installation metadata.
+```
+
+During uninstall, call `unregisterOverlayBrokerInstallation(registrationId)`
+from the same entry point before removing the supplying application.
+
+The `/broker` entry point does not import Electron. Installers without a Node
+installation can use the same operations through the standalone executable's
+`--register` and `--unregister <registrationId>` commands; `--help` describes the
+syntax. Run setup for the intended Windows user, not a system-service account.
+Unregistration removes that registration, not another app's registration,
+running service, active dependencies, or game ownership claims.
+
+Startup selection uses stable releases by default. Preview testing requires an
+explicit application-level opt-in:
+
+```ts
+import { ElectronGameOverlay } from 'electron-game-overlay';
+
+const overlay = new ElectronGameOverlay({ allowPrereleaseBroker: true });
+```
+
+Registering a preview also requires `{ allowPrerelease: true }`; that permission
+does not silently opt unrelated starting applications into preview selection.
+An already-running compatible broker still wins, including after this setting
+changes. Shared startup is supported at normal medium Windows integrity; it
+rejects elevated or unknown-integrity callers rather than running per-user
+cached code with extra privileges.
 
 Name-only and path-watcher attachment cannot share a known PID ahead of time,
 so those legacy modes remain exclusive. Use an application process watcher and
 exact-PID attachment whenever overlap is possible.
 
 See [`doc/multi-application-broker.md`](doc/multi-application-broker.md) for the
-mandatory compatibility contract, current election/recovery design, planned
+mandatory compatibility contract, election/recovery design,
 advance-registration behavior, and required regression coverage. The
 500-app/500-version scenario expresses the design goal; it is not a tested
 capacity guarantee.
@@ -574,16 +622,20 @@ so signatures and option fields stay synchronized with the implementation.
 | `parseReShadeLaunchConfig`        | Parses and validates explicit startup configuration         |
 | `defaultReShadeRuntimeDirectory`  | Resolves the runtime artifacts staged with the SDK          |
 | `defaultReShadeRunsRootDirectory` | Resolves the default writable per-attachment run directory  |
+| `registerOverlayBrokerInstallation` | Opts an installed standalone distribution into per-user discovery |
+| `unregisterOverlayBrokerInstallation` | Removes only that installation's advance-discovery registration |
 
-Start from the package export list in
-[`src/lib/sdk.ts`](libs/electron-game-overlay/src/lib/sdk.ts). The declaration
-sites for the main API are:
+Start from [`src/index.ts`](libs/electron-game-overlay/src/index.ts), the overlay
+export list in [`src/lib/sdk.ts`](libs/electron-game-overlay/src/lib/sdk.ts), or
+the Node-only [`src/broker.ts`](libs/electron-game-overlay/src/broker.ts) setup
+entry point. The declaration sites for the main API are:
 
 - [`ElectronGameOverlay`](libs/electron-game-overlay/src/lib/electron-game-overlay.ts)
 - [`OverlaySession`](libs/electron-game-overlay/src/lib/overlay-session.ts)
 - [`ElectronOverlayWindow`](libs/electron-game-overlay/src/lib/electron-overlay-window.ts)
 - [window, telemetry, event, and diagnostic types](libs/electron-game-overlay/src/lib/types.ts)
 - [launcher configuration, results, events, and errors](libs/electron-game-overlay/src/lib/reshade-launcher.ts)
+- [optional broker installation setup and options](libs/electron-game-overlay/src/lib/overlay-broker-installation.ts)
 
 Use editor autocomplete or the emitted `.d.ts` declarations for exact
 signatures instead of copying type definitions from this README.
@@ -611,8 +663,11 @@ hardening boundaries.
 
 ## Build and test
 
-Repository tooling requires Node.js `^20.19.0 || >=22.12.0`. Building the
-native runtime from source additionally requires Visual Studio 2022 with the
+General repository tooling accepts Node.js `^20.19.0 || >=22.12.0`, but a full
+SDK build requires **Node.js 26.12.1** to embed the standalone broker's pinned
+runtime. Consumers do not need a separate Node.js installation, and the broker
+does not depend on their application's Electron runtime or RunAsNode fuse.
+Building the native runtime from source additionally requires Visual Studio 2022 with the
 C++ desktop workload, Rust, CMake 3.24 or newer, and both Rust Windows targets:
 
 ```powershell
