@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { resolveOverlayBrokerSystemDirectory } from './overlay-broker-windows-os-path.js';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { copyFile } from 'node:fs/promises';
@@ -57,36 +58,39 @@ export async function resolveOverlayBrokerProcessImage(
   if (!Number.isInteger(pid) || pid < 1 || pid > 0xffffffff) {
     throw new RangeError('Target PID must be a positive uint32');
   }
-  const systemDirectory = '\\\\?\\GLOBALROOT\\SystemRoot\\System32';
-  const output = await new Promise<string>((resolve, reject) => {
-    execFile(
-      `${systemDirectory}\\WindowsPowerShell\\v1.0\\powershell.exe`,
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::WriteLine([Diagnostics.Process]::GetProcessById(${pid}).MainModule.FileName)`,
-      ],
-      {
-        shell: false,
-        windowsHide: true,
-        cwd: systemDirectory,
-        timeout: 2000,
-        maxBuffer: 128 * 1024,
-        encoding: 'utf8',
-      },
-      (error, stdout) => {
-        if (error)
-          reject(
-            new Error(`Unable to query OS executable identity for PID ${pid}`, {
-              cause: error,
-            }),
-          );
-        else resolve(stdout);
-      },
+  let output: string;
+  try {
+    const systemDirectory = await resolveOverlayBrokerSystemDirectory();
+    output = await new Promise<string>((resolve, reject) => {
+      execFile(
+        `${systemDirectory}\\WindowsPowerShell\\v1.0\\powershell.exe`,
+        [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::WriteLine([Diagnostics.Process]::GetProcessById(${pid}).MainModule.FileName)`,
+        ],
+        {
+          shell: false,
+          windowsHide: true,
+          cwd: systemDirectory,
+          timeout: 2000,
+          maxBuffer: 128 * 1024,
+          encoding: 'utf8',
+        },
+        (error, stdout) => {
+          if (error) reject(error);
+          else resolve(stdout);
+        },
+      );
+    });
+  } catch (error) {
+    throw new Error(
+      `Unable to query OS executable identity for PID ${pid}; trusted OS probe failed`,
+      { cause: error },
     );
-  });
+  }
   const executablePath = output.replace(/\r?\n$/, '');
   if (
     !win32.isAbsolute(executablePath) ||

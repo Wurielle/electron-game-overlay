@@ -92,7 +92,12 @@ test('a queue budget may be lowered but cannot disable the hard byte ceiling', (
   }
 });
 
-test('target pending overflow emits a safe buffer diagnostic and permits same-PID recovery', async (t) => {
+for (const closeOrder of ['native', 'remote-first']) {
+  test(`target pending overflow emits a safe buffer diagnostic and permits same-PID recovery (${closeOrder})`,
+    (t) => testOverflowCleanup(t, closeOrder));
+}
+
+async function testOverflowCleanup(t, closeOrder) {
   const directory = await mkdtemp(join(tmpdir(), 'overlay-buffer-'));
   const token = 'ab'.repeat(32);
   const transport = new OverlayLoopbackTransport({
@@ -120,9 +125,25 @@ test('target pending overflow emits a safe buffer diagnostic and permits same-PI
   peer.socket.write = () => false;
   peer.writer.maxPendingBytes = 32;
   const closed = new Promise((resolve) => socket.once('close', resolve));
+  const localClosed = new Promise((resolve) => peer.socket.once('close', resolve));
+  if (closeOrder === 'remote-first') {
+    // Gate only delivery of the real local close event, not socket destruction
+    // or transport cleanup. Windows may deliver the remote event first.
+    const emit = peer.socket.emit;
+    peer.socket.emit = function (event, ...args) {
+      if (event !== 'close') return emit.call(this, event, ...args);
+      closed.then(() => setImmediate(() => {
+        this.emit = emit;
+        emit.call(this, event, ...args);
+      }));
+      return false;
+    };
+  }
   transport.setInputIntercept(true);
   transport.setInputIntercept(false);
-  await closed;
+  // The remote close does not imply that the local transport close handler
+  // has removed its client. Observe both endpoints before cleanup/recovery.
+  await Promise.all([closed, localClosed]);
   const diagnostic = diagnostics.find(({ code }) => code === 'target-socket-error');
   assert.deepEqual(diagnostic.context, { errorCode: 'ENOBUFS' });
   assert.equal(peer.writer.pendingBytes, 0);
@@ -130,4 +151,4 @@ test('target pending overflow emits a safe buffer diagnostic and permits same-PI
   const recovered = await authenticate();
   assert.equal(recovered.destroyed, false);
   assert.notEqual(transport.activeClientsByPid.get(12345), peer);
-});
+}

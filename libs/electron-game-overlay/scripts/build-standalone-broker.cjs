@@ -70,15 +70,12 @@ function validateRuntime(runtimeDir) {
     const suffix = bits === 64 ? '' : '32';
     let stamp;
     try {
-      stamp = JSON.parse(
-        fs.readFileSync(
-          path.join(
-            reshade,
-            `electron_game_overlay_runtime${suffix}.build.json`,
-          ),
-          'utf8',
-        ),
+      // Windows PowerShell 5 writes a UTF-8 BOM; normalize only the parse view.
+      const raw = fs.readFileSync(
+        path.join(reshade, `electron_game_overlay_runtime${suffix}.build.json`),
+        'utf8',
       );
+      stamp = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
     } catch {
       throw new Error(`Runtime build manifest invalid for ${bits}-bit payload`);
     }

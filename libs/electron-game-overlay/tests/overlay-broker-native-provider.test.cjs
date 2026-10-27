@@ -124,8 +124,13 @@ async function fixture(t, generation = 7, options = {}) {
   const sockets = [];
   let transport;
   const original = cp.execFile;
+  const originalRealpath = fs.realpath.native;
+  fs.realpath.native = (input, callback) => {
+    assert.equal(input, '\\\\?\\GLOBALROOT\\SystemRoot\\System32');
+    queueMicrotask(() => callback(null, 'Z:\\OS Installation\\System32'));
+  };
   cp.execFile = (exe, args, opts, callback) => {
-    if (exe.endsWith('powershell.exe')) {
+    if (exe === 'Z:\\OS Installation\\System32\\WindowsPowerShell\\v1.0\\powershell.exe') {
       imageQueries.push({ exe, args, opts });
       if (options.queryHook) {
         options.queryHook(callback);
@@ -181,6 +186,7 @@ async function fixture(t, generation = 7, options = {}) {
     await server.stop();
     provider?.dispose();
     cp.execFile = original;
+    fs.realpath.native = originalRealpath;
     require('../dist/lib/overlay-loopback-transport.js').clearOverlayTargetRecoveryClaimForExitedPid(
       PID,
     );
@@ -327,11 +333,22 @@ test('validated installed runtime beats first raw-v1 app while source app is una
 test('cached provider rejects the sole wrong executable before publication or native execution', async (t) => {
   const publications = [];
   const f = await fixture(t, 7, {
-    transportOptions: { targetAuthorizationPublicationHook: (phase) => publications.push(phase) },
+    transportOptions: {
+      targetAuthorizationPublicationHook: (phase) => publications.push(phase),
+    },
   });
-  const app = await f.client({ expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe' });
-  await wait(() => f.calls.length > 0 || app.messages.some((m) => m.type === 'broker.error'));
-  assert.equal(f.calls.length, 0, 'no requester accepts the authoritative OS image');
+  const app = await f.client({
+    expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe',
+  });
+  await wait(
+    () =>
+      f.calls.length > 0 || app.messages.some((m) => m.type === 'broker.error'),
+  );
+  assert.equal(
+    f.calls.length,
+    0,
+    'no requester accepts the authoritative OS image',
+  );
   await wait(() => app.messages.some((m) => m.type === 'broker.error'));
   const errors = app.messages.filter((m) => m.type === 'broker.error');
   assert.equal(errors.length, 1);
@@ -340,18 +357,36 @@ test('cached provider rejects the sole wrong executable before publication or na
   assert.equal(errors[0].code, 'target-authorization-failed');
   assert.match(errors[0].message, /does not match/);
   assert.ok(Buffer.byteLength(errors[0].message) < 2048);
-  assert.equal(app.messages.some((m) => m.type === 'broker.target.authorized'), false);
-  assert.equal(require('../dist/lib/overlay-loopback-transport.js').readOverlayTargetRecoveryClaim(PID), undefined);
+  assert.equal(
+    app.messages.some((m) => m.type === 'broker.target.authorized'),
+    false,
+  );
+  assert.equal(
+    require('../dist/lib/overlay-loopback-transport.js').readOverlayTargetRecoveryClaim(
+      PID,
+    ),
+    undefined,
+  );
   await wait(() => f.server.targets.size === 0);
   await wait(() => fs.readdirSync(path.join(f.root, 'runs')).length === 0);
-  assert.deepEqual(publications, [], 'no target publication transaction may begin');
+  assert.deepEqual(
+    publications,
+    [],
+    'no target publication transaction may begin',
+  );
 });
 
 for (const expectedExecutablePath of [EXE, undefined]) {
   test(`cached provider isolates wrong first requester from later ${expectedExecutablePath ? 'correct-path' : 'PID-only'} requester`, async (t) => {
     let finishQuery;
-    const f = await fixture(t, 7, { queryHook: (callback) => { finishQuery = callback; } });
-    const wrong = await f.client({ expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe' });
+    const f = await fixture(t, 7, {
+      queryHook: (callback) => {
+        finishQuery = callback;
+      },
+    });
+    const wrong = await f.client({
+      expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe',
+    });
     await wait(() => finishQuery);
     const accepting = await f.client({ expectedExecutablePath });
     await wait(() => f.server.targets.get(PID).members.size === 3);
@@ -365,13 +400,30 @@ for (const expectedExecutablePath of [EXE, undefined]) {
     assert.equal(errors[0].code, 'target-authorization-failed');
     assert.match(errors[0].message, /does not match/);
     assert.ok(Buffer.byteLength(errors[0].message) < 2048);
-    assert.equal(wrong.messages.some((m) => m.type === 'broker.target.authorized'), false);
-    assert.equal(accepting.messages.some((m) => m.type === 'broker.error'), false);
+    assert.equal(
+      wrong.messages.some((m) => m.type === 'broker.target.authorized'),
+      false,
+    );
+    assert.equal(
+      accepting.messages.some((m) => m.type === 'broker.error'),
+      false,
+    );
     await f.finishNative();
-    await wait(() => accepting.messages.some((m) => m.type === 'broker.target.authorized'));
-    assert.equal(accepting.messages.find((m) => m.type === 'broker.target.authorized').disposition, 'joined-existing');
+    await wait(() =>
+      accepting.messages.some((m) => m.type === 'broker.target.authorized'),
+    );
+    assert.equal(
+      accepting.messages.find((m) => m.type === 'broker.target.authorized')
+        .disposition,
+      'joined-existing',
+    );
     assert.equal(f.calls.length, 1);
-    assert.equal(require('../dist/lib/overlay-loopback-transport.js').readOverlayTargetRecoveryClaim(PID).expectedExecutablePath, EXE.toLowerCase());
+    assert.equal(
+      require('../dist/lib/overlay-loopback-transport.js').readOverlayTargetRecoveryClaim(
+        PID,
+      ).expectedExecutablePath,
+      EXE.toLowerCase(),
+    );
   });
 }
 
@@ -637,9 +689,9 @@ test('winner resolves OS identity before any route publication and does not use 
   const query = f.imageQueries[0];
   assert.equal(
     query.exe,
-    '\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    'Z:\\OS Installation\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
   );
-  assert.equal(query.opts.cwd, '\\\\?\\GLOBALROOT\\SystemRoot\\System32');
+  assert.equal(query.opts.cwd, 'Z:\\OS Installation\\System32');
   assert.equal(query.opts.shell, false);
   assert.equal(query.opts.timeout, 2000);
   assert.equal(query.opts.maxBuffer, 128 * 1024);
@@ -651,7 +703,9 @@ test('winner resolves OS identity before any route publication and does not use 
   await wait(() => f.server.targets.get(PID).members.size === 3);
   finishQuery(null, EXE + '\r\n', '');
   await f.finishNative();
-  await wait(() => accepting.messages.some((m) => m.type === 'broker.target.authorized'));
+  await wait(() =>
+    accepting.messages.some((m) => m.type === 'broker.target.authorized'),
+  );
   await wait(() => app.messages.some((m) => m.type === 'broker.error'));
   assert.match(
     app.messages.find((m) => m.type === 'broker.error').message,
@@ -911,12 +965,17 @@ test('restarted cached provider services consumed pinned route without reinjecti
   const pinned = readOverlayTargetRecoveryClaim(PID).discoveryPath;
   await f.restart();
   const pinnedClaim = readOverlayTargetRecoveryClaim(PID);
-  const wrong = await f.client({ expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe' });
+  const wrong = await f.client({
+    expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe',
+  });
   await wait(() => wrong.messages.some((m) => m.type === 'broker.error'));
   await wait(() => f.server.targets.get(PID)?.isEmpty === true);
   assert.deepEqual(readOverlayTargetRecoveryClaim(PID), pinnedClaim);
   assert.equal(f.calls.length, 0);
-  assert.equal(wrong.messages.find((m) => m.type === 'broker.error').requestId, wrong.requestId);
+  assert.equal(
+    wrong.messages.find((m) => m.type === 'broker.error').requestId,
+    wrong.requestId,
+  );
   const replacement = await f.client();
   await wait(() => {
     try {
@@ -1061,9 +1120,14 @@ test('cached provider resumes its exact unconsumed crash-snapshot intent with on
   fs.writeFileSync(claimPath, JSON.stringify(captured));
   f.relocate();
   await f.restart();
-  const wrong = await f.client({ expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe' });
+  const wrong = await f.client({
+    expectedExecutablePath: 'C:\\OtherGame\\OtherGame.exe',
+  });
   await wait(() => wrong.messages.some((m) => m.type === 'broker.error'));
-  assert.equal(wrong.messages.find((m) => m.type === 'broker.error').requestId, wrong.requestId);
+  assert.equal(
+    wrong.messages.find((m) => m.type === 'broker.error').requestId,
+    wrong.requestId,
+  );
   const replacement = await f.client({ expectedExecutablePath: undefined });
   await f.finishNative();
   await wait(() =>

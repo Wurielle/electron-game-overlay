@@ -393,8 +393,13 @@ ordinary startup permanently unavailable. A replacement compatible coordinator
 still has to adopt every durable target claim; it cannot reinterpret its own
 restart as permission to inject again. Shared startup requires proven medium
 Windows integrity and rejects elevated or unknown-integrity callers before
-executing per-user cached code. Cross-user or cross-integrity delegation is not
-supported. The direct no-argument executable entry repeats the integrity check
+executing per-user cached code. OS probes resolve the protected Object Manager
+`SystemRoot` link through native filesystem canonicalization, then use the
+resulting Win32 DOS path for executable and working-directory arguments.
+Environment `SystemRoot`/`PATH` values are not authority, and a `GLOBALROOT`
+device path must not be passed directly as a Windows process working directory.
+Cross-user or cross-integrity delegation is not supported. The direct no-argument
+executable entry repeats the integrity check
 before loading service/native-provider modules; it cannot rely solely on an
 SDK launcher having checked. Help and copy/write-only setup do not start that
 service and remain usable in their documented current-account context.

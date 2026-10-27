@@ -26,6 +26,8 @@ jobs:
     env:
       NX_DAEMON: 'false'
       NX_NO_CLOUD: 'true'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: ''
+      ELECTRON_OVERRIDE_DIST_PATH: ''
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -33,12 +35,42 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 26.12.1
+          # The locked Electron extractor exits early under Node 26.
+          node-version: 24.22.1
           cache: npm
       - name: Install locked dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Prepare Electron dependency without launching the application
-        run: node node_modules/electron/install.js
+        shell: pwsh
+        run: |
+          Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD, Env:ELECTRON_OVERRIDE_DIST_PATH, Env:npm_config_platform, Env:npm_config_arch -ErrorAction SilentlyContinue
+          & node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node -e @'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const executable = require('electron');
+          const expected = path.join(path.dirname(require.resolve('electron/package.json')), 'dist', 'electron.exe');
+          if (typeof executable !== 'string' || !fs.existsSync(executable) || !fs.statSync(executable).isFile() || fs.statSync(executable).size === 0 || fs.realpathSync.native(executable) !== fs.realpathSync.native(expected)) {
+            throw new Error('Electron prerequisite is not an installed Windows executable');
+          }
+          console.log('Electron prerequisite verified without launching the application');
+          '@
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          package-manager-cache: false
+      - name: Isolate fixtures in a canonical temporary directory
+        shell: pwsh
+        run: |
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'ego-broker-fixtures'
+          New-Item -ItemType Directory -Force -Path $fixtureTemp | Out-Null
+          $fixtureTemp = & node -e "process.stdout.write(require('node:fs').realpathSync.native(process.argv[1]))" $fixtureTemp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($name in @('TMP', 'TEMP', 'TMPDIR')) {
+            "$name=$fixtureTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
       - name: Compile SDK
         run: node node_modules/typescript/bin/tsc --build libs/electron-game-overlay/tsconfig.lib.json
       - name: Run SDK tests
@@ -54,7 +86,7 @@ jobs:
           EGO_MIXED_ACCEPTANCE_EVIDENCE: test-results/mixed-packages.json
         shell: pwsh
         run: |
-          $baseline = Join-Path $env:RUNNER_TEMP 'ego-broker-baseline'
+          $baseline = Join-Path $env:TEMP 'ego-broker-baseline'
           & git worktree add --detach $baseline $env:COMPATIBILITY_BASE_REF
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Junction -Path (Join-Path $baseline 'node_modules') -Target (Join-Path $PWD 'node_modules') | Out-Null

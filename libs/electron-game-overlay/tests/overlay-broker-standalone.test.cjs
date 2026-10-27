@@ -66,6 +66,80 @@ function fixture(t) {
   return { root, runtime, reshade, output: path.join(root, 'distribution') };
 }
 
+function powershellRuntimeManifests(f, architectures = [64, 32]) {
+  for (const bits of architectures) {
+    const suffix = bits === 64 ? '' : '32';
+    const file = path.join(
+      f.reshade,
+      `electron_game_overlay_runtime${suffix}.build.json`,
+    );
+    // Windows PowerShell 5 ConvertTo-Json | Set-Content -Encoding UTF8:
+    // one EF BB BF prefix, CRLF formatting, and a final CRLF.
+    const json = JSON.stringify(
+      JSON.parse(fs.readFileSync(file, 'utf8')),
+      null,
+      4,
+    );
+    fs.writeFileSync(file, `\uFEFF${json.replace(/\n/g, '\r\n')}\r\n`);
+  }
+}
+
+for (const architectures of [[64, 32], [32]]) {
+  test(
+    `packages PowerShell UTF8 BOM runtime manifests (${architectures.join('/')}-bit) without changing bytes`,
+    { timeout: 120_000 },
+    (t) => {
+      const f = fixture(t);
+      powershellRuntimeManifests(f, architectures);
+      const result = build(f);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(f.output, 'broker-manifest.json'), 'utf8'),
+      );
+      assert.ok(
+        fs.statSync(path.join(f.output, executable)).size > 1_000_000,
+        'builds a genuine SEA',
+      );
+      for (const name of fs.readdirSync(f.reshade)) {
+        const relative = `runtime/win32-x64/reshade/${name}`;
+        const original = fs.readFileSync(path.join(f.reshade, name));
+        const packaged = fs.readFileSync(path.join(f.output, relative));
+        assert.deepEqual(packaged, original, name);
+        const entry = manifest.files.find((entry) => entry.path === relative);
+        assert.equal(entry.size, original.length, name);
+        assert.equal(entry.sha256, hash(original), name);
+      }
+    },
+  );
+}
+
+test('rejects repeated BOMs and malformed PowerShell runtime JSON', (t) => {
+  const f = fixture(t);
+  powershellRuntimeManifests(f);
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    const file = path.join(
+      f.reshade,
+      `electron_game_overlay_runtime${suffix}.build.json`,
+    );
+    const original = fs.readFileSync(file);
+    for (const invalid of [
+      Buffer.concat([Buffer.from('\uFEFF'), original]),
+      Buffer.from('\uFEFF{"addonSha256":'),
+    ]) {
+      fs.writeFileSync(file, invalid);
+      const result = build(f);
+      assert.notEqual(result.status, 0);
+      assert.match(
+        result.stderr,
+        new RegExp(`Runtime build manifest invalid for ${bits}-bit payload`),
+      );
+      assert.ok(!fs.existsSync(f.output));
+    }
+    fs.writeFileSync(file, original);
+  }
+});
+
 function controlServicePrivilegeProbe(libDir) {
   if (process.platform !== 'win32') return;
   // Control only the exact OS probe in this disposable SEA service fixture.
@@ -422,6 +496,7 @@ test(
   { timeout: 120_000 },
   (t) => {
     const f = fixture(t);
+    powershellRuntimeManifests(f);
     for (const name of fs.readdirSync(f.reshade)) {
       const file = path.join(f.reshade, name);
       const bytes = fs.readFileSync(file);

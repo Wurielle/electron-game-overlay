@@ -482,7 +482,12 @@ test(
     try {
       const { execFile } = require('node:child_process');
       const { promisify } = require('node:util');
-      const directory = '\\\\?\\GLOBALROOT\\SystemRoot\\System32';
+      const directory = await new Promise((resolve, reject) =>
+        require('node:fs').realpath.native(
+          '\\\\?\\GLOBALROOT\\SystemRoot\\System32',
+          (error, result) => (error ? reject(error) : resolve(result)),
+        ),
+      );
       let output = '';
       try {
         ({ stdout: output } = await promisify(execFile)(
@@ -497,8 +502,10 @@ test(
             maxBuffer: 65536,
           },
         ));
-      } catch {
-        /* Unavailable host proof must refuse, too. */
+      } catch (error) {
+        assert.fail(
+          `Actual Windows host token probe could not execute: ${error}`,
+        );
       }
       const labels = [...output.matchAll(/S-1-16-([0-9]+)/g)].map(
         (match) => match[1],

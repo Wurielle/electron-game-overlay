@@ -21,10 +21,14 @@ function runMainWithPrivilegeProbe(probe) {
     const events = [];
     const probe = ${JSON.stringify(probe)};
     Object.defineProperty(process, 'platform', { value: 'win32' });
+    require('node:fs').realpath.native = (input, callback) => {
+      assert.equal(input, ${JSON.stringify('\\\\?\\GLOBALROOT\\SystemRoot\\System32')});
+      queueMicrotask(() => callback(null, ${JSON.stringify('Z:\\OS Installation\\System32')}));
+    };
     childProcess.execFile = (file, args, options, callback) => {
-      assert.equal(file, '\\\\\\\\?\\\\GLOBALROOT\\\\SystemRoot\\\\System32\\\\whoami.exe');
+      assert.equal(file, ${JSON.stringify('Z:\\OS Installation\\System32\\whoami.exe')});
       assert.deepEqual(args, ['/groups', '/fo', 'csv', '/nh']);
-      assert.equal(options.cwd, '\\\\\\\\?\\\\GLOBALROOT\\\\SystemRoot\\\\System32');
+      assert.equal(options.cwd, ${JSON.stringify('Z:\\OS Installation\\System32')});
       assert.equal(options.shell, false);
       assert.equal(options.windowsHide, true);
       assert.equal(options.timeout, 2000);

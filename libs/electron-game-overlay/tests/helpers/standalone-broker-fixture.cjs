@@ -131,11 +131,18 @@ async function disposeFixture() {
 function controlPrivilegeProbe() {
   if (process.platform !== 'win32') return () => {};
   const original = childProcess.execFile;
+  const nativeFs = require('node:fs');
+  const originalRealpath = nativeFs.realpath.native;
+  nativeFs.realpath.native = function (input, callback) {
+    if (input !== '\\\\?\\GLOBALROOT\\SystemRoot\\System32')
+      return originalRealpath.apply(this, arguments);
+    queueMicrotask(() => callback(null, 'Z:\\OS Installation\\System32'));
+  };
   childProcess.execFile = function (file, args, options, callback) {
-    if (file !== '\\\\?\\GLOBALROOT\\SystemRoot\\System32\\whoami.exe')
+    if (file !== 'Z:\\OS Installation\\System32\\whoami.exe')
       return original.apply(this, arguments);
     assert.deepEqual(args, ['/groups', '/fo', 'csv', '/nh']);
-    assert.equal(options.cwd, '\\\\?\\GLOBALROOT\\SystemRoot\\System32');
+    assert.equal(options.cwd, 'Z:\\OS Installation\\System32');
     assert.equal(options.shell, false);
     queueMicrotask(() =>
       callback(null, '"Mandatory Label","Label","S-1-16-8192",""'),
@@ -143,6 +150,7 @@ function controlPrivilegeProbe() {
   };
   return () => {
     childProcess.execFile = original;
+    nativeFs.realpath.native = originalRealpath;
   };
 }
 

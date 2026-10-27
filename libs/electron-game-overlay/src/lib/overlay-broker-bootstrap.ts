@@ -1,5 +1,6 @@
 import { createConnection } from 'node:net';
 import { spawn, execFile } from 'node:child_process';
+import { resolveOverlayBrokerSystemDirectory } from './overlay-broker-windows-os-path.js';
 
 import {
   iterateOverlayBrokerInstallations,
@@ -36,31 +37,33 @@ export async function assertOverlayBrokerPrivilege(): Promise<void> {
   if (process.platform !== 'win32') return;
   // The Object Manager SystemRoot link is OS-owned, unlike SystemRoot/PATH
   // environment strings. Never resolve this privileged probe via app paths.
-  const systemDirectory = '\\\\?\\GLOBALROOT\\SystemRoot\\System32';
-  const output = await new Promise<string>((resolve, reject) => {
-    execFile(
-      `${systemDirectory}\\whoami.exe`,
-      ['/groups', '/fo', 'csv', '/nh'],
-      {
-        shell: false,
-        windowsHide: true,
-        cwd: systemDirectory,
-        timeout: 2000,
-        maxBuffer: 64 * 1024,
-        encoding: 'utf8',
-      },
-      (error, stdout) => {
-        if (error)
-          reject(
-            new Error(
-              'Unable to prove medium Windows integrity; shared overlay broker launch is unsupported',
-              { cause: error },
-            ),
-          );
-        else resolve(stdout);
-      },
+  let output: string;
+  try {
+    const systemDirectory = await resolveOverlayBrokerSystemDirectory();
+    output = await new Promise<string>((resolve, reject) => {
+      execFile(
+        `${systemDirectory}\\whoami.exe`,
+        ['/groups', '/fo', 'csv', '/nh'],
+        {
+          shell: false,
+          windowsHide: true,
+          cwd: systemDirectory,
+          timeout: 2000,
+          maxBuffer: 64 * 1024,
+          encoding: 'utf8',
+        },
+        (error, stdout) => {
+          if (error) reject(error);
+          else resolve(stdout);
+        },
+      );
+    });
+  } catch (error) {
+    throw new Error(
+      'Unable to prove medium Windows integrity; trusted OS probe failed; shared overlay broker launch is unsupported',
+      { cause: error },
     );
-  });
+  }
   assertOverlayBrokerIntegrityOutput(output);
 }
 
