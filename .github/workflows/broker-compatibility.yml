@@ -116,6 +116,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & node libs/electron-game-overlay/tests/broker-mixed-package.acceptance.cjs (Join-Path $baseline 'libs/electron-game-overlay/dist')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:EGO_HARDENING_OLD_DIST = Join-Path $baseline 'libs/electron-game-overlay/dist'
+          $env:EGO_HARDENING_MUTATION = ''
+          & node --test --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/election-load.xml libs/electron-game-overlay/tests/broker-election-load-hardening.acceptance.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check demo and client types
         run: |
           node node_modules/typescript/bin/tsc --project demos/tsconfig.json --noEmit

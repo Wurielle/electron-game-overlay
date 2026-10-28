@@ -87,7 +87,12 @@ it can overwrite a user-dragged position and invalidate an in-flight drag.
 Ordinary new/topmost-window publication must not replay every other member's
 geometry. Preserve full ordered replay where older retained order tokens or
 recovery genuinely require it; do not claim native drag positions are persisted
-across reconnects by that metadata.
+across reconnects by that metadata. A native transport disconnect clears its
+registered windows; reauthentication reconstructs them from producer metadata,
+not native-dragged rectangles. Window names and newly allocated global IDs are
+not stable window-incarnation identities. Preserving placement through these
+paths requires an explicitly negotiated native feature, not silently treating
+v1 registration as an order-only command.
 
 Demo focus callbacks must not hide and recreate a visible control overlay merely
 to keep it on top. Let normal native click/focus stacking apply without mutating
@@ -492,6 +497,38 @@ what remains unverified. Existing source/tests and historical Windows runs do
 not establish that every future package combination or Windows/native target
 already works.
 
+## Repeatable failure and contention exercises
+
+After compiling the SDK, the normal unit suite includes
+`broker-crash-recovery-hardening.test.cjs`. It launches only fixture-owned broker
+children, uses the production server/client, persistent claim files and target
+TCP transport, and abruptly terminates only those children. Cases cover a crash
+after the real `publishing` claim rename but before grant delivery, recovery
+with no prior SDK application process left alive, and two consecutive crashes
+with surviving clients. A controlled game peer reauthenticates after
+replacement. The regression checks pinned ownership,
+retained scene/order/frame data, isolated input, interception requests and
+single settlement of existing authorizations. The fixture suppresses automatic
+external bootstrap and starts its replacement child explicitly: this is not
+standalone SEA startup or native-game acceptance.
+
+`broker-election-load-hardening.acceptance.cjs` requires an absolute
+`EGO_HARDENING_OLD_DIST` pointing to an independently compiled compatible SDK
+`dist` directory. Run it with `node --test`; it is intentionally outside the
+ordinary unit-test glob. CI reuses its separately compiled compatibility ref.
+Both coordinator implementations and both client arrival orders run against
+fresh servers; apps become ready before submitting their target requests into
+the actual 50 ms cohort. A later generation-99 provider must wait and join,
+not replace the committed owner.
+
+The same acceptance exercises 32 and 64 real socket members with colliding
+local window IDs and bounded frames. A paused reader uses a test-only reduced
+256 KiB pending-queue ceiling to exercise the production overflow/cleanup path
+without allocating the full default queue budget. Surviving members must keep
+routing frames and input, and their interception requests remain effective.
+The target/injection boundary and generation advertisements are controlled;
+these counts are not Electron-app, native-runtime or 500-version capacity.
+
 ## Resource bounds and backpressure
 
 The broker uses fixed admission bounds, not a performance scheduler:
@@ -532,8 +569,13 @@ PID to `attach()`.
 ## Trust boundary and deferred hardening
 
 The current broker treats applications running as the same Windows user as
-trusted peers. It must not run elevated relative to its clients. The following
-remain explicit hardening rather than accepted feature claims:
+trusted peers. It must not run elevated relative to its clients. The startup
+guard verifies the mandatory-integrity label; it does not audit every token
+group or privilege. Medium integrity alone is not a sandbox or proof that a
+manually filtered administrative token is equivalent to an ordinary desktop
+user token. Do not add automatic de-elevation or use relabeled token output to
+claim supported-token acceptance. The following remain explicit hardening
+rather than accepted feature claims:
 
 - verify the connecting process identity and apply an explicit per-user named
   pipe ACL;
