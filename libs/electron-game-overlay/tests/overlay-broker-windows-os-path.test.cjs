@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const cp = require('node:child_process');
+const path = require('node:path');
+const manager = path.resolve('validated-native-manager.exe');
 const anchor = '\\\\?\\GLOBALROOT\\SystemRoot\\System32';
 const directory = 'Z:\\OS Installation\\System32';
 const bootstrap = require('../dist/lib/overlay-broker-bootstrap.js');
@@ -26,13 +28,23 @@ function boundary(t, resolution = directory) {
   };
   cp.execFile = (exe, args, options, callback) => {
     calls.push(exe);
-    assert.equal(options.cwd, directory);
+    assert.equal(
+      options.cwd,
+      exe.endsWith('whoami.exe') ? directory : path.dirname(manager),
+    );
     assert.equal(options.shell, false);
     assert.equal(options.timeout, 2000);
     queueMicrotask(() =>
       callback(
         null,
-        exe.endsWith('whoami.exe') ? 'S-1-16-8192' : 'C:\\Games\\game.exe\r\n',
+        exe.endsWith('whoami.exe')
+          ? 'S-1-16-8192'
+          : JSON.stringify({
+              schemaVersion: 1,
+              kind: 'electron-game-overlay-process-image',
+              pid: 42,
+              executablePath: 'C:\\Games\\game.exe',
+            }) + '\n',
       ),
     );
   };
@@ -44,22 +56,29 @@ function boundary(t, resolution = directory) {
   return calls;
 }
 
-test('both OS probes resolve the kernel anchor before spawning canonical DOS executable and CWD', async (t) => {
+test('privilege guard retains kernel-owned whoami while native query never resolves SystemRoot or PowerShell', async (t) => {
   const calls = boundary(t);
   await bootstrap.assertOverlayBrokerPrivilege();
-  assert.equal(
-    await provider.resolveOverlayBrokerProcessImage(42),
-    'C:\\Games\\game.exe',
-  );
-  assert.deepEqual(calls, [
-    'resolve',
-    directory + '\\whoami.exe',
-    'resolve',
-    directory + '\\WindowsPowerShell\\v1.0\\powershell.exe',
-  ]);
+  const environment = process.env;
+  let actual;
+  try {
+    process.env = new Proxy(environment, {
+      get() {
+        assert.fail('native query must not consult environment authority');
+      },
+      ownKeys() {
+        assert.fail('native query must not enumerate environment authority');
+      },
+    });
+    actual = await provider.resolveOverlayBrokerProcessImage(42, manager);
+  } finally {
+    process.env = environment;
+  }
+  assert.equal(actual, 'C:\\Games\\game.exe');
+  assert.deepEqual(calls, ['resolve', directory + '\\whoami.exe', manager]);
 });
 
-test('kernel anchor rejects noncanonical/device/relative resolution without spawning either probe', async (t) => {
+test('kernel anchor rejects noncanonical/device/relative resolution without spawning the privilege probe', async (t) => {
   const calls = boundary(t);
   for (const result of [
     'C:relative',
@@ -78,10 +97,6 @@ test('kernel anchor rejects noncanonical/device/relative resolution without spaw
       bootstrap.assertOverlayBrokerPrivilege(),
       /Unable to prove medium Windows integrity/,
     );
-    await assert.rejects(
-      provider.resolveOverlayBrokerProcessImage(42),
-      /Unable to query OS executable identity/,
-    );
   }
   assert.deepEqual(calls, []);
 });
@@ -97,13 +112,11 @@ test('resolution failure and synchronous spawn EINVAL retain actionable caller c
       /Unable to prove medium Windows integrity/.test(error.message) &&
       error.cause.code === 'ENOENT',
   );
-  await assert.rejects(
-    provider.resolveOverlayBrokerProcessImage(42),
-    (error) =>
-      /Unable to query OS executable identity for PID 42/.test(error.message) &&
-      error.cause.code === 'ENOENT',
+  assert.equal(
+    await provider.resolveOverlayBrokerProcessImage(42, manager),
+    'C:\\Games\\game.exe',
   );
-  assert.deepEqual(calls, ['resolve', 'resolve']);
+  assert.deepEqual(calls, ['resolve', manager]);
   fs.realpath.native = (input, callback) =>
     queueMicrotask(() => callback(null, directory));
   cp.execFile = () => {
@@ -116,7 +129,7 @@ test('resolution failure and synchronous spawn EINVAL retain actionable caller c
       error.cause.code === 'EINVAL',
   );
   await assert.rejects(
-    provider.resolveOverlayBrokerProcessImage(42),
+    provider.resolveOverlayBrokerProcessImage(42, manager),
     (error) =>
       /Unable to query OS executable identity for PID 42/.test(error.message) &&
       error.cause.code === 'EINVAL',
@@ -133,11 +146,20 @@ test('kernel anchor resolution is bounded and a late callback never starts a chi
   const started = performance.now();
   let watchdog;
   const result = await Promise.race([
-    bootstrap.assertOverlayBrokerPrivilege().then(() => 'accepted', () => 'refused'),
-    new Promise((resolve) => { watchdog = setTimeout(() => resolve('unbounded'), 2800); }),
+    bootstrap.assertOverlayBrokerPrivilege().then(
+      () => 'accepted',
+      () => 'refused',
+    ),
+    new Promise((resolve) => {
+      watchdog = setTimeout(() => resolve('unbounded'), 2800);
+    }),
   ]);
   clearTimeout(watchdog);
-  assert.equal(result, 'refused', 'OS resolution must refuse before its deadline');
+  assert.equal(
+    result,
+    'refused',
+    'OS resolution must refuse before its deadline',
+  );
   assert.ok(performance.now() - started < 3000);
   finish(null, directory);
   await new Promise((resolve) => setImmediate(resolve));

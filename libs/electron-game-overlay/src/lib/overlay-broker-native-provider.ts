@@ -1,9 +1,8 @@
 import { execFile } from 'node:child_process';
-import { resolveOverlayBrokerSystemDirectory } from './overlay-broker-windows-os-path.js';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { copyFile } from 'node:fs/promises';
-import { dirname, join, win32 } from 'node:path';
+import { dirname, isAbsolute, join, win32 } from 'node:path';
 import type { NativeRuntimeProviderMetadata } from './native.js';
 import type {
   OverlayBrokerServerMessage,
@@ -51,30 +50,27 @@ export interface StandaloneOverlayNativeProviderOptions {
   onDiagnostic?: (diagnostic: unknown) => void;
 }
 
-/** @internal Read-only OS identity query; no caller path, environment search or profile is executable authority. */
+/** @internal Read-only OS identity query through the already validated native manager. */
 export async function resolveOverlayBrokerProcessImage(
   pid: number,
+  addonManagerPath: string,
 ): Promise<string> {
   if (!Number.isInteger(pid) || pid < 1 || pid > 0xffffffff) {
     throw new RangeError('Target PID must be a positive uint32');
   }
+  if (typeof addonManagerPath !== 'string' || !isAbsolute(addonManagerPath)) {
+    throw new Error('A validated absolute native manager path is required');
+  }
   let output: string;
   try {
-    const systemDirectory = await resolveOverlayBrokerSystemDirectory();
     output = await new Promise<string>((resolve, reject) => {
       execFile(
-        `${systemDirectory}\\WindowsPowerShell\\v1.0\\powershell.exe`,
-        [
-          '-NoLogo',
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::WriteLine([Diagnostics.Process]::GetProcessById(${pid}).MainModule.FileName)`,
-        ],
+        addonManagerPath,
+        ['--query-process-image', String(pid)],
         {
           shell: false,
           windowsHide: true,
-          cwd: systemDirectory,
+          cwd: dirname(addonManagerPath),
           timeout: 2000,
           maxBuffer: 128 * 1024,
           encoding: 'utf8',
@@ -87,11 +83,35 @@ export async function resolveOverlayBrokerProcessImage(
     });
   } catch (error) {
     throw new Error(
-      `Unable to query OS executable identity for PID ${pid}; trusted OS probe failed`,
+      `Unable to query OS executable identity for PID ${pid}; validated native probe failed`,
       { cause: error },
     );
   }
-  const executablePath = output.replace(/\r?\n$/, '');
+  let record: unknown;
+  try {
+    if (/[\r\n]/.test(output.replace(/\r?\n$/, '')))
+      throw new Error('Expected one JSON line');
+    record = JSON.parse(output);
+  } catch (error) {
+    throw new Error(`OS executable identity unavailable for PID ${pid}`, {
+      cause: error,
+    });
+  }
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    !('schemaVersion' in record) ||
+    record.schemaVersion !== 1 ||
+    !('kind' in record) ||
+    record.kind !== 'electron-game-overlay-process-image' ||
+    !('pid' in record) ||
+    record.pid !== pid ||
+    !('executablePath' in record) ||
+    typeof record.executablePath !== 'string'
+  ) {
+    throw new Error(`OS executable identity unavailable for PID ${pid}`);
+  }
+  const executablePath = record.executablePath;
   if (
     !win32.isAbsolute(executablePath) ||
     !/^([a-z]:\\|\\\\[^\\]+\\[^\\]+\\)/i.test(executablePath) ||
@@ -250,6 +270,7 @@ export async function prepareStandaloneOverlayNativeProvider(
             void (async () => {
               executablePath = await resolveOverlayBrokerProcessImage(
                 request.pid,
+                validatedConfig.addonManagerPath,
               );
               if (closed) return;
               await attachReShadeOverlay(launcher, session, {

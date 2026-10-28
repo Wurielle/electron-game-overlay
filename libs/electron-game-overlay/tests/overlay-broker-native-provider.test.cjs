@@ -36,6 +36,150 @@ const {
 } = require('../dist/lib/overlay-broker-protocol.js');
 const PID = 54321;
 const EXE = 'C:\\Games\\Cached\\game.exe';
+const imageRecord = (pid = PID, executablePath = EXE) =>
+  JSON.stringify({
+    schemaVersion: 1,
+    kind: 'electron-game-overlay-process-image',
+    pid,
+    executablePath,
+  }) + '\n';
+
+test('native image query executes only the explicit absolute manager with bounded PID-only arguments', async (t) => {
+  const original = cp.execFile;
+  const originalRealpath = fs.realpath.native;
+  const manager = path.resolve('controlled-native-manager.exe');
+  const calls = [];
+  t.after(() => {
+    cp.execFile = original;
+    fs.realpath.native = originalRealpath;
+  });
+  fs.realpath.native = () => {
+    assert.fail(
+      'native query must not resolve SystemRoot or environment authority',
+    );
+  };
+  cp.execFile = (exe, args, options, callback) => {
+    calls.push({ exe, args, options });
+    queueMicrotask(() => callback(null, imageRecord(), ''));
+    return new EventEmitter();
+  };
+  const {
+    resolveOverlayBrokerProcessImage,
+  } = require('../dist/lib/overlay-broker-native-provider.js');
+  assert.equal(await resolveOverlayBrokerProcessImage(PID, manager), EXE);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].exe, manager);
+  assert.deepEqual(calls[0].args, ['--query-process-image', String(PID)]);
+  assert.equal(calls[0].options.cwd, path.dirname(manager));
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(calls[0].options.timeout, 2000);
+  assert.equal(calls[0].options.maxBuffer, 128 * 1024);
+  assert.equal(calls[0].options.encoding, 'utf8');
+});
+test('native image query rejects malformed or mismatched response envelopes without fallback', async (t) => {
+  const original = cp.execFile;
+  t.after(() => {
+    cp.execFile = original;
+  });
+  const {
+    resolveOverlayBrokerProcessImage,
+  } = require('../dist/lib/overlay-broker-native-provider.js');
+  const valid = JSON.parse(imageRecord());
+  for (const output of [
+    JSON.stringify({ ...valid, schemaVersion: 2 }),
+    JSON.stringify({ ...valid, kind: 'other' }),
+    JSON.stringify({ ...valid, pid: PID + 1 }),
+    JSON.stringify({ ...valid, pid: String(PID) }),
+    JSON.stringify({ ...valid, executablePath: 42 }),
+    JSON.stringify({ ...valid, executablePath: 'C:relative.exe' }),
+    JSON.stringify({ ...valid, executablePath: '\\game.exe' }),
+    JSON.stringify({ ...valid, executablePath: 'C:\\bad\npath.exe' }),
+    JSON.stringify({ ...valid, executablePath: 'C:\\' + 'x'.repeat(32768) }),
+    'null',
+    '[]',
+    '{}',
+    'not JSON',
+    imageRecord() + imageRecord(),
+    JSON.stringify(valid, null, 2),
+  ]) {
+    let calls = 0;
+    cp.execFile = (_exe, _args, _opts, callback) => {
+      calls++;
+      queueMicrotask(() => callback(null, output, ''));
+      return new EventEmitter();
+    };
+    await assert.rejects(
+      resolveOverlayBrokerProcessImage(PID, path.resolve('manager.exe')),
+    );
+    assert.equal(
+      calls,
+      1,
+      'invalid native output must not invoke another probe',
+    );
+  }
+});
+
+test('native image query refuses absent or nonabsolute manager authority before spawning', async (t) => {
+  const original = cp.execFile;
+  t.after(() => {
+    cp.execFile = original;
+  });
+  let calls = 0;
+  cp.execFile = (_exe, _args, _opts, callback) => {
+    calls++;
+    queueMicrotask(() => callback(null, imageRecord(), ''));
+  };
+  const {
+    resolveOverlayBrokerProcessImage,
+  } = require('../dist/lib/overlay-broker-native-provider.js');
+  for (const manager of [
+    'manager.exe',
+    undefined,
+    '',
+    'C:manager.exe',
+    'relative/manager.exe',
+  ]) {
+    await assert.rejects(
+      resolveOverlayBrokerProcessImage(PID, manager),
+      /absolute native manager path/,
+    );
+  }
+  assert.equal(calls, 0);
+});
+
+test('native image query rejects child errors even with valid stdout and never falls back', async (t) => {
+  const original = cp.execFile;
+  t.after(() => {
+    cp.execFile = original;
+  });
+  const {
+    resolveOverlayBrokerProcessImage,
+  } = require('../dist/lib/overlay-broker-native-provider.js');
+  for (const error of [
+    Object.assign(new Error('nonzero exit'), { code: 1 }),
+    Object.assign(new Error('deadline'), { killed: true }),
+    Object.assign(new Error('output limit'), {
+      code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    }),
+  ]) {
+    let calls = 0;
+    cp.execFile = (_exe, _args, _opts, callback) => {
+      calls++;
+      queueMicrotask(() =>
+        callback(error, imageRecord(), 'bounded diagnostic'),
+      );
+      return new EventEmitter();
+    };
+    await assert.rejects(
+      resolveOverlayBrokerProcessImage(PID, path.resolve('manager.exe')),
+      (actual) =>
+        /Unable to query OS executable identity/.test(actual.message) &&
+        actual.cause === error,
+    );
+    assert.equal(calls, 1);
+  }
+});
+
 const wait = async (predicate) => {
   const deadline = Date.now() + 3000;
   while (!predicate()) {
@@ -125,12 +269,21 @@ async function fixture(t, generation = 7, options = {}) {
   let transport;
   const original = cp.execFile;
   const originalRealpath = fs.realpath.native;
-  fs.realpath.native = (input, callback) => {
-    assert.equal(input, '\\\\?\\GLOBALROOT\\SystemRoot\\System32');
-    queueMicrotask(() => callback(null, 'Z:\\OS Installation\\System32'));
-  };
+  fs.realpath.native = () =>
+    assert.fail('native query must not resolve OS/environment paths');
   cp.execFile = (exe, args, opts, callback) => {
-    if (exe === 'Z:\\OS Installation\\System32\\WindowsPowerShell\\v1.0\\powershell.exe') {
+    if (args[0] === '--query-process-image') {
+      assert.equal(
+        exe,
+        path.join(
+          bundleRoot,
+          'runtime',
+          'win32-x64',
+          'reshade',
+          'electron_game_overlay_reshade_manager.exe',
+        ),
+      );
+      assert.deepEqual(args, ['--query-process-image', String(PID)]);
       imageQueries.push({ exe, args, opts });
       if (options.queryHook) {
         options.queryHook(callback);
@@ -139,7 +292,7 @@ async function fixture(t, generation = 7, options = {}) {
       queueMicrotask(() =>
         callback(
           options.processImageError ?? null,
-          (options.processImage ?? EXE) + '\r\n',
+          imageRecord(PID, options.processImage ?? EXE),
           '',
         ),
       );
@@ -390,7 +543,7 @@ for (const expectedExecutablePath of [EXE, undefined]) {
     await wait(() => finishQuery);
     const accepting = await f.client({ expectedExecutablePath });
     await wait(() => f.server.targets.get(PID).members.size === 3);
-    finishQuery(null, EXE + '\r\n', '');
+    finishQuery(null, imageRecord(), '');
     await wait(() => f.calls.length === 1);
     await wait(() => wrong.messages.some((m) => m.type === 'broker.error'));
     const errors = wrong.messages.filter((m) => m.type === 'broker.error');
@@ -689,19 +842,17 @@ test('winner resolves OS identity before any route publication and does not use 
   const query = f.imageQueries[0];
   assert.equal(
     query.exe,
-    'Z:\\OS Installation\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    path.join(f.directory, 'electron_game_overlay_reshade_manager.exe'),
   );
-  assert.equal(query.opts.cwd, 'Z:\\OS Installation\\System32');
+  assert.equal(query.opts.cwd, f.directory);
   assert.equal(query.opts.shell, false);
   assert.equal(query.opts.timeout, 2000);
   assert.equal(query.opts.maxBuffer, 128 * 1024);
-  assert.ok(query.args.includes('-NoProfile'));
-  assert.ok(query.args.includes('-NonInteractive'));
+  assert.deepEqual(query.args, ['--query-process-image', String(PID)]);
   assert.ok(!query.args.some((arg) => arg.includes('caller')));
-  assert.match(query.args.at(-1), /GetProcessById\(54321\)/);
   const accepting = await f.client({ expectedExecutablePath: undefined });
   await wait(() => f.server.targets.get(PID).members.size === 3);
-  finishQuery(null, EXE + '\r\n', '');
+  finishQuery(null, imageRecord(), '');
   await f.finishNative();
   await wait(() =>
     accepting.messages.some((m) => m.type === 'broker.target.authorized'),
@@ -746,7 +897,10 @@ test('process identity query validates positive uint32 PID before starting any c
   } = require('../dist/lib/overlay-broker-native-provider.js');
   for (const pid of [0, -1, 1.5, NaN, Infinity, 0x100000000, '54321']) {
     await assert.rejects(
-      resolveOverlayBrokerProcessImage(pid),
+      resolveOverlayBrokerProcessImage(
+        pid,
+        path.join(f.directory, 'electron_game_overlay_reshade_manager.exe'),
+      ),
       /positive uint32/,
     );
     assert.equal(f.provider.createTarget({ pid }), undefined);
@@ -756,20 +910,37 @@ test('process identity query validates positive uint32 PID before starting any c
 });
 
 test(
-  'OS-owned Windows self-process image query returns the actual executable',
+  'native Windows first-call self-process image query returns the actual executable',
   { skip: process.platform !== 'win32' },
   async (t) => {
     const {
       resolveOverlayBrokerProcessImage,
     } = require('../dist/lib/overlay-broker-native-provider.js');
     const started = performance.now();
-    const actual = await resolveOverlayBrokerProcessImage(process.pid);
+    assert.ok(
+      process.env.EGO_NATIVE_MANAGER_PATH,
+      'compiled helper fixture EGO_NATIVE_MANAGER_PATH is required on Windows',
+    );
+    assert.ok(path.isAbsolute(process.env.EGO_NATIVE_MANAGER_PATH));
+    assert.ok(fs.statSync(process.env.EGO_NATIVE_MANAGER_PATH).isFile());
+    const actual = await resolveOverlayBrokerProcessImage(
+      process.pid,
+      process.env.EGO_NATIVE_MANAGER_PATH,
+    );
     t.diagnostic(
       `OS identity query elapsed ${Math.round(performance.now() - started)}ms`,
     );
     assert.equal(
       path.win32.normalize(actual).toLowerCase(),
       path.win32.normalize(process.execPath).toLowerCase(),
+    );
+    // Run the negative probe only after recording the genuine first invocation.
+    await assert.rejects(
+      resolveOverlayBrokerProcessImage(
+        0xffffffff,
+        process.env.EGO_NATIVE_MANAGER_PATH,
+      ),
+      /Unable to query OS executable identity/,
     );
   },
 );

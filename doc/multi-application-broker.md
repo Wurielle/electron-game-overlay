@@ -127,6 +127,30 @@ The internal provider itself is not an application request. Failure to prove
 identity may permit pre-publication fallback, never guessed paths or another
 injector after commitment.
 
+### Read-only native process identity
+
+The cached provider queries the OS through the selected distribution's already
+validated x64 `electron_game_overlay_reshade_manager.exe`, not PowerShell, a
+caller-supplied program, or an environment/PATH search. The shared broker's
+medium-integrity guard still runs before cached native code is executed.
+
+The additive `--query-process-image <pid>` mode accepts one canonical positive
+decimal uint32 PID. It opens the process with only
+`PROCESS_QUERY_LIMITED_INFORMATION` and calls `QueryFullProcessImageNameW` with
+Win32-path flags. It does not enumerate target modules, inject, or open/mutate
+game or ReShade files. Success is one UTF-8 JSON line:
+
+```json
+{"schemaVersion":1,"kind":"electron-game-overlay-process-image","pid":123,"executablePath":"C:\\Games\\Game.exe"}
+```
+
+The broker requires the matching PID, schema/kind, and a valid full Windows path.
+Child execution remains shell-disabled, bounded to 2000 milliseconds and 128 KiB
+of output. Missing processes, denied access, malformed responses, and timeouts
+fail closed without a PowerShell fallback. This is a separate read-only mode;
+existing manager file-transaction commands and broker/target protocol v1 are
+unchanged, and the mapped runtime build ID/generation does not change.
+
 ## Failure and recovery
 
 - If the selected provider leaves before target-route publication starts, the

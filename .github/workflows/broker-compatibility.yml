@@ -88,9 +88,9 @@ jobs:
           $tests = @(Get-ChildItem libs/electron-game-overlay/tests/*.test.cjs | ForEach-Object FullName)
           & node --test --test-timeout=120000 --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/broker.xml @tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Diagnose process-image timings after the unchanged SDK suite
+      - name: Check native process-image identity after SDK first-call coverage
         if: always()
-        run: node libs/electron-game-overlay/scripts/diagnose-process-image-probe.cjs --output test-results/process-probe-after-suite.json --context after-sdk-suite
+        run: node --test --test-reporter=tap libs/electron-game-overlay/tests/native-process-image.acceptance.cjs
       - name: Check independently built base and updated SDK interoperability
         env:
           COMPATIBILITY_BASE_REF: ${{ inputs.compatibility-ref || 'a2cdfd42ae639168773191f5e69fca468b020e13' }}
@@ -181,6 +181,26 @@ jobs:
         run: |
           Get-Command Get-FileHash -ErrorAction Stop | Out-Null
           npm exec --yes=false -- nx run electron-game-overlay:build
+      - name: Check both packaged native manager architectures
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $PWD 'libs/electron-game-overlay/dist/runtime/win32-x64/reshade'
+          $failed = 0
+          foreach ($architecture in @('x64', 'x86')) {
+            $name = if ($architecture -eq 'x64') { 'electron_game_overlay_reshade_manager.exe' } else { 'electron_game_overlay_reshade_manager32.exe' }
+            $env:EGO_NATIVE_MANAGER_PATH = (Get-Item -LiteralPath (Join-Path $runtime $name)).FullName
+            & node --test --test-reporter=tap libs/electron-game-overlay/tests/native-process-image.acceptance.cjs
+            $status = $LASTEXITCODE
+            Move-Item -LiteralPath test-results/native-process-image.json -Destination "test-results/native-process-image-production-$architecture.json"
+            if ($status -ne 0) { $failed = $status }
+          }
+          if ($failed -ne 0) { exit $failed }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: production-native-process-image-results
+          path: test-results/native-process-image-production-*.json
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: electron-game-overlay-windows-sdk

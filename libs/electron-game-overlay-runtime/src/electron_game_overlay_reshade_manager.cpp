@@ -10,11 +10,20 @@
 //   electron_game_overlay.addon64 / electron_game_overlay.addon32
 //   architecture-specific marker, journal, and transaction temporary names
 //
-// It never mutates a ReShade DLL or INI path. Every command opens the exact
-// caller-supplied ReShade module read-only, verifies its hash and single-link
+// It never mutates a ReShade DLL or INI path. Every file-transaction command
+// opens the caller-supplied ReShade module read-only, verifies its hash and single-link
 // regular-file identity, and holds that handle through recovery and mutation.
 //
 // CLI protocol (UTF-16 Windows argv):
+//
+//   electron_game_overlay_reshade_manager.exe --query-process-image <pid>
+//
+// This read-only mode accepts one canonical positive decimal uint32 PID and
+// queries its Win32 executable path with PROCESS_QUERY_LIMITED_INFORMATION.
+// It opens no game files, does not inject, and emits a separate success schema:
+// {"schemaVersion":1,"kind":"electron-game-overlay-process-image",
+//  "pid":<pid>,"executablePath":"..."}
+// Errors retain the manager error schema with operation "query-process-image".
 //
 //   electron_game_overlay_reshade_manager.exe prepare
 //     --directory <absolute-existing-directory>
@@ -35,7 +44,8 @@
 //     --reshade-module <absolute-existing-file>
 //     --reshade-module-sha256 <64-uppercase-hex>
 //
-// Options may appear in any order, exactly once. No other option is accepted.
+// File-transaction options may appear in any order, exactly once. No other
+// option is accepted.
 // Success exits 0. Invalid requests exit 2, preserved foreign/integrity state
 // exits 3, transaction races/busy state exit 4, and operating-system I/O errors
 // exit 5.
@@ -66,7 +76,7 @@
 //   {
 //     "schemaVersion":1,
 //     "kind":"electron-game-overlay-reshade-addon-manager-result",
-//     "operation":"prepare"|"remove"|"inspect"|null,
+//     "operation":"prepare"|"remove"|"inspect"|"query-process-image"|null,
 //     "status":"error",
 //     "code":"<stable-code>",
 //     "message":"...",
@@ -4524,6 +4534,83 @@ std::string serialize_error(
     return stream.str();
 }
 
+std::string query_process_image(int argc, wchar_t **argv)
+{
+    if (argc != 3)
+    {
+        throw manager_error(
+            "invalid-request",
+            "The process-image query requires exactly one PID.",
+            exit_category::invalid_request);
+    }
+    const std::wstring_view text(argv[2]);
+    if (text.empty() || text.size() > 10 ||
+        text.front() < L'1' || text.front() > L'9')
+    {
+        throw manager_error(
+            "invalid-request",
+            "The PID must be a canonical positive decimal uint32.",
+            exit_category::invalid_request);
+    }
+    std::uint64_t value = 0;
+    for (const wchar_t digit : text)
+    {
+        if (digit < L'0' || digit > L'9')
+        {
+            throw manager_error(
+                "invalid-request",
+                "The PID must be a canonical positive decimal uint32.",
+                exit_category::invalid_request);
+        }
+        value = value * 10 + static_cast<unsigned>(digit - L'0');
+        if (value > (std::numeric_limits<DWORD>::max)())
+        {
+            throw manager_error(
+                "invalid-request",
+                "The PID exceeds the uint32 range.",
+                exit_category::invalid_request);
+        }
+    }
+    const DWORD pid = static_cast<DWORD>(value);
+    unique_handle process(OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+    if (!process)
+    {
+        const DWORD error = GetLastError();
+        throw_windows(
+            "process-query-failed",
+            "Unable to open the process for read-only identity inspection.",
+            exit_category::io_failure,
+            error);
+    }
+    std::wstring image(32768, L'\0');
+    DWORD length = static_cast<DWORD>(image.size());
+    if (!QueryFullProcessImageNameW(process.get(), 0, image.data(), &length))
+    {
+        const DWORD error = GetLastError();
+        throw_windows(
+            "process-query-failed",
+            "Unable to query the process executable path.",
+            exit_category::io_failure,
+            error);
+    }
+    if (length == 0 || length >= image.size())
+    {
+        throw_windows(
+            "process-query-failed",
+            "The process executable path has an invalid length.",
+            exit_category::io_failure,
+            ERROR_INVALID_DATA);
+    }
+    image.resize(length);
+    std::ostringstream result;
+    result << "{\"schemaVersion\":1,"
+           << "\"kind\":\"electron-game-overlay-process-image\","
+           << "\"pid\":" << pid << ",\"executablePath\":"
+           << json_string(utf8_from_wide(image)) << "}\n";
+    return result.str();
+}
+
 void write_stdout(const std::string &text)
 {
     const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -4555,6 +4642,13 @@ int wmain(int argc, wchar_t **argv)
     std::optional<std::string> operation;
     try
     {
+        if (argc >= 2 &&
+            std::wstring_view(argv[1]) == L"--query-process-image")
+        {
+            operation = "query-process-image";
+            write_stdout(query_process_image(argc, argv));
+            return static_cast<int>(exit_category::success);
+        }
         request input = parse_request(argc, argv);
         operation = input.operation;
         const command_result result =
