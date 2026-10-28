@@ -14,6 +14,9 @@ import {
   OVERLAY_BROKER_REQUIRED_CAPABILITIES,
 } from './overlay-broker-protocol.js';
 
+/** @internal Total startup budget, including cold cache preparation and service readiness. */
+export const DEFAULT_OVERLAY_BROKER_STARTUP_TIMEOUT_MS = 75_000;
+
 /** @internal Bootstrap options; production uses the stable per-account v1 pipe. */
 export interface OverlayBrokerBootstrapOptions extends OverlayBrokerInstallationOptions {
   pipePath?: string;
@@ -73,7 +76,7 @@ export async function ensureOverlayBrokerRunning(
 ): Promise<void> {
   await assertOverlayBrokerPrivilege();
   const pipePath = options.pipePath ?? defaultOverlayBrokerPipePath();
-  const timeoutMs = options.timeoutMs ?? 15_000;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_OVERLAY_BROKER_STARTUP_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000)
     throw new RangeError(
       'Bootstrap timeout must be between 1 and 120000 milliseconds',

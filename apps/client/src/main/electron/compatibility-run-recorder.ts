@@ -1126,6 +1126,7 @@ function sanitizeErrorMessage(value: string | null): string | null {
   // Only fixed summaries and bounded OS codes leave this boundary, never raw text.
   const inspected = value.slice(0, 4096);
   const categories: readonly [RegExp, string][] = [
+    [/\boverlay session readiness failed\b/i, 'Overlay session readiness failed'],
     [
       /Failed to open target application process!/i,
       'Injector could not open target application process (OpenProcess)',

@@ -138,6 +138,7 @@ class Application {
             session: this.overlaySession,
             reshadeConfig,
             prearmedPathInjection: !process.argv.includes('--steam-exact-pid-only'),
+            waitForSessionReady: process.argv.includes('--steam-exact-pid-only'),
             launcherEventHandler: (event) =>
               this.handleReShadeLauncherEvent(event),
             watcherFactory: () =>

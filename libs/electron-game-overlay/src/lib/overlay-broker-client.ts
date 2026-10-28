@@ -37,6 +37,7 @@ import {
   OverlayLoopbackTransport,
 } from './overlay-loopback-transport.js';
 import {
+  DEFAULT_OVERLAY_BROKER_STARTUP_TIMEOUT_MS,
   ensureOverlayBrokerRunning,
   assertOverlayBrokerPrivilege,
 } from './overlay-broker-bootstrap.js';
@@ -44,7 +45,6 @@ import type { OverlayBrokerInstallationOptions } from './overlay-broker-installa
 import type { OverlayDiagnostic, Disposable } from './types.js';
 
 const SDK_VERSION = '0.0.1';
-const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const HANDSHAKE_TIMEOUT_MS = 5_000;
 const MIN_RETRY_DELAY_MS = 25;
 const MAX_RETRY_DELAY_MS = 500;
@@ -178,7 +178,7 @@ export class OverlayBrokerClient implements NativeOverlay {
     this.targetTransportMax =
       options.targetTransportMax ?? OVERLAY_BROKER_TARGET_TRANSPORT_MAX;
     this.connectTimeoutMs =
-      options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+      options.connectTimeoutMs ?? DEFAULT_OVERLAY_BROKER_STARTUP_TIMEOUT_MS;
     this.brokerEntryPath = options.brokerEntryPath;
     this.brokerInstallation = options.brokerInstallation;
     this.spawnBrokerOverride = options.spawnBroker;

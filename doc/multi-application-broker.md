@@ -80,6 +80,16 @@ in the release-evidence section explicit.
 
 ## Attachment sequence
 
+Cold coordinator startup includes discovery, full payload validation, immutable
+cache copying and service initialization, not just a pipe connection. The SDK
+client and standalone bootstrap share a bounded **75-second total default** for
+this path; an explicit `connectTimeoutMs` or bootstrap `timeoutMs` remains a
+total-budget override with its existing validation bounds. A healthy existing
+owner is still joined immediately. This allowance does not change the
+five-second client handshake timer, two-second OS privilege/identity probes,
+or any native injection deadline or ownership rule. Optional registration is
+not required to prepare the first cache.
+
 Before this sequence, the SDK joins an existing compatible service or bootstraps
 an eligible standalone distribution. A valid cached native provider prepares
 its first run before the standalone listener opens, without starting an

@@ -241,6 +241,7 @@ type SteamGameAutoAttacherOptions = Readonly<{
   launcherFactory?: ReShadeLauncherFactory;
   launcherEventHandler?: ReShadeLauncherEventHandler;
   prearmedPathInjection?: boolean;
+  waitForSessionReady?: boolean;
   preparedLauncherPoolSize?: number;
   preparedLauncherRetryBaseDelayMs?: number;
   preparedLauncherRetryMaxDelayMs?: number;
@@ -292,6 +293,7 @@ export class SteamGameAutoAttacher {
   private watcherErrorValue: string | null = null;
   private started = false;
   private disposed = false;
+  private sessionReady = false;
 
   constructor(private readonly options: SteamGameAutoAttacherOptions) {
     this.launchConfig = stripAutomaticTargeting(options.reshadeConfig);
@@ -389,6 +391,20 @@ export class SteamGameAutoAttacher {
       }),
     );
     this.publishState();
+
+    if (this.options.waitForSessionReady) {
+      void Promise.resolve()
+        .then(() => this.options.session.whenReady())
+        .then(() => {
+          this.sessionReady = true;
+          this.startWatcher();
+        })
+        .catch(() => {
+          this.handleWatcherStatus('failed', 'overlay session readiness failed');
+        });
+      this.fillPreparedLauncherPool();
+      return;
+    }
 
     // Observation must be live before staging starts. The broad native
     // path watcher is an early-injection fast lane; exact-PID observation and
@@ -787,6 +803,12 @@ export class SteamGameAutoAttacher {
     if (this.disposed || !this.started || this.watcher) {
       return;
     }
+    if (this.options.waitForSessionReady && (
+      !this.sessionReady ||
+      (this.preparedLauncherPoolSize > 0 && this.preparedLaunchers.length === 0)
+    )) {
+      return;
+    }
     try {
       const watcher = this.options.watcherFactory();
       this.watcher = watcher;
@@ -855,6 +877,7 @@ export class SteamGameAutoAttacher {
           this.preparedLauncherRetryTimer = null;
         }
         this.drainPendingTargets();
+        if (this.options.waitForSessionReady) this.startWatcher();
       }
     }
   }

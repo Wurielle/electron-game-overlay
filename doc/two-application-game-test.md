@@ -31,12 +31,17 @@ Do not disable protection or broadly exclude temporary folders.
 1. Close Gun Frog and, for this controlled comparison, other executables under
    Steam game folders. The historical SDK's observer still reports pre-existing
    matching processes; it is intentionally not patched to resemble the new SDK.
-2. Run **Start Broker Test.cmd** in the current folder, then in the baseline
-   folder. Do not use **Start Demo.cmd** for this test: its default prearmed
-   path-based lane is exclusive, not the shared exact-PID lane.
-3. Wait for both watchers to be ready, then launch Gun Frog once through Steam.
-   Both apps must detect the same new PID. Do not manually inject again into an
-   indeterminate or already-owned target.
+2. Run **Start Broker Test.cmd** in the current folder and wait for its watcher
+   to be ready **before starting the baseline app**. In this test mode, readiness
+   waits for the actual broker session and at least one prepared native runtime,
+   then requires the process observer's READY event. First-time cache preparation
+   can take longer than 15 seconds; the current SDK allows 75 seconds total for
+   broker startup. Do not use **Start Demo.cmd** for this test: its default
+   prearmed path-based lane is exclusive, not the shared exact-PID lane.
+3. Run **Start Broker Test.cmd** in the baseline folder and wait for its watcher
+   to be ready too, then launch Gun Frog once through Steam. Both apps must detect
+   the same new PID. Do not manually inject again into an indeterminate or
+   already-owned target.
 4. Use each app's controls to show its interactive example overlay. Move the
    overlays apart so overlapping initial positions do not hide one of them.
    Enter different text or activate controls in each; only the owning app's
@@ -69,10 +74,13 @@ short recording of both overlays and the survivor after the first app exits.
 State whether the broker was already running and whether the game exit was
 intentional; a socket reset alone does not prove authoritative process exit.
 
-The older revision retains its two-second PowerShell process-image lookup.
-A cold-start timeout there is a known historical limitation, not evidence that
-the newer read-only native query failed. Report it separately rather than
-silently warming or modifying the baseline.
+The older revision retains its 15-second total broker-startup budget and its
+two-second PowerShell process-image lookup. A reverse-order cold startup may
+therefore fail in the historical SDK before a valid distribution has finished
+copying. The current demo's readiness gate does not rewrite that older SDK.
+These are historical limitations, not evidence that the newer startup allowance
+or read-only native query failed. Report them separately rather than silently
+warming or modifying the baseline.
 
 Packaging/import/profile-setup checks, sealed payload validation, and controlled
 old/new protocol tests do not establish successful real-game coexistence,

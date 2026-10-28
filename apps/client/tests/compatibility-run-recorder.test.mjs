@@ -51,6 +51,7 @@ test('missing executable saves an allowlisted errno without its spawn path', () 
 });
 
 test('broker startup failures without diagnostics save fixed actionable categories', () => {
+  assertSavedError('overlay session readiness failed', 'Overlay session readiness failed');
   assertSavedError(
     'No validated standalone overlay broker could be started',
     'No validated standalone overlay broker could be started',
