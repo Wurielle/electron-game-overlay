@@ -112,3 +112,25 @@ index 6541ab3..21dcba2 100644
  			if (error != ERROR_SUCCESS)
  				return error;
  		}
+@@ -383,5 +408,21 @@ static DWORD observe_path_matches(const wchar_t *fragment, DWORD parent_pid)
+ 	const std::wstring normalized_fragment = normalize_path_separators(fragment);
+ 	std::unordered_map<DWORD, observed_process_state> observed_processes;
++	std::vector<DWORD> baseline_process_ids;
++	if (const DWORD error = enumerate_process_ids(baseline_process_ids); error != ERROR_SUCCESS)
++		return error;
++
++	for (const DWORD pid : baseline_process_ids)
++	{
++		auto &state = observed_processes.try_emplace(pid).first->second;
++		// Keep every enumerated baseline PID muted, even if access is denied.
++		// Retain its process identity when possible, without resolving a path
++		// or publishing either lifecycle event for an already-running process.
++		state.path_resolved = true;
++		state.process.handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
++		if (!has_process_identity(state))
++			state.process.handle = OpenProcess(SYNCHRONIZE, FALSE, pid);
++	}
++
+ 	if (!write_utf8_stdout_line(L"EGO_PROCESS_OBSERVER_READY"))
+ 		return ERROR_WRITE_FAULT;
+ 
