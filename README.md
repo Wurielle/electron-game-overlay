@@ -75,6 +75,14 @@ launcher enables the bundled runtime and Steam auto-attachment. Use the tray's
 Quit action to stop the demo. This is an unsigned testing build; elevated games
 and anti-cheat-protected games are unsupported.
 
+**Antivirus warning:** Microsoft Defender can flag and remove the demo's
+temporary `inject.exe` helpers, causing attachment failures even when the
+watcher is running. A tester confirmed that allowing the detected item restored
+operation; this is not a verified false-positive determination. See the
+[known antivirus issue](doc/known-issues.md#antivirus-detection-of-injection-helpers)
+before overriding a detection. Do not disable antivirus or exclude your entire
+Temp folder.
+
 ### Run a focused example from source
 
 On Windows, use Node.js **26.12.1** and the [native build prerequisites](#build-and-test).
