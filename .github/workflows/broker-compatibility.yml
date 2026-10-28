@@ -80,6 +80,9 @@ jobs:
           $tests = @(Get-ChildItem libs/electron-game-overlay/tests/*.test.cjs | ForEach-Object FullName)
           & node --test --test-timeout=120000 --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/broker.xml @tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Diagnose process-image timings after the unchanged SDK suite
+        if: always()
+        run: node libs/electron-game-overlay/scripts/diagnose-process-image-probe.cjs --output test-results/process-probe-after-suite.json --context after-sdk-suite
       - name: Check independently built base and updated SDK interoperability
         env:
           COMPATIBILITY_BASE_REF: ${{ inputs.compatibility-ref || 'a2cdfd42ae639168773191f5e69fca468b020e13' }}
@@ -105,6 +108,34 @@ jobs:
         with:
           name: broker-test-results
           path: test-results/
+          if-no-files-found: error
+
+  process-image-diagnostics:
+    name: Windows process-image timing diagnostics
+    runs-on: windows-2022
+    timeout-minutes: 5
+    env:
+      NX_DAEMON: 'false'
+      NX_NO_CLOUD: 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          cache: npm
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Compile SDK without preparing or launching a service
+        run: node node_modules/typescript/bin/tsc --build libs/electron-game-overlay/tsconfig.lib.json
+      - name: Measure first and repeated process-image probe timings
+        run: node libs/electron-game-overlay/scripts/diagnose-process-image-probe.cjs --output test-results/process-probe-fresh.json --context fresh-runner
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: process-image-timing-diagnostics
+          path: test-results/process-probe-fresh.json
           if-no-files-found: error
 
   packaged-broker:
