@@ -75,6 +75,12 @@ launcher enables the bundled runtime and Steam auto-attachment. Use the tray's
 Quit action to stop the demo. This is an unsigned testing build; elevated games
 and anti-cheat-protected games are unsupported.
 
+Normal demo runs save structured evidence under
+`%APPDATA%\electron-game-overlay-demo\logs\compatibility-runs`. Quit through
+the tray menu to finalize the matching `.events.jsonl` and `.summary.json`.
+Saved events include bounded, allowlisted `errorMessage` summaries and Windows
+error codes; raw commands, personal paths and unknown error text are omitted.
+
 **Antivirus warning:** Microsoft Defender can flag and remove the demo's
 temporary `inject.exe` helpers, causing attachment failures even when the
 watcher is running. A tester confirmed that allowing the detected item restored
@@ -82,6 +88,12 @@ operation; this is not a verified false-positive determination. See the
 [known antivirus issue](doc/known-issues.md#antivirus-detection-of-injection-helpers)
 before overriding a detection. Do not disable antivirus or exclude your entire
 Temp folder.
+
+For the shared-broker game test, also enable **build-two-app-demo** to obtain a
+second app carrying the pinned previous SDK revision. Use **Start Broker
+Test.cmd** in each folder, not the ordinary launcher. Follow the
+[two-application game test](doc/two-application-game-test.md) for launch order,
+profile separation, input checks and survivor acceptance.
 
 ### Run a focused example from source
 

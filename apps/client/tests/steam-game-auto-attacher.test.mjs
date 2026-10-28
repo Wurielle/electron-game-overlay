@@ -18,6 +18,17 @@ test('packaged watcher factory selects bundled Node without PATH and preserves d
   assert.equal(resolveNodeExecutable(factoryArgs(false)[3], { PATH: '' }, path.resolve('ElectronGameOverlayDemo.exe')), 'node');
   assert.equal(resolveNodeExecutable(factoryArgs(false)[3], { npm_node_execpath: process.execPath }, path.resolve('electron.exe')), process.execPath);
 });
+test('broker test mode disables the exclusive prearmed lane without changing default Steam attachment', () => {
+  const source = fs.readFileSync(new URL('../src/main/electron/app-entry.ts', import.meta.url), 'utf8');
+  const assignment = source.match(/this\.steamGameAutoAttacher =[\s\S]*?: null;/)[0];
+  const configure = new Function('SteamGameAutoAttacher', 'steamAutoAttachRequested', 'reshadeConfig', 'process', `${assignment}\nreturn this.steamGameAutoAttacher;`);
+  const capture = function (options) { return options; };
+  const context = { overlaySession: {} };
+  assert.equal(configure.call(context, capture, true, {}, { argv: ['--steam-exact-pid-only'] }).prearmedPathInjection, false);
+  assert.equal(configure.call(context, capture, true, {}, { argv: [] }).prearmedPathInjection, true);
+  assert.equal(configure.call(context, capture, false, {}, { argv: ['--steam-exact-pid-only'] }), null);
+});
+
 import { ReShadeOperationError } from 'electron-game-overlay';
 import { createReShadeOperationError } from '../../../libs/electron-game-overlay/dist/lib/reshade-launcher.js';
 import {

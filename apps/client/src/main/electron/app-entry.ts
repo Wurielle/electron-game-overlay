@@ -137,6 +137,7 @@ class Application {
         ? new SteamGameAutoAttacher({
             session: this.overlaySession,
             reshadeConfig,
+            prearmedPathInjection: !process.argv.includes('--steam-exact-pid-only'),
             launcherEventHandler: (event) =>
               this.handleReShadeLauncherEvent(event),
             watcherFactory: () =>

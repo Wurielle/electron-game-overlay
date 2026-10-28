@@ -63,6 +63,10 @@ async function smoke(output) {
     work = fs.mkdtempSync(path.join(output, '.runtime-probe-'));
     fs.writeFileSync(path.join(work, 'package.json'), JSON.stringify({ private: true, main: 'main.cjs' }));
     const resultFile = path.join(work, 'result.json');
+    const profileRoot = path.join(work, 'profile-probe');
+    const profileEntry = path.join(profileRoot, 'resources/app/portable-entry.cjs');
+    fs.mkdirSync(path.dirname(profileEntry), { recursive: true });
+    fs.copyFileSync(path.join(app, 'portable-entry.cjs'), profileEntry);
     const expectedElectron = require('../../../node_modules/electron/package.json').version;
     fs.writeFileSync(path.join(work, 'main.cjs'), `
 const { app } = require('electron');
@@ -71,6 +75,30 @@ const assert = require('node:assert/strict');
 const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
 app.setPath('userData', ${JSON.stringify(path.join(work, 'user-data'))});
+// Execute the shipped profile entry with real Electron path APIs, intercepting
+// only the UI main import so this acceptance probe never starts a broker.
+const Module = require('node:module');
+const originalLoad = Module._load;
+const originalArgv = process.argv;
+let profileMainIntercepted = false;
+try {
+  process.argv = [...originalArgv, '--manual-test-profile'];
+  Module._load = function(id, parent, isMain) {
+    if (parent?.filename === ${JSON.stringify(profileEntry)} && id === './dist/main/main.js') {
+      profileMainIntercepted = true;
+      return {};
+    }
+    return originalLoad.call(this, id, parent, isMain);
+  };
+  require(${JSON.stringify(profileEntry)});
+} finally {
+  Module._load = originalLoad;
+  process.argv = originalArgv;
+}
+assert.equal(profileMainIntercepted, true);
+assert.equal(app.getPath('userData'), ${JSON.stringify(path.join(profileRoot, 'profile'))});
+assert.equal(app.getPath('sessionData'), ${JSON.stringify(path.join(profileRoot, 'profile'))});
+assert.equal(app.getPath('logs'), ${JSON.stringify(path.join(profileRoot, 'logs'))});
 app.whenReady().then(async () => {
   const load = createRequire(${JSON.stringify(path.join(app, 'package.json'))});
   assert.equal(process.versions.electron, ${JSON.stringify(expectedElectron)});
@@ -87,7 +115,7 @@ app.whenReady().then(async () => {
   assert.equal(pid, process.pid);
   const wql = await import(pathToFileURL(load.resolve('wql-process-monitor')).href);
   assert.equal(typeof wql.subscribe, 'function');
-  fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify({ status: 'passed', versions: process.versions, sdkImported: true, wqlImported: true, koffiWin32FFI: true, ffiPidMatches: true }));
+  fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify({ status: 'passed', versions: process.versions, sdkImported: true, wqlImported: true, koffiWin32FFI: true, ffiPidMatches: true, profilePathSetup: true, uiMainIntercepted: true }));
   app.exit(0);
 }).catch(error => { fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify({ status: 'failed', error: error.message })); app.exit(1); });
 `);
