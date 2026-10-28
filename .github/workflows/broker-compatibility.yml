@@ -73,6 +73,14 @@ jobs:
           }
       - name: Compile SDK
         run: node node_modules/typescript/bin/tsc --build libs/electron-game-overlay/tsconfig.lib.json
+      - name: Build the native process-image query manager
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'ego-native-process-query'
+          & ./libs/electron-game-overlay-runtime/scripts/build-reshade-manager.ps1 -Architecture x64 -OutputDirectory $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manager = (Get-Item -LiteralPath (Join-Path $output 'electron_game_overlay_reshade_manager.exe')).FullName
+          "EGO_NATIVE_MANAGER_PATH=$manager" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run SDK tests
         shell: pwsh
         run: |
@@ -111,7 +119,7 @@ jobs:
           if-no-files-found: error
 
   process-image-diagnostics:
-    name: Windows process-image timing diagnostics
+    name: Windows native process-image query
     runs-on: windows-2022
     timeout-minutes: 5
     env:
@@ -124,18 +132,28 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 26.12.1
-          cache: npm
-      - name: Install locked dependencies without lifecycle scripts
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Compile SDK without preparing or launching a service
-        run: node node_modules/typescript/bin/tsc --build libs/electron-game-overlay/tsconfig.lib.json
-      - name: Measure first and repeated process-image probe timings
-        run: node libs/electron-game-overlay/scripts/diagnose-process-image-probe.cjs --output test-results/process-probe-fresh.json --context fresh-runner
+      - name: Seed sanitized native setup evidence before compilation
+        run: >-
+          node -e "const fs=require('node:fs'); fs.mkdirSync('test-results',{recursive:true});
+          fs.writeFileSync('test-results/native-process-image.json',JSON.stringify({schemaVersion:1,
+          kind:'electron-game-overlay-native-process-image-acceptance',platform:process.platform,
+          architecture:process.arch,status:'setup-not-completed',setupStage:'build',nativeExecuted:false,
+          passed:false,selfQueries:[],checks:[]},null,2)+'\n');"
+      - name: Build the native process-image query manager
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'ego-native-process-query'
+          & ./libs/electron-game-overlay-runtime/scripts/build-reshade-manager.ps1 -Architecture x64 -OutputDirectory $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manager = (Get-Item -LiteralPath (Join-Path $output 'electron_game_overlay_reshade_manager.exe')).FullName
+          "EGO_NATIVE_MANAGER_PATH=$manager" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check native process-image identity, latency and read-only behavior
+        run: node --test --test-reporter=tap libs/electron-game-overlay/tests/native-process-image.acceptance.cjs
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
-          name: process-image-timing-diagnostics
-          path: test-results/process-probe-fresh.json
+          name: native-process-image-results
+          path: test-results/native-process-image.json
           if-no-files-found: error
 
   packaged-broker:
