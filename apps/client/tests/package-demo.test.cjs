@@ -61,6 +61,7 @@ test('production closure dereferences workspace, preserves nested versions, excl
     const sdk = path.join(root, 'sdk');
     write(path.join(sdk, 'package.json'), '{"name":"sdk"}');
     write(path.join(sdk, 'dist/index.js'), 'module.exports=1');
+    write(path.join(sdk, 'dist/broker/win32-x64/node_modules/tslib/tslib.js'), 'sealed broker dependency');
     write(path.join(sdk, 'src/dev.ts'), 'not shipped');
     fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
     fs.symlinkSync(sdk, path.join(root, 'node_modules/sdk'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -74,6 +75,8 @@ test('production closure dereferences workspace, preserves nested versions, excl
     assert.equal(fs.lstatSync(path.join(output, 'node_modules/sdk')).isSymbolicLink(), false);
     assert.equal(fs.existsSync(path.join(output, 'node_modules/sdk/src')), false);
     assert.equal(fs.existsSync(path.join(output, 'node_modules/sdk/dist/index.js')), true);
+    assert.equal(fs.existsSync(path.join(output, 'node_modules/sdk/dist/broker/win32-x64/node_modules/tslib/tslib.js')), true, 'sealed broker dependencies must survive production-tree filtering');
+    assert.equal(fs.readFileSync(path.join(output, 'node_modules/sdk/dist/broker/win32-x64/node_modules/tslib/tslib.js'), 'utf8'), 'sealed broker dependency');
     assert.equal(JSON.parse(fs.readFileSync(path.join(output, 'node_modules/a/node_modules/b/package.json'))).version, '2');
     assert.equal(fs.existsSync(path.join(output, 'node_modules/a/node_modules/dev')), false);
     assert.equal(fs.existsSync(path.join(output, 'node_modules/electron')), false);

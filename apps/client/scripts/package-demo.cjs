@@ -46,7 +46,9 @@ function copyProductionGraph(root, output, graph) {
     const workspace = real !== path.resolve(node.path);
     copyTree(real, path.join(output, relative), (file) => {
       const rel = path.relative(real, file).split(path.sep);
-      if (rel.includes('node_modules')) return false;
+      // Installed dependency children are copied from the graph separately;
+      // dependencies sealed inside dist belong to the packaged artifact itself.
+      if (rel[0] === 'node_modules') return false;
       return !workspace || rel[0] === '' || rel[0] === 'dist' || /^(package\.json|licen[cs]e.*|copying.*|notice.*)$/i.test(rel[0]);
     });
     for (const [childName, child] of Object.entries(node.dependencies || {})) visit(child, childName);
