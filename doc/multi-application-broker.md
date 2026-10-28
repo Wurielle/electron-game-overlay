@@ -529,6 +529,30 @@ routing frames and input, and their interception requests remain effective.
 The target/injection boundary and generation advertisements are controlled;
 these counts are not Electron-app, native-runtime or 500-version capacity.
 
+## Read-only live recovery evidence
+
+The demo's `broker-recovery-diagnostic.cjs` is an optional observer outside the
+SDK/broker core; see [the manual procedure](two-application-game-test.md#observe-broker-recovery-without-changing-ownership).
+It loads the embedded SDK's existing protocol implementation, sends only the
+frozen hello, and closes its session. It never bootstraps an absent service,
+authorizes a target, changes ownership files, or implements a new wire message.
+
+On Windows, its own pipe handles obtain the server PID through
+`GetNamedPipeServerProcessId`; limited-rights process handles obtain the image,
+exact 64-bit creation time and token-user comparison. Matching before/after OS
+observations must corroborate the welcome. A self-reported PID, expected image
+basename or unchanged claim alone is not authoritative proof of a live broker
+instance, executable authenticity, exclusive use or permission to terminate.
+The observer's SID and full path remain in memory only. Claim credentials are
+omitted; bounded projections retain phase and lease/route fingerprints.
+
+Its transient hello sessions can delay idle shutdown. Reports explicitly leave
+other-client exclusivity, native injection count and native recovery unverified.
+An observation of unchanged pinned ownership is not physical-game acceptance.
+The diagnostic does not add process-creation identity to existing target claims
+or implement the deferred ACL/client-identity hardening below. Missing evidence
+is unknown, never permission to inject again or erase a claim.
+
 ## Resource bounds and backpressure
 
 The broker uses fixed admission bounds, not a performance scheduler:

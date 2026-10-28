@@ -99,6 +99,22 @@ jobs:
           $tests = @(Get-ChildItem libs/electron-game-overlay/tests/*.test.cjs | ForEach-Object FullName)
           & node --test --test-timeout=120000 --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/broker.xml @tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check read-only broker diagnostic unit boundaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          & node --test --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/broker-recovery-unit.xml apps/client/tests/broker-recovery-diagnostic.test.cjs apps/client/tests/windows-broker-identity.test.cjs apps/client/tests/broker-recovery-smoke.test.cjs apps/client/tests/broker-recovery-package.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check genuine Windows broker identity on a private owned pipe
+        if: always()
+        env:
+          EGO_WINDOWS_IDENTITY_ACCEPTANCE: '1'
+          EGO_WINDOWS_IDENTITY_REPORT: test-results/windows-broker-identity.json
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          & node apps/client/tests/windows-broker-identity.acceptance.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check native process-image identity after SDK first-call coverage
         if: always()
         run: node --test --test-reporter=tap libs/electron-game-overlay/tests/native-process-image.acceptance.cjs
@@ -339,6 +355,16 @@ jobs:
           $previousVersion = (Get-Content -Raw -LiteralPath (Join-Path $previous $packagePath) | ConvertFrom-Json).version
           @{ sdkSourceRevision = $env:GITHUB_SHA; sdkImplementationSha256 = $currentHash; packageVersion = $currentVersion; role = 'current' } | ConvertTo-Json | Out-File -FilePath (Join-Path $current 'SDK-REVISION.json') -Encoding utf8
           @{ sdkSourceRevision = '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48'; sdkImplementationSha256 = $previousHash; packageVersion = $previousVersion; role = 'previous'; sdkArtifactId = '12780691390' } | ConvertTo-Json | Out-File -FilePath (Join-Path $previous 'SDK-REVISION.json') -Encoding utf8
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          name: packaged-recovery-diagnostic-results
+          path: |
+            artifacts/ElectronGameOverlayDemo-win32-x64/runtime-smoke.json
+            artifacts/ElectronGameOverlayDemo-win32-x64/windows-broker-identity.json
+            artifacts/ElectronGameOverlayDemo-baseline-win32-x64/runtime-smoke.json
+            artifacts/ElectronGameOverlayDemo-baseline-win32-x64/windows-broker-identity.json
+          if-no-files-found: warn
       - name: Archive the previous-SDK manual test demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
         shell: pwsh

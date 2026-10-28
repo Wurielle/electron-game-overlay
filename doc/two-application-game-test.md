@@ -75,6 +75,60 @@ coordinator. Stop a leftover test broker only after all test apps and games
 have exited and only if it is not serving another application. Never delete
 claims, caches, rendezvous files or game files to force a new owner.
 
+## Observe broker recovery without changing ownership
+
+The portable packages include **Start Broker Recovery Diagnostic.cmd**. This is
+an observation tool, not a broker restart or termination command. Run it from
+one extracted folder after both test apps are ready and attached to the same
+live game. Leave the game and both apps running. It requests up to 180 samples
+at a two-second cadence and saves its own JSON report under
+`logs/broker-recovery`. Press `Ctrl+C` to request an early stop. Cancellation
+abandons a pending asynchronous capture and saves an interrupted report; it
+cannot forcibly preempt synchronous OS/native calls or setup/report filesystem
+I/O. The scheduled observation deadline is not an absolute process wall-clock
+limit, and abandoned reads finish their own cleanup when the underlying I/O
+settles.
+
+To restrict claim reads to the exact game PID shown by the apps, run the
+launcher from a command prompt with `--target-pid <PID>`. Without this option,
+it reads a bounded selection of existing recovery-claim files; a truncated
+selection is explicitly marked. It does not start an absent broker, authorize
+a target, inject, repair a claim, register a version, or modify cache/catalog
+or game files. Do not clear any of those files to obtain a different result.
+
+The tool correlates a frozen-v1 welcome with independently opened Windows pipe
+handles. It checks the OS-reported server PID, process creation time, image
+path and same-user token identity before and after the welcome. The report
+retains the PID, exact creation-time string and expected executable basename,
+not the raw executable path, account SID, session credential or claim token.
+An unavailable, mismatched or unexpected image remains unverified; never
+substitute a PID guessed from Task Manager or the protocol welcome alone.
+Expected basename and same-user identity are not publisher authentication.
+
+Claim observations include phase and fingerprints of the pinned route and
+lease. Broker PID plus creation time identifies an observed process instance;
+a PID alone does not. Changed endpoint credentials can be normal recovery and
+must not be confused with permission to replace the pinned route. Missing,
+unreadable, invalid or legacy evidence may leave continuity unknown. Unchanged
+fingerprints do **not** independently count native injections or prove that
+rendering/input recovered.
+
+Each hello briefly creates a broker client and can postpone idle retirement.
+Stop the diagnostic before checking the broker's normal 30-second idle exit.
+Frozen v1 cannot enumerate other consuming applications: this report never
+establishes exclusive use or permission to terminate a process. **Collect and
+review the baseline first; do not terminate a broker as part of this step.** A
+later controlled crash test requires a fresh, positively identified test
+broker and confirmation that no unrelated application depends on it.
+
+Keep the report with both apps' compatibility evidence. For a subsequent
+separately agreed crash test, record whether the same game PID stayed alive,
+both apps reconnected, both scenes returned, and input still reached only its
+owner. Native-dragged positions can reset during reconstruction; their
+persistence across reconnects is a documented feature gap, not a guarantee of
+this diagnostic. Local OS/pipe checks and CI fixtures do not substitute for
+that physical game acceptance.
+
 ## Evidence and limitations
 
 The broker-test launcher uses a separate `profile` and `logs` directory inside

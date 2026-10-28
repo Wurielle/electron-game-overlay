@@ -135,6 +135,8 @@ test('complete packaging fixture wires explicit revision and entry while default
     write('node_modules/wql-process-monitor/lib/dist/processMonitor.x64.dll', binary);
     for (const name of ['main/main.js', 'process-watcher/index.cjs']) write(`apps/client/dist/${name}`, '//fixture');
     write('apps/client/dist/index/index.html', '<html></html>');
+    for (const name of ['broker-recovery-diagnostic.cjs', 'windows-broker-identity.cjs']) write(`apps/client/scripts/${name}`, `throw new Error('copy-only fixture: ${name}');`);
+    write('libs/electron-game-overlay-runtime/scripts/test-cases/broker-recovery-diagnostic.cmd', fs.readFileSync(path.resolve(__dirname, '../../..', 'libs/electron-game-overlay-runtime/scripts/test-cases/broker-recovery-diagnostic.cmd')));
     Module._load = function(id, parent, isMain) {
       if (id === 'node:child_process') return { execFileSync: () => JSON.stringify(graph) };
       return original.call(this, id, parent, isMain);
@@ -149,6 +151,10 @@ test('complete packaging fixture wires explicit revision and entry while default
       const app = path.join(output, 'resources/app'), metadata = JSON.parse(fs.readFileSync(path.join(app, 'package.json')));
       assert.equal(metadata.main, 'portable-entry.cjs'); assert.equal(metadata.dependencies['electron-game-overlay'], '0.0.1');
       assert.equal(fs.existsSync(path.join(app, metadata.main)), true);
+      for (const name of ['broker-recovery-diagnostic.cjs', 'windows-broker-identity.cjs']) {
+        assert.equal(fs.existsSync(path.join(app, 'scripts', name)), true, `package must ship ${name}`);
+        assert.deepEqual(fs.readFileSync(path.join(app, 'scripts', name)), fs.readFileSync(path.join(root, 'apps/client/scripts', name)));
+      }
       assert.deepEqual(fs.readFileSync(path.join(app, 'node_modules/electron-game-overlay/dist/index.js')), fs.readFileSync(path.join(sdk || installed, 'dist/index.js')));
       assert.equal(fs.readFileSync(path.join(output, 'Start Manual Test.cmd'), 'utf8').includes('--steam-auto-attach'), false);
     }

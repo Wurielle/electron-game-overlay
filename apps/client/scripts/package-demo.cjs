@@ -123,6 +123,12 @@ function copyNodeRuntime(output, source, license) {
   fs.copyFileSync(source, path.join(destination, 'node.exe'));
   fs.copyFileSync(license, path.join(destination, 'LICENSE'));
 }
+function copyRecoveryDiagnostic(source, app) {
+  const names = ['broker-recovery-diagnostic.cjs', 'windows-broker-identity.cjs'];
+  for (const name of names) regular(path.join(source, name));
+  fs.mkdirSync(path.join(app, 'scripts'), { recursive: true });
+  for (const name of names) fs.copyFileSync(path.join(source, name), path.join(app, 'scripts', name));
+}
 function writeLaunchers(output) {
   const app = path.join(output, 'resources/app');
   fs.writeFileSync(path.join(app, 'portable-entry.cjs'), `
@@ -145,6 +151,7 @@ require('./dist/main/main.js');
   fs.writeFileSync(path.join(output, 'Start Demo.cmd'), '@echo off\r\nstart "" "%~dp0ElectronGameOverlayDemo.exe" --reshade-overlay --steam-auto-attach --demo-presentation %*\r\n');
   fs.writeFileSync(path.join(output, 'Start Broker Test.cmd'), '@echo off\r\nstart "" "%~dp0ElectronGameOverlayDemo.exe" --manual-test-profile --reshade-overlay --steam-auto-attach --steam-exact-pid-only --demo-presentation %*\r\n');
   fs.writeFileSync(path.join(output, 'Start Manual Test.cmd'), '@echo off\r\nstart "" "%~dp0ElectronGameOverlayDemo.exe" --manual-test-profile --reshade-overlay --demo-presentation %*\r\n');
+  fs.copyFileSync(path.join(repo, 'libs/electron-game-overlay-runtime/scripts/test-cases/broker-recovery-diagnostic.cmd'), path.join(output, 'Start Broker Recovery Diagnostic.cmd'));
 }
 function packageDemo(output, sdkPackage) {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Portable demo packaging requires genuine Windows x64 build inputs');
@@ -170,6 +177,7 @@ function packageDemo(output, sdkPackage) {
   if (sdkMetadata) metadata.dependencies['electron-game-overlay'] = sdkMetadata.version;
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify(metadata, null, 2));
   copyTree(path.join(repo, 'apps/client/dist'), path.join(app, 'dist'));
+  copyRecoveryDiagnostic(path.join(repo, 'apps/client/scripts'), app);
   copyProductionGraph(repo, app, graph, sdkPackage);
   fs.copyFileSync(path.join(repo, 'LICENSE'), path.join(app, 'LICENSE'));
   if (process.versions.node !== '26.12.1') throw new Error('Portable watcher requires pinned Node 26.12.1');
@@ -180,7 +188,7 @@ function packageDemo(output, sdkPackage) {
   fs.writeFileSync(path.join(output, 'README.txt'), 'Electron Game Overlay portable Windows x64 demo\r\nExtract ALL files before running Start Demo.cmd as a normal user (not Administrator).\r\nNo Node.js/npm installation is needed. Close using the tray menu Quit.\r\nSteam auto-attach attempts detected Steam executables. Test only games you own and are permitted to modify.\r\nAvoid anti-cheat/protected/multiplayer games: injection may violate game rules or trigger bans.\r\nExisting ReShade installations are fail-closed; this is an experimental demo.\r\nCI packaging/runtime smoke is NOT proof of real-game attachment.\r\n');
   return { output, executable, scope: 'portable packaging; no game attachment' };
 }
-module.exports = { writeLaunchers, copyNodeRuntime, createAppManifest, copyProductionGraph, validateClientAssets, validatePayloads, packageDemo };
+module.exports = { writeLaunchers, copyRecoveryDiagnostic, copyNodeRuntime, createAppManifest, copyProductionGraph, validateClientAssets, validatePayloads, packageDemo };
 if (require.main === module) {
   try {
     const { values } = parseArgs({ options: { output: { type: 'string' }, 'sdk-package': { type: 'string' } } });

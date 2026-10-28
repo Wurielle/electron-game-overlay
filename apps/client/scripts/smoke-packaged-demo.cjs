@@ -31,6 +31,31 @@ function probeWatcher(app, node) {
     });
   });
 }
+function probeRecoveryDiagnostic(app, node, reportFile) {
+  const report = { status: 'failed', stage: 'diagnostic-help', platform: process.platform, windowsExecuted: false, brokerStarted: false, gameInjectionAttempted: false };
+  fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (/^(PATH|NODE_OPTIONS|NODE_PATH|NODE_TEST_CONTEXT|ELECTRON_RUN_AS_NODE|npm_node_execpath|NODE_ENV|EGO_.*)$/i.test(key)) delete env[key];
+  env.PATH = '';
+  for (const file of [path.join(app, 'scripts/broker-recovery-diagnostic.cjs'), path.join(app, 'scripts/windows-broker-identity.cjs'), path.resolve(app, '../../Start Broker Recovery Diagnostic.cmd')]) {
+    let stat;
+    try { stat = fs.statSync(file); } catch { throw new Error('Missing packaged recovery diagnostic support file'); }
+    if (!stat.isFile() || !stat.size) throw new Error('Missing packaged recovery diagnostic support file');
+  }
+  const help = spawnSync(node, [path.join(app, 'scripts/broker-recovery-diagnostic.cjs'), '--help'], { cwd: app, env, timeout: 10000, encoding: 'utf8', windowsHide: true });
+  if (help.error || help.status !== 0 || !/Usage:/i.test(help.stdout || '')) throw new Error('Packaged recovery diagnostic help failed');
+  report.stage = 'owned-pipe-identity-acceptance';
+  fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+  const identity = spawnSync(node, [path.resolve(__dirname, '../tests/windows-broker-identity.acceptance.cjs')], {
+    cwd: app, env: { ...env, EGO_WINDOWS_IDENTITY_ACCEPTANCE: '1', EGO_WINDOWS_IDENTITY_REPORT: reportFile, EGO_WINDOWS_IDENTITY_MODULE: path.join(app, 'scripts/windows-broker-identity.cjs') },
+    timeout: 25000, encoding: 'utf8', windowsHide: true,
+  });
+  if (identity.error || identity.status !== 0) throw new Error('Packaged owned-pipe identity acceptance failed');
+  let evidence;
+  try { evidence = JSON.parse(fs.readFileSync(reportFile, 'utf8')); } catch { throw new Error('Packaged identity evidence unavailable'); }
+  if (evidence.status !== 'passed' || evidence.platform !== 'win32' || evidence.windowsExecuted !== true) throw new Error('Packaged identity evidence did not pass');
+  return { helpExecuted: true, pathEmpty: true, identity: evidence };
+}
 async function smoke(output) {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Runtime smoke requires Windows x64; no simulated Windows execution');
   if (!output || !path.isAbsolute(output)) throw new Error('--output must identify the absolute packaged directory');
@@ -135,12 +160,14 @@ app.whenReady().then(async () => {
     const version = spawnSync(node, ['--version'], { env: { PATH: '' }, timeout: 5000, encoding: 'utf8', windowsHide: true });
     if (version.status !== 0 || version.stdout.trim() !== 'v26.12.1') throw new Error('Bundled Node version mismatch');
     report.watcher = await probeWatcher(app, node);
+    report.stage = 'genuine-packaged-recovery-diagnostic'; save();
+    report.recoveryDiagnostic = probeRecoveryDiagnostic(app, node, path.join(output, 'windows-broker-identity.json'));
     report.status = 'passed'; report.stage = 'complete'; save();
     return report;
   } catch (error) { report.error = error.message; save(); throw error; }
   finally { if (work) fs.rmSync(work, { recursive: true, force: true }); }
 }
-module.exports = { smoke, probeWatcher };
+module.exports = { smoke, probeWatcher, probeRecoveryDiagnostic };
 if (require.main === module) {
   (async () => {
   try {
