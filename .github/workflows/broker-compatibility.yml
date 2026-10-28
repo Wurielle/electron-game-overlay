@@ -124,6 +124,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check real Electron offscreen focus and typed input
         run: node libs/electron-game-overlay/tests/real-electron-input.acceptance.cjs test-results/real-electron-input.json
+      - name: Check real Electron control-panel collapse paint
+        run: node apps/client/tests/real-electron-control-panel.acceptance.cjs test-results/real-electron-control-panel.json
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -286,11 +288,16 @@ jobs:
       - name: Check real Electron offscreen focus and typed input for the demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         run: node libs/electron-game-overlay/tests/real-electron-input.acceptance.cjs test-results/real-electron-input-demo.json
+      - name: Check real Electron control-panel collapse paint for the demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node apps/client/tests/real-electron-control-panel.acceptance.cjs test-results/real-electron-control-panel-demo.json
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         with:
           name: demo-electron-input-results
-          path: test-results/real-electron-input-demo.json
+          path: |
+            test-results/real-electron-input-demo.json
+            test-results/real-electron-control-panel-demo.json
           if-no-files-found: warn
       - name: Build and package the manual Electron demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}

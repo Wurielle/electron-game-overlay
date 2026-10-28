@@ -217,22 +217,53 @@ for (const flags of [[], ['--steam-exact-pid-only']]) {
       );
     });
   });
-  test(`${mode}: input toggling retains expanded and compact control sizes`, async () => {
+  test(`${mode}: input toggling never rewrites fixed control backing geometry`, async () => {
     await withApps(flags, async (apps, sessions) => {
-      apps.forEach((app) => {
+      const controls = apps.map((app) => {
         app.syncDemoControlOverlay();
-        app.setInputIntercept(true);
-        const control = app.overlayWindows.get('demo-control-overlay');
+        return app.overlayWindows.get('demo-control-overlay');
+      });
+      for (const control of controls) {
         assert.equal(control.browserWindow.bounds.width, 390);
         assert.equal(control.browserWindow.bounds.height, 390);
         assert.equal(control.options.captionHeight, 54);
-        app.setInputIntercept(false);
-        assert.equal(control.browserWindow.bounds.width, 320);
-        assert.equal(control.browserWindow.bounds.height, 170);
-      });
-      sessions.forEach((session) =>
-        assert.deepEqual(session.inputCalls, [true, false]),
-      );
+        assert.equal(control.options.dragBorder, 8);
+        assert.equal(control.options.transparent, true);
+        control.browserWindow.calls.length = 0;
+      }
+      const initial = controls.map((control) => ({
+        ...control.browserWindow.bounds,
+      }));
+      for (let cycle = 0; cycle < 4; cycle++) {
+        for (const requested of [true, false]) {
+          apps[0].setInputIntercept(requested);
+          assert.equal(
+            apps[0].getDemoState().presentation.menuExpanded,
+            requested,
+          );
+          controls.forEach((control, index) => {
+            assert.deepEqual(control.browserWindow.bounds, initial[index]);
+            assert.equal(
+              control.browserWindow.calls.some(
+                (call) => Array.isArray(call) && call[0] === 'bounds',
+              ),
+              false,
+            );
+          });
+          assert.deepEqual(controls[1].browserWindow.calls, []);
+        }
+      }
+      assert.deepEqual(sessions[0].inputCalls, [
+        true,
+        false,
+        true,
+        false,
+        true,
+        false,
+        true,
+        false,
+      ]);
+      assert.deepEqual(sessions[1].inputCalls, []);
     });
   });
 }

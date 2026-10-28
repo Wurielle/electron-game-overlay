@@ -13,8 +13,6 @@ import {
   createExamplePopupOverlayWindow,
   createExampleStatusOverlayWindow,
   createExampleVideoOverlayWindow,
-  DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
-  DEMO_CONTROL_OVERLAY_EXPANDED_SIZE,
 } from './example-overlay-windows';
 import type { OverlayWindowContext } from './example-overlay-windows';
 import {
@@ -746,11 +744,6 @@ class Application {
       AppWindows.demoControlOverlay,
     );
     overlayWindow.show();
-    overlayWindow.setBounds(
-      this.inputInterceptRequested
-        ? DEMO_CONTROL_OVERLAY_EXPANDED_SIZE
-        : DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
-    );
   }
 
   private getDemoState() {

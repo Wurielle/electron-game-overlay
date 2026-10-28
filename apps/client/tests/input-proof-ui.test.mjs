@@ -290,9 +290,20 @@ test('the normal demo presents a Ctrl+I dock and an interception menu without au
     appEntry,
     /process\.argv\.includes\(DEMO_PRESENTATION_FLAG\)[\s\S]{0,100}!this\.gunFrogInputProof/,
   );
-  assert.match(
+  assert.match(windowFactories, /\.\.\.DEMO_CONTROL_OVERLAY_EXPANDED_SIZE/);
+  const controlSync = sourceSection(
     appEntry,
-    /this\.inputInterceptRequested[\s\S]{0,100}DEMO_CONTROL_OVERLAY_EXPANDED_SIZE[\s\S]{0,100}DEMO_CONTROL_OVERLAY_COMPACT_SIZE/,
+    'private syncDemoControlOverlay()',
+    'private getDemoState()',
+  );
+  assert.doesNotMatch(controlSync, /setBounds/);
+  assert.match(
+    controlOverlay,
+    /body\s*\{[^}]*width: 320px;[^}]*height: 170px;[^}]*contain: paint;/,
+  );
+  assert.match(
+    controlOverlay,
+    /body\.expanded\s*\{[^}]*width: 390px;[^}]*height: 390px;/,
   );
   assert.match(appEntry, /this\.syncDemoControlOverlay\(\)/);
   assert.match(appEntry, /for \(const window of this\.windows\.values\(\)\)/);
@@ -302,7 +313,10 @@ test('the normal demo presents a Ctrl+I dock and an interception menu without au
   assert.match(appEntry, /targetSurfaceRemoved/);
   assert.match(appEntry, /ipcMain\.handle\('overlay:create-popup'/);
   assert.match(appEntry, /this\.overlaySession\.on\('windowFocused'/);
-  assert.doesNotMatch(appEntry, /keepDemoControlOverlayOnTop|demoControlRaiseQueued/);
+  assert.doesNotMatch(
+    appEntry,
+    /keepDemoControlOverlayOnTop|demoControlRaiseQueued/,
+  );
   assert.doesNotMatch(
     appEntry,
     /current\.hide\(\);[\s\S]{0,80}?current\.show\(\);[\s\S]{0,100}?webContents\.invalidate\(\)/,

@@ -54,8 +54,11 @@ Do not terminate an unrelated broker or clear claims/caches to force an update.
    their input fields; only the intended app's content should change. Click
    between existing test windows, then drag each test window. Neither control
    overlay may jump back, and test windows must not flash or snap back. Repeat
-   after opening another window. Use per-app input controls rather than the
-   shared global `Ctrl+I` shortcut, whose registration can collide between apps.
+   after opening another window. Toggle interception off and on after moving
+   each control panel: its visible size may change, but its position and all
+   peer/test-window positions must stay unchanged. Use per-app input controls
+   rather than the shared global `Ctrl+I` shortcut, whose registration can
+   collide between apps.
 5. Quit the first app through its tray menu. Its windows should disappear while
    the second app remains rendered and interactive, without another injection.
 6. Keep the second app open, exit and relaunch Gun Frog, and verify a fresh game

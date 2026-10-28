@@ -31,9 +31,18 @@
       }
 
       body {
+        width: 320px;
+        height: 170px;
+        /* Clip all paint, including the HUD shadow, inside the visible panel. */
+        contain: paint;
         padding: 8px;
         color: #f7fbff;
         user-select: none;
+      }
+
+      body.expanded {
+        width: 390px;
+        height: 390px;
       }
 
       button {

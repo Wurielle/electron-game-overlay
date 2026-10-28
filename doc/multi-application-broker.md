@@ -92,7 +92,11 @@ across reconnects by that metadata.
 Demo focus callbacks must not hide and recreate a visible control overlay merely
 to keep it on top. Let normal native click/focus stacking apply without mutating
 the scene. Test child-window focus, actual typed text, and dragging after focus
-changes separately from the visibility of control overlays.
+changes separately from the visibility of control overlays. The demo control
+uses a fixed transparent backing surface and changes only its CSS panel size
+on interception toggles, avoiding a resize that would resend stale Electron
+coordinates. Pixels outside the collapsed panel must remain fully transparent;
+verify actual offscreen paint rather than merely hiding DOM controls.
 
 ## Attachment sequence
 
