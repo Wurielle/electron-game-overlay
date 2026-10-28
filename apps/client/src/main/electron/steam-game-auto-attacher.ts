@@ -67,10 +67,15 @@ export class ForkedProcessWatcher implements ProcessWatcher {
     this.stopping = false;
     handlers.onStatus('starting');
     const childEnvironment = { ...process.env };
-    delete childEnvironment.ELECTRON_RUN_AS_NODE;
+    for (const key of Object.keys(childEnvironment)) {
+      if (/^(NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE)$/i.test(key)) {
+        delete childEnvironment[key];
+      }
+    }
     const child = this.forkProcess(this.entryPath, [this.nativeObserverPath], {
       env: childEnvironment,
       execPath: resolveNodeExecutable(this.nodeExecutable),
+      execArgv: [],
       serialization: 'json',
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });

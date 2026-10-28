@@ -5,6 +5,37 @@ const os = require('node:os');
 const path = require('node:path');
 const { copyProductionGraph, validateClientAssets, validatePayloads } = require('../scripts/package-demo.cjs');
 
+test('packaging fixture copies real runtime bytes and license, not Windows execution', () => {
+  const { copyNodeRuntime } = require('../scripts/package-demo.cjs');
+  assert.equal(typeof copyNodeRuntime, 'function', 'portable package lacks a Node runtime copier');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-node-copy-'));
+  try {
+    const binary = Buffer.alloc(68); binary.write('MZ'); binary.writeUInt32LE(64, 60); binary.write('PE\0\0', 64);
+    const source = path.join(root, 'node.exe'), license = path.join(root, 'node.txt');
+    fs.writeFileSync(source, binary); fs.writeFileSync(license, 'fixture Node license');
+    copyNodeRuntime(root, source, license);
+    assert.deepEqual(fs.readFileSync(path.join(root, 'resources/node/node.exe')), binary);
+    assert.equal(fs.readFileSync(path.join(root, 'resources/node/LICENSE'), 'utf8'), 'fixture Node license');
+    fs.writeFileSync(source, 'not PE');
+    assert.throws(() => copyNodeRuntime(root, source, license), /PE/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('watcher smoke orchestration fixture awaits ready IPC and clean child exit (not native execution)', async () => {
+  const { probeWatcher } = require('../scripts/smoke-packaged-demo.cjs');
+  assert.equal(typeof probeWatcher, 'function');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-watcher-probe-'));
+  try {
+    fs.mkdirSync(path.join(root, 'dist/process-watcher'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'dist/process-watcher/index.cjs'), `
+      if (process.env.PATH !== '' || Object.keys(process.env).some(k => /^(NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE|npm_node_execpath|NODE_ENV|EGO_PROCESS_WATCHER_TEST_WMI_MODULE)$/i.test(k))) process.exit(3);
+      process.on('disconnect', () => process.exit(0));
+      process.send({type:'process-watcher-ready'});
+    `);
+    assert.deepEqual(await probeWatcher(root, process.execPath), { readyIPC: true, exitCode: 0, pathEmpty: true });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('packaged manifest has concrete installed versions, not workspace install paths', () => {
   const { createAppManifest } = require('../scripts/package-demo.cjs');
   assert.equal(typeof createAppManifest, 'function');

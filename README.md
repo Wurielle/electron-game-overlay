@@ -67,7 +67,9 @@ ordinary pull-request checks do not build the Electron app.
 
 Download `ElectronGameOverlayDemo-win32-x64.zip` from the completed run's
 artifacts and extract the entire archive. No separate Node.js, Electron, or
-native build tools are required. With the target game closed, run
+native build tools are required. The bundle includes a dedicated Node runtime
+for the Steam process watcher; it does not require `node` on your PATH. With the
+target game closed, run
 `Start Demo.cmd` as a normal user, then launch the game through Steam. The
 launcher enables the bundled runtime and Steam auto-attachment. Use the tray's
 Quit action to stop the demo. This is an unsigned testing build; elevated games

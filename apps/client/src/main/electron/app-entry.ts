@@ -143,6 +143,10 @@ class Application {
               new ForkedProcessWatcher(
                 resolveProcessWatcherEntry(),
                 reshadeConfig.injectorPath,
+                undefined,
+                app.isPackaged
+                  ? path.join(process.resourcesPath, 'node', 'node.exe')
+                  : undefined,
               ),
           })
         : null;

@@ -101,6 +101,13 @@ function validatePayloads(app) {
   pe(path.join(app, 'node_modules/wql-process-monitor/lib/dist/processMonitor.x64.dll'));
   return manifest;
 }
+function copyNodeRuntime(output, source, license) {
+  pe(source); regular(license);
+  const destination = path.join(output, 'resources/node');
+  fs.mkdirSync(destination, { recursive: true });
+  fs.copyFileSync(source, path.join(destination, 'node.exe'));
+  fs.copyFileSync(license, path.join(destination, 'LICENSE'));
+}
 function packageDemo(output) {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Portable demo packaging requires genuine Windows x64 build inputs');
   if (!path.isAbsolute(output)) throw new Error('--output must be an absolute job-owned directory');
@@ -123,13 +130,15 @@ function packageDemo(output) {
   copyTree(path.join(repo, 'apps/client/dist'), path.join(app, 'dist'));
   copyProductionGraph(repo, app, graph);
   fs.copyFileSync(path.join(repo, 'LICENSE'), path.join(app, 'LICENSE'));
+  if (process.versions.node !== '26.12.1') throw new Error('Portable watcher requires pinned Node 26.12.1');
+  copyNodeRuntime(output, process.execPath, path.join(app, 'node_modules/electron-game-overlay/dist/broker/win32-x64/licenses/node.txt'));
   validatePayloads(app);
   validateClientAssets(path.join(app, 'dist'));
   fs.writeFileSync(path.join(output, 'Start Demo.cmd'), '@echo off\r\nstart "" "%~dp0ElectronGameOverlayDemo.exe" --reshade-overlay --steam-auto-attach --demo-presentation %*\r\n');
   fs.writeFileSync(path.join(output, 'README.txt'), 'Electron Game Overlay portable Windows x64 demo\r\nExtract ALL files before running Start Demo.cmd as a normal user (not Administrator).\r\nNo Node.js/npm installation is needed. Close using the tray menu Quit.\r\nSteam auto-attach attempts detected Steam executables. Test only games you own and are permitted to modify.\r\nAvoid anti-cheat/protected/multiplayer games: injection may violate game rules or trigger bans.\r\nExisting ReShade installations are fail-closed; this is an experimental demo.\r\nCI packaging/runtime smoke is NOT proof of real-game attachment.\r\n');
   return { output, executable, scope: 'portable packaging; no game attachment' };
 }
-module.exports = { createAppManifest, copyProductionGraph, validateClientAssets, validatePayloads, packageDemo };
+module.exports = { copyNodeRuntime, createAppManifest, copyProductionGraph, validateClientAssets, validatePayloads, packageDemo };
 if (require.main === module) {
   try {
     const { values } = parseArgs({ options: { output: { type: 'string' } } });

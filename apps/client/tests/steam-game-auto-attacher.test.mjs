@@ -1,6 +1,23 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
+
+test('packaged watcher factory selects bundled Node without PATH and preserves development resolution', () => {
+  const source = fs.readFileSync(new URL('../src/main/electron/app-entry.ts', import.meta.url), 'utf8');
+  const expression = source.match(/new ForkedProcessWatcher\([\s\S]*?\n\s+\),/)[0].slice(0, -1);
+  const resourcesPath = path.resolve('portable-demo/resources');
+  const factoryArgs = (isPackaged) => new Function('app', 'process', 'path', 'ForkedProcessWatcher', 'resolveProcessWatcherEntry', 'reshadeConfig', `return ${expression}`)(
+    { isPackaged }, { resourcesPath }, path, function (...args) { return args; },
+    () => path.resolve('watcher.cjs'), { injectorPath: path.resolve('inject.exe') },
+  );
+  for (const env of [{ PATH: '' }, { PATH: '', npm_node_execpath: path.resolve('external/node.exe') }]) {
+    assert.equal(resolveNodeExecutable(factoryArgs(true)[3], env, path.resolve('ElectronGameOverlayDemo.exe')), path.join(resourcesPath, 'node/node.exe'));
+  }
+  assert.equal(resolveNodeExecutable(factoryArgs(false)[3], { PATH: '' }, path.resolve('ElectronGameOverlayDemo.exe')), 'node');
+  assert.equal(resolveNodeExecutable(factoryArgs(false)[3], { npm_node_execpath: process.execPath }, path.resolve('electron.exe')), process.execPath);
+});
 import { ReShadeOperationError } from 'electron-game-overlay';
 import { createReShadeOperationError } from '../../../libs/electron-game-overlay/dist/lib/reshade-launcher.js';
 import {
@@ -10,6 +27,22 @@ import {
   SteamGameAutoAttacher,
   stripAutomaticTargeting,
 } from '../src/main/electron/steam-game-auto-attacher.ts';
+
+test('watcher fork strips inherited preload hooks case-insensitively and parent flags', async () => {
+  const keys = ['NoDe_OpTiOnS', 'node_path', 'Electron_Run_As_Node'];
+  const saved = keys.map(key => process.env[key]);
+  let options;
+  const child = createFakeChildProcess();
+  try {
+    for (const key of keys) process.env[key] = 'untrusted';
+    const watcher = new ForkedProcessWatcher(path.resolve('watcher.cjs'), path.resolve('inject.exe'), (_entry, _args, opts) => { options = opts; return child; }, process.execPath);
+    watcher.start({ onEvent() {}, onStatus() {} });
+    assert.equal(Object.keys(options.env).some(key => /^(NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE)$/i.test(key)), false);
+    assert.deepEqual(options.execArgv, []);
+    child.emit('exit', 0, null);
+    await watcher.stop();
+  } finally { keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; }); }
+});
 
 test('Node executable resolution avoids Electron and has a PATH fallback', () => {
   assert.equal(
