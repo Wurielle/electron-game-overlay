@@ -256,7 +256,7 @@ test('the demo prearms Steam injection and still attempts every detected executa
   assert.doesNotMatch(watcher, /bin:\s*\{\s*filter:/);
 });
 
-test('the normal demo presents an always-visible Ctrl+I dock and an interception menu', () => {
+test('the normal demo presents a Ctrl+I dock and an interception menu without automatic focus raising', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
   const devLaunch = readClientFile('src', 'main', 'dev-launch.mts');
   const windowNames = readClientFile(
@@ -302,8 +302,8 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(appEntry, /targetSurfaceRemoved/);
   assert.match(appEntry, /ipcMain\.handle\('overlay:create-popup'/);
   assert.match(appEntry, /this\.overlaySession\.on\('windowFocused'/);
-  assert.match(appEntry, /this\.keepDemoControlOverlayOnTop\(windowId\)/);
-  assert.match(
+  assert.doesNotMatch(appEntry, /keepDemoControlOverlayOnTop|demoControlRaiseQueued/);
+  assert.doesNotMatch(
     appEntry,
     /current\.hide\(\);[\s\S]{0,80}?current\.show\(\);[\s\S]{0,100}?webContents\.invalidate\(\)/,
   );

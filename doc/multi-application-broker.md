@@ -78,6 +78,22 @@ in the release-evidence section explicit.
 - The authenticated host survives a zero-member interval and retires only on
   authoritative `game.process.disconnected`.
 
+## Window placement and focus
+
+Frozen-v1 caption dragging updates native runtime-local placement; it does not
+report new positions back to the Electron `BrowserWindow` or broker metadata.
+Re-registering an unchanged window is therefore not a harmless z-order update:
+it can overwrite a user-dragged position and invalidate an in-flight drag.
+Ordinary new/topmost-window publication must not replay every other member's
+geometry. Preserve full ordered replay where older retained order tokens or
+recovery genuinely require it; do not claim native drag positions are persisted
+across reconnects by that metadata.
+
+Demo focus callbacks must not hide and recreate a visible control overlay merely
+to keep it on top. Let normal native click/focus stacking apply without mutating
+the scene. Test child-window focus, actual typed text, and dragging after focus
+changes separately from the visibility of control overlays.
+
 ## Attachment sequence
 
 Cold coordinator startup includes discovery, full payload validation, immutable

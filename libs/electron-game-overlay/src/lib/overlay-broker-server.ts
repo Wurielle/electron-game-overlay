@@ -512,8 +512,26 @@ export class OverlayBrokerTargetHost {
     ) {
       return;
     }
-    this.ensureTargetWindowId(client, localWindowId);
-    this.restoreAggregateWindowOrder();
+    const targetWindowId = this.ensureTargetWindowId(client, localWindowId);
+    const hasLaterWindow = Array.from(this.ownersByTargetWindowId.entries()).some(
+      ([id, owner]) =>
+        id !== targetWindowId &&
+        (owner.client.windows.get(owner.localWindowId)?.orderToken ?? '') >
+          state.orderToken,
+    );
+    if (hasLaterWindow) {
+      // Restored older tokens cannot be inserted below existing windows in v1.
+      this.restoreAggregateWindowOrder();
+      return;
+    }
+    this.safeTargetMutation(() => {
+      // A window command raises only this window and clears only its frame.
+      this.transport.addWindow(targetWindowId, cloneWindowDetails(state.details));
+      if (state.latestFrame) {
+        this.transport.sendFrameBuffer(targetWindowId, state.latestFrame.pixels,
+          state.latestFrame.width, state.latestFrame.height);
+      }
+    });
   }
 
   public updateWindowBounds(
@@ -1338,10 +1356,12 @@ export class OverlayBrokerTargetHost {
   }
 
   private materializeClientWindows(client: BrokerTargetClient): void {
-    for (const localWindowId of client.windows.keys()) {
-      this.ensureTargetWindowId(client, localWindowId);
+    const ordered = Array.from(client.windows.entries()).sort((left, right) =>
+      left[1].orderToken.localeCompare(right[1].orderToken),
+    );
+    for (const [localWindowId, state] of ordered) {
+      this.upsertWindow(client, localWindowId, state);
     }
-    this.restoreAggregateWindowOrder();
   }
 
   private restoreAggregateWindowOrder(): void {

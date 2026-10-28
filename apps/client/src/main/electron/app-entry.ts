@@ -102,7 +102,6 @@ class Application {
   private gunFrogButtonsReady = false;
   private gunFrogTargetConnected = false;
   private gunFrogProofReadyLogged = false;
-  private demoControlRaiseQueued = false;
   private disposed = false;
 
   constructor(reshadeConfig: ReShadeLaunchConfig | null = null) {
@@ -215,7 +214,6 @@ class Application {
         pid,
         focusWindowId: windowId,
       });
-      this.keepDemoControlOverlayOnTop(windowId);
     });
   }
 
@@ -688,9 +686,6 @@ class Application {
     if (visible) {
       const overlayWindow = this.ensureExampleOverlayWindow(name);
       overlayWindow.show();
-      if (name !== AppWindows.demoControlOverlay) {
-        this.keepDemoControlOverlayOnTop(overlayWindow.nativeId);
-      }
     } else {
       this.overlayWindows.get(name)?.hide();
     }
@@ -943,40 +938,6 @@ class Application {
       `HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=${intercepting}`,
     );
     this.maybeLogGunFrogProofReady();
-  }
-
-  private keepDemoControlOverlayOnTop(focusWindowId: number) {
-    if (
-      !this.demoPresentationEnabled ||
-      this.demoControlRaiseQueued ||
-      !Number.isSafeInteger(focusWindowId) ||
-      focusWindowId <= 0
-    ) {
-      return;
-    }
-    const controlOverlay = this.overlayWindows.get(
-      AppWindows.demoControlOverlay,
-    );
-    if (!controlOverlay?.visible || focusWindowId === controlOverlay.nativeId) {
-      return;
-    }
-
-    this.demoControlRaiseQueued = true;
-    queueMicrotask(() => {
-      this.demoControlRaiseQueued = false;
-      const current = this.overlayWindows.get(AppWindows.demoControlOverlay);
-      if (
-        this.disposed ||
-        current !== controlOverlay ||
-        !current.visible ||
-        current.browserWindow.isDestroyed()
-      ) {
-        return;
-      }
-      current.hide();
-      current.show();
-      current.browserWindow.webContents.invalidate();
-    });
   }
 
   private handleTargetTransportEnded(pid: number) {

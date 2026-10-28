@@ -122,6 +122,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check real Electron offscreen focus and typed input
+        run: node libs/electron-game-overlay/tests/real-electron-input.acceptance.cjs test-results/real-electron-input.json
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -281,13 +283,22 @@ jobs:
           $metadata = & git show '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48:libs/electron-game-overlay/package.json'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $metadata | Out-File -FilePath artifacts/sdk-baseline/package.json -Encoding utf8
+      - name: Check real Electron offscreen focus and typed input for the demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node libs/electron-game-overlay/tests/real-electron-input.acceptance.cjs test-results/real-electron-input-demo.json
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          name: demo-electron-input-results
+          path: test-results/real-electron-input-demo.json
+          if-no-files-found: warn
       - name: Build and package the manual Electron demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         shell: pwsh
         run: |
           & node --test apps/client/tests/package-demo.test.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & node --no-warnings --require ./apps/client/tests/helpers/register-typescript.cjs --test apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/compatibility-run-recorder.test.mjs
+          & node --no-warnings --require ./apps/client/tests/helpers/register-typescript.cjs --test apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/compatibility-run-recorder.test.mjs apps/client/tests/app-demo-focus.test.mjs apps/client/tests/input-proof-ui.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

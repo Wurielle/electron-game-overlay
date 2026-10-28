@@ -28,6 +28,13 @@ Do not disable protection or broadly exclude temporary folders.
 
 ## Exercise the shared exact-PID path
 
+When testing a replacement build that changes the coordinator, first close the
+previous test game and both test apps. If no other EGO clients or owned targets
+remain, the standalone broker exits after its 30-second idle period. Allow it
+to retire before starting the new comparison: an already-running compatible
+broker deliberately stays authoritative and is not hot-upgraded by a new app.
+Do not terminate an unrelated broker or clear claims/caches to force an update.
+
 1. Close Gun Frog and, for this controlled comparison, other executables under
    Steam game folders. The historical SDK's observer still reports pre-existing
    matching processes; it is intentionally not patched to resemble the new SDK.
@@ -42,11 +49,13 @@ Do not disable protection or broadly exclude temporary folders.
    to be ready too, then launch Gun Frog once through Steam. Both apps must detect
    the same new PID. Do not manually inject again into an indeterminate or
    already-owned target.
-4. Use each app's controls to show its interactive example overlay. Move the
-   overlays apart so overlapping initial positions do not hide one of them.
-   Enter different text or activate controls in each; only the owning app's
-   content should change. Use per-app controls rather than the shared global
-   `Ctrl+I` shortcut, whose registration can collide between instances.
+4. Move both control overlays away from their initial positions. Open a **Main
+   window** from each app, move the test windows apart and type distinct text in
+   their input fields; only the intended app's content should change. Click
+   between existing test windows, then drag each test window. Neither control
+   overlay may jump back, and test windows must not flash or snap back. Repeat
+   after opening another window. Use per-app input controls rather than the
+   shared global `Ctrl+I` shortcut, whose registration can collide between apps.
 5. Quit the first app through its tray menu. Its windows should disappear while
    the second app remains rendered and interactive, without another injection.
 6. Keep the second app open, exit and relaunch Gun Frog, and verify a fresh game
