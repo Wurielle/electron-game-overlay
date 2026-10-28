@@ -5,6 +5,11 @@ on:
     branches: [feat/overlay-pocs]
   workflow_dispatch:
     inputs:
+      build-demo:
+        description: Build a downloadable Windows Electron demo instead of running SDK checks
+        type: boolean
+        required: false
+        default: false
       compatibility-ref:
         description: Frozen broker-v1 source revision for mixed-package tests
         type: string
@@ -21,6 +26,7 @@ concurrency:
 jobs:
   sdk-tests:
     name: Windows SDK and standalone broker tests
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.build-demo }}
     runs-on: windows-2022
     timeout-minutes: 30
     env:
@@ -120,6 +126,7 @@ jobs:
 
   process-image-diagnostics:
     name: Windows native process-image query
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.build-demo }}
     runs-on: windows-2022
     timeout-minutes: 5
     env:
@@ -201,6 +208,51 @@ jobs:
           name: production-native-process-image-results
           path: test-results/native-process-image-production-*.json
           if-no-files-found: warn
+      - uses: actions/setup-node@v7.1.0
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - name: Install the locked Electron runtime for the manual demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD, Env:ELECTRON_OVERRIDE_DIST_PATH, Env:npm_config_platform, Env:npm_config_arch -ErrorAction SilentlyContinue
+          & node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node -e "const fs=require('node:fs');const executable=require('electron');if(typeof executable!=='string'||!fs.statSync(executable).isFile()||fs.statSync(executable).size===0)throw Error('Electron runtime installation incomplete');"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-node@v7.1.0
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          node-version: 26.12.1
+          package-manager-cache: false
+      - name: Build and package the manual Electron demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          & node --test apps/client/tests/package-demo.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & npm exec --yes=false -- vite build --config apps/client/vite.config.mts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node apps/client/scripts/package-demo.cjs --output "$PWD/artifacts/ElectronGameOverlayDemo-win32-x64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke-test the packaged Electron runtime and dependencies
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node apps/client/scripts/smoke-packaged-demo.cjs --package artifacts/ElectronGameOverlayDemo-win32-x64
+      - name: Archive the portable Electron demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: Compress-Archive -LiteralPath artifacts/ElectronGameOverlayDemo-win32-x64 -DestinationPath artifacts/ElectronGameOverlayDemo-win32-x64.zip -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          path: artifacts/ElectronGameOverlayDemo-win32-x64.zip
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: electron-game-overlay-windows-sdk

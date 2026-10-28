@@ -58,6 +58,23 @@ applications do not create or manage a broker instance.
 
 ## Try a demo
 
+### Download the Windows validation app
+
+For a ready-to-run build of `apps/client`, open the **Broker compatibility**
+GitHub Action, choose **Run workflow**, select the branch to test, and enable
+**build-demo**. Demo packaging runs only for that explicit manual request;
+ordinary pull-request checks do not build the Electron app.
+
+Download `ElectronGameOverlayDemo-win32-x64.zip` from the completed run's
+artifacts and extract the entire archive. No separate Node.js, Electron, or
+native build tools are required. With the target game closed, run
+`Start Demo.cmd` as a normal user, then launch the game through Steam. The
+launcher enables the bundled runtime and Steam auto-attachment. Use the tray's
+Quit action to stop the demo. This is an unsigned testing build; elevated games
+and anti-cheat-protected games are unsupported.
+
+### Run a focused example from source
+
 On Windows, use Node.js **26.12.1** and the [native build prerequisites](#build-and-test).
 Install the workspace and prepare the runtime once:
 
