@@ -10,6 +10,16 @@ on:
         type: boolean
         required: false
         default: false
+      build-two-app-demo:
+        description: Also package the pinned previous SDK for manual two-app testing (requires build-demo)
+        type: boolean
+        required: false
+        default: false
+      observer-baseline-only:
+        description: Check the unchanged pinned observer without rebuilding (requires build-demo)
+        type: boolean
+        required: false
+        default: false
       compatibility-ref:
         description: Frozen broker-v1 source revision for mixed-package tests
         type: string
@@ -163,8 +173,49 @@ jobs:
           path: test-results/native-process-image.json
           if-no-files-found: error
 
+  observer-baseline:
+    name: Windows unchanged observer regression
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.observer-baseline-only }}
+    runs-on: windows-2022
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          artifact-ids: '12780691390'
+          run-id: '40603803843'
+          github-token: ${{ github.token }}
+          path: baseline-sdk
+          digest-mismatch: error
+      - name: Check the unchanged injector with canonical fixture paths
+        shell: pwsh
+        run: |
+          $injector = Join-Path $PWD 'baseline-sdk/runtime/win32-x64/reshade/inject.exe'
+          if ((Get-FileHash -LiteralPath $injector -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'eb1a3292ee050eeaa2d97361a5c3a3b020ac7966b2deee615e11e540e0476f0f') { throw 'Unexpected unchanged injector payload' }
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'ego-observer-baseline-fixtures'
+          New-Item -ItemType Directory -Force -Path $fixtureTemp | Out-Null
+          $fixtureTemp = & node -e "process.stdout.write(require('node:fs').realpathSync.native(process.argv[1]))" $fixtureTemp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TEMP = $fixtureTemp
+          $env:TMP = $fixtureTemp
+          $env:TMPDIR = $fixtureTemp
+          & ./libs/electron-game-overlay-runtime/scripts/run-process-observer-gate.ps1 -InjectorPath $injector
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   packaged-broker:
     name: Windows production broker distribution
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.observer-baseline-only }}
+    permissions:
+      contents: read
+      actions: read
     runs-on: windows-2022
     timeout-minutes: 90
     env:
@@ -174,6 +225,10 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Validate optional two-app packaging request
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-two-app-demo && !inputs.build-demo }}
+        run: throw 'build-two-app-demo requires build-demo'
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 26.12.1
@@ -182,6 +237,16 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Prepare Windows Rust targets
         run: rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
+      - name: Isolate runtime fixtures in a canonical temporary directory
+        shell: pwsh
+        run: |
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'ego-runtime-fixtures'
+          New-Item -ItemType Directory -Force -Path $fixtureTemp | Out-Null
+          $fixtureTemp = & node -e "process.stdout.write(require('node:fs').realpathSync.native(process.argv[1]))" $fixtureTemp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($name in @('TMP', 'TEMP', 'TMPDIR')) {
+            "$name=$fixtureTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
       - name: Build native runtimes and packaged SDK
         # Native targets spawn Windows PowerShell and need its module paths.
         shell: powershell
@@ -233,6 +298,32 @@ jobs:
         with:
           node-version: 26.12.1
           package-manager-cache: false
+      - name: Verify the pinned previous SDK artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $artifact = Invoke-RestMethod -Uri 'https://api.github.com/repos/Wurielle/electron-game-overlay/actions/artifacts/12780691390' -Headers $headers
+          if ($artifact.expired -or $artifact.workflow_run.head_sha -ne '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48' -or $artifact.digest -ne 'sha256:6190d0c7a58f646f1dd325781cfd709ea9f939b29c1360cfa906d6a1aff61c08') {
+            throw 'Pinned previous SDK artifact is unavailable or has unexpected provenance'
+          }
+      - uses: actions/download-artifact@v8.0.2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        with:
+          artifact-ids: '12780691390'
+          run-id: '40603803843'
+          github-token: ${{ github.token }}
+          path: artifacts/sdk-baseline/dist
+          digest-mismatch: error
+      - name: Prepare the previous SDK package metadata
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: |
+          $metadata = & git show '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48:libs/electron-game-overlay/package.json'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadata | Out-File -FilePath artifacts/sdk-baseline/package.json -Encoding utf8
       - name: Build and package the manual Electron demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         shell: pwsh
@@ -250,6 +341,36 @@ jobs:
       - name: Smoke-test the packaged Electron runtime and dependencies
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         run: node apps/client/scripts/smoke-packaged-demo.cjs --package artifacts/ElectronGameOverlayDemo-win32-x64
+      - name: Package and smoke-test the independent previous-SDK demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: |
+          & node apps/client/scripts/package-demo.cjs --output "$PWD/artifacts/ElectronGameOverlayDemo-baseline-win32-x64" --sdk-package "$PWD/artifacts/sdk-baseline"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node apps/client/scripts/smoke-packaged-demo.cjs --package artifacts/ElectronGameOverlayDemo-baseline-win32-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $current = 'artifacts/ElectronGameOverlayDemo-win32-x64'
+          $previous = 'artifacts/ElectronGameOverlayDemo-baseline-win32-x64'
+          $relative = 'resources/app/node_modules/electron-game-overlay/dist/lib/overlay-broker-native-provider.js'
+          $currentHash = (Get-FileHash -LiteralPath (Join-Path $current $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
+          $previousHash = (Get-FileHash -LiteralPath (Join-Path $previous $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($currentHash -eq $previousHash) { throw 'Two-app test requires genuinely different compiled SDK implementations' }
+          $packagePath = 'resources/app/node_modules/electron-game-overlay/package.json'
+          $currentVersion = (Get-Content -Raw -LiteralPath (Join-Path $current $packagePath) | ConvertFrom-Json).version
+          $previousVersion = (Get-Content -Raw -LiteralPath (Join-Path $previous $packagePath) | ConvertFrom-Json).version
+          @{ sdkSourceRevision = $env:GITHUB_SHA; sdkImplementationSha256 = $currentHash; packageVersion = $currentVersion; role = 'current' } | ConvertTo-Json | Out-File -FilePath (Join-Path $current 'SDK-REVISION.json') -Encoding utf8
+          @{ sdkSourceRevision = '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48'; sdkImplementationSha256 = $previousHash; packageVersion = $previousVersion; role = 'previous'; sdkArtifactId = '12780691390' } | ConvertTo-Json | Out-File -FilePath (Join-Path $previous 'SDK-REVISION.json') -Encoding utf8
+      - name: Archive the previous-SDK manual test demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: Compress-Archive -LiteralPath artifacts/ElectronGameOverlayDemo-baseline-win32-x64 -DestinationPath artifacts/ElectronGameOverlayDemo-baseline-win32-x64.zip -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        with:
+          path: artifacts/ElectronGameOverlayDemo-baseline-win32-x64.zip
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
       - name: Archive the portable Electron demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         shell: pwsh
