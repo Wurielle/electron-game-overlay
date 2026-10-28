@@ -138,13 +138,17 @@ try {
         Join-Path $SteamFixture "existing.exe"
         Join-Path $SteamFixture "first.exe"
         Join-Path $SteamFixture "second.exe"
+        Join-Path $SteamFixture "UnityCrashHandler64.exe"
     )
     foreach ($FixturePath in $FixturePaths) {
         Copy-Item -LiteralPath "$env:WINDIR\System32\ping.exe" -Destination $FixturePath
     }
 
     $Fixtures += Start-Process -FilePath $FixturePaths[0] `
-        -ArgumentList @("127.0.0.1", "-n", "20") -WindowStyle Hidden -PassThru
+        -ArgumentList @("127.0.0.1", "-n", "120") -WindowStyle Hidden -PassThru
+    if ($Fixtures[0].HasExited) {
+        throw "The already-running matching fixture exited before observer startup."
+    }
 
     $Observer = Start-Process -FilePath $Injector `
         -ArgumentList @(
@@ -169,15 +173,17 @@ try {
     }
 
     $Fixtures += Start-Process -FilePath $FixturePaths[1] `
-        -ArgumentList @("127.0.0.1", "-n", "20") -WindowStyle Hidden -PassThru
+        -ArgumentList @("127.0.0.1", "-n", "120") -WindowStyle Hidden -PassThru
     $Fixtures += Start-Process -FilePath $FixturePaths[2] `
-        -ArgumentList @("127.0.0.1", "-n", "20") -WindowStyle Hidden -PassThru
+        -ArgumentList @("127.0.0.1", "-n", "120") -WindowStyle Hidden -PassThru
+    $Fixtures += Start-Process -FilePath $FixturePaths[3] `
+        -ArgumentList @("127.0.0.1", "-n", "120") -WindowStyle Hidden -PassThru
     $NonMatching = Start-Process -FilePath "$env:WINDIR\System32\ping.exe" `
-        -ArgumentList @("127.0.0.1", "-n", "20") -WindowStyle Hidden -PassThru
+        -ArgumentList @("127.0.0.1", "-n", "120") -WindowStyle Hidden -PassThru
     $Fixtures += $NonMatching
 
     $ExpectedByPid = @{}
-    for ($Index = 0; $Index -lt $FixturePaths.Count; $Index++) {
+    for ($Index = 1; $Index -lt $FixturePaths.Count; $Index++) {
         $ExpectedByPid[[string]$Fixtures[$Index].Id] = [IO.Path]::GetFullPath($FixturePaths[$Index])
     }
 
@@ -195,7 +201,12 @@ try {
             }
         }
         return $true
-    } -FailureMessage "The native process observer did not report every matching executable."
+    } -FailureMessage "The native process observer did not report every newly started matching executable, including UnityCrashHandler64.exe."
+
+    if ((Get-ObserverEventCount -Path $ObserverStdout -Kind CREATE `
+                -ProcessId $Fixtures[0].Id -ExecutablePath $FixturePaths[0]) -ne 0) {
+        throw "The native process observer emitted CREATE for the already-running matching baseline fixture."
+    }
 
     $Lines = Read-Lines $ObserverStdout
     if ($Lines -match ("^EGO_PROCESS_CREATE\t" + $NonMatching.Id + "\t")) {
@@ -203,6 +214,9 @@ try {
     }
 
     $Resources = Measure-ObserverIdleResources -Process $Observer
+    if ($Fixtures[0].HasExited) {
+        throw "The baseline fixture exited before the idle resource sample completed."
+    }
     foreach ($Entry in $ExpectedByPid.GetEnumerator()) {
         if ((Get-ObserverEventCount `
                 -Path $ObserverStdout `
@@ -220,6 +234,7 @@ try {
         }
     }
 
+    Stop-Process -Id $Fixtures[0].Id -Force
     $Released = $Fixtures[1]
     Stop-Process -Id $Released.Id -Force
     Wait-ForCondition `
@@ -232,6 +247,13 @@ try {
         } `
         -FailureMessage "The native process observer did not report the matching executable's deletion."
 
+    foreach ($Kind in @("CREATE", "DELETE")) {
+        if ((Get-ObserverEventCount -Path $ObserverStdout -Kind $Kind `
+                    -ProcessId $Fixtures[0].Id -ExecutablePath $FixturePaths[0]) -ne 0) {
+            throw "The native process observer emitted $Kind for a suppressed baseline process."
+        }
+    }
+
     Start-Sleep -Milliseconds 100
     if ((Get-ObserverEventCount `
             -Path $ObserverStdout `
@@ -242,7 +264,7 @@ try {
     }
 
     $Restarted = Start-Process -FilePath $FixturePaths[1] `
-        -ArgumentList @("127.0.0.1", "-n", "20") -WindowStyle Hidden -PassThru
+        -ArgumentList @("127.0.0.1", "-n", "120") -WindowStyle Hidden -PassThru
     $Fixtures += $Restarted
     $ExpectedRestartCreateCount = if ($Restarted.Id -eq $Released.Id) { 2 } else { 1 }
     Wait-ForCondition `
@@ -262,6 +284,26 @@ try {
             -ProcessId $Restarted.Id `
             -ExecutablePath $FixturePaths[1]) -ne $ExpectedRestartCreateCount) {
         throw "The persistent observer emitted a relaunched executable's creation more than once."
+    }
+
+    Stop-Process -Id $Restarted.Id -Force
+    Wait-ForCondition -Condition {
+        (Get-ObserverEventCount -Path $ObserverStdout -Kind DELETE `
+                -ProcessId $Restarted.Id -ExecutablePath $FixturePaths[1]) -eq $ExpectedRestartCreateCount
+    } -FailureMessage "The native process observer did not complete the relaunched executable's lifecycle."
+    Start-Sleep -Milliseconds 100
+    if ((Get-ObserverEventCount -Path $ObserverStdout -Kind DELETE `
+                -ProcessId $Restarted.Id -ExecutablePath $FixturePaths[1]) -ne $ExpectedRestartCreateCount) {
+        throw "The persistent observer emitted a relaunched executable's deletion more than once."
+    }
+    if ((Read-Lines $ObserverStdout) -match ("^EGO_PROCESS_(CREATE|DELETE)\t" + $NonMatching.Id + "\t")) {
+        throw "The native process observer reported a lifecycle outside the configured path."
+    }
+    foreach ($Kind in @("CREATE", "DELETE")) {
+        if ((Get-ObserverEventCount -Path $ObserverStdout -Kind $Kind `
+                    -ProcessId $Fixtures[0].Id -ExecutablePath $FixturePaths[0]) -ne 0) {
+            throw "The native process observer emitted a delayed $Kind for a suppressed baseline process."
+        }
     }
 
     if ($Observer.HasExited) {

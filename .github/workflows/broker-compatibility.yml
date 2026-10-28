@@ -188,6 +188,12 @@ jobs:
         run: |
           Get-Command Get-FileHash -ErrorAction Stop | Out-Null
           npm exec --yes=false -- nx run electron-game-overlay:build
+      - name: Check new-process-only observation and observer lifecycle
+        shell: pwsh
+        run: |
+          $injector = Join-Path $PWD 'libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject.exe'
+          & ./libs/electron-game-overlay-runtime/scripts/run-process-observer-gate.ps1 -InjectorPath $injector
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check both packaged native manager architectures
         shell: pwsh
         run: |
@@ -233,7 +239,7 @@ jobs:
         run: |
           & node --test apps/client/tests/package-demo.test.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & node --no-warnings --require ./apps/client/tests/helpers/register-typescript.cjs --test apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs
+          & node --no-warnings --require ./apps/client/tests/helpers/register-typescript.cjs --test apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/compatibility-run-recorder.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
