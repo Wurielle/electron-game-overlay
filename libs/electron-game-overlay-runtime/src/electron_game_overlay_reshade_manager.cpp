@@ -19,10 +19,11 @@
 //   electron_game_overlay_reshade_manager.exe --query-process-image <pid>
 //
 // This read-only mode accepts one canonical positive decimal uint32 PID and
-// queries its Win32 executable path with PROCESS_QUERY_LIMITED_INFORMATION.
+// queries its Win32 executable path and exact creation FILETIME on the same
+// PROCESS_QUERY_LIMITED_INFORMATION handle.
 // It opens no game files, does not inject, and emits a separate success schema:
 // {"schemaVersion":1,"kind":"electron-game-overlay-process-image",
-//  "pid":<pid>,"executablePath":"..."}
+//  "pid":<pid>,"executablePath":"...","creationTime100ns":"<positive uint64 decimal>"}
 // Errors retain the manager error schema with operation "query-process-image".
 //
 //   electron_game_overlay_reshade_manager.exe prepare
@@ -4603,11 +4604,35 @@ std::string query_process_image(int argc, wchar_t **argv)
             ERROR_INVALID_DATA);
     }
     image.resize(length);
+    FILETIME creation_time{}, exit_time{}, kernel_time{}, user_time{};
+    if (!GetProcessTimes(
+            process.get(), &creation_time, &exit_time, &kernel_time, &user_time))
+    {
+        const DWORD error = GetLastError();
+        throw_windows(
+            "process-query-failed",
+            "Unable to query the process creation time.",
+            exit_category::io_failure,
+            error);
+    }
+    const std::uint64_t creation_time_100ns =
+        (std::uint64_t{creation_time.dwHighDateTime} << 32) |
+        std::uint64_t{creation_time.dwLowDateTime};
+    if (creation_time_100ns == 0)
+    {
+        throw_windows(
+            "process-query-failed",
+            "The process creation time is invalid.",
+            exit_category::io_failure,
+            ERROR_INVALID_DATA);
+    }
     std::ostringstream result;
     result << "{\"schemaVersion\":1,"
            << "\"kind\":\"electron-game-overlay-process-image\","
            << "\"pid\":" << pid << ",\"executablePath\":"
-           << json_string(utf8_from_wide(image)) << "}\n";
+           << json_string(utf8_from_wide(image))
+           << ",\"creationTime100ns\":"
+           << json_string(std::to_string(creation_time_100ns)) << "}\n";
     return result.str();
 }
 
