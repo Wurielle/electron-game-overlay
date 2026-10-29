@@ -514,7 +514,7 @@
         </div>
         <div class="shortcut">
           <span>Menu</span>
-          <kbd id="demo-shortcut">Ctrl+I</kbd>
+          <kbd id="demo-shortcut">Checking…</kbd>
         </div>
       </div>
 
@@ -539,7 +539,7 @@
       </div>
 
       <div id="demo-hint" class="hint">
-        Press Ctrl+I to capture input and open controls
+        Checking input shortcut availability…
       </div>
 
       <section class="launcher" aria-label="Demo window launcher">
@@ -566,7 +566,7 @@
           </button>
         </div>
         <button id="demo-release-input" class="release-button" type="button">
-          Release input to game · Ctrl+I
+          Release input to game
         </button>
         <div id="demo-action-message" class="action-message">
           Choose a surface to open inside the game
@@ -683,11 +683,15 @@
         const expanded = Boolean(
           state.inputInterceptRequested || state.presentation?.menuExpanded,
         );
-        const shortcut = state.presentation?.shortcut || 'Ctrl+I';
+        // Never advertise Ctrl+I when registration failed.
+        const shortcut = state.presentation?.shortcut ?? null;
 
         document.body.classList.toggle('expanded', expanded);
         document.body.dataset.inputState = inputState.name;
-        elements.shortcut.textContent = shortcut;
+        elements.shortcut.textContent = shortcut ?? 'Unavailable';
+        elements.release.textContent = shortcut
+          ? `Release input to game · ${shortcut}`
+          : 'Release input to game';
         elements.inputState.textContent = inputState.label;
         elements.inputDetail.textContent = inputState.detail;
         const diagnostic = visibleDiagnostic();
@@ -696,9 +700,13 @@
           ? `${diagnostic.code} · ${diagnostic.pid ? `PID ${diagnostic.pid}` : 'session'}: ${diagnostic.message}`
           : expanded
             ? state.inputInterceptEffective
-              ? 'Select a test window or press the shortcut to return input'
+              ? shortcut
+                ? `Select a test window or press ${shortcut} to return input`
+                : 'Select a test window or use Release input to game'
               : 'Waiting for the injected overlay to capture input…'
-            : `Press ${shortcut} to capture input and open controls`;
+            : shortcut
+              ? `Press ${shortcut} to capture input and open controls`
+              : 'Shortcut unavailable · use desktop controls';
 
         renderTarget();
 
@@ -725,7 +733,9 @@
 
         if (!elements.actionMessage.classList.contains('error')) {
           elements.actionMessage.textContent = state.inputInterceptEffective
-            ? `Choose a surface to open · release with ${shortcut}`
+            ? shortcut
+              ? `Choose a surface to open · release with ${shortcut}`
+              : 'Choose a surface to open · use Release input to game'
             : 'Launcher unlocks when input capture is active';
         }
       }

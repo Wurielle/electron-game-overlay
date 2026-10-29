@@ -8,10 +8,11 @@ type DemoState = {
   overlayStarted: boolean;
   inputInterceptRequested: boolean;
   inputInterceptEffective: boolean;
+  inputInterceptAccelerator: string | null;
   runtime: 'reshade' | null;
   presentation: null | {
     enabled: true;
-    shortcut: string;
+    shortcut: string | null;
     menuExpanded: boolean;
   };
   steamAutoAttach: null | {
@@ -47,12 +48,12 @@ const overlayWindows = {
 
 const processNameStorageKey = 'demo.processName';
 const demoStateChangedChannel = 'overlay:state-changed';
-const inputInterceptAccelerator = 'Ctrl+I';
 
 let state: DemoState = {
   overlayStarted: false,
   inputInterceptRequested: false,
   inputInterceptEffective: false,
+  inputInterceptAccelerator: null,
   runtime: null,
   presentation: null,
   steamAutoAttach: null,
@@ -224,6 +225,8 @@ function renderState() {
   startButton.textContent = state.overlayStarted
     ? 'Session running'
     : 'Start session';
+  const inputInterceptAccelerator =
+    state.inputInterceptAccelerator ?? 'Shortcut unavailable';
   interceptButton.textContent = state.inputInterceptRequested
     ? state.inputInterceptEffective
       ? `Release input (${inputInterceptAccelerator})`

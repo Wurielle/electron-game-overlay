@@ -20,6 +20,26 @@ test('controlled host builds and packaging are manual-only and use fresh six-cel
   assert.ok(steps.indexOf(pack) < steps.findIndex(s => s.name === 'Archive the portable Electron demo'));
 });
 
+test('paired manual download is one short original-basename ZIP; single-demo remains independent', () => {
+  const paired = "${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}";
+  const single = "${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && !inputs.build-two-app-demo }}";
+  const pack = steps.find(s => s.name === 'Assemble the paired portable test bundle');
+  assert.ok(pack); assert.equal(pack.if, paired);
+  for (const value of ['package-broker-test-bundle.cjs', '--current', 'artifacts/ElectronGameOverlayDemo-win32-x64', '--previous', 'artifacts/ElectronGameOverlayDemo-baseline-win32-x64', '--output', 'artifacts/ego']) assert.ok(pack.run.includes(value), value);
+  const archives = steps.filter(s=>s.run?.includes('Compress-Archive'));
+  assert.equal(archives.length,2);
+  const bundle = archives.find(s=>s.run.includes('ego-tests.zip'));
+  assert.ok(bundle);assert.equal(bundle.if,paired);assert.ok(bundle.run.includes('-LiteralPath artifacts/ego '));
+  assert.ok(steps.indexOf(pack)>steps.findIndex(s=>s.name==='Package controlled hosts for the portable demos'));
+  assert.ok(steps.indexOf(bundle)>steps.indexOf(pack));
+  const uploads=steps.filter(s=>s.with?.archive===false);assert.equal(uploads.length,2);
+  const upload=uploads.find(s=>s.with.path==='artifacts/ego-tests.zip');assert.ok(upload);assert.equal(upload.if,paired);assert.equal(upload.with.name,undefined);
+  assert.equal(uploads.find(s=>s!==upload).if,single);
+  assert.equal(archives.find(s=>s!==bundle).if,single);
+  const fixtureStep=steps.find(s=>s.name==='Build the six controlled smoke hosts');
+  assert.ok(fixtureStep.run.includes('apps/client/tests/package-broker-test-bundle.test.cjs'));
+});
+
 test('each manual package has revision metadata and smoke manifests remain available as evidence', () => {
   const revision = steps.find(s => s.name === 'Record the current SDK revision');
   assert.ok(revision); assert.equal(revision.if, manual);

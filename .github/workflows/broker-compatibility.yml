@@ -310,7 +310,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         shell: pwsh
         run: |
-          & node --test apps/client/tests/broker-smoke-host-runner.test.cjs apps/client/tests/package-broker-smoke-hosts.test.cjs apps/client/tests/broker-smoke-workflow.test.cjs
+          & node --test apps/client/tests/broker-smoke-host-runner.test.cjs apps/client/tests/package-broker-smoke-hosts.test.cjs apps/client/tests/package-broker-test-bundle.test.cjs apps/client/tests/broker-smoke-workflow.test.cjs apps/client/tests/demo-usability-workflow.test.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & cmake --build build/electron-game-overlay-runtime-production --config RelWithDebInfo --target d3d9_overlay_test_host d3d10_overlay_test_host d3d11_overlay_test_host d3d12_overlay_test_host --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -367,6 +367,9 @@ jobs:
       - name: Check real Electron control-panel collapse paint for the demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         run: node apps/client/tests/real-electron-control-panel.acceptance.cjs test-results/real-electron-control-panel-demo.json
+      - name: Check real Electron bounded Main-window usability
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node apps/client/tests/real-electron-demo-main.acceptance.cjs test-results/real-electron-demo-main.json
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         with:
@@ -374,6 +377,7 @@ jobs:
           path: |
             test-results/real-electron-input-demo.json
             test-results/real-electron-control-panel-demo.json
+            test-results/real-electron-demo-main.json
           if-no-files-found: warn
       - name: Build and package the manual Electron demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
@@ -381,7 +385,7 @@ jobs:
         run: |
           & node --test apps/client/tests/package-demo.test.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & node --no-warnings --require ./apps/client/tests/helpers/register-typescript.cjs --test apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/compatibility-run-recorder.test.mjs apps/client/tests/app-demo-focus.test.mjs apps/client/tests/input-proof-ui.test.mjs
+          & node --no-warnings --require ./apps/client/tests/helpers/register-typescript.cjs --test apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/compatibility-run-recorder.test.mjs apps/client/tests/app-demo-focus.test.mjs apps/client/tests/input-proof-ui.test.mjs apps/client/tests/input-intercept-shortcut.test.mjs apps/client/tests/app-demo-shortcuts.test.mjs apps/client/tests/demo-main-window.test.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -449,23 +453,29 @@ jobs:
             artifacts/ElectronGameOverlayDemo-baseline-win32-x64/smoke/manifest.json
           if-no-files-found: error
           retention-days: 14
-      - name: Archive the previous-SDK manual test demo
+      - name: Assemble the paired portable test bundle
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
         shell: pwsh
-        run: Compress-Archive -LiteralPath artifacts/ElectronGameOverlayDemo-baseline-win32-x64 -DestinationPath artifacts/ElectronGameOverlayDemo-baseline-win32-x64.zip -CompressionLevel Optimal
+        run: |
+          & node apps/client/scripts/package-broker-test-bundle.cjs --current "$PWD/artifacts/ElectronGameOverlayDemo-win32-x64" --previous "$PWD/artifacts/ElectronGameOverlayDemo-baseline-win32-x64" --output "$PWD/artifacts/ego"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Archive the paired portable test bundle
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: Compress-Archive -LiteralPath artifacts/ego -DestinationPath artifacts/ego-tests.zip -CompressionLevel Optimal
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
         with:
-          path: artifacts/ElectronGameOverlayDemo-baseline-win32-x64.zip
+          path: artifacts/ego-tests.zip
           archive: false
           retention-days: 14
           if-no-files-found: error
       - name: Archive the portable Electron demo
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && !inputs.build-two-app-demo }}
         shell: pwsh
         run: Compress-Archive -LiteralPath artifacts/ElectronGameOverlayDemo-win32-x64 -DestinationPath artifacts/ElectronGameOverlayDemo-win32-x64.zip -CompressionLevel Optimal
       - uses: actions/upload-artifact@v7.0.2
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && !inputs.build-two-app-demo }}
         with:
           path: artifacts/ElectronGameOverlayDemo-win32-x64.zip
           archive: false

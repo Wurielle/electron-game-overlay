@@ -34,7 +34,6 @@ import {
   type ReShadeTarget,
 } from 'electron-game-overlay';
 import {
-  INPUT_INTERCEPT_ACCELERATOR,
   InputInterceptShortcut,
 } from './input-intercept-shortcut';
 import {
@@ -645,12 +644,12 @@ class Application {
     try {
       if (!this.inputInterceptShortcut.register()) {
         console.warn(
-          `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`,
+          'Global input interception shortcut unavailable',
         );
       }
     } catch (error) {
       console.warn(
-        `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`,
+        'Global input interception shortcut unavailable',
         error,
       );
     }
@@ -754,10 +753,11 @@ class Application {
       inputInterceptRequested: this.inputInterceptRequested,
       inputInterceptEffective: this.inputInterceptEffective,
       runtime: this.reshadeLauncher ? 'reshade' : null,
+      inputInterceptAccelerator: this.inputInterceptShortcut.accelerator,
       presentation: this.demoPresentationEnabled
         ? {
             enabled: true as const,
-            shortcut: INPUT_INTERCEPT_ACCELERATOR,
+            shortcut: this.inputInterceptShortcut.accelerator,
             menuExpanded: this.inputInterceptRequested,
           }
         : null,

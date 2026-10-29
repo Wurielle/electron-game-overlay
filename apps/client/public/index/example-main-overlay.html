@@ -1,20 +1,45 @@
 <html>
   <head>
     <style>
+      :root {
+        color-scheme: dark;
+        --main-surface: #151c28;
+        --main-caption: #202b3c;
+        --main-text: #edf3fc;
+        --main-muted: #afbed3;
+        --main-border: #465771;
+        --main-focus: #8bc5ff;
+      }
+      * { box-sizing: border-box; }
       body {
-        background-color: rgba(67, 138, 138, 0.25);
-        margin: 10px;
+        background: var(--main-surface);
+        color: var(--main-text);
+        margin: 0;
+        font: 14px/1.5 system-ui, sans-serif;
       }
-
-      h1 {
-        color: maroon;
-        margin-left: 40px;
-      }
-
       .caption {
         height: 40px;
-        background-color: brown;
+        padding: 9px 24px;
+        background: var(--main-caption);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 1px;
       }
+      .caption span { float: right; color: var(--main-muted); font-weight: 400; letter-spacing: 0; }
+      main { padding: 14px 24px; }
+      .actions { display: flex; gap: 10px; margin-bottom: 0; }
+      button, input { font: inherit; border: 1px solid var(--main-border); border-radius: 6px; }
+      button { min-height: 36px; padding: 6px 12px; color: var(--main-text); background: var(--main-caption); cursor: pointer; }
+      button:hover { background: #334660; }
+      button:active { background: #405b7c; }
+      button:focus-visible, input:focus-visible { outline: 2px solid var(--main-focus); outline-offset: 2px; }
+      #hide-main-overlay { margin-left: auto; }
+      .input-label { display: block; color: var(--main-muted); margin-bottom: 4px; }
+      input { height: 36px; width: 280px; padding: 6px 10px; background: #0d1420; color: var(--main-text); }
+      input::placeholder { color: var(--main-muted); }
+      .help, .timestamp { display: block; color: var(--main-muted); font-size: 12px; }
+      .input-row { min-height: 36px; }
+      .help { margin: 12px 0; }
 
       #hudhook-input-diagnostic {
         position: fixed;
@@ -54,15 +79,21 @@
 
   <body>
     <div>
-      <div class="caption"></div>
-      <button id="show-popup-overlay">Popup overlay</button>
-      <button id="show-video-overlay">Video overlay</button>
-      <br />
-      Hello Electron!
-
-      <label id="label">Label</label>
-      <input id="hudhook-client-input-target" type="text" autocomplete="off" />
-      <div id="hudhook-input-diagnostic">DOM input: waiting</div>
+      <header class="caption">MAIN OVERLAY <span>Drag to move</span></header>
+      <main>
+        <div class="actions">
+          <button id="show-popup-overlay" type="button">Open popup</button>
+          <button id="show-video-overlay" type="button">Open video</button>
+          <button id="hide-main-overlay" type="button">Hide Main</button>
+        </div>
+        <label class="input-label" for="hudhook-client-input-target">Test keyboard input</label>
+        <div class="input-row">
+          <input id="hudhook-client-input-target" type="text" autocomplete="off" placeholder="Type here to test overlay input" />
+        </div>
+        <p class="help">Hide keeps your text. Reopen Main from the overlay controls.</p>
+        <label id="label" class="timestamp"></label>
+        <div id="hudhook-input-diagnostic" role="status">DOM input: waiting</div>
+      </main>
     </div>
     <script>
       const label = document.getElementById('label');
@@ -71,13 +102,20 @@
         // console.log(label.innerText)
       }, 1000);
 
-      const { ipcRenderer, remote } = window.require('electron');
+      const { ipcRenderer } = window.require('electron');
+
+      document.getElementById('hide-main-overlay').addEventListener('click', () => {
+        void ipcRenderer.invoke(
+          'overlay:set-window-visible',
+          'example-main-overlay',
+          false,
+        ).catch((error) => {
+          console.error('Unable to hide Main overlay', error);
+        });
+      });
 
       const popupButton = document.getElementById('show-popup-overlay');
       popupButton.addEventListener('click', () => {
-        remote
-          .getCurrentWindow()
-          .setSize(window.innerWidth + 20, window.innerHeight + 20);
         console.log('button click ', new Date().toString());
         ipcRenderer.send('showExamplePopupOverlay');
       });

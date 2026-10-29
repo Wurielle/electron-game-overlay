@@ -256,7 +256,7 @@ test('the demo prearms Steam injection and still attempts every detected executa
   assert.doesNotMatch(watcher, /bin:\s*\{\s*filter:/);
 });
 
-test('the normal demo presents a Ctrl+I dock and an interception menu without automatic focus raising', () => {
+test('the normal demo presents a shortcut dock without full-target test windows or automatic focus raising', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
   const devLaunch = readClientFile('src', 'main', 'dev-launch.mts');
   const windowNames = readClientFile(
@@ -281,10 +281,14 @@ test('the normal demo presents a Ctrl+I dock and an interception menu without au
   assert.match(windowNames, /demoControlOverlay = ["']demo-control-overlay/);
   assert.match(windowFactories, /createDemoControlOverlayWindow/);
   assert.match(windowFactories, /demo-control-overlay\.html/);
-  assert.match(
+  const mainFactory = sourceSection(
     windowFactories,
-    /if \(context\.demoPresentation\)[\s\S]{0,100}followTarget\(\{ area: 'render' \}\)/,
+    'export function createExampleMainOverlayWindow',
+    'export function createExampleStatusOverlayWindow',
   );
+  assert.doesNotMatch(mainFactory, /followTarget/);
+  assert.match(mainFactory, /width:\s*640/);
+  assert.match(mainFactory, /height:\s*360/);
   assert.match(appEntry, /DEMO_PRESENTATION_FLAG/);
   assert.match(
     appEntry,
