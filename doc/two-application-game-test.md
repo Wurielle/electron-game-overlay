@@ -26,6 +26,29 @@ non-elevated. Review the [antivirus warning](known-issues.md#antivirus-detection
 if Defender blocks a helper; an allowance for one build need not cover another.
 Do not disable protection or broadly exclude temporary folders.
 
+## Combined acceptance session
+
+Keep these checks in one session once the replacement packages and automated
+checks are ready; no incremental game restarts are needed for CI-only fixes.
+
+1. Establish both exact-PID apps and do the short scene/input/placement check
+   below. While both remain attached, collect the read-only recovery baseline.
+2. Review that baseline before any separately authorized broker-crash exercise.
+   Require a fresh OS-corroborated broker instance and confirmation that no
+   unrelated application depends on it. The report itself grants no permission
+   to terminate, and this procedure supplies no guessed-PID stop command.
+3. If that exercise is explicitly agreed, leave the same game and both apps
+   alive and check reconnection, both scenes and isolated input. Then perform
+   the starter-app exit, surviving-app interaction and normal game-relaunch
+   checks below. Repeat the relevant pass with the SDK startup order reversed.
+
+An older coordinator can drop the optional target creation-time field. Such a
+claim must remain legacy/unknown; do not edit it, force PID reuse or clear
+ownership to make this check pass. The diagnostic's OS identity describes the
+**broker**, not proof that the target claim contains creation-time evidence.
+Automatic safe PID-reuse recovery and native-drag placement persistence across
+reconnection remain outside this acceptance claim.
+
 ## Exercise the shared exact-PID path
 
 When testing a replacement build that changes the coordinator, first close the

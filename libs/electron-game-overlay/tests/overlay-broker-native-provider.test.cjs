@@ -180,6 +180,97 @@ test('native image query rejects child errors even with valid stdout and never f
   }
 });
 
+test('structured process identity decoder retains exact creation time above Number precision', async (t) => {
+  const original = cp.execFile;
+  t.after(() => { cp.execFile = original; });
+  const creationTime100ns = '9007199254740993';
+  cp.execFile = (_exe, _args, _opts, callback) => {
+    queueMicrotask(() => callback(null, JSON.stringify({
+      ...JSON.parse(imageRecord()), creationTime100ns,
+    }) + '\n', ''));
+    return new EventEmitter();
+  };
+  const { resolveOverlayBrokerProcessIdentity } = require('../dist/lib/overlay-broker-native-provider.js');
+  assert.deepEqual(await resolveOverlayBrokerProcessIdentity(PID, path.resolve('manager.exe')), {
+    pid: PID, executablePath: EXE, creationTime100ns,
+  });
+});
+
+test('structured identity rejects malformed present canonical uint64 creation times in both APIs', async (t) => {
+  const original = cp.execFile;
+  t.after(() => { cp.execFile = original; });
+  const api = require('../dist/lib/overlay-broker-native-provider.js');
+  for (const value of [null, 0, 1, 9007199254740992, '', '0', '01', '+1', '-1', ' 1', '1 ', '1\n', '1.0', '1e3', '18446744073709551616', '999999999999999999999']) {
+    for (const query of [api.resolveOverlayBrokerProcessIdentity, api.resolveOverlayBrokerProcessImage]) {
+      let calls = 0;
+      cp.execFile = (_exe, _args, _opts, callback) => {
+        calls++;
+        queueMicrotask(() => callback(null, JSON.stringify({ ...JSON.parse(imageRecord()), creationTime100ns: value }), ''));
+        return new EventEmitter();
+      };
+      await assert.rejects(query(PID, path.resolve('manager.exe')), /identity unavailable/, `creationTime100ns=${JSON.stringify(value)}`);
+      assert.equal(calls, 1);
+    }
+  }
+});
+
+test('structured identity preserves legacy absence and exact canonical uint64 boundaries with one child per API', async (t) => {
+  const original = cp.execFile;
+  t.after(() => { cp.execFile = original; });
+  const api = require('../dist/lib/overlay-broker-native-provider.js');
+  for (const creationTime100ns of [undefined, '1', '9007199254740993', '18446744073709551615']) {
+    const expected = { pid: PID, executablePath: EXE, ...(creationTime100ns === undefined ? {} : { creationTime100ns }) };
+    const calls = [];
+    cp.execFile = (exe, args, options, callback) => {
+      calls.push({ exe, args, options });
+      queueMicrotask(() => callback(null, JSON.stringify({ ...JSON.parse(imageRecord()), ...expected }) + '\r\n', ''));
+      return new EventEmitter();
+    };
+    assert.deepEqual(await api.resolveOverlayBrokerProcessIdentity(PID, path.resolve('manager.exe')), expected);
+    assert.equal(calls.length, 1);
+    assert.equal(await api.resolveOverlayBrokerProcessImage(PID, path.resolve('manager.exe')), EXE);
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.options.shell, false);
+      assert.equal(call.options.timeout, 2000);
+      assert.equal(call.options.maxBuffer, 128 * 1024);
+      assert.equal(call.options.cwd, path.dirname(path.resolve('manager.exe')));
+      assert.deepEqual(call.args, ['--query-process-image', String(PID)]);
+    }
+  }
+});
+
+test('structured query preserves PID and absolute-root authority guards, protocol bounds and child failures', async (t) => {
+  const original = cp.execFile;
+  const originalRealpath = fs.realpath.native;
+  t.after(() => { cp.execFile = original; fs.realpath.native = originalRealpath; });
+  const { resolveOverlayBrokerProcessIdentity: query } = require('../dist/lib/overlay-broker-native-provider.js');
+  let calls = 0;
+  cp.execFile = () => { calls++; assert.fail('invalid authority must not spawn'); };
+  fs.realpath.native = () => assert.fail('must not use OS/environment fallback authority');
+  for (const manager of [undefined, '', 'manager.exe', 'C:manager.exe', 'relative/manager.exe'])
+    await assert.rejects(query(PID, manager), /absolute native manager path/);
+  for (const pid of [0, -1, 1.5, NaN, Infinity, 0x100000000, '54321'])
+    await assert.rejects(query(pid, path.resolve('manager.exe')), /positive uint32/);
+  assert.equal(calls, 0);
+  for (const output of ['null', '[]', '{}', 'not JSON', imageRecord() + imageRecord(), JSON.stringify(JSON.parse(imageRecord()), null, 2),
+    JSON.stringify({ ...JSON.parse(imageRecord()), pid: PID + 1 }),
+    JSON.stringify({ ...JSON.parse(imageRecord()), schemaVersion: 2 }),
+    JSON.stringify({ ...JSON.parse(imageRecord()), executablePath: '\\game.exe' }),
+    JSON.stringify({ ...JSON.parse(imageRecord()), executablePath: 'C:\\' + 'x'.repeat(32768) })]) {
+    let count = 0;
+    cp.execFile = (_exe, _args, _opts, cb) => { count++; queueMicrotask(() => cb(null, output, '')); return new EventEmitter(); };
+    await assert.rejects(query(PID, path.resolve('manager.exe')), /identity unavailable/);
+    assert.equal(count, 1);
+  }
+  for (const error of [Object.assign(new Error('exit'), { code: 1 }), Object.assign(new Error('timeout'), { killed: true }), Object.assign(new Error('output'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })]) {
+    let count = 0;
+    cp.execFile = (_exe, _args, _opts, cb) => { count++; queueMicrotask(() => cb(error, imageRecord(), '')); return new EventEmitter(); };
+    await assert.rejects(query(PID, path.resolve('manager.exe')), actual => actual.cause === error);
+    assert.equal(count, 1);
+  }
+});
+
 const wait = async (predicate) => {
   const deadline = Date.now() + 3000;
   while (!predicate()) {
@@ -464,6 +555,28 @@ async function fixture(t, generation = 7, options = {}) {
   };
 }
 
+test('broker-owned process query exists before election and uses its validated manager after live runtime wins', async (t) => {
+  const f = await fixture(t, 7, {
+    queryHook(callback) {
+      queueMicrotask(() => callback(null, JSON.stringify({
+        ...JSON.parse(imageRecord()), creationTime100ns: '18446744073709551615',
+      }) + '\n', ''));
+    },
+  });
+  assert.equal(typeof f.provider.queryProcessIdentity, 'function');
+  const expected = { pid: PID, executablePath: EXE, creationTime100ns: '18446744073709551615' };
+  assert.deepEqual(await f.provider.queryProcessIdentity(PID), expected);
+  assert.equal(f.server.targets.size, 0, 'query must not allocate a target adapter');
+  assert.equal(f.calls.length, 0);
+  const app = await f.client({ runtimeGeneration: 99, targetTransportMin: 1, targetTransportMax: 1 });
+  await wait(() => app.messages.some(m => m.type === 'broker.target.authorized'));
+  assert.equal(app.messages.find(m => m.type === 'broker.target.authorized').disposition, 'injection-owner');
+  const before = f.imageQueries.length;
+  assert.deepEqual(await f.provider.queryProcessIdentity(PID), expected);
+  assert.equal(f.imageQueries.length, before + 1);
+  assert.equal(f.calls.length, 0);
+});
+
 test('validated installed runtime beats first raw-v1 app while source app is unavailable', async (t) => {
   const f = await fixture(t);
   const old = await f.client();
@@ -480,6 +593,9 @@ test('validated installed runtime beats first raw-v1 app while source app is una
     /controlled-native-boundary:g7:/,
   );
   assert.equal(f.calls.length, 1);
+  assert.equal(f.imageQueries.length, 1, 'cached preparation and initial publication share one identity sample');
+  assert.deepEqual(await f.provider.queryProcessIdentity(PID), { pid: PID, executablePath: EXE });
+  assert.equal(f.imageQueries.length, 2, 'a later recovery query must sample afresh');
   assert.equal(fs.existsSync(path.join(f.root, 'supplying-app.exe')), false);
 });
 
@@ -883,7 +999,9 @@ test('OS-query failure before publication falls back to an ordinary PID-only pro
     'injection-owner',
   );
   assert.equal(f.calls.length, 0);
-  assert.equal(f.imageQueries.length, 1);
+  // The failed cached candidate is disposed; the independently elected live
+  // candidate still gets a broker-local identity attempt, also fail-closed.
+  assert.equal(f.imageQueries.length, 2);
   assert.match(
     f.diagnostics[0].message,
     /Unable to query OS executable identity/,

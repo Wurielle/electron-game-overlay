@@ -10,6 +10,10 @@ import type {
   OverlayBrokerTargetAuthorized,
 } from './overlay-broker-protocol.js';
 import {
+  isValidProcessCreationTime100ns,
+  type OverlayBrokerProcessIdentity,
+} from './overlay-process-identity.js';
+import {
   targetAuthorizers,
   type ReShadeAttachmentSession,
 } from './overlay-session-authorization.js';
@@ -37,6 +41,10 @@ export interface OverlayBrokerNativeTargetProvider {
 
 /** A validated cached implementation offered synchronously to every new cohort. */
 export interface OverlayBrokerNativeRuntimeProvider {
+  /** Broker-owned OS evidence, independent of the elected target runtime. */
+  queryProcessIdentity?(
+    pid: number,
+  ): Promise<OverlayBrokerProcessIdentity | undefined>;
   createTarget(
     request: OverlayBrokerTargetAuthorize,
   ): OverlayBrokerNativeTargetProvider | undefined;
@@ -51,10 +59,10 @@ export interface StandaloneOverlayNativeProviderOptions {
 }
 
 /** @internal Read-only OS identity query through the already validated native manager. */
-export async function resolveOverlayBrokerProcessImage(
+export async function resolveOverlayBrokerProcessIdentity(
   pid: number,
   addonManagerPath: string,
-): Promise<string> {
+): Promise<OverlayBrokerProcessIdentity> {
   if (!Number.isInteger(pid) || pid < 1 || pid > 0xffffffff) {
     throw new RangeError('Target PID must be a positive uint32');
   }
@@ -120,7 +128,28 @@ export async function resolveOverlayBrokerProcessImage(
   ) {
     throw new Error(`OS executable identity unavailable for PID ${pid}`);
   }
-  return executablePath;
+  if (
+    'creationTime100ns' in record &&
+    !isValidProcessCreationTime100ns(record.creationTime100ns)
+  ) {
+    throw new Error(`OS executable identity unavailable for PID ${pid}`);
+  }
+  return {
+    pid,
+    executablePath,
+    ...('creationTime100ns' in record
+      ? { creationTime100ns: record.creationTime100ns as string }
+      : {}),
+  };
+}
+
+/** @internal Compatibility image-only view of the same bounded OS query. */
+export async function resolveOverlayBrokerProcessImage(
+  pid: number,
+  addonManagerPath: string,
+): Promise<string> {
+  return (await resolveOverlayBrokerProcessIdentity(pid, addonManagerPath))
+    .executablePath;
 }
 
 function deferred<T>() {
@@ -180,8 +209,22 @@ export async function prepareStandaloneOverlayNativeProvider(
   }
   const validatedConfig = config;
   const targets = new Set<OverlayBrokerNativeTargetProvider>();
+  // The elected cached target already sampled this identity. Reuse that sample
+  // once for initial broker publication; later recovery probes must query afresh.
+  const preparedIdentities = new Map<number, Promise<OverlayBrokerProcessIdentity>>();
   let disposed = false;
   return {
+    queryProcessIdentity(pid) {
+      const prepared = preparedIdentities.get(pid);
+      if (prepared) {
+        preparedIdentities.delete(pid);
+        return prepared;
+      }
+      return resolveOverlayBrokerProcessIdentity(
+        pid,
+        validatedConfig.addonManagerPath,
+      );
+    },
     createTarget(request) {
       if (
         disposed ||
@@ -191,6 +234,7 @@ export async function prepareStandaloneOverlayNativeProvider(
       )
         return undefined;
       let executablePath: string | undefined;
+      let preparedIdentity: Promise<OverlayBrokerProcessIdentity> | undefined;
       const launcher = spare ?? new ReShadeOverlayLauncher(validatedConfig);
       spare = undefined;
       const ready = deferred<string>();
@@ -268,10 +312,13 @@ export async function prepareStandaloneOverlayNativeProvider(
           if (!started && !closed) {
             started = true;
             void (async () => {
-              executablePath = await resolveOverlayBrokerProcessImage(
+              const identity = resolveOverlayBrokerProcessIdentity(
                 request.pid,
                 validatedConfig.addonManagerPath,
               );
+              preparedIdentity = identity;
+              preparedIdentities.set(request.pid, identity);
+              executablePath = (await identity).executablePath;
               if (closed) return;
               await attachReShadeOverlay(launcher, session, {
                 pid: request.pid,
@@ -314,6 +361,8 @@ export async function prepareStandaloneOverlayNativeProvider(
         dispose() {
           if (closed) return;
           closed = true;
+          if (preparedIdentities.get(request.pid) === preparedIdentity)
+            preparedIdentities.delete(request.pid);
           const error = new Error('Cached native provider session closed');
           ready.reject(error);
           authorization.reject(error);

@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { isValidProcessCreationTime100ns, type OverlayBrokerProcessIdentity } from './overlay-process-identity.js';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
@@ -87,6 +88,8 @@ export type OverlayTargetRecoveryClaim = Readonly<{
   discoveryPath: string;
   staticDiscoveryPath: string;
   expectedExecutablePath?: string;
+  /** Authoritative process creation FILETIME, retained only when initially known. */
+  creationTime100ns?: string;
   leaseId?: string;
   phase: 'intent' | 'publishing' | 'published';
   record: OverlayDiscoveryRecord;
@@ -96,6 +99,7 @@ export type OverlayTargetRecoveryClaim = Readonly<{
 
 /** @internal Broker-only context for durable target-route ownership. */
 export type OverlayTargetRouteAuthorizationContext = Readonly<{
+  creationTime100ns?: string;
   leaseId?: string;
   /** A committed route can be serviced by another compatible provider. */
   allowPublishedClaimTakeover?: boolean;
@@ -113,6 +117,7 @@ export interface OverlayLoopbackTransportOptions {
   discoveryPath?: string;
   tokenFactory?: () => string;
   isProcessAlive?: (pid: number) => boolean;
+  queryProcessIdentity?: (pid: number) => Promise<OverlayBrokerProcessIdentity | undefined>;
   processExitPollIntervalMs?: number;
   /** @internal Deterministic fault barrier used by publication-order tests. */
   targetAuthorizationPublicationHook?: (
@@ -311,6 +316,10 @@ interface ClientState {
 }
 
 interface ProcessExitWatch {
+  generation: number;
+  authorization?: TargetAuthorization;
+  inFlight?: boolean;
+  identityMismatchDiagnosed?: boolean;
   pid: number;
   path: string;
   timer?: ReturnType<typeof setTimeout>;
@@ -625,6 +634,7 @@ function parseOverlayTargetRecoveryClaim(
       (typeof value.expectedExecutablePath !== 'string' ||
         value.expectedExecutablePath.includes('\0') ||
         !win32.isAbsolute(value.expectedExecutablePath))) ||
+    ('creationTime100ns' in value && !isValidProcessCreationTime100ns(value.creationTime100ns)) ||
     (value.leaseId !== undefined && !isValidRecoveryLeaseId(value.leaseId)) ||
     (value.phase !== 'intent' &&
       value.phase !== 'publishing' &&
@@ -653,6 +663,7 @@ function parseOverlayTargetRecoveryClaim(
       ? {}
       : { expectedExecutablePath: value.expectedExecutablePath }),
     ...(value.leaseId === undefined ? {} : { leaseId: value.leaseId }),
+    ...(value.creationTime100ns === undefined ? {} : { creationTime100ns: value.creationTime100ns as string }),
     phase: value.phase,
     record,
     ...(previousRecord === undefined ? {} : { previousRecord }),
@@ -681,6 +692,7 @@ function recoveryClaimsEqual(
       normalizeExecutablePathIdentity(right.staticDiscoveryPath) &&
     normalizeOptionalExecutablePathIdentity(left.expectedExecutablePath) ===
       normalizeOptionalExecutablePathIdentity(right.expectedExecutablePath) &&
+    left.creationTime100ns === right.creationTime100ns &&
     left.leaseId === right.leaseId &&
     left.phase === right.phase &&
     isOwnedDiscoveryRecord(left.record, right.record) &&
@@ -799,6 +811,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private readonly discoveryPath: string;
   private readonly tokenFactory: () => string;
   private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly queryProcessIdentity: OverlayLoopbackTransportOptions['queryProcessIdentity'];
   private readonly processExitPollIntervalMs: number;
   private readonly targetAuthorizationPublicationHook:
     | OverlayLoopbackTransportOptions['targetAuthorizationPublicationHook']
@@ -855,6 +868,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.tokenFactory =
       options.tokenFactory ?? (() => randomBytes(32).toString('hex'));
     this.isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+    this.queryProcessIdentity = options.queryProcessIdentity;
     this.processExitPollIntervalMs =
       options.processExitPollIntervalMs ??
       DEFAULT_PROCESS_EXIT_POLL_INTERVAL_MS;
@@ -1003,6 +1017,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     const routeContext =
       isJsonObject(runtimeProviderOrRouteContext) &&
       ('leaseId' in runtimeProviderOrRouteContext ||
+        'creationTime100ns' in runtimeProviderOrRouteContext ||
         'allowPublishedClaimTakeover' in runtimeProviderOrRouteContext)
         ? (runtimeProviderOrRouteContext as OverlayTargetRouteAuthorizationContext)
         : undefined;
@@ -1011,6 +1026,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       !isValidRecoveryLeaseId(routeContext.leaseId)
     ) {
       throw new TypeError('Overlay target route lease ID is invalid');
+    }
+    if (routeContext && 'creationTime100ns' in routeContext && !isValidProcessCreationTime100ns(routeContext.creationTime100ns)) {
+      throw new TypeError('Overlay target creation time is invalid');
     }
     const resolvedDiscoveryPath = resolve(discoveryPath);
     if (
@@ -1047,11 +1065,14 @@ export class OverlayLoopbackTransport implements NativeOverlay {
 
     let authorization: TargetAuthorization;
     let pending = this.pendingTargetAuthorizationsByPid.get(pid);
+    let reusedAuthorization = false;
     if (pending) {
+      reusedAuthorization = true;
       authorization = await pending;
     } else {
       const existing = this.targetAuthorizationsByPid.get(pid);
       if (existing) {
+        reusedAuthorization = true;
         authorization = existing;
       } else {
         pending = this.createTargetAuthorization(
@@ -1095,6 +1116,20 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       throw new Error('Overlay transport stopped before target authorization');
     }
 
+    if (authorization.recoveryClaim.creationTime100ns !== undefined && routeContext?.creationTime100ns !== undefined && authorization.recoveryClaim.creationTime100ns !== routeContext.creationTime100ns) {
+      throw new Error('Overlay target process creation identity mismatch');
+    }
+    if (reusedAuthorization && authorization.recoveryClaim.creationTime100ns !== undefined && routeContext?.creationTime100ns === undefined) {
+      const claim = authorization.recoveryClaim;
+      const identity = await this.queryProcessIdentity?.(pid);
+      if (this.targetAuthorizationsByPid.get(pid) !== authorization || authorization.generation !== this.generation || this.activeClientsByPid.get(pid)?.targetAuthorization !== undefined && this.activeClientsByPid.get(pid)?.targetAuthorization !== authorization) {
+        throw new Error('Overlay target authorization changed during identity inspection');
+      }
+      const currentClaim = readOverlayTargetRecoveryClaim(pid);
+      if (!currentClaim || !recoveryClaimsEqual(claim, currentClaim)) throw new Error('Overlay target identity claim changed during inspection');
+      if (identity?.pid !== pid || !isValidProcessCreationTime100ns(identity.creationTime100ns)) throw new Error('Overlay target process identity unavailable');
+      if (identity.creationTime100ns !== claim.creationTime100ns) throw new Error('Overlay target process creation identity mismatch');
+    }
     ++authorization.references;
     let released = false;
     return () => {
@@ -1445,6 +1480,22 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       );
     }
     const priorClaim = readOverlayTargetRecoveryClaim(pid);
+    if (priorClaim?.creationTime100ns !== undefined) {
+      let observed = routeContext?.creationTime100ns;
+      if (observed === undefined) {
+        const identity = await this.queryProcessIdentity?.(pid);
+        this.assertTargetAuthorizationActive(generation, readyRecord);
+        if (identity?.pid === pid && isValidProcessCreationTime100ns(identity.creationTime100ns)) {
+          observed = identity.creationTime100ns;
+        }
+        const currentClaim = readOverlayTargetRecoveryClaim(pid);
+        if (!currentClaim || !recoveryClaimsEqual(priorClaim, currentClaim)) {
+          throw new Error('Overlay target identity claim changed during inspection');
+        }
+      }
+      if (observed === undefined) throw new Error('Overlay target process identity unavailable');
+      if (observed !== priorClaim.creationTime100ns) throw new Error('Overlay target process creation identity mismatch');
+    }
     const staticDiscoveryPath =
       priorClaim?.staticDiscoveryPath ?? defaultOverlayTargetDiscoveryPath(pid);
     const staticDiscoveryEndpointReservation =
@@ -1499,6 +1550,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         targetPid: pid,
         discoveryPath,
         staticDiscoveryPath,
+        ...((priorClaim ? priorClaim.creationTime100ns : routeContext?.creationTime100ns) === undefined
+          ? {}
+          : { creationTime100ns: priorClaim ? priorClaim.creationTime100ns : routeContext?.creationTime100ns }),
         ...(expectedExecutablePath === undefined
           ? {}
           : { expectedExecutablePath }),
@@ -1588,6 +1642,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         targetPid: pid,
         discoveryPath,
         staticDiscoveryPath,
+        ...(publishingClaim.creationTime100ns === undefined ? {} : { creationTime100ns: publishingClaim.creationTime100ns }),
         ...(expectedExecutablePath === undefined
           ? {}
           : { expectedExecutablePath }),
@@ -2241,13 +2296,13 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     targetPath: string,
   ): ProcessExitWatch {
     this.cancelProcessExitWatch(pid);
-    const watch: ProcessExitWatch = { pid, path: targetPath };
+    const watch: ProcessExitWatch = { pid, path: targetPath, generation: this.generation, authorization: this.targetAuthorizationsByPid.get(pid) };
     this.processExitWatchesByPid.set(pid, watch);
     return watch;
   }
 
   private pollProcessExit(watch: ProcessExitWatch): void {
-    if (this.processExitWatchesByPid.get(watch.pid) !== watch) {
+    if (this.processExitWatchesByPid.get(watch.pid) !== watch || watch.generation !== this.generation || watch.authorization !== this.targetAuthorizationsByPid.get(watch.pid) || this.activeClientsByPid.has(watch.pid) || watch.inFlight) {
       return;
     }
 
@@ -2276,6 +2331,38 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return;
     }
 
+    const claim = watch.authorization?.recoveryClaim;
+    if (claim?.creationTime100ns !== undefined && this.queryProcessIdentity) {
+      watch.inFlight = true;
+      void this.inspectWatchedProcessIdentity(watch, claim);
+      return;
+    }
+    this.scheduleProcessExitPoll(watch);
+  }
+
+  private async inspectWatchedProcessIdentity(watch: ProcessExitWatch, claim: OverlayTargetRecoveryClaim): Promise<void> {
+    try {
+      const identity = await this.queryProcessIdentity!(watch.pid);
+      if (!this.isProcessExitWatchCurrent(watch)) return;
+      const currentClaim = readOverlayTargetRecoveryClaim(watch.pid);
+      if (!currentClaim || !recoveryClaimsEqual(claim, currentClaim)) return;
+      if (identity?.pid === watch.pid && isValidProcessCreationTime100ns(identity.creationTime100ns) && identity.creationTime100ns !== claim.creationTime100ns && !watch.identityMismatchDiagnosed) {
+        watch.identityMismatchDiagnosed = true;
+        this.publishDiagnostic({ code: 'target-process-inspection-failed', pid: watch.pid });
+      }
+    } catch {
+      // Inspection failure is unknown, never permission to release ownership.
+    } finally {
+      watch.inFlight = false;
+      if (this.isProcessExitWatchCurrent(watch)) this.scheduleProcessExitPoll(watch);
+    }
+  }
+
+  private isProcessExitWatchCurrent(watch: ProcessExitWatch): boolean {
+    return this.processExitWatchesByPid.get(watch.pid) === watch && watch.generation === this.generation && watch.authorization === this.targetAuthorizationsByPid.get(watch.pid) && !this.activeClientsByPid.has(watch.pid);
+  }
+
+  private scheduleProcessExitPoll(watch: ProcessExitWatch): void {
     watch.timer = setTimeout(
       () => this.pollProcessExit(watch),
       this.processExitPollIntervalMs,

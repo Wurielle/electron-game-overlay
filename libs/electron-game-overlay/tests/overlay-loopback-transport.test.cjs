@@ -27,6 +27,216 @@ const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
 
 const TOKEN = 'ab'.repeat(32);
 
+const identityFixture = async (t, options = {}) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'overlay-instance-'));
+  const originalUserInfo = os.userInfo;
+  const originalTmpdir = os.tmpdir;
+  os.tmpdir = () => root;
+  os.userInfo = () => ({ ...originalUserInfo(), homedir: root });
+  const pid = 0xffffc001;
+  const discoveryPath = path.join(root, 'run', 'electron-overlay-transport-v1.json');
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(root, 'global.json'),
+    isProcessAlive: () => true,
+    processExitPollIntervalMs: 10,
+    ...options,
+  });
+  t.after(async () => {
+    transport.stop();
+    await rm(defaultOverlayTargetDiscoveryPath(pid), { force: true });
+    os.userInfo = originalUserInfo;
+    os.tmpdir = originalTmpdir;
+    await rm(root, { recursive: true, force: true });
+  });
+  const seed = async (extra = {}) => {
+    const claim = {
+      schemaVersion: 1, targetPid: pid, discoveryPath,
+      staticDiscoveryPath: defaultOverlayTargetDiscoveryPath(pid),
+      leaseId: 'instance-lease', phase: 'intent',
+      record: { version: 1, pid: 71, port: 47001, token: TOKEN, targetPid: pid },
+      ...extra,
+    };
+    const filename = defaultOverlayTargetRecoveryClaimPath(pid);
+    await mkdir(path.dirname(filename), { recursive: true });
+    await writeFile(filename, JSON.stringify(claim));
+    return claim;
+  };
+  return { root, pid, discoveryPath, transport, seed };
+};
+
+test('process creation identity reader round trip preserves exact uint64 string', async (t) => {
+  const f = await identityFixture(t);
+  await f.seed({ creationTime100ns: '18446744073709551615' });
+  assert.equal(readOverlayTargetRecoveryClaim(f.pid).creationTime100ns, '18446744073709551615');
+});
+
+test('process creation identity publication phases and exact intent resume stay pinned', async (t) => {
+  const observed = [];
+  const f = await identityFixture(t, {
+    targetAuthorizationPublicationHook(phase, claim) {
+      observed.push([phase, readOverlayTargetRecoveryClaim(claim.targetPid).creationTime100ns]);
+    },
+  });
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '9007199254740993' });
+  assert.deepEqual(observed.map(([, time]) => time), Array(6).fill('9007199254740993'));
+  f.transport.stop();
+  await f.seed({ creationTime100ns: '9007199254740993' });
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease', creationTime100ns: '9007199254740993' });
+  assert.equal(readOverlayTargetRecoveryClaim(f.pid).creationTime100ns, '9007199254740993');
+});
+
+test('process creation identity malformed present claims and contexts reject', async (t) => {
+  const f = await identityFixture(t);
+  f.transport.start();
+  await f.transport.whenReady();
+  for (const creationTime100ns of [null, 1, '', '0', '01', '+1', ' 1', '1e2', '18446744073709551616', '1'.repeat(21)]) {
+    await f.seed({ creationTime100ns });
+    assert.throws(() => readOverlayTargetRecoveryClaim(f.pid), /invalid schema/i);
+    await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns }), /creation|invalid/i);
+  }
+});
+
+test('process creation identity mismatch blocks recovery before any writes or cleanup', async (t) => {
+  let writes = 0;
+  const f = await identityFixture(t, { targetRecoveryClaimWriteHook() { writes++; } });
+  const claim = await f.seed({ phase: 'published', creationTime100ns: '100' });
+  f.transport.start();
+  await f.transport.whenReady();
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, {
+    leaseId: 'instance-lease', creationTime100ns: '200',
+  }), /creation|identity/i);
+  assert.equal(writes, 0);
+  assert.deepEqual(readOverlayTargetRecoveryClaim(f.pid), claim);
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease' }), /identity|unavailable/i);
+});
+
+test('process creation identity legacy exact intent resume never backfills', async (t) => {
+  const f = await identityFixture(t, { queryProcessIdentity: async (pid) => ({ pid, executablePath: 'C:\\Game.exe', creationTime100ns: '200' }) });
+  await f.seed();
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease', creationTime100ns: '200' });
+  assert.equal('creationTime100ns' in readOverlayTargetRecoveryClaim(f.pid), false);
+});
+
+test('process creation identity lost watch queries once and retains mismatch without disconnect', async (t) => {
+  let resolveProbe;
+  let calls = 0;
+  const f = await identityFixture(t, { queryProcessIdentity: () => {
+    calls++;
+    return new Promise((resolve) => { resolveProbe = resolve; });
+  } });
+  const events = [];
+  const diagnostics = [];
+  f.transport.setEventCallback((event) => events.push(event));
+  f.transport.setDiagnosticCallback((diagnostic) => diagnostics.push(diagnostic));
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  const claim = readOverlayTargetRecoveryClaim(f.pid);
+  const socket = await connect(claim.record.port);
+  t.after(() => { socket.destroy(); resolveProbe?.(undefined); });
+  const reader = createPacketReader(socket);
+  socket.write(encodeJsonTransportPacket({ type: 'game.process', protocolVersion: 1, token: claim.record.token, pid: f.pid, path: 'C:\\Game.exe' }));
+  await reader.next();
+  socket.destroy();
+  await waitFor(() => calls === 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(calls, 1);
+  resolveProbe({ pid: f.pid, executablePath: 'C:\\Game.exe', creationTime100ns: '200' });
+  await waitFor(() => diagnostics.some((d) => d.code === 'target-process-inspection-failed'));
+  assert.equal(events.includes('game.process.disconnected'), false);
+  assert.deepEqual(readOverlayTargetRecoveryClaim(f.pid), claim);
+});
+
+test('process creation identity equality protects an identity-only replacement from rollback', async (t) => {
+  const f = await identityFixture(t, {
+    async targetAuthorizationPublicationHook(phase, claim) {
+      if (phase === 'recovery-claim-published') {
+        await writeFile(defaultOverlayTargetRecoveryClaimPath(claim.targetPid), JSON.stringify({ ...claim, creationTime100ns: '200' }));
+        throw new Error('held intent failure');
+      }
+    },
+  });
+  f.transport.start();
+  await f.transport.whenReady();
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' }), /held intent failure/);
+  assert.equal(readOverlayTargetRecoveryClaim(f.pid)?.creationTime100ns, '200');
+});
+
+test('process creation identity existing authorization rejects conflicting context', async (t) => {
+  const f = await identityFixture(t);
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '200' }), /identity|creation/i);
+});
+
+for (const invalidation of ['reconnect', 'stop', 'claim-replacement', 'unknown', 'probe-error']) {
+  test(`process creation identity held watch ignores ${invalidation}`, async (t) => {
+    let settle;
+    let rejectProbe;
+    let calls = 0;
+    const f = await identityFixture(t, { queryProcessIdentity: () => {
+      calls++;
+      return new Promise((resolve, reject) => { settle = resolve; rejectProbe = reject; });
+    } });
+    const diagnostics = [];
+    const events = [];
+    f.transport.setDiagnosticCallback((d) => diagnostics.push(d));
+    f.transport.setEventCallback((e) => events.push(e));
+    f.transport.start();
+    await f.transport.whenReady();
+    await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+    const claim = readOverlayTargetRecoveryClaim(f.pid);
+    const sockets = [];
+    t.after(() => { sockets.forEach((s) => s.destroy()); settle?.(undefined); });
+    const authenticate = async () => {
+      const socket = await connect(claim.record.port);
+      sockets.push(socket);
+      const reader = createPacketReader(socket);
+      socket.write(encodeJsonTransportPacket({ type: 'game.process', protocolVersion: 1, token: claim.record.token, pid: f.pid, path: 'C:\\Game.exe' }));
+      await reader.next();
+      return socket;
+    };
+    (await authenticate()).destroy();
+    await waitFor(() => calls === 1);
+    if (invalidation === 'reconnect') await authenticate();
+    if (invalidation === 'stop') f.transport.stop();
+    if (invalidation === 'claim-replacement') await f.seed({ ...claim, creationTime100ns: '300' });
+    if (invalidation === 'probe-error') rejectProbe(new Error('controlled unavailable'));
+    else settle(invalidation === 'unknown' ? undefined : { pid: f.pid, executablePath: 'C:\\Game.exe', creationTime100ns: '200' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(diagnostics.some((d) => d.code === 'target-process-inspection-failed'), false);
+    assert.equal(events.includes('game.process.disconnected'), false);
+    assert.equal(readOverlayTargetRecoveryClaim(f.pid).creationTime100ns, invalidation === 'claim-replacement' ? '300' : '100');
+  });
+}
+
+test('process creation identity direct existing caller without proof fails closed', async (t) => {
+  const f = await identityFixture(t);
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath), /identity|unavailable/i);
+});
+
+test('process creation identity direct recovery queries once and matching context avoids query', async (t) => {
+  let calls = 0;
+  const f = await identityFixture(t, { queryProcessIdentity: async (pid) => { calls++; return { pid, executablePath: 'C:\\Game.exe', creationTime100ns: '100' }; } });
+  await f.seed({ creationTime100ns: '100' });
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease' });
+  assert.equal(calls, 1);
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  assert.equal(calls, 1);
+});
+
 test('the static target discovery path is deterministic per PID', () => {
   assert.equal(
     defaultOverlayTargetDiscoveryPath(0xfffffffe),

@@ -122,6 +122,7 @@ jobs:
         env:
           COMPATIBILITY_BASE_REF: ${{ inputs.compatibility-ref || 'a2cdfd42ae639168773191f5e69fca468b020e13' }}
           EGO_MIXED_ACCEPTANCE_EVIDENCE: test-results/mixed-packages.json
+          EGO_INSTANCE_MIXED_EVIDENCE: test-results/process-instance-mixed.json
         shell: pwsh
         run: |
           $baseline = Join-Path $env:TEMP 'ego-broker-baseline'
@@ -131,6 +132,8 @@ jobs:
           & node node_modules/typescript/bin/tsc --build (Join-Path $baseline 'libs/electron-game-overlay/tsconfig.lib.json')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & node libs/electron-game-overlay/tests/broker-mixed-package.acceptance.cjs (Join-Path $baseline 'libs/electron-game-overlay/dist')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node libs/electron-game-overlay/tests/process-instance-mixed.acceptance.cjs (Join-Path $baseline 'libs/electron-game-overlay/dist')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:EGO_HARDENING_OLD_DIST = Join-Path $baseline 'libs/electron-game-overlay/dist'
           $env:EGO_HARDENING_MUTATION = ''

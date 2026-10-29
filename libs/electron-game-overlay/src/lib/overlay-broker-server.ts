@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import {
+  isValidProcessCreationTime100ns,
+  type OverlayBrokerProcessIdentity,
+} from './overlay-process-identity.js';
 import type {
   OverlayBrokerNativeRuntimeProvider,
   OverlayBrokerNativeTargetProvider,
@@ -119,6 +123,10 @@ export type OverlayBrokerServerOptions = Readonly<{
   runtimeProviderElectionWindowMs?: number;
   /** Injectable process probe used only after a granted owner disappears. */
   isProcessAlive?: (pid: number) => boolean;
+  /** Read-only OS identity probe from validated broker-owned artifacts. */
+  queryProcessIdentity?: (
+    pid: number,
+  ) => Promise<OverlayBrokerProcessIdentity | undefined>;
   /** Poll cadence for fail-closed retirement of an unauthenticated grant. */
   processExitPollIntervalMs?: number;
   /** Injectable probe for a durable route claim left by another broker. */
@@ -238,6 +246,11 @@ export class OverlayBrokerTargetHost {
   private electionWindowElapsed = false;
   private electionTimer: ReturnType<typeof setTimeout> | undefined;
   private frozenTargetExitTimer: ReturnType<typeof setTimeout> | undefined;
+  private processIdentityProbe: Promise<OverlayBrokerProcessIdentity | undefined> | undefined;
+  private processIdentityFailure: string | undefined;
+  private pinnedCreationTime100ns: string | undefined;
+  private processIdentityEpoch = 0;
+  private frozenIdentityProbePending = false;
 
   constructor(
     public readonly pid: number,
@@ -259,11 +272,17 @@ export class OverlayBrokerTargetHost {
       client: BrokerTargetClient,
       localWindowId: number,
     ) => void,
+    private readonly queryProcessIdentity?: OverlayBrokerServerOptions['queryProcessIdentity'],
   ) {
     transport.setEventCallback((event, payload) => {
       this.handleTargetEvent(event, payload);
     });
     transport.setDiagnosticCallback?.((diagnostic) => {
+      if (!this.disposed && !this.targetConnected && isRecord(diagnostic) &&
+        diagnostic.code === 'target-process-inspection-failed' &&
+        diagnostic.pid === this.pid) {
+        void this.verifyLostProcessIdentity();
+      }
       this.broadcast({ type: 'broker.diagnostic', diagnostic });
     });
     try {
@@ -350,6 +369,11 @@ export class OverlayBrokerTargetHost {
         `Target PID ${this.pid} is no longer available.`,
         request,
       );
+      this.onMemberRejected(this, client);
+      return;
+    }
+    if (this.processIdentityFailure) {
+      this.sendError(client, 'target-authorization-failed', this.processIdentityFailure, request);
       this.onMemberRejected(this, client);
       return;
     }
@@ -606,6 +630,7 @@ export class OverlayBrokerTargetHost {
       return;
     }
     this.disposed = true;
+    this.processIdentityEpoch++;
     for (const member of this.members.values()) {
       member.client.internalProvider?.dispose();
       member.active = false;
@@ -635,6 +660,7 @@ export class OverlayBrokerTargetHost {
     this.recoveryTombstone = true;
     this.recoveringPinnedRoute = false;
     if (state.kind === 'valid') {
+      this.pinnedCreationTime100ns = state.claim.creationTime100ns;
       this.recoveryTombstonePath = state.claim.discoveryPath;
       this.recoveryTombstoneExpectedExecutablePath =
         state.claim.expectedExecutablePath;
@@ -817,7 +843,8 @@ export class OverlayBrokerTargetHost {
     this.frozenTargetExitTimer = undefined;
   }
 
-  private pollFrozenTargetExit(): void {
+  private async pollFrozenTargetExit(): Promise<void> {
+    if (this.frozenIdentityProbePending) return;
     this.clearFrozenTargetExitTimer();
     if (
       this.disposed ||
@@ -828,6 +855,8 @@ export class OverlayBrokerTargetHost {
     ) {
       return;
     }
+    const epoch = this.processIdentityEpoch;
+    const claimState = this.recoveryClaimState;
     let alive = true;
     try {
       alive = this.isProcessAlive(this.pid);
@@ -844,11 +873,71 @@ export class OverlayBrokerTargetHost {
       queueMicrotask(() => this.onTerminal(this));
       return;
     }
+    if (this.pinnedCreationTime100ns && !this.authorizationPending && !this.processIdentityFailure) {
+      this.frozenIdentityProbePending = true;
+      const observed = await this.inspectProcessIdentity();
+      this.frozenIdentityProbePending = false;
+      if (this.disposed || this.terminalTargetExited || this.everAuthenticated ||
+        epoch !== this.processIdentityEpoch || this.recoveryClaimState !== claimState) return;
+      if (observed?.creationTime100ns !== this.pinnedCreationTime100ns) {
+        this.retainProcessIdentityFailure();
+      }
+    }
+    if (this.frozenTargetExitTimer) return;
     this.frozenTargetExitTimer = setTimeout(
       () => this.pollFrozenTargetExit(),
-      this.processExitPollIntervalMs,
+      this.pinnedCreationTime100ns ? Math.max(2000, this.processExitPollIntervalMs) : this.processExitPollIntervalMs,
     );
     this.frozenTargetExitTimer.unref();
+  }
+
+  private inspectProcessIdentity(): Promise<OverlayBrokerProcessIdentity | undefined> {
+    if (this.processIdentityProbe) return this.processIdentityProbe;
+    const pending = Promise.resolve().then(() => this.queryProcessIdentity?.(this.pid))
+      .then(observed => observed?.pid === this.pid &&
+        isValidProcessCreationTime100ns(observed.creationTime100ns) ? observed : undefined)
+      .catch(() => undefined);
+    this.processIdentityProbe = pending;
+    void pending.finally(() => {
+      if (this.processIdentityProbe === pending) this.processIdentityProbe = undefined;
+    });
+    return pending;
+  }
+
+  private async verifyLostProcessIdentity(): Promise<void> {
+    if (!this.everAuthenticated || this.targetConnected || !this.pinnedCreationTime100ns || this.processIdentityFailure) return;
+    const epoch = this.processIdentityEpoch;
+    const claim = this.recoveryClaimState;
+    // The transport diagnostic is only a prompt to inspect, never identity proof.
+    // Its mismatch notification is one-shot, so retry one unavailable confirmation.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const observed = await this.inspectProcessIdentity();
+      if (this.disposed || this.terminalTargetExited || this.targetConnected ||
+        epoch !== this.processIdentityEpoch || claim !== this.recoveryClaimState) return;
+      if (observed) {
+        if (observed.creationTime100ns !== this.pinnedCreationTime100ns) {
+          this.retainProcessIdentityFailure();
+        }
+        return;
+      }
+    }
+  }
+
+  private retainProcessIdentityFailure(): void {
+    // The old PID-only grant may already have attached a replacement instance.
+    // Mismatch never authorizes claim cleanup or a second injector.
+    this.processIdentityFailure = `Target PID ${this.pid} process identity could not be verified against its pinned recovery claim. Ownership remains pinned.`;
+    this.recoveryTombstone = true;
+    this.clearOwnerElectionTimer();
+    for (const member of [...this.members.values()]) {
+      if (!member.active || member.state === 'owner' || member.state === 'joined') continue;
+      this.sendError(member.client, 'target-authorization-failed', this.processIdentityFailure, member);
+      member.active = false;
+      this.members.delete(member.client);
+      this.onMemberRejected(this, member.client);
+    }
+    this.waiters.length = 0;
+    this.owner = undefined;
   }
 
   private rejectWaitersForExitedFrozenTarget(): void {
@@ -1087,8 +1176,21 @@ export class OverlayBrokerTargetHost {
           return;
         }
       }
-      // Publishing a target authorization route is the point of no return: an
-      // injector may observe it before this asynchronous call settles.
+      const identityEpoch = this.processIdentityEpoch;
+      const observed = await this.inspectProcessIdentity();
+      const observedCreationTime100ns = observed?.creationTime100ns;
+      if (this.disposed || this.terminalTargetExited || !candidate.active ||
+        identityEpoch !== this.processIdentityEpoch || this.processIdentityFailure ||
+        this.owner !== candidate || this.members.get(candidate.client) !== candidate) {
+        return;
+      }
+      if (this.pinnedCreationTime100ns && observedCreationTime100ns !== this.pinnedCreationTime100ns) {
+        this.retainProcessIdentityFailure();
+        return;
+      }
+      if (!this.recoveryClaimState) this.pinnedCreationTime100ns = observedCreationTime100ns;
+      // Publishing is the point of no return: an injector may observe the route
+      // before authorizeTarget settles. Identity observation never binds that injector.
       this.frozenAuthorizationStarted = true;
       const recoveryClaim =
         this.recoveryClaimState?.kind === 'valid'
@@ -1098,6 +1200,8 @@ export class OverlayBrokerTargetHost {
         this.recoveringPinnedRoute && recoveryClaim
           ? recoveryClaim.discoveryPath
           : candidate.discoveryPath;
+      const authorizationCreationTime100ns = recoveryClaim
+        ? recoveryClaim.creationTime100ns : observedCreationTime100ns;
       const authorizationExpectedExecutablePath =
         this.recoveringPinnedRoute && recoveryClaim
           ? recoveryClaim.expectedExecutablePath
@@ -1117,6 +1221,8 @@ export class OverlayBrokerTargetHost {
         authorizationDiscoveryPath,
         authorizationExpectedExecutablePath,
         {
+          ...(authorizationCreationTime100ns === undefined
+            ? {} : { creationTime100ns: authorizationCreationTime100ns }),
           ...(candidate.leaseId === undefined
             ? {}
             : { leaseId: candidate.leaseId }),
@@ -1467,6 +1573,7 @@ export class OverlayBrokerTargetHost {
       if (payload.pid !== this.pid || typeof payload.path !== 'string') {
         return;
       }
+      this.processIdentityEpoch++;
       this.clearOwnerElectionTimer();
       this.clearFrozenTargetExitTimer();
       this.everAuthenticated = true;
@@ -1497,6 +1604,7 @@ export class OverlayBrokerTargetHost {
       return;
     }
     if (event === 'game.process.transport-lost') {
+      this.processIdentityEpoch++;
       this.targetConnected = false;
       this.retainedInputInterception = undefined;
       this.broadcast({ type: event, ...payload });
@@ -1507,6 +1615,7 @@ export class OverlayBrokerTargetHost {
       this.clearFrozenTargetExitTimer();
       this.targetConnected = false;
       this.terminalTargetExited = true;
+      this.processIdentityEpoch++;
       try {
         this.clearTargetRecoveryClaim(this.pid);
       } catch {
@@ -1755,6 +1864,8 @@ export class OverlayBrokerServer {
   private readonly idleShutdownMs: number | false;
   private readonly runtimeProviderElectionWindowMs: number;
   private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly processIdentityProbes = new Map<number, Promise<OverlayBrokerProcessIdentity | undefined>>();
+  private readonly queryProcessIdentity: OverlayBrokerServerOptions['queryProcessIdentity'];
   private readonly processExitPollIntervalMs: number;
   private readonly targetRecoveryClaimProbe: (
     pid: number,
@@ -1771,6 +1882,21 @@ export class OverlayBrokerServer {
 
   constructor(options: OverlayBrokerServerOptions = {}) {
     this.nativeRuntimeProvider = options.nativeRuntimeProvider;
+    const queryProcessIdentity = options.queryProcessIdentity ??
+      options.nativeRuntimeProvider?.queryProcessIdentity?.bind(options.nativeRuntimeProvider);
+    // Host confirmation and the lost-transport watch share one actual OS probe.
+    const processIdentityProbes = this.processIdentityProbes;
+    this.queryProcessIdentity = queryProcessIdentity ? (pid) => {
+      const existing = processIdentityProbes.get(pid);
+      if (existing) return existing;
+      const pending = Promise.resolve().then(() => queryProcessIdentity(pid));
+      processIdentityProbes.set(pid, pending);
+      const clear = () => {
+        if (processIdentityProbes.get(pid) === pending) processIdentityProbes.delete(pid);
+      };
+      void pending.then(clear, clear);
+      return pending;
+    } : undefined;
     this.pipePath = options.pipePath ?? defaultOverlayBrokerPipePath();
     this.capabilities = Object.freeze([
       ...(options.capabilities ?? OVERLAY_BROKER_CAPABILITIES),
@@ -1826,6 +1952,7 @@ export class OverlayBrokerServer {
       options.targetTransportFactory ??
       ((pid) =>
         new OverlayLoopbackTransport({
+          queryProcessIdentity: this.queryProcessIdentity,
           discoveryPath: join(
             tmpdir(),
             'electron-game-overlay',
@@ -2091,6 +2218,8 @@ export class OverlayBrokerServer {
         } catch {
           initialRecoveryClaimState = Object.freeze({ kind: 'opaque' });
         }
+        // A retired host's observation must never identify a new host at the same PID.
+        this.processIdentityProbes.delete(request.pid);
         transport = this.targetTransportFactory(request.pid);
         target = new OverlayBrokerTargetHost(
           request.pid,
@@ -2111,6 +2240,7 @@ export class OverlayBrokerServer {
           (host) => this.retireTerminalTarget(host),
           (raisedClient, localWindowId) =>
             this.promoteWindowOrder(raisedClient, localWindowId),
+          this.queryProcessIdentity,
         );
       } catch (error) {
         this.sendError(

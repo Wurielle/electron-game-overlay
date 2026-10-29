@@ -172,14 +172,18 @@ medium-integrity guard still runs before cached native code is executed.
 The additive `--query-process-image <pid>` mode accepts one canonical positive
 decimal uint32 PID. It opens the process with only
 `PROCESS_QUERY_LIMITED_INFORMATION` and calls `QueryFullProcessImageNameW` with
-Win32-path flags. It does not enumerate target modules, inject, or open/mutate
-game or ReShade files. Success is one UTF-8 JSON line:
+Win32-path flags plus `GetProcessTimes` on the same retained handle. It does not
+enumerate target modules, inject, or open/mutate game or ReShade files. An
+illustrative extended-helper success record is one UTF-8 JSON line:
 
 ```json
-{"schemaVersion":1,"kind":"electron-game-overlay-process-image","pid":123,"executablePath":"C:\\Games\\Game.exe"}
+{"schemaVersion":1,"kind":"electron-game-overlay-process-image","pid":123,"executablePath":"C:\\Games\\Game.exe","creationTime100ns":"9007199254740993"}
 ```
 
 The broker requires the matching PID, schema/kind, and a valid full Windows path.
+The optional creation time remains an exact positive uint64 decimal string;
+malformed present values are rejected. Older image-only helper responses remain
+supported by the image-query API, but cannot establish process-instance identity.
 Child execution remains shell-disabled, bounded to 2000 milliseconds and 128 KiB
 of output. Missing processes, denied access, malformed responses, and timeouts
 fail closed without a PowerShell fallback. This is a separate read-only mode;
@@ -234,6 +238,40 @@ unchanged, and the mapped runtime build ID/generation does not change.
   repeated broker crashes from reopening injection ownership.
 - A broker with no clients and no retained target hosts or claim anchors shuts
   down after 30 seconds.
+
+### Optional process-instance evidence
+
+Schema-1 claims may carry an optional `creationTime100ns` string: the exact,
+positive uint64 Windows process creation FILETIME, expressed in canonical decimal
+without leading zeros or numeric conversion. The image and creation time must
+come from the same limited-query OS process handle. A broker uses its own
+validated distribution's manager for this observation, independently of which
+application/runtime provider wins election. It adds no required v1 client field
+or capability.
+
+Only a genuinely new route claim can acquire newly observed instance evidence.
+A legacy claim without the field remains unidentified, including intent
+resumption; never backfill the creation time of whatever now occupies its PID.
+An older coordinator may ignore and drop the additive field when rewriting a
+claim. That degrades to legacy unknown, not permission to reconstruct the lost
+identity. Malformed present evidence is not an absent legacy value.
+
+For a known instance, a recovery mismatch or unavailable comparison must retain
+possibly consumed ownership rather than republish a route, grant a replacement
+injector or use PID-wide exit cleanup. Asynchronous observations must not affect
+a replaced host, authorization, connection generation or process-exit watch.
+Matching evidence permits only the existing recovery path; it is not proof that
+the process remains alive after the query.
+
+This deliberately detects and fails closed; it does **not** implement automatic
+safe PID-reuse recovery. A separate helper can observe instance A, then A can
+exit and a PID-only injector can consume the old grant against replacement B.
+Seeing B's different creation time afterward does not prove B was never
+injected. Automatically clearing A's claim could therefore inject B twice.
+Automatic release on reuse requires injection itself to be bound to creation
+identity on the actual target handle, with compatible legacy-provider rules and
+exact observed-claim cleanup. No such guarantee follows from this optional
+field, and no cross-protocol-major arbiter is introduced here.
 
 ## Version compatibility and runtime election
 
@@ -529,6 +567,21 @@ routing frames and input, and their interception requests remain effective.
 The target/injection boundary and generation advertisements are controlled;
 these counts are not Electron-app, native-runtime or 500-version capacity.
 
+`process-instance-mixed.acceptance.cjs` also requires an independently compiled
+old SDK, passed as an absolute `dist` path:
+
+```sh
+node libs/electron-game-overlay/tests/process-instance-mixed.acceptance.cjs /absolute/old-sdk/dist
+```
+
+It exercises current publication, actual older-reader acceptance and coordinator
+rewrite, then current recovery after the older implementation drops the identity
+field. Both a published claim and an actual held legacy-intent transaction must
+retain their pinned route/lease without backfilling a new instance identity.
+The runner checks an in-memory no-backfill mutation and a clean rerun, preserving
+compiled graph hashes. These are private filesystem/transport fixtures, not OS
+process identity, native injection or game acceptance.
+
 ## Read-only live recovery evidence
 
 The demo's `broker-recovery-diagnostic.cjs` is an optional observer outside the
@@ -603,8 +656,10 @@ rather than accepted feature claims:
 
 - verify the connecting process identity and apply an explicit per-user named
   pipe ACL;
-- carry target process-creation identity in addition to PID/path and use it for
-  any future cross-protocol-major target arbiter;
+- bind injection itself to process-creation identity before allowing automatic
+  PID-reuse claim release, and use that authority for any future
+  cross-protocol-major target arbiter; the optional recovery evidence above does
+  not provide either guarantee;
 - add per-client quotas only if concrete usage justifies them; the current
   broker-wide admission and per-peer queue bounds are described above;
 - add further stalled-owner diagnostics only where needed, without ever
