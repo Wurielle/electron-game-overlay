@@ -212,6 +212,16 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Seed installed-package failure evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          @{ status = 'failed'; stage = 'before-dependency-setup'; nativeExecuted = $false; electronPeerInstalled = $false } | ConvertTo-Json -Compress | Set-Content -LiteralPath test-results/broker-package-install.json -Encoding utf8
+      - name: Seed native-binding failure evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          @{ status = 'failed'; stage = 'before-dependency-setup'; nativeExecuted = $false; legacyFixtureVerified = $false; sameHandlePlacementVerified = $false } | ConvertTo-Json -Compress | Set-Content -LiteralPath test-results/native-injection-binding.json -Encoding utf8
       - name: Validate optional two-app packaging request
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-two-app-demo && !inputs.build-demo }}
         run: throw 'build-two-app-demo requires build-demo'
@@ -239,6 +249,18 @@ jobs:
         run: |
           Get-Command Get-FileHash -ErrorAction Stop | Out-Null
           npm exec --yes=false -- nx run electron-game-overlay:build
+      - name: Check installed SDK tarball
+        shell: pwsh
+        run: |
+          & node libs/electron-game-overlay/tests/broker-package-install.acceptance.cjs --package-root libs/electron-game-overlay --sdk-root libs/electron-game-overlay/dist --tslib-root node_modules/tslib --typescript-root node_modules/typescript --scratch-root $env:TMPDIR --report test-results/broker-package-install.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: installed-sdk-package-results
+          path: test-results/broker-package-install.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Check new-process-only observation and observer lifecycle
         shell: pwsh
         run: |
@@ -265,6 +287,25 @@ jobs:
           name: production-native-process-image-results
           path: test-results/native-process-image-production-*.json
           if-no-files-found: warn
+      - name: Check native injection instance binding
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$installation) { throw 'MSVC installation was not found' }
+          $vcvarsall = (Get-Item -LiteralPath (Join-Path $installation.Trim() 'VC/Auxiliary/Build/vcvarsall.bat')).FullName
+          $runtime = Join-Path $PWD 'libs/electron-game-overlay/dist/runtime/win32-x64/reshade'
+          $injector64 = (Get-Item -LiteralPath (Join-Path $runtime 'inject.exe')).FullName
+          $injector32 = (Get-Item -LiteralPath (Join-Path $runtime 'inject32.exe')).FullName
+          & node libs/electron-game-overlay/tests/native-injection-binding.acceptance.cjs --injector64 $injector64 --injector32 $injector32 --vcvarsall $vcvarsall --report (Join-Path $PWD 'test-results/native-injection-binding.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: native-injection-binding-results
+          path: test-results/native-injection-binding.json
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/setup-node@v7.1.0
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         with:
