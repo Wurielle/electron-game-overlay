@@ -6,7 +6,8 @@ const vm = require('node:vm');
 const cp = require('node:child_process');
 const assert = require('node:assert/strict');
 const sourcePath = path.join(__dirname, 'native-injection-binding.acceptance.cjs');
-const source = fs.readFileSync(sourcePath, 'utf8');
+// Normalize only the source-extraction view, never payload bytes or integrity hashes.
+const source = fs.readFileSync(sourcePath, 'utf8').replace(/\r\n/g, '\n');
 function waitForResult(worker, onReady = () => {}) {
   return new Promise((resolve, reject) => {
     let releaseTimer;
