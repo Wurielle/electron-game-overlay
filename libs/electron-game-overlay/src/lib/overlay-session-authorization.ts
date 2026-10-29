@@ -24,6 +24,7 @@ export interface ReShadeAttachmentSession {
 export type OverlaySessionTargetAuthorization = Disposable &
   Readonly<{
     disposition: NativeTargetAuthorizationDisposition;
+    expectedCreationTime100ns?: string;
     target?: NativeTargetConnection;
   }>;
 
@@ -98,9 +99,11 @@ export function createSessionTargetAuthorization(
   release: Disposable,
   disposition: NativeTargetAuthorizationDisposition,
   target?: NativeTargetConnection,
+  expectedCreationTime100ns?: string,
 ): OverlaySessionTargetAuthorization {
   return Object.assign(release, {
     disposition,
+    ...(expectedCreationTime100ns === undefined ? {} : { expectedCreationTime100ns }),
     ...(target === undefined ? {} : { target }),
   });
 }
@@ -118,11 +121,13 @@ export function normalizeSessionTargetAuthorization(
         ? 'joined-existing'
         : 'injection-owner',
       enriched.target,
+      enriched.expectedCreationTime100ns,
     );
   }
   return createSessionTargetAuthorization(
     authorization.release,
     authorization.disposition,
     authorization.target,
+    authorization.expectedCreationTime100ns,
   );
 }

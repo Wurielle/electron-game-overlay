@@ -159,6 +159,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-injector-exact-target-path.patch"
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
+    injectorProcessInstanceBindingPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
 }
 
 $CMake = Resolve-Executable "cmake.exe"
@@ -244,7 +246,8 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 27 -or
+if ($BuildStamp.schemaVersion -ne 28 -or
+    $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -271,11 +274,12 @@ if (-not (Test-Path -LiteralPath $ManagerSourcePath -PathType Leaf)) {
 }
 Assert-NotReparsePoint $ManagerSourcePath
 $PackageBuildStamp = [ordered]@{
-    schemaVersion = 3
+    schemaVersion = 4
     kind = "electron-game-overlay-runtime-build"
     platform = $ArchitectureConfig.PackagePlatform
     configuration = "RelWithDebInfo"
     addonBuildId = $ExpectedAddonBuildId
+    injectorProcessInstanceBinding = 1
     managerProtocolSchemaVersion = 1
     runtimeGeneration = $RuntimeGeneration
     targetTransportMin = $TargetTransportMin

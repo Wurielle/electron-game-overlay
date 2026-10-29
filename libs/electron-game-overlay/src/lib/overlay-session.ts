@@ -413,6 +413,7 @@ export class OverlaySession {
       release,
       normalized.disposition,
       normalized.target,
+      normalized.expectedCreationTime100ns,
     );
   }
 

@@ -44,6 +44,8 @@ export type NativeTargetConnection = Readonly<{
 export type NativeTargetAuthorization = Readonly<{
   release: Disposable;
   disposition: NativeTargetAuthorizationDisposition;
+  /** Exact broker-pinned process creation FILETIME for an injection owner. */
+  expectedCreationTime100ns?: string;
   target?: NativeTargetConnection;
 }>;
 

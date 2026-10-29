@@ -270,8 +270,53 @@ Seeing B's different creation time afterward does not prove B was never
 injected. Automatically clearing A's claim could therefore inject B twice.
 Automatic release on reuse requires injection itself to be bound to creation
 identity on the actual target handle, with compatible legacy-provider rules and
-exact observed-claim cleanup. No such guarantee follows from this optional
-field, and no cross-protocol-major arbiter is introduced here.
+exact observed-claim cleanup. No such guarantee follows from the observed claim
+field alone. An instance-bound invocation also cannot establish whether an older,
+unbound provider previously consumed the same route. No cross-protocol-major
+arbiter or automatic claim release is introduced here.
+
+### Optional instance-bound injection
+
+`process-instance-injection-v1` is an optional supported capability, never part
+of the required v1 baseline. A capable injection owner can receive the broker's
+already pinned `expectedCreationTime100ns`. The field is a canonical positive
+uint64 decimal string, with the same exact-value rules as the observed creation
+time above. It is not a new authenticated-target field: `joined-existing` skips
+the injector and receives no injection expectation. Legacy peers and an older
+coordinator may omit the field; absence remains unbound, not evidence that an
+instance comparison happened.
+
+The exact broker expectation must survive object/function authorization
+normalization, session wrapping, cached-provider grants, x86 handoff and
+existing official-add-on wait/reopen paths. An independent later sample must
+never replace the broker's A with a replacement process B. A malformed present
+expectation, or one that the staged artifacts cannot enforce, is rejected before
+execution rather than silently retried without binding.
+
+Native binding support comes from validated private runtime package schema 4,
+with `injectorProcessInstanceBinding: 1` and matching declarations for both
+architectures. Source and staged payload hashes must still validate. Schemas 2
+and 3 remain accepted as unbound artifacts. SDK capability negotiation, a caller
+boolean, runtime generation, package version or the manager's read-only creation
+time query does not upgrade old injector bytes.
+
+The native check uses `GetProcessTimes` on the retained `remote_process` handle
+that performs injection. It follows same-handle executable identity validation
+and precedes architecture/module inspection, injection-mutex acquisition, file
+ACL changes, remote allocation/writes and thread creation. The handle is not
+closed and reopened by PID for mutation. If the instance exits after comparison,
+that handle still refers to the old process object; a later failure must not
+retarget a replacement process. Every reopened x86 or official-add-on invocation
+must compare the same original expectation on its own actual target handle.
+
+A mismatch is a terminal `target-process-instance-mismatch` preflight error
+with `injectionStarted: false` and exit/error 1306. A query failure is a terminal
+`target-process-instance-query-failed` error carrying the immediately captured
+Win32 error; zero creation time is invalid data. Neither permits repair,
+unbound retry, replacement-owner election or cleanup of possibly consumed
+claims. Current conservative ownership retention applies even to a locally
+not-started invocation; full provider-history and exact-claim cleanup proof
+remain separate requirements.
 
 ## Version compatibility and runtime election
 
@@ -534,6 +579,26 @@ For each change, state which gates ran, which boundaries were controlled, and
 what remains unverified. Existing source/tests and historical Windows runs do
 not establish that every future package combination or Windows/native target
 already works.
+
+`broker-package-install.acceptance.cjs` packs the actual built SDK, installs it
+and its real bundled dependency offline with scripts disabled, and checks the
+installed public Node-only `./broker` export and declarations without Electron
+or ancestor dependency fallback. It verifies every declared sealed payload and
+packaged PE architecture. Removing a sealed dependency must fail the actual
+tarball check; a source import or package file count alone is not acceptance.
+
+`native-injection-binding.acceptance.cjs` takes explicit freshly built x64/x86
+injectors and the installed MSVC developer-environment script. It compiles only
+owned console targets and an inert marker DLL, compares actual child-reported
+FILETIMEs with retained parent query handles, and exercises matching, mismatched
+and malformed exact-PID expectations on both architectures. Both legacy marker
+loads must succeed before an old injector's unknown-option rejection can count
+as a missing-CLI RED. A compiler/setup failure, timeout or arbitrary nonzero exit
+is not that behavioral result. Genuine Windows matching/mismatch acceptance and
+source review of actual same-handle placement remain distinct from portable
+parser, cancellation and LF/CRLF checkout regressions. The fixture changes no
+host token or security setting and proves neither ordinary-medium shared-service
+startup nor real-game graphics/input behavior.
 
 ## Repeatable failure and contention exercises
 

@@ -124,6 +124,10 @@ $InjectorNameWatcherReadyPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
 $InjectorNameWatcherReadyPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorNameWatcherReadyPatch).Hash
+$InjectorProcessInstanceBindingPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
+$InjectorProcessInstanceBindingPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorProcessInstanceBindingPatch).Hash
 $ExpectedPatchedFiles = @(
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -144,7 +148,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/input.cpp" = "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
     "source/input.hpp" = "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "5AC7DE8505C13229DA65E5D90FCEADD2332C041B4C8E3D6A48704EDB4096AEED"
+    "tools/injector.cpp" = "2FE4BA05EB60B46E50988E1A0BC5171F823D8C9DB192FE74D2C61D7776B40F0C"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -190,7 +194,8 @@ function Test-ReShadePatchedSourceState {
         $X86RuntimePatch,
         $X86TargetArchitectureDiagnosticPatch,
         $InjectorExactTargetPathPatch,
-        $InjectorNameWatcherReadyPatch
+        $InjectorNameWatcherReadyPatch,
+        $InjectorProcessInstanceBindingPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -246,7 +251,7 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 27 -and
+        return $Stamp.schemaVersion -eq 28 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -272,6 +277,8 @@ function Test-RuntimeBuildCache {
             $Stamp.x86TargetArchitectureDiagnosticPatchSha256 -eq $X86TargetArchitectureDiagnosticPatchHash -and
             $Stamp.injectorExactTargetPathPatchSha256 -eq $InjectorExactTargetPathPatchHash -and
             $Stamp.injectorNameWatcherReadyPatchSha256 -eq $InjectorNameWatcherReadyPatchHash -and
+            $Stamp.injectorProcessInstanceBindingPatchSha256 -eq $InjectorProcessInstanceBindingPatchHash -and
+            $Stamp.injectorProcessInstanceBinding -eq 1 -and
             $Stamp.configuration -eq "Release" -and
             $Stamp.platform -eq $ArchitectureConfig.RuntimePlatform -and
             $Stamp.addonLevel -eq 2 -and
@@ -381,7 +388,7 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 27
+    schemaVersion = 28
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -407,6 +414,8 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     x86TargetArchitectureDiagnosticPatchSha256 = $X86TargetArchitectureDiagnosticPatchHash
     injectorExactTargetPathPatchSha256 = $InjectorExactTargetPathPatchHash
     injectorNameWatcherReadyPatchSha256 = $InjectorNameWatcherReadyPatchHash
+    injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash
+    injectorProcessInstanceBinding = 1
     configuration = "Release"
     platform = $ArchitectureConfig.RuntimePlatform
     addonLevel = 2

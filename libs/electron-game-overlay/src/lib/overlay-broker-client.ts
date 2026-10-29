@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createConnection, createServer, type Socket } from 'node:net';
@@ -926,6 +927,8 @@ export class OverlayBrokerClient implements NativeOverlay {
       Object.freeze({
         release: this.createTargetRelease(lease),
         disposition: message.disposition,
+        ...(message.expectedCreationTime100ns === undefined
+          ? {} : { expectedCreationTime100ns: message.expectedCreationTime100ns }),
         ...(message.target === undefined
           ? {}
           : {
@@ -1428,7 +1431,9 @@ function parseTargetAuthorized(
     !isPositiveUint32(value.pid) ||
     (value.disposition !== 'injection-owner' &&
       value.disposition !== 'joined-existing') ||
-    typeof value.discoveryPath !== 'string'
+    typeof value.discoveryPath !== 'string' ||
+    ('expectedCreationTime100ns' in value &&
+      !isValidProcessCreationTime100ns(value.expectedCreationTime100ns))
   ) {
     return null;
   }

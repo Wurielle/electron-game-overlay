@@ -30,6 +30,9 @@ export const OVERLAY_BROKER_TARGET_TRANSPORT_VERSION = 1 as const;
 export const OVERLAY_BROKER_TARGET_TRANSPORT_MIN = 1 as const;
 /** Inclusive target-transport range supported by this runtime provider. */
 export const OVERLAY_BROKER_TARGET_TRANSPORT_MAX = 1 as const;
+/** Optional SDK understanding of an exact injection expectation; not artifact proof. */
+export const OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY =
+  'process-instance-injection-v1' as const;
 export const OVERLAY_BROKER_GLOBAL_WINDOW_ORDER_CAPABILITY =
   'global-window-order-v1' as const;
 /**
@@ -48,6 +51,7 @@ export const OVERLAY_BROKER_REQUIRED_CAPABILITIES = Object.freeze([
 /** All capabilities advertised by this broker implementation. */
 export const OVERLAY_BROKER_CAPABILITIES = Object.freeze([
   ...OVERLAY_BROKER_REQUIRED_CAPABILITIES,
+  OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY,
 ] as const);
 
 export const MAX_BROKER_JSON_BODY_BYTES = 1024 * 1024;
@@ -139,6 +143,7 @@ export type OverlayBrokerTargetAuthorized = Readonly<{
   requestId: string;
   pid: number;
   disposition: 'injection-owner' | 'joined-existing';
+  expectedCreationTime100ns?: string;
   /** The one underlying rendezvous selected for this target host. */
   discoveryPath: string;
   target?: OverlayBrokerTargetIdentity;

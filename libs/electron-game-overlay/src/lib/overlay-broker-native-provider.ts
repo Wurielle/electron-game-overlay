@@ -292,6 +292,8 @@ export async function prepareStandaloneOverlayNativeProvider(
           }
           return Object.assign(() => undefined, {
             disposition: granted.disposition,
+            ...(granted.expectedCreationTime100ns === undefined
+              ? {} : { expectedCreationTime100ns: granted.expectedCreationTime100ns }),
             ...(granted.target ? { target: granted.target } : {}),
           });
         },

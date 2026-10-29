@@ -29,6 +29,7 @@ import {
 import {
   BrokerPacketDecoder,
   OVERLAY_BROKER_CAPABILITIES,
+  OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY,
   OVERLAY_BROKER_GLOBAL_WINDOW_ORDER_CAPABILITY,
   OVERLAY_BROKER_PROTOCOL_VERSION,
   OVERLAY_BROKER_TARGET_TRANSPORT_VERSION,
@@ -273,6 +274,7 @@ export class OverlayBrokerTargetHost {
       localWindowId: number,
     ) => void,
     private readonly queryProcessIdentity?: OverlayBrokerServerOptions['queryProcessIdentity'],
+    private readonly supportsProcessInstanceInjection = true,
   ) {
     transport.setEventCallback((event, payload) => {
       this.handleTargetEvent(event, payload);
@@ -1397,6 +1399,10 @@ export class OverlayBrokerTargetHost {
       requestId: member.requestId,
       pid: this.pid,
       disposition,
+      ...(disposition === 'injection-owner' && this.pinnedCreationTime100ns !== undefined &&
+        (member.client.internalProvider || (this.supportsProcessInstanceInjection && member.client.hello &&
+          getOverlayBrokerClientSupportedCapabilities(member.client.hello).includes(OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY)))
+        ? { expectedCreationTime100ns: this.pinnedCreationTime100ns } : {}),
       discoveryPath,
       ...(this.targetIdentity === undefined
         ? {}
@@ -2241,6 +2247,7 @@ export class OverlayBrokerServer {
           (raisedClient, localWindowId) =>
             this.promoteWindowOrder(raisedClient, localWindowId),
           this.queryProcessIdentity,
+          this.capabilitiesSet.has(OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY),
         );
       } catch (error) {
         this.sendError(
