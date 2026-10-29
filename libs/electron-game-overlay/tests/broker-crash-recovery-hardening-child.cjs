@@ -55,6 +55,33 @@ if (process.env.EGO_CRASH_PUBLISHING_CLAIM) {
     }
   };
 }
+// Hold the real replacement route rename before the final claim commit.
+if (process.env.EGO_CRASH_HOLD_ROUTE) {
+  const fs = require('node:fs/promises');
+  const rename = fs.rename;
+  fs.rename = async (from, to) => {
+    await rename(from, to);
+    if (to !== process.env.EGO_CRASH_HOLD_ROUTE) return;
+    await new Promise((resolve, reject) => {
+      const finish = (error) => {
+        clearTimeout(timer);
+        process.removeListener('message', release);
+        error ? reject(error) : resolve();
+      };
+      const release = (message) => {
+        if (message.kind === 'release-route-publication') finish();
+      };
+      const timer = setTimeout(
+        () => finish(new Error('Timeout: held replacement route publication')),
+        6000,
+      );
+      process.on('message', release);
+      process.send({ kind: 'replacement-route-durable' }, (error) => {
+        if (error) finish(error);
+      });
+    });
+  };
+}
 if (process.env.EGO_CRASH_MUTATE_FREEZE === '1') {
   const Module = require('node:module');
   const file = require.resolve('../dist/lib/overlay-loopback-transport.js');

@@ -442,8 +442,9 @@ test(
       sockets = [],
       authorizations = [];
     const cleanup = ownedCleanup(t, root, children, clients, sockets);
-    let child;
-    const launch = async () => {
+    let child, replacementRouteDurable;
+    const launch = async (holdRoute = false) => {
+      replacementRouteDurable = false;
       if (process.platform !== 'win32') await fs.rm(pipe, { force: true }); // Owned dead child's socket only.
       child = fork(
         path.join(__dirname, 'broker-crash-recovery-hardening-child.cjs'),
@@ -453,6 +454,7 @@ test(
             ...process.env,
             EGO_CRASH_TEST_ROOT: root,
             EGO_CRASH_TEST_PIPE: pipe,
+            EGO_CRASH_HOLD_ROUTE: holdRoute ? route : '',
           },
           stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         },
@@ -466,6 +468,8 @@ test(
       child.on('message', (value) => {
         if (value.kind === 'ready') ready = true;
         if (value.kind === 'authorization') authorizations.push(value.message);
+        if (value.kind === 'replacement-route-durable')
+          replacementRouteDurable = true;
       });
       await waitFor(() => {
         if (child.exitCode !== null)
@@ -579,7 +583,11 @@ test(
             ),
           'one synthetic loss per crash',
         );
-        await launch();
+        await launch(true);
+        await waitFor(
+          () => replacementRouteDurable,
+          'replacement route durable before claim commit',
+        );
         await waitFor(async () => {
           try {
             return (await json(route)).pid === child.pid;
@@ -587,8 +595,32 @@ test(
             return false;
           }
         }, 'replacement pinned route');
-        const claim = await json(claimPath),
-          record = await json(route);
+        // Route visibility precedes the final durable claim commit. Prove that
+        // exact window with production writes, then wait for the same claim.
+        assert.equal((await json(claimPath)).phase, 'publishing');
+        await bounded(
+          new Promise((resolve, reject) =>
+            child.send({ kind: 'release-route-publication' }, (error) =>
+              error ? reject(error) : resolve(),
+            ),
+          ),
+          'release replacement route publication',
+          t.signal,
+        );
+        let claim;
+        await waitFor(async () => {
+          const candidate = await json(claimPath);
+          if (
+            candidate.phase !== 'published' ||
+            candidate.discoveryPath !== initialClaim.discoveryPath ||
+            candidate.staticDiscoveryPath !== initialClaim.staticDiscoveryPath ||
+            candidate.leaseId !== initialClaim.leaseId ||
+            candidate.record.pid !== child.pid
+          ) return false;
+          claim = candidate;
+          return true;
+        }, 'replacement claim committed published with original identity');
+        const record = await json(route);
         assert.equal(claim.phase, 'published');
         assert.equal(claim.discoveryPath, initialClaim.discoveryPath);
         assert.equal(

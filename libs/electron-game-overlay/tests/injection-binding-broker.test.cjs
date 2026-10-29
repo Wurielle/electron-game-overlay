@@ -11,6 +11,50 @@ const ts = require('typescript');
 const source = path.resolve(__dirname, '../src/lib');
 const cache = new Map();
 let launcherBoundary;
+let privilegeOutput = 'S-1-16-8192';
+let privilegeCalls = 0;
+let managerBoundary;
+const ownedEndpoints = new Set();
+const controlledNet = {
+  createConnection(endpoint, ...args) {
+    assert.ok(ownedEndpoints.has(endpoint), 'connection must target an owned private listener');
+    return net.createConnection(endpoint, ...args);
+  },
+  createServer(...args) {
+    const server = net.createServer(...args);
+    const listen = server.listen;
+    server.listen = function (endpoint, ...rest) {
+      if (typeof endpoint === 'string') {
+        assert.ok(ownedEndpoints.has(endpoint), 'listener must use the owned private endpoint');
+      } else {
+        assert.equal(endpoint, 0, 'only an ephemeral owned loopback listener is permitted');
+        assert.equal(rest[0], '127.0.0.1');
+      }
+      return listen.call(this, endpoint, ...rest);
+    };
+    return server;
+  },
+};
+const controlledDirectory = 'Z:\\Controlled OS\\System32';
+const controlledChildProcess = new Proxy({}, { get(_target, key) {
+  if (key !== 'execFile') return () => assert.fail(`unexpected process operation: ${String(key)}`);
+  return (exe, args, options, callback) => {
+    if (exe === `${controlledDirectory}\\whoami.exe`) {
+      assert.deepEqual(args, ['/groups', '/fo', 'csv', '/nh']);
+      assert.deepEqual(options, { shell: false, windowsHide: true, cwd: controlledDirectory, timeout: 2000, maxBuffer: 64 * 1024, encoding: 'utf8' });
+      privilegeCalls++;
+      queueMicrotask(() => callback(null, privilegeOutput, ''));
+      return new (require('node:events').EventEmitter)();
+    }
+    assert.equal(exe, managerBoundary, 'only the owned controlled manager query is permitted');
+    assert.ok(managerBoundary);
+    assert.deepEqual(args, ['--query-process-image', String(PID)]);
+    assert.equal(options.shell, false);
+    assert.equal(options.timeout, 2000);
+    queueMicrotask(() => callback(null, JSON.stringify({ schemaVersion: 1, kind: 'electron-game-overlay-process-image', pid: PID, executablePath: EXE, creationTime100ns: A }) + '\n', ''));
+    return new (require('node:events').EventEmitter)();
+  };
+} });
 function load(name) {
   const file = path.join(source, name + '.ts');
   if (cache.has(file)) return cache.get(file).exports;
@@ -19,12 +63,29 @@ function load(name) {
   mod.filename = file;
   mod.paths = Module._nodeModulePaths(source);
   mod.require = function (id) {
+    if (id === 'node:net') return controlledNet;
+    if (id === 'node:child_process') return controlledChildProcess;
+    if (id === 'node:fs' && name === 'overlay-broker-windows-os-path') return {
+      ...fs, realpath: { native(input, callback) {
+        assert.equal(input, '\\\\?\\GLOBALROOT\\SystemRoot\\System32');
+        queueMicrotask(() => callback(null, controlledDirectory));
+      } },
+    };
     if (id === 'electron') return { screen: new (require('node:events').EventEmitter)() };
     if (id === './reshade-launcher.js' && launcherBoundary) return launcherBoundary;
     if (id.startsWith('./') && id.endsWith('.js')) return load(id.slice(2, -3));
+    assert.ok(['node:crypto', 'node:fs', 'node:fs/promises', 'node:os', 'node:path', 'node:events'].includes(id), `unexpected private-graph dependency: ${id}`);
     return module.require(id);
   };
-  mod._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+  let text = fs.readFileSync(file, 'utf8');
+  // Explicit controlled Windows branch projection, never host platform replacement.
+  // Only select the branch; the actual guard, resolver and output parser remain real.
+  const branch = name === 'overlay-broker-bootstrap'
+    ? "if (process.platform !== 'win32') return;"
+    : name === 'overlay-broker-native-provider'
+      ? "if (process.platform !== 'win32' || process.arch !== 'x64') return undefined;" : undefined;
+  if (branch && process.platform !== 'win32') { assert.equal(text.split(branch).length, 2); text = text.replace(branch, '/* controlled Windows branch selection; nativeExecuted=false */'); }
+  mod._compile(ts.transpileModule(text, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
     fileName: file,
   }).outputText, file);
@@ -33,6 +94,12 @@ function load(name) {
 const A = '9007199254740993';
 
 test('client rejects malformed-present expectations without numeric coercion', async t => {
+  const bootstrap = load('overlay-broker-bootstrap');
+  privilegeOutput = 'S-1-16-12288';
+  await assert.rejects(bootstrap.assertOverlayBrokerPrivilege(), /requires proven medium/);
+  privilegeOutput = 'S-1-16-8192';
+  await bootstrap.assertOverlayBrokerPrivilege();
+  assert.ok(privilegeCalls >= 2, 'actual Windows guard consumed controlled OS output');
   const f = await fixture(t);
   const client = await f.client();
   const message = { type: 'broker.target.authorized', requestId: 'unknown', pid: PID, disposition: 'injection-owner', discoveryPath: path.join(f.root, 'raw.json') };
@@ -149,6 +216,7 @@ async function fixture(t, options = {}) {
       if (errors.length) throw new AggregateError(errors);
     } finally {
       os.userInfo = userInfo; os.tmpdir = tmpdir;
+      ownedEndpoints.clear();
       if (root) fs.rmSync(root, { recursive: true, force: true });
     }
   })();
@@ -165,6 +233,7 @@ async function fixture(t, options = {}) {
     async authorizeTarget(...args) { publications.push(args); return () => {}; },
   };
   const pipePath = process.platform === 'win32' ? `\\\\.\\pipe\\ego-binding-${require('node:crypto').randomUUID()}` : path.join(root, 'broker.sock');
+  ownedEndpoints.add(pipePath);
   server = new OverlayBrokerServer({ pipePath, idleShutdownMs: false, runtimeProviderElectionWindowMs: 0,
     isProcessAlive: () => true, targetRecoveryClaimProbe: () => undefined,
     clearTargetRecoveryClaim: () => assert.fail('must not clear retained ownership'),
@@ -176,7 +245,7 @@ async function fixture(t, options = {}) {
     clients.push(c); c.start(); await bounded(c.whenReady(), t.signal); return c;
   }
   async function raw(hello = {}, onMessage) {
-    const socket = net.createConnection(pipePath); sockets.push(socket);
+    const socket = controlledNet.createConnection(pipePath); sockets.push(socket);
     const messages = [], decoder = new protocol.BrokerPacketDecoder();
     socket.on('data', data => { for (const packet of decoder.push(data)) { messages.push(packet.value); onMessage?.(packet.value, socket); } });
     await bounded(new Promise((r, j) => { socket.once('connect', r); socket.once('error', j); }), t.signal);
@@ -201,11 +270,8 @@ test('known broker A survives real client and object/function session adapters e
 
 test('cached internal provider preserves broker A through its real synthetic session', { timeout: 7000 }, async t => {
   const f = await fixture(t);
-  const cp = require('node:child_process');
-  const original = cp.execFile;
-  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
   let provider, settlement;
-  f.own(async () => { try { provider?.dispose(); if (settlement) await bounded(settlement, undefined); } finally { cp.execFile = original; Object.defineProperty(process, 'platform', platform); launcherBoundary = undefined; } });
+  f.own(async () => { try { provider?.dispose(); if (settlement) await bounded(settlement, undefined); } finally { managerBoundary = undefined; launcherBoundary = undefined; } });
   const stamp = path.join(f.root, 'stamp.json'); fs.writeFileSync(stamp, '{}');
   const route = path.join(f.root, 'cached.json');
   const metadata = { runtimeGeneration: 7, targetTransportMin: 1, targetTransportMax: 1 };
@@ -218,10 +284,8 @@ test('cached internal provider preserves broker A through its real synthetic ses
       return settlement;
     },
   };
-  cp.execFile = (_exe, _args, _opts, cb) => { queueMicrotask(() => cb(null, JSON.stringify({ schemaVersion: 1, kind: 'electron-game-overlay-process-image', pid: PID, executablePath: EXE, creationTime100ns: A }) + '\n', '')); return new (require('node:events').EventEmitter)(); };
-  Object.defineProperty(process, 'platform', { value: 'win32' });
+  managerBoundary = path.join(f.root, 'manager.exe');
   provider = await load('overlay-broker-native-provider').prepareStandaloneOverlayNativeProvider();
-  Object.defineProperty(process, 'platform', platform);
   assert.ok(provider);
   const target = provider.createTarget({ pid: PID });
   await bounded(target.prepare(), t.signal);

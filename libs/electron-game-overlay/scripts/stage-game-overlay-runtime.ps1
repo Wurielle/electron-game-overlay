@@ -132,6 +132,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-exact-target-path.patch"
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-name-watcher-ready.patch"
+    injectorProcessInstanceBindingPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-process-instance-binding.patch"
 }
 $ExpectedArtifactNames = @(
     $ArchitectureConfig.AddonName
@@ -221,7 +223,8 @@ try {
 catch {
     throw "The native runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 27 -or
+if ($BuildStamp.schemaVersion -ne 28 -or
+    $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -259,6 +262,7 @@ $ExpectedPackageBuildStampProperties = @(
     "addonSha256"
     "configuration"
     "injectorSha256"
+    "injectorProcessInstanceBinding"
     "kind"
     "managerProtocolSchemaVersion"
     "managerSha256"
@@ -282,7 +286,8 @@ if (@(
             $ExpectedPackageBuildStampProperties `
             $ActualPackageBuildStampProperties
     ).Count -ne 0 -or
-    $PackageBuildStamp.schemaVersion -ne 3 -or
+    $PackageBuildStamp.schemaVersion -ne 4 -or
+    $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $PackageBuildStamp.kind -ne "electron-game-overlay-runtime-build" -or
     $PackageBuildStamp.platform -ne $ArchitectureConfig.PackagePlatform -or
     $PackageBuildStamp.configuration -ne "RelWithDebInfo" -or
