@@ -313,7 +313,7 @@ function runtime(root, generation) {
         kind: 'electron-game-overlay-runtime-build',
         platform: bits === 64 ? 'win32-x64' : 'win32-ia32',
         configuration: 'RelWithDebInfo',
-        addonBuildId: 'F2A88AD705204DBB8E18D86E7147A13C',
+        addonBuildId: '31D321732C1B424796593C0778FB722E',
         managerProtocolSchemaVersion: 1,
         managerSourceSha256: 'A'.repeat(64),
         runtimeGeneration: generation,

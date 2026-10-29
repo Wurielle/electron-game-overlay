@@ -121,6 +121,26 @@ test('actual fixture persists setup failure even when the selected server cannot
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
 
+test('optional controlled-native CLI mode is explicit and isolated from all eight original cases', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'popup-order-cli-'));
+  try {
+    // Controlled orchestration input only; no fabricated SDK/native acceptance.
+    const lib = path.join(root, 'lib'); fs.mkdirSync(lib);
+    for (const name of ['electron-game-overlay','overlay-broker-server','overlay-broker-client','overlay-session','electron-overlay-window']) fs.writeFileSync(path.join(lib, `${name}.js`), '// orchestration only');
+    const audit = path.join(root, 'audit.jsonl'), preload = path.join(root, 'preload.cjs'), fixture = path.join(root, 'fixture.cjs');
+    fs.writeFileSync(fixture, `require('node:fs').appendFileSync(${JSON.stringify(audit)}, JSON.stringify({order:process.env.EGO_POPUP_CONTROLLED_WINDOW_ORDER,reconnect:process.env.EGO_POPUP_RECONNECT,expect:process.env.EGO_POPUP_EXPECT_ORDER,legacy:process.env.EGO_POPUP_LEGACY_COORDINATOR})+'\\n');process.exitCode=2;`);
+    fs.writeFileSync(preload, `const cp=require('node:child_process'),spawn=cp.spawn;cp.spawn=(exe,args,options)=>spawn(exe,[${JSON.stringify(fixture)}],options);`);
+    const env = {...process.env,TMPDIR:root,TMP:root,TEMP:root}; delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(process.execPath, ['--require',preload,runner,'--current-lib',lib,'--previous-lib',lib,'--output',path.join(root,'report.json'),'--controlled-native-window-order'], {env,encoding:'utf8',timeout:10000});
+    assert.equal(result.status,1, 'arbitrary child exit must remain failure');
+    const rows = fs.readFileSync(audit,'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(rows.length,16);
+    assert.ok(rows.slice(0,8).every(r=>r.order==='0' && r.reconnect==='0' && r.expect==='0'));
+    assert.ok(rows.slice(8,12).every(r=>r.order==='1' && r.reconnect==='1' && r.expect==='1' && r.legacy==='0'));
+    assert.ok(rows.slice(12).every(r=>r.order==='1' && r.reconnect==='1' && r.expect==='0' && r.legacy==='1'));
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});
+
 test('invalid setup replaces stale success before validation', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'popup-gate-test-'));
   try {

@@ -76,10 +76,10 @@ $PlatformRuntimeDirectory = Join-Path `
     "win32-x64"
 $DestinationDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "F2A88AD705204DBB8E18D86E7147A13C"
+$ExpectedAddonBuildId = "31D321732C1B424796593C0778FB722E"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 1
+$ExpectedRuntimeGeneration = 2
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"

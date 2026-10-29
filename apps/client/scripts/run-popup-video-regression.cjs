@@ -57,14 +57,16 @@ async function runMatrix(options = {}) {
     const scratch = fs.mkdtempSync(path.join(require('node:os').tmpdir(),'ego-popup-matrix-'));
     report.scratch = scratch;
     const fixture = options.fixture || path.resolve(__dirname,'../tests/popup-video-real-graph.acceptance.cjs');
-    async function execute(coordinator, sdkA, sdkB, reconnect = false) {
-      const label = `${coordinator}-${sdkA}-${sdkB}${reconnect ? '-reconnect' : ''}`;
+    async function execute(coordinator, sdkA, sdkB, reconnect = false, controlledOrder = false) {
+      const label = `${coordinator}-${sdkA}-${sdkB}${reconnect ? '-reconnect' : ''}${controlledOrder ? '-controlled-order' : ''}`;
       const tracePath = path.join(scratch,`${label}.json`);
       const item = {coordinator,sdkA,sdkB,status:'failed',label};
-      (reconnect ? report.reconnect = [] : report.cases).push(item); save();
+      (reconnect ? (report.reconnect ||= []) : report.cases).push(item); save();
       try {
         const env = {...process.env, EGO_POPUP_CLIENT_LIB:libs[sdkA], EGO_POPUP_PEER_CLIENT_LIB:libs[sdkB],
           EGO_POPUP_SERVER_LIB: coordinator === 'current' ? path.resolve(options.currentServerLib || libs.current) : path.resolve(options.previousServerLib || libs.previous),
+          EGO_POPUP_LEGACY_COORDINATOR:coordinator === 'previous' ? '1' : '0',
+          EGO_POPUP_CONTROLLED_WINDOW_ORDER:controlledOrder ? '1' : '0', EGO_POPUP_EXPECT_ORDER:controlledOrder && coordinator === 'current' ? '1' : '0',
           EGO_POPUP_TRACE:tracePath, EGO_POPUP_RECONNECT:reconnect ? '1' : '0', TMPDIR:scratch,TMP:scratch,TEMP:scratch};
         delete env.NODE_TEST_CONTEXT;
         const result = await new Promise(resolve => {
@@ -86,15 +88,26 @@ async function runMatrix(options = {}) {
         item.status = classify(coordinator,result,trace);
         item.unrelatedCounts = trace.phases.map(p=>p.unrelated.length);
         if (reconnect) {
-          assert.ok(trace.recoveryCharacterization?.delta.some(c=>c.kind==='add' && c.id===1));
-          assert.equal(trace.recoveryCharacterization.produced.length,0);
-          item.status = 'known-placement-limitation-characterization';
+          const recovery = trace.recoveryCharacterization;
+          assert.equal(recovery.produced.length,0);
+          if (controlledOrder && coordinator === 'current') {
+            assert.equal(recovery.delta.filter(c=>c.kind==='add').length,3);
+            assert.deepEqual(recovery.delta.filter(c=>c.kind==='add' && recovery.survivors.includes(c.id)),[]);
+            assert.deepEqual(recovery.frames.filter(c=>recovery.survivors.includes(c.id)),[]);
+            assert.deepEqual(recovery.delta.filter(c=>c.kind==='order').at(-1).ids,recovery.afterOrder.map(c=>c.id));
+            item.status = 'controlled-native-order-reconnect-pass';
+          } else {
+            assert.equal(recovery.delta.filter(c=>c.kind==='add').length,coordinator === 'previous' ? 10 : 27);
+            assert.ok(recovery.delta.some(c=>c.kind==='add' && c.id===1));
+            item.status = coordinator === 'previous' ? 'legacy-known-failing-reconnect-characterization' : 'known-placement-limitation-characterization';
+          }
         }
       } catch(error) {item.status='failed';item.error=error.message;} finally {save();}
     }
     try {
       for (const coordinator of ['current','previous']) for (const sdkA of ['current','previous']) for (const sdkB of ['current','previous']) await execute(coordinator,sdkA,sdkB);
       if (options.reconnect) await execute('current','current','previous',true);
+      if (options.controlledWindowOrder) for (const coordinator of ['current','previous']) for (const sdkA of ['current','previous']) for (const sdkB of ['current','previous']) await execute(coordinator,sdkA,sdkB,true,true);
       report.summary = {currentPass:report.cases.filter(c=>c.status==='current-pass').length,
         legacyKnownFailingCharacterizations:report.cases.filter(c=>c.status==='legacy-known-failing-characterization').length,
         reconnectSeparate:report.reconnect?.length || 0};
@@ -112,5 +125,6 @@ if (require.main === module) {
     previousLib: args.includes('--previous-lib') ? value('--previous-lib') : undefined,
     currentServerLib: args.includes('--current-server-lib') ? value('--current-server-lib') : undefined,
     previousServerLib: args.includes('--previous-server-lib') ? value('--previous-server-lib') : undefined,
+    controlledWindowOrder: args.includes('--controlled-native-window-order'),
     reconnect: args.includes('--reconnect') }).then(report => { process.exitCode = report.status === 'passed' ? 0 : 1; });
 }

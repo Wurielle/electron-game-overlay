@@ -86,13 +86,22 @@ test('actual popup/video paths never replay unrelated placements', {timeout: 200
   const calls = [], producer = [], clients = [], graphs = [], phases = [];
   let recoveryCharacterization = null;
   let frameCount = 0, focusCount = 0;
+  const frames = [];
+  const expectOrder = process.env.EGO_POPUP_EXPECT_ORDER === '1';
   let nativeEvent;
   const transport = {
     start() {}, stop() {}, whenReady: async () => {}, authorizeTarget: async () => () => {},
     setDiagnosticCallback() {}, setEventCallback(callback) { nativeEvent = callback; },
-    setInputIntercept() {}, closeWindow(id) { calls.push({kind:'close',id}); }, sendFrameBuffer() { frameCount++; return true; },
+    setInputIntercept() {}, closeWindow(id) { calls.push({kind:'close',id}); }, sendFrameBuffer(id) { frames.push({id}); frameCount++; return true; },
     sendWindowBounds(id, geometry) { calls.push({kind:'bounds',id,geometry}); }, raiseWindowForSnapshot() {},
     addWindow(id, details) { calls.push({kind:'add',id,details:structuredClone(details),origin:new Error().stack.split('\n').slice(2,7)}); },
+  };
+  // Opt-in controlled native boundary: records the production coordinator's output only.
+  // No placement simulation or copy of the coordinator/Loopback ordering algorithm.
+  if (process.env.EGO_POPUP_CONTROLLED_WINDOW_ORDER === '1') transport.addWindowInOrder = (id, details, ids) => {
+    transport.addWindow(id, details);
+    calls.push({kind:'order', ids:[...ids]});
+    return true;
   };
   let server, failure, completed = false, stage = 'setup';
   const argv = process.argv, config = global.CONFIG;
@@ -165,13 +174,43 @@ test('actual popup/video paths never replay unrelated placements', {timeout: 200
   if (process.env.EGO_POPUP_RECONNECT === '1') {
     // Characterize the documented older-token restoration path, not a normal popup.
     // Break only this fixture's actual socket; retain genuine broker-issued tokens.
-    const before = calls.length, beforeProducer = producer.length;
+    const host = server.targets.get(pid);
+    const snapshot = () => Array.from(host.ownersByTargetWindowId, ([id, owner]) => ({id, token:owner.client.windows.get(owner.localWindowId).orderToken})).sort((a,b)=>a.token.localeCompare(b.token));
+    const beforeOrder = snapshot();
+    const beforeSeed = frames.length;
+    for (const client of clients) for (const id of client.windows.keys()) client.sendFrameBuffer(id, Buffer.from([1,2,3,4]), 1, 1);
+    await waitFor(() => frames.length >= beforeSeed + beforeOrder.length);
+    const before = calls.length, beforeProducer = producer.length, beforeFrames = frames.length;
     const original = clients[1].socket;
     original.destroy();
-    await waitFor(() => clients[1].socket && clients[1].socket !== original && calls.slice(before).some(call => call.kind === 'add' && call.id === 1));
-    recoveryCharacterization = {trigger:'real peer socket disconnect/reconnect with genuine retained older order tokens',delta:calls.slice(before),produced:producer.slice(beforeProducer)};
-    assert.ok(recoveryCharacterization.delta.some(call => call.kind === 'add' && call.id === 1), 'retained older-token restoration really replays the surviving app placement');
+    await waitFor(() => clients[1].socket && clients[1].socket !== original && calls.slice(before).filter(call => call.kind === 'close').length === 3 && host.ownersByTargetWindowId.size === beforeOrder.length);
+    // A real surviving-client frame is a socket processing barrier, excluded from recovery frames.
+    clients[0].sendFrameBuffer(1, Buffer.from([1,2,3,4]), 1, 1);
+    await waitFor(() => frames.length > beforeFrames && frames.at(-1).id === 1);
+    const delta = calls.slice(before), removed = delta.filter(c=>c.kind==='close').map(c=>c.id);
+    const survivors = beforeOrder.filter(entry=>!removed.includes(entry.id)).map(entry=>entry.id);
+    recoveryCharacterization = {trigger:'real peer socket disconnect/reconnect with genuine retained older order tokens',boundary:'controlled native transport only; not Loopback/native placement proof',delta,produced:producer.slice(beforeProducer),frames:frames.slice(beforeFrames,-1),survivors,removed,beforeOrder,afterOrder:snapshot()};
+    stage = 'assertions';
     assert.equal(recoveryCharacterization.produced.length, 0, 'recovery replay is not an application/OverlaySession re-registration');
+    if (expectOrder) {
+      assert.deepEqual(delta.filter(c=>c.kind==='add' && survivors.includes(c.id)), [], 'capable reconnect must not replay survivor metadata');
+      assert.deepEqual(recoveryCharacterization.frames.filter(c=>survivors.includes(c.id)), [], 'capable reconnect must not replay survivor frames');
+      assert.equal(delta.filter(c=>c.kind==='add').length, 3, 'only removed own windows re-register');
+      assert.deepEqual(recoveryCharacterization.frames.map(c=>c.id).sort((a,b)=>a-b), delta.filter(c=>c.kind==='add').map(c=>c.id).sort((a,b)=>a-b), 'only recreated own windows receive their retained frames');
+      assert.equal(delta.filter(c=>c.kind==='order').length, 3, 'each restored older token supplies complete order');
+      const live = new Set(beforeOrder.map(entry=>entry.id));
+      const finalOrder = snapshot().map(entry=>entry.id);
+      for (const call of delta) {
+        if (call.kind === 'close') live.delete(call.id);
+        if (call.kind === 'add') live.add(call.id);
+        if (call.kind === 'order') assert.deepEqual(call.ids, finalOrder.filter(id=>live.has(id)), 'every insertion carries exact complete bottom-to-top live order');
+      }
+      assert.deepEqual(delta.filter(c=>c.kind==='order').at(-1).ids, finalOrder, 'complete aggregate order follows genuine broker tokens');
+      assert.deepEqual(snapshot().map(entry=>entry.token), beforeOrder.map(entry=>entry.token), 'genuine retained token order restored');
+    } else {
+      assert.equal(delta.filter(c=>c.kind==='add').length, process.env.EGO_POPUP_LEGACY_COORDINATOR === '1' ? 10 : 27, 'exact frozen-v1 reconnect metadata replay characterization');
+      assert.ok(delta.some(call => call.kind === 'add' && call.id === 1), 'retained older-token restoration really replays the surviving app placement');
+    }
   }
   stage = 'assertions';
   assert.deepEqual(violations, [], 'unrelated windows must not be re-registered with retained Electron geometry');

@@ -19,7 +19,7 @@ export const OVERLAY_BROKER_LEGACY_TARGET_TRANSPORT_MAX = 1 as const;
  * Monotonic generation of the runtime provider shipped by this SDK. Bump this
  * only with the matching staged-artifact manifests, never for package semver.
  */
-export const OVERLAY_BROKER_RUNTIME_GENERATION = 1 as const;
+export const OVERLAY_BROKER_RUNTIME_GENERATION = 2 as const;
 /** Current target transport spoken by the broker and injected runtime. */
 export const OVERLAY_BROKER_TARGET_TRANSPORT_VERSION = 1 as const;
 /**

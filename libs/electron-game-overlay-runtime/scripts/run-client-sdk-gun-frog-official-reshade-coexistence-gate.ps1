@@ -1121,7 +1121,7 @@ try {
         $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
         $PackageBuildStamp.kind -cne
             "electron-game-overlay-runtime-build" -or
-        $PackageBuildStamp.runtimeGeneration -ne 1 -or
+        $PackageBuildStamp.runtimeGeneration -ne 2 -or
         $PackageBuildStamp.targetTransportMin -ne 1 -or
         $PackageBuildStamp.targetTransportMax -ne 1 -or
         ([string]$PackageBuildStamp.addonBuildId) -cnotmatch

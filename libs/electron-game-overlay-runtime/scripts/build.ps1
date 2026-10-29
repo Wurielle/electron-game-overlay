@@ -100,9 +100,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "F2A88AD705204DBB8E18D86E7147A13C"
+$ExpectedAddonBuildId = "31D321732C1B424796593C0778FB722E"
 # Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 1
+$RuntimeGeneration = 2
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1

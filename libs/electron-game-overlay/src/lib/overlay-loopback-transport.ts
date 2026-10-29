@@ -306,6 +306,7 @@ interface ClientState {
   writer: BackpressurePacketQueue;
   receiveBuffer: Buffer;
   authenticated: boolean;
+  supportsWindowOrder?: boolean;
   pid?: number;
   path?: string;
   targetAuthorization?: TargetAuthorization;
@@ -1261,6 +1262,63 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.broadcastWindowBarrierPacket(windowId, packet);
   }
 
+  /**
+   * Registers only the changed window, then applies a complete bottom-to-top
+   * order without replaying peer metadata or discarding retained frames.
+   * Returns false without side effects unless every active native peer opted in.
+   */
+  public addWindowInOrder(
+    windowId: number,
+    details: NativeOverlayWindowDetails,
+    windowIds: readonly number[],
+  ): boolean {
+    const peers = Array.from(this.clients).filter((client) => client.authenticated);
+    if (peers.length === 0 || peers.some((client) => !client.supportsWindowOrder)) {
+      return false;
+    }
+    assertPositiveUnsigned32(windowId, 'windowId');
+    const expected = new Set(this.windows.keys());
+    expected.add(windowId);
+    const ids = Array.from(windowIds);
+    if (
+      ids.length !== expected.size ||
+      new Set(ids).size !== expected.size ||
+      ids.some((id) => !expected.has(id))
+    ) {
+      return false;
+    }
+    if (details.scaleFactorMicros !== undefined) {
+      assertPositiveUnsigned32(details.scaleFactorMicros, 'scaleFactorMicros');
+    }
+    const message: WindowMessage = {
+      type: 'window',
+      windowId,
+      name: details.name,
+      transparent: details.transparent,
+      rect: { ...details.rect },
+      ...(details.caption ? { caption: { ...details.caption } } : {}),
+      ...(details.scaleFactorMicros !== undefined
+        ? { scaleFactorMicros: details.scaleFactorMicros }
+        : {}),
+    };
+    const packet = encodeJsonTransportPacket(message);
+    const orderPacket = encodeJsonTransportPacket({
+      type: 'window.order',
+      windowIds: ids,
+    });
+    this.assertSnapshotFits(windowId, message);
+    const ordered = ids.map((id) =>
+      [id, id === windowId ? message : this.windows.get(id)!] as const,
+    );
+    this.windows.clear();
+    for (const [id, window] of ordered) {
+      this.windows.set(id, window);
+    }
+    this.broadcastWindowBarrierPacket(windowId, packet);
+    this.broadcastControlPacket(orderPacket);
+    return true;
+  }
+
   private assertSnapshotFits(windowId: number, replacement: WindowMessage): void {
     const windows = Array.from(this.windows.values()).filter(
       (window) => window.windowId !== windowId,
@@ -2155,6 +2213,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     const inputTranslator = new InputEventTranslator();
     this.cancelProcessExitWatch(hello.pid);
     client.authenticated = true;
+    client.supportsWindowOrder =
+      Array.isArray(hello.capabilities) &&
+      hello.capabilities.includes('window-order-v1');
     client.pid = hello.pid;
     client.path = hello.path;
     client.targetAuthorization = targetAuthorization;

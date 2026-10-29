@@ -89,6 +89,12 @@ export interface OverlayBrokerTargetTransport {
   setEventCallback(callback: (event: string, payload: unknown) => void): void;
   setInputIntercept(intercept: boolean): void;
   addWindow(windowId: number, details: NativeOverlayWindowDetails): void;
+  /** Registers only this window in a complete order if all native peers opt in. */
+  addWindowInOrder?(
+    windowId: number,
+    details: NativeOverlayWindowDetails,
+    windowIds: readonly number[],
+  ): boolean;
   closeWindow(windowId: number): void;
   sendWindowBounds(
     windowId: number,
@@ -546,8 +552,7 @@ export class OverlayBrokerTargetHost {
           state.orderToken,
     );
     if (hasLaterWindow) {
-      // Restored older tokens cannot be inserted below existing windows in v1.
-      this.restoreAggregateWindowOrder();
+      this.restoreAggregateWindowOrder(targetWindowId, state);
       return;
     }
     this.safeTargetMutation(() => {
@@ -1476,7 +1481,10 @@ export class OverlayBrokerTargetHost {
     }
   }
 
-  private restoreAggregateWindowOrder(): void {
+  private restoreAggregateWindowOrder(
+    changedWindowId: number,
+    changedState: BrokerWindowState,
+  ): void {
     const ordered = Array.from(this.ownersByTargetWindowId.entries())
       .map(([targetWindowId, owner]) => ({
         targetWindowId,
@@ -1491,6 +1499,24 @@ export class OverlayBrokerTargetHost {
         left.state.orderToken.localeCompare(right.state.orderToken),
       );
     this.safeTargetMutation(() => {
+      if (
+        this.transport.addWindowInOrder?.(
+          changedWindowId,
+          cloneWindowDetails(changedState.details),
+          ordered.map((entry) => entry.targetWindowId),
+        )
+      ) {
+        if (changedState.latestFrame) {
+          this.transport.sendFrameBuffer(
+            changedWindowId,
+            changedState.latestFrame.pixels,
+            changedState.latestFrame.width,
+            changedState.latestFrame.height,
+          );
+        }
+        return;
+      }
+      // Frozen-v1 native peers still require the original full ordered replay.
       for (const { targetWindowId, state } of ordered) {
         this.transport.addWindow(
           targetWindowId,

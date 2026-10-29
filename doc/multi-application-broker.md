@@ -85,9 +85,20 @@ report new positions back to the Electron `BrowserWindow` or broker metadata.
 Re-registering an unchanged window is therefore not a harmless z-order update:
 it can overwrite a user-dragged position and invalidate an in-flight drag.
 Ordinary new/topmost-window publication must not replay every other member's
-geometry. Preserve full ordered replay where older retained order tokens or
-recovery genuinely require it; do not claim native drag positions are persisted
-across reconnects by that metadata. A native transport disconnect clears its
+geometry. Runtime generation 2 can additionally advertise the optional
+`window-order-v1` capability in its authenticated target-transport-v1
+`game.process` hello. With that explicit per-connection support, the coordinator
+can insert an older retained order token by publishing only the changed window
+and a `window.order` packet containing the complete bottom-to-top global-ID
+list. The native update changes order only: surviving windows retain their
+runtime-local rectangles, frames, placement epochs and input ownership. Invalid
+or incomplete order lists do not partially modify the scene.
+
+An older runtime, a connection without the optional capability, or an older
+coordinator keeps the frozen-v1 ordered-registration fallback. The feature does
+not change broker membership, required capabilities, election deadlines, route
+ownership or the no-takeover rule. It does not preserve a removed window's own
+placement when that window is recreated. A native transport disconnect clears its
 registered windows; reauthentication reconstructs them from producer metadata,
 not native-dragged rectangles. Window names and newly allocated global IDs are
 not stable window-incarnation identities. Preserving placement through these

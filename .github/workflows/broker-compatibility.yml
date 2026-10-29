@@ -243,6 +243,25 @@ jobs:
           foreach ($name in @('TMP', 'TEMP', 'TMPDIR')) {
             "$name=$fixtureTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
+      - name: Check placement-preserving window order on both native architectures
+        shell: pwsh
+        run: |
+          foreach ($target in @('x86_64-pc-windows-msvc', 'i686-pc-windows-msvc')) {
+            $listed = @(& cargo test --locked --manifest-path libs/electron-overlay-transport/Cargo.toml --target $target --lib window_order -- --list 2>&1)
+            $status = $LASTEXITCODE
+            $listed | ForEach-Object { Write-Output $_ }
+            if ($status -ne 0) { exit $status }
+            if (($listed | Out-String) -notmatch 'electron_frame::tests::window_order') {
+              throw "Native window-order packet tests were not collected for $target"
+            }
+            $result = @(& cargo test --locked --manifest-path libs/electron-overlay-transport/Cargo.toml --target $target --lib window_order -- --nocapture 2>&1)
+            $status = $LASTEXITCODE
+            $result | ForEach-Object { Write-Output $_ }
+            if ($status -ne 0) { exit $status }
+            if (($result | Out-String) -notmatch 'test result: ok\. [1-9][0-9]* passed;') {
+              throw "Native window-order tests did not pass with collected tests for $target"
+            }
+          }
       - name: Build native runtimes and packaged SDK
         # Native targets spawn Windows PowerShell and need its module paths.
         shell: powershell
