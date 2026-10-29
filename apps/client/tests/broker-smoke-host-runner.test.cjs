@@ -68,7 +68,7 @@ test('CLI invalidates stale success and refuses unknown options', (t)=>{
   const r=cp.spawnSync(process.execPath,[path.resolve(__dirname,runnerPath),'--output-root',f.options.outputRoot,'--unknown','x'],{encoding:'utf8',timeout:2000});
   assert.equal(r.status,1);assert.equal(JSON.parse(fs.readFileSync(path.join(f.options.outputRoot,'report.json'))).reason,'invalid-options');
 });
-test('production modes refuse native platform on Linux without spawning',async(t)=>{
+test('production modes refuse native execution outside Windows without spawning',{skip:process.platform==='win32'?'Non-Windows platform refusal only':false},async(t)=>{
   const f=fixture(t);for(const mode of ['singleApp','twoAppSameTarget']){
     const r=await require(runnerPath).run({...f.options,mode});assert.equal(r.reason,'unsupported-native-platform');assert.equal(r.nativeExecuted,false);
   }
@@ -145,12 +145,17 @@ test('interactive lifetime retains owned children through readiness and App A ex
 });
 module.exports={fixture};
 
-test('actual CLI preflight refuses native Linux and does not expose controlled boundary',t=>{
+test('actual CLI refuses native execution outside Windows',{skip:process.platform==='win32'?'Non-Windows platform refusal only':false},t=>{
   const f=fixture(t);
   const args=['--app-a',f.options.appA,'--host-manifest',f.options.hostManifest,'--architecture','x64','--backend','d3d11','--output-root',f.options.outputRoot];
   const result=cp.spawnSync(process.execPath,[path.resolve(__dirname,runnerPath),...args],{encoding:'utf8',timeout:2000});
   assert.equal(result.status,1);assert.equal(JSON.parse(fs.readFileSync(path.join(f.options.outputRoot,'report.json'))).reason,'unsupported-native-platform');
+});
+test('actual CLI rejects the controlled non-native boundary switch on every platform',t=>{
+  const f=fixture(t);
+  const args=['--app-a',f.options.appA,'--host-manifest',f.options.hostManifest,'--architecture','x64','--backend','d3d11','--output-root',f.options.outputRoot];
   const denied=cp.spawnSync(process.execPath,[path.resolve(__dirname,runnerPath),...args,'--controlled-non-native','true'],{encoding:'utf8',timeout:2000});assert.equal(denied.status,1);assert.equal(JSON.parse(fs.readFileSync(path.join(f.options.outputRoot,'report.json'))).reason,'invalid-options');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.options.outputRoot,'report.json'))).nativeExecuted,false);
 });
 test('one returned injector never releases barrier without both sessions',async t=>{
   const f=fixture(t),boundary=controlled(t,f);const original=boundary.spawn;
