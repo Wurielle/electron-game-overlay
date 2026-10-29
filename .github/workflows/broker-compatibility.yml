@@ -306,6 +306,16 @@ jobs:
           path: test-results/native-injection-binding.json
           if-no-files-found: error
           retention-days: 14
+      - name: Build the six controlled smoke hosts
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          & node --test apps/client/tests/broker-smoke-host-runner.test.cjs apps/client/tests/package-broker-smoke-hosts.test.cjs apps/client/tests/broker-smoke-workflow.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cmake --build build/electron-game-overlay-runtime-production --config RelWithDebInfo --target d3d9_overlay_test_host d3d10_overlay_test_host d3d11_overlay_test_host d3d12_overlay_test_host --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cmake --build build/electron-game-overlay-runtime-production-x86 --config RelWithDebInfo --target d3d9_overlay_test_host d3d10_overlay_test_host --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/setup-node@v7.1.0
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         with:
@@ -379,6 +389,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & node apps/client/scripts/package-demo.cjs --output "$PWD/artifacts/ElectronGameOverlayDemo-win32-x64"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Record the current SDK revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          $current = 'artifacts/ElectronGameOverlayDemo-win32-x64'
+          $implementation = Join-Path $current 'resources/app/node_modules/electron-game-overlay/dist/lib/overlay-broker-native-provider.js'
+          $hash = (Get-FileHash -LiteralPath $implementation -Algorithm SHA256).Hash.ToLowerInvariant()
+          $version = (Get-Content -Raw -LiteralPath (Join-Path $current 'resources/app/node_modules/electron-game-overlay/package.json') | ConvertFrom-Json).version
+          @{ sdkSourceRevision = $env:GITHUB_SHA; sdkImplementationSha256 = $hash; packageVersion = $version; role = 'current' } | ConvertTo-Json | Out-File -FilePath (Join-Path $current 'SDK-REVISION.json') -Encoding utf8
       - name: Smoke-test the packaged Electron runtime and dependencies
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         run: node apps/client/scripts/smoke-packaged-demo.cjs --package artifacts/ElectronGameOverlayDemo-win32-x64
@@ -411,6 +430,25 @@ jobs:
             artifacts/ElectronGameOverlayDemo-baseline-win32-x64/runtime-smoke.json
             artifacts/ElectronGameOverlayDemo-baseline-win32-x64/windows-broker-identity.json
           if-no-files-found: warn
+      - name: Package controlled hosts for the portable demos
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          & node apps/client/scripts/package-broker-smoke-hosts.cjs --host-root64 "$PWD/build/electron-game-overlay-runtime-production/RelWithDebInfo" --host-root32 "$PWD/build/electron-game-overlay-runtime-production-x86/RelWithDebInfo" --output "$PWD/artifacts/ElectronGameOverlayDemo-win32-x64/smoke" --revision $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ('${{ inputs.build-two-app-demo }}' -eq 'true') {
+            & node apps/client/scripts/package-broker-smoke-hosts.cjs --host-root64 "$PWD/build/electron-game-overlay-runtime-production/RelWithDebInfo" --host-root32 "$PWD/build/electron-game-overlay-runtime-production-x86/RelWithDebInfo" --output "$PWD/artifacts/ElectronGameOverlayDemo-baseline-win32-x64/smoke" --revision $env:GITHUB_SHA
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          name: portable-smoke-host-manifests
+          path: |
+            artifacts/ElectronGameOverlayDemo-win32-x64/smoke/manifest.json
+            artifacts/ElectronGameOverlayDemo-baseline-win32-x64/smoke/manifest.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Archive the previous-SDK manual test demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
         shell: pwsh
