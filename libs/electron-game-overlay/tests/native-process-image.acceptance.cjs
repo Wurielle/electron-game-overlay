@@ -87,10 +87,44 @@ if (!worker) {
     try {
       action();
       report.checks.push({ name, passed: true });
-    } catch {
+    } catch (error) {
       // Do not persist native output, executable paths, environment, or assertion diffs.
       failures.push(name);
-      report.checks.push({ name, passed: false });
+      const failure = { name, passed: false };
+      if (error.message?.startsWith('creationTime100ns-required-string')) {
+        failure.assertion = 'creationTime100ns-required-string';
+      }
+      report.checks.push(failure);
+    }
+  }
+  // Test-only independent OS reference. Load it lazily AFTER the first manager
+  // invocation, so neither FFI setup nor an OS query warms that first sample.
+  let reference;
+  function creationTimeReference(pid) {
+    stage('independent-process-times');
+    if (!reference) {
+      const koffi = require('koffi');
+      const kernel = koffi.load('kernel32.dll');
+      reference = {
+        open: kernel.func('void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)'),
+        times: kernel.func('int __stdcall GetProcessTimes(void *process, void *creation, void *exitTime, void *kernelTime, void *userTime)'),
+        close: kernel.func('int __stdcall CloseHandle(void *handle)'),
+        last: kernel.func('uint32_t __stdcall GetLastError()'),
+      };
+    }
+    const handle = reference.open(0x1000, 0, pid);
+    const openError = reference.last();
+    assert.ok(handle, `independent OpenProcess failed (${openError})`);
+    try {
+      const created = Buffer.alloc(8);
+      const ok = reference.times(handle, created, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8));
+      const timesError = reference.last();
+      assert.ok(ok, `independent GetProcessTimes failed (${timesError})`);
+      const value = created.readBigUInt64LE().toString();
+      assert.notEqual(value, '0');
+      return value;
+    } finally {
+      assert.ok(reference.close(handle), 'independent process handle closed');
     }
   }
   function query(args) {
@@ -107,14 +141,20 @@ if (!worker) {
     assert.equal(call.result.signal, null);
     assert.ok(call.elapsedMs < 2000, 'unchanged per-call budget');
   }
-  function success(call, pid, expectedPath) {
+  function success(call, pid, expectedPath, expectedCreationTime) {
     bounded(call);
     assert.equal(call.result.status, 0);
     assert.equal(call.result.stderr.length, 0);
     const text = new TextDecoder('utf-8', { fatal: true }).decode(call.result.stdout);
     assert.match(text, /^\{[^\r\n]*\}\r?\n$/);
     const value = JSON.parse(text);
-    assert.deepEqual(Object.keys(value).sort(), ['executablePath', 'kind', 'pid', 'schemaVersion']);
+    // Field/type/value assertions deliberately precede the exact key list:
+    // the baseline helper must fail for missing identity, not for extra keys.
+    assert.equal(typeof value.creationTime100ns, 'string', 'creationTime100ns-required-string');
+    assert.match(value.creationTime100ns, /^[1-9][0-9]{0,19}$/);
+    assert.ok(BigInt(value.creationTime100ns) <= 18446744073709551615n);
+    assert.equal(value.creationTime100ns, expectedCreationTime);
+    assert.deepEqual(Object.keys(value).sort(), ['creationTime100ns', 'executablePath', 'kind', 'pid', 'schemaVersion']);
     assert.equal(value.schemaVersion, 1);
     assert.equal(value.kind, 'electron-game-overlay-process-image');
     assert.equal(value.pid, pid);
@@ -148,13 +188,20 @@ if (!worker) {
       assert.match(process.execPath, /[^\x00-\x7f]/);
     });
     // Six distinct measurements, not retries: every failure remains a gate failure.
+    let firstCreationTime;
     for (let index = 0; index < 6; index++) {
       const call = query(['--query-process-image', String(process.pid)]);
       const sample = { label: index ? `repeat-${index}` : report.firstLabel,
         elapsedMs: call.elapsedMs, passed: false };
       report.selfQueries.push(sample);
+      // Setup/reference failure must leave assertions incomplete, never masquerade
+      // as the expected native missing-field RED. Only owned handles are queried.
+      const expectedCreationTime = creationTimeReference(process.pid);
+      stage('assertions');
+      firstCreationTime ??= expectedCreationTime;
       check(index ? `self-repeat-${index}` : 'first-call-exact-self-path', () => {
-        success(call, process.pid, process.execPath);
+        assert.equal(expectedCreationTime, firstCreationTime);
+        success(call, process.pid, process.execPath, expectedCreationTime);
         sample.passed = true;
       });
     }

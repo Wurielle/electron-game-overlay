@@ -175,6 +175,8 @@ jobs:
           kind:'electron-game-overlay-native-process-image-acceptance',platform:process.platform,
           architecture:process.arch,status:'setup-not-completed',setupStage:'build',nativeExecuted:false,
           passed:false,selfQueries:[],checks:[]},null,2)+'\n');"
+      - name: Install locked dependencies for the independent OS reference
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build the native process-image query manager
         shell: pwsh
         run: |
