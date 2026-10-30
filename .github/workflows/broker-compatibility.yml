@@ -145,6 +145,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check encountered application regressions
+        shell: pwsh
+        run: |
+          & node --require ./apps/client/tests/helpers/register-typescript.cjs --test --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/application-regressions.xml apps/client/tests/input-intercept-shortcut.test.mjs apps/client/tests/app-demo-shortcuts.test.mjs apps/client/tests/app-demo-focus.test.mjs apps/client/tests/demo-main-window.test.cjs apps/client/tests/target-input-intercept-state.test.mjs apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/input-proof-ui.test.mjs apps/client/tests/package-broker-test-bundle.test.cjs apps/client/tests/package-demo.test.cjs apps/client/tests/package-broker-smoke-hosts.test.cjs apps/client/tests/broker-smoke-host-runner.test.cjs apps/client/tests/run-popup-video-regression.test.cjs apps/client/tests/demo-usability-workflow.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check popup and video registration with the pinned previous SDK
+        shell: pwsh
+        run: |
+          $previous = Join-Path $env:TEMP 'ego-popup-previous-sdk'
+          & git worktree add --detach $previous 2d1cd28b7f51460a6a5f58b20fd9e8df219bea48
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Junction -Path (Join-Path $previous 'node_modules') -Target (Join-Path $PWD 'node_modules') | Out-Null
+          & node node_modules/typescript/bin/tsc --build (Join-Path $previous 'libs/electron-game-overlay/tsconfig.lib.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $previousLib = Join-Path $previous 'libs/electron-game-overlay/dist/lib'
+          & node apps/client/scripts/run-popup-video-regression.cjs --current-lib libs/electron-game-overlay/dist/lib --previous-lib $previousLib --previous-server-lib $previousLib --controlled-native-window-order --reconnect --output test-results/popup-video-regression.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check real Electron Main popup and video geometry
+        run: node apps/client/tests/real-electron-demo-main.acceptance.cjs test-results/real-electron-demo-main.json
       - name: Check real Electron offscreen focus and typed input
         run: node libs/electron-game-overlay/tests/real-electron-input.acceptance.cjs test-results/real-electron-input.json
       - name: Check real Electron control-panel collapse paint

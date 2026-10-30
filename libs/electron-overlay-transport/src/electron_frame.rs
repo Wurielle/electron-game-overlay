@@ -4304,6 +4304,201 @@ mod tests {
     }
 
     #[test]
+    fn window_order_real_caption_moves_survive_popup_video_frames_and_typing() {
+        use crate::electron_input::{WM_CHAR, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE};
+        fn point(x: i32, y: i32) -> u32 {
+            ((y as u16 as u32) << 16) | x as u16 as u32
+        }
+        for older_token in [false, true] {
+            let mut state = test_bridge_state();
+            let mut main = window_metadata(7, "Main", 10);
+            main.transparent = false;
+            main.caption = Some(WindowCaptionMetadata {
+                left: 0,
+                right: 0,
+                top: 0,
+                height: 40,
+            });
+            let mut peer = main.clone();
+            peer.window_id = 8;
+            peer.name = "Peer".into();
+            peer.rect.x = 900;
+            state
+                .on_overlay_init(OverlayInit {
+                    windows: vec![main, peer],
+                })
+                .unwrap();
+            for window_id in [7, 8] {
+                state
+                    .on_frame(WireFrame {
+                        window_id,
+                        width: 1,
+                        height: 1,
+                        bgra: vec![255; 4],
+                    })
+                    .unwrap();
+            }
+            {
+                let mut router = state.input_router.lock().unwrap();
+                router.set_target_focused(true);
+                router.request_interception(true);
+                router.apply_input_filter(true, true);
+            }
+            // Only real caption gestures create runtime placement: no rect writes.
+            for (id, dx, dy) in [(8, 73, 91), (7, -331, 143)] {
+                let before = state
+                    .windows
+                    .iter()
+                    .find(|w| w.window_id == id)
+                    .unwrap()
+                    .rect;
+                for (msg, x, y) in [
+                    (WM_LBUTTONDOWN, before.x + 10, before.y + 10),
+                    (WM_MOUSEMOVE, before.x + 10 + dx, before.y + 10 + dy),
+                    (WM_LBUTTONUP, before.x + 10 + dx, before.y + 10 + dy),
+                ] {
+                    let intent = {
+                        let mut router = state.input_router.lock().unwrap();
+                        router.route_win32_message(msg, 1, point(x, y), Some);
+                        router.take_pending_drag_move()
+                    };
+                    if let Some(intent) = intent {
+                        state
+                            .drag
+                            .enqueue_and_wake(intent, || Ok::<(), ()>(()))
+                            .unwrap();
+                        state.apply_pending_drag_move();
+                    }
+                }
+                let moved = state
+                    .windows
+                    .iter()
+                    .find(|w| w.window_id == id)
+                    .unwrap()
+                    .rect;
+                assert_eq!(
+                    (moved.x, moved.y),
+                    (before.x + dx, before.y + dy),
+                    "caption mailbox movement"
+                );
+                assert_eq!((moved.width, moved.height), (before.width, before.height));
+            }
+            let saved: Vec<_> = state
+                .windows
+                .iter()
+                .map(|w| {
+                    (
+                        w.window_id,
+                        w.rect,
+                        w.placement_epoch,
+                        w.latest.as_ref().unwrap().clone(),
+                    )
+                })
+                .collect();
+            let producer_epoch = state.producer_session_epoch.load(Ordering::Acquire);
+            for (new_id, name) in [(2, "Popup"), (9, "Video")] {
+                let preserved: Vec<_> = state
+                    .windows
+                    .iter()
+                    .map(|w| {
+                        (
+                            w.window_id,
+                            w.rect,
+                            w.placement_epoch,
+                            w.latest.as_ref().unwrap().clone(),
+                        )
+                    })
+                    .collect();
+                state.dispatch_json(&serde_json::json!({"type":"window", "windowId":new_id, "name":name, "transparent":false, "rect":{"x":1500,"y":700,"width":240,"height":135}}).to_string());
+                // A previously allocated older token needs an order packet;
+                // a fresh token is already correctly appended (legacy optional path).
+                if older_token {
+                    let mut ids: Vec<_> = state.windows.iter().map(|w| w.window_id).collect();
+                    ids.sort_unstable();
+                    state.dispatch_json(
+                        &serde_json::json!({"type":"window.order","windowIds":ids}).to_string(),
+                    );
+                }
+                for (id, rect, epoch, frame) in &preserved {
+                    let w = state.windows.iter().find(|w| w.window_id == *id).unwrap();
+                    assert_eq!(
+                        w.rect, *rect,
+                        "metadata/order must retain all native bounds"
+                    );
+                    assert_eq!(w.placement_epoch, *epoch);
+                    assert_eq!(w.latest.as_ref().unwrap().sequence, frame.sequence);
+                    assert!(Arc::ptr_eq(&w.latest.as_ref().unwrap().rgba, &frame.rgba));
+                }
+                for tick in 0..3 {
+                    let frame_ids: Vec<_> = state.windows.iter().map(|w| w.window_id).collect();
+                    for window_id in frame_ids {
+                        state
+                            .on_frame(WireFrame {
+                                window_id,
+                                width: 2,
+                                height: 1,
+                                bgra: vec![128 + tick; 8],
+                            })
+                            .unwrap();
+                    }
+                    for (id, rect, epoch, frame) in &preserved {
+                        let w = state.windows.iter().find(|w| w.window_id == *id).unwrap();
+                        assert_eq!(
+                            w.rect, *rect,
+                            "frame must not replay stale geometry or resize"
+                        );
+                        assert_eq!(w.placement_epoch, *epoch);
+                        let scene = state.scene.read().unwrap();
+                        let rendered = scene.windows.iter().find(|w| w.window_id == *id).unwrap();
+                        assert_eq!(rendered.rect, *rect, "scene bounds retained");
+                        assert!(rendered.sequence > frame.sequence);
+                    }
+                    let mut router = state.input_router.lock().unwrap();
+                    assert_eq!(
+                        router.state().focused_window_id,
+                        Some(7),
+                        "popup must not steal typing focus"
+                    );
+                    let routed = router.route_win32_message(WM_CHAR, 'x' as u32, 0, Some);
+                    assert!(routed.iter().any(|m| matches!(m, OutboundMessage::Input { window_id: 7, msg: WM_CHAR, wparam, .. } if *wparam == 'x' as u32)), "routed character owner retained");
+                }
+            }
+            assert_eq!(
+                state.producer_session_epoch.load(Ordering::Acquire),
+                producer_epoch
+            );
+            println!(
+                "older_token={older_token} retained={:?}",
+                saved
+                    .iter()
+                    .map(|(id, rect, epoch, frame)| (*id, *rect, *epoch, frame.sequence))
+                    .collect::<Vec<_>>()
+            );
+            // Preserve the intentional producer resize API, not a frozen scene.
+            state.dispatch_json(r#"{"type":"window.bounds","windowId":7,"rect":{"x":-321,"y":163,"width":480,"height":72}}"#);
+            let resized = state.windows.iter().find(|w| w.window_id == 7).unwrap();
+            assert_eq!(
+                (resized.rect.width, resized.rect.height),
+                (480, 72),
+                "explicit producer resize remains supported"
+            );
+            assert!(resized.placement_epoch > saved.iter().find(|w| w.0 == 7).unwrap().2);
+            assert_eq!(
+                state
+                    .scene
+                    .read()
+                    .unwrap()
+                    .windows
+                    .iter()
+                    .find(|w| w.window_id == 7)
+                    .unwrap()
+                    .rect,
+                resized.rect
+            );
+        }
+    }
+
+    #[test]
     fn window_order_packet_preserves_dragged_placement_pixels_and_input_capture() {
         let mut state = test_bridge_state();
         state

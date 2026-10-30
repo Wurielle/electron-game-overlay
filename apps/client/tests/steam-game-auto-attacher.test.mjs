@@ -97,8 +97,8 @@ test('forked watcher uses real Node and preserves a detailed startup failure', (
   const calls = [];
   const statuses = [];
   const watcher = new ForkedProcessWatcher(
-    'C:\\client\\process-watcher\\index.cjs',
-    'C:\\runtime\\inject.exe',
+    path.resolve('client/process-watcher/index.cjs'),
+    path.resolve('runtime/inject.exe'),
     (...args) => {
       calls.push(args);
       return child;
@@ -112,7 +112,7 @@ test('forked watcher uses real Node and preserves a detailed startup failure', (
   });
 
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0][1], ['C:\\runtime\\inject.exe']);
+  assert.deepEqual(calls[0][1], [path.resolve('runtime/inject.exe')]);
   assert.equal(calls[0][2].execPath, 'C:\\Program Files\\nodejs\\node.exe');
   assert.equal(Object.hasOwn(calls[0][2].env, 'ELECTRON_RUN_AS_NODE'), false);
 

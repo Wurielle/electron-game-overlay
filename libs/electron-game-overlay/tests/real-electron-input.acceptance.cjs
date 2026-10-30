@@ -24,8 +24,6 @@ class ControlledNativeBoundary {
   sendWindowBounds(id, details) { this.bounds.push({ id, details }); }
   sendFrameBuffer(id, pixels, width, height) { this.frames.set(id, { width, height }); return true; }
   emit(event, payload) {
-    // Opt-in negative control must fail the DOM assertion, not substitute a renderer.
-    if (process.env.EGO_ACCEPTANCE_DROP_CHAR === '1' && event === 'game.input' && payload.msg === 0x102) return;
     this.callback(event, { pid: 43210, ...payload });
   }
 }
@@ -97,9 +95,14 @@ const deadline = setTimeout(() => { report.error = 'Overall 60s acceptance deadl
     check(new Set(report.registrations.map(item => item.id)).size === 4, 'four target-global IDs');
     await waitFor(() => native.frames.size === 4);
     report.frames = [...native.frames];
+    const moved = await Promise.all(apps.map(child => request(child, 'move')));
+    check(moved.every(windows => windows.every((window, index) => window.bounds.x === 90 + index * 300 && window.bounds.y === 130 + index * 70)), 'genuine Electron setPosition updates all four window positions');
+    check(moved.every((windows, app) => windows.every((window, index) => window.bounds.width === report.children[app].ready.windows[index].bounds.width && window.bounds.height === report.children[app].ready.windows[index].bounds.height)), 'moving preserves all four sizes');
+    report.movedSnapshots = moved;
     const expected = [['', ''], ['', '']];
     // The same path visits both real windows of each app, then returns to each.
     for (const [appIndex, windowIndex, text] of [[0, 0, 'a'], [1, 0, 'b'], [0, 1, 'A'], [1, 1, 'B'], [0, 0, 'A'], [1, 0, 'B'], [0, 1, 'a'], [1, 1, 'b']]) {
+      await request(apps[appIndex], 'hide-reopen');
       const name = `${appIndex === 0 ? 'a' : 'b'}-${windowIndex}`;
       const id = [...native.windows].find(([, details]) => details.name === name)?.[0];
       check(id !== undefined, `registered ${name}`);
@@ -117,7 +120,7 @@ const deadline = setTimeout(() => { report.error = 'Overall 60s acceptance deadl
       check(snapshots[appIndex][windowIndex].dom.active === 'hudhook-client-input-target', 'real mouse click focuses intended DOM input');
       check(['mousedown', 'mouseup', 'keydown', 'input', 'keyup'].every(type => snapshots[appIndex][windowIndex].dom.events.some(event => event.type === type)), 'real DOM observes mouse/key/input events');
       check(JSON.stringify(snapshots.map(windows => windows.map(window => window.dom.value))) === JSON.stringify(expected), 'all other input values unchanged');
-      check(snapshots.every((windows, app) => windows.every((window, index) => JSON.stringify(window.bounds) === JSON.stringify(report.children[app].ready.windows[index].bounds))), 'focus changes preserve every actual BrowserWindow bounds');
+      check(snapshots.every((windows, app) => windows.every((window, index) => JSON.stringify(window.bounds) === JSON.stringify(moved[app][index].bounds))), 'focus/Hide/reopen preserves every moved actual BrowserWindow bounds');
       report.completedSteps.push({ appIndex, windowIndex, text, snapshots });
     }
     report.finalValues = expected;
