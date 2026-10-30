@@ -81,6 +81,13 @@ app
     session.on('inputInterceptionChanged', (value) => {
       state.intercepting = value.intercepting;
     });
+    session.on('windowFocused', (value) => {
+      state.nativeFocusedWindowId = value.windowId;
+      state.focusRevision = (state.focusRevision || 0) + 1;
+    });
+    session.on('fps', () => {
+      state.lastFpsAt = Date.now();
+    });
     const config = parseReShadeLaunchConfig(['--reshade-overlay'], {
       runsRootDirectory: path.join(root, `runs-${member}`),
     });
@@ -120,6 +127,7 @@ app
       id: `focus-${member}`,
       bounds: { x: member === 'a' ? 20 : 450, y: 60, width: 400, height: 180 },
     });
+    state.windowId = window.nativeId;
     await window.browserWindow.loadURL(
       'data:text/html;charset=utf-8,' +
         encodeURIComponent(

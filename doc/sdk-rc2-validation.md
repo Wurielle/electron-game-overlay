@@ -20,20 +20,27 @@ manifests remain accepted without acquiring that capability.
 | Election/load hardening | Eleven checks passed with independently compiled old/current implementations. Controlled native boundary, 32/64 socket members, late arrivals, isolation and ownership freeze; not a 500-app/500-version capacity result. |
 | Installed package | Complete npm tarball installed offline with its real dependency; all 49 sealed payloads, public exports, declarations, native PE architectures and SDK/provider byte identity verified. |
 | Electron 39.8.10 consumer | External standalone installation, strict consumer types and genuine Electron DOM smoke passed. |
+| Electron 39 native focus | The final two-process D3D11 no-click focus/input-gate case also passed on Electron 39.8.10. |
 | Electron 46.0.0-alpha.2 consumer | External standalone installation with matching Electron-46 declarations, strict types and genuine Electron-46 DOM smoke passed. |
 | Electron 46 native focus | Actual D3D11 host and two independent SDK Electron processes passed authenticated rendering, no-click first show, hide/reopen, focus transfer, member exit, conditional blur, interception-off and foreground loss/regain. Private test broker pipe; Windows SendInput virtual keys, zero pointer-downs. |
+| Older creation-identity reader/recovery | Independently compiled v1 implementation `9f26185` and current transport passed private durable-claim reader/rewrite/recovery cases, mutation detection and a clean rerun. This is controlled filesystem/transport evidence, not OS identity or injection acceptance. |
 
 The public focus example is `window.show(); window.focus();
 session.input.intercept();`, with the desired DOM input focused by the page.
 No sole-window heuristic or synthetic click is used.
 
-The new candidate's 130-second full future-target/render/input and real Gun Frog
-checks are **not claimed passed**: the running Izabela dev application owns the
-existing exclusive precreation rendezvous. It was left running. The dedicated
-launchers are available once that watcher is released. Historical rc.1 consumer
-patch tests (including Gun Frog) are diagnostic evidence, not acceptance of these
-new artifact bytes. A human physical-key run is also distinct from the automated
-SendInput acceptance and remains available with `-PhysicalKeyboard`.
+The full future-target/render/input check passed after **130.012 seconds idle**
+with Electron 46.0.0-alpha.2. Gun Frog (Steam 3173130), prearmed by its exact
+executable path, passed authenticated rendering, no-click first opening/reopen,
+blur, interception-off and foreground restore using SendInput. Gun Frog did not
+produce a background interception-off acknowledgement while its renderer was
+inactive; that acknowledgement is not claimed. The restore check waits for a
+fresh presentation sample and native keyboard ownership rather than reusing a
+stale acknowledgement. This does not establish arbitrary late-PID attachment.
+
+A human physical first-key run is distinct from SendInput and has its dedicated
+`gun-frog-physical-first-key.ps1` launcher. It is awaiting human participation;
+no physical hardware-key acceptance is claimed yet.
 
 No Izabela files were edited, no existing ReShade installation was rewritten,
 and no live coordinator/runtime was replaced. The candidate has an exact

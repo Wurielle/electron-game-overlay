@@ -158,6 +158,8 @@ policy results for incarnations that have exited and cancel their pending work.
   check. `gun-frog-explicit-keyboard-focus.ps1 -GameExecutable <absolute path>`
   tests a newly launched real game through exact-path prearming. Leave existing
   games alone; start with the target closed. This case is single-application.
+  `gun-frog-physical-first-key.ps1` asks for physical `a` on first show and `b`
+  after reopening, then runs later gates with SendInput.
 
 Electron 39 remains the normal declared range. The exact prerelease
 `46.0.0-alpha.2` is additionally admitted after the Windows controlled native

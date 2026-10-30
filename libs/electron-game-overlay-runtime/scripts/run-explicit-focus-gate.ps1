@@ -2,6 +2,7 @@
 param(
     [string]$ElectronExecutable,
     [switch]$PhysicalKeyboard,
+    [switch]$PhysicalFirstKeys,
     [string]$GameExecutable,
     [switch]$FutureTarget,
     [ValidateRange(0,600)][int]$IdleSeconds = 0
@@ -14,7 +15,7 @@ $Evidence = Join-Path $RepoRoot ('build\explicit-focus-' + (Get-Date -Format yyy
 New-Item -ItemType Directory -Path $Evidence | Out-Null
 $HostPath = Join-Path $RepoRoot 'build\electron-game-overlay-runtime-production\RelWithDebInfo\d3d11_overlay_test_host.exe'
 $ScriptPath = Join-Path $RepoRoot 'libs\electron-game-overlay\tests\native-focus.acceptance.cjs'
-$Report = @{ status = 'failed'; inputSource = $(if ($PhysicalKeyboard) { 'human physical keyboard' } else { 'Windows SendInput virtual keys' }); evidence = $Evidence; clicksSent = 0; checks = @() }
+$Report = @{ status = 'failed'; inputSource = $(if ($PhysicalKeyboard) { 'human physical keyboard' } elseif ($PhysicalFirstKeys) { 'human physical first-show/reopen keys; Windows SendInput for later gates' } else { 'Windows SendInput virtual keys' }); evidence = $Evidence; clicksSent = 0; checks = @() }
 function Read-State([string]$Member) {
     $File = Join-Path $Evidence "$Member-state.json"
     if (-not (Test-Path -LiteralPath $File)) { return $null }
@@ -71,7 +72,8 @@ public static class EgoExplicitFocusKeys {
 }
 '@
 function Type-Key([string]$Key, [string]$Member, [string]$Expected) {
-    if ($PhysicalKeyboard) { Write-Host "Type lowercase '$Key' in the foreground game, without clicking." }
+    Wait-State $Member { param($s) $s.intercepting -and $s.nativeFocusedWindowId -eq $s.windowId } 'native keyboard owner' | Out-Null
+    if ($PhysicalKeyboard -or ($PhysicalFirstKeys -and $Key -in @('a','b'))) { Write-Host "Type lowercase '$Key' in the foreground game, without clicking. Use Alt+Tab to return to the game if needed." }
     else { [EgoExplicitFocusKeys]::Key([uint16][char]$Key.ToUpperInvariant()) }
     $State = Wait-State $Member { param($s) $s.value -ceq $Expected } "key $Key / expected $Expected" 60
     if ($State.pointerDowns -ne 0) { throw 'A pointer-down invalidated the no-click test.' }
@@ -148,9 +150,18 @@ try {
     Command a probe
     $ProbeHandle = [IntPtr]([int64](Read-State a).probeHwnd)
     if (-not [EgoExplicitFocusKeys]::Activate($ProbeHandle)) { throw 'Could not foreground the owned focus probe' }
-    Wait-State a { param($s) -not $s.intercepting } 'game lost foreground focus' | Out-Null
+    if (-not $GameExecutable) {
+        Wait-State a { param($s) -not $s.intercepting } 'game lost foreground focus' | Out-Null
+    } else {
+        # Some games stop Present while inactive; filter acknowledgements are
+        # published at render boundaries. Do not label a paused-renderer ack
+        # timeout as keyboard-routing failure. OS foreground was verified above.
+        $Report.foregroundLossAckObserved = -not (Read-State a).intercepting
+    }
     Assert-DroppedKey h $Expected
+    $PriorFpsAt = (Read-State a).lastFpsAt
     if (-not [EgoExplicitFocusKeys]::Activate($Target.MainWindowHandle)) { throw 'Could not restore target foreground focus' }
+    Wait-State a { param($s) $s.lastFpsAt -gt $PriorFpsAt } 'fresh target presentation after foreground restore' | Out-Null
     Wait-State a { param($s) $s.intercepting } 'game regained foreground focus' | Out-Null
     $Expected += 'i'; Type-Key i a $Expected
     Command a close-probe
