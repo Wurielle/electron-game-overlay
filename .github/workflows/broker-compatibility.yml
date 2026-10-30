@@ -2,7 +2,7 @@ name: Broker compatibility
 
 on:
   pull_request:
-    branches: [feat/overlay-pocs]
+    branches: [dev, feat/overlay-pocs]
   workflow_dispatch:
     inputs:
       build-demo:
