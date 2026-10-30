@@ -1,0 +1,2783 @@
+const assert = require('node:assert/strict');
+const { mkdir, mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
+const test = require('node:test');
+
+const {
+  BackpressurePacketQueue,
+  OverlayLoopbackTransport,
+  MAX_JSON_BODY_BYTES,
+  OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  clearOverlayTargetRecoveryClaimForExitedPid,
+  defaultOverlayTargetDiscoveryPath,
+  defaultOverlayTargetRecoveryClaimPath,
+  encodeFrameTransportPacket,
+  encodeJsonTransportPacket,
+  overlayTargetRecoveryClaimMayHaveBeenConsumed,
+  readOverlayTargetRecoveryClaim,
+} = require('../dist/lib/overlay-loopback-transport.js');
+const { ElectronGameOverlay } = require('../dist/lib/electron-game-overlay.js');
+const {
+  createOverlaySession,
+  OverlaySession,
+} = require('../dist/lib/overlay-session.js');
+const { createWindowScaleState } = require('../dist/lib/window-scale-state.js');
+
+const TOKEN = 'ab'.repeat(32);
+
+const identityFixture = async (t, options = {}) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'overlay-instance-'));
+  const originalUserInfo = os.userInfo;
+  const originalTmpdir = os.tmpdir;
+  os.tmpdir = () => root;
+  os.userInfo = () => ({ ...originalUserInfo(), homedir: root });
+  const pid = 0xffffc001;
+  const discoveryPath = path.join(root, 'run', 'electron-overlay-transport-v1.json');
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(root, 'global.json'),
+    isProcessAlive: () => true,
+    processExitPollIntervalMs: 10,
+    ...options,
+  });
+  t.after(async () => {
+    transport.stop();
+    await rm(defaultOverlayTargetDiscoveryPath(pid), { force: true });
+    os.userInfo = originalUserInfo;
+    os.tmpdir = originalTmpdir;
+    await rm(root, { recursive: true, force: true });
+  });
+  const seed = async (extra = {}) => {
+    const claim = {
+      schemaVersion: 1, targetPid: pid, discoveryPath,
+      staticDiscoveryPath: defaultOverlayTargetDiscoveryPath(pid),
+      leaseId: 'instance-lease', phase: 'intent',
+      record: { version: 1, pid: 71, port: 47001, token: TOKEN, targetPid: pid },
+      ...extra,
+    };
+    const filename = defaultOverlayTargetRecoveryClaimPath(pid);
+    await mkdir(path.dirname(filename), { recursive: true });
+    await writeFile(filename, JSON.stringify(claim));
+    return claim;
+  };
+  return { root, pid, discoveryPath, transport, seed };
+};
+
+test('process creation identity reader round trip preserves exact uint64 string', async (t) => {
+  const f = await identityFixture(t);
+  await f.seed({ creationTime100ns: '18446744073709551615' });
+  assert.equal(readOverlayTargetRecoveryClaim(f.pid).creationTime100ns, '18446744073709551615');
+});
+
+test('process creation identity publication phases and exact intent resume stay pinned', async (t) => {
+  const observed = [];
+  const f = await identityFixture(t, {
+    targetAuthorizationPublicationHook(phase, claim) {
+      observed.push([phase, readOverlayTargetRecoveryClaim(claim.targetPid).creationTime100ns]);
+    },
+  });
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '9007199254740993' });
+  assert.deepEqual(observed.map(([, time]) => time), Array(6).fill('9007199254740993'));
+  f.transport.stop();
+  await f.seed({ creationTime100ns: '9007199254740993' });
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease', creationTime100ns: '9007199254740993' });
+  assert.equal(readOverlayTargetRecoveryClaim(f.pid).creationTime100ns, '9007199254740993');
+});
+
+test('process creation identity malformed present claims and contexts reject', async (t) => {
+  const f = await identityFixture(t);
+  f.transport.start();
+  await f.transport.whenReady();
+  for (const creationTime100ns of [null, 1, '', '0', '01', '+1', ' 1', '1e2', '18446744073709551616', '1'.repeat(21)]) {
+    await f.seed({ creationTime100ns });
+    assert.throws(() => readOverlayTargetRecoveryClaim(f.pid), /invalid schema/i);
+    await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns }), /creation|invalid/i);
+  }
+});
+
+test('process creation identity mismatch blocks recovery before any writes or cleanup', async (t) => {
+  let writes = 0;
+  const f = await identityFixture(t, { targetRecoveryClaimWriteHook() { writes++; } });
+  const claim = await f.seed({ phase: 'published', creationTime100ns: '100' });
+  f.transport.start();
+  await f.transport.whenReady();
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, {
+    leaseId: 'instance-lease', creationTime100ns: '200',
+  }), /creation|identity/i);
+  assert.equal(writes, 0);
+  assert.deepEqual(readOverlayTargetRecoveryClaim(f.pid), claim);
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease' }), /identity|unavailable/i);
+});
+
+test('process creation identity legacy exact intent resume never backfills', async (t) => {
+  const f = await identityFixture(t, { queryProcessIdentity: async (pid) => ({ pid, executablePath: 'C:\\Game.exe', creationTime100ns: '200' }) });
+  await f.seed();
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease', creationTime100ns: '200' });
+  assert.equal('creationTime100ns' in readOverlayTargetRecoveryClaim(f.pid), false);
+});
+
+test('process creation identity lost watch queries once and retains mismatch without disconnect', async (t) => {
+  let resolveProbe;
+  let calls = 0;
+  const f = await identityFixture(t, { queryProcessIdentity: () => {
+    calls++;
+    return new Promise((resolve) => { resolveProbe = resolve; });
+  } });
+  const events = [];
+  const diagnostics = [];
+  f.transport.setEventCallback((event) => events.push(event));
+  f.transport.setDiagnosticCallback((diagnostic) => diagnostics.push(diagnostic));
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  const claim = readOverlayTargetRecoveryClaim(f.pid);
+  const socket = await connect(claim.record.port);
+  t.after(() => { socket.destroy(); resolveProbe?.(undefined); });
+  const reader = createPacketReader(socket);
+  socket.write(encodeJsonTransportPacket({ type: 'game.process', protocolVersion: 1, token: claim.record.token, pid: f.pid, path: 'C:\\Game.exe' }));
+  await reader.next();
+  socket.destroy();
+  await waitFor(() => calls === 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(calls, 1);
+  resolveProbe({ pid: f.pid, executablePath: 'C:\\Game.exe', creationTime100ns: '200' });
+  await waitFor(() => diagnostics.some((d) => d.code === 'target-process-inspection-failed'));
+  assert.equal(events.includes('game.process.disconnected'), false);
+  assert.deepEqual(readOverlayTargetRecoveryClaim(f.pid), claim);
+});
+
+test('process creation identity equality protects an identity-only replacement from rollback', async (t) => {
+  const f = await identityFixture(t, {
+    async targetAuthorizationPublicationHook(phase, claim) {
+      if (phase === 'recovery-claim-published') {
+        await writeFile(defaultOverlayTargetRecoveryClaimPath(claim.targetPid), JSON.stringify({ ...claim, creationTime100ns: '200' }));
+        throw new Error('held intent failure');
+      }
+    },
+  });
+  f.transport.start();
+  await f.transport.whenReady();
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' }), /held intent failure/);
+  assert.equal(readOverlayTargetRecoveryClaim(f.pid)?.creationTime100ns, '200');
+});
+
+test('process creation identity existing authorization rejects conflicting context', async (t) => {
+  const f = await identityFixture(t);
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '200' }), /identity|creation/i);
+});
+
+for (const invalidation of ['reconnect', 'stop', 'claim-replacement', 'unknown', 'probe-error']) {
+  test(`process creation identity held watch ignores ${invalidation}`, async (t) => {
+    let settle;
+    let rejectProbe;
+    let calls = 0;
+    const f = await identityFixture(t, { queryProcessIdentity: () => {
+      calls++;
+      return new Promise((resolve, reject) => { settle = resolve; rejectProbe = reject; });
+    } });
+    const diagnostics = [];
+    const events = [];
+    f.transport.setDiagnosticCallback((d) => diagnostics.push(d));
+    f.transport.setEventCallback((e) => events.push(e));
+    f.transport.start();
+    await f.transport.whenReady();
+    await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+    const claim = readOverlayTargetRecoveryClaim(f.pid);
+    const sockets = [];
+    t.after(() => { sockets.forEach((s) => s.destroy()); settle?.(undefined); });
+    const authenticate = async () => {
+      const socket = await connect(claim.record.port);
+      sockets.push(socket);
+      const reader = createPacketReader(socket);
+      socket.write(encodeJsonTransportPacket({ type: 'game.process', protocolVersion: 1, token: claim.record.token, pid: f.pid, path: 'C:\\Game.exe' }));
+      await reader.next();
+      return socket;
+    };
+    (await authenticate()).destroy();
+    await waitFor(() => calls === 1);
+    if (invalidation === 'reconnect') await authenticate();
+    if (invalidation === 'stop') f.transport.stop();
+    if (invalidation === 'claim-replacement') await f.seed({ ...claim, creationTime100ns: '300' });
+    if (invalidation === 'probe-error') rejectProbe(new Error('controlled unavailable'));
+    else settle(invalidation === 'unknown' ? undefined : { pid: f.pid, executablePath: 'C:\\Game.exe', creationTime100ns: '200' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(diagnostics.some((d) => d.code === 'target-process-inspection-failed'), false);
+    assert.equal(events.includes('game.process.disconnected'), false);
+    assert.equal(readOverlayTargetRecoveryClaim(f.pid).creationTime100ns, invalidation === 'claim-replacement' ? '300' : '100');
+  });
+}
+
+test('process creation identity direct existing caller without proof fails closed', async (t) => {
+  const f = await identityFixture(t);
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  await assert.rejects(f.transport.authorizeTarget(f.pid, f.discoveryPath), /identity|unavailable/i);
+});
+
+test('process creation identity direct recovery queries once and matching context avoids query', async (t) => {
+  let calls = 0;
+  const f = await identityFixture(t, { queryProcessIdentity: async (pid) => { calls++; return { pid, executablePath: 'C:\\Game.exe', creationTime100ns: '100' }; } });
+  await f.seed({ creationTime100ns: '100' });
+  f.transport.start();
+  await f.transport.whenReady();
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { leaseId: 'instance-lease' });
+  assert.equal(calls, 1);
+  await f.transport.authorizeTarget(f.pid, f.discoveryPath, undefined, { creationTime100ns: '100' });
+  assert.equal(calls, 1);
+});
+
+test('the static target discovery path is deterministic per PID', () => {
+  assert.equal(
+    defaultOverlayTargetDiscoveryPath(0xfffffffe),
+    path.join(
+      os.tmpdir(),
+      'electron-game-overlay',
+      'electron-overlay-transport-v1.pid-4294967294.json',
+    ),
+  );
+  assert.throws(
+    () => defaultOverlayTargetDiscoveryPath(0),
+    /positive uint32 integer/,
+  );
+  assert.equal(
+    defaultOverlayTargetRecoveryClaimPath(0xfffffffe),
+    path.join(
+      os.userInfo().homedir,
+      '.electron-game-overlay',
+      'broker-v1',
+      'electron-overlay-transport-v1.pid-4294967294.recovery.json',
+    ),
+  );
+});
+
+test('recovery claims accept additive fields and reject unknown schemas fail closed', async (t) => {
+  const pid = 0xffffe001;
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+  const discoveryPath = path.join(
+    os.tmpdir(),
+    'overlay-claim-schema',
+    'electron-overlay-transport-v1.json',
+  );
+  const claim = {
+    schemaVersion: 1,
+    targetPid: pid,
+    discoveryPath,
+    staticDiscoveryPath: defaultOverlayTargetDiscoveryPath(pid),
+    leaseId: 'schema-test-lease',
+    phase: 'intent',
+    record: {
+      version: 1,
+      pid: 71,
+      port: 47001,
+      token: 'ab'.repeat(32),
+      targetPid: pid,
+    },
+    additiveFutureField: { ignored: true },
+  };
+  t.after(() => clearOverlayTargetRecoveryClaimForExitedPid(pid));
+  await mkdir(path.dirname(claimPath), { recursive: true });
+  await writeFile(claimPath, JSON.stringify(claim), 'utf8');
+  assert.deepEqual(readOverlayTargetRecoveryClaim(pid), {
+    schemaVersion: 1,
+    targetPid: pid,
+    discoveryPath: path.resolve(discoveryPath),
+    staticDiscoveryPath: path.resolve(claim.staticDiscoveryPath),
+    leaseId: claim.leaseId,
+    phase: 'intent',
+    record: claim.record,
+  });
+
+  await writeFile(
+    claimPath,
+    JSON.stringify({ ...claim, schemaVersion: 99 }),
+    'utf8',
+  );
+  assert.throws(() => readOverlayTargetRecoveryClaim(pid), /invalid schema/i);
+});
+
+const overlayWindow = (name, x = 0) => ({
+  name,
+  transparent: true,
+  rect: { x, y: 20, width: 2, height: 1 },
+  caption: { left: 8, right: 8, top: 8, height: 32 },
+  scaleFactorMicros: 1_250_000,
+});
+
+const targetSurfaceMessage = (overrides = {}) => ({
+  type: 'game.target.surface',
+  pid: 9999,
+  surfaceId: '0x1234',
+  hwnd: '0xabcd',
+  revision: 7,
+  graphicsApi: 'd3d12',
+  renderSize: { width: 2560, height: 1440 },
+  clientBounds: { x: 0, y: 0, width: 2560, height: 1440 },
+  clientScreenBounds: { x: -2560, y: 40, width: 2560, height: 1440 },
+  windowScreenBounds: { x: -2568, y: 9, width: 2576, height: 1479 },
+  dpi: { x: 120, y: 120 },
+  monitor: {
+    id: '0x55',
+    bounds: { x: -2560, y: 0, width: 2560, height: 1440 },
+    workArea: { x: -2560, y: 0, width: 2560, height: 1400 },
+  },
+  focused: true,
+  minimized: false,
+  visible: true,
+  fullscreen: true,
+  ...overrides,
+});
+
+const runtimeDiagnosticMessage = (overrides = {}) => ({
+  type: 'game.diagnostic',
+  schemaVersion: 1,
+  source: 'electron-game-overlay-runtime',
+  code: 'runtime-ready',
+  ...overrides,
+});
+
+const connect = (port) =>
+  new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    socket.once('connect', () => resolve(socket));
+    socket.once('error', reject);
+  });
+
+const waitFor = async (predicate, timeoutMs = 2_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error('Timed out waiting for transport state');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+
+const createPacketReader = (socket) => {
+  let buffered = Buffer.alloc(0);
+  const packets = [];
+  const waiters = [];
+
+  const dispatch = () => {
+    while (buffered.length >= 5) {
+      const bodyLength = buffered.readUInt32LE(0);
+      const packetLength = 5 + bodyLength;
+      if (buffered.length < packetLength) {
+        return;
+      }
+      const packet = {
+        kind: buffered.readUInt8(4),
+        body: Buffer.from(buffered.subarray(5, packetLength)),
+      };
+      buffered = buffered.subarray(packetLength);
+      const waiter = waiters.shift();
+      if (waiter) {
+        waiter.resolve(packet);
+      } else {
+        packets.push(packet);
+      }
+    }
+  };
+
+  socket.on('data', (chunk) => {
+    buffered = Buffer.concat([buffered, chunk]);
+    dispatch();
+  });
+
+  return {
+    next(timeoutMs = 2_000) {
+      const packet = packets.shift();
+      if (packet) {
+        return Promise.resolve(packet);
+      }
+      return new Promise((resolve, reject) => {
+        const waiter = { resolve, reject };
+        waiters.push(waiter);
+        setTimeout(() => {
+          const index = waiters.indexOf(waiter);
+          if (index !== -1) {
+            waiters.splice(index, 1);
+            reject(new Error('Timed out waiting for transport packet'));
+          }
+        }, timeoutMs).unref();
+      });
+    },
+  };
+};
+
+const decodeJson = (packet) => {
+  assert.equal(packet.kind, 1);
+  return JSON.parse(packet.body.toString('utf8'));
+};
+
+test('packet framing uses a body-only length and validates BGRA dimensions', () => {
+  const json = encodeJsonTransportPacket({ type: 'test', value: 4 });
+  assert.equal(json.readUInt32LE(0), json.length - 5);
+  assert.equal(json.readUInt8(4), 1);
+  assert.deepEqual(JSON.parse(json.subarray(5).toString('utf8')), {
+    type: 'test',
+    value: 4,
+  });
+
+  const pixels = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+  const frame = encodeFrameTransportPacket(9, 2, 1, pixels);
+  assert.equal(frame.readUInt32LE(0), 12 + pixels.length);
+  assert.equal(frame.readUInt8(4), 2);
+  assert.equal(frame.readUInt32LE(5), 9);
+  assert.equal(frame.readUInt32LE(9), 2);
+  assert.equal(frame.readUInt32LE(13), 1);
+  assert.deepEqual(frame.subarray(17), pixels);
+
+  assert.throws(
+    () => encodeFrameTransportPacket(9, 2, 1, Buffer.alloc(7)),
+    /Expected 8 BGRA bytes/,
+  );
+  assert.throws(
+    () => encodeJsonTransportPacket({ text: 'x'.repeat(MAX_JSON_BODY_BYTES) }),
+    /exceeds/,
+  );
+});
+
+test('failed window encoding does not mutate retained transport state', () => {
+  const transport = new OverlayLoopbackTransport();
+  const oversizedWindow = overlayWindow('x'.repeat(MAX_JSON_BODY_BYTES));
+
+  assert.throws(
+    () => transport.addWindow(7, oversizedWindow),
+    /Overlay JSON packet exceeds/,
+  );
+  assert.equal(transport.windows.has(7), false);
+  assert.equal(transport.latestFrames.has(7), false);
+
+  transport.addWindow(7, overlayWindow('retained'));
+  transport.sendFrameBuffer(7, Buffer.alloc(8, 1), 2, 1);
+
+  assert.throws(
+    () => transport.addWindow(7, oversizedWindow),
+    /Overlay JSON packet exceeds/,
+  );
+  assert.equal(transport.windows.get(7).name, 'retained');
+  assert.equal(transport.latestFrames.has(7), true);
+});
+
+test('window metadata rejects zero identifiers and scale factors at ingress', () => {
+  const transport = new OverlayLoopbackTransport();
+  const details = overlayWindow('strict-window');
+  const geometry = { rect: { ...details.rect } };
+
+  assert.throws(
+    () => transport.addWindow(0, details),
+    /windowId must be greater than zero/,
+  );
+  assert.throws(
+    () =>
+      transport.addWindow(7, {
+        ...details,
+        scaleFactorMicros: 0,
+      }),
+    /scaleFactorMicros must be greater than zero/,
+  );
+  assert.throws(
+    () => transport.sendWindowBounds(0, geometry),
+    /windowId must be greater than zero/,
+  );
+  assert.throws(
+    () =>
+      transport.sendWindowBounds(7, {
+        ...geometry,
+        scaleFactorMicros: 0,
+      }),
+    /scaleFactorMicros must be greater than zero/,
+  );
+  assert.throws(
+    () => transport.closeWindow(0),
+    /windowId must be greater than zero/,
+  );
+  assert.equal(transport.windows.size, 0);
+});
+
+test('each overlay owns its transport and permits only one live session', () => {
+  const firstOverlay = new ElectronGameOverlay();
+  const secondOverlay = new ElectronGameOverlay();
+  assert.notEqual(firstOverlay.nativeOverlay, secondOverlay.nativeOverlay);
+
+  const firstSession = firstOverlay.createSession();
+  assert.throws(
+    () => firstOverlay.createSession(),
+    /already has an active overlay session/,
+  );
+
+  firstSession.close();
+  const replacementSession = firstOverlay.createSession();
+  assert.notEqual(replacementSession, firstSession);
+  replacementSession.close();
+  firstOverlay.dispose();
+  secondOverlay.dispose();
+  assert.throws(
+    () => firstOverlay.createSession(),
+    /ElectronGameOverlay is disposed/,
+  );
+});
+
+test('the fixed discovery endpoint has one owner and transfers after stop', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-endpoint-owner-test-'),
+  );
+  const discoveryPath = path.join(tempDirectory, 'transport.json');
+  const first = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '11'.repeat(32),
+  });
+  const second = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '22'.repeat(32),
+  });
+  t.after(async () => {
+    first.stop();
+    second.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  first.start();
+  assert.throws(() => second.start(), /discovery endpoint is already active/);
+  const firstRecord = await first.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    firstRecord,
+  );
+
+  first.stop();
+  second.start();
+  const secondRecord = await second.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    secondRecord,
+  );
+
+  second.stop();
+  first.start();
+  const restartedFirstRecord = await first.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    restartedFirstRecord,
+  );
+});
+
+test('startup failures release fixed discovery endpoint ownership', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-endpoint-failure-test-'),
+  );
+  const discoveryPath = path.join(tempDirectory, 'transport.json');
+  const synchronousFailure = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => 'invalid-token',
+  });
+  const asynchronousFailure = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '33'.repeat(32),
+  });
+  const successor = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '44'.repeat(32),
+  });
+  asynchronousFailure.publishDiscovery = async () => {
+    throw new Error('synthetic discovery publication failure');
+  };
+  t.after(async () => {
+    synchronousFailure.stop();
+    asynchronousFailure.stop();
+    successor.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  assert.throws(
+    () => synchronousFailure.start(),
+    /token must be exactly 32 bytes of hex/,
+  );
+
+  asynchronousFailure.start();
+  await assert.rejects(
+    asynchronousFailure.whenReady(),
+    /synthetic discovery publication failure/,
+  );
+
+  successor.start();
+  const successorRecord = await successor.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    successorRecord,
+  );
+});
+
+test('an immediate stop releases ownership before the same transport restarts', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-endpoint-restart-test-'),
+  );
+  const discoveryPath = path.join(tempDirectory, 'transport.json');
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => '55'.repeat(32),
+  });
+  t.after(async () => {
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.start();
+  const interruptedReadiness = transport.whenReady();
+  transport.stop();
+  await assert.rejects(
+    interruptedReadiness,
+    /transport stopped before startup/i,
+  );
+
+  transport.start();
+  const restartedRecord = await transport.whenReady();
+  assert.deepEqual(
+    JSON.parse(await readFile(discoveryPath, 'utf8')),
+    restartedRecord,
+  );
+});
+
+test('backpressure coalesces same-window frames without crossing control barriers', () => {
+  const writes = [];
+  let blockFirstWrite = true;
+  const queue = new BackpressurePacketQueue({
+    write(packet) {
+      writes.push(Buffer.from(packet).toString());
+      if (blockFirstWrite) {
+        blockFirstWrite = false;
+        return false;
+      }
+      return true;
+    },
+  });
+
+  queue.sendControl(Buffer.from('blocked'));
+  queue.sendFrame(1, Buffer.from('frame-a'));
+  queue.sendFrame(1, Buffer.from('frame-b'));
+  queue.sendControl(Buffer.from('bounds'));
+  queue.sendFrame(1, Buffer.from('frame-c'));
+  queue.sendFrame(1, Buffer.from('frame-d'));
+  queue.sendFrame(2, Buffer.from('frame-other'));
+  queue.sendFrame(1, Buffer.from('frame-e'));
+  queue.handleDrain();
+
+  assert.deepEqual(writes, [
+    'blocked',
+    'frame-b',
+    'bounds',
+    'frame-e',
+    'frame-other',
+  ]);
+});
+
+test('window barriers drop only stale unsent frames and retain control FIFO order', () => {
+  const writes = [];
+  let blockFirstWrite = true;
+  const queue = new BackpressurePacketQueue({
+    write(packet) {
+      writes.push(Buffer.from(packet).toString());
+      if (blockFirstWrite) {
+        blockFirstWrite = false;
+        return false;
+      }
+      return true;
+    },
+  });
+
+  queue.sendControl(Buffer.from('blocked'));
+  queue.sendFrame(1, Buffer.from('stale-a'));
+  queue.sendControl(Buffer.from('control-a'));
+  queue.sendFrame(1, Buffer.from('stale-b'));
+  queue.sendFrame(2, Buffer.from('other-window'));
+  queue.dropPendingFrames(1);
+  queue.sendControl(Buffer.from('window.close'));
+  queue.handleDrain();
+
+  assert.deepEqual(writes, [
+    'blocked',
+    'control-a',
+    'other-window',
+    'window.close',
+  ]);
+});
+
+test('one synchronous client write failure does not abort later clients', () => {
+  const writeErrors = [];
+  const delivered = [];
+  const transport = new OverlayLoopbackTransport();
+  const failingWriter = new BackpressurePacketQueue(
+    {
+      write() {
+        const error = new Error('synchronous sink failure');
+        error.code = 'EPIPE';
+        throw error;
+      },
+    },
+    (error) => writeErrors.push(error),
+  );
+  const healthyWriter = new BackpressurePacketQueue({
+    write(packet) {
+      delivered.push(Buffer.from(packet));
+      return true;
+    },
+  });
+  const client = (writer) => ({
+    socket: { destroy() {} },
+    writer,
+    receiveBuffer: Buffer.alloc(0),
+    authenticated: true,
+    diagnosticRates: new Map(),
+  });
+  transport.clients.add(client(failingWriter));
+  transport.clients.add(client(healthyWriter));
+
+  assert.doesNotThrow(() =>
+    transport.addWindow(9, {
+      ...overlayWindow('still-delivered'),
+      nativeHandle: 123,
+      resizable: true,
+      maxWidth: 1920,
+      maxHeight: 1080,
+      minWidth: 100,
+      minHeight: 100,
+      dragBorderWidth: 8,
+    }),
+  );
+  assert.equal(writeErrors.length, 1);
+  assert.equal(delivered.length, 1);
+  const message = JSON.parse(delivered[0].subarray(5).toString('utf8'));
+  assert.deepEqual(message, {
+    type: 'window',
+    windowId: 9,
+    name: 'still-delivered',
+    transparent: true,
+    rect: { x: 0, y: 20, width: 2, height: 1 },
+    caption: { left: 8, right: 8, top: 8, height: 32 },
+    scaleFactorMicros: 1_250_000,
+  });
+
+  transport.sendWindowBounds(9, {
+    rect: { x: 10, y: 30, width: 4, height: 2 },
+    caption: { left: 4, right: 4, top: 4, height: 16 },
+    scaleFactorMicros: 1_500_000,
+    rasterChanged: false,
+    maxWidth: 2560,
+    maxHeight: 1440,
+    minWidth: 100,
+    minHeight: 100,
+    dragBorderWidth: 4,
+  });
+  assert.equal(writeErrors.length, 2);
+  assert.equal(delivered.length, 2);
+  assert.deepEqual(JSON.parse(delivered[1].subarray(5).toString('utf8')), {
+    type: 'window.bounds',
+    windowId: 9,
+    rect: { x: 10, y: 30, width: 4, height: 2 },
+    caption: { left: 4, right: 4, top: 4, height: 16 },
+    scaleFactorMicros: 1_500_000,
+    rasterChanged: false,
+  });
+});
+
+test('authenticated clients receive a canonical snapshot and retained input state', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-transport-test-'),
+  );
+  const discoveryPath = path.join(tempDirectory, 'transport.json');
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath,
+    tokenFactory: () => TOKEN,
+  });
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.addWindow(1, overlayWindow('first'));
+  transport.addWindow(2, overlayWindow('second', 10));
+  transport.addWindow(1, overlayWindow('first-replaced', 20));
+  const latestPixels = Buffer.from([10, 20, 30, 40, 50, 60, 70, 80]);
+  transport.sendFrameBuffer(1, Buffer.alloc(8, 1), 2, 1);
+  transport.sendFrameBuffer(1, latestPixels, 2, 1);
+  transport.setInputIntercept(true);
+
+  const events = [];
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  assert.equal(record.pid, process.pid);
+  assert.equal(record.token, TOKEN);
+  assert.deepEqual(JSON.parse(await readFile(discoveryPath, 'utf8')), record);
+
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  const hello = encodeJsonTransportPacket({
+    type: 'game.process',
+    protocolVersion: 1,
+    token: TOKEN,
+    pid: 4321,
+    path: 'C:\\games\\test.exe',
+  });
+  socket.write(hello.subarray(0, 3));
+  socket.write(hello.subarray(3));
+
+  const init = decodeJson(await reader.next());
+  assert.deepEqual(Object.keys(init).sort(), ['type', 'windows']);
+  assert.equal(init.type, 'overlay.init');
+  assert.deepEqual(
+    init.windows.map((window) => [window.windowId, window.name]),
+    [
+      [2, 'second'],
+      [1, 'first-replaced'],
+    ],
+  );
+  assert.deepEqual(Object.keys(init.windows[0]).sort(), [
+    'caption',
+    'name',
+    'rect',
+    'scaleFactorMicros',
+    'transparent',
+    'windowId',
+  ]);
+
+  const frame = await reader.next();
+  assert.equal(frame.kind, 2);
+  assert.equal(frame.body.readUInt32LE(0), 1);
+  assert.equal(frame.body.readUInt32LE(4), 2);
+  assert.equal(frame.body.readUInt32LE(8), 1);
+  assert.deepEqual(frame.body.subarray(12), latestPixels);
+  assert.deepEqual(decodeJson(await reader.next()), {
+    type: 'command.input.intercept',
+    intercept: true,
+  });
+
+  await waitFor(() => events.length === 1);
+  assert.deepEqual(events[0], {
+    event: 'game.process',
+    payload: { pid: 4321, path: 'C:\\games\\test.exe' },
+  });
+
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.input',
+      windowId: 1,
+      msg: 0x0200,
+      wparam: 0,
+      lparam: 0,
+    }),
+  );
+  await waitFor(() => events.length === 2);
+  assert.deepEqual(events[1], {
+    event: 'game.input',
+    payload: {
+      pid: 4321,
+      windowId: 1,
+      msg: 0x0200,
+      wparam: 0,
+      lparam: 0,
+    },
+  });
+
+  transport.stop();
+  await assert.rejects(
+    readFile(discoveryPath, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+});
+
+test('invalid authenticated input envelopes fail closed before SDK forwarding', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-input-envelope-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const events = [];
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\invalid-input-envelope.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+  await waitFor(() => events.length === 1);
+
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.input',
+      windowId: 1,
+      msg: '512',
+      wparam: null,
+      lparam: [0],
+      secret: 'must-not-cross',
+    }),
+  );
+  await closed;
+  await waitFor(() =>
+    diagnostics.some(({ code }) => code === 'target-packet-rejected'),
+  );
+
+  assert.equal(
+    events.some(({ event }) => event === 'game.input'),
+    false,
+  );
+  assert.deepEqual(
+    diagnostics.filter(({ code }) => code === 'target-packet-rejected'),
+    [
+      {
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        severity: 'warning',
+        code: 'target-packet-rejected',
+        message:
+          'The overlay transport rejected a packet from an authenticated target.',
+        pid: 4321,
+        context: {
+          reason: 'invalid-game-input',
+          eventType: 'game.input',
+        },
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(diagnostics).includes('must-not-cross'), false);
+});
+
+test('Electron input dispatch failure does not disconnect the authenticated target', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-input-dispatch-containment-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const session = createOverlaySession(transport);
+  const diagnostics = [];
+  const delivered = [];
+  const warnings = [];
+  const originalWarn = console.warn;
+  let rejectDispatch = true;
+  let socket;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(async () => {
+    console.warn = originalWarn;
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  session.windowsByNativeId.set(7, {
+    nativeId: 7,
+    visible: true,
+    browserWindow: {
+      focusOnWebView() {},
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        sendInputEvent(event) {
+          if (rejectDispatch) {
+            throw Object.assign(new Error('dispatch failed'), {
+              code: 'EPIPE',
+            });
+          }
+          delivered.push(event);
+        },
+      },
+    },
+  });
+  session.windowScaleStates.set(
+    7,
+    createWindowScaleState(
+      { id: 1, scaleFactor: 1, width: 1920, height: 1080 },
+      { x: 0, y: 0, width: 640, height: 360 },
+    ),
+  );
+  session.on('diagnostic', (diagnostic) => diagnostics.push(diagnostic));
+  transport.setEventCallback((event, payload) => {
+    session.handleEvent(event, payload);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 6101,
+      path: 'C:\\games\\input-dispatch-containment.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+  await waitFor(() => transport.activeClientsByPid.has(6101));
+  const authoritativeClient = transport.activeClientsByPid.get(6101);
+
+  const sendMouseMove = (x) => {
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.input',
+        windowId: 7,
+        msg: 0x0200,
+        wparam: 0,
+        lparam: (20 << 16) | x,
+      }),
+    );
+  };
+  sendMouseMove(10);
+  await waitFor(() =>
+    diagnostics.some(
+      ({ code, pid }) =>
+        code === 'producer-input-forwarding-failed' && pid === 6101,
+    ),
+  );
+
+  rejectDispatch = false;
+  sendMouseMove(11);
+  await waitFor(() => delivered.length === 1);
+  assert.equal(delivered[0].x, 11);
+  assert.equal(
+    transport.activeClientsByPid.get(6101),
+    authoritativeClient,
+    'the same authenticated socket must remain authoritative',
+  );
+  assert.equal(socket.destroyed, false);
+  assert.equal(warnings.length, 1);
+});
+
+test('invalid authentication is closed without receiving a snapshot', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-auth-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+  });
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    socket = await connect(record.port);
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: 'cd'.repeat(32),
+        pid: 4321,
+        path: 'bad.exe',
+      }),
+    );
+    await closed;
+  }
+  const rejected = diagnostics.filter(
+    ({ code }) => code === 'target-authentication-rejected',
+  );
+  assert.equal(
+    rejected.length,
+    8,
+    'repeated rejected clients must hit the per-code diagnostic bound',
+  );
+  assert.deepEqual(rejected[0], {
+    schemaVersion: 1,
+    source: 'electron-overlay-transport',
+    severity: 'warning',
+    code: 'target-authentication-rejected',
+    message: 'An overlay target presented an invalid transport credential.',
+    context: { scope: 'global' },
+  });
+  assert.equal(
+    JSON.stringify(rejected).includes('cd'.repeat(32)),
+    false,
+    'diagnostics must not expose rejected credentials',
+  );
+});
+
+test('run-local credentials isolate simultaneous exact-PID targets', async (t) => {
+  clearOverlayTargetRecoveryClaimForExitedPid(4101);
+  clearOverlayTargetRecoveryClaimForExitedPid(4102);
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-target-auth-test-'),
+  );
+  const tokens = ['10'.repeat(32), '20'.repeat(32), '30'.repeat(32)];
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: () => {
+      const token = tokens.shift();
+      assert.ok(token, 'test token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  const sockets = [];
+  const events = [];
+  const firstStaticDiscoveryPath = defaultOverlayTargetDiscoveryPath(4101);
+  const secondStaticDiscoveryPath = defaultOverlayTargetDiscoveryPath(4102);
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(4101);
+    clearOverlayTargetRecoveryClaimForExitedPid(4102);
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const globalRecord = await transport.whenReady();
+  const firstPath = path.join(
+    tempDirectory,
+    'first-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const secondPath = path.join(
+    tempDirectory,
+    'second-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const firstRouteIntentPath = path.join(
+    path.dirname(firstPath),
+    OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  );
+  const secondRouteIntentPath = path.join(
+    path.dirname(secondPath),
+    OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  );
+  const [releaseFirst, releaseSecond] = await Promise.all([
+    transport.authorizeTarget(4101, firstPath),
+    transport.authorizeTarget(4102, secondPath),
+  ]);
+  const firstRecord = JSON.parse(await readFile(firstPath, 'utf8'));
+  const secondRecord = JSON.parse(await readFile(secondPath, 'utf8'));
+  const firstStaticRecord = JSON.parse(
+    await readFile(firstStaticDiscoveryPath, 'utf8'),
+  );
+  const secondStaticRecord = JSON.parse(
+    await readFile(secondStaticDiscoveryPath, 'utf8'),
+  );
+
+  assert.equal(firstRecord.targetPid, 4101);
+  assert.equal(secondRecord.targetPid, 4102);
+  assert.equal(firstRecord.port, globalRecord.port);
+  assert.equal(secondRecord.port, globalRecord.port);
+  assert.notEqual(firstRecord.token, secondRecord.token);
+  assert.notEqual(firstRecord.token, globalRecord.token);
+  assert.deepEqual(firstStaticRecord, firstRecord);
+  assert.deepEqual(secondStaticRecord, secondRecord);
+  assert.deepEqual(
+    JSON.parse(await readFile(firstRouteIntentPath, 'utf8')),
+    firstRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondRouteIntentPath, 'utf8')),
+    secondRecord,
+  );
+  await assert.rejects(
+    transport.authorizeTarget(4103, firstPath),
+    /already authorized for PID 4101/,
+  );
+
+  const wrongSocket = await connect(globalRecord.port);
+  sockets.push(wrongSocket);
+  const wrongBytes = [];
+  wrongSocket.on('data', (chunk) => wrongBytes.push(chunk));
+  const wrongClosed = new Promise((resolve) =>
+    wrongSocket.once('close', resolve),
+  );
+  wrongSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: firstRecord.token,
+      pid: 4102,
+      path: 'C:\\games\\wrong-target.exe',
+    }),
+  );
+  await wrongClosed;
+  assert.equal(Buffer.concat(wrongBytes).length, 0);
+  assert.equal(events.length, 0);
+
+  const globalTokenSocket = await connect(globalRecord.port);
+  sockets.push(globalTokenSocket);
+  const globalTokenBytes = [];
+  globalTokenSocket.on('data', (chunk) => globalTokenBytes.push(chunk));
+  const globalTokenClosed = new Promise((resolve) =>
+    globalTokenSocket.once('close', resolve),
+  );
+  globalTokenSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: globalRecord.token,
+      pid: 4101,
+      path: 'C:\\games\\global-token-bypass.exe',
+    }),
+  );
+  await globalTokenClosed;
+  assert.equal(Buffer.concat(globalTokenBytes).length, 0);
+  assert.equal(events.length, 0);
+
+  const authenticate = async (record, pid, executablePath) => {
+    const socket = await connect(globalRecord.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: record.token,
+        pid,
+        path: executablePath,
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+
+  const [firstSocket, secondSocket] = await Promise.all([
+    authenticate(firstRecord, 4101, 'C:\\games\\first.exe'),
+    authenticate(secondRecord, 4102, 'C:\\games\\second.exe'),
+  ]);
+  await waitFor(
+    () => events.filter(({ event }) => event === 'game.process').length === 2,
+  );
+  assert.deepEqual(
+    events
+      .filter(({ event }) => event === 'game.process')
+      .map(({ payload }) => payload.pid)
+      .sort(),
+    [4101, 4102],
+  );
+
+  const firstSocketClosed = new Promise((resolve) =>
+    firstSocket.once('close', resolve),
+  );
+  firstSocket.destroy();
+  await firstSocketClosed;
+  await waitFor(() =>
+    events.some(
+      ({ event, payload }) =>
+        event === 'game.process.transport-lost' && payload.pid === 4101,
+    ),
+  );
+  assert.deepEqual(JSON.parse(await readFile(firstPath, 'utf8')), firstRecord);
+  assert.deepEqual(
+    JSON.parse(await readFile(firstStaticDiscoveryPath, 'utf8')),
+    firstRecord,
+  );
+  const reauthenticatedFirstSocket = await authenticate(
+    firstRecord,
+    4101,
+    'C:\\games\\first-reconnected.exe',
+  );
+  await waitFor(
+    () => events.filter(({ event }) => event === 'game.process').length === 3,
+  );
+
+  const reauthenticatedFirstClosed = new Promise((resolve) =>
+    reauthenticatedFirstSocket.once('close', resolve),
+  );
+  releaseFirst();
+  await reauthenticatedFirstClosed;
+  assert.deepEqual(JSON.parse(await readFile(firstPath, 'utf8')), firstRecord);
+  assert.deepEqual(
+    JSON.parse(await readFile(firstStaticDiscoveryPath, 'utf8')),
+    firstRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(firstRouteIntentPath, 'utf8')),
+    firstRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondPath, 'utf8')),
+    secondRecord,
+  );
+
+  const secondSocketClosed = new Promise((resolve) =>
+    secondSocket.once('close', resolve),
+  );
+  releaseSecond();
+  await secondSocketClosed;
+  assert.deepEqual(
+    JSON.parse(await readFile(secondPath, 'utf8')),
+    secondRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondStaticDiscoveryPath, 'utf8')),
+    secondRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondRouteIntentPath, 'utf8')),
+    secondRecord,
+  );
+});
+
+test('exact executable authorization rejects a reused PID before sending overlay state', async (t) => {
+  clearOverlayTargetRecoveryClaimForExitedPid(4201);
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-target-path-auth-test-'),
+  );
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  const staticDiscoveryPath = defaultOverlayTargetDiscoveryPath(4201);
+  const tokens = ['40'.repeat(32), '41'.repeat(32)];
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: () => {
+      const token = tokens.shift();
+      assert.ok(token, 'test token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  const sockets = [];
+  const events = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(4201);
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const globalRecord = await transport.whenReady();
+  const release = await transport.authorizeTarget(
+    4201,
+    discoveryPath,
+    'C:\\Games\\Expected.exe',
+  );
+  const targetRecord = JSON.parse(await readFile(discoveryPath, 'utf8'));
+
+  await assert.rejects(
+    transport.authorizeTarget(
+      4201,
+      discoveryPath,
+      'C:\\Games\\Replacement.exe',
+    ),
+    /already authorized for another executable path/,
+  );
+
+  const rejectedSocket = await connect(globalRecord.port);
+  sockets.push(rejectedSocket);
+  const rejectedBytes = [];
+  rejectedSocket.on('data', (chunk) => rejectedBytes.push(chunk));
+  const rejectedClosed = new Promise((resolve) =>
+    rejectedSocket.once('close', resolve),
+  );
+  rejectedSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: targetRecord.token,
+      pid: 4201,
+      path: 'C:\\Games\\Replacement.exe',
+    }),
+  );
+  await rejectedClosed;
+  assert.equal(
+    Buffer.concat(rejectedBytes).length,
+    0,
+    'a path-mismatched target must be rejected before overlay.init or retained state',
+  );
+  assert.equal(
+    events.some(({ event }) => event === 'game.process'),
+    false,
+  );
+
+  const acceptedSocket = await connect(globalRecord.port);
+  sockets.push(acceptedSocket);
+  const reader = createPacketReader(acceptedSocket);
+  acceptedSocket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: targetRecord.token,
+      pid: 4201,
+      path: '\\\\?\\c:\\games\\EXPECTED.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+  await waitFor(() =>
+    events.some(
+      ({ event, payload }) =>
+        event === 'game.process' &&
+        payload.pid === 4201 &&
+        payload.path === '\\\\?\\c:\\games\\EXPECTED.exe',
+    ),
+  );
+
+  release();
+});
+
+test('target route claims survive release and stop while preserving foreign replacements', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-target-cleanup-test-'),
+  );
+  const tokens = ['40'.repeat(32), '50'.repeat(32), '60'.repeat(32)];
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: () => {
+      const token = tokens.shift();
+      assert.ok(token, 'test token supply exhausted');
+      return token;
+    },
+    isProcessAlive: () => true,
+  });
+  const replacedPid = 0xfffffff0;
+  const stoppedPid = 0xfffffff1;
+  clearOverlayTargetRecoveryClaimForExitedPid(replacedPid);
+  clearOverlayTargetRecoveryClaimForExitedPid(stoppedPid);
+  const replacedPath = path.join(
+    tempDirectory,
+    'replaced-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const stoppedPath = path.join(
+    tempDirectory,
+    'stopped-run',
+    'electron-overlay-transport-v1.json',
+  );
+  const replacedStaticPath = defaultOverlayTargetDiscoveryPath(replacedPid);
+  const stoppedStaticPath = defaultOverlayTargetDiscoveryPath(stoppedPid);
+  t.after(async () => {
+    transport.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(replacedPid);
+    clearOverlayTargetRecoveryClaimForExitedPid(stoppedPid);
+    await rm(replacedStaticPath, { force: true });
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.start();
+  await transport.whenReady();
+  const releaseReplaced = await transport.authorizeTarget(
+    replacedPid,
+    replacedPath,
+  );
+  const replacedRecord = JSON.parse(await readFile(replacedPath, 'utf8'));
+  const replacement = {
+    ...replacedRecord,
+    targetPid: replacedPid - 1,
+  };
+  await writeFile(replacedPath, JSON.stringify(replacement), 'utf8');
+  await writeFile(replacedStaticPath, JSON.stringify(replacement), 'utf8');
+
+  releaseReplaced();
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedPath, 'utf8')),
+    replacement,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedStaticPath, 'utf8')),
+    replacement,
+  );
+
+  const staleRelease = await transport.authorizeTarget(stoppedPid, stoppedPath);
+  const stoppedRecord = JSON.parse(await readFile(stoppedPath, 'utf8'));
+  assert.deepEqual(
+    JSON.parse(await readFile(stoppedStaticPath, 'utf8')),
+    stoppedRecord,
+  );
+
+  transport.stop();
+  assert.deepEqual(
+    JSON.parse(await readFile(stoppedPath, 'utf8')),
+    stoppedRecord,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(stoppedStaticPath, 'utf8')),
+    stoppedRecord,
+  );
+  staleRelease();
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedPath, 'utf8')),
+    replacement,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(replacedStaticPath, 'utf8')),
+    replacement,
+  );
+});
+
+for (const [index, phase] of [
+  'recovery-claim-published',
+  'recovery-claim-armed',
+  'static-discovery-published',
+  'route-intent-published',
+  'run-discovery-published',
+  'recovery-claim-committed',
+].entries()) {
+  test(`target publication fails closed after ${phase}`, async (t) => {
+    const tempDirectory = await mkdtemp(
+      path.join(os.tmpdir(), `overlay-target-wal-${index}-`),
+    );
+    const pid = 0xfffff000 + index;
+    const discoveryPath = path.join(
+      tempDirectory,
+      'run',
+      'electron-overlay-transport-v1.json',
+    );
+    const ownerLease = `owner-${index}`;
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    const first = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-a', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = [
+          '70'.repeat(32),
+          `${index + 1}`.repeat(64).slice(0, 64),
+        ];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+      targetAuthorizationPublicationHook(candidatePhase) {
+        if (candidatePhase === phase) {
+          throw new Error(`fault after ${phase}`);
+        }
+      },
+    });
+    const second = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-b', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = [
+          '80'.repeat(32),
+          `${index + 7}`.repeat(64).slice(0, 64),
+        ];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+    });
+    t.after(async () => {
+      first.stop();
+      second.stop();
+      clearOverlayTargetRecoveryClaimForExitedPid(pid);
+      await rm(tempDirectory, { recursive: true, force: true });
+    });
+
+    first.start();
+    await first.whenReady();
+    await assert.rejects(
+      first.authorizeTarget(pid, discoveryPath, undefined, {
+        leaseId: ownerLease,
+      }),
+      new RegExp(`fault after ${phase}`),
+    );
+    first.stop();
+
+    const interruptedClaim = readOverlayTargetRecoveryClaim(pid);
+    const caughtIntentWasRolledBack = phase === 'recovery-claim-published';
+    assert.equal(interruptedClaim === undefined, caughtIntentWasRolledBack);
+    const mayHaveBeenConsumed = interruptedClaim
+      ? overlayTargetRecoveryClaimMayHaveBeenConsumed(interruptedClaim)
+      : false;
+    assert.equal(mayHaveBeenConsumed, !caughtIntentWasRolledBack);
+
+    second.start();
+    await second.whenReady();
+    if (interruptedClaim && !mayHaveBeenConsumed) {
+      await assert.rejects(
+        second.authorizeTarget(pid, discoveryPath, undefined, {
+          leaseId: 'another-lease',
+          allowPublishedClaimTakeover: true,
+        }),
+        /recovery requires the claimed lease/i,
+      );
+    }
+    const release = await second.authorizeTarget(
+      pid,
+      discoveryPath,
+      undefined,
+      interruptedClaim === undefined
+        ? { leaseId: 'another-lease' }
+        : mayHaveBeenConsumed
+          ? {
+              leaseId: 'another-lease',
+              allowPublishedClaimTakeover: true,
+            }
+          : { leaseId: ownerLease },
+    );
+    const recoveredClaim = readOverlayTargetRecoveryClaim(pid);
+    assert.equal(recoveredClaim.phase, 'published');
+    assert.equal(
+      recoveredClaim.leaseId,
+      interruptedClaim === undefined ? 'another-lease' : ownerLease,
+    );
+    assert.equal(recoveredClaim.discoveryPath, path.resolve(discoveryPath));
+    release();
+    second.stop();
+    assert.ok(readOverlayTargetRecoveryClaim(pid));
+  });
+}
+
+test('failed intent replacements roll back the authoritative safe intent for a new lease', async (t) => {
+  for (const [index, failure] of ['arm-write', 'replacement-write'].entries()) {
+    const pid = 0xffffd000 + index;
+    const tempDirectory = await mkdtemp(
+      path.join(os.tmpdir(), `overlay-intent-rollback-${index}-`),
+    );
+    const discoveryPath = path.join(
+      tempDirectory,
+      'run',
+      'electron-overlay-transport-v1.json',
+    );
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    if (failure === 'replacement-write') {
+      const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+      await mkdir(path.dirname(claimPath), { recursive: true });
+      await writeFile(
+        claimPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          targetPid: pid,
+          discoveryPath,
+          staticDiscoveryPath: defaultOverlayTargetDiscoveryPath(pid),
+          leaseId: 'original-lease',
+          phase: 'intent',
+          record: {
+            version: 1,
+            pid: 81,
+            port: 48001,
+            token: '45'.repeat(32),
+            targetPid: pid,
+          },
+        }),
+        'utf8',
+      );
+    }
+    const failing = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-a', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = ['46'.repeat(32), '47'.repeat(32)];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+      targetRecoveryClaimWriteHook(claim) {
+        if (
+          (failure === 'arm-write' && claim.phase === 'publishing') ||
+          (failure === 'replacement-write' && claim.phase === 'intent')
+        ) {
+          throw new Error(failure);
+        }
+      },
+    });
+    const replacement = new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, 'global-b', 'transport.json'),
+      tokenFactory: (() => {
+        const tokens = ['48'.repeat(32), '49'.repeat(32)];
+        return () => tokens.shift();
+      })(),
+      isProcessAlive: () => true,
+    });
+    try {
+      failing.start();
+      await failing.whenReady();
+      if (failure === 'replacement-write') {
+        const ownedIntent = readOverlayTargetRecoveryClaim(pid);
+        await assert.rejects(
+          failing.authorizeTarget(pid, discoveryPath, undefined, {
+            leaseId: 'wrong-lease',
+          }),
+          /recovery requires the claimed lease/i,
+        );
+        assert.deepEqual(readOverlayTargetRecoveryClaim(pid), ownedIntent);
+      }
+      await assert.rejects(
+        failing.authorizeTarget(pid, discoveryPath, undefined, {
+          leaseId: 'original-lease',
+        }),
+        new RegExp(failure),
+      );
+      assert.equal(readOverlayTargetRecoveryClaim(pid), undefined);
+      failing.stop();
+
+      replacement.start();
+      await replacement.whenReady();
+      const release = await replacement.authorizeTarget(
+        pid,
+        discoveryPath,
+        undefined,
+        { leaseId: 'new-lease' },
+      );
+      assert.equal(readOverlayTargetRecoveryClaim(pid).leaseId, 'new-lease');
+      release();
+    } finally {
+      failing.stop();
+      replacement.stop();
+      clearOverlayTargetRecoveryClaimForExitedPid(pid);
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('a stopped publisher cannot roll back a replacement broker claim', async (t) => {
+  const pid = 0xffffd050;
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-intent-replacement-race-'),
+  );
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  let markIntentPublished;
+  const intentPublished = new Promise((resolve) => {
+    markIntentPublished = resolve;
+  });
+  let resumeStoppedPublisher;
+  const stoppedPublisherMayResume = new Promise((resolve) => {
+    resumeStoppedPublisher = resolve;
+  });
+  const first = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global-a', 'transport.json'),
+    tokenFactory: (() => {
+      const tokens = ['60'.repeat(32), '61'.repeat(32)];
+      return () => tokens.shift();
+    })(),
+    isProcessAlive: () => true,
+    async targetAuthorizationPublicationHook(phase) {
+      if (phase === 'recovery-claim-published') {
+        markIntentPublished();
+        await stoppedPublisherMayResume;
+        throw new Error('stopped publisher resumed');
+      }
+    },
+  });
+  const second = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global-b', 'transport.json'),
+    tokenFactory: (() => {
+      const tokens = ['62'.repeat(32), '63'.repeat(32)];
+      return () => tokens.shift();
+    })(),
+    isProcessAlive: () => true,
+  });
+  t.after(async () => {
+    resumeStoppedPublisher?.();
+    first.stop();
+    second.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  first.start();
+  await first.whenReady();
+  const interrupted = first.authorizeTarget(pid, discoveryPath, undefined, {
+    leaseId: 'shared-lease',
+  });
+  await intentPublished;
+  first.stop();
+
+  second.start();
+  await second.whenReady();
+  const release = await second.authorizeTarget(pid, discoveryPath, undefined, {
+    leaseId: 'shared-lease',
+  });
+  const replacementClaim = readOverlayTargetRecoveryClaim(pid);
+  assert.equal(replacementClaim.phase, 'published');
+  resumeStoppedPublisher();
+  await assert.rejects(interrupted, /stopped publisher resumed/);
+  assert.deepEqual(readOverlayTargetRecoveryClaim(pid), replacementClaim);
+  release();
+});
+
+test('definitive exit clears mixed credentials after repeated partial takeovers', async (t) => {
+  const pid = 0xffffd100;
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-double-interruption-'),
+  );
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  const routePath = path.join(
+    path.dirname(discoveryPath),
+    OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME,
+  );
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  const makeTransport = (name, tokens, faultPhase) =>
+    new OverlayLoopbackTransport({
+      discoveryPath: path.join(tempDirectory, name, 'transport.json'),
+      tokenFactory: () => tokens.shift(),
+      isProcessAlive: () => true,
+      targetAuthorizationPublicationHook(phase) {
+        if (phase === faultPhase) {
+          throw new Error(`interrupt ${name}`);
+        }
+      },
+    });
+  const first = makeTransport('first', ['50'.repeat(32), '51'.repeat(32)]);
+  const second = makeTransport(
+    'second',
+    ['52'.repeat(32), '53'.repeat(32)],
+    'static-discovery-published',
+  );
+  const third = makeTransport(
+    'third',
+    ['54'.repeat(32), '55'.repeat(32)],
+    'recovery-claim-published',
+  );
+  t.after(async () => {
+    first.stop();
+    second.stop();
+    third.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  first.start();
+  await first.whenReady();
+  const release = await first.authorizeTarget(pid, discoveryPath, undefined, {
+    leaseId: 'original-lease',
+  });
+  const firstRunRecord = JSON.parse(await readFile(discoveryPath, 'utf8'));
+  release();
+  first.stop();
+
+  second.start();
+  await second.whenReady();
+  await assert.rejects(
+    second.authorizeTarget(pid, discoveryPath, undefined, {
+      leaseId: 'provider-two',
+      allowPublishedClaimTakeover: true,
+    }),
+    /interrupt second/,
+  );
+  second.stop();
+  const secondStaticRecord = JSON.parse(
+    await readFile(defaultOverlayTargetDiscoveryPath(pid), 'utf8'),
+  );
+  assert.notEqual(secondStaticRecord.token, firstRunRecord.token);
+  assert.equal(
+    JSON.parse(await readFile(discoveryPath, 'utf8')).token,
+    firstRunRecord.token,
+  );
+  assert.equal(
+    JSON.parse(await readFile(routePath, 'utf8')).token,
+    firstRunRecord.token,
+  );
+
+  third.start();
+  await third.whenReady();
+  await assert.rejects(
+    third.authorizeTarget(pid, discoveryPath, undefined, {
+      leaseId: 'provider-three',
+      allowPublishedClaimTakeover: true,
+    }),
+    /interrupt third/,
+  );
+  third.stop();
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  for (const candidatePath of [
+    discoveryPath,
+    routePath,
+    defaultOverlayTargetDiscoveryPath(pid),
+    defaultOverlayTargetRecoveryClaimPath(pid),
+  ]) {
+    await assert.rejects(
+      readFile(candidatePath, 'utf8'),
+      (error) => error.code === 'ENOENT',
+    );
+  }
+});
+
+test('authentication during a final claim-write failure preserves target reconnect authorization', async (t) => {
+  const pid = 0xffffd200;
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-final-claim-auth-race-'),
+  );
+  const discoveryPath = path.join(
+    tempDirectory,
+    'run',
+    'electron-overlay-transport-v1.json',
+  );
+  clearOverlayTargetRecoveryClaimForExitedPid(pid);
+  let markFinalClaimWrite;
+  const finalClaimWriteEntered = new Promise((resolve) => {
+    markFinalClaimWrite = resolve;
+  });
+  let resumeFinalClaimWrite;
+  const finalClaimWriteMayResume = new Promise((resolve) => {
+    resumeFinalClaimWrite = resolve;
+  });
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'global', 'transport.json'),
+    tokenFactory: (() => {
+      const tokens = ['70'.repeat(32), '71'.repeat(32)];
+      return () => tokens.shift();
+    })(),
+    isProcessAlive: () => true,
+    async targetRecoveryClaimWriteHook(claim) {
+      if (claim.phase === 'published') {
+        markFinalClaimWrite();
+        await finalClaimWriteMayResume;
+        throw new Error('final claim write failed');
+      }
+    },
+  });
+  const events = [];
+  const sockets = [];
+  t.after(async () => {
+    resumeFinalClaimWrite?.();
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    clearOverlayTargetRecoveryClaimForExitedPid(pid);
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+  transport.setEventCallback((event, payload) =>
+    events.push({ event, payload }),
+  );
+  transport.start();
+  const globalRecord = await transport.whenReady();
+  const pendingAuthorization = transport.authorizeTarget(
+    pid,
+    discoveryPath,
+    'C:\\Games\\ClaimRace.exe',
+    { leaseId: 'claim-race-lease' },
+  );
+  await finalClaimWriteEntered;
+  const targetRecord = JSON.parse(await readFile(discoveryPath, 'utf8'));
+  const authenticate = async () => {
+    const socket = await connect(globalRecord.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: targetRecord.token,
+        pid,
+        path: 'C:\\Games\\ClaimRace.exe',
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+
+  const firstSocket = await authenticate();
+  await waitFor(() => events.some(({ event }) => event === 'game.process'));
+  resumeFinalClaimWrite();
+  const release = await pendingAuthorization;
+  assert.equal(readOverlayTargetRecoveryClaim(pid).phase, 'publishing');
+
+  const firstClosed = new Promise((resolve) =>
+    firstSocket.once('close', resolve),
+  );
+  firstSocket.destroy();
+  await firstClosed;
+  await waitFor(() =>
+    events.some(({ event }) => event === 'game.process.transport-lost'),
+  );
+  const secondSocket = await authenticate();
+  assert.equal(secondSocket.destroyed, false);
+  release();
+});
+
+test('authenticated surface and FPS telemetry is validated with an authoritative PID', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-telemetry-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const events = [];
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\telemetry.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+  socket.write(encodeJsonTransportPacket(targetSurfaceMessage()));
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.graphics.fps',
+      pid: 9999,
+      fps: 143.625,
+    }),
+  );
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.target.surface.removed',
+      pid: 9999,
+      surfaceId: '0x1234',
+      revision: 8,
+    }),
+  );
+  await waitFor(() => events.length === 4);
+
+  const surface = events[1];
+  assert.equal(surface.event, 'game.target.surface');
+  assert.equal(surface.payload.pid, 4321);
+  assert.equal(surface.payload.dpi.scaleFactor, 1.25);
+  assert.deepEqual(surface.payload.clientScreenBounds, {
+    x: -2560,
+    y: 40,
+    width: 2560,
+    height: 1440,
+  });
+  assert.deepEqual(events[2], {
+    event: 'game.graphics.fps',
+    payload: { pid: 4321, fps: 143.625 },
+  });
+  assert.deepEqual(events[3], {
+    event: 'game.target.surface.removed',
+    payload: { pid: 4321, surfaceId: '0x1234', revision: 8 },
+  });
+
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  socket.write(
+    encodeJsonTransportPacket(
+      targetSurfaceMessage({
+        surfaceId: '0xABCD',
+      }),
+    ),
+  );
+  await closed;
+  assert.equal(events.length, 5, 'only transport loss follows malformed data');
+  assert.equal(events.at(-1).event, 'game.process.transport-lost');
+  assert.deepEqual(
+    diagnostics.filter(({ code }) => code === 'target-packet-rejected'),
+    [
+      {
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        severity: 'warning',
+        code: 'target-packet-rejected',
+        message:
+          'The overlay transport rejected a packet from an authenticated target.',
+        pid: 4321,
+        context: {
+          reason: 'invalid-target-surface',
+          eventType: 'game.target.surface',
+        },
+      },
+    ],
+  );
+});
+
+test('authenticated runtime diagnostics are canonical, PID-authoritative, and not native events', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-runtime-diagnostic-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const events = [];
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\runtime-diagnostic.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+  socket.write(
+    encodeJsonTransportPacket(
+      runtimeDiagnosticMessage({
+        code: 'runtime-frame-upload-failed',
+        context: { errorCode: -6 },
+      }),
+    ),
+  );
+  await waitFor(() =>
+    diagnostics.some(({ code }) => code === 'runtime-frame-upload-failed'),
+  );
+
+  assert.deepEqual(
+    diagnostics.filter(({ code }) => code === 'runtime-frame-upload-failed'),
+    [
+      {
+        schemaVersion: 1,
+        source: 'electron-game-overlay-runtime',
+        severity: 'error',
+        code: 'runtime-frame-upload-failed',
+        message:
+          'The injected overlay runtime could not upload a transported Electron frame.',
+        pid: 4321,
+        context: { errorCode: -6 },
+      },
+    ],
+  );
+  assert.equal(
+    events.some(({ event }) => event === 'game.diagnostic'),
+    false,
+  );
+});
+
+test('invalid runtime diagnostic envelopes fail closed with an authoritative rejection', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-runtime-diagnostic-rejection-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const diagnostics = [];
+  const sockets = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const invalidPackets = [
+    runtimeDiagnosticMessage({ source: 'electron-overlay-transport' }),
+    runtimeDiagnosticMessage({ code: 'runtime-unknown' }),
+    runtimeDiagnosticMessage({ context: {} }),
+    runtimeDiagnosticMessage({ context: { errorCode: -8 } }),
+    runtimeDiagnosticMessage({ pid: 9999 }),
+    runtimeDiagnosticMessage({ severity: 'error' }),
+    runtimeDiagnosticMessage({ message: 'producer-owned message' }),
+  ];
+
+  for (const [index, packet] of invalidPackets.entries()) {
+    const socket = await connect(record.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    const pid = 5100 + index;
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid,
+        path: `C:\\games\\invalid-runtime-diagnostic-${index}.exe`,
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+    const rejectionCount = diagnostics.filter(
+      ({ code }) => code === 'target-packet-rejected',
+    ).length;
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    socket.write(encodeJsonTransportPacket(packet));
+    await closed;
+    await waitFor(
+      () =>
+        diagnostics.filter(({ code }) => code === 'target-packet-rejected')
+          .length ===
+        rejectionCount + 1,
+    );
+
+    assert.deepEqual(
+      diagnostics
+        .filter(({ code }) => code === 'target-packet-rejected')
+        .at(-1),
+      {
+        schemaVersion: 1,
+        source: 'electron-overlay-transport',
+        severity: 'warning',
+        code: 'target-packet-rejected',
+        message:
+          'The overlay transport rejected a packet from an authenticated target.',
+        pid,
+        context: {
+          reason: 'invalid-runtime-diagnostic',
+          eventType: 'game.diagnostic',
+        },
+      },
+    );
+  }
+
+  assert.equal(
+    diagnostics.some(
+      ({ source }) => source === 'electron-game-overlay-runtime',
+    ),
+    false,
+  );
+});
+
+test('runtime diagnostic rate limiting is isolated to each authenticated client', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-runtime-diagnostic-rate-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => true,
+  });
+  const diagnostics = [];
+  const sockets = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const authenticate = async (pid) => {
+    const socket = await connect(record.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid,
+        path: `C:\\games\\runtime-diagnostic-rate-${pid}.exe`,
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+  const publishBurst = (socket) => {
+    for (let index = 0; index < 12; index += 1) {
+      socket.write(
+        encodeJsonTransportPacket(
+          runtimeDiagnosticMessage({
+            code: 'runtime-input-router-reset',
+          }),
+        ),
+      );
+    }
+  };
+
+  const first = await authenticate(5201);
+  publishBurst(first);
+  await waitFor(
+    () =>
+      diagnostics.filter(
+        ({ code, pid }) =>
+          code === 'runtime-input-router-reset' && pid === 5201,
+      ).length === 8,
+  );
+
+  const second = await authenticate(5202);
+  publishBurst(second);
+  await waitFor(
+    () =>
+      diagnostics.filter(
+        ({ code, pid }) =>
+          code === 'runtime-input-router-reset' && pid === 5202,
+      ).length === 8,
+  );
+
+  assert.equal(
+    diagnostics.filter(({ code }) => code === 'runtime-input-router-reset')
+      .length,
+    16,
+  );
+});
+
+test('authenticated clients cannot forge server-owned lifecycle events', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-disconnect-auth-test-'),
+  );
+  let processAlive = true;
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => processAlive,
+    processExitPollIntervalMs: 5,
+  });
+  const events = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const authenticate = async () => {
+    const expectedProcessEvents =
+      events.filter(({ event }) => event === 'game.process').length + 1;
+    socket = await connect(record.port);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid: 4321,
+        path: 'C:\\games\\real.exe',
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    await waitFor(
+      () =>
+        events.filter(({ event }) => event === 'game.process').length ===
+        expectedProcessEvents,
+    );
+  };
+
+  for (const reservedEvent of [
+    'game.process.disconnected',
+    'game.process.transport-lost',
+  ]) {
+    await authenticate();
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    socket.write(
+      encodeJsonTransportPacket({
+        type: reservedEvent,
+        pid: 9999,
+        path: 'C:\\games\\forged.exe',
+      }),
+    );
+    await closed;
+  }
+
+  assert.deepEqual(
+    events.filter(({ event }) => event === 'game.process.transport-lost'),
+    [
+      {
+        event: 'game.process.transport-lost',
+        payload: { pid: 4321, path: 'C:\\games\\real.exe' },
+      },
+      {
+        event: 'game.process.transport-lost',
+        payload: { pid: 4321, path: 'C:\\games\\real.exe' },
+      },
+    ],
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+  );
+
+  processAlive = false;
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.disconnected')
+        .length === 1,
+  );
+  assert.deepEqual(
+    events.filter(({ event }) => event === 'game.process.disconnected'),
+    [
+      {
+        event: 'game.process.disconnected',
+        payload: { pid: 4321, path: 'C:\\games\\real.exe' },
+      },
+    ],
+  );
+  assert.deepEqual(
+    events
+      .filter(({ event }) =>
+        ['game.process.transport-lost', 'game.process.disconnected'].includes(
+          event,
+        ),
+      )
+      .map(({ event }) => event),
+    [
+      'game.process.transport-lost',
+      'game.process.transport-lost',
+      'game.process.disconnected',
+    ],
+  );
+});
+
+test('sequential same-PID reauthentication cancels exit confirmation', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-process-exit-test-'),
+  );
+  let processAlive = true;
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => processAlive,
+    processExitPollIntervalMs: 5,
+  });
+  const sockets = [];
+  const events = [];
+  let throwOnNextTransportLoss = true;
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+    if (event === 'game.process.transport-lost' && throwOnNextTransportLoss) {
+      throwOnNextTransportLoss = false;
+      throw new Error('consumer lifecycle callback failed');
+    }
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  const authenticate = async () => {
+    const socket = await connect(record.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid: 4321,
+        path: 'C:\\games\\test.exe',
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+
+  let socket = await authenticate();
+  socket.destroy();
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.transport-lost')
+        .length === 1,
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+  );
+
+  socket = await authenticate();
+  processAlive = false;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+    'reauthentication must cancel the prior socket exit watch',
+  );
+
+  socket.destroy();
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.disconnected')
+        .length === 1,
+  );
+  assert.deepEqual(
+    events.filter(({ event }) => event === 'game.process.disconnected'),
+    [
+      {
+        event: 'game.process.disconnected',
+        payload: { pid: 4321, path: 'C:\\games\\test.exe' },
+      },
+    ],
+  );
+});
+
+test('process exit inspection failures emit one bounded authoritative diagnostic', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-process-inspection-test-'),
+  );
+  let inspectionCalls = 0;
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+    isProcessAlive: () => {
+      inspectionCalls += 1;
+      const error = new Error('sensitive process inspection detail');
+      error.code = 'EINSPECT';
+      throw error;
+    },
+    processExitPollIntervalMs: 5,
+  });
+  const diagnostics = [];
+  let socket;
+  t.after(async () => {
+    socket?.destroy();
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setDiagnosticCallback((diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
+  transport.start();
+  const record = await transport.whenReady();
+  socket = await connect(record.port);
+  const reader = createPacketReader(socket);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.process',
+      protocolVersion: 1,
+      token: TOKEN,
+      pid: 4321,
+      path: 'C:\\games\\test.exe',
+    }),
+  );
+  assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+
+  socket.destroy();
+  await waitFor(() => inspectionCalls >= 3);
+  const failures = diagnostics.filter(
+    ({ code }) => code === 'target-process-inspection-failed',
+  );
+  assert.deepEqual(failures, [
+    {
+      schemaVersion: 1,
+      source: 'electron-overlay-transport',
+      severity: 'warning',
+      code: 'target-process-inspection-failed',
+      message:
+        'The overlay transport could not confirm whether a disconnected target exited.',
+      pid: 4321,
+    },
+  ]);
+  assert.equal(
+    JSON.stringify(failures).includes('sensitive process inspection detail'),
+    false,
+  );
+});
+
+test('reconnects reset input state and emit only authoritative disconnects', async (t) => {
+  const tempDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'overlay-input-state-test-'),
+  );
+  const transport = new OverlayLoopbackTransport({
+    discoveryPath: path.join(tempDirectory, 'transport.json'),
+    tokenFactory: () => TOKEN,
+  });
+  const sockets = [];
+  const translated = [];
+  const events = [];
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    transport.stop();
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  transport.setEventCallback((event, payload) => {
+    events.push({ event, payload });
+    if (event === 'game.input') {
+      translated.push(transport.translateInputEvent(payload));
+    }
+  });
+  transport.start();
+  const record = await transport.whenReady();
+
+  const authenticate = async () => {
+    const socket = await connect(record.port);
+    sockets.push(socket);
+    const reader = createPacketReader(socket);
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.process',
+        protocolVersion: 1,
+        token: TOKEN,
+        pid: 4321,
+        path: 'C:\\games\\test.exe',
+      }),
+    );
+    assert.equal(decodeJson(await reader.next()).type, 'overlay.init');
+    return socket;
+  };
+
+  let socket = await authenticate();
+  const input = (wparam) =>
+    socket.write(
+      encodeJsonTransportPacket({
+        type: 'game.input',
+        windowId: 1,
+        msg: 0x0100,
+        wparam,
+        lparam: 0,
+      }),
+    );
+
+  input(0x11);
+  await waitFor(() => translated.length === 1);
+  assert.deepEqual(translated[0].modifiers, ['control', 'left']);
+
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.window.focused',
+      focusWindowId: 0,
+    }),
+  );
+  await waitFor(() =>
+    events.some(
+      ({ event, payload }) =>
+        event === 'game.window.focused' && payload.focusWindowId === 0,
+    ),
+  );
+  input(0x41);
+  await waitFor(() => translated.length === 2);
+  assert.deepEqual(translated[1].modifiers, []);
+
+  input(0x11);
+  await waitFor(() => translated.length === 3);
+  socket.write(
+    encodeJsonTransportPacket({
+      type: 'game.input.intercept',
+      intercepting: false,
+    }),
+  );
+  await waitFor(() =>
+    events.some(
+      ({ event, payload }) =>
+        event === 'game.input.intercept' && payload.intercepting === false,
+    ),
+  );
+  input(0x42);
+  await waitFor(() => translated.length === 4);
+  assert.deepEqual(translated[3].modifiers, []);
+
+  input(0x11);
+  await waitFor(() => translated.length === 5);
+  const replacedSocketClosed = new Promise((resolve) =>
+    socket.once('close', resolve),
+  );
+  socket = await authenticate();
+  await replacedSocketClosed;
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.disconnected').length,
+    0,
+    'closing a replaced same-PID socket must not report the new socket as disconnected',
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.transport-lost')
+      .length,
+    0,
+    'closing a replaced same-PID socket must not report transient transport loss',
+  );
+  input(0x43);
+  await waitFor(() => translated.length === 6);
+  assert.deepEqual(translated[5].modifiers, []);
+
+  socket.destroy();
+  await waitFor(
+    () =>
+      events.filter(({ event }) => event === 'game.process.disconnected')
+        .length === 1,
+  );
+  assert.deepEqual(
+    events.find(({ event }) => event === 'game.process.disconnected'),
+    {
+      event: 'game.process.disconnected',
+      payload: { pid: 4321, path: 'C:\\games\\test.exe' },
+    },
+  );
+  assert.equal(
+    events.filter(({ event }) => event === 'game.process.transport-lost')
+      .length,
+    1,
+  );
+});

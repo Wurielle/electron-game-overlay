@@ -1,0 +1,203 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index e7410c3..aac609b 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -296,6 +296,7 @@ enum class target_preflight_result
+ {
+ 	clear,
+ 	reusable_runtime,
++	official_addon,
+ 	runtime_incompatible,
+ 	runtime_reuse_too_late,
+ 	inspection_failed,
+@@ -304,8 +305,10 @@ enum class target_preflight_result
+ struct reusable_runtime_info
+ {
+ 	std::wstring module_path;
++	std::wstring addon_module_path;
+ 	uintptr_t addon_gate_address = 0;
+ 	unsigned int host_abi = 0;
++	unsigned int addon_abi = 0;
+ };
+ 
+ static bool read_remote_bytes(HANDLE process, uintptr_t address, void *destination, SIZE_T size, DWORD &error)
+@@ -1034,6 +1037,95 @@ static module_export_inspection remote_module_export_address(
+ 	return module_export_inspection::not_present;
+ }
+ 
++static bool remote_module_path(
++	HANDLE process,
++	HMODULE module,
++	std::wstring &path,
++	DWORD &error)
++{
++	WCHAR module_path[32768] = L"";
++	const DWORD module_path_length = K32GetModuleFileNameExW(
++		process,
++		module,
++		module_path,
++		static_cast<DWORD>(sizeof(module_path) / sizeof(module_path[0])));
++	if (module_path_length == 0 ||
++		module_path_length >= sizeof(module_path) / sizeof(module_path[0]))
++	{
++		error = GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_INSUFFICIENT_BUFFER;
++		return false;
++	}
++
++	path.assign(module_path, module_path_length);
++	return true;
++}
++
++static target_preflight_result inspect_target_for_official_addon(
++	HANDLE process,
++	const std::vector<HMODULE> &modules,
++	size_t module_count,
++	reusable_runtime_info &runtime,
++	DWORD &error)
++{
++	constexpr char addon_abi_export[] =
++		"ElectronGameOverlayReShadeAddonAbi";
++	constexpr unsigned int supported_addon_abi = 1;
++	bool found_addon = false;
++
++	for (size_t index = 0; index < module_count; ++index)
++	{
++		uintptr_t addon_abi_address = 0;
++		switch (remote_module_export_address(
++			process,
++			modules[index],
++			addon_abi_export,
++			addon_abi_address,
++			error))
++		{
++		case module_export_inspection::not_present:
++			continue;
++		case module_export_inspection::failed:
++			return target_preflight_result::inspection_failed;
++		case module_export_inspection::present:
++			break;
++		}
++
++		unsigned int addon_abi = 0;
++		if (!read_remote_bytes(
++				process,
++				addon_abi_address,
++				&addon_abi,
++				sizeof(addon_abi),
++				error))
++			return target_preflight_result::inspection_failed;
++
++		// A marker with an unknown value, or multiple marker modules, is
++		// ambiguous. Keep the loaded stock runtime fail-closed in both cases.
++		if (addon_abi != supported_addon_abi || found_addon)
++			return target_preflight_result::runtime_incompatible;
++
++		if (!remote_module_path(
++				process,
++				modules[index],
++				runtime.addon_module_path,
++				error))
++			return target_preflight_result::inspection_failed;
++		if (_wcsicmp(
++				runtime.addon_module_path.c_str(),
++				runtime.module_path.c_str()) == 0)
++			return target_preflight_result::runtime_incompatible;
++
++		runtime.addon_abi = addon_abi;
++		found_addon = true;
++	}
++
++	return found_addon
++		? target_preflight_result::official_addon
++		: target_preflight_result::runtime_incompatible;
++}
++
+ static target_preflight_result inspect_target_for_reshade_once(
+ 	HANDLE process,
+ 	reusable_runtime_info &runtime,
+@@ -1085,21 +1177,12 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 			break;
+ 		}
+ 
+-		WCHAR module_path[32768] = L"";
+-		const DWORD module_path_length = K32GetModuleFileNameExW(
+-			process,
+-			modules[index],
+-			module_path,
+-			static_cast<DWORD>(sizeof(module_path) / sizeof(module_path[0])));
+-		if (module_path_length == 0 ||
+-			module_path_length >= sizeof(module_path) / sizeof(module_path[0]))
+-		{
+-			error = GetLastError();
+-			if (error == ERROR_SUCCESS)
+-				error = ERROR_INSUFFICIENT_BUFFER;
++		if (!remote_module_path(
++				process,
++				modules[index],
++				runtime.module_path,
++				error))
+ 			return target_preflight_result::inspection_failed;
+-		}
+-		runtime.module_path.assign(module_path, module_path_length);
+ 
+ 		uintptr_t host_abi_address = 0;
+ 		const module_export_inspection host_abi_inspection =
+@@ -1112,7 +1195,12 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 		if (host_abi_inspection == module_export_inspection::failed)
+ 			return target_preflight_result::inspection_failed;
+ 		if (host_abi_inspection == module_export_inspection::not_present)
+-			return target_preflight_result::runtime_incompatible;
++			return inspect_target_for_official_addon(
++				process,
++				modules,
++				module_count,
++				runtime,
++				error);
+ 		if (!read_remote_bytes(
+ 				process,
+ 				host_abi_address,
+@@ -1321,6 +1409,26 @@ static bool write_injector_result(
+ 		fflush(stdout) == 0;
+ }
+ 
++static bool write_official_addon_result(
++	DWORD pid,
++	const reusable_runtime_info &runtime)
++{
++	std::wstring result =
++		L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
++	result.append(std::to_wstring(pid));
++	result.append(
++		L",\"runtimeMode\":\"official-addon\",\"runtimeModulePath\":");
++	append_json_string(result, runtime.module_path);
++	result.append(L",\"addonModulePath\":");
++	append_json_string(result, runtime.addon_module_path);
++	result.append(L",\"addonAbi\":");
++	result.append(std::to_wstring(runtime.addon_abi));
++	result.push_back(L'}');
++
++	return fwprintf(stdout, L"%ls\n", result.c_str()) >= 0 &&
++		fflush(stdout) == 0;
++}
++
+ enum class injection_claim_result
+ {
+ 	acquired,
+@@ -1836,6 +1944,15 @@ int wmain(int argc, wchar_t *argv[])
+ 	bool reuse_existing_runtime = false;
+ 	switch (inspect_target_for_reshade(remote_process, reusable_runtime, preflight_error))
+ 	{
++	case target_preflight_result::official_addon:
++		wprintf(
++			L"Found a matching process with PID %lu! "
++			L"Official ReShade and Electron Game Overlay add-on are already loaded. "
++			L"Succeeded!\n",
++			pid);
++		if (!write_official_addon_result(pid, reusable_runtime))
++			return ERROR_WRITE_FAULT;
++		return ERROR_SUCCESS;
+ 	case target_preflight_result::runtime_incompatible:
+ 		if (!write_injector_diagnostic(
+ 				L"target-runtime-incompatible",

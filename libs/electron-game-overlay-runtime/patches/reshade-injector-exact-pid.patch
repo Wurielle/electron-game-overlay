@@ -1,0 +1,193 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 02eee45..883ad77 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -82,6 +82,36 @@ static void update_acl_for_uwp(LPWSTR path)
+ 	LocalFree(sd);
+ }
+ 
++static bool parse_process_id(const wchar_t *value, DWORD &pid)
++{
++	if (value == nullptr || *value == L'\0')
++		return false;
++
++	DWORD parsed_pid = 0;
++	for (const wchar_t *digit = value; *digit != L'\0'; ++digit)
++	{
++		if (*digit < L'0' || *digit > L'9')
++			return false;
++
++		const DWORD digit_value = *digit - L'0';
++		if (parsed_pid > (MAXDWORD - digit_value) / 10)
++			return false;
++
++		parsed_pid = parsed_pid * 10 + digit_value;
++	}
++
++	if (parsed_pid == 0)
++		return false;
++
++	pid = parsed_pid;
++	return true;
++}
++
++static void print_injection_not_started()
++{
++	wprintf(L"ReShade injection not started.\n");
++}
++
+ #if RESHADE_LOADING_THREAD_FUNC
+ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ {
+@@ -94,10 +124,14 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ 
+ int wmain(int argc, wchar_t *argv[])
+ {
+-	if (argc != 2)
++	const bool exact_pid_requested = argc >= 3 && wcscmp(argv[2], L"--pid") == 0;
++	const bool use_exact_pid = argc == 4 && exact_pid_requested;
++	if (argc != 2 && !use_exact_pid)
+ 	{
+-		wprintf(L"usage: %s <exe name>\n", argv[0]);
+-		return 0;
++		wprintf(L"usage: %s <exe name> [--pid <uint32>]\n", argv[0]);
++		if (exact_pid_requested)
++			print_injection_not_started();
++		return exact_pid_requested ? ERROR_INVALID_PARAMETER : 0;
+ 	}
+ 
+ 	const wchar_t *name = wcsrchr(argv[1], L'\\');
+@@ -106,36 +140,75 @@ int wmain(int argc, wchar_t *argv[])
+ 	else
+ 		name = argv[1]; // No path separator in the argument, this is a file name
+ 
+-	wprintf(L"Waiting for a '%s' process to spawn ...\n", name);
+-
+ 	DWORD pid = 0;
+-
+-	// Wait for a process with the target name to spawn
+-	while (!pid)
++	if (use_exact_pid)
+ 	{
+-		const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
++		if (!parse_process_id(argv[3], pid))
++		{
++			wprintf(L"Invalid process ID '%s': expected a decimal uint32 greater than zero.\n", argv[3]);
++			print_injection_not_started();
++			return ERROR_INVALID_PARAMETER;
++		}
++	}
++	else
++	{
++		wprintf(L"Waiting for a '%s' process to spawn ...\n", name);
+ 
+-		PROCESSENTRY32W process = { sizeof(process) };
+-		for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
++		// Wait for a process with the target name to spawn
++		while (!pid)
+ 		{
+-			if (_wcsicmp(process.szExeFile, name) == 0)
++			const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
++
++			PROCESSENTRY32W process = { sizeof(process) };
++			for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
+ 			{
+-				pid = process.th32ProcessID;
+-				break;
++				if (_wcsicmp(process.szExeFile, name) == 0)
++				{
++					pid = process.th32ProcessID;
++					break;
++				}
+ 			}
+-		}
+ 
+-		Sleep(1); // Sleep a bit to not overburden the CPU
++			Sleep(1); // Sleep a bit to not overburden the CPU
++		}
+ 	}
+ 
+-	wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
++	if (!use_exact_pid)
++		wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
+ 
+ 	// Open target application process
+ 	const scoped_handle remote_process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+ 	if (remote_process == nullptr)
+ 	{
++		const DWORD error = GetLastError();
+ 		wprintf(L"\nFailed to open target application process!\n");
+-		return GetLastError();
++		if (use_exact_pid)
++			print_injection_not_started();
++		return error;
++	}
++
++	if (use_exact_pid)
++	{
++		WCHAR image_path[32768] = L"";
++		DWORD image_path_size = static_cast<DWORD>(sizeof(image_path) / sizeof(image_path[0]));
++		if (!QueryFullProcessImageNameW(remote_process, 0, image_path, &image_path_size))
++		{
++			const DWORD error = GetLastError();
++			wprintf(L"\nFailed to query target application executable name!\n");
++			print_injection_not_started();
++			return error;
++		}
++
++		const wchar_t *actual_name = wcsrchr(image_path, L'\\');
++		actual_name = actual_name != nullptr ? actual_name + 1 : image_path;
++		if (_wcsicmp(actual_name, name) != 0)
++		{
++			wprintf(L"\nTarget process executable mismatch: PID %lu is '%s', expected '%s'.\n", pid, actual_name, name);
++			print_injection_not_started();
++			return ERROR_INVALID_NAME;
++		}
++
++		wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
+ 	}
+ 
+ 	// Check process architecture
+@@ -148,6 +221,8 @@ int wmain(int argc, wchar_t *argv[])
+ #endif
+ 	{
+ 		wprintf(L"\nProcess architecture does not match injection tool! Cannot continue.\n");
++		if (use_exact_pid)
++			print_injection_not_started();
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
+ 	}
+ 
+@@ -167,6 +242,8 @@ int wmain(int argc, wchar_t *argv[])
+ 	if (GetFileAttributesW(arg.load_path) == INVALID_FILE_ATTRIBUTES)
+ 	{
+ 		wprintf(L"\nFailed to find ReShade at \"%s\"!\n", arg.load_path);
++		if (use_exact_pid)
++			print_injection_not_started();
+ 		return ERROR_FILE_NOT_FOUND;
+ 	}
+ 
+@@ -198,16 +275,22 @@ int wmain(int argc, wchar_t *argv[])
+ #endif
+ 		)
+ 	{
++		const DWORD error = GetLastError();
+ 		wprintf(L"\nFailed to allocate and write 'LoadLibrary' argument in target application!\n");
+-		return GetLastError();
++		if (use_exact_pid)
++			print_injection_not_started();
++		return error;
+ 	}
+ 
+ 	// Execute 'LoadLibrary' in target application
+ 	const scoped_handle load_thread = CreateRemoteThread(remote_process, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(loading_thread_func_address), load_param, 0, nullptr);
+ 	if (load_thread == nullptr)
+ 	{
++		const DWORD error = GetLastError();
+ 		wprintf(L"\nFailed to execute 'LoadLibrary' in target application!\n");
+-		return GetLastError();
++		if (use_exact_pid)
++			print_injection_not_started();
++		return error;
+ 	}
+ 
+ 	// Wait for loading to finish and clean up parameter memory afterwards

@@ -1,0 +1,649 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index b0d4aa7..9fabf91 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -55,6 +55,28 @@ struct scoped_handle
+ 	const HANDLE *operator&() const { return &handle; }
+ };
+ 
++struct scoped_mapped_view
++{
++	const BYTE *data = nullptr;
++
++	~scoped_mapped_view()
++	{
++		if (data != nullptr)
++			UnmapViewOfFile(data);
++	}
++};
++
++struct scoped_find_handle
++{
++	HANDLE handle = INVALID_HANDLE_VALUE;
++
++	~scoped_find_handle()
++	{
++		if (handle != INVALID_HANDLE_VALUE)
++			FindClose(handle);
++	}
++};
++
+ static void update_acl_for_uwp(LPWSTR path)
+ {
+ 	OSVERSIONINFOEX verinfo_windows7 = { sizeof(OSVERSIONINFOEX), 6, 1 };
+@@ -306,6 +328,517 @@ static bool image_range_is_valid(DWORD rva, SIZE_T size, DWORD image_size)
+ 	return rva <= image_size && size <= static_cast<SIZE_T>(image_size - rva);
+ }
+ 
++static bool file_range_is_valid(SIZE_T offset, SIZE_T size, SIZE_T file_size)
++{
++	return offset <= file_size && size <= file_size - offset;
++}
++
++static std::wstring make_extended_length_path(const std::wstring &path)
++{
++	if (path.compare(0, 4, L"\\\\?\\") == 0)
++		return path;
++	if (path.compare(0, 2, L"\\\\") == 0)
++		return L"\\\\?\\UNC\\" + path.substr(2);
++	return L"\\\\?\\" + path;
++}
++
++static bool pe_rva_to_file_offset(
++	DWORD rva,
++	SIZE_T size,
++	DWORD size_of_headers,
++	const std::vector<IMAGE_SECTION_HEADER> &sections,
++	SIZE_T file_size,
++	SIZE_T &file_offset)
++{
++	const uint64_t range_end = static_cast<uint64_t>(rva) + size;
++	if (rva < size_of_headers &&
++		range_end <= size_of_headers &&
++		range_end <= file_size)
++	{
++		file_offset = rva;
++		return true;
++	}
++
++	for (const IMAGE_SECTION_HEADER &section : sections)
++	{
++		const uint64_t section_start = section.VirtualAddress;
++		const uint64_t section_span =
++			std::max(section.Misc.VirtualSize, section.SizeOfRawData);
++		const uint64_t section_end = section_start + section_span;
++		if (rva < section_start || rva >= section_end)
++			continue;
++
++		const uint64_t section_offset =
++			static_cast<uint64_t>(rva) - section_start;
++		if (section_offset + size > section.SizeOfRawData)
++			return false;
++
++		const uint64_t raw_offset =
++			static_cast<uint64_t>(section.PointerToRawData) + section_offset;
++		if (raw_offset > file_size ||
++			size > static_cast<uint64_t>(file_size) - raw_offset)
++			return false;
++
++		file_offset = static_cast<SIZE_T>(raw_offset);
++		return true;
++	}
++
++	return false;
++}
++
++static module_export_inspection file_has_export(
++	const std::wstring &path,
++	const char *requested_export_name,
++	DWORD &error)
++{
++	constexpr LONGLONG max_candidate_file_size = 512ll * 1024 * 1024;
++	constexpr LONG max_pe_header_offset = 1024 * 1024;
++	constexpr WORD max_sections = 96;
++	constexpr DWORD max_export_entries = 65536;
++	constexpr size_t max_export_name_length = 128;
++	const size_t requested_export_name_length = std::strlen(requested_export_name);
++	if (requested_export_name_length == 0 ||
++		requested_export_name_length >= max_export_name_length)
++	{
++		error = ERROR_INVALID_PARAMETER;
++		return module_export_inspection::failed;
++	}
++
++	const std::wstring extended_path = make_extended_length_path(path);
++	const scoped_handle file = CreateFileW(
++		extended_path.c_str(),
++		GENERIC_READ,
++		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++		nullptr,
++		OPEN_EXISTING,
++		FILE_ATTRIBUTE_NORMAL,
++		nullptr);
++	if (file == INVALID_HANDLE_VALUE)
++	{
++		error = GetLastError();
++		return module_export_inspection::failed;
++	}
++
++	LARGE_INTEGER file_size = {};
++	if (!GetFileSizeEx(file, &file_size))
++	{
++		error = GetLastError();
++		return module_export_inspection::failed;
++	}
++	if (file_size.QuadPart <= 0)
++		return module_export_inspection::not_present;
++	if (file_size.QuadPart > max_candidate_file_size)
++	{
++		error = ERROR_FILE_TOO_LARGE;
++		return module_export_inspection::failed;
++	}
++
++	const scoped_handle file_mapping = CreateFileMappingW(
++		file,
++		nullptr,
++		PAGE_READONLY,
++		0,
++		0,
++		nullptr);
++	if (file_mapping == nullptr)
++	{
++		error = GetLastError();
++		return module_export_inspection::failed;
++	}
++
++	scoped_mapped_view view;
++	view.data = static_cast<const BYTE *>(
++		MapViewOfFile(file_mapping, FILE_MAP_READ, 0, 0, 0));
++	if (view.data == nullptr)
++	{
++		error = GetLastError();
++		return module_export_inspection::failed;
++	}
++
++	const SIZE_T mapped_size = static_cast<SIZE_T>(file_size.QuadPart);
++	auto read_file_bytes = [&view, mapped_size](
++		SIZE_T offset,
++		void *destination,
++		SIZE_T size) {
++		if (!file_range_is_valid(offset, size, mapped_size))
++			return false;
++		std::memcpy(destination, view.data + offset, size);
++		return true;
++	};
++
++	IMAGE_DOS_HEADER dos_header = {};
++	if (!read_file_bytes(0, &dos_header, sizeof(dos_header)) ||
++		dos_header.e_magic != IMAGE_DOS_SIGNATURE)
++		return module_export_inspection::not_present;
++	if (dos_header.e_lfanew <= 0 ||
++		dos_header.e_lfanew > max_pe_header_offset)
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	const SIZE_T nt_header_offset =
++		static_cast<SIZE_T>(dos_header.e_lfanew);
++	DWORD signature = 0;
++	IMAGE_FILE_HEADER file_header = {};
++	if (!read_file_bytes(
++			nt_header_offset,
++			&signature,
++			sizeof(signature)) ||
++		!read_file_bytes(
++			nt_header_offset + sizeof(signature),
++			&file_header,
++			sizeof(file_header)))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++	if (signature != IMAGE_NT_SIGNATURE)
++		return module_export_inspection::not_present;
++	if (file_header.NumberOfSections == 0 ||
++		file_header.NumberOfSections > max_sections)
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	const SIZE_T optional_header_offset =
++		nt_header_offset + sizeof(signature) + sizeof(file_header);
++	WORD optional_header_magic = 0;
++	if (!read_file_bytes(
++			optional_header_offset,
++			&optional_header_magic,
++			sizeof(optional_header_magic)))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	DWORD size_of_headers = 0;
++	IMAGE_DATA_DIRECTORY export_data = {};
++	if (optional_header_magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
++	{
++		IMAGE_OPTIONAL_HEADER64 optional_header = {};
++		if (file_header.SizeOfOptionalHeader < sizeof(optional_header) ||
++			!read_file_bytes(
++				optional_header_offset,
++				&optional_header,
++				sizeof(optional_header)))
++		{
++			error = ERROR_BAD_EXE_FORMAT;
++			return module_export_inspection::failed;
++		}
++		if (optional_header.NumberOfRvaAndSizes <=
++			IMAGE_DIRECTORY_ENTRY_EXPORT)
++			return module_export_inspection::not_present;
++		size_of_headers = optional_header.SizeOfHeaders;
++		export_data =
++			optional_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
++	}
++	else if (optional_header_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
++	{
++		IMAGE_OPTIONAL_HEADER32 optional_header = {};
++		if (file_header.SizeOfOptionalHeader < sizeof(optional_header) ||
++			!read_file_bytes(
++				optional_header_offset,
++				&optional_header,
++				sizeof(optional_header)))
++		{
++			error = ERROR_BAD_EXE_FORMAT;
++			return module_export_inspection::failed;
++		}
++		if (optional_header.NumberOfRvaAndSizes <=
++			IMAGE_DIRECTORY_ENTRY_EXPORT)
++			return module_export_inspection::not_present;
++		size_of_headers = optional_header.SizeOfHeaders;
++		export_data =
++			optional_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
++	}
++	else
++	{
++		return module_export_inspection::not_present;
++	}
++
++	const SIZE_T section_table_offset =
++		optional_header_offset + file_header.SizeOfOptionalHeader;
++	const SIZE_T section_table_size =
++		static_cast<SIZE_T>(file_header.NumberOfSections) *
++		sizeof(IMAGE_SECTION_HEADER);
++	if (!file_range_is_valid(
++		section_table_offset,
++		section_table_size,
++		mapped_size))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	std::vector<IMAGE_SECTION_HEADER> sections(file_header.NumberOfSections);
++	std::memcpy(
++		sections.data(),
++		view.data + section_table_offset,
++		section_table_size);
++
++	if (export_data.VirtualAddress == 0 || export_data.Size == 0)
++		return module_export_inspection::not_present;
++
++	SIZE_T export_directory_offset = 0;
++	if (!pe_rva_to_file_offset(
++		export_data.VirtualAddress,
++		sizeof(IMAGE_EXPORT_DIRECTORY),
++		size_of_headers,
++		sections,
++		mapped_size,
++		export_directory_offset))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	IMAGE_EXPORT_DIRECTORY export_directory = {};
++	std::memcpy(
++		&export_directory,
++		view.data + export_directory_offset,
++		sizeof(export_directory));
++	if (export_directory.NumberOfNames == 0)
++		return module_export_inspection::not_present;
++	if (export_directory.NumberOfNames > max_export_entries ||
++		export_directory.NumberOfFunctions == 0 ||
++		export_directory.NumberOfFunctions > max_export_entries)
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	SIZE_T name_table_offset = 0;
++	SIZE_T ordinal_table_offset = 0;
++	SIZE_T function_table_offset = 0;
++	if (!pe_rva_to_file_offset(
++			export_directory.AddressOfNames,
++			static_cast<SIZE_T>(export_directory.NumberOfNames) *
++				sizeof(DWORD),
++			size_of_headers,
++			sections,
++			mapped_size,
++			name_table_offset) ||
++		!pe_rva_to_file_offset(
++			export_directory.AddressOfNameOrdinals,
++			static_cast<SIZE_T>(export_directory.NumberOfNames) *
++				sizeof(WORD),
++			size_of_headers,
++			sections,
++			mapped_size,
++			ordinal_table_offset) ||
++		!pe_rva_to_file_offset(
++			export_directory.AddressOfFunctions,
++			static_cast<SIZE_T>(export_directory.NumberOfFunctions) *
++				sizeof(DWORD),
++			size_of_headers,
++			sections,
++			mapped_size,
++			function_table_offset))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	size_t first = 0;
++	size_t last = export_directory.NumberOfNames;
++	while (first < last)
++	{
++		const size_t middle = first + (last - first) / 2;
++		DWORD name_rva = 0;
++		std::memcpy(
++			&name_rva,
++			view.data + name_table_offset + middle * sizeof(DWORD),
++			sizeof(name_rva));
++
++		SIZE_T name_offset = 0;
++		const SIZE_T readable_name_bytes =
++			requested_export_name_length + 1;
++		if (!pe_rva_to_file_offset(
++			name_rva,
++			readable_name_bytes,
++			size_of_headers,
++			sections,
++			mapped_size,
++			name_offset))
++		{
++			error = ERROR_BAD_EXE_FORMAT;
++			return module_export_inspection::failed;
++		}
++
++		const char *const export_name =
++			reinterpret_cast<const char *>(view.data + name_offset);
++		int comparison = std::memcmp(
++			export_name,
++			requested_export_name,
++			requested_export_name_length);
++		if (comparison == 0 &&
++			export_name[requested_export_name_length] != '\0')
++			comparison = 1;
++		if (comparison == 0)
++		{
++			WORD ordinal = 0;
++			std::memcpy(
++				&ordinal,
++				view.data + ordinal_table_offset + middle * sizeof(WORD),
++				sizeof(ordinal));
++			if (ordinal >= export_directory.NumberOfFunctions)
++			{
++				error = ERROR_BAD_EXE_FORMAT;
++				return module_export_inspection::failed;
++			}
++
++			DWORD function_rva = 0;
++			std::memcpy(
++				&function_rva,
++				view.data + function_table_offset +
++					static_cast<size_t>(ordinal) * sizeof(DWORD),
++				sizeof(function_rva));
++			if (function_rva == 0)
++			{
++				error = ERROR_BAD_EXE_FORMAT;
++				return module_export_inspection::failed;
++			}
++
++			const uint64_t export_range_start =
++				export_data.VirtualAddress;
++			const uint64_t export_range_end =
++				export_range_start + export_data.Size;
++			if (function_rva >= export_range_start &&
++				function_rva < export_range_end)
++				return module_export_inspection::not_present;
++
++			SIZE_T function_offset = 0;
++			if (!pe_rva_to_file_offset(
++				function_rva,
++				1,
++				size_of_headers,
++				sections,
++				mapped_size,
++				function_offset))
++			{
++				error = ERROR_BAD_EXE_FORMAT;
++				return module_export_inspection::failed;
++			}
++
++			return module_export_inspection::present;
++		}
++		if (comparison < 0)
++			first = middle + 1;
++		else
++			last = middle;
++	}
++
++	return module_export_inspection::not_present;
++}
++
++static bool has_reshade_installation_candidate_extension(
++	const wchar_t *file_name)
++{
++	const wchar_t *const extension = wcsrchr(file_name, L'.');
++	return extension != nullptr &&
++		(_wcsicmp(extension, L".dll") == 0 ||
++		 _wcsicmp(extension, L".asi") == 0);
++}
++
++static module_export_inspection inspect_target_directory_for_reshade(
++	const std::wstring &target_image_path,
++	std::wstring &installation_path,
++	DWORD &error)
++{
++	constexpr size_t max_candidate_files = 2048;
++	constexpr size_t max_win32_path_length = 32767;
++	constexpr char reshade_version_export[] = "ReShadeVersion";
++	installation_path.clear();
++	error = ERROR_SUCCESS;
++
++	const size_t separator = target_image_path.find_last_of(L"\\/");
++	if (separator == std::wstring::npos)
++	{
++		error = ERROR_INVALID_NAME;
++		return module_export_inspection::failed;
++	}
++
++	const std::wstring directory_prefix =
++		target_image_path.substr(0, separator + 1);
++	if (directory_prefix.size() + 1 > max_win32_path_length)
++	{
++		error = ERROR_FILENAME_EXCED_RANGE;
++		return module_export_inspection::failed;
++	}
++
++	const std::wstring search_pattern =
++		make_extended_length_path(directory_prefix + L"*");
++	WIN32_FIND_DATAW find_data = {};
++	scoped_find_handle files;
++	files.handle = FindFirstFileExW(
++		search_pattern.c_str(),
++		FindExInfoBasic,
++		&find_data,
++		FindExSearchNameMatch,
++		nullptr,
++		0);
++	if (files.handle == INVALID_HANDLE_VALUE)
++	{
++		error = GetLastError();
++		return module_export_inspection::failed;
++	}
++
++	size_t candidate_count = 0;
++	do
++	{
++		if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
++			!has_reshade_installation_candidate_extension(
++				find_data.cFileName))
++			continue;
++
++		if (++candidate_count > max_candidate_files)
++		{
++			error = ERROR_BUFFER_OVERFLOW;
++			return module_export_inspection::failed;
++		}
++
++		const std::wstring candidate_path =
++			directory_prefix + find_data.cFileName;
++		if (candidate_path.size() > max_win32_path_length)
++		{
++			installation_path = candidate_path;
++			error = ERROR_FILENAME_EXCED_RANGE;
++			return module_export_inspection::failed;
++		}
++
++		DWORD candidate_error = ERROR_SUCCESS;
++		switch (file_has_export(
++			candidate_path,
++			reshade_version_export,
++			candidate_error))
++		{
++		case module_export_inspection::present:
++			installation_path = candidate_path;
++			return module_export_inspection::present;
++		case module_export_inspection::failed:
++			installation_path = candidate_path;
++			error = candidate_error != ERROR_SUCCESS
++				? candidate_error
++				: ERROR_GEN_FAILURE;
++			return module_export_inspection::failed;
++		case module_export_inspection::not_present:
++			break;
++		}
++	} while (FindNextFileW(files.handle, &find_data));
++
++	const DWORD enumeration_error = GetLastError();
++	if (enumeration_error != ERROR_NO_MORE_FILES)
++	{
++		error = enumeration_error;
++		return module_export_inspection::failed;
++	}
++
++	return module_export_inspection::not_present;
++}
++
+ static module_export_inspection remote_module_export_address(
+ 	HANDLE process,
+ 	HMODULE module,
+@@ -1222,27 +1755,39 @@ int wmain(int argc, wchar_t *argv[])
+ 		return error;
+ 	}
+ 
+-	if (use_exact_pid)
++	WCHAR selected_image_path_buffer[32768] = L"";
++	DWORD selected_image_path_size = static_cast<DWORD>(
++		sizeof(selected_image_path_buffer) /
++		sizeof(selected_image_path_buffer[0]));
++	if (!QueryFullProcessImageNameW(
++		remote_process,
++		0,
++		selected_image_path_buffer,
++		&selected_image_path_size))
+ 	{
+-		WCHAR image_path[32768] = L"";
+-		DWORD image_path_size = static_cast<DWORD>(sizeof(image_path) / sizeof(image_path[0]));
+-		if (!QueryFullProcessImageNameW(remote_process, 0, image_path, &image_path_size))
+-		{
+-			const DWORD error = GetLastError();
+-			wprintf(L"\nFailed to query target application executable name!\n");
++		const DWORD error = GetLastError();
++		wprintf(L"\nFailed to query target application executable path!\n");
++		if (use_exact_pid || use_path_watcher)
+ 			print_injection_not_started();
+-			return error;
+-		}
++		return error;
++	}
++	const std::wstring selected_image_path(
++		selected_image_path_buffer,
++		selected_image_path_size);
+ 
+-		const wchar_t *actual_name = wcsrchr(image_path, L'\\');
+-		actual_name = actual_name != nullptr ? actual_name + 1 : image_path;
++	if (use_exact_pid)
++	{
++		const wchar_t *actual_name =
++			wcsrchr(selected_image_path.c_str(), L'\\');
++		actual_name = actual_name != nullptr
++			? actual_name + 1
++			: selected_image_path.c_str();
+ 		if (_wcsicmp(actual_name, name) != 0)
+ 		{
+ 			wprintf(L"\nTarget process executable mismatch: PID %lu is '%s', expected '%s'.\n", pid, actual_name, name);
+ 			print_injection_not_started();
+ 			return ERROR_INVALID_NAME;
+ 		}
+-
+ 	}
+ 
+ 	// Check process architecture
+@@ -1325,7 +1870,45 @@ int wmain(int argc, wchar_t *argv[])
+ 		print_injection_not_started();
+ 		return preflight_error;
+ 	case target_preflight_result::clear:
++	{
++		std::wstring installation_path;
++		DWORD installation_error = ERROR_SUCCESS;
++		switch (inspect_target_directory_for_reshade(
++			selected_image_path,
++			installation_path,
++			installation_error))
++		{
++		case module_export_inspection::present:
++			wprintf(
++				L"\nFound an existing inactive ReShade installation at '%s'. "
++				L"Project runtime injection was refused.\n",
++				installation_path.c_str());
++			if (!write_injector_diagnostic(
++					L"target-existing-reshade-installation",
++					pid,
++					installation_path,
++					ERROR_SUCCESS))
++				installation_error = ERROR_WRITE_FAULT;
++			else
++				installation_error = ERROR_ALREADY_EXISTS;
++			print_injection_not_started();
++			return installation_error;
++		case module_export_inspection::failed:
++			if (installation_error == ERROR_SUCCESS)
++				installation_error = ERROR_GEN_FAILURE;
++			if (!write_injector_diagnostic(
++					L"target-module-inspection-failed",
++					pid,
++					installation_path,
++					installation_error))
++				installation_error = ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return installation_error;
++		case module_export_inspection::not_present:
++			break;
++		}
+ 		break;
++	}
+ 	case target_preflight_result::reusable_runtime:
+ 		reuse_existing_runtime = true;
+ 		break;

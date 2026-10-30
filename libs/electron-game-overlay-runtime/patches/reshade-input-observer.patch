@@ -1,0 +1,1085 @@
+diff --git a/include/reshade.hpp b/include/reshade.hpp
+index 2d8f98e..4a19040 100644
+--- a/include/reshade.hpp
++++ b/include/reshade.hpp
+@@ -10,7 +10,7 @@
+ #include <charconv>
+ 
+ // Current version of the ReShade API
+-#define RESHADE_API_VERSION 18
++#define RESHADE_API_VERSION 19
+ 
+ // Optionally import ReShade API functions when 'RESHADE_API_LIBRARY' is defined instead of using header-only mode
+ #if defined(RESHADE_API_LIBRARY) || defined(RESHADE_API_LIBRARY_EXPORT)
+diff --git a/include/reshade_api.hpp b/include/reshade_api.hpp
+index ae8d386..c307d4d 100644
+--- a/include/reshade_api.hpp
++++ b/include/reshade_api.hpp
+@@ -43,6 +43,90 @@ namespace reshade::api
+ 		clipboard = 4,
+ 	};
+ 
++	/// <summary>
++	/// Source through which a blocked input message was observed.
++	/// </summary>
++	enum class input_message_source : uint32_t
++	{
++		window_message,
++		raw_input,
++		raw_input_buffer,
++	};
++
++	/// <summary>
++	/// Device class associated with a blocked input message.
++	/// </summary>
++	enum class input_device_type : uint32_t
++	{
++		mouse,
++		keyboard,
++	};
++
++	/// <summary>
++	/// Additional metadata associated with a blocked input message.
++	/// </summary>
++	enum class input_message_flags : uint32_t
++	{
++		none = 0,
++		foreground = 1 << 0,
++		client_point_valid = 1 << 1,
++		no_legacy = 1 << 2,
++		dead_key = 1 << 3,
++	};
++
++	/// <summary>
++	/// Immutable copy of input ReShade has already decided to block.
++	/// </summary>
++	/// <remarks>
++	/// This record never contains an <c>HRAWINPUT</c> or pointer to a <c>RAWINPUT</c>
++	/// record. Raw mouse and keyboard fields are copied before the callback.
++	/// The record is valid only for the duration of the callback and has to be
++	/// copied by consumers that defer processing.
++	/// Window handles and device handles are observational only and may become
++	/// invalid after the callback returns.
++	/// </remarks>
++	struct input_message
++	{
++		input_message_source source;
++		input_device_type device_type;
++		uint64_t sequence;
++		void *target_window;
++		void *source_window;
++		uintptr_t device_handle;
++		uint64_t wparam;
++		int64_t lparam;
++		uint32_t flags;
++		uint32_t message;
++		uint32_t time;
++		int32_t client_x;
++		int32_t client_y;
++		union
++		{
++			struct
++			{
++				uint16_t flags;
++				uint16_t button_flags;
++				uint16_t button_data;
++				uint16_t reserved;
++				uint32_t raw_buttons;
++				int32_t last_x;
++				int32_t last_y;
++				uint32_t extra_information;
++			} mouse;
++			struct
++			{
++				uint16_t make_code;
++				uint16_t flags;
++				uint16_t virtual_key;
++				uint16_t reserved;
++				uint32_t message;
++				uint32_t extra_information;
++			} keyboard;
++		};
++		uint16_t text[4];
++		uint8_t text_length;
++	};
++
+ 	/// <summary>
+ 	/// A post-processing effect runtime, used to control effects.
+ 	/// <para>ReShade associates an independent post-processing effect runtime with most swap chains.</para>
+diff --git a/include/reshade_events.hpp b/include/reshade_events.hpp
+index 0f5150e..59b0dd7 100644
+--- a/include/reshade_events.hpp
++++ b/include/reshade_events.hpp
+@@ -1787,8 +1787,20 @@ namespace reshade
+ 		/// </remarks>
+ 		reshade_overlay_technique,
+ 
++		/// <summary>
++		/// Called after ReShade has decided to block a mouse or keyboard input
++		/// message and copied all transient raw-input data, but before the original
++		/// message or buffered raw-input record is neutralized.
++		/// <para>Callback function signature: <c>void (const api::input_message &amp;message)</c></para>
++		/// </summary>
++		/// <remarks>
++		/// This event is emitted only by builds with full add-on support. It is
++		/// observational: callbacks cannot change ReShade's suppression decision.
++		/// </remarks>
++		input_message = 101,
++
+ #if RESHADE_ADDON
+-		max = 101 // Last value used internally by ReShade to determine number of events in this enum
++		max = 102 // Last value used internally by ReShade to determine number of events in this enum
+ #endif
+ 	};
+ 
+@@ -1936,4 +1948,6 @@ namespace reshade
+ 
+ 	RESHADE_DEFINE_ADDON_EVENT_TRAITS(addon_event::reshade_overlay_uniform_variable, bool, api::effect_runtime *runtime, api::effect_uniform_variable variable);
+ 	RESHADE_DEFINE_ADDON_EVENT_TRAITS(addon_event::reshade_overlay_technique, bool, api::effect_runtime *runtime, api::effect_technique technique);
++
++	RESHADE_DEFINE_ADDON_EVENT_TRAITS(addon_event::input_message, void, const api::input_message &message);
+ }
+diff --git a/source/addon_manager.cpp b/source/addon_manager.cpp
+index e639349..3ff3faa 100644
+--- a/source/addon_manager.cpp
++++ b/source/addon_manager.cpp
+@@ -127,6 +127,7 @@ static const char *addon_event_to_string(reshade::addon_event ev)
+ 	case addon_event::reshade_open_overlay: return "reshade_open_overlay";
+ 	case addon_event::reshade_overlay_uniform_variable: return "reshade_overlay_uniform_variable";
+ 	case addon_event::reshade_overlay_technique: return "reshade_overlay_technique";
++	case addon_event::input_message: return "input_message";
+ 	}
+ 	return "unknown";
+ }
+@@ -571,7 +572,9 @@ void ReShadeRegisterEventForAddon(void *module, reshade::addon_event ev, void *c
+ 
+ #if RESHADE_ADDON == 1
+ 	// Block all application events when building without add-on loading support
+-	if (info->handle != g_module_handle && (ev > reshade::addon_event::destroy_effect_runtime && ev < reshade::addon_event::present))
++	if (info->handle != g_module_handle &&
++		((ev > reshade::addon_event::destroy_effect_runtime && ev < reshade::addon_event::present) ||
++		 ev == reshade::addon_event::input_message))
+ 	{
+ 		reshade::log::message(reshade::log::level::error, "Failed to register an event because only limited add-on functionality is available!");
+ 		return;
+diff --git a/source/addon_manager.hpp b/source/addon_manager.hpp
+index 0cc7855..0ccea8e 100644
+--- a/source/addon_manager.hpp
++++ b/source/addon_manager.hpp
+@@ -85,7 +85,8 @@ namespace reshade
+ 			ev != addon_event::bind_descriptor_tables &&
+ 			ev != addon_event::bind_index_buffer &&
+ 			ev != addon_event::bind_vertex_buffers &&
+-			ev != addon_event::bind_stream_output_buffers,
++			ev != addon_event::bind_stream_output_buffers &&
++			ev != addon_event::input_message,
+ 			"Event that is disabled with limited add-on support was used!");
+ 
+ 		// Allow a subset of events even when add-ons are disabled, to ensure they continue working correctly
+@@ -126,7 +127,8 @@ namespace reshade
+ 				ev == addon_event::reshade_reloaded_effects ||
+ 				ev == addon_event::reshade_screenshot ||
+ 				ev == addon_event::reshade_render_technique ||
+-				ev == addon_event::reshade_set_current_preset_path)
++				ev == addon_event::reshade_set_current_preset_path ||
++				ev == addon_event::input_message)
+ 			{
+ 				// Prevent recursive invocation of events
+ 				if (nullptr == addon_current)
+diff --git a/source/input.cpp b/source/input.cpp
+index 7666f27..6b91cfe 100644
+--- a/source/input.cpp
++++ b/source/input.cpp
+@@ -4,11 +4,17 @@
+  */
+ 
+ #include "input.hpp"
++#include "reshade_api.hpp"
+ #include "dll_log.hpp"
+ #include "hook_manager.hpp"
++#if RESHADE_ADDON >= 2
++#include "addon_manager.hpp"
++#endif
+ #include <atomic>
+ #include <shared_mutex>
+ #include <unordered_map>
++#include <vector>
++#include <type_traits>
+ #include <cstring> // std::memset
+ #include <algorithm> // std::any_of, std::copy_n, std::max_element
+ #include <Windows.h>
+@@ -24,29 +30,99 @@ static POINT s_last_cursor_position = {};
+ static std::atomic<bool> s_block_mouse = false;
+ static std::atomic<bool> s_block_keyboard = false;
+ static std::atomic<bool> s_block_cursor_warping = false;
++static std::atomic<uint64_t> s_raw_input_registration_generation = 0;
++static_assert(std::is_trivially_copyable_v<reshade::api::input_message>);
++static_assert(std::is_standard_layout_v<reshade::api::input_message>);
++#if RESHADE_ADDON >= 2
++static std::atomic<uint64_t> s_input_message_sequence = 0;
++#endif
++
++static constexpr unsigned int raw_input_no_legacy_keyboard = 0x1u;
++static constexpr unsigned int raw_input_no_legacy_mouse = 0x2u;
++static constexpr unsigned int raw_input_registered_keyboard = 0x4u;
++static constexpr unsigned int raw_input_registered_mouse = 0x8u;
++
++static void add_input_message_flag(reshade::api::input_message &message, reshade::api::input_message_flags flag)
++{
++	message.flags |= static_cast<uint32_t>(flag);
++}
++
++static bool is_foreground_input_window(HWND window)
++{
++	if (window == nullptr)
++		return false;
++
++	const HWND foreground = GetForegroundWindow();
++	const HWND root = GetAncestor(window, GA_ROOT);
++	return foreground == window || (root != nullptr && foreground == root);
++}
++
++#if RESHADE_ADDON >= 2
++static void invoke_blocked_input_message(reshade::api::input_message &message)
++{
++	if (!reshade::has_addon_event<reshade::addon_event::input_message>())
++		return;
++
++	message.sequence = s_input_message_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
++	reshade::invoke_addon_event<reshade::addon_event::input_message>(message);
++}
++#endif
+ 
+ extern "C" BOOL WINAPI HookClipCursor(const RECT *lpRect);
+ extern "C" auto WINAPI HookGetKeyState(int vKey) -> SHORT;
+ extern "C" auto WINAPI HookGetAsyncKeyState(int vKey) -> SHORT;
+ 
++static bool handle_and_observe_window_message(MSG *message)
++{
++#if RESHADE_ADDON >= 2
++	reshade::api::input_message blocked_message = {};
++	reshade::api::input_message *const observation =
++		reshade::has_addon_event<reshade::addon_event::input_message>() ? &blocked_message : nullptr;
++	const bool blocked = reshade::input::handle_window_message(message, observation);
++	if (blocked && observation != nullptr)
++		invoke_blocked_input_message(blocked_message);
++	return blocked;
++#else
++	return reshade::input::handle_window_message(message);
++#endif
++}
++
+ reshade::input::input(window_handle window)
+ 	: _window(window)
+ {
+ }
+ 
+-void reshade::input::register_window_with_raw_input(window_handle window, bool no_legacy_keyboard, bool no_legacy_mouse)
++void reshade::input::register_window_with_raw_input(window_handle window, bool keyboard, bool mouse, bool no_legacy)
+ {
++	assert(keyboard != mouse);
+ 	if (is_uwp_app()) // UWP apps never use legacy input messages
+-		no_legacy_keyboard = no_legacy_mouse = true;
+-
+-	assert(window != nullptr);
++		no_legacy = true;
+ 
+ 	const std::unique_lock<std::shared_mutex> lock(s_windows_mutex);
++	const unsigned int no_legacy_flag = keyboard ? raw_input_no_legacy_keyboard : raw_input_no_legacy_mouse;
++	const unsigned int registered_flag = keyboard ? raw_input_registered_keyboard : raw_input_registered_mouse;
++
++	// Windows accepts only one registration per raw-input device class in a
++	// process. Mirror replacement and removal transactionally after the real
++	// RegisterRawInputDevices call succeeds so buffered records never inherit a
++	// stale target or stale NOLEGACY bit.
++	for (auto it = s_raw_input_windows.begin(); it != s_raw_input_windows.end();)
++	{
++		it->second &= ~(no_legacy_flag | registered_flag);
++		if ((it->second & (raw_input_registered_keyboard | raw_input_registered_mouse)) == 0)
++			it = s_raw_input_windows.erase(it);
++		else
++			++it;
++	}
+ 
+-	const auto flags = (no_legacy_keyboard ? 0x1u : 0u) | (no_legacy_mouse ? 0x2u : 0u);
+-	const auto insert = s_raw_input_windows.emplace(static_cast<HWND>(window), flags);
++	s_raw_input_registration_generation.fetch_add(1, std::memory_order_release);
++	if (window == nullptr)
++		return;
+ 
+-	if (!insert.second) insert.first->second |= flags;
++	unsigned int &flags = s_raw_input_windows[static_cast<HWND>(window)];
++	flags |= registered_flag;
++	if (no_legacy)
++		flags |= no_legacy_flag;
+ }
+ 
+ std::shared_ptr<reshade::input> reshade::input::register_window(window_handle window)
+@@ -82,14 +158,53 @@ std::shared_ptr<reshade::input> reshade::input::register_window(window_handle wi
+ 	}
+ }
+ 
+-bool reshade::input::handle_window_message(const void *message_data)
++static bool get_pointer_mouse_info(const MSG &message, POINTER_INFO &pointer_info)
++{
++	switch (message.message)
++	{
++	case WM_POINTERUPDATE:
++	case WM_POINTERDOWN:
++	case WM_POINTERUP:
++	case WM_POINTERENTER:
++	case WM_POINTERLEAVE:
++	case WM_POINTERWHEEL:
++	case WM_POINTERHWHEEL:
++		break;
++	default:
++		return false;
++	}
++
++	return GetPointerInfo(GET_POINTERID_WPARAM(message.wParam), &pointer_info) != FALSE &&
++		pointer_info.pointerType == PT_MOUSE;
++}
++
++bool reshade::input::handle_window_message(const void *message_data, api::input_message *blocked_message)
+ {
+ 	assert(message_data != nullptr);
+ 
+ 	MSG details = *static_cast<const MSG *>(message_data);
++	if (blocked_message != nullptr)
++	{
++		*blocked_message = {};
++		blocked_message->source = details.message == WM_INPUT ? api::input_message_source::raw_input : api::input_message_source::window_message;
++		blocked_message->source_window = details.hwnd;
++		blocked_message->wparam = static_cast<uint64_t>(details.wParam);
++		// 'lParam' contains a transient HRAWINPUT for 'WM_INPUT'. The copied raw
++		// payload below replaces it, so never publish that handle to an add-on.
++		blocked_message->lparam = details.message == WM_INPUT ? 0 : static_cast<int64_t>(details.lParam);
++		blocked_message->message = details.message;
++		blocked_message->time = details.time;
++	}
++
++	POINTER_INFO pointer_info = {};
++	const bool is_pointer_mouse_message = get_pointer_mouse_info(details, pointer_info);
+ 
+-	bool is_mouse_message = details.message >= WM_MOUSEFIRST && details.message <= WM_MOUSELAST;
++	bool is_mouse_message =
++		(details.message >= WM_MOUSEFIRST && details.message <= WM_MOUSELAST) ||
++		is_pointer_mouse_message;
+ 	bool is_keyboard_message = details.message >= WM_KEYFIRST && details.message <= WM_KEYLAST;
++	if (blocked_message != nullptr && details.message != WM_INPUT)
++		blocked_message->device_type = is_mouse_message ? api::input_device_type::mouse : api::input_device_type::keyboard;
+ 
+ 	// Ignore messages that are not related to mouse or keyboard input
+ 	if (details.message != WM_INPUT && !is_mouse_message && !is_keyboard_message)
+@@ -135,6 +250,8 @@ bool reshade::input::handle_window_message(const void *message_data)
+ 	if (input_window == s_windows.end())
+ 		return false;
+ 
++	const unsigned int raw_input_flags = raw_input_window != s_raw_input_windows.end() ? raw_input_window->second : 0;
++
+ 	const std::shared_ptr<input> input = input_window->second.lock();
+ 	// It may happen that the input was destroyed between the removal of expired entries above and here, so need to abort in this case
+ 	if (input == nullptr)
+@@ -144,7 +261,22 @@ bool reshade::input::handle_window_message(const void *message_data)
+ 	lock.unlock();
+ 
+ 	// Calculate window client mouse position
+-	ScreenToClient(static_cast<HWND>(input->_window), &details.pt);
++	const bool client_point_valid = ScreenToClient(static_cast<HWND>(input->_window), &details.pt) != FALSE;
++	if (blocked_message != nullptr)
++	{
++		blocked_message->target_window = input->_window;
++		blocked_message->client_x = details.pt.x;
++		blocked_message->client_y = details.pt.y;
++		if (client_point_valid)
++			add_input_message_flag(*blocked_message, api::input_message_flags::client_point_valid);
++		if (is_foreground_input_window(static_cast<HWND>(input->_window)))
++			add_input_message_flag(*blocked_message, api::input_message_flags::foreground);
++		// Mouse-in-pointer promotion can coexist with a raw mouse registration.
++		// Mark the promoted copy so consumers can give NOLEGACY raw input sole
++		// ownership instead of projecting one physical action twice.
++		if (is_pointer_mouse_message && (raw_input_flags & raw_input_no_legacy_mouse) != 0)
++			add_input_message_flag(*blocked_message, api::input_message_flags::no_legacy);
++	}
+ 
+ 	// Prevent input threads from modifying input while it is accessed elsewhere
+ 	const std::unique_lock<std::recursive_mutex> input_lock(input->_mutex);
+@@ -160,67 +292,163 @@ bool reshade::input::handle_window_message(const void *message_data)
+ 			GET_RAWINPUT_CODE_WPARAM(details.wParam) != RIM_INPUT || // Ignore all input sink messages (when window is not focused)
+ 			GetRawInputData(reinterpret_cast<HRAWINPUT>(details.lParam), RID_INPUT, &raw_data, &raw_data_size, sizeof(raw_data.header)) == UINT(-1))
+ 			break;
++		if (blocked_message != nullptr)
++		{
++			blocked_message->device_handle = reinterpret_cast<uintptr_t>(raw_data.header.hDevice);
++			blocked_message->wparam = static_cast<uint64_t>(raw_data.header.wParam);
++			if (GET_RAWINPUT_CODE_WPARAM(raw_data.header.wParam) == RIM_INPUT)
++				add_input_message_flag(*blocked_message, api::input_message_flags::foreground);
++		}
+ 		switch (raw_data.header.dwType)
+ 		{
+ 		case RIM_TYPEMOUSE:
++		{
+ 			is_mouse_message = true;
++			if (blocked_message != nullptr)
++			{
++				blocked_message->device_type = api::input_device_type::mouse;
++				blocked_message->mouse.flags = raw_data.data.mouse.usFlags;
++				blocked_message->mouse.button_flags = raw_data.data.mouse.usButtonFlags;
++				blocked_message->mouse.button_data = raw_data.data.mouse.usButtonData;
++				blocked_message->mouse.raw_buttons = raw_data.data.mouse.ulRawButtons;
++				blocked_message->mouse.last_x = raw_data.data.mouse.lLastX;
++				blocked_message->mouse.last_y = raw_data.data.mouse.lLastY;
++				blocked_message->mouse.extra_information = raw_data.data.mouse.ulExtraInformation;
++				if ((raw_input_flags & raw_input_no_legacy_mouse) != 0)
++					add_input_message_flag(*blocked_message, api::input_message_flags::no_legacy);
++			}
+ 
+-			if (raw_input_window == s_raw_input_windows.end() || (raw_input_window->second & 0x2) == 0)
++			if ((raw_input_flags & raw_input_no_legacy_mouse) == 0)
+ 				break; // Input is already handled (since legacy mouse messages are enabled), so nothing to do here
+ 
+-			if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN)
+-				input->_keys[VK_LBUTTON] = 0x88;
+-			else if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP)
+-				input->_keys[VK_LBUTTON] = 0x08;
+-			if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_RIGHT_BUTTON_DOWN)
+-				input->_keys[VK_RBUTTON] = 0x88;
+-			else if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_RIGHT_BUTTON_UP)
+-				input->_keys[VK_RBUTTON] = 0x08;
+-			if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_MIDDLE_BUTTON_DOWN)
+-				input->_keys[VK_MBUTTON] = 0x88;
+-			else if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_MIDDLE_BUTTON_UP)
+-				input->_keys[VK_MBUTTON] = 0x08;
+-
+-			if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_BUTTON_4_DOWN)
+-				input->_keys[VK_XBUTTON1] = 0x88;
+-			else if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_BUTTON_4_UP)
+-				input->_keys[VK_XBUTTON1] = 0x08;
+-
+-			if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_BUTTON_5_DOWN)
+-				input->_keys[VK_XBUTTON2] = 0x88;
+-			else if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_BUTTON_5_UP)
+-				input->_keys[VK_XBUTTON2] = 0x08;
++			const auto has_unowned_raw_transition = [&](unsigned int key, USHORT down_flag, USHORT up_flag) {
++				const uint8_t previous = input->_keys[key];
++				const bool was_down = (previous & 0x80) != 0;
++				const bool owned = (previous & 0x04) != 0;
++				return ((raw_data.data.mouse.usButtonFlags & down_flag) != 0 && was_down && !owned) ||
++					((raw_data.data.mouse.usButtonFlags & up_flag) != 0 && !owned);
++			};
++			const bool block_raw_record =
++				!has_unowned_raw_transition(VK_LBUTTON, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP) &&
++				!has_unowned_raw_transition(VK_RBUTTON, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP) &&
++				!has_unowned_raw_transition(VK_MBUTTON, RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP) &&
++				!has_unowned_raw_transition(VK_XBUTTON1, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP) &&
++				!has_unowned_raw_transition(VK_XBUTTON2, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP);
++			if (input->is_blocking_mouse_input() && !block_raw_record)
++				is_mouse_message = false;
++
++			const auto update_raw_button = [&](unsigned int key, USHORT down_flag, USHORT up_flag) {
++				if ((raw_data.data.mouse.usButtonFlags & down_flag) != 0)
++					input->_keys[key] = static_cast<uint8_t>(0x88 | (input->is_blocking_mouse_input() && block_raw_record ? 0x04 : 0));
++				if ((raw_data.data.mouse.usButtonFlags & up_flag) != 0)
++					input->_keys[key] = 0x08;
++			};
++			update_raw_button(VK_LBUTTON, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP);
++			update_raw_button(VK_RBUTTON, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP);
++			update_raw_button(VK_MBUTTON, RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP);
++			update_raw_button(VK_XBUTTON1, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP);
++			update_raw_button(VK_XBUTTON2, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP);
+ 
+ 			if (raw_data.data.mouse.usButtonFlags & RI_MOUSE_WHEEL)
+ 				input->_mouse_wheel_delta += static_cast<short>(raw_data.data.mouse.usButtonData) / WHEEL_DELTA;
+ 			break;
++		}
+ 		case RIM_TYPEKEYBOARD:
++			if (blocked_message != nullptr)
++			{
++				blocked_message->device_type = api::input_device_type::keyboard;
++				blocked_message->keyboard.make_code = raw_data.data.keyboard.MakeCode;
++				blocked_message->keyboard.flags = raw_data.data.keyboard.Flags;
++				blocked_message->keyboard.virtual_key = raw_data.data.keyboard.VKey;
++				blocked_message->keyboard.reserved = raw_data.data.keyboard.Reserved;
++				blocked_message->keyboard.message = raw_data.data.keyboard.Message;
++				blocked_message->keyboard.extra_information = raw_data.data.keyboard.ExtraInformation;
++				if ((raw_input_flags & raw_input_no_legacy_keyboard) != 0)
++					add_input_message_flag(*blocked_message, api::input_message_flags::no_legacy);
++			}
+ 			if (raw_data.data.keyboard.VKey == 0)
+ 				break; // Ignore messages without a valid key code
+ 
+ 			is_keyboard_message = true;
+-			// Do not block key up messages if the key down one was not blocked previously
+-			if (input->is_blocking_keyboard_input() && (raw_data.data.keyboard.Flags & RI_KEY_BREAK) != 0 && raw_data.data.keyboard.VKey < 0xFF && (input->_keys[raw_data.data.keyboard.VKey] & 0x04) == 0)
+-				is_keyboard_message = false;
+-
+-			if (raw_input_window == s_raw_input_windows.end() || (raw_input_window->second & 0x1) == 0)
++			if ((raw_input_flags & raw_input_no_legacy_keyboard) == 0)
+ 				break; // Input is already handled by 'WM_KEYDOWN' and friends (since legacy keyboard messages are enabled), so nothing to do here
+ 
+ 			// Filter out prefix messages without a key code
+ 			if (raw_data.data.keyboard.VKey < 0xFF)
+-				input->_keys[raw_data.data.keyboard.VKey] = (raw_data.data.keyboard.Flags & RI_KEY_BREAK) == 0 ? 0x88 : 0x08,
++			{
++				const bool key_down = (raw_data.data.keyboard.Flags & RI_KEY_BREAK) == 0;
++				const uint8_t previous = input->_keys[raw_data.data.keyboard.VKey];
++				const bool was_down = (previous & 0x80) != 0;
++				const bool owned = (previous & 0x04) != 0;
++				if (input->is_blocking_keyboard_input() &&
++					((key_down && was_down && !owned) || (!key_down && !owned)))
++					is_keyboard_message = false;
++				input->_keys[raw_data.data.keyboard.VKey] = key_down ? 0x88 : 0x08;
+ 				input->_keys_time[raw_data.data.keyboard.VKey] = details.time;
++				if (key_down && input->is_blocking_keyboard_input() && is_keyboard_message)
++					input->_keys[raw_data.data.keyboard.VKey] |= 0x04;
++			}
+ 
+ 			// No 'WM_CHAR' messages are sent if legacy keyboard messages are disabled, so need to generate text input manually here
+ 			// Cannot use the ToUnicode function always as it seems to reset dead key state and thus calling it can break subsequent application input, should be fine here though since the application is already explicitly using raw input
+ 			// Since Windows 10 version 1607 this supports the 0x2 flag, which prevents the keyboard state from being changed, so it is not a problem there anymore either way
+-			if (WCHAR ch[3] = {}; (raw_data.data.keyboard.Flags & RI_KEY_BREAK) == 0 && ToUnicode(raw_data.data.keyboard.VKey, raw_data.data.keyboard.MakeCode, input->_keys, ch, 2, 0x2))
+-				input->_text_input += ch;
++			if ((raw_data.data.keyboard.Flags & RI_KEY_BREAK) == 0)
++			{
++				WCHAR ch[3] = {};
++				const int translated = ToUnicode(raw_data.data.keyboard.VKey, raw_data.data.keyboard.MakeCode, input->_keys, ch, 2, 0x2);
++				if (translated != 0)
++				{
++					const unsigned int text_length = static_cast<unsigned int>(std::min(translated < 0 ? -translated : translated, 2));
++					input->_text_input += ch;
++					if (blocked_message != nullptr)
++					{
++						blocked_message->text_length = static_cast<uint8_t>(text_length);
++						for (unsigned int index = 0; index < text_length; ++index)
++							blocked_message->text[index] = static_cast<uint16_t>(ch[index]);
++						if (translated < 0)
++							add_input_message_flag(*blocked_message, api::input_message_flags::dead_key);
++					}
++				}
++			}
+ 			break;
+ 		}
+ 		break;
+ 	case WM_CHAR:
+ 		input->_text_input += static_cast<wchar_t>(details.wParam);
++		[[fallthrough]];
++	case WM_SYSCHAR:
++		if (blocked_message != nullptr)
++		{
++			blocked_message->text[0] = static_cast<uint16_t>(details.wParam);
++			blocked_message->text_length = 1;
++		}
++		break;
++	case WM_DEADCHAR:
++	case WM_SYSDEADCHAR:
++		if (blocked_message != nullptr)
++		{
++			blocked_message->text[0] = static_cast<uint16_t>(details.wParam);
++			blocked_message->text_length = 1;
++			add_input_message_flag(*blocked_message, api::input_message_flags::dead_key);
++		}
++		break;
++	case WM_UNICHAR:
++		if (blocked_message != nullptr && details.wParam != UNICODE_NOCHAR)
++		{
++			const uint32_t code_point = static_cast<uint32_t>(details.wParam);
++			if (code_point <= 0xFFFF)
++			{
++				blocked_message->text[0] = static_cast<uint16_t>(code_point);
++				blocked_message->text_length = 1;
++			}
++			else if (code_point <= 0x10FFFF)
++			{
++				const uint32_t surrogate = code_point - 0x10000;
++				blocked_message->text[0] = static_cast<uint16_t>(0xD800 + (surrogate >> 10));
++				blocked_message->text[1] = static_cast<uint16_t>(0xDC00 + (surrogate & 0x3FF));
++				blocked_message->text_length = 2;
++			}
++		}
+ 		break;
+ 	case WM_KEYDOWN:
+ 	case WM_SYSKEYDOWN:
+@@ -271,11 +499,279 @@ bool reshade::input::handle_window_message(const void *message_data)
+ 		assert(HIWORD(details.wParam) == XBUTTON1 || HIWORD(details.wParam) == XBUTTON2);
+ 		input->_keys[VK_XBUTTON1 + (HIWORD(details.wParam) - XBUTTON1)] = 0x08;
+ 		break;
++	case WM_POINTERDOWN:
++	case WM_POINTERUP:
++		switch (pointer_info.ButtonChangeType)
++		{
++		case POINTER_CHANGE_FIRSTBUTTON_DOWN:
++			input->_keys[VK_LBUTTON] = 0x88;
++			break;
++		case POINTER_CHANGE_FIRSTBUTTON_UP:
++			input->_keys[VK_LBUTTON] = 0x08;
++			break;
++		case POINTER_CHANGE_SECONDBUTTON_DOWN:
++			input->_keys[VK_RBUTTON] = 0x88;
++			break;
++		case POINTER_CHANGE_SECONDBUTTON_UP:
++			input->_keys[VK_RBUTTON] = 0x08;
++			break;
++		case POINTER_CHANGE_THIRDBUTTON_DOWN:
++			input->_keys[VK_MBUTTON] = 0x88;
++			break;
++		case POINTER_CHANGE_THIRDBUTTON_UP:
++			input->_keys[VK_MBUTTON] = 0x08;
++			break;
++		case POINTER_CHANGE_FOURTHBUTTON_DOWN:
++			input->_keys[VK_XBUTTON1] = 0x88;
++			break;
++		case POINTER_CHANGE_FOURTHBUTTON_UP:
++			input->_keys[VK_XBUTTON1] = 0x08;
++			break;
++		case POINTER_CHANGE_FIFTHBUTTON_DOWN:
++			input->_keys[VK_XBUTTON2] = 0x88;
++			break;
++		case POINTER_CHANGE_FIFTHBUTTON_UP:
++			input->_keys[VK_XBUTTON2] = 0x08;
++			break;
++		default:
++			break;
++		}
++		break;
++	case WM_POINTERWHEEL:
++		input->_mouse_wheel_delta += GET_WHEEL_DELTA_WPARAM(details.wParam) / WHEEL_DELTA;
++		break;
+ 	}
+ 
+ 	return (is_mouse_message && input->is_blocking_mouse_input()) || (is_keyboard_message && input->is_blocking_keyboard_input());
+ }
+ 
++reshade::input::raw_input_buffer_route reshade::input::resolve_raw_input_buffer_route(bool keyboard)
++{
++	raw_input_buffer_route route = {};
++	route.keyboard = keyboard;
++	std::vector<std::pair<HWND, std::shared_ptr<input>>> candidates;
++
++	const unsigned int registered_flag = keyboard ? raw_input_registered_keyboard : raw_input_registered_mouse;
++	const unsigned int no_legacy_flag = keyboard ? raw_input_no_legacy_keyboard : raw_input_no_legacy_mouse;
++	{
++		std::unique_lock<std::shared_mutex> lock(s_windows_mutex);
++		for (auto it = s_windows.begin(); it != s_windows.end();)
++			if (it->second.expired())
++				it = s_windows.erase(it);
++			else
++				++it;
++
++		const HWND foreground = GetForegroundWindow();
++		const HWND foreground_root = foreground != nullptr ? GetAncestor(foreground, GA_ROOT) : nullptr;
++		const HWND normalized_foreground_root = foreground_root != nullptr ? foreground_root : foreground;
++		const DWORD current_thread = GetCurrentThreadId();
++		for (const auto &[window, flags] : s_raw_input_windows)
++		{
++			if ((flags & (registered_flag | no_legacy_flag)) != (registered_flag | no_legacy_flag) ||
++				IsWindow(window) == FALSE ||
++				GetWindowThreadProcessId(window, nullptr) != current_thread)
++				continue;
++
++			const HWND root = GetAncestor(window, GA_ROOT);
++			const HWND normalized_root = root != nullptr ? root : window;
++			if (normalized_foreground_root == nullptr || normalized_root != normalized_foreground_root)
++				continue;
++			if (route.source_window != nullptr)
++				return {}; // Buffered input has no HWND, so ambiguous registrations must fail open.
++			route.source_window = window;
++		}
++
++		if (route.source_window != nullptr)
++		{
++			const HWND source_root_handle = GetAncestor(static_cast<HWND>(route.source_window), GA_ROOT);
++			const HWND source_root = source_root_handle != nullptr ? source_root_handle : static_cast<HWND>(route.source_window);
++			for (const auto &[window, weak_input] : s_windows)
++			{
++				const std::shared_ptr<input> candidate = weak_input.lock();
++				if (candidate == nullptr)
++					continue;
++				const HWND root_handle = GetAncestor(window, GA_ROOT);
++				const HWND root = root_handle != nullptr ? root_handle : window;
++				if (root == source_root)
++					candidates.emplace_back(window, candidate);
++			}
++			route.registration_generation = s_raw_input_registration_generation.load(std::memory_order_acquire);
++		}
++	}
++
++	uint64_t best_frame_count = 0;
++	for (const auto &[window, candidate] : candidates)
++	{
++		const std::unique_lock<std::recursive_mutex> input_lock(candidate->_mutex);
++		if (keyboard ? !candidate->_block_keyboard : !candidate->_block_mouse)
++			continue;
++		if (route.target_input != nullptr && candidate->_frame_count <= best_frame_count)
++			continue;
++		route.target_input = candidate;
++		best_frame_count = candidate->_frame_count;
++	}
++
++	if (route.target_input == nullptr)
++		return {};
++	route.foreground = is_foreground_input_window(static_cast<HWND>(route.target_input->_window));
++	POINT cursor = {};
++	if (GetCursorPos(&cursor) != FALSE &&
++		ScreenToClient(static_cast<HWND>(route.target_input->_window), &cursor) != FALSE)
++	{
++		route.client_x = cursor.x;
++		route.client_y = cursor.y;
++		route.client_point_valid = true;
++	}
++	if (!route.foreground || (!keyboard && !route.client_point_valid))
++		return {};
++	return route;
++}
++
++bool reshade::input::handle_raw_input_buffer(const void *raw_input, const raw_input_buffer_route &route)
++{
++	if (raw_input == nullptr || !route)
++		return false;
++	if (route.registration_generation != s_raw_input_registration_generation.load(std::memory_order_acquire))
++		return false;
++
++	const RAWINPUT &raw_data = *static_cast<const RAWINPUT *>(raw_input);
++	if ((route.keyboard && raw_data.header.dwType != RIM_TYPEKEYBOARD) ||
++		(!route.keyboard && raw_data.header.dwType != RIM_TYPEMOUSE) ||
++		GET_RAWINPUT_CODE_WPARAM(raw_data.header.wParam) != RIM_INPUT)
++		return false;
++
++	api::input_message message = {};
++	message.source = api::input_message_source::raw_input_buffer;
++	message.device_type = route.keyboard ? api::input_device_type::keyboard : api::input_device_type::mouse;
++	message.source_window = route.source_window;
++	message.target_window = route.target_input->_window;
++	message.device_handle = reinterpret_cast<uintptr_t>(raw_data.header.hDevice);
++	message.wparam = static_cast<uint64_t>(raw_data.header.wParam);
++	message.message = WM_INPUT;
++	message.time = static_cast<uint32_t>(GetMessageTime());
++	message.client_x = route.client_x;
++	message.client_y = route.client_y;
++	add_input_message_flag(message, api::input_message_flags::no_legacy);
++	if (route.foreground)
++		add_input_message_flag(message, api::input_message_flags::foreground);
++	if (route.client_point_valid)
++		add_input_message_flag(message, api::input_message_flags::client_point_valid);
++
++	bool block_record = true;
++	{
++		const std::unique_lock<std::recursive_mutex> input_lock(route.target_input->_mutex);
++		if (route.keyboard ? !route.target_input->_block_keyboard : !route.target_input->_block_mouse)
++			return false;
++		if (route.keyboard)
++		{
++			message.keyboard.make_code = raw_data.data.keyboard.MakeCode;
++			message.keyboard.flags = raw_data.data.keyboard.Flags;
++			message.keyboard.virtual_key = raw_data.data.keyboard.VKey;
++			message.keyboard.reserved = raw_data.data.keyboard.Reserved;
++			message.keyboard.message = raw_data.data.keyboard.Message;
++			message.keyboard.extra_information = raw_data.data.keyboard.ExtraInformation;
++
++			const unsigned int virtual_key = raw_data.data.keyboard.VKey;
++			const bool down = (raw_data.data.keyboard.Flags & RI_KEY_BREAK) == 0;
++			const bool valid_message = down
++				? raw_data.data.keyboard.Message == WM_KEYDOWN || raw_data.data.keyboard.Message == WM_SYSKEYDOWN
++				: raw_data.data.keyboard.Message == WM_KEYUP || raw_data.data.keyboard.Message == WM_SYSKEYUP;
++			if (virtual_key == 0 || virtual_key >= 0xFF || !valid_message)
++				return false;
++
++			const uint8_t previous = route.target_input->_keys[virtual_key];
++			const bool was_down = (previous & 0x80) != 0;
++			const bool owned = (previous & 0x04) != 0;
++			if (down)
++			{
++				block_record = owned || !was_down;
++				route.target_input->_keys[virtual_key] = static_cast<uint8_t>(0x88 | (block_record ? 0x04 : 0));
++			}
++			else
++			{
++				block_record = owned;
++				route.target_input->_keys[virtual_key] = 0x08;
++			}
++			route.target_input->_keys_time[virtual_key] = message.time;
++
++			if (down && block_record)
++			{
++				WCHAR text[5] = {};
++				const int translated = ToUnicode(
++					virtual_key,
++					raw_data.data.keyboard.MakeCode,
++					route.target_input->_keys,
++					text,
++					4,
++					0x2);
++				if (translated != 0)
++				{
++					const unsigned int text_length = static_cast<unsigned int>(
++						std::min(translated < 0 ? -translated : translated, 4));
++					route.target_input->_text_input.append(text, text_length);
++					message.text_length = static_cast<uint8_t>(text_length);
++					for (unsigned int index = 0; index < text_length; ++index)
++						message.text[index] = static_cast<uint16_t>(text[index]);
++					if (translated < 0)
++						add_input_message_flag(message, api::input_message_flags::dead_key);
++				}
++			}
++		}
++		else
++		{
++			message.mouse.flags = raw_data.data.mouse.usFlags;
++			message.mouse.button_flags = raw_data.data.mouse.usButtonFlags;
++			message.mouse.button_data = raw_data.data.mouse.usButtonData;
++			message.mouse.raw_buttons = raw_data.data.mouse.ulRawButtons;
++			message.mouse.last_x = raw_data.data.mouse.lLastX;
++			message.mouse.last_y = raw_data.data.mouse.lLastY;
++			message.mouse.extra_information = raw_data.data.mouse.ulExtraInformation;
++
++			const auto has_unowned_transition = [&](unsigned int key, USHORT down_flag, USHORT up_flag) {
++				const uint8_t previous = route.target_input->_keys[key];
++				const bool was_down = (previous & 0x80) != 0;
++				const bool owned = (previous & 0x04) != 0;
++				return ((raw_data.data.mouse.usButtonFlags & down_flag) != 0 && was_down && !owned) ||
++					((raw_data.data.mouse.usButtonFlags & up_flag) != 0 && !owned);
++			};
++			block_record =
++				!has_unowned_transition(VK_LBUTTON, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP) &&
++				!has_unowned_transition(VK_RBUTTON, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP) &&
++				!has_unowned_transition(VK_MBUTTON, RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP) &&
++				!has_unowned_transition(VK_XBUTTON1, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP) &&
++				!has_unowned_transition(VK_XBUTTON2, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP);
++
++			const auto update_button = [&](unsigned int key, USHORT down_flag, USHORT up_flag) {
++				const uint8_t previous = route.target_input->_keys[key];
++				if ((raw_data.data.mouse.usButtonFlags & down_flag) != 0)
++					route.target_input->_keys[key] = static_cast<uint8_t>(0x88 | (block_record ? 0x04 : 0));
++				if ((raw_data.data.mouse.usButtonFlags & up_flag) != 0)
++					route.target_input->_keys[key] = 0x08;
++			};
++			update_button(VK_LBUTTON, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP);
++			update_button(VK_RBUTTON, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP);
++			update_button(VK_MBUTTON, RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP);
++			update_button(VK_XBUTTON1, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP);
++			update_button(VK_XBUTTON2, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP);
++			if (block_record && (raw_data.data.mouse.usButtonFlags & RI_MOUSE_WHEEL))
++				route.target_input->_mouse_wheel_delta += static_cast<short>(raw_data.data.mouse.usButtonData) / WHEEL_DELTA;
++			if (block_record)
++			{
++				route.target_input->_mouse_position[0] = message.client_x;
++				route.target_input->_mouse_position[1] = message.client_y;
++			}
++		}
++	}
++
++	if (!block_record)
++		return false;
++#if RESHADE_ADDON >= 2
++	if (has_addon_event<addon_event::input_message>())
++		invoke_blocked_input_message(message);
++#endif
++	return true;
++}
++
+ bool reshade::input::is_key_down(unsigned int keycode) const
+ {
+ 	assert(keycode < ARRAYSIZE(_keys));
+@@ -485,10 +981,32 @@ std::string reshade::input::key_name(const unsigned int key[4])
+ 
+ void reshade::input::block_mouse_input(bool enable)
+ {
++	const std::unique_lock<std::recursive_mutex> input_lock(_mutex);
++	if (enable && !_block_mouse)
++	{
++		static const auto GetAsyncKeyState_trampoline = reshade::hooks::is_hooked(GetAsyncKeyState) ? reshade::hooks::call(HookGetAsyncKeyState, GetAsyncKeyState) : GetAsyncKeyState;
++		for (const unsigned int key : { VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2 })
++		{
++			_keys[key] &= ~0x84;
++			if ((GetAsyncKeyState_trampoline(key) & 0x8000) != 0)
++				_keys[key] |= 0x80;
++		}
++	}
+ 	_block_mouse = enable;
+ }
+ void reshade::input::block_keyboard_input(bool enable)
+ {
++	const std::unique_lock<std::recursive_mutex> input_lock(_mutex);
++	if (enable && !_block_keyboard)
++	{
++		static const auto GetAsyncKeyState_trampoline = reshade::hooks::is_hooked(GetAsyncKeyState) ? reshade::hooks::call(HookGetAsyncKeyState, GetAsyncKeyState) : GetAsyncKeyState;
++		for (unsigned int key = 7; key < ARRAYSIZE(_keys); ++key)
++		{
++			_keys[key] &= ~0x84;
++			if ((GetAsyncKeyState_trampoline(key) & 0x8000) != 0)
++				_keys[key] |= 0x80;
++		}
++	}
+ 	_block_keyboard = enable;
+ }
+ void reshade::input::block_mouse_cursor_warping(bool enable)
+@@ -587,7 +1105,7 @@ extern "C" BOOL WINAPI HookGetMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMi
+ 
+ 	assert(lpMsg != nullptr);
+ 
+-	if (lpMsg->hwnd != nullptr && reshade::input::handle_window_message(lpMsg))
++	if (lpMsg->hwnd != nullptr && handle_and_observe_window_message(lpMsg))
+ 	{
+ 		// We still want 'WM_CHAR' messages, so translate message
+ 		TranslateMessage(lpMsg);
+@@ -641,7 +1159,7 @@ extern "C" BOOL WINAPI HookGetMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMi
+ 
+ 	assert(lpMsg != nullptr);
+ 
+-	if (lpMsg->hwnd != nullptr && reshade::input::handle_window_message(lpMsg))
++	if (lpMsg->hwnd != nullptr && handle_and_observe_window_message(lpMsg))
+ 	{
+ 		// We still want 'WM_CHAR' messages, so translate message
+ 		TranslateMessage(lpMsg);
+@@ -659,7 +1177,7 @@ extern "C" BOOL WINAPI HookPeekMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterM
+ 	if (!trampoline(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg) || lpMsg == nullptr)
+ 		return FALSE;
+ 
+-	if (lpMsg->hwnd != nullptr && (wRemoveMsg & PM_REMOVE) != 0 && reshade::input::handle_window_message(lpMsg))
++	if (lpMsg->hwnd != nullptr && (wRemoveMsg & PM_REMOVE) != 0 && handle_and_observe_window_message(lpMsg))
+ 	{
+ 		// We still want 'WM_CHAR' messages, so translate message
+ 		TranslateMessage(lpMsg);
+@@ -676,7 +1194,7 @@ extern "C" BOOL WINAPI HookPeekMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterM
+ 	if (!trampoline(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg) || lpMsg == nullptr)
+ 		return FALSE;
+ 
+-	if (lpMsg->hwnd != nullptr && (wRemoveMsg & PM_REMOVE) != 0 && reshade::input::handle_window_message(lpMsg))
++	if (lpMsg->hwnd != nullptr && (wRemoveMsg & PM_REMOVE) != 0 && handle_and_observe_window_message(lpMsg))
+ 	{
+ 		// We still want 'WM_CHAR' messages, so translate message
+ 		TranslateMessage(lpMsg);
+@@ -731,10 +1249,6 @@ extern "C" BOOL WINAPI HookRegisterRawInputDevices(PCRAWINPUTDEVICE pRawInputDev
+ 		reshade::log::message(reshade::log::level::debug, "  +-----------------------------------------+-----------------------------------------+");
+ #endif
+ 
+-		if (device.usUsagePage != 1 || device.hwndTarget == nullptr)
+-			continue;
+-
+-		reshade::input::register_window_with_raw_input(device.hwndTarget, device.usUsage == 0x06 && (device.dwFlags & RIDEV_NOLEGACY) != 0, device.usUsage == 0x02 && (device.dwFlags & RIDEV_NOLEGACY) != 0);
+ 	}
+ 
+ 	static const auto trampoline = reshade::hooks::call(HookRegisterRawInputDevices);
+@@ -744,6 +1258,20 @@ extern "C" BOOL WINAPI HookRegisterRawInputDevices(PCRAWINPUTDEVICE pRawInputDev
+ 		return FALSE;
+ 	}
+ 
++	for (UINT i = 0; i < uiNumDevices; ++i)
++	{
++		const RAWINPUTDEVICE &device = pRawInputDevices[i];
++		if (device.usUsagePage != 1 || (device.usUsage != 0x02 && device.usUsage != 0x06))
++			continue;
++
++		const bool remove = (device.dwFlags & RIDEV_REMOVE) != 0;
++		reshade::input::register_window_with_raw_input(
++			remove ? nullptr : device.hwndTarget,
++			device.usUsage == 0x06,
++			device.usUsage == 0x02,
++			!remove && (device.dwFlags & RIDEV_NOLEGACY) != 0);
++	}
++
+ 	return TRUE;
+ }
+ 
+@@ -850,18 +1378,26 @@ extern "C" UINT WINAPI HookGetRawInputBuffer(PRAWINPUT pData, PUINT pcbSize, UIN
+ {
+ 	static const auto trampoline = reshade::hooks::call(HookGetRawInputBuffer);
+ 	const UINT result = trampoline(pData, pcbSize, cbSizeHeader);
++	const bool block_mouse = reshade::input::is_blocking_any_mouse_input();
++	const bool block_keyboard = reshade::input::is_blocking_any_keyboard_input();
+ 	// This is a high throughput API (i.e. 8 kHz mouse polling), so need a fast path to exit
+-	if (result == static_cast<UINT>(-1) || pData == nullptr || *pcbSize == 0 || !(reshade::input::is_blocking_any_mouse_input() || reshade::input::is_blocking_any_keyboard_input()))
++	if (result == static_cast<UINT>(-1) || pData == nullptr || *pcbSize == 0 || !(block_mouse || block_keyboard))
+ 		return result;
+ 
+ 	using QWORD = UINT64;
++	const reshade::input::raw_input_buffer_route mouse_route = block_mouse
++		? reshade::input::resolve_raw_input_buffer_route(false)
++		: reshade::input::raw_input_buffer_route {};
++	const reshade::input::raw_input_buffer_route keyboard_route = block_keyboard
++		? reshade::input::resolve_raw_input_buffer_route(true)
++		: reshade::input::raw_input_buffer_route {};
+ 
+ 	for (UINT i = 0; i < result; ++i, pData = NEXTRAWINPUTBLOCK(pData))
+ 	{
+ 		switch (pData->header.dwType)
+ 		{
+ 		case RIM_TYPEMOUSE:
+-			if (reshade::input::is_blocking_any_mouse_input())
++			if (reshade::input::handle_raw_input_buffer(pData, mouse_route))
+ 			{
+ 				pData->header.hDevice = nullptr;
+ 				pData->header.wParam = RIM_INPUTSINK;
+@@ -871,7 +1407,7 @@ extern "C" UINT WINAPI HookGetRawInputBuffer(PRAWINPUT pData, PUINT pcbSize, UIN
+ 			}
+ 			break;
+ 		case RIM_TYPEKEYBOARD:
+-			if (reshade::input::is_blocking_any_keyboard_input())
++			if (reshade::input::handle_raw_input_buffer(pData, keyboard_route))
+ 			{
+ 				// Supplying an invalid device will early-out SDL before it calls HID APIs to try and get an input report that we don't want it to see
+ 				pData->header.hDevice = nullptr;
+diff --git a/source/input.hpp b/source/input.hpp
+index cc0a89f..52049b3 100644
+--- a/source/input.hpp
++++ b/source/input.hpp
+@@ -9,6 +9,11 @@
+ #include <memory>
+ #include <string>
+ 
++namespace reshade::api
++{
++	struct input_message;
++}
++
+ namespace reshade
+ {
+ 	class input
+@@ -34,9 +39,10 @@ namespace reshade
+ 		/// Registers a window using raw input with the input manager.
+ 		/// </summary>
+ 		/// <param name="window">Window handle of the target window.</param>
+-		/// <param name="no_legacy_keyboard"><c>true</c> if 'RIDEV_NOLEGACY' is set for the keyboard device, <c>false</c> otherwise.</param>
+-		/// <param name="no_legacy_mouse"><c>true</c> if 'RIDEV_NOLEGACY' is set for the mouse device, <c>false</c> otherwise.</param>
+-		static void register_window_with_raw_input(window_handle window, bool no_legacy_keyboard, bool no_legacy_mouse);
++		/// <param name="keyboard"><c>true</c> when updating the keyboard registration.</param>
++		/// <param name="mouse"><c>true</c> when updating the mouse registration.</param>
++		/// <param name="no_legacy"><c>true</c> if 'RIDEV_NOLEGACY' is set for the device, <c>false</c> otherwise.</param>
++		static void register_window_with_raw_input(window_handle window, bool keyboard, bool mouse, bool no_legacy);
+ 		/// <summary>
+ 		/// Registers a window using normal input window messages with the input manager.
+ 		/// </summary>
+@@ -122,7 +128,33 @@ namespace reshade
+ 		/// </summary>
+ 		/// <param name="message_data">Pointer to a <see cref="MSG"/> with the message data.</param>
+ 		/// <returns><see langword="true"/> if the called should ignore this message, or <see langword="false"/> if it should pass it on to the application.</returns>
+-		static bool handle_window_message(const void *message_data);
++		static bool handle_window_message(const void *message_data, api::input_message *blocked_message = nullptr);
++
++		struct raw_input_buffer_route
++		{
++			window_handle source_window = nullptr;
++			std::shared_ptr<input> target_input;
++			int client_x = 0;
++			int client_y = 0;
++			bool client_point_valid = false;
++			bool foreground = false;
++			bool keyboard = false;
++			uint64_t registration_generation = 0;
++
++			explicit operator bool() const { return target_input != nullptr; }
++		};
++
++		/// <summary>
++		/// Resolves the one foreground NOLEGACY raw-input registration and blocking
++		/// input manager eligible to own a buffered device class.
++		/// </summary>
++		static raw_input_buffer_route resolve_raw_input_buffer_route(bool keyboard);
++		/// <summary>
++		/// Copies and publishes one buffered raw-input record through a previously
++		/// resolved route.
++		/// </summary>
++		/// <returns><see langword="true"/> only when the application record may be neutralized.</returns>
++		static bool handle_raw_input_buffer(const void *raw_input, const raw_input_buffer_route &route);
+ 
+ 	private:
+ 		std::recursive_mutex _mutex;

@@ -1,23 +1,28 @@
-import { app as ElectronApp } from "electron"
+import { app as ElectronApp } from 'electron';
+import { parseReShadeLaunchConfig } from 'electron-game-overlay';
 
-import "./utils/config"
+import './utils/config';
 
-import { Application } from "./electron/app-entry"
+import { Application } from './electron/app-entry';
 
-const appEntry = new Application()
+const appEntry = new Application(parseReShadeLaunchConfig(process.argv));
 
-ElectronApp.disableHardwareAcceleration()
+ElectronApp.disableHardwareAcceleration();
 
-ElectronApp.on("ready", () => {
-    appEntry.start()
-})
+ElectronApp.on('before-quit', () => {
+  appEntry.dispose();
+});
 
-ElectronApp.on("window-all-closed", () => {
-    if (process.platform !== "darwin") {
-        ElectronApp.quit()
-    }
-})
+ElectronApp.on('ready', () => {
+  appEntry.start();
+});
 
-ElectronApp.on("activate", () => {
-    appEntry.activate()
-})
+ElectronApp.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    ElectronApp.quit();
+  }
+});
+
+ElectronApp.on('activate', () => {
+  appEntry.activate();
+});

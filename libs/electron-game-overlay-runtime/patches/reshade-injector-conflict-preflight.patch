@@ -1,0 +1,403 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 5a90b16..fc2051f 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -9,6 +9,8 @@
+ #include <AclAPI.h>
+ #include <Psapi.h>
+ #include <TlHelp32.h>
++#include <cstdint>
++#include <cstring>
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -257,6 +259,329 @@ static bool write_utf8_stdout_line(const std::wstring &line)
+ 	return fflush(stdout) == 0;
+ }
+ 
++enum class module_export_inspection
++{
++	not_present,
++	present,
++	failed,
++};
++
++enum class target_preflight_result
++{
++	clear,
++	runtime_conflict,
++	inspection_failed,
++};
++
++static bool read_remote_bytes(HANDLE process, uintptr_t address, void *destination, SIZE_T size, DWORD &error)
++{
++	SIZE_T bytes_read = 0;
++	if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(address), destination, size, &bytes_read) ||
++		bytes_read != size)
++	{
++		error = GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_PARTIAL_COPY;
++		return false;
++	}
++
++	return true;
++}
++
++static bool image_range_is_valid(DWORD rva, SIZE_T size, DWORD image_size)
++{
++	return rva <= image_size && size <= static_cast<SIZE_T>(image_size - rva);
++}
++
++static module_export_inspection remote_module_exports_reshade_version(
++	HANDLE process,
++	HMODULE module,
++	DWORD &error)
++{
++	constexpr LONG max_pe_header_offset = 1024 * 1024;
++	constexpr DWORD max_export_names = 65536;
++	constexpr char reshade_export_name[] = "ReShadeVersion";
++
++	const uintptr_t module_base = reinterpret_cast<uintptr_t>(module);
++	IMAGE_DOS_HEADER dos_header = {};
++	if (!read_remote_bytes(process, module_base, &dos_header, sizeof(dos_header), error))
++		return module_export_inspection::failed;
++	if (dos_header.e_magic != IMAGE_DOS_SIGNATURE ||
++		dos_header.e_lfanew <= 0 ||
++		dos_header.e_lfanew > max_pe_header_offset)
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	const uintptr_t nt_header_address = module_base + static_cast<uintptr_t>(dos_header.e_lfanew);
++	DWORD signature = 0;
++	IMAGE_FILE_HEADER file_header = {};
++	if (!read_remote_bytes(process, nt_header_address, &signature, sizeof(signature), error) ||
++		!read_remote_bytes(process, nt_header_address + sizeof(signature), &file_header, sizeof(file_header), error))
++		return module_export_inspection::failed;
++	if (signature != IMAGE_NT_SIGNATURE ||
++		file_header.Machine != IMAGE_FILE_MACHINE_AMD64 ||
++		file_header.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	IMAGE_OPTIONAL_HEADER64 optional_header = {};
++	if (!read_remote_bytes(
++			process,
++			nt_header_address + sizeof(signature) + sizeof(file_header),
++			&optional_header,
++			sizeof(optional_header),
++			error))
++		return module_export_inspection::failed;
++	if (optional_header.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
++		optional_header.SizeOfImage == 0 ||
++		optional_header.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT)
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	const IMAGE_DATA_DIRECTORY export_data =
++		optional_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
++	if (export_data.VirtualAddress == 0 || export_data.Size == 0)
++		return module_export_inspection::not_present;
++	if (!image_range_is_valid(
++			export_data.VirtualAddress,
++			sizeof(IMAGE_EXPORT_DIRECTORY),
++			optional_header.SizeOfImage))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	IMAGE_EXPORT_DIRECTORY export_directory = {};
++	if (!read_remote_bytes(
++			process,
++			module_base + export_data.VirtualAddress,
++			&export_directory,
++			sizeof(export_directory),
++			error))
++		return module_export_inspection::failed;
++	if (export_directory.NumberOfNames == 0)
++		return module_export_inspection::not_present;
++	if (export_directory.NumberOfNames > max_export_names ||
++		!image_range_is_valid(
++			export_directory.AddressOfNames,
++			static_cast<SIZE_T>(export_directory.NumberOfNames) * sizeof(DWORD),
++			optional_header.SizeOfImage))
++	{
++		error = ERROR_BAD_EXE_FORMAT;
++		return module_export_inspection::failed;
++	}
++
++	std::vector<DWORD> name_rvas(export_directory.NumberOfNames);
++	if (!read_remote_bytes(
++			process,
++			module_base + export_directory.AddressOfNames,
++			name_rvas.data(),
++			name_rvas.size() * sizeof(DWORD),
++			error))
++		return module_export_inspection::failed;
++
++	// PE export name pointers are sorted lexically, so a binary search keeps
++	// remote reads bounded even for modules with thousands of exports.
++	size_t first = 0;
++	size_t last = name_rvas.size();
++	while (first < last)
++	{
++		const size_t middle = first + (last - first) / 2;
++		const DWORD name_rva = name_rvas[middle];
++		if (!image_range_is_valid(name_rva, sizeof(reshade_export_name), optional_header.SizeOfImage))
++		{
++			error = ERROR_BAD_EXE_FORMAT;
++			return module_export_inspection::failed;
++		}
++
++		char export_name[sizeof(reshade_export_name)] = {};
++		if (!read_remote_bytes(
++				process,
++				module_base + name_rva,
++				export_name,
++				sizeof(export_name),
++				error))
++			return module_export_inspection::failed;
++		const int comparison =
++			std::memcmp(export_name, reshade_export_name, sizeof(reshade_export_name));
++		if (comparison == 0)
++			return module_export_inspection::present;
++		if (comparison < 0)
++			first = middle + 1;
++		else
++			last = middle;
++	}
++
++	return module_export_inspection::not_present;
++}
++
++static target_preflight_result inspect_target_for_reshade_once(
++	HANDLE process,
++	std::wstring &conflicting_module_path,
++	DWORD &error)
++{
++	constexpr size_t max_modules = 4096;
++	std::vector<HMODULE> modules(max_modules);
++	DWORD bytes_needed = 0;
++	if (!K32EnumProcessModules(
++			process,
++			modules.data(),
++			static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
++			&bytes_needed))
++	{
++		error = GetLastError();
++		return target_preflight_result::inspection_failed;
++	}
++	if (
++		bytes_needed % sizeof(HMODULE) != 0 ||
++		bytes_needed > modules.size() * sizeof(HMODULE))
++	{
++		error = ERROR_INSUFFICIENT_BUFFER;
++		return target_preflight_result::inspection_failed;
++	}
++
++	const size_t module_count = bytes_needed / sizeof(HMODULE);
++	for (size_t index = 0; index < module_count; ++index)
++	{
++		switch (remote_module_exports_reshade_version(process, modules[index], error))
++		{
++		case module_export_inspection::not_present:
++			continue;
++		case module_export_inspection::failed:
++			return target_preflight_result::inspection_failed;
++		case module_export_inspection::present:
++			WCHAR module_path[32768] = L"";
++			if (const DWORD length = K32GetModuleFileNameExW(
++					process,
++					modules[index],
++					module_path,
++					static_cast<DWORD>(sizeof(module_path) / sizeof(module_path[0])));
++				length != 0 && length < sizeof(module_path) / sizeof(module_path[0]))
++				conflicting_module_path.assign(module_path, length);
++			return target_preflight_result::runtime_conflict;
++		}
++	}
++
++	return target_preflight_result::clear;
++}
++
++static bool is_transient_module_inspection_error(DWORD error)
++{
++	return error == ERROR_BAD_LENGTH ||
++		error == ERROR_PARTIAL_COPY ||
++		error == ERROR_INVALID_ADDRESS ||
++		error == ERROR_NOACCESS;
++}
++
++static target_preflight_result inspect_target_for_reshade(
++	HANDLE process,
++	std::wstring &conflicting_module_path,
++	DWORD &error)
++{
++	constexpr unsigned int max_inspection_attempts = 4;
++	for (unsigned int attempt = 0; attempt < max_inspection_attempts; ++attempt)
++	{
++		conflicting_module_path.clear();
++		error = ERROR_SUCCESS;
++		const target_preflight_result result =
++			inspect_target_for_reshade_once(process, conflicting_module_path, error);
++		if (result != target_preflight_result::inspection_failed ||
++			!is_transient_module_inspection_error(error) ||
++			attempt + 1 == max_inspection_attempts)
++			return result;
++		Sleep(1);
++	}
++
++	error = ERROR_GEN_FAILURE;
++	return target_preflight_result::inspection_failed;
++}
++
++static void append_json_string(std::wstring &json, const std::wstring &value)
++{
++	constexpr wchar_t hex_digits[] = L"0123456789ABCDEF";
++	json.push_back(L'"');
++	for (const wchar_t character : value)
++	{
++		switch (character)
++		{
++		case L'"':
++			json.append(L"\\\"");
++			break;
++		case L'\\':
++			json.append(L"\\\\");
++			break;
++		case L'\b':
++			json.append(L"\\b");
++			break;
++		case L'\f':
++			json.append(L"\\f");
++			break;
++		case L'\n':
++			json.append(L"\\n");
++			break;
++		case L'\r':
++			json.append(L"\\r");
++			break;
++		case L'\t':
++			json.append(L"\\t");
++			break;
++		default:
++			if (character >= 0x20 && character <= 0x7E)
++			{
++				json.push_back(character);
++			}
++			else
++			{
++				const unsigned int value = static_cast<unsigned int>(character);
++				json.append(L"\\u");
++				json.push_back(hex_digits[(value >> 12) & 0xF]);
++				json.push_back(hex_digits[(value >> 8) & 0xF]);
++				json.push_back(hex_digits[(value >> 4) & 0xF]);
++				json.push_back(hex_digits[value & 0xF]);
++			}
++			break;
++		}
++	}
++	json.push_back(L'"');
++}
++
++static bool write_injector_diagnostic(
++	const wchar_t *code,
++	DWORD pid,
++	const std::wstring &module_path,
++	DWORD windows_error)
++{
++	std::wstring diagnostic =
++		L"ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {\"schemaVersion\":1,"
++		L"\"stage\":\"target-preflight\",\"code\":\"";
++	diagnostic.append(code);
++	diagnostic.append(L"\",\"pid\":");
++	diagnostic.append(std::to_wstring(pid));
++	diagnostic.append(L",\"injectionStarted\":false");
++	if (!module_path.empty())
++	{
++		diagnostic.append(L",\"modulePath\":");
++		append_json_string(diagnostic, module_path);
++	}
++	if (windows_error != ERROR_SUCCESS)
++	{
++		diagnostic.append(L",\"windowsErrorCode\":");
++		diagnostic.append(std::to_wstring(windows_error));
++	}
++	diagnostic.push_back(L'}');
++
++	// append_json_string escapes all non-ASCII code units, so this marker stays
++	// parseable even when the CRT stream is using a legacy Windows code page.
++	return fwprintf(stdout, L"%ls\n", diagnostic.c_str()) >= 0 &&
++		fflush(stdout) == 0;
++}
++
+ struct observed_process_state
+ {
+ 	scoped_handle process;
+@@ -544,11 +869,8 @@ int wmain(int argc, wchar_t *argv[])
+ 	if (use_path_watcher)
+ 	{
+ 		wprintf(L"Matched executable path: %s\n", matched_image_path.c_str());
+-		wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
+ 		fflush(stdout);
+ 	}
+-	else if (!use_exact_pid)
+-		wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
+ 
+ 	// Open target application process
+ 	const scoped_handle remote_process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+@@ -582,7 +904,6 @@ int wmain(int argc, wchar_t *argv[])
+ 			return ERROR_INVALID_NAME;
+ 		}
+ 
+-		wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
+ 	}
+ 
+ 	// Check process architecture
+@@ -600,6 +921,39 @@ int wmain(int argc, wchar_t *argv[])
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
+ 	}
+ 
++	std::wstring conflicting_module_path;
++	DWORD preflight_error = ERROR_SUCCESS;
++	switch (inspect_target_for_reshade(remote_process, conflicting_module_path, preflight_error))
++	{
++	case target_preflight_result::runtime_conflict:
++		if (!write_injector_diagnostic(
++				L"target-runtime-conflict",
++				pid,
++				conflicting_module_path,
++				ERROR_ALREADY_EXISTS))
++			preflight_error = ERROR_WRITE_FAULT;
++		else
++			preflight_error = ERROR_ALREADY_EXISTS;
++		print_injection_not_started();
++		return preflight_error;
++	case target_preflight_result::inspection_failed:
++		if (preflight_error == ERROR_SUCCESS)
++			preflight_error = ERROR_GEN_FAILURE;
++		if (!write_injector_diagnostic(
++				L"target-module-inspection-failed",
++				pid,
++				std::wstring(),
++				preflight_error))
++			preflight_error = ERROR_WRITE_FAULT;
++		print_injection_not_started();
++		return preflight_error;
++	case target_preflight_result::clear:
++		break;
++	}
++
++	wprintf(L"Found a matching process with PID %lu! Injecting ReShade ... ", pid);
++	fflush(stdout);
++
+ 	loading_data arg;
+ #if 0
+ 	GetCurrentDirectoryW(MAX_PATH, arg.load_path);

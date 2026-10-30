@@ -1,0 +1,108 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index fc2051f..68e0422 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -582,6 +582,70 @@ static bool write_injector_diagnostic(
+ 		fflush(stdout) == 0;
+ }
+ 
++enum class injection_claim_result
++{
++	acquired,
++	already_claimed,
++	failed,
++};
++
++struct scoped_injection_claim
++{
++	HANDLE mutex = nullptr;
++	bool acquired = false;
++
++	~scoped_injection_claim()
++	{
++		if (acquired)
++			ReleaseMutex(mutex);
++		if (mutex != nullptr)
++			CloseHandle(mutex);
++	}
++};
++
++static injection_claim_result acquire_injection_claim(
++	DWORD pid,
++	scoped_injection_claim &claim,
++	DWORD &error)
++{
++	std::wstring name = L"Local\\electron-game-overlay-injection-";
++	name.append(std::to_wstring(pid));
++
++	SetLastError(ERROR_SUCCESS);
++	claim.mutex = CreateMutexW(nullptr, TRUE, name.c_str());
++	if (claim.mutex == nullptr)
++	{
++		error = GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_GEN_FAILURE;
++		return injection_claim_result::failed;
++	}
++
++	if (GetLastError() != ERROR_ALREADY_EXISTS)
++	{
++		claim.acquired = true;
++		error = ERROR_SUCCESS;
++		return injection_claim_result::acquired;
++	}
++
++	switch (WaitForSingleObject(claim.mutex, 0))
++	{
++	case WAIT_OBJECT_0:
++	case WAIT_ABANDONED:
++		claim.acquired = true;
++		error = ERROR_SUCCESS;
++		return injection_claim_result::acquired;
++	case WAIT_TIMEOUT:
++		error = ERROR_BUSY;
++		return injection_claim_result::already_claimed;
++	default:
++		error = GetLastError();
++		if (error == ERROR_SUCCESS)
++			error = ERROR_GEN_FAILURE;
++		return injection_claim_result::failed;
++	}
++}
++
+ struct observed_process_state
+ {
+ 	scoped_handle process;
+@@ -921,6 +985,32 @@ int wmain(int argc, wchar_t *argv[])
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
+ 	}
+ 
++	scoped_injection_claim injection_claim;
++	DWORD claim_error = ERROR_SUCCESS;
++	switch (acquire_injection_claim(pid, injection_claim, claim_error))
++	{
++	case injection_claim_result::already_claimed:
++		if (!write_injector_diagnostic(
++				L"target-injection-already-claimed",
++				pid,
++				std::wstring(),
++				claim_error))
++			claim_error = ERROR_WRITE_FAULT;
++		print_injection_not_started();
++		return claim_error;
++	case injection_claim_result::failed:
++		if (!write_injector_diagnostic(
++				L"target-injection-claim-failed",
++				pid,
++				std::wstring(),
++				claim_error))
++			claim_error = ERROR_WRITE_FAULT;
++		print_injection_not_started();
++		return claim_error;
++	case injection_claim_result::acquired:
++		break;
++	}
++
+ 	std::wstring conflicting_module_path;
+ 	DWORD preflight_error = ERROR_SUCCESS;
+ 	switch (inspect_target_for_reshade(remote_process, conflicting_module_path, preflight_error))

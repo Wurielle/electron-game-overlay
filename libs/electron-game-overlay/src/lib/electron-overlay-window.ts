@@ -1,24 +1,103 @@
-import { BrowserWindow } from "electron";
-import type { OverlayWindowBridge } from "./overlay-window-bridge.js";
-import type { ElectronOverlayWindowOptions, Rect } from "./types.js";
+import { BrowserWindow } from 'electron';
+import type { OverlayWindowBridge } from './overlay-window-bridge.js';
+import type {
+  ElectronOverlayWindowFollowTargetOptions,
+  ElectronOverlayWindowOptions,
+  Rect,
+} from './types.js';
 
+const ELECTRON_OVERLAY_WINDOW_CONSTRUCTION_TOKEN = Symbol(
+  'ElectronOverlayWindow construction token',
+);
+
+let constructElectronOverlayWindow:
+  | ((
+      bridge: OverlayWindowBridge,
+      options: ElectronOverlayWindowOptions,
+    ) => ElectronOverlayWindow)
+  | undefined;
+
+/** @internal */
+export function createElectronOverlayWindow(
+  bridge: OverlayWindowBridge,
+  options: ElectronOverlayWindowOptions,
+): ElectronOverlayWindow {
+  if (!constructElectronOverlayWindow) {
+    throw new Error('ElectronOverlayWindow construction is not initialized');
+  }
+  return constructElectronOverlayWindow(bridge, options);
+}
+
+/**
+ * Controls one offscreen Electron window published to the game compositor.
+ * Instances are returned by {@link OverlaySession.windows}; they cannot be
+ * constructed directly.
+ */
 export class ElectronOverlayWindow {
+  static {
+    constructElectronOverlayWindow = (bridge, options) =>
+      new ElectronOverlayWindow(
+        ELECTRON_OVERLAY_WINDOW_CONSTRUCTION_TOKEN,
+        bridge,
+        options,
+      );
+  }
+
+  /** Session-local logical identifier supplied through the window options. */
   public readonly id: string;
+  /** Human-readable compositor name, defaulting to {@link id}. */
   public readonly name: string;
+  /** Electron's numeric identifier for the backing `BrowserWindow`. */
   public readonly nativeId: number;
+  /** The offscreen `BrowserWindow` whose painted frames are published. */
   public readonly browserWindow: Electron.BrowserWindow;
+  /** Draggable border thickness in Electron device-independent pixels. */
   public readonly dragBorder: number;
+  /** Draggable caption height in Electron device-independent pixels. */
   public readonly captionHeight: number;
+  /** Whether transparent pixels allow input to reach a lower overlay window. */
   public readonly transparent: boolean;
 
   private registered = false;
   private destroyed = false;
+  private readonly ownsBrowserWindow: boolean;
+  private readonly focusOnReady: boolean;
   private readonly closeHandlers = new Set<() => void>();
+  private readonly handlePaint = (
+    _event: Electron.Event,
+    _dirty: Electron.Rectangle,
+    image: Electron.NativeImage,
+  ) => {
+    this.bridge.sendFrame(this, image);
+  };
+  private readonly handleReadyToShow = () => {
+    if (this.focusOnReady) {
+      this.focus();
+    }
+  };
+  private readonly handleWindowGeometryChanged = () => {
+    if (this.registered) {
+      this.bridge.syncWindowGeometry(this);
+    }
+  };
+  private readonly handleBrowserWindowClosed = () => {
+    const failure = this.finalizeDestroy(false);
+    if (failure) {
+      this.reportTeardownFailure(failure.error);
+    }
+  };
 
-  constructor(
+  private constructor(
+    constructionToken: symbol,
     private readonly bridge: OverlayWindowBridge,
-    options: ElectronOverlayWindowOptions
+    options: ElectronOverlayWindowOptions,
   ) {
+    if (constructionToken !== ELECTRON_OVERLAY_WINDOW_CONSTRUCTION_TOKEN) {
+      throw new TypeError(
+        'ElectronOverlayWindow instances are created by OverlaySession.windows',
+      );
+    }
+    this.ownsBrowserWindow = options.existingWindow === undefined;
     this.browserWindow =
       options.existingWindow ||
       new BrowserWindow(getBrowserWindowOptions(options));
@@ -28,6 +107,7 @@ export class ElectronOverlayWindow {
     this.dragBorder = options.dragBorder || 0;
     this.captionHeight = options.captionHeight || 0;
     this.transparent = options.transparent || false;
+    this.focusOnReady = options.focusOnReady ?? false;
 
     if (options.bounds) {
       this.setBounds(options.bounds);
@@ -42,10 +122,15 @@ export class ElectronOverlayWindow {
     this.bindBrowserWindow();
   }
 
+  /** Whether this window is currently registered with the game compositor. */
   public get visible() {
     return this.registered && !this.destroyed;
   }
 
+  /**
+   * Subscribes to wrapper teardown. If already destroyed, invokes the handler
+   * immediately. The returned function removes the subscription.
+   */
   public onClose(handler: () => void) {
     if (this.destroyed) {
       handler();
@@ -59,6 +144,7 @@ export class ElectronOverlayWindow {
     };
   }
 
+  /** Registers the window with the compositor and requests an initial frame. */
   public show() {
     if (this.destroyed || this.registered) {
       return;
@@ -66,8 +152,19 @@ export class ElectronOverlayWindow {
 
     this.bridge.registerWindow(this);
     this.registered = true;
+    if (!this.browserWindow.webContents.isDestroyed()) {
+      try {
+        this.browserWindow.webContents.invalidate();
+      } catch (error) {
+        console.warn(
+          `Cannot request the initial Electron overlay frame for window ${this.nativeId}`,
+          error,
+        );
+      }
+    }
   }
 
+  /** Unregisters the window without destroying its backing `BrowserWindow`. */
   public hide() {
     if (!this.registered) {
       return;
@@ -77,33 +174,33 @@ export class ElectronOverlayWindow {
     this.registered = false;
   }
 
+  /**
+   * Removes the wrapper from its session. A BrowserWindow created by the SDK is
+   * also destroyed; a caller-owned attached BrowserWindow is left open.
+   */
   public destroy() {
-    if (this.destroyed) {
-      return;
-    }
-
-    this.hide();
-    this.destroyed = true;
-    this.bridge.removeWindow(this);
-    this.emitClose();
-
-    if (!this.browserWindow.isDestroyed()) {
-      this.browserWindow.close();
+    const failure = this.finalizeDestroy(this.ownsBrowserWindow);
+    if (failure) {
+      throw failure.error;
     }
   }
 
+  /** Alias for {@link destroy}. */
   public close() {
     this.destroy();
   }
 
+  /** Gives the backing offscreen web view overlay-input focus. */
   public focus() {
     this.browserWindow.focusOnWebView();
   }
 
+  /** Removes overlay-input focus from the backing offscreen web view. */
   public blur() {
     this.browserWindow.blurWebView();
   }
 
+  /** Updates any subset of the window bounds in Electron DIP coordinates. */
   public setBounds(bounds: Partial<Rect>) {
     const current = this.browserWindow.getBounds();
     this.browserWindow.setBounds({
@@ -112,55 +209,117 @@ export class ElectronOverlayWindow {
     });
 
     if (this.registered) {
-      this.bridge.syncWindowBounds(this);
+      this.bridge.syncWindowGeometry(this);
     }
   }
 
+  /** Returns the current window bounds in Electron DIP coordinates. */
   public getBounds() {
     return this.browserWindow.getBounds();
   }
 
+  /**
+   * Keeps the offscreen surface sized and positioned from a live injected
+   * render target. Selection defaults to the most recently changed surface and
+   * the render area.
+   */
+  public followTarget(options: ElectronOverlayWindowFollowTargetOptions = {}) {
+    if (this.destroyed) {
+      return;
+    }
+    this.bridge.followTarget(this, options);
+  }
+
+  /** Stops target following and restores the bounds captured when it began. */
+  public stopFollowingTarget() {
+    if (this.destroyed) {
+      return;
+    }
+    this.bridge.stopFollowingTarget(this);
+  }
+
   private bindBrowserWindow() {
-    this.browserWindow.webContents.on(
-      "paint",
-      (event, dirty, image: Electron.NativeImage) => {
-        this.bridge.sendFrame(this, image);
-      }
+    this.browserWindow.webContents.on('paint', this.handlePaint);
+    this.browserWindow.on('ready-to-show', this.handleReadyToShow);
+    this.browserWindow.on('move', this.handleWindowGeometryChanged);
+    this.browserWindow.on('resize', this.handleWindowGeometryChanged);
+    this.browserWindow.on('closed', this.handleBrowserWindowClosed);
+  }
+
+  private unbindBrowserWindow() {
+    this.browserWindow.removeListener('closed', this.handleBrowserWindowClosed);
+    this.browserWindow.webContents.removeListener('paint', this.handlePaint);
+    this.browserWindow.removeListener('ready-to-show', this.handleReadyToShow);
+    this.browserWindow.removeListener('move', this.handleWindowGeometryChanged);
+    this.browserWindow.removeListener(
+      'resize',
+      this.handleWindowGeometryChanged,
     );
+  }
 
-    this.browserWindow.on("ready-to-show", () => {
-      this.focus();
-    });
+  private finalizeDestroy(destroyOwnedBrowserWindow: boolean) {
+    if (this.destroyed) {
+      return undefined;
+    }
 
-    this.browserWindow.on("resize", () => {
-      console.log(`${this.name} resizing`);
-      if (this.registered) {
-        this.bridge.syncWindowBounds(this);
+    const wasRegistered = this.registered;
+    this.registered = false;
+    this.destroyed = true;
+    let failure: { error: unknown } | undefined;
+    const attempt = (operation: () => void) => {
+      try {
+        operation();
+      } catch (error) {
+        failure ??= { error };
       }
-    });
+    };
 
-    this.browserWindow.on("closed", () => {
-      this.hide();
-      this.destroyed = true;
-      this.bridge.removeWindow(this);
-      this.emitClose();
-    });
+    attempt(() => this.unbindBrowserWindow());
+    if (wasRegistered) {
+      attempt(() => this.bridge.unregisterWindow(this));
+    }
+    attempt(() => this.bridge.removeWindow(this));
+    if (destroyOwnedBrowserWindow) {
+      attempt(() => {
+        if (!this.browserWindow.isDestroyed()) {
+          this.browserWindow.destroy();
+        }
+      });
+    }
+    this.emitClose();
+    return failure;
+  }
 
-    this.browserWindow.webContents.on("cursor-changed", (event, type) => {
-      this.bridge.sendCursor(type);
-    });
+  private reportTeardownFailure(error: unknown) {
+    try {
+      console.error(
+        `Electron overlay window ${this.nativeId} teardown failed`,
+        error,
+      );
+    } catch {
+      // A diagnostic sink must not break Electron's closed event.
+    }
   }
 
   private emitClose() {
-    for (const handler of this.closeHandlers) {
-      handler();
-    }
+    const handlers = Array.from(this.closeHandlers);
     this.closeHandlers.clear();
+    for (const handler of handlers) {
+      try {
+        handler();
+      } catch (error) {
+        try {
+          console.error('Electron overlay window close handler failed', error);
+        } catch {
+          // A diagnostic sink must not break window teardown.
+        }
+      }
+    }
   }
 }
 
 function getBrowserWindowOptions(
-  options: ElectronOverlayWindowOptions
+  options: ElectronOverlayWindowOptions,
 ): Electron.BrowserWindowConstructorOptions {
   const bounds = options.bounds || {};
   const browserWindowOptions = options.browserWindow || {};

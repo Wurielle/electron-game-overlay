@@ -1,16 +1,55 @@
-export { ElectronGameOverlay } from "./electron-game-overlay.js";
-export { ElectronOverlayWindow } from "./electron-overlay-window.js";
-export { OverlaySession } from "./overlay-session.js";
+export { ElectronGameOverlay } from './electron-game-overlay.js';
+export type { ElectronGameOverlayOptions } from './electron-game-overlay.js';
+export { ElectronOverlayWindow } from './electron-overlay-window.js';
+export { OverlaySession } from './overlay-session.js';
+export {
+  ReShadeOperationError,
+  ReShadeOverlayLauncher,
+  defaultReShadeRunsRootDirectory,
+  defaultReShadeRuntimeDirectory,
+  isReShadeOperationError,
+  parseReShadeLaunchConfig,
+} from './reshade-launcher.js';
+export type {
+  ReShadeAttachResult,
+  ReShadeAttachmentState,
+  ReShadeDiagnostic,
+  ReShadeDiagnosticCode,
+  ReShadeDiagnosticEvidence,
+  ReShadeDiagnosticStage,
+  ReShadeLaunchConfig,
+  ReShadeLaunchConfigOptions,
+  ReShadeLaunchResult,
+  ReShadeLauncherEvent,
+  ReShadeLauncherEventHandler,
+  ReShadePathTarget,
+  ReShadeProcessTarget,
+  ReShadeRetrySafety,
+  ReShadeRuntimeMode,
+  ReShadeRuntimeStartupCode,
+  ReShadeTarget,
+} from './reshade-launcher.js';
 export type {
   AttachElectronOverlayWindowOptions,
   CreateElectronOverlayWindowOptions,
   Disposable,
-  ElectronOverlayWindowOptions,
-  OverlayHotkey,
-  OverlayProcessAttachResult,
-  OverlayProcessTarget,
+  ElectronOverlayWindowFollowTargetOptions,
+  OverlayDiagnostic,
+  OverlayDiagnosticCode,
+  OverlayDiagnosticContextValue,
+  OverlayDiagnosticSeverity,
+  OverlayDiagnosticSource,
+  OverlayGraphicsApi,
+  OverlayGraphicsFps,
   OverlaySessionEventHandler,
   OverlaySessionEventMap,
   OverlaySessionEventName,
+  OverlayTargetDpi,
+  OverlayTargetFollowArea,
+  OverlayTargetMonitor,
+  OverlayTargetRect,
+  OverlayTargetSize,
+  OverlayTargetSurface,
+  OverlayTargetSurfaceRemoved,
   Rect,
-} from "./types.js";
+} from './types.js';

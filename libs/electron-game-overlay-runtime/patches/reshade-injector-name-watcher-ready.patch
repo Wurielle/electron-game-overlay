@@ -1,0 +1,12 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -3851,6 +3851,8 @@ int wmain(int argc, wchar_t *argv[])
+ 	else if (!use_path_watcher)
+ 	{
+ 		wprintf(L"Waiting for a '%s' process to spawn ...\n", name);
++		wprintf(L"ReShade process watcher armed.\n");
++		fflush(stdout);
+ 
+ 		// Wait for a process with the target name to spawn
+ 		while (!pid)

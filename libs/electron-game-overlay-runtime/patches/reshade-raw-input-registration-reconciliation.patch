@@ -1,0 +1,450 @@
+diff --git a/source/input.cpp b/source/input.cpp
+index 6b91cfe..36c1991 100644
+--- a/source/input.cpp
++++ b/source/input.cpp
+@@ -10,8 +10,10 @@
+ #if RESHADE_ADDON >= 2
+ #include "addon_manager.hpp"
+ #endif
++#include <array>
+ #include <atomic>
+ #include <shared_mutex>
++#include <mutex>
+ #include <unordered_map>
+ #include <vector>
+ #include <type_traits>
+@@ -23,6 +25,7 @@ extern bool is_uwp_app();
+ 
+ extern HANDLE g_exit_event;
+ static std::shared_mutex s_windows_mutex;
++static std::mutex s_raw_input_registration_update_mutex;
+ static std::unordered_map<HWND, unsigned int> s_raw_input_windows;
+ static std::unordered_map<HWND, std::weak_ptr<reshade::input>> s_windows;
+ static RECT s_last_clip_cursor = {};
+@@ -30,6 +33,10 @@ static POINT s_last_cursor_position = {};
+ static std::atomic<bool> s_block_mouse = false;
+ static std::atomic<bool> s_block_keyboard = false;
+ static std::atomic<bool> s_block_cursor_warping = false;
++static std::atomic<bool> s_raw_input_registrations_seeded = false;
++static std::atomic<bool> s_raw_input_registration_authority = false;
++static std::atomic<bool> s_raw_input_registration_retryable = false;
++static std::atomic<ULONGLONG> s_raw_input_registration_retry_after = 0;
+ static std::atomic<uint64_t> s_raw_input_registration_generation = 0;
+ static_assert(std::is_trivially_copyable_v<reshade::api::input_message>);
+ static_assert(std::is_standard_layout_v<reshade::api::input_message>);
+@@ -41,6 +48,168 @@ static constexpr unsigned int raw_input_no_legacy_keyboard = 0x1u;
+ static constexpr unsigned int raw_input_no_legacy_mouse = 0x2u;
+ static constexpr unsigned int raw_input_registered_keyboard = 0x4u;
+ static constexpr unsigned int raw_input_registered_mouse = 0x8u;
++static constexpr ULONGLONG raw_input_registration_retry_delay_ms = 1000;
++
++enum class raw_input_registration_query_result
++{
++	valid,
++	retryable_failure,
++	unsupported,
++};
++
++static raw_input_registration_query_result query_registered_raw_input_devices(std::unordered_map<HWND, unsigned int> &registrations)
++{
++	constexpr UINT max_registration_count = 1024;
++	std::array<RAWINPUTDEVICE, max_registration_count> devices = {};
++	UINT device_count = 0;
++	UINT required_count = 0;
++	SetLastError(ERROR_SUCCESS);
++	const UINT probe = GetRegisteredRawInputDevices(nullptr, &required_count, sizeof(RAWINPUTDEVICE));
++	if (probe != UINT(-1))
++	{
++		if (probe == 0 && required_count == 0)
++		{
++			registrations.clear();
++			return raw_input_registration_query_result::valid;
++		}
++	}
++	else if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
++	{
++		return raw_input_registration_query_result::retryable_failure;
++	}
++	if (required_count > max_registration_count)
++		return raw_input_registration_query_result::unsupported;
++
++	for (unsigned int attempt = 0; attempt < 4; ++attempt)
++	{
++		if (required_count == 0)
++		{
++			registrations.clear();
++			return raw_input_registration_query_result::valid;
++		}
++
++		UINT capacity = required_count;
++		SetLastError(ERROR_SUCCESS);
++		const UINT copied = GetRegisteredRawInputDevices(devices.data(), &capacity, sizeof(RAWINPUTDEVICE));
++		if (copied != UINT(-1))
++		{
++			if (copied > devices.size())
++				return raw_input_registration_query_result::retryable_failure;
++			device_count = copied;
++			break;
++		}
++		if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
++			return raw_input_registration_query_result::retryable_failure;
++		if (capacity > max_registration_count)
++			return raw_input_registration_query_result::unsupported;
++		required_count = capacity;
++		if (attempt == 3)
++			return raw_input_registration_query_result::retryable_failure;
++	}
++
++	registrations.clear();
++	bool mouse_seen = false;
++	bool keyboard_seen = false;
++	for (UINT index = 0; index < device_count; ++index)
++	{
++		const RAWINPUTDEVICE &device = devices[index];
++		if (device.usUsagePage != 1 || (device.usUsage != 0x02 && device.usUsage != 0x06))
++			continue;
++		if ((device.dwFlags & RIDEV_REMOVE) != 0)
++			return raw_input_registration_query_result::unsupported;
++
++		const DWORD exclusive_mode = device.dwFlags & RIDEV_EXMODEMASK;
++		if (exclusive_mode == RIDEV_EXCLUDE || exclusive_mode == RIDEV_PAGEONLY)
++			continue;
++		if (exclusive_mode != 0 && exclusive_mode != RIDEV_NOLEGACY)
++			return raw_input_registration_query_result::unsupported;
++
++		const bool keyboard = device.usUsage == 0x06;
++		bool &seen = keyboard ? keyboard_seen : mouse_seen;
++		if (seen)
++			return raw_input_registration_query_result::unsupported;
++		seen = true;
++
++		unsigned int &flags = registrations[device.hwndTarget];
++		flags |= keyboard ? raw_input_registered_keyboard : raw_input_registered_mouse;
++		if (exclusive_mode == RIDEV_NOLEGACY || is_uwp_app())
++			flags |= keyboard ? raw_input_no_legacy_keyboard : raw_input_no_legacy_mouse;
++	}
++	return raw_input_registration_query_result::valid;
++}
++
++static bool publish_raw_input_registration_snapshot()
++{
++	std::unordered_map<HWND, unsigned int> registrations;
++	const raw_input_registration_query_result result = query_registered_raw_input_devices(registrations);
++	const bool valid = result == raw_input_registration_query_result::valid;
++	const bool retryable = result == raw_input_registration_query_result::retryable_failure;
++	const ULONGLONG retry_after = retryable ? GetTickCount64() + raw_input_registration_retry_delay_ms : 0;
++
++	const std::unique_lock<std::shared_mutex> lock(s_windows_mutex);
++	if (valid)
++		s_raw_input_windows.swap(registrations);
++	else
++		s_raw_input_windows.clear();
++	s_raw_input_registration_retry_after.store(retry_after, std::memory_order_release);
++	s_raw_input_registration_retryable.store(retryable, std::memory_order_release);
++	s_raw_input_registration_authority.store(valid, std::memory_order_release);
++	s_raw_input_registrations_seeded.store(true, std::memory_order_release);
++	return valid;
++}
++
++static bool ensure_raw_input_registrations_seeded(bool wait_for_update = false)
++{
++	if (s_raw_input_registrations_seeded.load(std::memory_order_acquire))
++	{
++		if (s_raw_input_registration_authority.load(std::memory_order_acquire))
++			return true;
++		if (!s_raw_input_registration_retryable.load(std::memory_order_acquire) ||
++			GetTickCount64() < s_raw_input_registration_retry_after.load(std::memory_order_acquire))
++			return false;
++	}
++
++	std::unique_lock<std::mutex> update_lock(s_raw_input_registration_update_mutex, std::defer_lock);
++	if (wait_for_update)
++		update_lock.lock();
++	else if (!update_lock.try_lock())
++		return false;
++
++	if (s_raw_input_registrations_seeded.load(std::memory_order_acquire))
++	{
++		if (s_raw_input_registration_authority.load(std::memory_order_acquire))
++			return true;
++		if (!s_raw_input_registration_retryable.load(std::memory_order_acquire) ||
++			GetTickCount64() < s_raw_input_registration_retry_after.load(std::memory_order_acquire))
++			return false;
++	}
++
++	const uint64_t previous_generation = s_raw_input_registration_generation.fetch_add(1, std::memory_order_acq_rel);
++	assert((previous_generation & 1) == 0);
++	const DWORD previous_error = GetLastError();
++	const bool valid = publish_raw_input_registration_snapshot();
++	s_raw_input_registration_generation.fetch_add(1, std::memory_order_release);
++	SetLastError(previous_error);
++	return valid;
++}
++
++static unsigned int raw_input_registration_flags(HWND source_window, bool include_focus_following)
++{
++	const uint64_t generation = s_raw_input_registration_generation.load(std::memory_order_acquire);
++	if ((generation & 1) != 0 || !s_raw_input_registration_authority.load(std::memory_order_acquire))
++		return 0;
++
++	unsigned int flags = 0;
++	if (const auto exact = s_raw_input_windows.find(source_window); exact != s_raw_input_windows.end())
++		flags |= exact->second;
++
++	if (include_focus_following)
++	{
++		if (const auto focused = s_raw_input_windows.find(nullptr); focused != s_raw_input_windows.end())
++			flags |= focused->second;
++	}
++	return generation == s_raw_input_registration_generation.load(std::memory_order_acquire) ? flags : 0;
++}
+ 
+ static void add_input_message_flag(reshade::api::input_message &message, reshade::api::input_message_flags flag)
+ {
+@@ -92,39 +261,6 @@ reshade::input::input(window_handle window)
+ {
+ }
+ 
+-void reshade::input::register_window_with_raw_input(window_handle window, bool keyboard, bool mouse, bool no_legacy)
+-{
+-	assert(keyboard != mouse);
+-	if (is_uwp_app()) // UWP apps never use legacy input messages
+-		no_legacy = true;
+-
+-	const std::unique_lock<std::shared_mutex> lock(s_windows_mutex);
+-	const unsigned int no_legacy_flag = keyboard ? raw_input_no_legacy_keyboard : raw_input_no_legacy_mouse;
+-	const unsigned int registered_flag = keyboard ? raw_input_registered_keyboard : raw_input_registered_mouse;
+-
+-	// Windows accepts only one registration per raw-input device class in a
+-	// process. Mirror replacement and removal transactionally after the real
+-	// RegisterRawInputDevices call succeeds so buffered records never inherit a
+-	// stale target or stale NOLEGACY bit.
+-	for (auto it = s_raw_input_windows.begin(); it != s_raw_input_windows.end();)
+-	{
+-		it->second &= ~(no_legacy_flag | registered_flag);
+-		if ((it->second & (raw_input_registered_keyboard | raw_input_registered_mouse)) == 0)
+-			it = s_raw_input_windows.erase(it);
+-		else
+-			++it;
+-	}
+-
+-	s_raw_input_registration_generation.fetch_add(1, std::memory_order_release);
+-	if (window == nullptr)
+-		return;
+-
+-	unsigned int &flags = s_raw_input_windows[static_cast<HWND>(window)];
+-	flags |= registered_flag;
+-	if (no_legacy)
+-		flags |= no_legacy_flag;
+-}
+-
+ std::shared_ptr<reshade::input> reshade::input::register_window(window_handle window)
+ {
+ 	assert(window != nullptr);
+@@ -137,6 +273,8 @@ std::shared_ptr<reshade::input> reshade::input::register_window(window_handle wi
+ 		return nullptr;
+ 	}
+ 
++	ensure_raw_input_registrations_seeded(true);
++
+ 	const std::unique_lock<std::shared_mutex> lock(s_windows_mutex);
+ 
+ 	const auto insert = s_windows.emplace(static_cast<HWND>(window), std::weak_ptr<input>());
+@@ -210,6 +348,8 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 	if (details.message != WM_INPUT && !is_mouse_message && !is_keyboard_message)
+ 		return false;
+ 
++	ensure_raw_input_registrations_seeded();
++
+ 	// Guard access to windows list against race conditions
+ 	std::unique_lock<std::shared_mutex> lock(s_windows_mutex);
+ 
+@@ -222,7 +362,20 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 
+ 	// Look up the window in the list of known input windows
+ 	auto input_window = s_windows.find(details.hwnd);
+-	const auto raw_input_window = s_raw_input_windows.find(details.hwnd);
++	const uint64_t raw_input_registration_generation = s_raw_input_registration_generation.load(std::memory_order_acquire);
++	DWORD source_process = 0;
++	const bool source_is_current_thread =
++		GetWindowThreadProcessId(details.hwnd, &source_process) == GetCurrentThreadId() &&
++		source_process == GetCurrentProcessId();
++	bool include_focus_following = source_is_current_thread && is_foreground_input_window(details.hwnd);
++	if (include_focus_following && details.message == WM_INPUT)
++	{
++		GUITHREADINFO thread_info = { sizeof(GUITHREADINFO) };
++		include_focus_following = GET_RAWINPUT_CODE_WPARAM(details.wParam) == RIM_INPUT &&
++			GetGUIThreadInfo(GetCurrentThreadId(), &thread_info) != FALSE &&
++			thread_info.hwndFocus == details.hwnd;
++	}
++	const unsigned int raw_input_flags = raw_input_registration_flags(details.hwnd, include_focus_following);
+ 
+ 	if (input_window == s_windows.end())
+ 	{
+@@ -240,7 +393,8 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 			input_window = s_windows.find(parent);
+ 	}
+ 
+-	if (input_window == s_windows.end() && raw_input_window != s_raw_input_windows.end())
++	if (input_window == s_windows.end() &&
++		(raw_input_flags & (raw_input_registered_keyboard | raw_input_registered_mouse)) != 0)
+ 	{
+ 		// Reroute this raw input message to the window with the most rendering
+ 		input_window = std::max_element(s_windows.begin(), s_windows.end(),
+@@ -250,8 +404,6 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 	if (input_window == s_windows.end())
+ 		return false;
+ 
+-	const unsigned int raw_input_flags = raw_input_window != s_raw_input_windows.end() ? raw_input_window->second : 0;
+-
+ 	const std::shared_ptr<input> input = input_window->second.lock();
+ 	// It may happen that the input was destroyed between the removal of expired entries above and here, so need to abort in this case
+ 	if (input == nullptr)
+@@ -542,19 +694,46 @@ bool reshade::input::handle_window_message(const void *message_data, api::input_
+ 		break;
+ 	}
+ 
+-	return (is_mouse_message && input->is_blocking_mouse_input()) || (is_keyboard_message && input->is_blocking_keyboard_input());
++	const bool blocked = (is_mouse_message && input->is_blocking_mouse_input()) ||
++		(is_keyboard_message && input->is_blocking_keyboard_input());
++	if (details.message == WM_INPUT)
++	{
++		const unsigned int registered_flag = is_keyboard_message
++			? raw_input_registered_keyboard
++			: raw_input_registered_mouse;
++		if ((raw_input_flags & registered_flag) == 0 ||
++			(raw_input_registration_generation & 1) != 0 ||
++			raw_input_registration_generation != s_raw_input_registration_generation.load(std::memory_order_acquire))
++			return false;
++	}
++	return blocked;
+ }
+ 
+ reshade::input::raw_input_buffer_route reshade::input::resolve_raw_input_buffer_route(bool keyboard)
+ {
++	if (!ensure_raw_input_registrations_seeded())
++		return {};
++	const uint64_t registration_generation = s_raw_input_registration_generation.load(std::memory_order_acquire);
++	if ((registration_generation & 1) != 0 ||
++		!s_raw_input_registration_authority.load(std::memory_order_acquire))
++		return {};
++
+ 	raw_input_buffer_route route = {};
+ 	route.keyboard = keyboard;
+ 	std::vector<std::pair<HWND, std::shared_ptr<input>>> candidates;
+ 
+ 	const unsigned int registered_flag = keyboard ? raw_input_registered_keyboard : raw_input_registered_mouse;
+ 	const unsigned int no_legacy_flag = keyboard ? raw_input_no_legacy_keyboard : raw_input_no_legacy_mouse;
++	const DWORD current_thread = GetCurrentThreadId();
++	GUITHREADINFO thread_info = { sizeof(GUITHREADINFO) };
++	const HWND focused_window = GetGUIThreadInfo(current_thread, &thread_info) != FALSE
++		? thread_info.hwndFocus
++		: nullptr;
+ 	{
+ 		std::unique_lock<std::shared_mutex> lock(s_windows_mutex);
++		if (registration_generation != s_raw_input_registration_generation.load(std::memory_order_acquire) ||
++			!s_raw_input_registration_authority.load(std::memory_order_acquire))
++			return {};
+ 		for (auto it = s_windows.begin(); it != s_windows.end();)
+ 			if (it->second.expired())
+ 				it = s_windows.erase(it);
+@@ -564,21 +743,25 @@ reshade::input::raw_input_buffer_route reshade::input::resolve_raw_input_buffer_
+ 		const HWND foreground = GetForegroundWindow();
+ 		const HWND foreground_root = foreground != nullptr ? GetAncestor(foreground, GA_ROOT) : nullptr;
+ 		const HWND normalized_foreground_root = foreground_root != nullptr ? foreground_root : foreground;
+-		const DWORD current_thread = GetCurrentThreadId();
+ 		for (const auto &[window, flags] : s_raw_input_windows)
+ 		{
+-			if ((flags & (registered_flag | no_legacy_flag)) != (registered_flag | no_legacy_flag) ||
+-				IsWindow(window) == FALSE ||
+-				GetWindowThreadProcessId(window, nullptr) != current_thread)
++			if ((flags & (registered_flag | no_legacy_flag)) != (registered_flag | no_legacy_flag))
++				continue;
++
++			const HWND source_window = window != nullptr ? window : focused_window;
++			DWORD source_process = 0;
++			if (source_window == nullptr || IsWindow(source_window) == FALSE ||
++				GetWindowThreadProcessId(source_window, &source_process) != current_thread ||
++				source_process != GetCurrentProcessId())
+ 				continue;
+ 
+-			const HWND root = GetAncestor(window, GA_ROOT);
+-			const HWND normalized_root = root != nullptr ? root : window;
++			const HWND root = GetAncestor(source_window, GA_ROOT);
++			const HWND normalized_root = root != nullptr ? root : source_window;
+ 			if (normalized_foreground_root == nullptr || normalized_root != normalized_foreground_root)
+ 				continue;
+ 			if (route.source_window != nullptr)
+ 				return {}; // Buffered input has no HWND, so ambiguous registrations must fail open.
+-			route.source_window = window;
++			route.source_window = source_window;
+ 		}
+ 
+ 		if (route.source_window != nullptr)
+@@ -595,7 +778,7 @@ reshade::input::raw_input_buffer_route reshade::input::resolve_raw_input_buffer_
+ 				if (root == source_root)
+ 					candidates.emplace_back(window, candidate);
+ 			}
+-			route.registration_generation = s_raw_input_registration_generation.load(std::memory_order_acquire);
++			route.registration_generation = registration_generation;
+ 		}
+ 	}
+ 
+@@ -1252,27 +1435,18 @@ extern "C" BOOL WINAPI HookRegisterRawInputDevices(PCRAWINPUTDEVICE pRawInputDev
+ 	}
+ 
+ 	static const auto trampoline = reshade::hooks::call(HookRegisterRawInputDevices);
+-	if (!trampoline(pRawInputDevices, uiNumDevices, cbSize))
+-	{
+-		reshade::log::message(reshade::log::level::warning, "RegisterRawInputDevices failed with error code %lu.", GetLastError());
+-		return FALSE;
+-	}
+-
+-	for (UINT i = 0; i < uiNumDevices; ++i)
+-	{
+-		const RAWINPUTDEVICE &device = pRawInputDevices[i];
+-		if (device.usUsagePage != 1 || (device.usUsage != 0x02 && device.usUsage != 0x06))
+-			continue;
+-
+-		const bool remove = (device.dwFlags & RIDEV_REMOVE) != 0;
+-		reshade::input::register_window_with_raw_input(
+-			remove ? nullptr : device.hwndTarget,
+-			device.usUsage == 0x06,
+-			device.usUsage == 0x02,
+-			!remove && (device.dwFlags & RIDEV_NOLEGACY) != 0);
+-	}
++	const std::unique_lock<std::mutex> update_lock(s_raw_input_registration_update_mutex);
++	const uint64_t previous_generation = s_raw_input_registration_generation.fetch_add(1, std::memory_order_acq_rel);
++	assert((previous_generation & 1) == 0);
++	const BOOL result = trampoline(pRawInputDevices, uiNumDevices, cbSize);
++	const DWORD registration_error = GetLastError();
++	publish_raw_input_registration_snapshot();
++	s_raw_input_registration_generation.fetch_add(1, std::memory_order_release);
+ 
+-	return TRUE;
++	if (!result)
++		reshade::log::message(reshade::log::level::warning, "RegisterRawInputDevices failed with error code %lu.", registration_error);
++	SetLastError(registration_error);
++	return result;
+ }
+ 
+ extern "C" BOOL WINAPI HookClipCursor(const RECT *lpRect)
+diff --git a/source/input.hpp b/source/input.hpp
+index 52049b3..cff2878 100644
+--- a/source/input.hpp
++++ b/source/input.hpp
+@@ -35,14 +35,6 @@ namespace reshade
+ 
+ 		explicit input(window_handle window);
+ 
+-		/// <summary>
+-		/// Registers a window using raw input with the input manager.
+-		/// </summary>
+-		/// <param name="window">Window handle of the target window.</param>
+-		/// <param name="keyboard"><c>true</c> when updating the keyboard registration.</param>
+-		/// <param name="mouse"><c>true</c> when updating the mouse registration.</param>
+-		/// <param name="no_legacy"><c>true</c> if 'RIDEV_NOLEGACY' is set for the device, <c>false</c> otherwise.</param>
+-		static void register_window_with_raw_input(window_handle window, bool keyboard, bool mouse, bool no_legacy);
+ 		/// <summary>
+ 		/// Registers a window using normal input window messages with the input manager.
+ 		/// </summary>

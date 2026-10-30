@@ -22,11 +22,11 @@ pnpm-debug.log*
 
 # CMake / native build output
 /build/
-/build_Win32/
-/build_x64/
+/libs/electron-overlay-transport/target/
 
 # Electron client generated build output
 /apps/client/dist/
+/artifacts/
 
 # Copied/generated native addon runtime files
 /libs/electron-game-overlay/*.exe

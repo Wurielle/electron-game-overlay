@@ -1,0 +1,218 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 29a820b..6541ab3 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -7,12 +7,16 @@
+ #include <Windows.h>
+ #include <sddl.h>
+ #include <AclAPI.h>
++#include <Psapi.h>
+ #include <TlHelp32.h>
+ #include <string>
+ #include <unordered_map>
++#include <unordered_set>
+ #include <utility>
+ #include <vector>
+ 
++#pragma comment(lib, "psapi.lib")
++
+ #define RESHADE_LOADING_THREAD_FUNC 1
+ 
+ struct loading_data
+@@ -236,6 +240,167 @@ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std:
+ 	return ERROR_SUCCESS;
+ }
+ 
++static bool write_utf8_stdout_line(const std::wstring &line)
++{
++	const int byte_count = WideCharToMultiByte(CP_UTF8, 0, line.data(), static_cast<int>(line.size()), nullptr, 0, nullptr, nullptr);
++	if (byte_count <= 0)
++		return false;
++
++	std::string encoded(static_cast<size_t>(byte_count), '\0');
++	if (WideCharToMultiByte(CP_UTF8, 0, line.data(), static_cast<int>(line.size()), encoded.data(), byte_count, nullptr, nullptr) != byte_count)
++		return false;
++
++	if (fwrite(encoded.data(), 1, encoded.size(), stdout) != encoded.size() ||
++		fwrite("\n", 1, 1, stdout) != 1)
++		return false;
++
++	return fflush(stdout) == 0;
++}
++
++struct observed_process_state
++{
++	scoped_handle process;
++	std::wstring matched_path;
++	unsigned int query_attempts = 0;
++	bool inspected = false;
++};
++
++static DWORD enumerate_process_ids(std::vector<DWORD> &process_ids)
++{
++	process_ids.resize(1024);
++	for (;;)
++	{
++		DWORD bytes_written = 0;
++		const DWORD buffer_size = static_cast<DWORD>(process_ids.size() * sizeof(DWORD));
++		if (!EnumProcesses(process_ids.data(), buffer_size, &bytes_written))
++			return GetLastError();
++
++		if (bytes_written < buffer_size)
++		{
++			process_ids.resize(bytes_written / sizeof(DWORD));
++			return ERROR_SUCCESS;
++		}
++
++		if (process_ids.size() >= 65536)
++			return ERROR_INSUFFICIENT_BUFFER;
++		process_ids.resize(process_ids.size() * 2);
++	}
++}
++
++static DWORD inspect_process_path(
++	DWORD pid,
++	const std::wstring &normalized_fragment,
++	observed_process_state &state)
++{
++	constexpr unsigned int max_query_attempts = 8;
++	++state.query_attempts;
++
++	scoped_handle candidate = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
++	if (candidate == nullptr)
++	{
++		if (GetLastError() == ERROR_ACCESS_DENIED || state.query_attempts >= max_query_attempts)
++			state.inspected = true;
++		return ERROR_SUCCESS;
++	}
++
++	WCHAR candidate_path[32768] = L"";
++	DWORD candidate_path_size = static_cast<DWORD>(sizeof(candidate_path) / sizeof(candidate_path[0]));
++	if (!QueryFullProcessImageNameW(candidate, 0, candidate_path, &candidate_path_size))
++	{
++		if (state.query_attempts >= max_query_attempts)
++			state.inspected = true;
++		return ERROR_SUCCESS;
++	}
++
++	state.inspected = true;
++	if (!path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment))
++		return ERROR_SUCCESS;
++
++	state.process.handle = candidate.handle;
++	candidate.handle = nullptr;
++	state.matched_path.assign(candidate_path, candidate_path_size);
++
++	std::wstring event = L"EGO_PROCESS_CREATE\t";
++	event.append(std::to_wstring(pid));
++	event.push_back(L'\t');
++	event.append(state.matched_path);
++	if (!write_utf8_stdout_line(event))
++		return ERROR_WRITE_FAULT;
++
++	return ERROR_SUCCESS;
++}
++
++static DWORD scan_path_matches(
++	const std::wstring &normalized_fragment,
++	std::unordered_map<DWORD, observed_process_state> &observed_processes)
++{
++	std::vector<DWORD> process_ids;
++	if (const DWORD error = enumerate_process_ids(process_ids); error != ERROR_SUCCESS)
++		return error;
++
++	const std::unordered_set<DWORD> current_process_ids(process_ids.begin(), process_ids.end());
++	for (auto observed = observed_processes.begin(); observed != observed_processes.end();)
++	{
++		bool process_ended = current_process_ids.find(observed->first) == current_process_ids.end();
++		if (!process_ended && !observed->second.matched_path.empty())
++			process_ended = WaitForSingleObject(observed->second.process, 0) != WAIT_TIMEOUT;
++
++		if (!process_ended)
++		{
++			++observed;
++			continue;
++		}
++
++		if (!observed->second.matched_path.empty())
++		{
++			std::wstring event = L"EGO_PROCESS_DELETE\t";
++			event.append(std::to_wstring(observed->first));
++			event.push_back(L'\t');
++			event.append(observed->second.matched_path);
++			if (!write_utf8_stdout_line(event))
++				return ERROR_WRITE_FAULT;
++		}
++		observed = observed_processes.erase(observed);
++	}
++
++	for (const DWORD pid : process_ids)
++	{
++		auto observed = observed_processes.try_emplace(pid).first;
++		if (!observed->second.inspected)
++		{
++			const DWORD error = inspect_process_path(pid, normalized_fragment, observed->second);
++			if (error != ERROR_SUCCESS)
++				return error;
++		}
++	}
++
++	return ERROR_SUCCESS;
++}
++
++static DWORD observe_path_matches(const wchar_t *fragment, DWORD parent_pid)
++{
++	const scoped_handle parent_process = OpenProcess(SYNCHRONIZE, FALSE, parent_pid);
++	if (parent_process == nullptr)
++		return GetLastError();
++
++	const std::wstring normalized_fragment = normalize_path_separators(fragment);
++	std::unordered_map<DWORD, observed_process_state> observed_processes;
++	if (!write_utf8_stdout_line(L"EGO_PROCESS_OBSERVER_READY"))
++		return ERROR_WRITE_FAULT;
++
++	for (;;)
++	{
++		if (const DWORD error = scan_path_matches(normalized_fragment, observed_processes); error != ERROR_SUCCESS)
++			return error;
++
++		const DWORD wait_result = WaitForSingleObject(parent_process, 5);
++		if (wait_result == WAIT_OBJECT_0)
++			return ERROR_SUCCESS;
++		if (wait_result == WAIT_FAILED)
++			return GetLastError();
++	}
++}
++
+ #if RESHADE_LOADING_THREAD_FUNC
+ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ {
+@@ -248,6 +413,28 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ 
+ int wmain(int argc, wchar_t *argv[])
+ {
++	const bool process_observer_requested = argc >= 2 && wcscmp(argv[1], L"--observe-path-contains") == 0;
++	if (process_observer_requested)
++	{
++		DWORD parent_pid = 0;
++		if (argc != 5 ||
++			argv[2][0] == L'\0' ||
++			wcscmp(argv[3], L"--parent-pid") != 0 ||
++			!parse_process_id(argv[4], parent_pid))
++		{
++			fwprintf(stderr, L"usage: %s --observe-path-contains <fragment> --parent-pid <uint32>\n", argv[0]);
++			return ERROR_INVALID_PARAMETER;
++		}
++
++		if (const DWORD error = observe_path_matches(argv[2], parent_pid); error != ERROR_SUCCESS)
++		{
++			fwprintf(stderr, L"ReShade process observer failed with error %lu.\n", error);
++			return error;
++		}
++
++		return ERROR_SUCCESS;
++	}
++
+ 	const bool path_watcher_requested = argc >= 2 && wcscmp(argv[1], L"--path-contains") == 0;
+ 	bool use_path_watcher = argc >= 3 && path_watcher_requested && argv[2][0] != L'\0';
+ 	std::vector<std::wstring> excluded_process_names;

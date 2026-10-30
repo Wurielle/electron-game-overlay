@@ -1,0 +1,526 @@
+name: Broker compatibility
+
+on:
+  pull_request:
+    branches: [feat/overlay-pocs]
+  workflow_dispatch:
+    inputs:
+      build-demo:
+        description: Build a downloadable Windows Electron demo instead of running SDK checks
+        type: boolean
+        required: false
+        default: false
+      build-two-app-demo:
+        description: Also package the pinned previous SDK for manual two-app testing (requires build-demo)
+        type: boolean
+        required: false
+        default: false
+      compatibility-ref:
+        description: Frozen broker-v1 source revision for mixed-package tests
+        type: string
+        required: true
+        default: a2cdfd42ae639168773191f5e69fca468b020e13
+
+permissions:
+  contents: read
+
+concurrency:
+  group: broker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-tests:
+    name: Windows SDK and standalone broker tests
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.build-demo }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      NX_DAEMON: 'false'
+      NX_NO_CLOUD: 'true'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: ''
+      ELECTRON_OVERRIDE_DIST_PATH: ''
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          # The locked Electron extractor exits early under Node 26.
+          node-version: 24.22.1
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare Electron dependency without launching the application
+        shell: pwsh
+        run: |
+          Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD, Env:ELECTRON_OVERRIDE_DIST_PATH, Env:npm_config_platform, Env:npm_config_arch -ErrorAction SilentlyContinue
+          & node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node -e @'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const executable = require('electron');
+          const expected = path.join(path.dirname(require.resolve('electron/package.json')), 'dist', 'electron.exe');
+          if (typeof executable !== 'string' || !fs.existsSync(executable) || !fs.statSync(executable).isFile() || fs.statSync(executable).size === 0 || fs.realpathSync.native(executable) !== fs.realpathSync.native(expected)) {
+            throw new Error('Electron prerequisite is not an installed Windows executable');
+          }
+          console.log('Electron prerequisite verified without launching the application');
+          '@
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          package-manager-cache: false
+      - name: Isolate fixtures in a canonical temporary directory
+        shell: pwsh
+        run: |
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'ego-broker-fixtures'
+          New-Item -ItemType Directory -Force -Path $fixtureTemp | Out-Null
+          $fixtureTemp = & node -e "process.stdout.write(require('node:fs').realpathSync.native(process.argv[1]))" $fixtureTemp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($name in @('TMP', 'TEMP', 'TMPDIR')) {
+            "$name=$fixtureTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+      - name: Compile SDK
+        run: node node_modules/typescript/bin/tsc --build libs/electron-game-overlay/tsconfig.lib.json
+      - name: Build the native process-image query manager
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'ego-native-process-query'
+          & ./libs/electron-game-overlay-runtime/scripts/build-reshade-manager.ps1 -Architecture x64 -OutputDirectory $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manager = (Get-Item -LiteralPath (Join-Path $output 'electron_game_overlay_reshade_manager.exe')).FullName
+          "EGO_NATIVE_MANAGER_PATH=$manager" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run SDK tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          $tests = @(Get-ChildItem libs/electron-game-overlay/tests/*.test.cjs | ForEach-Object FullName)
+          & node --test --test-timeout=120000 --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/broker.xml @tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check read-only broker diagnostic unit boundaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          & node --test --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/broker-recovery-unit.xml apps/client/tests/broker-recovery-diagnostic.test.cjs apps/client/tests/windows-broker-identity.test.cjs apps/client/tests/broker-recovery-smoke.test.cjs apps/client/tests/broker-recovery-package.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check genuine Windows broker identity on a private owned pipe
+        if: always()
+        env:
+          EGO_WINDOWS_IDENTITY_ACCEPTANCE: '1'
+          EGO_WINDOWS_IDENTITY_REPORT: test-results/windows-broker-identity.json
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          & node apps/client/tests/windows-broker-identity.acceptance.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check native process-image identity after SDK first-call coverage
+        if: always()
+        run: node --test --test-reporter=tap libs/electron-game-overlay/tests/native-process-image.acceptance.cjs
+      - name: Check independently built base and updated SDK interoperability
+        env:
+          COMPATIBILITY_BASE_REF: ${{ inputs.compatibility-ref || 'a2cdfd42ae639168773191f5e69fca468b020e13' }}
+          EGO_MIXED_ACCEPTANCE_EVIDENCE: test-results/mixed-packages.json
+          EGO_INSTANCE_MIXED_EVIDENCE: test-results/process-instance-mixed.json
+        shell: pwsh
+        run: |
+          $baseline = Join-Path $env:TEMP 'ego-broker-baseline'
+          & git worktree add --detach $baseline $env:COMPATIBILITY_BASE_REF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Junction -Path (Join-Path $baseline 'node_modules') -Target (Join-Path $PWD 'node_modules') | Out-Null
+          & node node_modules/typescript/bin/tsc --build (Join-Path $baseline 'libs/electron-game-overlay/tsconfig.lib.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node libs/electron-game-overlay/tests/broker-mixed-package.acceptance.cjs (Join-Path $baseline 'libs/electron-game-overlay/dist')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node libs/electron-game-overlay/tests/process-instance-mixed.acceptance.cjs (Join-Path $baseline 'libs/electron-game-overlay/dist')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:EGO_HARDENING_OLD_DIST = Join-Path $baseline 'libs/electron-game-overlay/dist'
+          $env:EGO_HARDENING_MUTATION = ''
+          & node --test --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/election-load.xml libs/electron-game-overlay/tests/broker-election-load-hardening.acceptance.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check demo and client types
+        run: |
+          node node_modules/typescript/bin/tsc --project demos/tsconfig.json --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check encountered application regressions
+        shell: pwsh
+        run: |
+          & node --require ./apps/client/tests/helpers/register-typescript.cjs --test --test-reporter=tap --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/application-regressions.xml apps/client/tests/input-intercept-shortcut.test.mjs apps/client/tests/app-demo-shortcuts.test.mjs apps/client/tests/app-demo-focus.test.mjs apps/client/tests/demo-main-window.test.cjs apps/client/tests/target-input-intercept-state.test.mjs apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/input-proof-ui.test.mjs apps/client/tests/package-broker-test-bundle.test.cjs apps/client/tests/package-demo.test.cjs apps/client/tests/package-broker-smoke-hosts.test.cjs apps/client/tests/broker-smoke-host-runner.test.cjs apps/client/tests/run-popup-video-regression.test.cjs apps/client/tests/demo-usability-workflow.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check popup and video registration with the pinned previous SDK
+        shell: pwsh
+        run: |
+          $previous = Join-Path $env:TEMP 'ego-popup-previous-sdk'
+          & git worktree add --detach $previous 2d1cd28b7f51460a6a5f58b20fd9e8df219bea48
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Junction -Path (Join-Path $previous 'node_modules') -Target (Join-Path $PWD 'node_modules') | Out-Null
+          & node node_modules/typescript/bin/tsc --build (Join-Path $previous 'libs/electron-game-overlay/tsconfig.lib.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $previousLib = Join-Path $previous 'libs/electron-game-overlay/dist/lib'
+          & node apps/client/scripts/run-popup-video-regression.cjs --current-lib libs/electron-game-overlay/dist/lib --previous-lib $previousLib --previous-server-lib $previousLib --controlled-native-window-order --reconnect --output test-results/popup-video-regression.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check real Electron Main popup and video geometry
+        run: node apps/client/tests/real-electron-demo-main.acceptance.cjs test-results/real-electron-demo-main.json
+      - name: Check real Electron offscreen focus and typed input
+        run: node libs/electron-game-overlay/tests/real-electron-input.acceptance.cjs test-results/real-electron-input.json
+      - name: Check real Electron control-panel collapse paint
+        run: node apps/client/tests/real-electron-control-panel.acceptance.cjs test-results/real-electron-control-panel.json
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: broker-test-results
+          path: test-results/
+          if-no-files-found: error
+
+  process-image-diagnostics:
+    name: Windows native process-image query
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.build-demo }}
+    runs-on: windows-2022
+    timeout-minutes: 5
+    env:
+      NX_DAEMON: 'false'
+      NX_NO_CLOUD: 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+      - name: Seed sanitized native setup evidence before compilation
+        run: >-
+          node -e "const fs=require('node:fs'); fs.mkdirSync('test-results',{recursive:true});
+          fs.writeFileSync('test-results/native-process-image.json',JSON.stringify({schemaVersion:1,
+          kind:'electron-game-overlay-native-process-image-acceptance',platform:process.platform,
+          architecture:process.arch,status:'setup-not-completed',setupStage:'build',nativeExecuted:false,
+          passed:false,selfQueries:[],checks:[]},null,2)+'\n');"
+      - name: Install locked dependencies for the independent OS reference
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build the native process-image query manager
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'ego-native-process-query'
+          & ./libs/electron-game-overlay-runtime/scripts/build-reshade-manager.ps1 -Architecture x64 -OutputDirectory $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manager = (Get-Item -LiteralPath (Join-Path $output 'electron_game_overlay_reshade_manager.exe')).FullName
+          "EGO_NATIVE_MANAGER_PATH=$manager" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check native process-image identity, latency and read-only behavior
+        run: node --test --test-reporter=tap libs/electron-game-overlay/tests/native-process-image.acceptance.cjs
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: native-process-image-results
+          path: test-results/native-process-image.json
+          if-no-files-found: error
+
+  packaged-broker:
+    name: Windows production broker distribution
+    permissions:
+      contents: read
+      actions: read
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      NX_DAEMON: 'false'
+      NX_NO_CLOUD: 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Seed installed-package failure evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          @{ status = 'failed'; stage = 'before-dependency-setup'; nativeExecuted = $false; electronPeerInstalled = $false } | ConvertTo-Json -Compress | Set-Content -LiteralPath test-results/broker-package-install.json -Encoding utf8
+      - name: Seed native-binding failure evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          @{ status = 'failed'; stage = 'before-dependency-setup'; nativeExecuted = $false; legacyFixtureVerified = $false; sameHandlePlacementVerified = $false } | ConvertTo-Json -Compress | Set-Content -LiteralPath test-results/native-injection-binding.json -Encoding utf8
+      - name: Validate optional two-app packaging request
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-two-app-demo && !inputs.build-demo }}
+        run: throw 'build-two-app-demo requires build-demo'
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare Windows Rust targets
+        run: rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
+      - name: Isolate runtime fixtures in a canonical temporary directory
+        shell: pwsh
+        run: |
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'ego-runtime-fixtures'
+          New-Item -ItemType Directory -Force -Path $fixtureTemp | Out-Null
+          $fixtureTemp = & node -e "process.stdout.write(require('node:fs').realpathSync.native(process.argv[1]))" $fixtureTemp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($name in @('TMP', 'TEMP', 'TMPDIR')) {
+            "$name=$fixtureTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+      - name: Check placement-preserving window order on both native architectures
+        shell: pwsh
+        run: |
+          foreach ($target in @('x86_64-pc-windows-msvc', 'i686-pc-windows-msvc')) {
+            $listed = @(& cargo test --locked --manifest-path libs/electron-overlay-transport/Cargo.toml --target $target --lib window_order -- --list 2>&1)
+            $status = $LASTEXITCODE
+            $listed | ForEach-Object { Write-Output $_ }
+            if ($status -ne 0) { exit $status }
+            if (($listed | Out-String) -notmatch 'electron_frame::tests::window_order') {
+              throw "Native window-order packet tests were not collected for $target"
+            }
+            $result = @(& cargo test --locked --manifest-path libs/electron-overlay-transport/Cargo.toml --target $target --lib window_order -- --nocapture 2>&1)
+            $status = $LASTEXITCODE
+            $result | ForEach-Object { Write-Output $_ }
+            if ($status -ne 0) { exit $status }
+            if (($result | Out-String) -notmatch 'test result: ok\. [1-9][0-9]* passed;') {
+              throw "Native window-order tests did not pass with collected tests for $target"
+            }
+          }
+      - name: Build native runtimes and packaged SDK
+        # Native targets spawn Windows PowerShell and need its module paths.
+        shell: powershell
+        run: |
+          Get-Command Get-FileHash -ErrorAction Stop | Out-Null
+          npm exec --yes=false -- nx run electron-game-overlay:build
+      - name: Check installed SDK tarball
+        shell: pwsh
+        run: |
+          & node libs/electron-game-overlay/tests/broker-package-install.acceptance.cjs --package-root libs/electron-game-overlay --sdk-root libs/electron-game-overlay/dist --tslib-root node_modules/tslib --typescript-root node_modules/typescript --scratch-root $env:TMPDIR --report test-results/broker-package-install.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: installed-sdk-package-results
+          path: test-results/broker-package-install.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check new-process-only observation and observer lifecycle
+        shell: pwsh
+        run: |
+          $injector = Join-Path $PWD 'libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject.exe'
+          & ./libs/electron-game-overlay-runtime/scripts/run-process-observer-gate.ps1 -InjectorPath $injector
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check both packaged native manager architectures
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $PWD 'libs/electron-game-overlay/dist/runtime/win32-x64/reshade'
+          $failed = 0
+          foreach ($architecture in @('x64', 'x86')) {
+            $name = if ($architecture -eq 'x64') { 'electron_game_overlay_reshade_manager.exe' } else { 'electron_game_overlay_reshade_manager32.exe' }
+            $env:EGO_NATIVE_MANAGER_PATH = (Get-Item -LiteralPath (Join-Path $runtime $name)).FullName
+            & node --test --test-reporter=tap libs/electron-game-overlay/tests/native-process-image.acceptance.cjs
+            $status = $LASTEXITCODE
+            Move-Item -LiteralPath test-results/native-process-image.json -Destination "test-results/native-process-image-production-$architecture.json"
+            if ($status -ne 0) { $failed = $status }
+          }
+          if ($failed -ne 0) { exit $failed }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: production-native-process-image-results
+          path: test-results/native-process-image-production-*.json
+          if-no-files-found: warn
+      - name: Check native injection instance binding
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$installation) { throw 'MSVC installation was not found' }
+          $vcvarsall = (Get-Item -LiteralPath (Join-Path $installation.Trim() 'VC/Auxiliary/Build/vcvarsall.bat')).FullName
+          $runtime = Join-Path $PWD 'libs/electron-game-overlay/dist/runtime/win32-x64/reshade'
+          $injector64 = (Get-Item -LiteralPath (Join-Path $runtime 'inject.exe')).FullName
+          $injector32 = (Get-Item -LiteralPath (Join-Path $runtime 'inject32.exe')).FullName
+          & node libs/electron-game-overlay/tests/native-injection-binding.acceptance.cjs --injector64 $injector64 --injector32 $injector32 --vcvarsall $vcvarsall --report (Join-Path $PWD 'test-results/native-injection-binding.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: native-injection-binding-results
+          path: test-results/native-injection-binding.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build the six controlled smoke hosts
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          & node --test apps/client/tests/broker-smoke-host-runner.test.cjs apps/client/tests/package-broker-smoke-hosts.test.cjs apps/client/tests/package-broker-test-bundle.test.cjs apps/client/tests/broker-smoke-workflow.test.cjs apps/client/tests/demo-usability-workflow.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cmake --build build/electron-game-overlay-runtime-production --config RelWithDebInfo --target d3d9_overlay_test_host d3d10_overlay_test_host d3d11_overlay_test_host d3d12_overlay_test_host --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cmake --build build/electron-game-overlay-runtime-production-x86 --config RelWithDebInfo --target d3d9_overlay_test_host d3d10_overlay_test_host --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-node@v7.1.0
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - name: Install the locked Electron runtime for the manual demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD, Env:ELECTRON_OVERRIDE_DIST_PATH, Env:npm_config_platform, Env:npm_config_arch -ErrorAction SilentlyContinue
+          & node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node -e "const fs=require('node:fs');const executable=require('electron');if(typeof executable!=='string'||!fs.statSync(executable).isFile()||fs.statSync(executable).size===0)throw Error('Electron runtime installation incomplete');"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-node@v7.1.0
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          node-version: 26.12.1
+          package-manager-cache: false
+      - name: Verify the pinned previous SDK artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $artifact = Invoke-RestMethod -Uri 'https://api.github.com/repos/Wurielle/electron-game-overlay/actions/artifacts/12780691390' -Headers $headers
+          if ($artifact.expired -or $artifact.workflow_run.head_sha -ne '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48' -or $artifact.digest -ne 'sha256:6190d0c7a58f646f1dd325781cfd709ea9f939b29c1360cfa906d6a1aff61c08') {
+            throw 'Pinned previous SDK artifact is unavailable or has unexpected provenance'
+          }
+      - uses: actions/download-artifact@v8.0.2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        with:
+          artifact-ids: '12780691390'
+          run-id: '40603803843'
+          github-token: ${{ github.token }}
+          path: artifacts/sdk-baseline/dist
+          digest-mismatch: error
+      - name: Prepare the previous SDK package metadata
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: |
+          $metadata = & git show '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48:libs/electron-game-overlay/package.json'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadata | Out-File -FilePath artifacts/sdk-baseline/package.json -Encoding utf8
+      - name: Check real Electron offscreen focus and typed input for the demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node libs/electron-game-overlay/tests/real-electron-input.acceptance.cjs test-results/real-electron-input-demo.json
+      - name: Check real Electron control-panel collapse paint for the demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node apps/client/tests/real-electron-control-panel.acceptance.cjs test-results/real-electron-control-panel-demo.json
+      - name: Check real Electron bounded Main-window usability
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node apps/client/tests/real-electron-demo-main.acceptance.cjs test-results/real-electron-demo-main.json
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          name: demo-electron-input-results
+          path: |
+            test-results/real-electron-input-demo.json
+            test-results/real-electron-control-panel-demo.json
+            test-results/real-electron-demo-main.json
+          if-no-files-found: warn
+      - name: Build and package the manual Electron demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          & node --test apps/client/tests/package-demo.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node --no-warnings --require ./apps/client/tests/helpers/register-typescript.cjs --test apps/client/tests/steam-game-auto-attacher.test.mjs apps/client/tests/process-watcher-bridge.test.mjs apps/client/tests/compatibility-run-recorder.test.mjs apps/client/tests/app-demo-focus.test.mjs apps/client/tests/input-proof-ui.test.mjs apps/client/tests/input-intercept-shortcut.test.mjs apps/client/tests/app-demo-shortcuts.test.mjs apps/client/tests/demo-main-window.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node node_modules/typescript/bin/tsc --project apps/client/tsconfig.json --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & npm exec --yes=false -- vite build --config apps/client/vite.config.mts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node apps/client/scripts/package-demo.cjs --output "$PWD/artifacts/ElectronGameOverlayDemo-win32-x64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Record the current SDK revision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          $current = 'artifacts/ElectronGameOverlayDemo-win32-x64'
+          $implementation = Join-Path $current 'resources/app/node_modules/electron-game-overlay/dist/lib/overlay-broker-native-provider.js'
+          $hash = (Get-FileHash -LiteralPath $implementation -Algorithm SHA256).Hash.ToLowerInvariant()
+          $version = (Get-Content -Raw -LiteralPath (Join-Path $current 'resources/app/node_modules/electron-game-overlay/package.json') | ConvertFrom-Json).version
+          @{ sdkSourceRevision = $env:GITHUB_SHA; sdkImplementationSha256 = $hash; packageVersion = $version; role = 'current' } | ConvertTo-Json | Out-File -FilePath (Join-Path $current 'SDK-REVISION.json') -Encoding utf8
+      - name: Smoke-test the packaged Electron runtime and dependencies
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        run: node apps/client/scripts/smoke-packaged-demo.cjs --package artifacts/ElectronGameOverlayDemo-win32-x64
+      - name: Package and smoke-test the independent previous-SDK demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: |
+          & node apps/client/scripts/package-demo.cjs --output "$PWD/artifacts/ElectronGameOverlayDemo-baseline-win32-x64" --sdk-package "$PWD/artifacts/sdk-baseline"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node apps/client/scripts/smoke-packaged-demo.cjs --package artifacts/ElectronGameOverlayDemo-baseline-win32-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $current = 'artifacts/ElectronGameOverlayDemo-win32-x64'
+          $previous = 'artifacts/ElectronGameOverlayDemo-baseline-win32-x64'
+          $relative = 'resources/app/node_modules/electron-game-overlay/dist/lib/overlay-broker-native-provider.js'
+          $currentHash = (Get-FileHash -LiteralPath (Join-Path $current $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
+          $previousHash = (Get-FileHash -LiteralPath (Join-Path $previous $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($currentHash -eq $previousHash) { throw 'Two-app test requires genuinely different compiled SDK implementations' }
+          $packagePath = 'resources/app/node_modules/electron-game-overlay/package.json'
+          $currentVersion = (Get-Content -Raw -LiteralPath (Join-Path $current $packagePath) | ConvertFrom-Json).version
+          $previousVersion = (Get-Content -Raw -LiteralPath (Join-Path $previous $packagePath) | ConvertFrom-Json).version
+          @{ sdkSourceRevision = $env:GITHUB_SHA; sdkImplementationSha256 = $currentHash; packageVersion = $currentVersion; role = 'current' } | ConvertTo-Json | Out-File -FilePath (Join-Path $current 'SDK-REVISION.json') -Encoding utf8
+          @{ sdkSourceRevision = '2d1cd28b7f51460a6a5f58b20fd9e8df219bea48'; sdkImplementationSha256 = $previousHash; packageVersion = $previousVersion; role = 'previous'; sdkArtifactId = '12780691390' } | ConvertTo-Json | Out-File -FilePath (Join-Path $previous 'SDK-REVISION.json') -Encoding utf8
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          name: packaged-recovery-diagnostic-results
+          path: |
+            artifacts/ElectronGameOverlayDemo-win32-x64/runtime-smoke.json
+            artifacts/ElectronGameOverlayDemo-win32-x64/windows-broker-identity.json
+            artifacts/ElectronGameOverlayDemo-baseline-win32-x64/runtime-smoke.json
+            artifacts/ElectronGameOverlayDemo-baseline-win32-x64/windows-broker-identity.json
+          if-no-files-found: warn
+      - name: Package controlled hosts for the portable demos
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        shell: pwsh
+        run: |
+          & node apps/client/scripts/package-broker-smoke-hosts.cjs --host-root64 "$PWD/build/electron-game-overlay-runtime-production/RelWithDebInfo" --host-root32 "$PWD/build/electron-game-overlay-runtime-production-x86/RelWithDebInfo" --output "$PWD/artifacts/ElectronGameOverlayDemo-win32-x64/smoke" --revision $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ('${{ inputs.build-two-app-demo }}' -eq 'true') {
+            & node apps/client/scripts/package-broker-smoke-hosts.cjs --host-root64 "$PWD/build/electron-game-overlay-runtime-production/RelWithDebInfo" --host-root32 "$PWD/build/electron-game-overlay-runtime-production-x86/RelWithDebInfo" --output "$PWD/artifacts/ElectronGameOverlayDemo-baseline-win32-x64/smoke" --revision $env:GITHUB_SHA
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.build-demo }}
+        with:
+          name: portable-smoke-host-manifests
+          path: |
+            artifacts/ElectronGameOverlayDemo-win32-x64/smoke/manifest.json
+            artifacts/ElectronGameOverlayDemo-baseline-win32-x64/smoke/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Assemble the paired portable test bundle
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: |
+          & node apps/client/scripts/package-broker-test-bundle.cjs --current "$PWD/artifacts/ElectronGameOverlayDemo-win32-x64" --previous "$PWD/artifacts/ElectronGameOverlayDemo-baseline-win32-x64" --output "$PWD/artifacts/ego"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Archive the paired portable test bundle
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        shell: pwsh
+        run: Compress-Archive -LiteralPath artifacts/ego -DestinationPath artifacts/ego-tests.zip -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
+        with:
+          path: artifacts/ego-tests.zip
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
+      - name: Archive the portable Electron demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && !inputs.build-two-app-demo }}
+        shell: pwsh
+        run: Compress-Archive -LiteralPath artifacts/ElectronGameOverlayDemo-win32-x64 -DestinationPath artifacts/ElectronGameOverlayDemo-win32-x64.zip -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && !inputs.build-two-app-demo }}
+        with:
+          path: artifacts/ElectronGameOverlayDemo-win32-x64.zip
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: electron-game-overlay-windows-sdk
+          path: libs/electron-game-overlay/dist/
+          if-no-files-found: error

@@ -1,93 +1,167 @@
-import { ipcRenderer, IpcRendererEvent } from "electron";
+import { ipcRenderer, IpcRendererEvent } from 'electron';
+import type {
+  OverlayDiagnostic,
+  ReShadeDiagnostic,
+} from 'electron-game-overlay';
 
 type DemoState = {
   overlayStarted: boolean;
-  inputIntercepting: boolean;
+  inputInterceptRequested: boolean;
+  inputInterceptEffective: boolean;
+  inputInterceptAccelerator: string | null;
+  runtime: 'reshade' | null;
+  presentation: null | {
+    enabled: true;
+    shortcut: string | null;
+    menuExpanded: boolean;
+  };
+  steamAutoAttach: null | {
+    enabled: true;
+    pattern: '**/steamapps/**';
+    watcherStatus: 'starting' | 'running' | 'failed' | 'stopped';
+    watcherError: string | null;
+    targets: Array<{
+      pid: number;
+      processName: string;
+      filepath: string;
+      phase: 'attaching' | 'connected' | 'failed';
+      error: string | null;
+      diagnostic: ReShadeDiagnostic | null;
+    }>;
+  };
+  attachment: {
+    phase: 'idle' | 'attaching' | 'connected';
+    processName: string | null;
+    pid: number | null;
+    error: string | null;
+    diagnostic: ReShadeDiagnostic | null;
+  };
+  diagnostic: OverlayDiagnostic | null;
   windows: Record<string, boolean>;
 };
 
 const overlayWindows = {
-  main: "example-main-overlay",
-  status: "example-status-overlay",
-  video: "example-video-overlay",
+  main: 'example-main-overlay',
+  status: 'example-status-overlay',
+  video: 'example-video-overlay',
 };
 
-const windowTitleStorageKey = "demo.windowTitle";
+const processNameStorageKey = 'demo.processName';
+const demoStateChangedChannel = 'overlay:state-changed';
 
 let state: DemoState = {
   overlayStarted: false,
-  inputIntercepting: false,
+  inputInterceptRequested: false,
+  inputInterceptEffective: false,
+  inputInterceptAccelerator: null,
+  runtime: null,
+  presentation: null,
+  steamAutoAttach: null,
+  attachment: {
+    phase: 'idle',
+    processName: null,
+    pid: null,
+    error: null,
+    diagnostic: null,
+  },
+  diagnostic: null,
   windows: {},
 };
 
-const startButton = document.getElementById("start") as HTMLButtonElement;
+const startButton = document.getElementById('start') as HTMLButtonElement;
 const interceptButton = document.getElementById(
-  "intercept"
+  'intercept',
 ) as HTMLButtonElement;
-const injectButton = document.getElementById("inject") as HTMLButtonElement;
+const injectButton = document.getElementById('inject') as HTMLButtonElement;
 const popupButton = document.getElementById(
-  "show-popup-overlay"
+  'show-popup-overlay',
 ) as HTMLButtonElement;
 const mainOverlayButton = document.getElementById(
-  "toggle-main-overlay"
+  'toggle-main-overlay',
 ) as HTMLButtonElement;
 const statusOverlayButton = document.getElementById(
-  "toggle-status-overlay"
+  'toggle-status-overlay',
 ) as HTMLButtonElement;
 const videoOverlayButton = document.getElementById(
-  "toggle-video-overlay"
+  'toggle-video-overlay',
 ) as HTMLButtonElement;
-const titleInput = document.getElementById("title") as HTMLInputElement;
-const statusElement = document.getElementById("status") as HTMLDivElement;
-const imageElem = document.getElementById("image") as HTMLImageElement;
+const processNameInput = document.getElementById(
+  'process-name',
+) as HTMLInputElement;
+const processPidInput = document.getElementById(
+  'process-pid',
+) as HTMLInputElement;
+const statusElement = document.getElementById('status') as HTMLDivElement;
+const imageElem = document.getElementById('image') as HTMLImageElement;
 
-titleInput.value =
-  localStorage.getItem(windowTitleStorageKey) ?? titleInput.value;
+processNameInput.value =
+  localStorage.getItem(processNameStorageKey) ?? processNameInput.value;
 
-startButton.addEventListener("click", async () => {
-  await updateState(ipcRenderer.invoke("overlay:start"));
+startButton.addEventListener('click', async () => {
+  await updateState(ipcRenderer.invoke('overlay:start'));
 });
 
-interceptButton.addEventListener("click", async () => {
+interceptButton.addEventListener('click', async () => {
   await updateState(
     ipcRenderer.invoke(
-      "overlay:set-input-intercept",
-      !state.inputIntercepting
-    )
+      'overlay:set-input-intercept',
+      !state.inputInterceptRequested,
+    ),
   );
 });
 
-injectButton.addEventListener("click", async () => {
-  const title = titleInput.value.trim();
-  if (!title) {
+injectButton.addEventListener('click', async () => {
+  const processName = processNameInput.value.trim();
+  if (!processName) {
+    return;
+  }
+  const pidText = processPidInput.value.trim();
+  const pid = pidText ? Number(pidText) : undefined;
+  if (
+    pid !== undefined &&
+    (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff)
+  ) {
+    statusElement.classList.add('error');
+    statusElement.textContent =
+      'Target PID must be an integer between 1 and 4294967295';
     return;
   }
 
-  await updateState(ipcRenderer.invoke("overlay:inject", title));
+  injectButton.disabled = true;
+  try {
+    await updateState(ipcRenderer.invoke('overlay:inject', processName, pid));
+  } catch (error) {
+    if (!state.attachment.error) {
+      statusElement.classList.add('error');
+      statusElement.textContent = getErrorMessage(error);
+    }
+  } finally {
+    renderInjectAvailability();
+  }
 });
 
-mainOverlayButton.addEventListener("click", () => {
+mainOverlayButton.addEventListener('click', () => {
   toggleOverlayWindow(overlayWindows.main);
 });
 
-statusOverlayButton.addEventListener("click", () => {
+statusOverlayButton.addEventListener('click', () => {
   toggleOverlayWindow(overlayWindows.status);
 });
 
-videoOverlayButton.addEventListener("click", () => {
+videoOverlayButton.addEventListener('click', () => {
   toggleOverlayWindow(overlayWindows.video);
 });
 
-popupButton.addEventListener("click", () => {
-  ipcRenderer.send("showExamplePopupOverlay");
+popupButton.addEventListener('click', () => {
+  ipcRenderer.send('showExamplePopupOverlay');
 });
 
-titleInput.addEventListener("input", () => {
-  localStorage.setItem(windowTitleStorageKey, titleInput.value);
+processNameInput.addEventListener('input', () => {
+  localStorage.setItem(processNameStorageKey, processNameInput.value);
 });
 
 ipcRenderer.on(
-  "exampleMainOverlayImage",
+  'exampleMainOverlayImage',
   (event: IpcRendererEvent, arg: { image: string }) => {
     const { image } = arg;
     // imageElem.onload = function() {
@@ -105,25 +179,33 @@ ipcRenderer.on(
     //   )
     // }
     imageElem.src = image;
-  }
+  },
+);
+
+ipcRenderer.on(
+  demoStateChangedChannel,
+  (event: IpcRendererEvent, nextState: DemoState) => {
+    state = nextState;
+    renderState();
+  },
 );
 
 window.onfocus = function () {
-  console.log("focus");
+  console.log('focus');
 };
 window.onblur = function () {
-  console.log("blur");
+  console.log('blur');
 };
 
-void updateState(ipcRenderer.invoke("overlay:get-state"));
+void updateState(ipcRenderer.invoke('overlay:get-state'));
 
 async function toggleOverlayWindow(name: string) {
   await updateState(
     ipcRenderer.invoke(
-      "overlay:set-window-visible",
+      'overlay:set-window-visible',
       name,
-      !state.windows[name]
-    )
+      !state.windows[name],
+    ),
   );
 }
 
@@ -133,35 +215,155 @@ async function updateState(statePromise: Promise<DemoState>) {
 }
 
 function renderState() {
-  startButton.classList.toggle("active", state.overlayStarted);
-  interceptButton.classList.toggle("active", state.inputIntercepting);
+  startButton.classList.toggle('active', state.overlayStarted);
+  interceptButton.classList.toggle('active', state.inputInterceptEffective);
+  renderInjectAvailability();
+  statusElement.dataset.attachmentPhase = state.attachment.phase;
+  statusElement.dataset.steamAutoAttach =
+    state.steamAutoAttach?.watcherStatus ?? 'disabled';
 
   startButton.textContent = state.overlayStarted
-    ? "Session running"
-    : "Start session";
-  interceptButton.textContent = state.inputIntercepting
-    ? "Release input"
-    : "Intercept input";
+    ? 'Session running'
+    : 'Start session';
+  const inputInterceptAccelerator =
+    state.inputInterceptAccelerator ?? 'Shortcut unavailable';
+  interceptButton.textContent = state.inputInterceptRequested
+    ? state.inputInterceptEffective
+      ? `Release input (${inputInterceptAccelerator})`
+      : `Interception requested (${inputInterceptAccelerator})`
+    : state.inputInterceptEffective
+      ? `Releasing input (${inputInterceptAccelerator})`
+      : `Intercept input (${inputInterceptAccelerator})`;
 
-  renderOverlayButton(mainOverlayButton, overlayWindows.main, "main overlay");
+  renderOverlayButton(mainOverlayButton, overlayWindows.main, 'main overlay');
   renderOverlayButton(
     statusOverlayButton,
     overlayWindows.status,
-    "status overlay"
+    'status overlay',
   );
-  renderOverlayButton(videoOverlayButton, overlayWindows.video, "video overlay");
+  renderOverlayButton(
+    videoOverlayButton,
+    overlayWindows.video,
+    'video overlay',
+  );
 
-  statusElement.textContent = state.overlayStarted
-    ? "Session ready"
-    : "Session idle";
+  renderAttachmentStatus();
+}
+
+function renderInjectAvailability() {
+  const steamAutoAttachEnabled = state.steamAutoAttach !== null;
+  injectButton.disabled =
+    state.runtime === null ||
+    steamAutoAttachEnabled ||
+    state.attachment.phase !== 'idle';
+  processNameInput.disabled = steamAutoAttachEnabled;
+  processPidInput.disabled = steamAutoAttachEnabled;
+  injectButton.textContent = steamAutoAttachEnabled
+    ? 'Steam auto-watch active'
+    : 'Inject / arm';
+}
+
+function renderAttachmentStatus() {
+  statusElement.classList.toggle(
+    'error',
+    Boolean(
+      state.steamAutoAttach?.watcherError ||
+        state.attachment.error ||
+        state.diagnostic?.severity === 'error',
+    ),
+  );
+  const sessionDiagnosticTag = formatOverlayDiagnosticTag(state.diagnostic);
+
+  if (!state.runtime) {
+    statusElement.textContent =
+      'Injection disabled: restart the client with ReShade enabled';
+    return;
+  }
+
+  const steamAutoAttach = state.steamAutoAttach;
+  if (steamAutoAttach) {
+    if (steamAutoAttach.watcherError) {
+      statusElement.textContent = `Steam process watcher failed: ${steamAutoAttach.watcherError}`;
+      return;
+    }
+    if (steamAutoAttach.watcherStatus !== 'running') {
+      statusElement.textContent = 'Starting Steam process watcher...';
+      return;
+    }
+
+    const connected = steamAutoAttach.targets.filter(
+      ({ phase }) => phase === 'connected',
+    ).length;
+    const attaching = steamAutoAttach.targets.filter(
+      ({ phase }) => phase === 'attaching',
+    ).length;
+    const failed = steamAutoAttach.targets.filter(
+      ({ phase }) => phase === 'failed',
+    ).length;
+    const failedDiagnostic = steamAutoAttach.targets.find(
+      ({ phase, diagnostic }) => phase === 'failed' && diagnostic !== null,
+    )?.diagnostic;
+    const diagnosticTag = formatDiagnosticTag(failedDiagnostic);
+    statusElement.textContent = steamAutoAttach.targets.length
+      ? `Watching ${steamAutoAttach.pattern} · ${connected} connected · ${attaching} attaching · ${failed} failed${diagnosticTag ? ` · ${diagnosticTag}` : ''}${sessionDiagnosticTag ? ` · ${sessionDiagnosticTag}` : ''}`
+      : `Watching ${steamAutoAttach.pattern}. Launch a Steam game to inject automatically.${sessionDiagnosticTag ? ` ${sessionDiagnosticTag}` : ''}`;
+    return;
+  }
+
+  if (state.attachment.error) {
+    const diagnosticTag = formatDiagnosticTag(state.attachment.diagnostic);
+    statusElement.textContent = diagnosticTag
+      ? `${diagnosticTag}: ${state.attachment.error}`
+      : state.attachment.error;
+    return;
+  }
+
+  if (state.attachment.phase === 'attaching') {
+    statusElement.textContent = state.attachment.pid
+      ? `Injecting ReShade into ${state.attachment.processName} (PID ${state.attachment.pid})...`
+      : `Arming ReShade for ${state.attachment.processName}. Launch the game now...`;
+    return;
+  }
+
+  if (state.attachment.phase === 'connected') {
+    statusElement.textContent = `Connected to ${state.attachment.processName} (PID ${state.attachment.pid}) with ReShade${sessionDiagnosticTag ? ` · ${sessionDiagnosticTag}` : ''}`;
+    return;
+  }
+
+  if (state.attachment.processName && state.attachment.pid) {
+    statusElement.textContent = `Disconnected from ${state.attachment.processName} (PID ${state.attachment.pid}). Ready to inject again.`;
+    return;
+  }
+
+  statusElement.textContent = `${state.overlayStarted ? 'Session ready' : 'Session idle'} · ReShade${sessionDiagnosticTag ? ` · ${sessionDiagnosticTag}` : ''}`;
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatDiagnosticTag(
+  diagnostic: ReShadeDiagnostic | null | undefined,
+): string {
+  return diagnostic ? `${diagnostic.stage}/${diagnostic.code}` : '';
+}
+
+function formatOverlayDiagnosticTag(
+  diagnostic: OverlayDiagnostic | null | undefined,
+): string {
+  return diagnostic && diagnostic.severity !== 'info'
+    ? `${diagnostic.source}/${diagnostic.code}${
+        diagnostic.pid === undefined ? ' (session)' : ` (PID ${diagnostic.pid})`
+      }`
+    : '';
 }
 
 function renderOverlayButton(
   button: HTMLButtonElement,
   windowName: string,
-  label: string
+  label: string,
 ) {
   const visible = Boolean(state.windows[windowName]);
-  button.classList.toggle("active", visible);
-  button.textContent = `${visible ? "Hide" : "Show"} ${label}`;
+  button.classList.toggle('active', visible);
+  button.textContent = `${visible ? 'Hide' : 'Show'} ${label}`;
 }

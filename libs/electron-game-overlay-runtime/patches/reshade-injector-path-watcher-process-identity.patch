@@ -1,0 +1,105 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 4ab6a64..29a820b 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -9,7 +9,8 @@
+ #include <AclAPI.h>
+ #include <TlHelp32.h>
+ #include <string>
+-#include <unordered_set>
++#include <unordered_map>
++#include <utility>
+ #include <vector>
+ 
+ #define RESHADE_LOADING_THREAD_FUNC 1
+@@ -145,7 +146,7 @@ static bool path_contains_case_insensitive(const std::wstring &path, const std::
+ 	return false;
+ }
+ 
+-static DWORD snapshot_process_ids(std::unordered_set<DWORD> &process_ids)
++static DWORD snapshot_process_identities(std::unordered_map<DWORD, scoped_handle> &processes)
+ {
+ 	const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+ 	if (snapshot == INVALID_HANDLE_VALUE)
+@@ -153,7 +154,11 @@ static DWORD snapshot_process_ids(std::unordered_set<DWORD> &process_ids)
+ 
+ 	PROCESSENTRY32W process = { sizeof(process) };
+ 	for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
+-		process_ids.insert(process.th32ProcessID);
++	{
++		scoped_handle candidate = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process.th32ProcessID);
++		if (candidate != nullptr)
++			processes.emplace(process.th32ProcessID, std::move(candidate));
++	}
+ 
+ 	return ERROR_SUCCESS;
+ }
+@@ -171,8 +176,8 @@ static bool process_name_is_excluded(const wchar_t *name, const std::vector<std::
+ 
+ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path)
+ {
+-	std::unordered_set<DWORD> ignored_process_ids;
+-	if (const DWORD error = snapshot_process_ids(ignored_process_ids); error != ERROR_SUCCESS)
++	std::unordered_map<DWORD, scoped_handle> ignored_processes;
++	if (const DWORD error = snapshot_process_identities(ignored_processes); error != ERROR_SUCCESS)
+ 		return error;
+ 
+ 	const std::wstring normalized_fragment = normalize_path_separators(fragment);
+@@ -181,6 +186,14 @@ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::
+ 
+ 	while (pid == 0)
+ 	{
++		for (auto ignored = ignored_processes.begin(); ignored != ignored_processes.end();)
++		{
++			if (WaitForSingleObject(ignored->second, 0) == WAIT_TIMEOUT)
++				++ignored;
++			else
++				ignored = ignored_processes.erase(ignored);
++		}
++
+ 		const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+ 		if (snapshot == INVALID_HANDLE_VALUE)
+ 			return GetLastError();
+@@ -188,18 +201,18 @@ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::
+ 		PROCESSENTRY32W process = { sizeof(process) };
+ 		for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
+ 		{
+-			if (ignored_process_ids.find(process.th32ProcessID) != ignored_process_ids.end())
++			if (ignored_processes.find(process.th32ProcessID) != ignored_processes.end())
++				continue;
++
++			scoped_handle candidate = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process.th32ProcessID);
++			if (candidate == nullptr)
+ 				continue;
+ 			if (process_name_is_excluded(process.szExeFile, excluded_names))
+ 			{
+-				ignored_process_ids.insert(process.th32ProcessID);
++				ignored_processes.emplace(process.th32ProcessID, std::move(candidate));
+ 				continue;
+ 			}
+ 
+-			const scoped_handle candidate = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process.th32ProcessID);
+-			if (candidate == nullptr)
+-				continue;
+-
+ 			WCHAR candidate_path[32768] = L"";
+ 			DWORD candidate_path_size = static_cast<DWORD>(sizeof(candidate_path) / sizeof(candidate_path[0]));
+ 			if (!QueryFullProcessImageNameW(candidate, 0, candidate_path, &candidate_path_size))
+@@ -207,7 +220,7 @@ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::
+ 
+ 			if (!path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment))
+ 			{
+-				ignored_process_ids.insert(process.th32ProcessID);
++				ignored_processes.emplace(process.th32ProcessID, std::move(candidate));
+ 				continue;
+ 			}
+ 
+@@ -217,7 +230,7 @@ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::
+ 		}
+ 
+ 		if (pid == 0)
+-			Sleep(1); // Sleep a bit to not overburden the CPU
++			Sleep(50); // Keep prelaunch polling responsive without busy-looping over the process table
+ 	}
+ 
+ 	return ERROR_SUCCESS;

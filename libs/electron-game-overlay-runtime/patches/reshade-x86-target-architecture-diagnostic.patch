@@ -1,0 +1,17 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index f5f9585..cd9a1c5 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -3944,5 +3944,12 @@ int wmain(int argc, wchar_t *argv[])
+ 	{
+ 		wprintf(L"\nProcess architecture does not match injection tool! Cannot continue.\n");
++		if (!write_injector_diagnostic(
++				L"target-architecture-mismatch",
++				pid,
++				std::wstring(),
++				ERROR_IMAGE_MACHINE_TYPE_MISMATCH,
++				selected_image_path))
++			return ERROR_WRITE_FAULT;
+ 		if (use_exact_pid || use_path_watcher)
+ 			print_injection_not_started();
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;

@@ -1,0 +1,152 @@
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -150,6 +150,69 @@
+ 	}
+ 
+ 	LocalFree(sd);
++}
++
++// Exact process-instance binding helpers. No process reopen or mutation here.
++static bool parse_creation_time_100ns(const wchar_t *value, uint64_t &result)
++{
++	if (value == nullptr || value[0] < L'1' || value[0] > L'9')
++		return false;
++	uint64_t parsed = 0;
++	size_t length = 0;
++	for (const wchar_t *digit = value; *digit != L'\0'; ++digit)
++	{
++		if (++length > 20 || *digit < L'0' || *digit > L'9')
++			return false;
++		const uint64_t next = static_cast<uint64_t>(*digit - L'0');
++		if (parsed > (UINT64_MAX - next) / 10)
++			return false;
++		parsed = parsed * 10 + next;
++	}
++	result = parsed;
++	return true;
++}
++
++static DWORD check_process_creation_time(HANDLE process, uint64_t expected, bool &mismatch)
++{
++	mismatch = false;
++	FILETIME created = {}, exited = {}, kernel = {}, user = {};
++	if (!GetProcessTimes(process, &created, &exited, &kernel, &user))
++	{
++		const DWORD error = GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
++	}
++	const uint64_t actual =
++		(static_cast<uint64_t>(created.dwHighDateTime) << 32) |
++		static_cast<uint64_t>(created.dwLowDateTime);
++	if (actual == 0)
++		return ERROR_INVALID_DATA;
++	mismatch = actual != expected;
++	return mismatch ? ERROR_REVISION_MISMATCH : ERROR_SUCCESS;
++}
++
++// The optional binding precedes the existing optional official-add-on wait.
++static bool parse_exact_pid_tail(int argc, wchar_t *argv[], uint64_t &expected,
++	bool &binding, bool &wait, int &wait_value_index)
++{
++	binding = false;
++	wait = false;
++	int next = 4;
++	if (next < argc && wcscmp(argv[next], L"--expected-creation-time-100ns") == 0)
++	{
++		if (next + 1 >= argc || !parse_creation_time_100ns(argv[next + 1], expected))
++			return false;
++		binding = true;
++		next += 2;
++	}
++	if (next < argc && wcscmp(argv[next], L"--wait-for-official-addon") == 0)
++	{
++		if (next + 1 >= argc)
++			return false;
++		wait = true;
++		wait_value_index = next + 1;
++		next += 2;
++	}
++	return next == argc;
+ }
+ 
+ static bool parse_process_id(const wchar_t *value, DWORD &pid)
+@@ -3817,20 +3880,26 @@
+ 		}
+ 	}
+ 	const bool exact_pid_requested = !path_watcher_requested && argc >= 3 && wcscmp(argv[2], L"--pid") == 0;
+-	const bool official_addon_wait_requested =
+-		exact_pid_requested &&
+-		argc == 6 &&
+-		wcscmp(argv[4], L"--wait-for-official-addon") == 0;
+-	const bool use_exact_pid =
+-		exact_pid_requested &&
+-		(argc == 4 || official_addon_wait_requested);
++	uint64_t expected_creation_time = 0;
++	bool process_instance_binding_requested = false;
++	bool official_addon_wait_requested = false;
++	int official_addon_wait_value_index = 0;
++	const bool use_exact_pid = exact_pid_requested && argc >= 4 &&
++		parse_exact_pid_tail(argc, argv, expected_creation_time,
++			process_instance_binding_requested, official_addon_wait_requested,
++			official_addon_wait_value_index);
++	// Reject a misplaced binding option before observer/watcher selection.
++	bool misplaced_binding = false;
++	for (int argument = 1; argument < argc; ++argument)
++		if (wcscmp(argv[argument], L"--expected-creation-time-100ns") == 0 && !use_exact_pid)
++			misplaced_binding = true;
+ 	if ((argc != 2 && !use_exact_pid && !use_path_watcher) ||
+-		(path_watcher_requested && !use_path_watcher))
+-	{
+-		wprintf(L"usage: %s <exe name> [--pid <uint32> [--wait-for-official-addon <milliseconds>]] | --path-contains <fragment> [--exclude-name <exe basename>]...\n", argv[0]);
+-		if (exact_pid_requested || path_watcher_requested)
++		(path_watcher_requested && !use_path_watcher) || misplaced_binding)
++	{
++		wprintf(L"usage: %s <exe name> [--pid <uint32> [--expected-creation-time-100ns <uint64>] [--wait-for-official-addon <milliseconds>]] | --path-contains <fragment> [--exclude-name <exe basename>]...\n", argv[0]);
++		if (exact_pid_requested || path_watcher_requested || misplaced_binding)
+ 			print_injection_not_started();
+-		return exact_pid_requested || path_watcher_requested ? ERROR_INVALID_PARAMETER : 0;
++		return exact_pid_requested || path_watcher_requested || misplaced_binding ? ERROR_INVALID_PARAMETER : 0;
+ 	}
+ 
+ 	const wchar_t *name = nullptr;
+@@ -3855,12 +3924,12 @@
+ 			return ERROR_INVALID_PARAMETER;
+ 		}
+ 		if (official_addon_wait_requested &&
+-			(!parse_process_id(argv[5], official_addon_wait_ms) ||
++			(!parse_process_id(argv[official_addon_wait_value_index], official_addon_wait_ms) ||
+ 			 official_addon_wait_ms > 60000))
+ 		{
+ 			wprintf(
+ 				L"Invalid official add-on wait '%s': expected milliseconds from 1 through 60000.\n",
+-				argv[5]);
++				argv[official_addon_wait_value_index]);
+ 			print_injection_not_started();
+ 			return ERROR_INVALID_PARAMETER;
+ 		}
+@@ -3963,6 +4032,25 @@
+ 			wprintf(L"\nTarget process executable mismatch: PID %lu is '%s', expected '%s'.\n", pid, actual_name, name);
+ 			print_injection_not_started();
+ 			return ERROR_INVALID_NAME;
++		}
++	}
++
++	// Bind the retained mutation handle only after its real image is validated.
++	// This must precede architecture/module inspection, claims, ACLs and VM work.
++	if (process_instance_binding_requested)
++	{
++		bool mismatch = false;
++		const DWORD error = check_process_creation_time(
++			remote_process, expected_creation_time, mismatch);
++		if (error != ERROR_SUCCESS)
++		{
++			if (!write_injector_diagnostic(
++					mismatch ? L"target-process-instance-mismatch" :
++						L"target-process-instance-query-failed",
++					pid, std::wstring(), error, selected_image_path))
++				return ERROR_WRITE_FAULT;
++			print_injection_not_started();
++			return error;
+ 		}
+ 	}
+ 

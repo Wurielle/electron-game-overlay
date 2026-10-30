@@ -1,0 +1,167 @@
+diff --git a/source/addon_manager.cpp b/source/addon_manager.cpp
+index 8f39f81..60cd13d 100644
+--- a/source/addon_manager.cpp
++++ b/source/addon_manager.cpp
+@@ -159,14 +159,10 @@ static unsigned long s_reference_count = 0;
+ 
+ void reshade::load_addons()
+ {
+-	// Only load add-ons the first time a reference is added
+-	if (InterlockedIncrement(&s_reference_count) != 1)
+-		return;
+-
+-	// Serialize the first normal add-on-manager initialization with the one
+-	// project-owned external add-on load that may have claimed the gate. This
+-	// closes registration before event vectors can be iterated, while allowing
+-	// an already-claimed LoadLibrary call to finish registering from DllMain.
++	// Every caller must close or wait out project-owned external registration
++	// before it may return and dispatch events. Doing this before incrementing
++	// the reference count removes the gap where a second caller could return
++	// while the first caller had not closed the still-OPEN gate yet.
+ 	for (;;)
+ 	{
+ 		const LONG state = InterlockedCompareExchange(
+@@ -189,10 +185,15 @@ void reshade::load_addons()
+ 
+ 		// The external loader owns the registration vectors until it publishes
+ 		// either REGISTERED or OPEN. Do not begin normal initialization midway
+-		// through its DllMain callbacks.
+-		SwitchToThread();
++		// through its DllMain callbacks. Keep this fail-closed wait low-CPU:
++		// forcibly terminating that loader leaves ownership indeterminate.
++		Sleep(1);
+ 	}
+ 
++	// Only load add-ons the first time a reference is added
++	if (InterlockedIncrement(&s_reference_count) != 1)
++		return;
++
+ 	ini_file &config = global_config();
+ 
+ 	addon_all_loaded = true;
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 3917627..b0d4aa7 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -22,8 +22,6 @@
+ 
+ #define RESHADE_LOADING_THREAD_FUNC 1
+ 
+-using compare_exchange_function = LONG (WINAPI *)(volatile LONG *, LONG, LONG);
+-
+ struct loading_data
+ {
+ 	WCHAR load_path[MAX_PATH] = L"";
+@@ -35,7 +33,6 @@ struct loading_data
+ 	WCHAR routing_env_var_value[MAX_PATH] = L"";
+ 	decltype(&SetEnvironmentVariableW) SetEnvironmentVariableW = nullptr;
+ 	volatile LONG *existing_runtime_addon_gate = nullptr;
+-	compare_exchange_function CompareExchange = nullptr;
+ };
+ 
+ struct scoped_handle
+@@ -1025,14 +1022,15 @@ static DWORD observe_path_matches(const wchar_t *fragment, DWORD parent_pid)
+ }
+ 
+ #if RESHADE_LOADING_THREAD_FUNC
+-static DWORD WINAPI loading_thread_func(loading_data *arg)
++#pragma optimize("", off)
++__declspec(noinline) static DWORD WINAPI loading_thread_func(loading_data *arg)
+ {
+ 	constexpr LONG addon_gate_open = 0;
+ 	constexpr LONG addon_gate_loading = 1;
+ 	constexpr LONG addon_gate_registered = 2;
+ 
+ 	if (arg->existing_runtime_addon_gate != nullptr &&
+-		arg->CompareExchange(
++		InterlockedCompareExchange(
+ 			arg->existing_runtime_addon_gate,
+ 			addon_gate_loading,
+ 			addon_gate_open) != addon_gate_open)
+@@ -1048,7 +1046,7 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ 		if (error == ERROR_SUCCESS)
+ 			error = ERROR_GEN_FAILURE;
+ 		if (arg->existing_runtime_addon_gate != nullptr)
+-			arg->CompareExchange(
++			InterlockedCompareExchange(
+ 				arg->existing_runtime_addon_gate,
+ 				addon_gate_open,
+ 				addon_gate_loading);
+@@ -1061,7 +1059,7 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ 		if (error == ERROR_SUCCESS)
+ 			error = ERROR_MOD_NOT_FOUND;
+ 		if (arg->existing_runtime_addon_gate != nullptr)
+-			arg->CompareExchange(
++			InterlockedCompareExchange(
+ 				arg->existing_runtime_addon_gate,
+ 				addon_gate_open,
+ 				addon_gate_loading);
+@@ -1069,12 +1067,37 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ 	}
+ 
+ 	if (arg->existing_runtime_addon_gate != nullptr)
+-		arg->CompareExchange(
++		InterlockedCompareExchange(
+ 			arg->existing_runtime_addon_gate,
+ 			addon_gate_registered,
+ 			addon_gate_loading);
+ 	return ERROR_SUCCESS;
+ }
++#pragma optimize("", on)
++
++static bool get_loading_thread_func_size(SIZE_T &size)
++{
++	constexpr SIZE_T maximum_loader_thunk_size = 4096;
++	const DWORD64 function_start =
++		reinterpret_cast<DWORD64>(loading_thread_func);
++	DWORD64 image_base = 0;
++	const RUNTIME_FUNCTION *const function_entry =
++		RtlLookupFunctionEntry(function_start, &image_base, nullptr);
++	if (function_entry == nullptr)
++		return false;
++
++	const DWORD64 unwind_start =
++		image_base + function_entry->BeginAddress;
++	const DWORD64 unwind_end =
++		image_base + function_entry->EndAddress;
++	if (unwind_start != function_start ||
++		unwind_end <= unwind_start ||
++		unwind_end - unwind_start > maximum_loader_thunk_size)
++		return false;
++
++	size = static_cast<SIZE_T>(unwind_end - unwind_start);
++	return true;
++}
+ #endif
+ 
+ int wmain(int argc, wchar_t *argv[])
+@@ -1349,21 +1372,19 @@ int wmain(int argc, wchar_t *argv[])
+ 	arg.GetLastError = GetLastError;
+ 	arg.LoadLibraryW = LoadLibraryW;
+ 	arg.SetEnvironmentVariableW = SetEnvironmentVariableW;
+-	arg.CompareExchange = reinterpret_cast<compare_exchange_function>(
+-		GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "InterlockedCompareExchange"));
+-	if (arg.CompareExchange == nullptr)
+-	{
+-		wprintf(L"\nFailed to resolve the atomic registration primitive.\n");
+-		if (use_exact_pid || use_path_watcher)
+-			print_injection_not_started();
+-		return ERROR_PROC_NOT_FOUND;
+-	}
+ 	if (reuse_existing_runtime)
+ 		arg.existing_runtime_addon_gate =
+ 			reinterpret_cast<volatile LONG *>(reusable_runtime.addon_gate_address);
+ 
+ #if RESHADE_LOADING_THREAD_FUNC
+-	const auto loading_thread_func_size = 512; // An upper bound for the copied loader thunk
++	SIZE_T loading_thread_func_size = 0;
++	if (!get_loading_thread_func_size(loading_thread_func_size))
++	{
++		wprintf(L"\nFailed to measure the remote loader thunk.\n");
++		if (use_exact_pid || use_path_watcher)
++			print_injection_not_started();
++		return ERROR_BAD_EXE_FORMAT;
++	}
+ #else
+ 	const auto loading_thread_func_size = 0;
+ #endif
