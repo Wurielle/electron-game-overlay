@@ -38,9 +38,15 @@ inactive; that acknowledgement is not claimed. The restore check waits for a
 fresh presentation sample and native keyboard ownership rather than reusing a
 stale acknowledgement. This does not establish arbitrary late-PID attachment.
 
-A human physical first-key run is distinct from SendInput and has its dedicated
-`gun-frog-physical-first-key.ps1` launcher. It is awaiting human participation;
-no physical hardware-key acceptance is claimed yet.
+A human physical first-key run passed on Gun Frog with Electron
+46.0.0-alpha.2: physical lowercase `a` on first show and `b` after hide/reopen,
+with zero pointer-down events. The dedicated
+`gun-frog-physical-first-key.ps1` launcher displays each prompt and waits for
+key release before advancing. Its report is
+`build/explicit-focus-20261030-215226/report.json`; later blur, interception and
+foreground gates passed using SendInput, so only the first-show/reopen keys
+are claimed as physical-key evidence. An earlier attempt recorded physical
+`a` but timed out awaiting `b`; the fixture now makes that transition visible.
 
 No Izabela files were edited, no existing ReShade installation was rewritten,
 and no live coordinator/runtime was replaced. The candidate has an exact

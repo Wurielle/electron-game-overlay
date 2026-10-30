@@ -131,7 +131,7 @@ app
     await window.browserWindow.loadURL(
       'data:text/html;charset=utf-8,' +
         encodeURIComponent(
-          `<html><body style="background:#183044;color:white;font:24px sans-serif"><p>Native keyboard focus ${member}</p><input id="text" autofocus style="font:24px sans-serif;width:95%"><script>window.downs=0;window.keys=0;addEventListener('pointerdown',()=>downs++);addEventListener('keydown',()=>keys++);document.querySelector('input').focus()</script></body></html>`,
+          `<html><body style="background:#183044;color:white;font:24px sans-serif"><p id="prompt">Native keyboard focus ${member}</p><input id="text" autofocus style="font:24px sans-serif;width:95%"><script>window.downs=0;window.keys=0;window.heldKeys=new Set();addEventListener('pointerdown',()=>downs++);addEventListener('keydown',e=>{keys++;heldKeys.add(e.code)});addEventListener('keyup',e=>heldKeys.delete(e.code));document.querySelector('input').focus()</script></body></html>`,
         ),
     );
     window.show();
@@ -193,6 +193,12 @@ app
           if (command.sequence !== lastCommand) {
             lastCommand = command.sequence;
             switch (command.action) {
+              case 'prompt-a':
+              case 'prompt-b':
+                await window.browserWindow.webContents.executeJavaScript(
+                  `document.querySelector('#prompt').textContent=${JSON.stringify(`Tap lowercase ${command.action.slice(-1)} once, then release. No click.`)}`,
+                );
+                break;
               case 'focus':
                 await window.browserWindow.webContents.executeJavaScript(
                   "document.querySelector('input').focus()",
@@ -248,7 +254,7 @@ app
         Object.assign(
           state,
           await window.browserWindow.webContents.executeJavaScript(
-            "({value:document.querySelector('input').value,pointerDowns:window.downs,keys:window.keys})",
+            "({value:document.querySelector('input').value,pointerDowns:window.downs,keys:window.keys,heldKeys:[...window.heldKeys]})",
           ),
         );
         state.visible = window.visible;

@@ -73,9 +73,13 @@ public static class EgoExplicitFocusKeys {
 '@
 function Type-Key([string]$Key, [string]$Member, [string]$Expected) {
     Wait-State $Member { param($s) $s.intercepting -and $s.nativeFocusedWindowId -eq $s.windowId } 'native keyboard owner' | Out-Null
-    if ($PhysicalKeyboard -or ($PhysicalFirstKeys -and $Key -in @('a','b'))) { Write-Host "Type lowercase '$Key' in the foreground game, without clicking. Use Alt+Tab to return to the game if needed." }
+    $HumanKey = $PhysicalKeyboard -or ($PhysicalFirstKeys -and $Key -in @('a','b'))
+    if ($HumanKey) {
+        if ($Key -in @('a','b')) { Command $Member "prompt-$Key" }
+        Write-Host "Tap lowercase '$Key' once, then release, without clicking. Use Alt+Tab to return to the game if needed."
+    }
     else { [EgoExplicitFocusKeys]::Key([uint16][char]$Key.ToUpperInvariant()) }
-    $State = Wait-State $Member { param($s) $s.value -ceq $Expected } "key $Key / expected $Expected" 60
+    $State = Wait-State $Member { param($s) $s.value -ceq $Expected -and @($s.heldKeys).Count -eq 0 } "key $Key released / expected $Expected" $(if ($HumanKey) { 180 } else { 60 })
     if ($State.pointerDowns -ne 0) { throw 'A pointer-down invalidated the no-click test.' }
     $Report.checks += "$Member=$Expected without pointer-down"
 }
