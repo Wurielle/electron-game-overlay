@@ -39,8 +39,10 @@ process.on('message', async ({ requestId, command }) => {
       send({ requestId, result: await snapshot() });
     }
     if (command === 'hide-reopen') {
-      for (const window of windows) { window.hide(); window.show(); }
+      for (const window of windows) window.hide();
+      // ACK is deliberately earlier than SDK/broker re-registration.
       send({ requestId, result: await snapshot() });
+      setTimeout(() => { for (const window of windows) window.show(); }, 75);
     }
     if (command === 'authorize') send({ requestId, result: await client.authorizeTarget(43210, path.join(process.env.EGO_ACCEPTANCE_PROFILE, 'electron-overlay-transport-v1.json'), 'C:\\Games\\Shared Game\\game.exe') });
     if (command === 'quit') {

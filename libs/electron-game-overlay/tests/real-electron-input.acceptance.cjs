@@ -11,7 +11,7 @@ const { fork } = require('node:child_process');
 // Only the native target transport is controlled. No routing/geometry algorithm
 // or Electron API is replaced; the real broker communicates over real sockets.
 class ControlledNativeBoundary {
-  constructor() { this.windows = new Map(); this.frames = new Map(); this.bounds = []; }
+  constructor() { this.windows = new Map(); this.frames = new Map(); this.bounds = []; this.registrations = new Map(); }
   start() {}
   stop() {}
   whenReady() { return Promise.resolve(); }
@@ -19,7 +19,7 @@ class ControlledNativeBoundary {
   setEventCallback(callback) { this.callback = callback; }
   setDiagnosticCallback() {}
   setInputIntercept() {}
-  addWindow(id, details) { this.windows.set(id, structuredClone(details)); }
+  addWindow(id, details) { this.windows.set(id, structuredClone(details)); this.registrations.set(details.name, (this.registrations.get(details.name) || 0) + 1); }
   closeWindow(id) { this.windows.delete(id); }
   sendWindowBounds(id, details) { this.bounds.push({ id, details }); }
   sendFrameBuffer(id, pixels, width, height) { this.frames.set(id, { width, height }); return true; }
@@ -102,7 +102,12 @@ const deadline = setTimeout(() => { report.error = 'Overall 60s acceptance deadl
     const expected = [['', ''], ['', '']];
     // The same path visits both real windows of each app, then returns to each.
     for (const [appIndex, windowIndex, text] of [[0, 0, 'a'], [1, 0, 'b'], [0, 1, 'A'], [1, 1, 'B'], [0, 0, 'A'], [1, 0, 'B'], [0, 1, 'a'], [1, 1, 'b']]) {
+      const reopening = [0,1].map(index => `${appIndex === 0 ? 'a' : 'b'}-${index}`);
+      const before = reopening.map(name => native.registrations.get(name) || 0);
       await request(apps[appIndex], 'hide-reopen');
+      // Child IPC acknowledgement is not broker-visible registration readiness.
+      await waitFor(() => native.windows.size === 4 && reopening.every((name,index) =>
+        (native.registrations.get(name) || 0) > before[index] && [...native.windows.values()].some(details => details.name === name)));
       const name = `${appIndex === 0 ? 'a' : 'b'}-${windowIndex}`;
       const id = [...native.windows].find(([, details]) => details.name === name)?.[0];
       check(id !== undefined, `registered ${name}`);
