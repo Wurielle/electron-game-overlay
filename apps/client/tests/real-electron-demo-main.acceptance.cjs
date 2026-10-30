@@ -51,9 +51,9 @@ if (!process.versions.electron) {
       assert.ok(source.includes(anchor), 'negative control source anchor');
       source = source.replace(anchor, anchor + `\n require('electron').BrowserWindow.getAllWindows().filter(w => w.getBounds().width === 640).forEach(w => w.setSize(900,700));`);
     }
-    mod._compile(ts.transpileModule(source, { compilerOptions: {
+    mod._compile(require('./helpers/compile-demo-factory.cjs')(ts.transpileModule(source, { compilerOptions: {
       module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
-    } }).outputText, filename);
+    } }).outputText, filename), filename);
     return mod.exports;
   }
   app.whenReady().then(async () => {

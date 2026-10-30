@@ -6,6 +6,22 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const runner = path.resolve(__dirname, '../scripts/run-popup-video-regression.cjs');
 
+test('demo fixture popup entropy is unique and local even when outer randomness collides', () => {
+  const compileDemoFactory = require('./helpers/compile-demo-factory.cjs');
+  const vm = require('node:vm');
+  const ts = require('typescript');
+  const filename = path.resolve(__dirname,'../src/main/utils/utils.ts');
+  const source = ts.transpileModule(fs.readFileSync(filename,'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;
+  const outerMath = Object.create(Math); outerMath.random = () => 0;
+  const module = {exports:{}};
+  vm.runInNewContext(compileDemoFactory(source,filename), {module,exports:module.exports,require,Math:outerMath});
+  const names = Array.from({length:20}, () => module.exports.getRandomInt(1,10000));
+  assert.equal(new Set(names).size,20,'fixture popup suffixes must not collide');
+  assert.deepEqual(names,Array.from({length:20},(_,i)=>i+1));
+  assert.equal(outerMath.random(),0,'fixture must not mutate global Math');
+  assert.equal(compileDemoFactory(source,'overlay-session.js'),source,'SDK entropy must remain untouched');
+});
+
 test('fixture endpoints use an abstract Linux socket and the canonical Windows pipe namespace', () => {
   const source = fs.readFileSync(path.resolve(__dirname, 'popup-video-real-graph.acceptance.cjs'), 'utf8');
   const match = source.match(/^\s*const pipePath = (.+);$/m);

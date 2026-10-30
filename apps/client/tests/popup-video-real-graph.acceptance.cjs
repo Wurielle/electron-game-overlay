@@ -71,7 +71,7 @@ function appGraph(pipePath, clients, producer, sdkLib) {
     };
     const source = fs.readFileSync(filename, 'utf8');
     loadedHashes.set(filename, createHash('sha256').update(source).digest('hex'));
-    mod._compile(filename.endsWith('.ts') ? ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText : source, filename);
+    mod._compile(require('./helpers/compile-demo-factory.cjs')(filename.endsWith('.ts') ? ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText : source, filename), filename);
     return mod.exports;
   }
   sdk = load(path.join(sdkLib, 'electron-game-overlay.js'));
