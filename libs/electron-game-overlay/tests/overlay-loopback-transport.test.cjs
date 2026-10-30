@@ -2652,6 +2652,8 @@ test('reconnects reset input state and emit only authoritative disconnects', asy
   const transport = new OverlayLoopbackTransport({
     discoveryPath: path.join(tempDirectory, 'transport.json'),
     tokenFactory: () => TOKEN,
+    // This fixture owns no real PID 4321; model an authoritative OS exit.
+    isProcessAlive: () => false,
   });
   const sockets = [];
   const translated = [];

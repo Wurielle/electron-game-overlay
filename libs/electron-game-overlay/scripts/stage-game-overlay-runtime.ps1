@@ -76,10 +76,10 @@ $PlatformRuntimeDirectory = Join-Path `
     "win32-x64"
 $DestinationDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "31D321732C1B424796593C0778FB722E"
+$ExpectedAddonBuildId = "B6A6721DEF914B38A040AC08A87F31A2"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 2
+$ExpectedRuntimeGeneration = 4
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
@@ -132,6 +132,7 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-exact-target-path.patch"
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-name-watcher-ready.patch"
+    injectorFutureTargetsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-process-instance-binding.patch"
 }
@@ -225,6 +226,7 @@ catch {
 }
 if ($BuildStamp.schemaVersion -ne 28 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
+    $BuildStamp.injectorFutureTargets -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -263,6 +265,7 @@ $ExpectedPackageBuildStampProperties = @(
     "configuration"
     "injectorSha256"
     "injectorProcessInstanceBinding"
+    "injectorFutureTargets"
     "kind"
     "managerProtocolSchemaVersion"
     "managerSha256"
@@ -288,6 +291,7 @@ if (@(
     ).Count -ne 0 -or
     $PackageBuildStamp.schemaVersion -ne 4 -or
     $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
+    $PackageBuildStamp.injectorFutureTargets -ne 1 -or
     $PackageBuildStamp.kind -ne "electron-game-overlay-runtime-build" -or
     $PackageBuildStamp.platform -ne $ArchitectureConfig.PackagePlatform -or
     $PackageBuildStamp.configuration -ne "RelWithDebInfo" -or

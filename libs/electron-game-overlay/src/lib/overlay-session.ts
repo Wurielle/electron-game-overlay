@@ -223,6 +223,7 @@ export class OverlaySession {
   };
 
   private readonly windowBridge: OverlayWindowBridge = {
+    setWindowFocus: (window, focused) => this.overlay.setWindowFocus?.(window.nativeId, focused),
     registerWindow: (window) => this.registerWindow(window),
     unregisterWindow: (window) => this.unregisterWindow(window),
     removeWindow: (window) => this.removeWindow(window),

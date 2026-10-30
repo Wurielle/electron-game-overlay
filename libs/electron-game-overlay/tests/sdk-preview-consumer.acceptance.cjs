@@ -23,7 +23,7 @@ try {
   reportPath=path.resolve(process.argv[at+1]);
   fs.mkdirSync(path.dirname(reportPath),{recursive:true});
   fs.writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n');
-  const {values}=parseArgs({options:Object.fromEntries(['candidate-report','example-root','scratch-root','report'].map(key=>[key,{type:'string'}]))});
+  const {values}=parseArgs({options:Object.fromEntries(['candidate-report','example-root','scratch-root','report','electron-executable','electron-version'].map(key=>[key,{type:'string'}]))});
   for(const key of ['candidate-report','example-root','scratch-root']) assert.ok(values[key],`--${key} is required`);
   const candidate=JSON.parse(fs.readFileSync(values['candidate-report'],'utf8'));
   assert.equal(candidate.status,'passed');
@@ -33,7 +33,12 @@ try {
   owned=fs.mkdtempSync(path.join(fs.realpathSync(values['scratch-root']),'sdk-installed-consumer-'));
   const consumer=path.join(owned,'consumer');
   fs.cpSync(fs.realpathSync(values['example-root']),consumer,{recursive:true,filter:file=>!['node_modules','tests','package-lock.json'].includes(path.basename(file))});
-  const env={...process.env,NODE_PATH:'',NODE_OPTIONS:'',ELECTRON_SKIP_BINARY_DOWNLOAD:'1',npm_config_ignore_scripts:'true',npm_config_audit:'false',npm_config_fund:'false'};
+  if (values['electron-version']) {
+    assert.match(values['electron-version'], /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+    const file=path.join(consumer,'package.json'), metadata=JSON.parse(fs.readFileSync(file,'utf8'));
+    metadata.devDependencies.electron=values['electron-version']; fs.writeFileSync(file,JSON.stringify(metadata,null,2)+'\n');
+  }
+  const env={...process.env,NODE_PATH:'',NODE_OPTIONS:'',ELECTRON_SKIP_BINARY_DOWNLOAD:'1',npm_config_ignore_scripts:'true',npm_config_audit:'false',npm_config_fund:'false',npm_config_cache:path.join(owned,'npm-cache')};
   delete env.NODE_TEST_CONTEXT; delete env.ELECTRON_RUN_AS_NODE;
   const bin=path.dirname(process.execPath);
   const npm=[process.env.npm_execpath,path.join(bin,'node_modules/npm/bin/npm-cli.js'),path.join(bin,'../lib/node_modules/npm/bin/npm-cli.js')].find(file=>file && /npm-cli\.js$/.test(file) && fs.existsSync(file));
@@ -63,7 +68,7 @@ try {
     return path.relative(consumer,file.fileName);
   });
   report.stage='electron';
-  const electron=require('electron');
+  const electron=values['electron-executable'] ? fs.realpathSync(values['electron-executable']) : require('electron');
   assert.ok(typeof electron==='string' && fs.existsSync(electron),'genuine installed Electron executable required');
   const wrapper=path.join(consumer,'smoke-driver.cjs');
   fs.writeFileSync(wrapper,`const path=require('node:path'),fs=require('node:fs'),assert=require('node:assert/strict'),Module=require('node:module');
@@ -73,9 +78,12 @@ const resolve=Module._resolveFilename;
 Module._resolveFilename=function(request,parent,...rest){const value=resolve.call(this,request,parent,...rest);if(parent&&typeof parent.filename==='string'&&within(sdk,parent.filename)&&!Module.isBuiltin(value)&&value!=='electron')assert.ok(within(path.join(root,'node_modules'),fs.realpathSync(value)),'SDK ancestor fallback');return value;};
 assert.ok(within(sdk,require.resolve('electron-game-overlay')));
 const {app}=require('electron');app.setPath('userData',path.join(root,'profile'));app.setPath('sessionData',path.join(root,'session'));
+console.log('ELECTRON_RUNTIME_VERSION:'+process.versions.electron);
 process.argv=[process.execPath,path.join(root,'main.cjs'),'--smoke'];require('./main.cjs');\n`);
   const stdout=run(['--disable-gpu',...(process.platform==='linux'?['--no-sandbox','--ozone-platform=headless']:[]),wrapper],consumer,env,electron);
   assert.ok(stdout.includes('SMOKE_OK:'),'real consumer must report completed DOM smoke');
+  report.executedElectronVersion = /ELECTRON_RUNTIME_VERSION:([^\r\n]+)/.exec(stdout)?.[1];
+  if (values['electron-version']) assert.equal(report.executedElectronVersion, values['electron-version'], 'executed Electron must match the declaration/peer version under test');
   report.electronSmokePassed=true;
   report.status='passed';report.stage='complete';
 } catch(error) { report.error=error.message;process.exitCode=1; }

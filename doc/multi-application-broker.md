@@ -116,6 +116,15 @@ verify actual offscreen paint rather than merely hiding DOM controls.
 
 ## Attachment sequence
 
+Runtime generation 4 adds optional `window-focus-v1` support. A capable client
+sends `broker.window.focus { windowId, focused }` only after the coordinator
+advertises that capability. The coordinator translates the member's owned local
+ID; the target transport sends `window.focus { windowId, focused }` only to a
+native peer that explicitly advertises the same capability. No required v1
+capability or existing wire/recovery meaning changes. Older coordinators and
+already-mapped older runtimes retain click-to-focus behavior without preemption.
+See [the candidate focus and attachment guide](sdk-rc2-attachment-and-focus.md).
+
 Cold coordinator startup includes discovery, full payload validation, immutable
 cache copying and service initialization, not just a pipe connection. The SDK
 client and standalone bootstrap share a bounded **75-second total default** for

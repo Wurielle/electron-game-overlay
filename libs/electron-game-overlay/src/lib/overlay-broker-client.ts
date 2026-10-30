@@ -45,7 +45,7 @@ import {
 import type { OverlayBrokerInstallationOptions } from './overlay-broker-installation.js';
 import type { OverlayDiagnostic, Disposable } from './types.js';
 
-const SDK_VERSION = '0.0.1';
+const SDK_VERSION = '0.1.0-rc.2';
 const HANDSHAKE_TIMEOUT_MS = 5_000;
 const MIN_RETRY_DELAY_MS = 25;
 const MAX_RETRY_DELAY_MS = 500;
@@ -377,6 +377,7 @@ export class OverlayBrokerClient implements NativeOverlay {
             );
           }
         }
+        if (this.requestedFocusWindowId !== undefined) transport.setWindowFocus(this.requestedFocusWindowId, true);
         if (this.inputIntercept !== undefined) {
           transport.setInputIntercept(this.inputIntercept);
         }
@@ -446,6 +447,7 @@ export class OverlayBrokerClient implements NativeOverlay {
     this.targetLeases.clear();
     this.leasesByRequestId.clear();
     this.windows.clear();
+    this.requestedFocusWindowId = undefined;
     this.inputTranslatorsByPid.clear();
     this.inputIntercept = undefined;
     this.pendingEvents.length = 0;
@@ -488,6 +490,20 @@ export class OverlayBrokerClient implements NativeOverlay {
     this.legacyTransport?.setInputIntercept(intercept);
   }
 
+  private supportsWindowFocus = false;
+  private requestedFocusWindowId: number | undefined;
+
+  public setWindowFocus(windowId: number, focused: boolean): void {
+    assertPositiveUint32(windowId, 'windowId');
+    if (!this.windows.has(windowId)) return;
+    if (focused) this.requestedFocusWindowId = windowId;
+    else if (this.requestedFocusWindowId === windowId) this.requestedFocusWindowId = undefined;
+    if (this.welcomed && this.supportsWindowFocus) {
+      this.sendJson({ type: 'broker.window.focus', windowId, focused });
+    }
+    this.legacyTransport?.setWindowFocus(windowId, focused);
+  }
+
   public addWindow(
     windowId: number,
     details: NativeOverlayWindowDetails,
@@ -514,6 +530,7 @@ export class OverlayBrokerClient implements NativeOverlay {
   }
 
   public closeWindow(windowId: number): void {
+    if (this.requestedFocusWindowId === windowId) this.requestedFocusWindowId = undefined;
     assertPositiveUint32(windowId, 'windowId');
     const packet = encodeBrokerJsonPacket({
       type: 'broker.window.close',
@@ -827,6 +844,7 @@ export class OverlayBrokerClient implements NativeOverlay {
       return;
     }
     this.clearHandshakeTimer();
+    this.supportsWindowFocus = welcome.capabilities.includes('window-focus-v1');
     this.welcomed = true;
     for (const lease of this.targetLeases.values()) {
       this.clearTargetReauthorizationRetry(lease);
@@ -861,6 +879,9 @@ export class OverlayBrokerClient implements NativeOverlay {
       if (retained.latestFrame) {
         this.writer?.sendFrame(windowId, retained.latestFrame);
       }
+    }
+    if (this.requestedFocusWindowId !== undefined && this.supportsWindowFocus) {
+      this.sendJson({ type: 'broker.window.focus', windowId: this.requestedFocusWindowId, focused: true });
     }
     if (this.inputIntercept !== undefined) {
       this.sendJson({

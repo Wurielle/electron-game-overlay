@@ -3,10 +3,10 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "31D321732C1B424796593C0778FB722E"
+    "B6A6721DEF914B38A040AC08A87F31A2"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "87A6F9A1BA8548F86025EC05905A189ACDB0925568E16C55A7762E791C4994CD"
+    "3B5E8958A9F36375F901FE91C2A4A1297756749F724EB431DFCDD0668CCB72EB"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
     "07A76311F29A7A20E54D305BCA1F384A035C84D620BF201C3CACBAC9681BA7B6"
@@ -110,6 +110,7 @@ set(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH
 set(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-name-watcher-ready.patch"
 )
+set(RESHAPE_FUTURE_TARGETS_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-future-targets.patch")
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -159,6 +160,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
     "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
     "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
+    "${RESHAPE_FUTURE_TARGETS_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -322,6 +324,11 @@ verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 # tree before migrating or validating the historical stack below. They are
 # reapplied in the opposite order after those patches, so repeated configure
 # runs and earlier trees remain idempotent.
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" RESULT_VARIABLE FUTURE_PRESENT OUTPUT_QUIET ERROR_QUIET)
+if(FUTURE_PRESENT EQUAL 0)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+endif()
+
 # Peel the new terminal seam before replaying historical migrations.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
@@ -1895,6 +1902,8 @@ execute_process(
 if(NOT RESHAPE_BINDING_APPLY EQUAL 0)
     message(FATAL_ERROR "Unable to apply process-instance binding patch.")
 endif()
+
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and

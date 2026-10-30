@@ -7,11 +7,11 @@ are needed. Electron is pinned to **39.8.10**.
 ## Install a candidate
 
 Copy this entire folder **outside the checkout** (for example to
-`C:\overlay-consumer`). Obtain `electron-game-overlay-0.1.0-rc.1.tgz` from the
+`C:\overlay-consumer`). Obtain `electron-game-overlay-0.1.0-rc.2.tgz` from the
 SDK candidate artifact, then run in the copied folder:
 
 ```powershell
-npm install --save-exact "C:\downloads\electron-game-overlay-0.1.0-rc.1.tgz"
+npm install --save-exact "C:\downloads\electron-game-overlay-0.1.0-rc.2.tgz"
 npm start -- --smoke
 ```
 

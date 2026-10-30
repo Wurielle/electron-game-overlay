@@ -35,7 +35,7 @@ function main() {
   try {
     // Use the effective parsed values for every path decision, including repeated options.
     // Defer strict validation until safe destinations have failure-default evidence.
-    const options = { 'package-root': { type: 'string' }, 'built-dist': { type: 'string' }, output: { type: 'string' }, version: { type: 'string', default: '0.1.0-rc.1' } };
+    const options = { 'package-root': { type: 'string' }, 'built-dist': { type: 'string' }, output: { type: 'string' }, version: { type: 'string', default: '0.1.0-rc.2' }, 'source-commit': { type: 'string' } };
     const { values } = parseArgs({ options, strict: false, allowPositionals: true });
     if (typeof values.output !== 'string' || !values.output) throw Error('--output is required');
     const output = path.resolve(values.output);
@@ -60,6 +60,7 @@ function main() {
     for (const key of ['package-root', 'built-dist']) if (!values[key]) throw Error(`--${key} is required`);
     report.version = values.version;
     if (!/^0\.1\.0-rc\.[1-9][0-9]{0,5}$/.test(values.version)) throw Error('Candidate version must match 0.1.0-rc.N (N=1..999999)');
+    if (values['source-commit'] !== undefined && !/^[0-9a-f]{40}$/.test(values['source-commit'])) throw Error('--source-commit must be a full lowercase Git commit');
     const pkg = fs.realpathSync(values['package-root']);
     const dist = fs.realpathSync(values['built-dist']);
     const metadata = readJson(path.join(pkg, 'package.json'));
@@ -94,6 +95,7 @@ function main() {
     metadata.version = values.version;
     metadata.private = false;
     metadata.files = ['dist', 'README.md', 'LICENSE'];
+    if (values['source-commit']) metadata.files.push('SDK_PROVENANCE.json');
     delete metadata.exports['.'].gelectron;
     delete metadata.scripts;
     const selected = files.filter(file => file.startsWith(leafPrefix) || (file.startsWith('runtime/') && sealed.has(file.toLowerCase())) || /^(?:index|broker)\.(?:js|d\.ts)(?:\.map)?$/.test(file) || (file.startsWith('lib/') && /\.(?:js|d\.ts)(?:\.map)?$/.test(file) && !/(?:^|\/)(?:src|test|tests|scripts|validationapp)(?:\/|$)/.test(file)));
@@ -111,6 +113,15 @@ function main() {
     copy(license, path.join(stage, 'LICENSE'));
     if (fs.existsSync(path.join(pkg, 'README.md'))) copy(path.join(pkg, 'README.md'), path.join(stage, 'README.md'));
     fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify(metadata, null, 2) + '\n');
+    if (values['source-commit']) {
+      const native = [64, 32].map(bits => {
+        const stamp = readJson(path.join(dist, 'runtime/win32-x64/reshade', `electron_game_overlay_runtime${bits === 64 ? '' : '32'}.build.json`));
+        const reshade = readJson(path.join(dist, 'runtime/win32-x64/reshade', `ReShade${bits}.build.json`));
+        return { architecture: bits === 64 ? 'x64' : 'x86', addonBuildId: stamp.addonBuildId, runtimeGeneration: stamp.runtimeGeneration, reshadeCommit: reshade.commit, patchProvenance: Object.fromEntries(Object.entries(reshade).filter(([key]) => key.endsWith('PatchSha256'))) };
+      });
+      report.sourceCommit = values['source-commit'];
+      fs.writeFileSync(path.join(stage, 'SDK_PROVENANCE.json'), JSON.stringify({ schemaVersion: 1, version: values.version, repository: 'https://github.com/Wurielle/electron-game-overlay', sourceCommit: values['source-commit'], native }, null, 2) + '\n');
+    }
     report.stage = 'pack';
     const command = [npmCli(), 'pack', '--json', '--ignore-scripts', '--offline', '--pack-destination', output];
     const env = { ...process.env, npm_config_ignore_scripts: 'true', npm_config_offline: 'true', npm_config_audit: 'false', npm_config_fund: 'false', npm_config_cache: path.join(output, 'npm-cache'), NODE_OPTIONS: '' };

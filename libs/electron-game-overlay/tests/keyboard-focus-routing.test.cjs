@@ -18,6 +18,47 @@ vm.runInNewContext(prefix + '\nmodule.exports = { startFixture, overlayWindow, w
 }, { filename: fixturePath });
 const { startFixture, overlayWindow, waitFor, TARGET_PID, TARGET_EXE } = fixtureModule.exports;
 
+test('explicit focus translates colliding app IDs, retains first-show intent and isolates blur/removal', async () => {
+  const fixture = await startFixture();
+  try {
+    const clients = [await fixture.makeClient('0.1.0-rc.1'), await fixture.makeClient('0.1.0-rc.2')];
+    for (const [i, client] of clients.entries()) {
+      client.addWindow(7, overlayWindow(`app-${i}`));
+      client.setWindowFocus(7, true);
+      client.setInputIntercept(true);
+    }
+    await clients[0].authorizeTarget(TARGET_PID, path.join(require('node:os').tmpdir(), 'focus-a', 'electron-overlay-transport-v1.json'), TARGET_EXE);
+    const joined = clients[1].authorizeTarget(TARGET_PID, path.join(require('node:os').tmpdir(), 'focus-b', 'electron-overlay-transport-v1.json'), TARGET_EXE);
+    const transport = fixture.transports[0];
+    const focus = [];
+    transport.setWindowFocus = (id, focused) => focus.push({ id, focused });
+    transport.emit('game.process', { pid: TARGET_PID, path: TARGET_EXE });
+    await joined;
+    await waitFor(() => transport.windows.size === 2 && focus.length >= 2);
+    assert.deepEqual(focus.slice(-2), [{ id: 1, focused: true }, { id: 2, focused: true }]);
+    const beforeToggle = focus.length;
+    clients[0].setInputIntercept(false);
+    clients[0].setInputIntercept(true);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(focus.length, beforeToggle, 'another member toggling interception must not steal the selected focus');
+    clients[0].blur = () => clients[0].setWindowFocus(7, false);
+    clients[0].blur();
+    await waitFor(() => focus.at(-1)?.focused === false);
+    assert.deepEqual(focus.at(-1), { id: 1, focused: false }, 'blur must carry app A global ID, never the shared local 7');
+    clients[1].closeWindow(7);
+    await waitFor(() => transport.windows.size === 1);
+    clients[1].addWindow(7, overlayWindow('reopened'));
+    clients[1].setWindowFocus(7, true);
+    await waitFor(() => focus.at(-1)?.focused === true && focus.at(-1)?.id > 2);
+    assert.notEqual(focus.at(-1).id, 1);
+    const before = focus.length;
+    clients[0].setWindowFocus(999, true);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(focus.length, before, 'unowned local IDs cannot address another member');
+    assert.equal(transport.authorizations.length, 1, 'focus never injects');
+  } finally { await fixture.close(); }
+});
+
 test('two app namespaces dispatch typed characters only to the selected local offscreen window', async () => {
   const fixture = await startFixture();
   try {

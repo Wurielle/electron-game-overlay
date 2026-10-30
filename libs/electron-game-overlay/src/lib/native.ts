@@ -72,6 +72,7 @@ export interface NativeOverlay {
   setDiagnosticCallback?(callback: (diagnostic: unknown) => void): void;
   setEventCallback(callback: (event: string, ...args: any[]) => void): void;
   setInputIntercept(intercept: boolean): void;
+  setWindowFocus?(windowId: number, focused: boolean): void;
   addWindow(windowId: number, details: NativeOverlayWindowDetails): void;
   closeWindow(windowId: number): void;
   sendWindowBounds(

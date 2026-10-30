@@ -307,6 +307,7 @@ interface ClientState {
   receiveBuffer: Buffer;
   authenticated: boolean;
   supportsWindowOrder?: boolean;
+  supportsWindowFocus?: boolean;
   pid?: number;
   path?: string;
   targetAuthorization?: TargetAuthorization;
@@ -1180,6 +1181,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.activeClientsByPid.clear();
     this.inputTranslatorsByPid.clear();
     this.windows.clear();
+    this.requestedFocusWindowId = undefined;
     this.latestFrames.clear();
     this.inputIntercept = undefined;
     this.pendingEvents.length = 0;
@@ -1233,6 +1235,19 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       type: 'command.input.intercept',
       intercept,
     });
+  }
+
+  private requestedFocusWindowId: number | undefined;
+
+  public setWindowFocus(windowId: number, focused: boolean): void {
+    assertPositiveUnsigned32(windowId, 'windowId');
+    if (!this.windows.has(windowId)) return;
+    if (focused) this.requestedFocusWindowId = windowId;
+    else if (this.requestedFocusWindowId === windowId) this.requestedFocusWindowId = undefined;
+    const packet = encodeJsonTransportPacket({ type: 'window.focus', windowId, focused });
+    for (const client of this.clients) {
+      if (client.authenticated && client.supportsWindowFocus) client.writer.sendControl(packet);
+    }
   }
 
   public addWindow(
@@ -1332,6 +1347,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   }
 
   public closeWindow(windowId: number): void {
+    if (this.requestedFocusWindowId === windowId) this.requestedFocusWindowId = undefined;
     assertPositiveUnsigned32(windowId, 'windowId');
     const packet = encodeJsonTransportPacket({
       type: 'window.close',
@@ -2216,6 +2232,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     client.supportsWindowOrder =
       Array.isArray(hello.capabilities) &&
       hello.capabilities.includes('window-order-v1');
+    client.supportsWindowFocus = Array.isArray(hello.capabilities) && hello.capabilities.includes('window-focus-v1');
     client.pid = hello.pid;
     client.path = hello.path;
     client.targetAuthorization = targetAuthorization;
@@ -2243,6 +2260,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     );
     for (const [windowId, frame] of this.latestFrames) {
       client.writer.sendFrame(windowId, frame);
+    }
+    if (client.supportsWindowFocus && this.requestedFocusWindowId !== undefined) {
+      client.writer.sendControl(encodeJsonTransportPacket({ type: 'window.focus', windowId: this.requestedFocusWindowId, focused: true }));
     }
     if (this.inputIntercept !== undefined) {
       client.writer.sendControl(

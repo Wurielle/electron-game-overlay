@@ -100,9 +100,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "31D321732C1B424796593C0778FB722E"
+$ExpectedAddonBuildId = "B6A6721DEF914B38A040AC08A87F31A2"
 # Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 2
+$RuntimeGeneration = 4
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -159,6 +159,7 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-injector-exact-target-path.patch"
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
+    injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
 }
@@ -248,6 +249,7 @@ catch {
 }
 if ($BuildStamp.schemaVersion -ne 28 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
+    $BuildStamp.injectorFutureTargets -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -280,6 +282,7 @@ $PackageBuildStamp = [ordered]@{
     configuration = "RelWithDebInfo"
     addonBuildId = $ExpectedAddonBuildId
     injectorProcessInstanceBinding = 1
+    injectorFutureTargets = 1
     managerProtocolSchemaVersion = 1
     runtimeGeneration = $RuntimeGeneration
     targetTransportMin = $TargetTransportMin

@@ -152,6 +152,7 @@ export class ElectronOverlayWindow {
 
     this.bridge.registerWindow(this);
     this.registered = true;
+    if (this.focusOnReady) this.focus();
     if (!this.browserWindow.webContents.isDestroyed()) {
       try {
         this.browserWindow.webContents.invalidate();
@@ -190,13 +191,20 @@ export class ElectronOverlayWindow {
     this.destroy();
   }
 
-  /** Gives the backing offscreen web view overlay-input focus. */
+  /** Selects this visible window for native keyboard input and focuses its web view.
+   * Call after show(), including each reopen. Input still requires interception
+   * and foreground game focus. Older brokers/runtimes may require a pointer click.
+   */
   public focus() {
+    if (this.destroyed) return;
+    if (this.registered) this.bridge.setWindowFocus(this, true);
     this.browserWindow.focusOnWebView();
   }
 
   /** Removes overlay-input focus from the backing offscreen web view. */
   public blur() {
+    if (this.destroyed) return;
+    if (this.registered) this.bridge.setWindowFocus(this, false);
     this.browserWindow.blurWebView();
   }
 

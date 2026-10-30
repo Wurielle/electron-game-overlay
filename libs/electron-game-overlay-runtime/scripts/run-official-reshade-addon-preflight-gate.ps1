@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ExpectedAddonBuildId = "31D321732C1B424796593C0778FB722E"
+$ExpectedAddonBuildId = "B6A6721DEF914B38A040AC08A87F31A2"
 
 function Wait-ForCondition {
     param(

@@ -1,0 +1,222 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 03cf3c0..7d00115 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -285,8 +285,7 @@ static DWORD snapshot_process_identities(std::unordered_map<DWORD, scoped_handle
+ 	for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
+ 	{
+ 		scoped_handle candidate = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process.th32ProcessID);
+-		if (candidate != nullptr)
+-			processes.emplace(process.th32ProcessID, std::move(candidate));
++		processes.emplace(process.th32ProcessID, std::move(candidate));
+ 	}
+ 
+ 	return ERROR_SUCCESS;
+@@ -303,24 +302,26 @@ static bool process_name_is_excluded(const wchar_t *name, const std::vector<std:
+ 	return false;
+ }
+ 
+-static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path)
++static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path, const wchar_t *required_name = nullptr, const wchar_t *exact_path = nullptr, scoped_handle *retained_identity = nullptr)
+ {
+-	std::unordered_map<DWORD, scoped_handle> ignored_processes;
++	FILETIME cutoff{}; GetSystemTimeAsFileTime(&cutoff);
++    const uint64_t creation_cutoff = (static_cast<uint64_t>(cutoff.dwHighDateTime) << 32) | cutoff.dwLowDateTime;
++    std::unordered_map<DWORD, scoped_handle> ignored_processes;
+ 	if (const DWORD error = snapshot_process_identities(ignored_processes); error != ERROR_SUCCESS)
+ 		return error;
+ 
+ 	const std::wstring normalized_fragment = normalize_path_separators(fragment);
+-	wprintf(L"ReShade path watcher armed.\n");
++	wprintf(required_name != nullptr ? L"ReShade process watcher armed.\n" : L"ReShade path watcher armed.\n");
+ 	fflush(stdout);
+ 
+ 	while (pid == 0)
+ 	{
+ 		for (auto ignored = ignored_processes.begin(); ignored != ignored_processes.end();)
+ 		{
+-			if (WaitForSingleObject(ignored->second, 0) == WAIT_TIMEOUT)
+-				++ignored;
+-			else
+-				ignored = ignored_processes.erase(ignored);
++			if (WaitForSingleObject(ignored->second, 0) == WAIT_OBJECT_0)
++                ignored = ignored_processes.erase(ignored);
++            else
++                ++ignored; // Unknown baseline identity remains excluded.
+ 		}
+ 
+ 		const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+@@ -347,7 +348,12 @@ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std:
+ 			if (!QueryFullProcessImageNameW(candidate, 0, candidate_path, &candidate_path_size))
+ 				continue;
+ 
+-			if (!path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment))
++			FILETIME created{}, exited{}, kernel{}, user{};
++            if (!GetProcessTimes(candidate, &created, &exited, &kernel, &user)) continue;
++            const uint64_t creation_time = (static_cast<uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
++            if (creation_time <= creation_cutoff || !path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment) ||
++                (required_name != nullptr && _wcsicmp(process.szExeFile, required_name) != 0) ||
++                (exact_path != nullptr && _wcsicmp(candidate_path, exact_path) != 0))
+ 			{
+ 				ignored_processes.emplace(process.th32ProcessID, std::move(candidate));
+ 				continue;
+@@ -355,11 +361,12 @@ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std:
+ 
+ 			pid = process.th32ProcessID;
+ 			image_path.assign(candidate_path, candidate_path_size);
++            if (retained_identity != nullptr) { retained_identity->handle = candidate.handle; candidate.handle = nullptr; }
+ 			break;
+ 		}
+ 
+ 		if (pid == 0)
+-			Sleep(50); // Keep prelaunch polling responsive without busy-looping over the process table
++			Sleep(required_name != nullptr ? 1 : 50); // Keep prelaunch polling responsive without busy-looping over the process table
+ 	}
+ 
+ 	return ERROR_SUCCESS;
+@@ -2999,7 +3006,7 @@ static target_preflight_result inspect_target_for_official_addon(
+ 		"ElectronGameOverlayReShadeAddonBuildId";
+ 	constexpr unsigned int supported_addon_abi = 1;
+ 	constexpr char expected_addon_build_id[] =
+-		"31D321732C1B424796593C0778FB722E";
++		"B6A6721DEF914B38A040AC08A87F31A2";
+ 	static_assert(sizeof(expected_addon_build_id) == 33);
+ 	bool found_addon = false;
+ 
+@@ -3547,8 +3554,12 @@ static injection_claim_result acquire_injection_claim(
+ 	}
+ }
+ 
++static bool future_observer = false;
++static uint64_t observer_cutoff = 0;
++
+ struct observed_process_state
+ {
++    uint64_t creation_time = 0;
+ 	scoped_handle process;
+ 	std::wstring matched_path;
+ 	unsigned int query_attempts = 0;
+@@ -3598,7 +3609,7 @@ static DWORD inspect_process_path(
+ {
+ 	++state.query_attempts;
+ 
+-	scoped_handle candidate = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
++	scoped_handle candidate = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+ 	if (candidate == nullptr)
+ 	{
+ 		// A synchronization-only handle is enough to keep this exact process
+@@ -3632,11 +3643,18 @@ static DWORD inspect_process_path(
+ 	if (!path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment))
+ 		return ERROR_SUCCESS;
+ 
+-	state.matched_path.assign(candidate_path, candidate_path_size);
++	if (future_observer) {
++        FILETIME created{}, exited{}, kernel{}, user{};
++        if (!GetProcessTimes(query_process, &created, &exited, &kernel, &user)) { state.path_resolved = false; return ERROR_SUCCESS; }
++        state.creation_time = (static_cast<uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
++        if (state.creation_time <= observer_cutoff) return ERROR_SUCCESS;
++    }
++    state.matched_path.assign(candidate_path, candidate_path_size);
+ 
+-	std::wstring event = L"EGO_PROCESS_CREATE\t";
++	std::wstring event = future_observer ? L"EGO_PROCESS_CREATE_V2\t" : L"EGO_PROCESS_CREATE\t";
+ 	event.append(std::to_wstring(pid));
+ 	event.push_back(L'\t');
++	if (future_observer) { event.append(std::to_wstring(state.creation_time)); event.push_back(L'\t'); }
+ 	event.append(state.matched_path);
+ 	if (!write_utf8_stdout_line(event))
+ 		return ERROR_WRITE_FAULT;
+@@ -3656,7 +3674,8 @@ static DWORD scan_path_matches(
+ 	const ULONGLONG current_tick = GetTickCount64();
+ 	for (auto observed = observed_processes.begin(); observed != observed_processes.end();)
+ 	{
+-		const bool process_ended = current_process_ids.find(observed->first) == current_process_ids.end();
++		const bool process_ended = current_process_ids.find(observed->first) == current_process_ids.end() &&
++            (!future_observer || (has_process_identity(observed->second) && WaitForSingleObject(observed->second.process, 0) == WAIT_OBJECT_0));
+ 
+ 		if (!process_ended)
+ 		{
+@@ -3666,9 +3685,10 @@ static DWORD scan_path_matches(
+ 
+ 		if (!observed->second.matched_path.empty())
+ 		{
+-			std::wstring event = L"EGO_PROCESS_DELETE\t";
++			std::wstring event = future_observer ? L"EGO_PROCESS_DELETE_V2\t" : L"EGO_PROCESS_DELETE\t";
+ 			event.append(std::to_wstring(observed->first));
+ 			event.push_back(L'\t');
++			if (future_observer) { event.append(std::to_wstring(observed->second.creation_time)); event.push_back(L'\t'); }
+ 			event.append(observed->second.matched_path);
+ 			if (!write_utf8_stdout_line(event))
+ 				return ERROR_WRITE_FAULT;
+@@ -3716,7 +3736,9 @@ static DWORD observe_path_matches(const wchar_t *fragment, DWORD parent_pid)
+ 			state.process.handle = OpenProcess(SYNCHRONIZE, FALSE, pid);
+ 	}
+ 
+-	if (!write_utf8_stdout_line(L"EGO_PROCESS_OBSERVER_READY"))
++	FILETIME cutoff{}; GetSystemTimeAsFileTime(&cutoff);
++    observer_cutoff = (static_cast<uint64_t>(cutoff.dwHighDateTime) << 32) | cutoff.dwLowDateTime;
++    if (!write_utf8_stdout_line(future_observer ? L"EGO_PROCESS_OBSERVER_READY_V2" : L"EGO_PROCESS_OBSERVER_READY"))
+ 		return ERROR_WRITE_FAULT;
+ 
+ 	for (;;)
+@@ -3837,7 +3859,8 @@ static bool get_loading_thread_func_size(SIZE_T &size)
+ 
+ int wmain(int argc, wchar_t *argv[])
+ {
+-	const bool process_observer_requested = argc >= 2 && wcscmp(argv[1], L"--observe-path-contains") == 0;
++	future_observer = argc >= 2 && wcscmp(argv[1], L"--observe-future-path-contains") == 0;
++    const bool process_observer_requested = future_observer || (argc >= 2 && wcscmp(argv[1], L"--observe-path-contains") == 0);
+ 	if (process_observer_requested)
+ 	{
+ 		DWORD parent_pid = 0;
+@@ -3915,6 +3938,7 @@ int wmain(int argc, wchar_t *argv[])
+ 	DWORD pid = 0;
+ 	DWORD official_addon_wait_ms = 0;
+ 	std::wstring matched_image_path;
++    scoped_handle retained_selected_identity;
+ 	if (use_exact_pid)
+ 	{
+ 		if (!parse_process_id(argv[3], pid))
+@@ -3937,28 +3961,14 @@ int wmain(int argc, wchar_t *argv[])
+ 	else if (!use_path_watcher)
+ 	{
+ 		wprintf(L"Waiting for a '%s' process to spawn ...\n", name);
+-		wprintf(L"ReShade process watcher armed.\n");
+-		fflush(stdout);
+ 
+-		// Wait for a process with the target name to spawn
+-		while (!pid)
+-		{
+-			const scoped_handle snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+ 
+-			PROCESSENTRY32W process = { sizeof(process) };
+-			for (BOOL next = Process32FirstW(snapshot, &process); next; next = Process32NextW(snapshot, &process))
+-			{
+-				if (_wcsicmp(process.szExeFile, name) == 0)
+-				{
+-					pid = process.th32ProcessID;
+-					break;
+-				}
+-			}
+-
+-			Sleep(1); // Sleep a bit to not overburden the CPU
+-		}
++        const bool exact_path = wcschr(argv[1], L'\\') != nullptr;
++        const DWORD error = wait_for_path_match(L"\\", {}, pid, matched_image_path, name,
++            exact_path ? argv[1] : nullptr, std::addressof(retained_selected_identity));
++        if (error != ERROR_SUCCESS) { print_injection_not_started(); return error; }
+ 	}
+-	else if (const DWORD error = wait_for_path_match(argv[2], excluded_process_names, pid, matched_image_path); error != ERROR_SUCCESS)
++	else if (const DWORD error = wait_for_path_match(argv[2], excluded_process_names, pid, matched_image_path, nullptr, nullptr, std::addressof(retained_selected_identity)); error != ERROR_SUCCESS)
+ 	{
+ 		wprintf(L"Failed to monitor process creation for path matches!\n");
+ 		print_injection_not_started();
+@@ -4054,6 +4064,8 @@ int wmain(int argc, wchar_t *argv[])
+ 		}
+ 	}
+ 
++	if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) return ERROR_WRITE_FAULT;
++
+ 	// Check process architecture
+ 	BOOL remote_is_wow64 = FALSE;
+ 	IsWow64Process(remote_process, &remote_is_wow64);

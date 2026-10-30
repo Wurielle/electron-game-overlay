@@ -186,6 +186,7 @@ function createOverlayWindowFocusHarness(focusOnReady) {
     },
   };
   const bridge = {
+    setWindowFocus() {},
     registerWindow() {},
     unregisterWindow() {},
     removeWindow(window) {

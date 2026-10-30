@@ -293,7 +293,7 @@ jobs:
       - name: Package SDK release candidate
         shell: pwsh
         run: |
-          & node libs/electron-game-overlay/scripts/package-sdk.cjs --package-root libs/electron-game-overlay --built-dist libs/electron-game-overlay/dist --output artifacts/sdk-preview
+          & node libs/electron-game-overlay/scripts/package-sdk.cjs --package-root libs/electron-game-overlay --built-dist libs/electron-game-overlay/dist --output artifacts/sdk-preview --source-commit $env:GITHUB_SHA
           $status = $LASTEXITCODE
           if (Test-Path artifacts/sdk-preview/sdk-preview-report.json) { Copy-Item artifacts/sdk-preview/sdk-preview-report.json test-results/sdk-preview-package.json }
           if ($status -ne 0) { exit $status }

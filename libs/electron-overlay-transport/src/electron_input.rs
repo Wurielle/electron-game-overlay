@@ -633,6 +633,7 @@ pub struct InputRouter {
     /// Ordered back-to-front. The final hit window is visually topmost.
     windows: Vec<InputWindow>,
     focused_window_id: Option<u32>,
+    explicit_focus_window_id: Option<u32>,
     captured_window_id: Option<u32>,
     captured_buttons: u8,
     last_captured_point: Option<InputPoint>,
@@ -661,6 +662,7 @@ impl Default for InputRouter {
             target_focused: false,
             windows: Vec::new(),
             focused_window_id: None,
+            explicit_focus_window_id: None,
             captured_window_id: None,
             captured_buttons: 0,
             last_captured_point: None,
@@ -825,6 +827,7 @@ impl InputRouter {
 
         self.windows = windows;
         self.recompute_desired_interception(false);
+        self.restore_explicit_focus(&mut outbound);
         outbound
     }
 
@@ -832,6 +835,7 @@ impl InputRouter {
     /// Unlike [`Self::replace_windows`], reused native IDs do not retain focus,
     /// capture, or a pending click-to-front intent from the previous session.
     pub fn reset_windows(&mut self, windows: Vec<InputWindow>) -> Vec<OutboundMessage> {
+        self.explicit_focus_window_id = None;
         let mut outbound = self.cancel_pointer_capture();
         self.clear_electron_focus(&mut outbound);
         self.pending_raise_window_id = None;
@@ -843,6 +847,9 @@ impl InputRouter {
     /// Removes one window. Removing the capture owner synthesizes releases
     /// before clearing its focus; unrelated focus/capture state is preserved.
     pub fn remove_window(&mut self, window_id: u32) -> Vec<OutboundMessage> {
+        if self.explicit_focus_window_id == Some(window_id) {
+            self.explicit_focus_window_id = None;
+        }
         if !self
             .windows
             .iter()
@@ -983,6 +990,7 @@ impl InputRouter {
         }
 
         self.recompute_desired_interception(true);
+        self.restore_explicit_focus(&mut outbound);
         outbound
     }
 
@@ -1002,6 +1010,7 @@ impl InputRouter {
             self.clear_electron_focus(&mut outbound);
         }
         self.recompute_desired_interception(false);
+        self.restore_explicit_focus(&mut outbound);
         outbound
     }
 
@@ -1029,6 +1038,7 @@ impl InputRouter {
         }
 
         self.effective_interception = effective;
+        self.restore_explicit_focus(&mut outbound);
         self.atomic_interception
             .effective
             .store(effective, Ordering::Release);
@@ -1151,6 +1161,7 @@ impl InputRouter {
         if matches!(transition, Some(PointerTransition::Down(_)))
             && self.focused_window_id != Some(target.window_id)
         {
+            self.explicit_focus_window_id = None;
             self.focused_window_id = Some(target.window_id);
             outbound.push(OutboundMessage::WindowFocused {
                 focus_window_id: target.window_id,
@@ -1387,6 +1398,42 @@ impl InputRouter {
         };
 
         vec![OutboundMessage::input_for(window, msg, wparam, lparam)]
+    }
+
+    /// The caller validates registration; first-frame arrival may make this
+    /// window routable later. Blur is conditional so a stale member cannot
+    /// clear another application's current keyboard owner.
+    pub fn request_window_focus(&mut self, window_id: u32, focused: bool) -> Vec<OutboundMessage> {
+        let mut outbound = Vec::new();
+        if focused {
+            self.explicit_focus_window_id = Some(window_id);
+            if self.focused_window_id != Some(window_id) {
+                self.clear_electron_focus(&mut outbound);
+            }
+            self.restore_explicit_focus(&mut outbound);
+        } else {
+            if self.explicit_focus_window_id == Some(window_id) {
+                self.explicit_focus_window_id = None;
+            }
+            if self.focused_window_id == Some(window_id) {
+                self.clear_electron_focus(&mut outbound);
+            }
+        }
+        outbound
+    }
+
+    fn restore_explicit_focus(&mut self, outbound: &mut Vec<OutboundMessage>) {
+        if !self.requested_interception || !self.effective_interception || !self.target_focused {
+            return;
+        }
+        if let Some(id) = self.explicit_focus_window_id {
+            if contains_window(&self.windows, id) && self.focused_window_id != Some(id) {
+                self.focused_window_id = Some(id);
+                outbound.push(OutboundMessage::WindowFocused {
+                    focus_window_id: id,
+                });
+            }
+        }
     }
 
     fn clear_electron_focus(&mut self, outbound: &mut Vec<OutboundMessage>) {

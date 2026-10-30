@@ -11,7 +11,7 @@ const previousAddonId = 'F2A88AD705204DBB8E18D86E7147A13C';
 
 // These guards cover distribution provenance, not native execution or placement.
 test('order-capable runtime advances generation without changing frozen v1 defaults', () => {
-  assert.equal(protocol.OVERLAY_BROKER_RUNTIME_GENERATION, 2);
+  assert.equal(protocol.OVERLAY_BROKER_RUNTIME_GENERATION, 4);
   assert.equal(protocol.OVERLAY_BROKER_LEGACY_RUNTIME_GENERATION, 1);
   assert.equal(protocol.OVERLAY_BROKER_PROTOCOL_VERSION, 1);
   assert.equal(protocol.OVERLAY_BROKER_TARGET_TRANSPORT_VERSION, 1);
@@ -29,7 +29,7 @@ test('changed mapped runtime has a fresh exact addon ID across injector and pack
     `${runtimeRoot}/scripts/build.ps1`,
     `${runtimeRoot}/scripts/run-official-reshade-addon-preflight-gate.ps1`,
     `${runtimeRoot}/scripts/run-client-sdk-process-start-injection-gate.ps1`,
-    `${runtimeRoot}/patches/reshade-injector-global-layer-preflight.patch`,
+    `${runtimeRoot}/patches/reshade-injector-future-targets.patch`,
     'libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1',
     'libs/electron-game-overlay/src/lib/reshade-launcher.ts',
   ];
@@ -40,11 +40,11 @@ test('changed mapped runtime has a fresh exact addon ID across injector and pack
   }
 });
 
-test('runtime builder and SDK staging advertise generation two but retain target transport one', () => {
+test('runtime builder and SDK staging advertise generation four but retain target transport one', () => {
   const build = read(`${runtimeRoot}/scripts/build.ps1`);
   const stage = read('libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1');
-  assert.match(build, /\$RuntimeGeneration = 2\b/u);
-  assert.match(stage, /\$ExpectedRuntimeGeneration = 2\b/u);
+  assert.match(build, /\$RuntimeGeneration = 4\b/u);
+  assert.match(stage, /\$ExpectedRuntimeGeneration = 4\b/u);
   assert.match(build, /\$TargetTransportMin = 1\b/u);
   assert.match(build, /\$TargetTransportMax = 1\b/u);
   assert.match(stage, /\$ExpectedTargetTransportMin = 1\b/u);

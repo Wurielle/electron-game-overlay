@@ -63,7 +63,7 @@ const PROCESS_WATCHER_READY_MARKER = 'ReShade process watcher armed.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH = 706;
-const OFFICIAL_ADDON_BUILD_ID = '31D321732C1B424796593C0778FB722E';
+const OFFICIAL_ADDON_BUILD_ID = 'B6A6721DEF914B38A040AC08A87F31A2';
 const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 3;
 // Schema 2 shipped before provider metadata. Keep accepting it permanently as
 // generation 1 / target transport 1 so copied runtime-directory overrides do
@@ -197,6 +197,7 @@ type RuntimePackageBuildStamp =
       Readonly<{
         schemaVersion: 3 | 4;
         injectorProcessInstanceBinding?: 1;
+        injectorFutureTargets?: 1;
         runtimeGeneration: number;
         targetTransportMin: number;
         targetTransportMax: number;
@@ -288,7 +289,8 @@ export type ReShadeProcessTarget = Readonly<{
    * Canonical executable path observed by a trusted process watcher. When
    * supplied, the launcher can safely prepare its uniquely named add-on for a
    * recognized official ReShade installation without guessing target paths.
-   * This is accepted only together with an exact PID.
+   * Without a PID, prearms only future processes at this exact path. Filtering
+   * occurs in the injector before any target mutation; it is not a glob.
    */
   executablePath?: string;
 }>;
@@ -314,6 +316,7 @@ type ExactReShadeProcessTarget = ReShadeProcessTarget &
 export type ReShadeLaunchConfig = Readonly<{
   /** Binding support derived from both validated native package stamps. */
   injectorProcessInstanceBinding?: 1;
+  injectorFutureTargets?: 1;
   /** Canonical directory containing the packaged runtime artifacts. */
   runtimeDirectory: string;
   /** Writable parent directory for isolated per-attachment runs. */
@@ -431,6 +434,7 @@ export type ReShadeAttachResult = ReShadeLaunchResult &
 type StagedRuntime = Readonly<{
   expectedCreationTime100ns?: string;
   injectorProcessInstanceBinding?: 1;
+  injectorFutureTargets?: 1;
   runId: string;
   runsRootDirectory: string;
   runDirectory: string;
@@ -1091,6 +1095,7 @@ export function parseReShadeLaunchConfig(
     runtimeDirectory,
     runtimeProvider: providerMetadataOnly(runtimeProvider),
     ...(runtimeProvider.injectorProcessInstanceBinding === undefined ? {} : { injectorProcessInstanceBinding: runtimeProvider.injectorProcessInstanceBinding }),
+    ...(runtimeProvider.injectorFutureTargets === undefined ? {} : { injectorFutureTargets: runtimeProvider.injectorFutureTargets }),
     runsRootDirectory: path.resolve(requestedRunsRoot),
     injectorPath,
     x86InjectorPath,
@@ -1130,7 +1135,7 @@ export function buildReShadeInvocation(
         ]),
       ]
     : target.pid === undefined
-      ? ([target.processName] as const)
+      ? ([target.executablePath === undefined ? target.processName : normalizeExecutablePathForNativeInvocation(target.executablePath)] as const)
       : ([
           target.executablePath === undefined
             ? target.processName
@@ -1564,7 +1569,7 @@ export class ReShadeOverlayLauncher {
     this.attachmentTargetLabel = targetLabel;
     this.attachmentExpectedTargetPid = expectedTargetPid;
     this.awaitingTargetProof = !isPathTarget(launchTarget);
-    if (this.awaitingTargetProof) {
+    if (this.awaitingTargetProof && expectedTargetPid !== undefined) {
       this.targetProofTimer = setTimeout(() => {
         this.closeTargetProofWindow();
       }, TARGET_PROOF_TIMEOUT_MS);
@@ -1584,7 +1589,7 @@ export class ReShadeOverlayLauncher {
     )
       .then((result) => {
         if (
-          isPathTarget(launchTarget) &&
+          expectedTargetPid === undefined &&
           this.activeAttach === null &&
           !this.disposed &&
           this.attachmentState === 'attaching' &&
@@ -1594,7 +1599,7 @@ export class ReShadeOverlayLauncher {
           this.awaitingTargetProof = true;
           this.targetProofTimer = setTimeout(() => {
             this.closeTargetProofWindow();
-          }, PATH_TARGET_PROOF_TIMEOUT_MS);
+          }, isPathTarget(launchTarget) ? PATH_TARGET_PROOF_TIMEOUT_MS : TARGET_PROOF_TIMEOUT_MS);
         }
         return result;
       })
@@ -1763,7 +1768,7 @@ export class ReShadeOverlayLauncher {
       this.blockTargetState(targetLabel);
       rejectConnectionProof(
         createReShadeOperationError({
-          message: `the ReShade target did not connect within ${proofTimeoutMs}ms; ${runtimeStartupDescription(runtimeStartupCode)}`,
+          message: `the ReShade target did not connect within ${proofTimeoutMs}ms; ${runtimeStartupDescription(runtimeStartupCode)}. Injector DLL-load success does not prove authenticated attachment or render readiness. For fast-starting games, arm a future-target watcher before launch; do not retry this live PID after an uncertain injection`,
           code: 'runtime-initialization-timeout',
           stage: 'runtime-initialization',
           retrySafety: 'indeterminate',
@@ -1839,6 +1844,9 @@ export class ReShadeOverlayLauncher {
       void resolve;
       rejectConnectionLost = reject;
     });
+    // Setup can fail before the final launch/proof race is installed.
+    void connectionProof.catch(() => undefined);
+    void connectionLost.catch(() => undefined);
 
     removeSessionEventHandlers.push(
       session.on('targetConnected', ({ pid, executablePath }) => {
@@ -1964,49 +1972,60 @@ export class ReShadeOverlayLauncher {
         );
       }
     });
-    if (!isPathTarget(target)) {
+    if (expectedTargetPid !== undefined) {
       startProofTimer();
     }
 
-    if (expectedTargetPid === undefined) {
-      const releaseGlobalTarget =
-        await authorizeOverlaySessionGlobalTarget(session);
-      if (
-        this.disposed ||
-        this.attachmentState !== 'attaching' ||
-        this.attachmentTargetLabel !== targetLabel
-      ) {
-        releaseGlobalTarget();
-        throw new Error(
-          'the ReShade attachment stopped before its untargeted rendezvous was ready',
-        );
+    let launch: Promise<ReShadeLaunchResult> | undefined;
+    try {
+      if (expectedTargetPid === undefined) {
+        let acquired: (() => void) | undefined;
+        const authorization = authorizeOverlaySessionGlobalTarget(session).then(release => { acquired = release; return release; });
+        let releaseGlobalTarget: () => void;
+        try {
+          releaseGlobalTarget = await Promise.race([
+            authorization, cancellation, connectionLost,
+            connectionProof.then(() => new Promise<never>(() => undefined)),
+          ]);
+        } catch (error) {
+          if (acquired) acquired();
+          else void authorization.then(release => release(), () => undefined);
+          throw error;
+        }
+        if (
+          this.disposed ||
+          this.attachmentState !== 'attaching' ||
+          this.attachmentTargetLabel !== targetLabel
+        ) {
+          releaseGlobalTarget();
+          throw new Error(
+            'the ReShade attachment stopped before its untargeted rendezvous was ready',
+          );
+        }
+        if (this.releaseGlobalTargetAuthorization) {
+          releaseGlobalTarget();
+          throw new Error(
+            'an untargeted ReShade rendezvous is already authorized',
+          );
+        }
+        this.releaseGlobalTargetAuthorization = releaseGlobalTarget;
       }
-      if (this.releaseGlobalTargetAuthorization) {
-        releaseGlobalTarget();
-        throw new Error(
-          'an untargeted ReShade rendezvous is already authorized',
-        );
-      }
-      this.releaseGlobalTargetAuthorization = releaseGlobalTarget;
-    }
 
-    const targetRendezvousAuthorizer: TargetRendezvousAuthorizer = (
-      runDirectory,
-      pid,
-      expectedExecutablePath,
-      runtimeProvider,
-      signal,
-    ) =>
-      authorizeOverlaySessionTarget(
-        session,
+      const targetRendezvousAuthorizer: TargetRendezvousAuthorizer = (
+        runDirectory,
         pid,
-        path.join(runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME),
         expectedExecutablePath,
         runtimeProvider,
         signal,
-      );
-    let launch: Promise<ReShadeLaunchResult> | undefined;
-    try {
+      ) =>
+        authorizeOverlaySessionTarget(
+          session,
+          pid,
+          path.join(runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME),
+          expectedExecutablePath,
+          runtimeProvider,
+          signal,
+        );
       launch = this.#requestLaunch(
         target,
         targetRendezvousAuthorizer,
@@ -2014,7 +2033,7 @@ export class ReShadeOverlayLauncher {
       ).then((result) => {
         launchResultForProof = result;
         injectorTargetPid = result.injectorTargetPid;
-        if (isPathTarget(target)) {
+        if (expectedTargetPid === undefined) {
           startProofTimer();
         }
         tryAcceptCandidate();
@@ -2073,6 +2092,9 @@ export class ReShadeOverlayLauncher {
     let expectedCreationTime100ns: string | undefined;
     try {
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+      if (expectedTargetPid === undefined && !isPathTarget(target) && target.executablePath !== undefined && staged.injectorFutureTargets !== 1) {
+        throw this.createInjectorFailure({ message: 'exact-path prearming requires validated future-target injector support', code: 'injector-start-failed', stage: 'injector', retrySafety: 'definite-safe', targetLabel });
+      }
       if (expectedTargetPid !== undefined && authorizeTarget) {
         newTargetAuthorization = await authorizeTarget(
           staged.runDirectory,
@@ -2238,6 +2260,9 @@ export class ReShadeOverlayLauncher {
         const currentArguments = [...currentInvocation.arguments];
         let didSpawn = false;
         let detachWatcherReadyObserver = () => undefined;
+        let readyTimer: ReturnType<typeof setTimeout> | undefined;
+        let selectedTimer: ReturnType<typeof setTimeout> | undefined;
+        let detachSelectionObserver = () => undefined;
         const child = execFile(
           currentInvocation.executable,
           currentArguments,
@@ -2246,11 +2271,14 @@ export class ReShadeOverlayLauncher {
             encoding: 'utf8',
             maxBuffer: MAX_OUTPUT_BYTES,
             shell: false,
-            timeout: isPathTarget(executionTarget) ? 0 : REQUEST_TIMEOUT_MS,
+            timeout: currentExpectedTargetPid === undefined ? 0 : REQUEST_TIMEOUT_MS,
             windowsHide: true,
           },
           (error, stdout, stderr) => {
             detachWatcherReadyObserver();
+            detachSelectionObserver();
+            clearTimeout(readyTimer);
+            clearTimeout(selectedTimer);
             if (this.activeChild === child) {
               this.activeChild = null;
             }
@@ -2340,6 +2368,12 @@ export class ReShadeOverlayLauncher {
         );
         child.once('spawn', () => {
           didSpawn = true;
+          if (currentExpectedTargetPid === undefined) {
+            readyTimer = setTimeout(() => {
+              child.kill();
+              reject(this.createInjectorFailure({ message: 'the native future-target watcher did not report readiness within 5000ms; target mutation cannot be ruled out', code: 'injector-start-failed', stage: 'injector', retrySafety: 'indeterminate', targetLabel, evidence: diagnosticEvidenceForStagedRuntime(staged) }));
+            }, 5000);
+          }
           this.emitEvent(
             Object.freeze({
               type: 'injector-started',
@@ -2370,6 +2404,7 @@ export class ReShadeOverlayLauncher {
               return;
             }
             emitted = true;
+            clearTimeout(readyTimer);
             stdout.removeListener('data', onData);
             if (
               this.activeChild === child &&
@@ -2388,6 +2423,26 @@ export class ReShadeOverlayLauncher {
           detachWatcherReadyObserver = () => {
             stdout.removeListener('data', onData);
           };
+        }
+        if (currentExpectedTargetPid === undefined && child.stdout !== null) {
+          let selectionOutput = '';
+          const onSelectionData = (chunk: unknown) => {
+            selectionOutput = (selectionOutput + String(chunk)).slice(-MAX_OUTPUT_BYTES);
+            const match = /(?:^|\n)EGO_TARGET_SELECTED\t([1-9][0-9]*)\r?\n/.exec(selectionOutput);
+            if (!match) return;
+            const selectedPid = Number(match[1]);
+            if (!isValidProcessPid(selectedPid) || this.activeChild !== child || this.disposed || this.launchGeneration !== launchGeneration) return;
+            clearTimeout(readyTimer);
+            detachSelectionObserver();
+            this.attachmentExpectedTargetPid = selectedPid;
+            currentExpectedTargetPid = selectedPid;
+            selectedTimer = setTimeout(() => {
+              child.kill();
+              reject(this.createInjectorFailure({ message: `native target pid=${selectedPid} was selected but its injector did not finish within ${REQUEST_TIMEOUT_MS}ms; wait for authoritative target exit before retrying`, code: 'injector-failed', stage: 'injector', retrySafety: 'indeterminate', targetLabel, pid: selectedPid, evidence: diagnosticEvidenceForStagedRuntime(staged) }));
+            }, REQUEST_TIMEOUT_MS);
+          };
+          child.stdout.on('data', onSelectionData);
+          detachSelectionObserver = () => { child.stdout?.removeListener('data', onSelectionData); };
         }
         this.activeChild = child;
       };
@@ -2481,6 +2536,7 @@ export class ReShadeOverlayLauncher {
         runDirectory: createdRunDirectory,
         runtimeProvider: providerMetadataOnly(runtimeProvider),
         ...(runtimeProvider.injectorProcessInstanceBinding === undefined ? {} : { injectorProcessInstanceBinding: runtimeProvider.injectorProcessInstanceBinding }),
+    ...(runtimeProvider.injectorFutureTargets === undefined ? {} : { injectorFutureTargets: runtimeProvider.injectorFutureTargets }),
         injectorPath: path.join(createdRunDirectory, INJECTOR_FILE_NAME),
         addonManagerPath: path.join(
           createdRunDirectory,
@@ -3930,7 +3986,7 @@ function providerMetadataOnly(provider: NativeRuntimeProviderMetadata): NativeRu
   return Object.freeze({ runtimeGeneration: provider.runtimeGeneration, targetTransportMin: provider.targetTransportMin, targetTransportMax: provider.targetTransportMax });
 }
 
-type ValidatedRuntimeProvider = NativeRuntimeProviderMetadata & Readonly<{ injectorProcessInstanceBinding?: 1 }>;
+type ValidatedRuntimeProvider = NativeRuntimeProviderMetadata & Readonly<{ injectorProcessInstanceBinding?: 1; injectorFutureTargets?: 1 }>;
 
 function validateRuntimePackageBuildStampsSync(
   artifactPaths: ReadonlyMap<string, string>,
@@ -4003,6 +4059,7 @@ function runtimeProviderForBuildStamp(
         targetTransportMin: manifest.targetTransportMin,
         targetTransportMax: manifest.targetTransportMax,
         ...(manifest.schemaVersion === 4 ? { injectorProcessInstanceBinding: 1 as const } : {}),
+        ...(manifest.injectorFutureTargets === 1 ? { injectorFutureTargets: 1 as const } : {}),
       });
 }
 
@@ -4019,7 +4076,8 @@ function commonRuntimeProviderMetadata(
         provider.runtimeGeneration !== first.runtimeGeneration ||
         provider.targetTransportMin !== first.targetTransportMin ||
         provider.targetTransportMax !== first.targetTransportMax ||
-        provider.injectorProcessInstanceBinding !== first.injectorProcessInstanceBinding,
+        provider.injectorProcessInstanceBinding !== first.injectorProcessInstanceBinding ||
+        provider.injectorFutureTargets !== first.injectorFutureTargets,
     )
   ) {
     throw new Error(
@@ -4074,7 +4132,7 @@ function parseRuntimePackageBuildStamp(
       : candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION
         ? RUNTIME_PACKAGE_BUILD_STAMP_KEYS
         : candidate.schemaVersion === 4
-          ? [...RUNTIME_PACKAGE_BUILD_STAMP_KEYS, 'injectorProcessInstanceBinding']
+          ? [...RUNTIME_PACKAGE_BUILD_STAMP_KEYS, 'injectorProcessInstanceBinding', ...(candidate.injectorFutureTargets === undefined ? [] : ['injectorFutureTargets'])]
           : undefined;
   if (
     !expectedKeys ||
@@ -4100,6 +4158,7 @@ function parseRuntimePackageBuildStamp(
     candidate.managerProtocolSchemaVersion !==
       RUNTIME_PACKAGE_MANAGER_PROTOCOL_SCHEMA_VERSION ||
     (candidate.schemaVersion === 4 && candidate.injectorProcessInstanceBinding !== 1) ||
+    (candidate.injectorFutureTargets !== undefined && candidate.injectorFutureTargets !== 1) ||
     ((candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION || candidate.schemaVersion === 4) &&
       (!isPositiveUint32(candidate.runtimeGeneration) ||
         !isPositiveUint32(candidate.targetTransportMin) ||
@@ -4556,7 +4615,7 @@ function targetLabelFor(target: ReShadeTarget): string {
     ].join(':');
   }
   return target.pid === undefined
-    ? `process:${target.processName}`
+    ? `process:${target.processName}${target.executablePath === undefined ? '' : `:path:${normalizeExecutablePathIdentity(target.executablePath)}`}`
     : [
         `process:${target.processName}:pid:${target.pid}`,
         ...(target.executablePath === undefined
@@ -5360,14 +5419,13 @@ function validateTarget(target: ReShadeTarget): void {
   }
   if (
     target.executablePath !== undefined &&
-    (target.pid === undefined ||
-      !path.win32.isAbsolute(target.executablePath) ||
+    (!path.win32.isAbsolute(target.executablePath) ||
       target.executablePath.includes('\0') ||
       path.win32.basename(target.executablePath).toLowerCase() !==
         target.processName.toLowerCase())
   ) {
     throw new Error(
-      'the ReShade target executable path requires an exact PID, must be absolute, and must match its process basename',
+      'the ReShade target executable path must be absolute and must match its process basename',
     );
   }
 }

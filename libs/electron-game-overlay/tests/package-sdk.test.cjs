@@ -128,12 +128,12 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.report.status, 'passed');
   assert.equal(result.report.nativeExecuted, false);
-  assert.equal(result.report.version, '0.1.0-rc.1');
+  assert.equal(result.report.version, '0.1.0-rc.2');
   assert.ok(fs.statSync(result.report.tarball).size > 0);
   const stage = result.report.stageRoot;
   const metadata = JSON.parse(fs.readFileSync(path.join(stage, 'package.json')));
   assert.equal(metadata.private, false);
-  assert.equal(metadata.version, '0.1.0-rc.1');
+  assert.equal(metadata.version, '0.1.0-rc.2');
   assert.equal(metadata.exports['.'].gelectron, undefined);
   assert.equal(metadata.types, './dist/index.d.ts');
   assert.equal(metadata.scripts, undefined);

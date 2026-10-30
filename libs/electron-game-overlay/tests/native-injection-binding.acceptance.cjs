@@ -286,6 +286,43 @@ async function main() {
     loaded(await invoke(arch, fixtures[arch], owned, `${arch}-legacy-call`, null), owned);
   }
   report.legacyFixtureVerified = true; persist();
+  // Future selection uses only the inert owned payload, not a real ReShade
+  // rendezvous. This tests filtering before injection independently of an
+  // unrelated application's exclusive future-watcher ownership.
+  for (const arch of ['x64', 'x86']) {
+    await check(`${arch}-future-exact-path-baseline-and-early-filter`, async () => {
+      const fixture = fixtures[arch];
+      const baseline = await target(fixture, `${arch}-future-baseline`);
+      const directory = path.join(root, `${arch}-future-injector`); fs.mkdirSync(directory);
+      const injector = path.join(directory, 'inject.exe');
+      fs.copyFileSync(options[arch === 'x64' ? '--injector64' : '--injector32'], injector);
+      fs.copyFileSync(fixture.payload, path.join(directory, arch === 'x64' ? 'ReShade64.dll' : 'ReShade32.dll'));
+      const watcher = spawn(injector, [fixture.target]);
+      let stdout = '', stderr = '';
+      watcher.stdout.on('data', chunk => { stdout += chunk; });
+      watcher.stderr.on('data', chunk => { stderr += chunk; });
+      await deadline((async () => {
+        while (!stdout.includes('ReShade process watcher armed.')) {
+          assert.equal(watcher.exitCode, null, 'watcher remains alive before readiness');
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+      })(), 5000, 'future-watcher-ready');
+      const wrongDirectory = path.join(root, `${arch}-denied-path`); fs.mkdirSync(wrongDirectory);
+      const wrongPath = path.join(wrongDirectory, path.basename(fixture.target));
+      fs.copyFileSync(fixture.target, wrongPath);
+      const wrong = await target({ ...fixture, target: wrongPath }, `${arch}-future-wrong-path`);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.equal(fs.existsSync(baseline.marker), false, 'baseline process must never be injected');
+      assert.equal(fs.existsSync(wrong.marker), false, 'same basename at a different path must never be injected');
+      assert.equal(watcher.exitCode, null, 'watcher remains armed after a nonmatching creation');
+      const selected = await target(fixture, `${arch}-future-selected`);
+      await deadline(exited(watcher), budget, 'future-selected-injection');
+      loaded({ code: watcher.exitCode, stdout, stderr }, selected);
+      assert.equal(fs.existsSync(baseline.marker), false);
+      assert.equal(fs.existsSync(wrong.marker), false);
+      report.nativeExecuted = true;
+    });
+  }
   for (const arch of ['x64', 'x86']) {
     const fixture = fixtures[arch];
     const a = await target(fixture, `${arch}-A`);

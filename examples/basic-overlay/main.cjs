@@ -76,7 +76,7 @@ void app
   .then(async () => {
     const mode = readMode(process.argv);
     // Transport remains lazy in smoke mode: never start a session or launcher.
-    overlay = new ElectronGameOverlay();
+    overlay = new ElectronGameOverlay({ allowPrereleaseBroker: true });
     session = overlay.createSession();
     if (!mode.smoke) {
       const {

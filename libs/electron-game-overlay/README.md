@@ -7,11 +7,11 @@ applications and routes each application's frames and input separately.
 
 ## Candidate installation
 
-The distribution candidate is `electron-game-overlay-0.1.0-rc.1.tgz`, supplied as
+The distribution candidate is `electron-game-overlay-0.1.0-rc.2.tgz`, supplied as
 a build artifact, **not a public npm release**. In your own application directory:
 
 ```powershell
-npm install --save-exact electron@39.8.10 "C:\downloads\electron-game-overlay-0.1.0-rc.1.tgz"
+npm install --save-exact electron@39.8.10 "C:\downloads\electron-game-overlay-0.1.0-rc.2.tgz"
 ```
 
 The tarball includes compiled JavaScript/declarations and the packaged Windows
@@ -20,6 +20,13 @@ or a native compiler. A first install still needs npm/Electron downloads or a
 populated cache. Keep the complete installed package; do not copy individual
 runtime files or replace build stamps/manifests.
 
+The normal Electron range is `>=39.1.0 <40`; the exact experimental runtime
+`46.0.0-alpha.2` is also admitted after controlled Windows native acceptance.
+For native keyboard focus, exact-path prearming, watcher deadlines, public process
+observation, and compatibility limits, read the
+[rc.2 attachment guide](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/doc/sdk-rc2-attachment-and-focus.md).
+Use `new ElectronGameOverlay({ allowPrereleaseBroker: true })` with this candidate.
+
 ## Run the minimal consumer
 
 Copy [`examples/basic-overlay`](https://github.com/Wurielle/electron-game-overlay/tree/feat/sdk-release-candidate/examples/basic-overlay)
@@ -27,7 +34,7 @@ from the matching candidate source checkout into a directory outside that checko
 Its README gives local-tarball installation and verification instructions.
 
 ```powershell
-npm install --save-exact "C:\downloads\electron-game-overlay-0.1.0-rc.1.tgz"
+npm install --save-exact "C:\downloads\electron-game-overlay-0.1.0-rc.2.tgz"
 npm start -- --smoke
 ```
 
