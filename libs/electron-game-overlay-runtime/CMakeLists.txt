@@ -3,13 +3,13 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "F2A88AD705204DBB8E18D86E7147A13C"
+    "31D321732C1B424796593C0778FB722E"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "B6F4CCF164AB75CBD9D55AEF3EC4191E89A533F703B20D7A04BCD2EF534E2FCD"
+    "87A6F9A1BA8548F86025EC05905A189ACDB0925568E16C55A7762E791C4994CD"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
-    "A7272D6E47308B3F3439E47027F118ED4F2428C7F761FDA89D9128B8752ABFA0"
+    "07A76311F29A7A20E54D305BCA1F384A035C84D620BF201C3CACBAC9681BA7B6"
 )
 
 option(
@@ -110,6 +110,9 @@ set(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH
 set(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-name-watcher-ready.patch"
 )
+set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
+)
 set(RESHAPE_EXPECTED_PATCHED_FILES
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -155,6 +158,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
     "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
     "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
+    "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -318,6 +322,26 @@ verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 # tree before migrating or validating the historical stack below. They are
 # reapplied in the opposite order after those patches, so repeated configure
 # runs and earlier trees remain idempotent.
+# Peel the new terminal seam before replaying historical migrations.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_BINDING_PRESENT
+    OUTPUT_QUIET ERROR_QUIET
+)
+if(RESHAPE_BINDING_PRESENT EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+        RESULT_VARIABLE RESHAPE_BINDING_PEEL
+    )
+    if(NOT RESHAPE_BINDING_PEEL EQUAL 0)
+        message(FATAL_ERROR "Unable to peel process-instance binding patch.")
+    endif()
+endif()
+
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
         "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
@@ -1850,6 +1874,26 @@ if(NOT RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLIED EQUAL 0)
             "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY_ERROR}"
         )
     endif()
+endif()
+
+# Binding is terminal over the complete pinned historical stack for both widths.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --check
+        "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_BINDING_CHECK
+)
+if(NOT RESHAPE_BINDING_CHECK EQUAL 0)
+    message(FATAL_ERROR "Pinned process-instance binding patch cannot apply.")
+endif()
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply
+        "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE RESHAPE_BINDING_APPLY
+)
+if(NOT RESHAPE_BINDING_APPLY EQUAL 0)
+    message(FATAL_ERROR "Unable to apply process-instance binding patch.")
 endif()
 
 # Fail configuration unless this FetchContent tree is exactly the pinned

@@ -1794,6 +1794,9 @@ impl BridgeThreadState {
             "window" => serde_json::from_str::<WindowMetadata>(json)
                 .map_err(DispatchError::Json)
                 .and_then(|message| self.on_window(message).map_err(DispatchError::Transport)),
+            "window.order" => serde_json::from_str::<WindowOrderMessage>(json)
+                .map_err(DispatchError::Json)
+                .map(|message| self.on_window_order(message)),
             "window.bounds" => serde_json::from_str::<WindowBoundsMessage>(json)
                 .map_err(DispatchError::Json)
                 .and_then(|message| {
@@ -1868,6 +1871,41 @@ impl BridgeThreadState {
             );
         }
         Ok(())
+    }
+
+    fn on_window_order(&mut self, message: WindowOrderMessage) {
+        let input_order = Arc::clone(&self.input_order);
+        let input_router = Arc::clone(&self.input_router);
+        let _order = input_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match crate::window_order::reorder_windows(
+            &mut self.windows,
+            &message.window_ids,
+            |window| window.window_id,
+        ) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(_) => {
+                warn!("Ignoring window order that is not an exact registered-ID permutation");
+                return;
+            }
+        }
+        self.bump_state_revision();
+        // Reject queued click-to-front intents from the previous stack, but
+        // retain placement epochs and pending/active caption drag intents.
+        self.stack_generation.fetch_add(1, Ordering::AcqRel);
+        let mut router = input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Raising existing input entries preserves their runtime rectangles,
+        // alpha frames, focus, capture and drag state. Unframed IDs are absent
+        // from the router and safely ignored until their first frame arrives.
+        for window_id in message.window_ids {
+            let messages = router.raise_window(window_id);
+            debug_assert!(messages.is_empty(), "ordering live windows is local-only");
+        }
+        self.publish_scene();
     }
 
     fn on_window_bounds(&mut self, message: WindowBoundsMessage) -> Result<(), TransportError> {
@@ -2275,6 +2313,12 @@ impl From<WindowCaptionMetadata> for InputCaption {
 #[serde(rename_all = "camelCase")]
 struct WindowIdMessage {
     window_id: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowOrderMessage {
+    window_ids: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -2912,6 +2956,7 @@ fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
     let json = serde_json::json!({
         "type": "game.process",
         "protocolVersion": TRANSPORT_VERSION,
+        "capabilities": ["window-order-v1"],
         "token": token,
         "pid": unsafe { GetCurrentProcessId() },
         "path": path,
@@ -4256,6 +4301,392 @@ mod tests {
         assert!(!remove_drain_request_nonblocking(&requests, &request));
         assert!(started.elapsed() < Duration::from_millis(50));
         assert_eq!(guard.len(), 1);
+    }
+
+    #[test]
+    fn window_order_real_caption_moves_survive_popup_video_frames_and_typing() {
+        use crate::electron_input::{WM_CHAR, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE};
+        fn point(x: i32, y: i32) -> u32 {
+            ((y as u16 as u32) << 16) | x as u16 as u32
+        }
+        for older_token in [false, true] {
+            let mut state = test_bridge_state();
+            let mut main = window_metadata(7, "Main", 10);
+            main.transparent = false;
+            main.caption = Some(WindowCaptionMetadata {
+                left: 0,
+                right: 0,
+                top: 0,
+                height: 40,
+            });
+            let mut peer = main.clone();
+            peer.window_id = 8;
+            peer.name = "Peer".into();
+            peer.rect.x = 900;
+            state
+                .on_overlay_init(OverlayInit {
+                    windows: vec![main, peer],
+                })
+                .unwrap();
+            for window_id in [7, 8] {
+                state
+                    .on_frame(WireFrame {
+                        window_id,
+                        width: 1,
+                        height: 1,
+                        bgra: vec![255; 4],
+                    })
+                    .unwrap();
+            }
+            {
+                let mut router = state.input_router.lock().unwrap();
+                router.set_target_focused(true);
+                router.request_interception(true);
+                router.apply_input_filter(true, true);
+            }
+            // Only real caption gestures create runtime placement: no rect writes.
+            for (id, dx, dy) in [(8, 73, 91), (7, -331, 143)] {
+                let before = state
+                    .windows
+                    .iter()
+                    .find(|w| w.window_id == id)
+                    .unwrap()
+                    .rect;
+                for (msg, x, y) in [
+                    (WM_LBUTTONDOWN, before.x + 10, before.y + 10),
+                    (WM_MOUSEMOVE, before.x + 10 + dx, before.y + 10 + dy),
+                    (WM_LBUTTONUP, before.x + 10 + dx, before.y + 10 + dy),
+                ] {
+                    let intent = {
+                        let mut router = state.input_router.lock().unwrap();
+                        router.route_win32_message(msg, 1, point(x, y), Some);
+                        router.take_pending_drag_move()
+                    };
+                    if let Some(intent) = intent {
+                        state
+                            .drag
+                            .enqueue_and_wake(intent, || Ok::<(), ()>(()))
+                            .unwrap();
+                        state.apply_pending_drag_move();
+                    }
+                }
+                let moved = state
+                    .windows
+                    .iter()
+                    .find(|w| w.window_id == id)
+                    .unwrap()
+                    .rect;
+                assert_eq!(
+                    (moved.x, moved.y),
+                    (before.x + dx, before.y + dy),
+                    "caption mailbox movement"
+                );
+                assert_eq!((moved.width, moved.height), (before.width, before.height));
+            }
+            let saved: Vec<_> = state
+                .windows
+                .iter()
+                .map(|w| {
+                    (
+                        w.window_id,
+                        w.rect,
+                        w.placement_epoch,
+                        w.latest.as_ref().unwrap().clone(),
+                    )
+                })
+                .collect();
+            let producer_epoch = state.producer_session_epoch.load(Ordering::Acquire);
+            for (new_id, name) in [(2, "Popup"), (9, "Video")] {
+                let preserved: Vec<_> = state
+                    .windows
+                    .iter()
+                    .map(|w| {
+                        (
+                            w.window_id,
+                            w.rect,
+                            w.placement_epoch,
+                            w.latest.as_ref().unwrap().clone(),
+                        )
+                    })
+                    .collect();
+                state.dispatch_json(&serde_json::json!({"type":"window", "windowId":new_id, "name":name, "transparent":false, "rect":{"x":1500,"y":700,"width":240,"height":135}}).to_string());
+                // A previously allocated older token needs an order packet;
+                // a fresh token is already correctly appended (legacy optional path).
+                if older_token {
+                    let mut ids: Vec<_> = state.windows.iter().map(|w| w.window_id).collect();
+                    ids.sort_unstable();
+                    state.dispatch_json(
+                        &serde_json::json!({"type":"window.order","windowIds":ids}).to_string(),
+                    );
+                }
+                for (id, rect, epoch, frame) in &preserved {
+                    let w = state.windows.iter().find(|w| w.window_id == *id).unwrap();
+                    assert_eq!(
+                        w.rect, *rect,
+                        "metadata/order must retain all native bounds"
+                    );
+                    assert_eq!(w.placement_epoch, *epoch);
+                    assert_eq!(w.latest.as_ref().unwrap().sequence, frame.sequence);
+                    assert!(Arc::ptr_eq(&w.latest.as_ref().unwrap().rgba, &frame.rgba));
+                }
+                for tick in 0..3 {
+                    let frame_ids: Vec<_> = state.windows.iter().map(|w| w.window_id).collect();
+                    for window_id in frame_ids {
+                        state
+                            .on_frame(WireFrame {
+                                window_id,
+                                width: 2,
+                                height: 1,
+                                bgra: vec![128 + tick; 8],
+                            })
+                            .unwrap();
+                    }
+                    for (id, rect, epoch, frame) in &preserved {
+                        let w = state.windows.iter().find(|w| w.window_id == *id).unwrap();
+                        assert_eq!(
+                            w.rect, *rect,
+                            "frame must not replay stale geometry or resize"
+                        );
+                        assert_eq!(w.placement_epoch, *epoch);
+                        let scene = state.scene.read().unwrap();
+                        let rendered = scene.windows.iter().find(|w| w.window_id == *id).unwrap();
+                        assert_eq!(rendered.rect, *rect, "scene bounds retained");
+                        assert!(rendered.sequence > frame.sequence);
+                    }
+                    let mut router = state.input_router.lock().unwrap();
+                    assert_eq!(
+                        router.state().focused_window_id,
+                        Some(7),
+                        "popup must not steal typing focus"
+                    );
+                    let routed = router.route_win32_message(WM_CHAR, 'x' as u32, 0, Some);
+                    assert!(routed.iter().any(|m| matches!(m, OutboundMessage::Input { window_id: 7, msg: WM_CHAR, wparam, .. } if *wparam == 'x' as u32)), "routed character owner retained");
+                }
+            }
+            assert_eq!(
+                state.producer_session_epoch.load(Ordering::Acquire),
+                producer_epoch
+            );
+            println!(
+                "older_token={older_token} retained={:?}",
+                saved
+                    .iter()
+                    .map(|(id, rect, epoch, frame)| (*id, *rect, *epoch, frame.sequence))
+                    .collect::<Vec<_>>()
+            );
+            // Preserve the intentional producer resize API, not a frozen scene.
+            state.dispatch_json(r#"{"type":"window.bounds","windowId":7,"rect":{"x":-321,"y":163,"width":480,"height":72}}"#);
+            let resized = state.windows.iter().find(|w| w.window_id == 7).unwrap();
+            assert_eq!(
+                (resized.rect.width, resized.rect.height),
+                (480, 72),
+                "explicit producer resize remains supported"
+            );
+            assert!(resized.placement_epoch > saved.iter().find(|w| w.0 == 7).unwrap().2);
+            assert_eq!(
+                state
+                    .scene
+                    .read()
+                    .unwrap()
+                    .windows
+                    .iter()
+                    .find(|w| w.window_id == 7)
+                    .unwrap()
+                    .rect,
+                resized.rect
+            );
+        }
+    }
+
+    #[test]
+    fn window_order_packet_preserves_dragged_placement_pixels_and_input_capture() {
+        let mut state = test_bridge_state();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![
+                    window_metadata(7, "Dragged", 10),
+                    window_metadata(2, "Peer", 900),
+                ],
+            })
+            .unwrap();
+        for window_id in [7, 2] {
+            state
+                .on_frame(WireFrame {
+                    window_id,
+                    width: 1,
+                    height: 1,
+                    bgra: vec![255; 4],
+                })
+                .unwrap();
+        }
+        // Runtime placement differs from the producer's last announcement.
+        state.windows[0].rect.x = -321;
+        state.windows[0].caption = Some(InputCaption {
+            left: 0,
+            right: 0,
+            top: 0,
+            height: 100,
+        });
+        let input_windows = state.input_windows();
+        state.update_input_router_and_publish_scene(|router| router.replace_windows(input_windows));
+        let before = state.windows[0].latest.as_ref().unwrap().clone();
+        let epoch = state.windows[0].placement_epoch;
+        let placement_epoch = state.placement_epoch;
+        let sequence = state.sequence;
+        let producer_epoch = state.producer_session_epoch.load(Ordering::Acquire);
+        let revision = state.state_revision;
+        {
+            let mut router = state.input_router.lock().unwrap();
+            router.set_target_focused(true);
+            router.request_interception(true);
+            router.apply_input_filter(true, true);
+            let point = ((40_u32) << 16) | ((-310_i16) as u16 as u32);
+            router.route_win32_message(crate::electron_input::WM_LBUTTONDOWN, 1, point, Some);
+        }
+        let input_before = state.input_router.lock().unwrap().state();
+        assert_eq!(input_before.captured_window_id, Some(7));
+        assert_eq!(input_before.focused_window_id, Some(7));
+        state.dispatch_json(r#"{"type":"window.order","windowIds":[2,7]}"#);
+        assert_eq!(
+            state
+                .windows
+                .iter()
+                .map(|w| w.window_id)
+                .collect::<Vec<_>>(),
+            [2, 7]
+        );
+        let scene = state.scene.read().unwrap().clone();
+        assert_eq!(
+            scene
+                .windows
+                .iter()
+                .map(|w| w.window_id)
+                .collect::<Vec<_>>(),
+            [2, 7]
+        );
+        let after = &scene.windows[1];
+        assert_eq!(after.rect, before.rect);
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.sequence, before.sequence);
+        assert!(Arc::ptr_eq(&after.rgba, &before.rgba));
+        assert_eq!(state.windows[1].placement_epoch, epoch);
+        assert_eq!(state.placement_epoch, placement_epoch);
+        assert_eq!(state.sequence, sequence);
+        assert_eq!(
+            state.producer_session_epoch.load(Ordering::Acquire),
+            producer_epoch
+        );
+        assert_eq!(state.state_revision, revision + 1);
+        let input_after = state.input_router.lock().unwrap().state();
+        assert_eq!(input_after.topmost_window_id, Some(7));
+        assert_eq!(
+            input_after.focused_window_id,
+            input_before.focused_window_id
+        );
+        assert_eq!(
+            input_after.captured_window_id,
+            input_before.captured_window_id
+        );
+        {
+            let mut router = state.input_router.lock().unwrap();
+            let point = ((50_u32) << 16) | ((-300_i16) as u16 as u32);
+            router.route_win32_message(crate::electron_input::WM_MOUSEMOVE, 1, point, Some);
+            let intent = router
+                .take_pending_drag_move()
+                .expect("caption drag survives order-only packet");
+            assert_eq!(intent.window_id, 7);
+            assert_eq!(intent.placement_epoch, epoch);
+            assert_eq!((intent.x, intent.y), (-311, 30));
+        }
+        state.dispatch_json(r#"{"type":"window.order","windowIds":[2,7]}"#);
+        assert_eq!(
+            state.state_revision,
+            revision + 1,
+            "identical order is a no-op"
+        );
+        state
+            .on_frame(WireFrame {
+                window_id: 7,
+                width: 1,
+                height: 1,
+                bgra: vec![128; 4],
+            })
+            .unwrap();
+        assert_eq!(state.windows[1].rect.x, -321);
+        assert_eq!(state.windows[1].placement_epoch, epoch);
+    }
+
+    #[test]
+    fn window_order_rejects_invalid_packets_atomically_including_unframed_members() {
+        let mut state = test_bridge_state();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![
+                    window_metadata(7, "Back", 10),
+                    window_metadata(2, "Unframed", 900),
+                ],
+            })
+            .unwrap();
+        state
+            .on_frame(WireFrame {
+                window_id: 7,
+                width: 1,
+                height: 1,
+                bgra: vec![255; 4],
+            })
+            .unwrap();
+        let revision = state.state_revision;
+        let generation = state.stack_generation.load(Ordering::Acquire);
+        let scene = state.scene.read().unwrap().clone();
+        for ids in [
+            "[7]",
+            "[7,7]",
+            "[7,99]",
+            "[7,2,99]",
+            "[-1,2]",
+            "[7.5,2]",
+            "[4294967296,2]",
+            "[\"7\",2]",
+            "null",
+            "[]",
+        ] {
+            state.dispatch_json(&format!(r#"{{"type":"window.order","windowIds":{ids}}}"#));
+            assert_eq!(state.state_revision, revision, "{ids}");
+            assert_eq!(state.stack_generation.load(Ordering::Acquire), generation);
+            assert!(Arc::ptr_eq(&state.scene.read().unwrap(), &scene));
+            assert_eq!(
+                state
+                    .windows
+                    .iter()
+                    .map(|w| w.window_id)
+                    .collect::<Vec<_>>(),
+                [7, 2]
+            );
+        }
+        state.dispatch_json(r#"{"type":"window.order","windowIds":[2,7]}"#);
+        assert_eq!(
+            state
+                .windows
+                .iter()
+                .map(|w| w.window_id)
+                .collect::<Vec<_>>(),
+            [2, 7]
+        );
+    }
+
+    #[test]
+    fn process_hello_advertises_optional_window_order_without_version_change() {
+        let packet = game_process_packet(&"01".repeat(32)).unwrap();
+        let packets = WireDecoder::default().push(&packet).unwrap();
+        let WirePacket::Json(json) = &packets[0] else {
+            panic!("expected hello")
+        };
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(value["protocolVersion"], 1);
+        assert_eq!(
+            value["capabilities"],
+            serde_json::json!(["window-order-v1"])
+        );
     }
 
     #[test]

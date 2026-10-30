@@ -16,6 +16,246 @@ import {
   resolveCompatibilityRunsRoot,
 } from '../src/main/electron/compatibility-run-recorder.ts';
 
+test('multiline injector stdout saves OpenProcess and LoadLibrary failures, not commands', () => {
+  const command =
+    'Command failed: C:\\Users\\PrivatePerson\\inject.exe --token=privateSecret\r\n';
+  assertSavedError(
+    command +
+      'Failed to open target application process!\r\nReShade injection not started.',
+    'Injector could not open target application process (OpenProcess)',
+  );
+  assertSavedError(
+    command +
+      "Failed to execute 'LoadLibrary' in target application!\r\nReShade injection not started.",
+    'Injector could not execute LoadLibrary in target application',
+  );
+  assertSavedError(
+    command + 'x'.repeat(4096) + 'Failed to open target application process!',
+    'Error details omitted',
+  );
+  assertSavedError(
+    'unknown privateSecret cause: C:\\Users\\PrivatePerson',
+    'Error details omitted',
+  );
+  assertSavedError(
+    'loaded-module inspection failed with Windows error 4294967296',
+    'loaded-module inspection failed',
+  );
+});
+
+test('missing executable saves an allowlisted errno without its spawn path', () => {
+  assertSavedError(
+    'spawn C:\\Users\\PrivatePerson\\node.exe ENOENT',
+    'Executable not found (ENOENT)',
+  );
+});
+
+test('broker startup failures without diagnostics save fixed actionable categories', () => {
+  assertSavedError('overlay session readiness failed', 'Overlay session readiness failed');
+  assertSavedError(
+    'No validated standalone overlay broker could be started',
+    'No validated standalone overlay broker could be started',
+  );
+  assertSavedError(
+    'Unable to prove medium Windows integrity; trusted OS probe failed; shared overlay broker launch is unsupported',
+    'Shared overlay broker Windows integrity proof failed',
+  );
+  assertSavedError(
+    'Shared overlay broker requires proven medium Windows integrity; elevated or unknown-integrity launch is unsupported',
+    'Shared overlay broker requires medium Windows integrity',
+  );
+});
+
+function assertSavedError(error, expected) {
+  withTemporaryDirectory((directory) => {
+    const recorder = createRecorder(directory, 'compatibility-known-error');
+    recorder.recordAutoAttachState(
+      autoAttachState('running', [
+        {
+          ...autoTarget(28, 'Game.exe', 'failed'),
+          error:
+            error + '\r\nstack: C:\\Users\\PrivatePerson token=privateSecret',
+        },
+      ]),
+    );
+    recorder.close();
+    const event = readEvents(recorder.eventsPath).find(
+      (entry) => entry.type === 'target.attachment-state',
+    );
+    assert.equal(event.data.diagnostic, null);
+    assert.equal(event.data.errorPresent, true);
+    assert.equal(event.data.errorMessage, expected);
+    const saved =
+      readFileSync(recorder.eventsPath, 'utf8') +
+      readFileSync(recorder.summaryPath, 'utf8');
+    for (const forbidden of [
+      'PrivatePerson',
+      'privateSecret',
+      'Command failed:',
+      'stack:',
+      'cause:',
+    ])
+      assert.equal(saved.includes(forbidden), false, forbidden);
+    assert.ok(expected.length <= 240);
+  });
+}
+
+test('ordinary auto-attach errors without diagnostics remain actionable in saved JSONL', () => {
+  withTemporaryDirectory((fixtureDir) => {
+    const recorder = createRecorder(fixtureDir, 'compatibility-ordinary-error');
+    recorder.recordAutoAttachState(
+      autoAttachState('running', [
+        {
+          ...autoTarget(28, 'GunFrog.exe', 'failed'),
+          error: new Error(
+            'loaded-module inspection failed for target pid=28 with Windows error 299',
+          ).message,
+        },
+      ]),
+    );
+    recorder.close();
+    const event = readEvents(recorder.eventsPath).find(
+      (entry) => entry.type === 'target.attachment-state',
+    );
+    assert.equal(event.data.errorPresent, true);
+    assert.equal(event.data.diagnostic, null);
+    assert.equal(
+      event.data.errorMessage,
+      'loaded-module inspection failed with Windows error 299',
+    );
+    assert.equal(event.schemaVersion, 1);
+    assert.equal(readSummary(recorder.summaryPath).totals.everFailed, 1);
+  });
+});
+
+test('watcher and manual errors save only bounded privacy-safe summaries', () => {
+  withTemporaryDirectory((fixtureDir) => {
+    const recorder = createRecorder(fixtureDir, 'compatibility-private-errors');
+    const unsafe =
+      'Access denied C:\\Users\\PersonalName\\secret.exe /home/PersonalName/private \\\\server\\PersonalName token=superSecret password="hidden credential" Bearer abc.def.ghi --env=PRIVATE_VALUE';
+    recorder.recordAutoAttachState({
+      watcherStatus: 'failed',
+      watcherError: unsafe,
+      targets: [],
+    });
+    for (const error of [
+      unsafe,
+      'loaded-module inspection failed with Windows error 299\r\nstack: /Users/PersonalName/secret token=superSecret',
+      '{"token":"superSecret"}',
+      '\u0000' + 'x'.repeat(100_000),
+      null,
+    ]) {
+      recorder.recordAttachmentState(
+        {
+          phase: 'idle',
+          processName: null,
+          pid: null,
+          error,
+          diagnostic: null,
+        },
+        'attach-failed',
+      );
+    }
+    recorder.close();
+    const events = readEvents(recorder.eventsPath);
+    assert.equal(
+      events.find((event) => event.type === 'watcher.status').data.errorMessage,
+      'Access denied',
+    );
+    const messages = events
+      .filter((event) => event.type === 'attachment.state')
+      .map((event) => event.data.errorMessage);
+    assert.deepEqual(messages, [
+      'Access denied',
+      'loaded-module inspection failed with Windows error 299',
+      'Error details omitted',
+      'Error details omitted',
+      null,
+    ]);
+    assert.ok(
+      messages.every(
+        (message) =>
+          message === null ||
+          (message.length <= 240 &&
+            !/[\x00-\x1f\x7f\u2028\u2029]/.test(message)),
+      ),
+    );
+    const saved =
+      readFileSync(recorder.eventsPath, 'utf8') +
+      readFileSync(recorder.summaryPath, 'utf8');
+    for (const secret of [
+      'PersonalName',
+      'superSecret',
+      'hidden credential',
+      'abc.def.ghi',
+      'PRIVATE_VALUE',
+      'stack:',
+    ])
+      assert.equal(saved.includes(secret), false, secret);
+    assert.equal(readSummary(recorder.summaryPath).watcher.failed, true);
+  });
+});
+
+test('sanitized error changes drive bounded watcher and target transitions', () => {
+  withTemporaryDirectory((fixtureDir) => {
+    const recorder = createRecorder(fixtureDir, 'compatibility-error-changes');
+    const snapshot = (code, privateText) => ({
+      watcherStatus: 'failed',
+      watcherError: `loaded-module inspection failed with Windows error ${code} ${privateText}`,
+      targets: [
+        {
+          ...autoTarget(28, 'GunFrog.exe', 'failed'),
+          error: `loaded-module inspection failed with Windows error ${code} ${privateText}`,
+        },
+      ],
+    });
+    recorder.recordAutoAttachState(snapshot(299, '/home/first/token=one'));
+    for (let index = 0; index < 100; index += 1)
+      recorder.recordAutoAttachState(snapshot(299, `/home/private-${index}`));
+    recorder.recordAutoAttachState(snapshot(5, 'C:\\Users\\Second'));
+    recorder.close();
+    const events = readEvents(recorder.eventsPath);
+    for (const type of ['watcher.status', 'target.attachment-state']) {
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === type)
+          .map((event) => event.data.errorMessage),
+        [
+          'loaded-module inspection failed with Windows error 299',
+          'loaded-module inspection failed with Windows error 5',
+        ],
+      );
+    }
+    assert.ok(
+      [...recorder.autoAttachFingerprints.values()].every(
+        (value) => value.length < 512 && !value.includes('/home/'),
+      ),
+    );
+  });
+  withTemporaryDirectory((fixtureDir) => {
+    const recorder = createRecorder(fixtureDir, 'compatibility-error-flood');
+    for (let code = 0; code < 50_010; code += 1)
+      recorder.recordAutoAttachState({
+        watcherStatus: 'failed',
+        watcherError: `loaded-module inspection failed with Windows error ${code}`,
+        targets: [],
+      });
+    recorder.close();
+    const events = readEvents(recorder.eventsPath);
+    assert.equal(
+      events.filter((event) => event.type === 'recorder.truncated').length,
+      1,
+    );
+    assert.equal(events.at(-1).type, 'run.finished');
+    assert.ok(events.length <= 50_002);
+    assert.ok(
+      Buffer.byteLength(readFileSync(recorder.eventsPath)) <=
+        10 * 1024 * 1024 + 2048,
+    );
+    assert.equal(readSummary(recorder.summaryPath).events.truncated, true);
+  });
+});
+
 test('compatibility evidence keeps concurrent targets and PID reuse isolated', () => {
   withTemporaryDirectory((rootDirectory) => {
     const recorder = createRecorder(rootDirectory, 'compatibility-concurrent');

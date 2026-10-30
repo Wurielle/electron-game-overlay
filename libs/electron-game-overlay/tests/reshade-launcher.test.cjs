@@ -126,7 +126,7 @@ const officialAddonSuccessFor = (
     runtimeModulePath,
     addonModulePath,
     addonAbi: 1,
-    addonBuildId: 'F2A88AD705204DBB8E18D86E7147A13C',
+    addonBuildId: '31D321732C1B424796593C0778FB722E',
     reshadeBasePath: path.win32.dirname(runtimeModulePath),
     addonDirectoryPath: path.win32.dirname(addonModulePath),
     electronGameOverlayAddonDisabled: false,
@@ -202,6 +202,151 @@ test.afterEach(() => {
     rmSync(directory, { force: true, recursive: true });
   }
   temporaryDirectories.clear();
+});
+
+test('binding authorization preserves exact A at the x64 exec boundary (controlled native child)', async () => {
+  const fixture = createBindingRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  const expected = '9007199254740993';
+  harness.session.authorizeTarget = async () => Object.assign(() => {}, {
+    disposition: 'injection-owner', expectedCreationTime100ns: expected,
+  });
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 });
+    const settled = attachment.catch(() => {});
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, injectorSuccessFor(4242, 'game.exe'), '');
+    harness.emitNative('game.process', { pid: 4242, path: 'C:\\games\\game.exe' });
+    await settled;
+    assert.deepEqual(execution.calls[0].arguments, ['game.exe', '--pid', '4242', '--expected-creation-time-100ns', expected]);
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
+test('binding x86 handoff retains original A (controlled native child)', async () => {
+  const fixture = createBindingRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  const expected = '18446744073709551615';
+  harness.session.authorizeTarget = async () => Object.assign(() => {}, { disposition: 'injection-owner', expectedCreationTime100ns: expected });
+  let settled;
+  try {
+    settled = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 }).catch(() => {});
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(Object.assign(new Error('x86'), { code: 706 }), architectureMismatchFor(4242), '');
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, injectorSuccessFor(4242, 'game.exe'), '');
+    harness.emitNative('game.process', { pid: 4242, path: 'C:\\games\\game.exe' });
+    await settled;
+    assert.deepEqual(execution.calls[1].arguments, ['C:\\game\\game.exe', '--pid', '4242', '--expected-creation-time-100ns', expected]);
+    assert.ok(execution.calls[1].executable.endsWith('inject32.exe'));
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
+test('binding wait reopen retains original A (controlled native child)', async () => {
+  const fixture = createBindingRuntime(); const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness(); const expected = '9007199254740993';
+  const targetExecutablePath = 'C:\\game\\game.exe'; const hostRuntimePath = 'C:\\game\\dxgi.dll';
+  const authorization = Object.assign(() => {}, { disposition: 'injection-owner', expectedCreationTime100ns: expected });
+  harness.session.authorizeTarget = async () => authorization;
+  const preparation = stubExistingReShadePreparation(async () => officialPreparedAddonResult({ status: 'already-current', targetExecutablePath, reshadeModulePath: hostRuntimePath }));
+  try {
+    const settled = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242, executablePath: targetExecutablePath }).catch(() => {});
+    await waitFor(() => execution.calls.length === 1);
+    authorization.expectedCreationTime100ns = '9007199254740994';
+    execution.calls[0].callback(Object.assign(new Error('existing'), { code: 183 }), injectorPreflightDiagnostic({ code: 'target-existing-reshade-installation', pid: 4242, modulePath: hostRuntimePath, windowsErrorCode: 183 }) + 'ReShade injection not started.\n', '');
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(Object.assign(new Error('expired'), { code: 1460 }), injectorPreflightDiagnostic({ code: 'target-official-addon-wait-expired', pid: 4242, windowsErrorCode: 1460 }) + 'ReShade injection not started.\n', '');
+    await settled;
+    assert.deepEqual(execution.calls[1].arguments, [targetExecutablePath, '--pid', '4242', '--expected-creation-time-100ns', expected, '--wait-for-official-addon', '30000']);
+  } finally { launcher.dispose(); preparation.restore(); execution.restore(); }
+});
+
+test('binding capability requires schema4 validated on both architectures', () => {
+  const fixture = createRuntime();
+  for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, m => { m.schemaVersion = 4; m.injectorProcessInstanceBinding = 1; });
+  }
+  assert.equal(createConfig(fixture).injectorProcessInstanceBinding, 1);
+  assert.equal(createConfig(fixture).runtimeProvider.injectorProcessInstanceBinding, undefined);
+  rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, 'electron_game_overlay_runtime32.build.json', m => { m.schemaVersion = 3; delete m.injectorProcessInstanceBinding; });
+  assert.throws(() => createConfig(fixture), /different/);
+});
+
+function createBindingRuntime() {
+  const fixture = createRuntime();
+  for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, m => { m.schemaVersion = 4; m.injectorProcessInstanceBinding = 1; });
+  }
+  return fixture;
+}
+
+test('binding invalid or unsupported expectation refuses before exec', async () => {
+  for (const expected of [null, 123, '', '0', '01', '-1', '1.0', '1e3', '18446744073709551616', '9007199254740993']) {
+    const fixture = expected === '9007199254740993' ? createRuntime() : createBindingRuntime();
+    const execution = stubExecFile(); const launcher = new ReShadeOverlayLauncher({ ...createConfig(fixture), injectorProcessInstanceBinding: 1 });
+    const harness = createSessionHarness();
+    harness.session.authorizeTarget = async () => Object.assign(() => {}, { disposition: 'injection-owner', expectedCreationTime100ns: expected });
+    try {
+      let done = false;
+      const result = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 }).then(() => null, e => e).finally(() => { done = true; });
+      await waitFor(() => execution.calls.length > 0 || done);
+      if (execution.calls.length) {
+        execution.calls[0].callback(null, injectorSuccessFor(4242, 'game.exe'), '');
+        harness.emitNative('game.process', { pid: 4242, path: 'C:\\games\\game.exe' });
+      }
+      const error = await result;
+      assert.ok(isReShadeOperationError(error));
+      assert.equal(error.diagnostic.code, expected === '9007199254740993' ? 'target-process-instance-binding-unsupported' : 'target-process-instance-expectation-invalid');
+      assert.equal(execution.calls.length, 0);
+    } finally { launcher.dispose(); execution.restore(); }
+  }
+});
+
+test('binding native failures require exact proof and never retry (controlled native child)', async () => {
+  for (const [code, winerr] of [['target-process-instance-mismatch', 1306], ['target-process-instance-query-failed', 5], ['target-process-instance-query-failed', 13]]) {
+    for (const variant of ['valid', 'exit', 'started', 'success', 'missing-marker', 'wrong-code']) {
+      const fixture = createBindingRuntime(); const execution = stubExecFile();
+      const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+      try {
+        const result = launchReShadeOverlay(launcher, { processName: 'game.exe', pid: 4242 }).then(() => null, e => e);
+        await waitFor(() => execution.calls.length === 1);
+        execution.calls[0].callback(Object.assign(new Error('binding rejected'), { code: variant === 'exit' ? 87 : winerr }), injectorPreflightDiagnostic({ code, pid: 4242, windowsErrorCode: variant === 'wrong-code' ? 87 : winerr, injectionStarted: variant === 'started' }) + (variant === 'missing-marker' ? '' : 'ReShade injection not started.\n') + (variant === 'success' ? injectorSuccessFor(4242, 'game.exe') : ''), '');
+        const error = await result;
+        assert.ok(isReShadeOperationError(error));
+        assert.equal(error.diagnostic.code, variant === 'valid' ? code : 'injector-result-invalid');
+        assert.equal(execution.calls.length, 1);
+      } finally { launcher.dispose(); execution.restore(); }
+    }
+  }
+});
+
+test('binding capability rejects invalid hashes and legacy declarations and revalidates staging', async () => {
+  for (const schemaVersion of [2, 3]) {
+    const fixture = createRuntime();
+    for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
+      rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, m => {
+        m.schemaVersion = schemaVersion;
+        if (schemaVersion === 2) { delete m.runtimeGeneration; delete m.targetTransportMin; delete m.targetTransportMax; }
+      });
+    }
+    assert.equal(createConfig(fixture).injectorProcessInstanceBinding, undefined);
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, 'electron_game_overlay_runtime.build.json', m => { m.injectorProcessInstanceBinding = 1; });
+    assert.throws(() => createConfig(fixture), /schema/);
+  }
+  for (const artifact of artifacts.filter(n => !n.endsWith('runtime.build.json') && !n.endsWith('runtime32.build.json'))) {
+    const fixture = createBindingRuntime();
+    writeFileSync(path.join(fixture.runtimeDirectory, artifact), 'tampered');
+    assert.throws(() => createConfig(fixture), /hash|SHA-256|match/i);
+  }
+  const fixture = createBindingRuntime(); const config = createConfig(fixture);
+  writeFileSync(path.join(fixture.runtimeDirectory, 'inject32.exe'), 'tampered after source validation');
+  const launcher = new ReShadeOverlayLauncher(config); const execution = stubExecFile();
+  try { await assert.rejects(launcher.prepare(), /hash|SHA-256|match/i); assert.equal(execution.calls.length, 0); }
+  finally { launcher.dispose(); execution.restore(); }
 });
 
 test('ReShade stays disabled without opt-in and exposes absolute default roots', () => {
@@ -5546,7 +5691,7 @@ function writeRuntimePackageBuildStamp(runtimeDirectory, spec) {
       kind: 'electron-game-overlay-runtime-build',
       platform: spec.platform,
       configuration: 'RelWithDebInfo',
-      addonBuildId: 'F2A88AD705204DBB8E18D86E7147A13C',
+      addonBuildId: '31D321732C1B424796593C0778FB722E',
       managerProtocolSchemaVersion: 1,
       runtimeGeneration: 1,
       targetTransportMin: 1,

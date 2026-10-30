@@ -27,9 +27,10 @@ import {
   authorizeOverlaySessionGlobalTarget,
   authorizeOverlaySessionTarget,
   type OverlaySessionTargetAuthorization,
-  type OverlaySession,
-} from './overlay-session.js';
+  type ReShadeAttachmentSession,
+} from './overlay-session-authorization.js';
 import type { NativeRuntimeProviderMetadata } from './native.js';
+import type { OverlaySession } from './overlay-session.js';
 
 const RESHADE_OPT_IN_FLAG = '--reshade-overlay';
 const RESHADE_RUNTIME_DIRECTORY_OPTION = '--reshade-runtime-dir';
@@ -62,7 +63,7 @@ const PROCESS_WATCHER_READY_MARKER = 'ReShade process watcher armed.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH = 706;
-const OFFICIAL_ADDON_BUILD_ID = 'F2A88AD705204DBB8E18D86E7147A13C';
+const OFFICIAL_ADDON_BUILD_ID = '31D321732C1B424796593C0778FB722E';
 const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 3;
 // Schema 2 shipped before provider metadata. Keep accepting it permanently as
 // generation 1 / target transport 1 so copied runtime-directory overrides do
@@ -194,7 +195,8 @@ type RuntimePackageBuildStamp =
       }>)
   | (RuntimePackageBuildStampCommon &
       Readonly<{
-        schemaVersion: 3;
+        schemaVersion: 3 | 4;
+        injectorProcessInstanceBinding?: 1;
         runtimeGeneration: number;
         targetTransportMin: number;
         targetTransportMax: number;
@@ -310,6 +312,8 @@ type ExactReShadeProcessTarget = ReShadeProcessTarget &
 
 /** Validated runtime paths and optional startup hints used by a launcher. */
 export type ReShadeLaunchConfig = Readonly<{
+  /** Binding support derived from both validated native package stamps. */
+  injectorProcessInstanceBinding?: 1;
   /** Canonical directory containing the packaged runtime artifacts. */
   runtimeDirectory: string;
   /** Writable parent directory for isolated per-attachment runs. */
@@ -340,6 +344,8 @@ export type ReShadeLaunchConfig = Readonly<{
   x86AddonPath: string;
   /** Canonical packaged ReShade configuration path. */
   configPath: string;
+  /** Provider metadata validated against both packaged architectures. */
+  runtimeProvider?: NativeRuntimeProviderMetadata;
   /** Process name parsed from `--reshade-auto-target-process`, if supplied. */
   autoTargetProcess?: string;
   /** Exact PID parsed from `--reshade-expected-target-pid`, if supplied. */
@@ -423,6 +429,8 @@ export type ReShadeAttachResult = ReShadeLaunchResult &
   }>;
 
 type StagedRuntime = Readonly<{
+  expectedCreationTime100ns?: string;
+  injectorProcessInstanceBinding?: 1;
   runId: string;
   runsRootDirectory: string;
   runDirectory: string;
@@ -592,7 +600,11 @@ export type ReShadeDiagnosticStage =
 /** Stable machine-readable attachment failure code. */
 export type ReShadeDiagnosticCode =
   | 'runtime-staging-failed'
+  | 'target-process-instance-expectation-invalid'
+  | 'target-process-instance-binding-unsupported'
   | 'official-addon-startup-grace-coordinated'
+  | 'target-process-instance-mismatch'
+  | 'target-process-instance-query-failed'
   | 'target-injection-already-claimed'
   | 'target-injection-claim-failed'
   | 'target-official-addon-wait-expired'
@@ -811,7 +823,9 @@ type InjectorPreflightDiagnostic = Readonly<{
   schemaVersion: 1;
   stage: 'target-preflight';
   code:
-    | 'target-injection-already-claimed'
+    | 'target-process-instance-mismatch'
+  | 'target-process-instance-query-failed'
+  | 'target-injection-already-claimed'
     | 'target-injection-claim-failed'
     | 'target-official-addon-wait-expired'
     | 'target-existing-reshade-installation'
@@ -922,7 +936,10 @@ export function defaultReShadeRunsRootDirectory(): string {
 export function parseReShadeLaunchConfig(
   argv: readonly string[],
   options: ReShadeLaunchConfigOptions = {},
-): ReShadeLaunchConfig | null {
+):
+  | (ReShadeLaunchConfig &
+      Readonly<{ runtimeProvider: NativeRuntimeProviderMetadata }>)
+  | null {
   const optInCount = argv.filter(
     (argument) => argument === RESHADE_OPT_IN_FLAG,
   ).length;
@@ -1052,7 +1069,7 @@ export function parseReShadeLaunchConfig(
     }
   }
 
-  validateRuntimePackageBuildStampsSync(
+  const runtimeProvider = validateRuntimePackageBuildStampsSync(
     new Map<string, string>([
       [INJECTOR_FILE_NAME, injectorPath],
       [X86_INJECTOR_FILE_NAME, x86InjectorPath],
@@ -1072,6 +1089,8 @@ export function parseReShadeLaunchConfig(
 
   return Object.freeze({
     runtimeDirectory,
+    runtimeProvider: providerMetadataOnly(runtimeProvider),
+    ...(runtimeProvider.injectorProcessInstanceBinding === undefined ? {} : { injectorProcessInstanceBinding: runtimeProvider.injectorProcessInstanceBinding }),
     runsRootDirectory: path.resolve(requestedRunsRoot),
     injectorPath,
     x86InjectorPath,
@@ -1094,6 +1113,7 @@ export function parseReShadeLaunchConfig(
 export function buildReShadeInvocation(
   target: ReShadeTarget,
   runDirectory: string,
+  context: Readonly<{ expectedCreationTime100ns?: string }> = {},
 ): ReShadeInvocation {
   validateTarget(target);
   if (!path.isAbsolute(runDirectory)) {
@@ -1117,6 +1137,7 @@ export function buildReShadeInvocation(
             : normalizeExecutablePathForNativeInvocation(target.executablePath),
           '--pid',
           String(target.pid),
+          ...(context.expectedCreationTime100ns === undefined ? [] : ['--expected-creation-time-100ns', context.expectedCreationTime100ns]),
         ] as const);
 
   return Object.freeze({
@@ -1125,6 +1146,25 @@ export function buildReShadeInvocation(
     targetLabel: targetLabelFor(target),
     workingDirectory: runDirectory,
   });
+}
+
+let requestReShadeOverlayAttachment:
+  | ((
+      launcher: ReShadeOverlayLauncher,
+      session: ReShadeAttachmentSession,
+      target: ReShadeTarget,
+    ) => Promise<ReShadeAttachResult>)
+  | undefined;
+
+/** @internal */
+export function attachReShadeOverlay(
+  launcher: ReShadeOverlayLauncher,
+  session: ReShadeAttachmentSession,
+  target: ReShadeTarget,
+): Promise<ReShadeAttachResult> {
+  if (!requestReShadeOverlayAttachment)
+    throw new Error('ReShade attachment plumbing is not initialized');
+  return requestReShadeOverlayAttachment(launcher, session, target);
 }
 
 let requestReShadeOverlayLaunch:
@@ -1169,6 +1209,8 @@ export function acceptReShadeTargetConnection(
  */
 export class ReShadeOverlayLauncher {
   static {
+    requestReShadeOverlayAttachment = (launcher, session, target) =>
+      launcher.#attach(session, target);
     requestReShadeOverlayLaunch = (launcher, target) =>
       launcher.#requestLaunch(target);
     proveReShadeTargetConnection = (launcher, pid) =>
@@ -1357,6 +1399,13 @@ export class ReShadeOverlayLauncher {
    */
   public attach(
     session: OverlaySession,
+    target: ReShadeTarget,
+  ): Promise<ReShadeAttachResult> {
+    return this.#attach(session, target);
+  }
+
+  #attach(
+    session: ReShadeAttachmentSession,
     target: ReShadeTarget,
   ): Promise<ReShadeAttachResult> {
     if (this.disposed) {
@@ -1619,7 +1668,7 @@ export class ReShadeOverlayLauncher {
   }
 
   private async performAttach(
-    session: OverlaySession,
+    session: ReShadeAttachmentSession,
     target: ReShadeTarget,
     expectedTargetPid: number | undefined,
     cancellation: Promise<never>,
@@ -2017,10 +2066,11 @@ export class ReShadeOverlayLauncher {
     this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     const preparedRuntime = this.preparedRuntime;
     this.preparedRuntime = null;
-    const staged = await (preparedRuntime ??
+    let staged = await (preparedRuntime ??
       this.stageRuntime(targetStageName(target)));
     let newTargetAuthorization: OverlaySessionTargetAuthorization | undefined;
     let installedTargetAuthorization = false;
+    let expectedCreationTime100ns: string | undefined;
     try {
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
       if (expectedTargetPid !== undefined && authorizeTarget) {
@@ -2038,6 +2088,7 @@ export class ReShadeOverlayLauncher {
         this.releaseTargetAuthorization = newTargetAuthorization;
         installedTargetAuthorization = true;
         const targetAuthorization = newTargetAuthorization;
+        expectedCreationTime100ns = targetAuthorization.expectedCreationTime100ns;
         newTargetAuthorization = undefined;
         const authorizedDiscoveryPath =
           targetAuthorization.target?.discoveryPath ??
@@ -2083,7 +2134,20 @@ export class ReShadeOverlayLauncher {
       await removeStagedRuntime(staged).catch(() => undefined);
       throw error;
     }
-    const invocation = buildReShadeInvocation(target, staged.runDirectory);
+    if (expectedCreationTime100ns !== undefined) {
+      const valid = typeof expectedCreationTime100ns === 'string' && /^[1-9][0-9]{0,19}$/.test(expectedCreationTime100ns) && (expectedCreationTime100ns.length < 20 || expectedCreationTime100ns <= '18446744073709551615');
+      if (!valid || staged.injectorProcessInstanceBinding !== 1) {
+        await removeStagedRuntime(staged).catch(() => undefined);
+        throw this.createInjectorFailure({
+          message: valid ? 'the staged injectors do not support process-instance binding' : 'expectedCreationTime100ns must be a canonical positive uint64 string',
+          code: valid ? 'target-process-instance-binding-unsupported' : 'target-process-instance-expectation-invalid',
+          stage: 'target-preflight', retrySafety: 'definite-safe', targetLabel,
+          ...(expectedTargetPid === undefined ? {} : { pid: expectedTargetPid }),
+        });
+      }
+    }
+    staged = Object.freeze({ ...staged, expectedCreationTime100ns });
+    const invocation = buildReShadeInvocation(target, staged.runDirectory, { expectedCreationTime100ns });
     try {
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     } catch (error) {
@@ -2217,6 +2281,7 @@ export class ReShadeOverlayLauncher {
                   const fallbackInvocation = buildReShadeInvocation(
                     fallbackTarget,
                     staged.runDirectory,
+                    { expectedCreationTime100ns },
                   );
                   executeInvocation(
                     Object.freeze({
@@ -2414,7 +2479,8 @@ export class ReShadeOverlayLauncher {
         runId,
         runsRootDirectory,
         runDirectory: createdRunDirectory,
-        runtimeProvider,
+        runtimeProvider: providerMetadataOnly(runtimeProvider),
+        ...(runtimeProvider.injectorProcessInstanceBinding === undefined ? {} : { injectorProcessInstanceBinding: runtimeProvider.injectorProcessInstanceBinding }),
         injectorPath: path.join(createdRunDirectory, INJECTOR_FILE_NAME),
         addonManagerPath: path.join(
           createdRunDirectory,
@@ -2767,6 +2833,10 @@ export class ReShadeOverlayLauncher {
           : ` with Windows error ${diagnostic.windowsErrorCode}`;
       let detail: string;
       switch (diagnostic.code) {
+        case 'target-process-instance-mismatch':
+        case 'target-process-instance-query-failed':
+          detail = `target pid=${diagnostic.pid} process-instance binding failed${windowsErrorDetail}`;
+          break;
         case 'target-injection-already-claimed':
           detail = `target pid=${diagnostic.pid} is already claimed by another ReShade injector${windowsErrorDetail}`;
           break;
@@ -3193,6 +3263,7 @@ export class ReShadeOverlayLauncher {
         executablePath: target.executablePath,
       }),
       staged.runDirectory,
+      { expectedCreationTime100ns: staged.expectedCreationTime100ns },
     );
     const retryInvocation: ReShadeInvocation = Object.freeze({
       ...invocation,
@@ -3855,9 +3926,15 @@ function hasNodeErrorCode(error: unknown, code: string): boolean {
   );
 }
 
+function providerMetadataOnly(provider: NativeRuntimeProviderMetadata): NativeRuntimeProviderMetadata {
+  return Object.freeze({ runtimeGeneration: provider.runtimeGeneration, targetTransportMin: provider.targetTransportMin, targetTransportMax: provider.targetTransportMax });
+}
+
+type ValidatedRuntimeProvider = NativeRuntimeProviderMetadata & Readonly<{ injectorProcessInstanceBinding?: 1 }>;
+
 function validateRuntimePackageBuildStampsSync(
   artifactPaths: ReadonlyMap<string, string>,
-): NativeRuntimeProviderMetadata {
+): ValidatedRuntimeProvider {
   const runtimeProviders = RUNTIME_PACKAGE_BUILD_STAMP_SPECS.map((spec) => {
     const manifestPath = runtimeArtifactPath(
       artifactPaths,
@@ -3884,7 +3961,7 @@ function validateRuntimePackageBuildStampsSync(
 
 async function validateRuntimePackageBuildStamps(
   artifactPaths: ReadonlyMap<string, string>,
-): Promise<NativeRuntimeProviderMetadata> {
+): Promise<ValidatedRuntimeProvider> {
   const runtimeProviders = await Promise.all(
     RUNTIME_PACKAGE_BUILD_STAMP_SPECS.map(async (spec) => {
       const manifestPath = runtimeArtifactPath(
@@ -3917,7 +3994,7 @@ async function validateRuntimePackageBuildStamps(
 
 function runtimeProviderForBuildStamp(
   manifest: RuntimePackageBuildStamp,
-): NativeRuntimeProviderMetadata {
+): ValidatedRuntimeProvider {
   return manifest.schemaVersion ===
     LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION
     ? LEGACY_RUNTIME_PROVIDER_METADATA
@@ -3925,12 +4002,13 @@ function runtimeProviderForBuildStamp(
         runtimeGeneration: manifest.runtimeGeneration,
         targetTransportMin: manifest.targetTransportMin,
         targetTransportMax: manifest.targetTransportMax,
+        ...(manifest.schemaVersion === 4 ? { injectorProcessInstanceBinding: 1 as const } : {}),
       });
 }
 
 function commonRuntimeProviderMetadata(
-  providers: readonly NativeRuntimeProviderMetadata[],
-): NativeRuntimeProviderMetadata {
+  providers: readonly ValidatedRuntimeProvider[],
+): ValidatedRuntimeProvider {
   const first = providers[0];
   if (!first) {
     throw new Error('runtime package provider metadata is unavailable');
@@ -3940,7 +4018,8 @@ function commonRuntimeProviderMetadata(
       (provider) =>
         provider.runtimeGeneration !== first.runtimeGeneration ||
         provider.targetTransportMin !== first.targetTransportMin ||
-        provider.targetTransportMax !== first.targetTransportMax,
+        provider.targetTransportMax !== first.targetTransportMax ||
+        provider.injectorProcessInstanceBinding !== first.injectorProcessInstanceBinding,
     )
   ) {
     throw new Error(
@@ -3994,7 +4073,9 @@ function parseRuntimePackageBuildStamp(
       ? LEGACY_RUNTIME_PACKAGE_BUILD_STAMP_KEYS
       : candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION
         ? RUNTIME_PACKAGE_BUILD_STAMP_KEYS
-        : undefined;
+        : candidate.schemaVersion === 4
+          ? [...RUNTIME_PACKAGE_BUILD_STAMP_KEYS, 'injectorProcessInstanceBinding']
+          : undefined;
   if (
     !expectedKeys ||
     !hasCanonicalRuntimePackageBuildStampKeys(text, expectedKeys) ||
@@ -4018,7 +4099,8 @@ function parseRuntimePackageBuildStamp(
     candidate.addonBuildId !== OFFICIAL_ADDON_BUILD_ID ||
     candidate.managerProtocolSchemaVersion !==
       RUNTIME_PACKAGE_MANAGER_PROTOCOL_SCHEMA_VERSION ||
-    (candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION &&
+    (candidate.schemaVersion === 4 && candidate.injectorProcessInstanceBinding !== 1) ||
+    ((candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION || candidate.schemaVersion === 4) &&
       (!isPositiveUint32(candidate.runtimeGeneration) ||
         !isPositiveUint32(candidate.targetTransportMin) ||
         !isPositiveUint32(candidate.targetTransportMax) ||
@@ -4818,7 +4900,9 @@ function parseInjectorDiagnostic(
   const windowsErrorCode = candidate.windowsErrorCode;
   const isPreflightDiagnostic =
     candidate.stage === 'target-preflight' &&
-    (code === 'target-injection-already-claimed' ||
+    (code === 'target-process-instance-mismatch' ||
+      code === 'target-process-instance-query-failed' ||
+      code === 'target-injection-already-claimed' ||
       code === 'target-injection-claim-failed' ||
       code === 'target-official-addon-wait-expired' ||
       code === 'target-existing-reshade-installation' ||
@@ -4858,6 +4942,8 @@ function parseInjectorDiagnostic(
     code === 'target-runtime-reuse-too-late' ||
     code === 'target-runtime-reuse-raced';
   const preflightRequiresWindowsError =
+    code === 'target-process-instance-mismatch' ||
+    code === 'target-process-instance-query-failed' ||
     code === 'target-injection-already-claimed' ||
     code === 'target-injection-claim-failed' ||
     code === 'target-official-addon-wait-expired' ||
@@ -4903,6 +4989,7 @@ function parseInjectorDiagnostic(
     (isPreflightDiagnostic &&
       ((preflightRequiresModule && modulePath === undefined) ||
         (preflightRequiresWindowsError && windowsErrorCode === undefined) ||
+        (code === 'target-process-instance-mismatch' && windowsErrorCode !== 1306) ||
         (code === 'target-architecture-mismatch' &&
           windowsErrorCode !== WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH) ||
         preflightRequiresEffectiveSettings !== hasAnyEffectiveSetting)) ||
@@ -5081,6 +5168,8 @@ function injectorDiagnosticExitMatches(
         return 1237;
       case 'target-injection-claim-failed':
       case 'target-official-addon-wait-expired':
+      case 'target-process-instance-mismatch':
+      case 'target-process-instance-query-failed':
       case 'target-module-inspection-failed':
       case 'target-global-reshade-layer-inspection-failed':
       case 'existing-runtime-addon-load-failed':

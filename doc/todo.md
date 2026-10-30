@@ -625,10 +625,23 @@ they are not the active production-host roadmap.
     `build/electron-game-overlay-runtime/client-sdk-two-app-one-target-20260809-155206`.
   - The earlier different-PID case remains recorded under
     `build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20260731-000719`.
+- [ ] Complete standalone broker discovery and release verification.
+  - Preserve the small stable bootstrap, frozen v1 handshake, and separate
+    native-provider generation election. Optional per-user registration and
+    independent sealed distributions must work with the supplying app stopped.
+  - Preserve ordinary unregistered startup, bounded candidate validation,
+    independent registration ownership, stable-only defaults with explicit
+    preview opt-in, and crash-recoverable coordinator startup.
+  - Exercise real standalone packaging, mixed compiled SDK revisions in both
+    startup orders, PID-only provider participation, post-grant failure
+    reporting, recovery, and basic bounded-buffer behavior. Keep controlled
+    native-boundary evidence separate from Windows/game acceptance.
 - [ ] Harden the same-PID broker beyond its trusted same-user baseline.
   - Verify client process identity, install an explicit per-user pipe ACL, and
     never run the broker elevated relative to clients.
-  - Add per-client window/frame/queue budgets and disconnect slow consumers.
+  - Keep the implemented aggregate metadata/frame and per-peer queue bounds.
+    Add finer per-client quotas only if a concrete problem justifies them; do
+    not add adaptive throttling or disconnect clients merely for brief slowness.
   - Add bounded stalled-owner diagnostics while preserving the launcher's
     120-second initialization budget. Never promote a waiter once target-route
     publication may have been observed.
@@ -637,7 +650,7 @@ they are not the active production-host roadmap.
   - Before any breaking broker/target-wire major, add a protocol-independent
     per-user arbiter keyed by PID plus process-creation identity. Separate major
     pipe names are not sufficient because they could both inject one process.
-  - Ship a dedicated broker executable if packaged clients need Electron's
-    RunAsNode fuse disabled, and add tarball/install acceptance when publishing
-    enters scope. Preserve golden raw-v1 fixtures and test oldest-v1/latest
-    released packages in both broker startup orders.
+  - Add tarball/install acceptance when publishing enters scope. Preserve golden
+    raw-v1 fixtures and test oldest-v1/latest released packages in both broker
+    startup orders; separately compiled POC revisions are not released-package
+    acceptance.

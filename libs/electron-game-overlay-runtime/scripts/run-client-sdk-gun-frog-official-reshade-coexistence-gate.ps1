@@ -1117,17 +1117,19 @@ try {
     $ProductionAddonHash = Get-FileSha256 -Path $ProductionAddonPath
     $ClientAddonHash = Get-FileSha256 -Path $ClientAddonPath
     $AddonManagerHash = Get-FileSha256 -Path $AddonManagerPath
-    if ($PackageBuildStamp.schemaVersion -ne 3 -or
+    if ($PackageBuildStamp.schemaVersion -ne 4 -or
+        $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
         $PackageBuildStamp.kind -cne
             "electron-game-overlay-runtime-build" -or
-        $PackageBuildStamp.runtimeGeneration -ne 1 -or
+        $PackageBuildStamp.runtimeGeneration -ne 2 -or
         $PackageBuildStamp.targetTransportMin -ne 1 -or
         $PackageBuildStamp.targetTransportMax -ne 1 -or
         ([string]$PackageBuildStamp.addonBuildId) -cnotmatch
             '^[0-9A-F]{32}$' -or
         $PackageBuildStamp.addonSha256 -cne $ProductionAddonHash -or
         $PackageBuildStamp.managerSha256 -cne $AddonManagerHash -or
-        $ClientBuildStamp.schemaVersion -ne 3 -or
+        $ClientBuildStamp.schemaVersion -ne 4 -or
+        $ClientBuildStamp.injectorProcessInstanceBinding -ne 1 -or
         $ClientBuildStamp.runtimeGeneration -ne
             $PackageBuildStamp.runtimeGeneration -or
         $ClientBuildStamp.targetTransportMin -ne

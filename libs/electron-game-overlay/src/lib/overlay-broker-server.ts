@@ -1,4 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import {
+  isValidProcessCreationTime100ns,
+  type OverlayBrokerProcessIdentity,
+} from './overlay-process-identity.js';
+import type {
+  OverlayBrokerNativeRuntimeProvider,
+  OverlayBrokerNativeTargetProvider,
+} from './overlay-broker-native-provider.js';
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
@@ -9,6 +17,8 @@ import type {
 import { parseOverlayDiagnostic } from './diagnostic.js';
 import {
   BackpressurePacketQueue,
+  MAX_JSON_BODY_BYTES,
+  MAX_RETAINED_FRAME_BYTES,
   clearOverlayTargetRecoveryClaimForExitedPid,
   OverlayLoopbackTransport,
   overlayTargetRecoveryClaimMayHaveBeenConsumed,
@@ -19,6 +29,7 @@ import {
 import {
   BrokerPacketDecoder,
   OVERLAY_BROKER_CAPABILITIES,
+  OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY,
   OVERLAY_BROKER_GLOBAL_WINDOW_ORDER_CAPABILITY,
   OVERLAY_BROKER_PROTOCOL_VERSION,
   OVERLAY_BROKER_TARGET_TRANSPORT_VERSION,
@@ -78,6 +89,12 @@ export interface OverlayBrokerTargetTransport {
   setEventCallback(callback: (event: string, payload: unknown) => void): void;
   setInputIntercept(intercept: boolean): void;
   addWindow(windowId: number, details: NativeOverlayWindowDetails): void;
+  /** Registers only this window in a complete order if all native peers opt in. */
+  addWindowInOrder?(
+    windowId: number,
+    details: NativeOverlayWindowDetails,
+    windowIds: readonly number[],
+  ): boolean;
   closeWindow(windowId: number): void;
   sendWindowBounds(
     windowId: number,
@@ -98,6 +115,8 @@ export type OverlayBrokerTargetTransportFactory = (
 ) => OverlayBrokerTargetTransport;
 
 export type OverlayBrokerServerOptions = Readonly<{
+  /** Validated standalone artifacts participate in the ordinary target cohort. */
+  nativeRuntimeProvider?: OverlayBrokerNativeRuntimeProvider;
   pipePath?: string;
   capabilities?: readonly string[];
   targetTransportFactory?: OverlayBrokerTargetTransportFactory;
@@ -111,6 +130,10 @@ export type OverlayBrokerServerOptions = Readonly<{
   runtimeProviderElectionWindowMs?: number;
   /** Injectable process probe used only after a granted owner disappears. */
   isProcessAlive?: (pid: number) => boolean;
+  /** Read-only OS identity probe from validated broker-owned artifacts. */
+  queryProcessIdentity?: (
+    pid: number,
+  ) => Promise<OverlayBrokerProcessIdentity | undefined>;
   /** Poll cadence for fail-closed retirement of an unauthenticated grant. */
   processExitPollIntervalMs?: number;
   /** Injectable probe for a durable route claim left by another broker. */
@@ -138,13 +161,14 @@ type RetainedFrame = Readonly<{
 type BrokerWindowState = {
   details: NativeOverlayWindowDetails;
   orderToken: string;
+  snapshotBytes: number;
   latestFrame?: RetainedFrame;
 };
 
 type TargetMemberState = 'authorizing-owner' | 'joined' | 'owner' | 'waiting';
 
 interface TargetMember {
-  client: BrokerClientSession;
+  client: BrokerTargetClient;
   requestId: string;
   discoveryPath: string;
   expectedExecutablePath?: string;
@@ -159,11 +183,17 @@ interface TargetMember {
 }
 
 interface BrokerWindowOwner {
-  client: BrokerClientSession;
+  client: BrokerTargetClient;
   localWindowId: number;
 }
 
+type BrokerTargetClient = Pick<
+  BrokerClientSession,
+  'id' | 'internalProvider' | 'hello' | 'closed' | 'inputIntercept' | 'windows' | 'targets' | 'send'
+>;
+
 interface BrokerClientSession {
+  internalProvider?: OverlayBrokerNativeTargetProvider;
   id: string;
   socket: Socket;
   writer: BackpressurePacketQueue;
@@ -183,9 +213,9 @@ interface BrokerClientSession {
  * the only layer that allocates IDs visible inside the injected runtime.
  */
 export class OverlayBrokerTargetHost {
-  private readonly members = new Map<BrokerClientSession, TargetMember>();
+  private readonly members = new Map<BrokerTargetClient, TargetMember>();
   private readonly mappingsByClient = new Map<
-    BrokerClientSession,
+    BrokerTargetClient,
     Map<number, number>
   >();
   private readonly ownersByTargetWindowId = new Map<
@@ -216,12 +246,18 @@ export class OverlayBrokerTargetHost {
   private nextTargetWindowId = 1;
   private everAuthenticated = false;
   private targetConnected = false;
+  private nativeAttachmentFailure: string | undefined;
   private terminalTargetExited = false;
   private disposed = false;
   private nextMemberArrivalOrder = 1;
   private electionWindowElapsed = false;
   private electionTimer: ReturnType<typeof setTimeout> | undefined;
   private frozenTargetExitTimer: ReturnType<typeof setTimeout> | undefined;
+  private processIdentityProbe: Promise<OverlayBrokerProcessIdentity | undefined> | undefined;
+  private processIdentityFailure: string | undefined;
+  private pinnedCreationTime100ns: string | undefined;
+  private processIdentityEpoch = 0;
+  private frozenIdentityProbePending = false;
 
   constructor(
     public readonly pid: number,
@@ -236,18 +272,25 @@ export class OverlayBrokerTargetHost {
     private readonly clearTargetRecoveryClaim: (pid: number) => void,
     private readonly onMemberRejected: (
       host: OverlayBrokerTargetHost,
-      client: BrokerClientSession,
+      client: BrokerTargetClient,
     ) => void,
     private readonly onTerminal: (host: OverlayBrokerTargetHost) => void,
     private readonly onWindowRaised: (
-      client: BrokerClientSession,
+      client: BrokerTargetClient,
       localWindowId: number,
     ) => void,
+    private readonly queryProcessIdentity?: OverlayBrokerServerOptions['queryProcessIdentity'],
+    private readonly supportsProcessInstanceInjection = true,
   ) {
     transport.setEventCallback((event, payload) => {
       this.handleTargetEvent(event, payload);
     });
     transport.setDiagnosticCallback?.((diagnostic) => {
+      if (!this.disposed && !this.targetConnected && isRecord(diagnostic) &&
+        diagnostic.code === 'target-process-inspection-failed' &&
+        diagnostic.pid === this.pid) {
+        void this.verifyLostProcessIdentity();
+      }
       this.broadcast({ type: 'broker.diagnostic', diagnostic });
     });
     try {
@@ -278,12 +321,53 @@ export class OverlayBrokerTargetHost {
     );
   }
 
-  public hasMember(client: BrokerClientSession): boolean {
+  public hasMember(client: BrokerTargetClient): boolean {
     return this.members.has(client);
   }
 
+  /** Adds a local candidate to the same election without a network/app lifetime. @internal */
+  public addNativeProvider(
+    provider: OverlayBrokerNativeTargetProvider,
+    request: OverlayBrokerTargetAuthorize,
+  ): void {
+    // Only target-member fields are used for broker-local providers. No socket,
+    // app registration or windows are created, so idle shutdown remains eligible.
+    const client: BrokerTargetClient = {
+      id: provider.leaseId,
+      closed: false,
+      inputIntercept: false,
+      internalProvider: provider,
+      windows: new Map(),
+      targets: new Map(),
+      hello: {
+        type: 'broker.hello', protocolMin: 1, protocolMax: 1,
+        requiredCapabilities: OVERLAY_BROKER_CAPABILITIES,
+        clientPid: process.pid, sdkVersion: 'cached-native-runtime',
+      },
+      send: (message: OverlayBrokerServerMessage) => provider.receive(message),
+    };
+    client.targets.set(this.pid, this);
+    provider.onAttachmentError((error) =>
+      this.handleNativeAttachmentFailure(client, error),
+    );
+    const claim = this.recoveryClaimState?.kind === 'valid'
+      ? this.recoveryClaimState.claim : undefined;
+    const resumesClaim = claim?.leaseId === provider.leaseId;
+    this.addMember(client, {
+      ...request,
+      // Caller constraints belong to external members, not the cached candidate.
+      expectedExecutablePath: undefined,
+      ...(resumesClaim && claim ? { discoveryPath: claim.discoveryPath } : {}),
+      requestId: provider.leaseId,
+      leaseId: provider.leaseId,
+      recovery: resumesClaim ? true : undefined,
+      routeEstablished: undefined,
+      ...provider.metadata,
+    });
+  }
+
   public addMember(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     request: OverlayBrokerTargetAuthorize,
   ): void {
     if (this.disposed) {
@@ -293,6 +377,11 @@ export class OverlayBrokerTargetHost {
         `Target PID ${this.pid} is no longer available.`,
         request,
       );
+      this.onMemberRejected(this, client);
+      return;
+    }
+    if (this.processIdentityFailure) {
+      this.sendError(client, 'target-authorization-failed', this.processIdentityFailure, request);
       this.onMemberRejected(this, client);
       return;
     }
@@ -360,6 +449,10 @@ export class OverlayBrokerTargetHost {
       this.onMemberRejected(this, client);
       return;
     }
+    if (this.nativeAttachmentFailure && !this.targetConnected) {
+      this.rejectNativeAttachmentWaiter(member);
+      return;
+    }
     this.members.set(client, member);
     this.recomputeInputIntercept();
 
@@ -380,7 +473,7 @@ export class OverlayBrokerTargetHost {
     this.promoteNextOwner();
   }
 
-  public removeMember(client: BrokerClientSession): void {
+  public removeMember(client: BrokerTargetClient): void {
     const member = this.members.get(client);
     if (!member) {
       return;
@@ -419,6 +512,17 @@ export class OverlayBrokerTargetHost {
       this.pollFrozenTargetExit();
     }
     this.recomputeInputIntercept();
+    if (
+      !client.internalProvider &&
+      ![...this.members.values()].some(member => !member.client.internalProvider)
+    ) {
+      for (const remaining of [...this.members.values()]) {
+        if (remaining.client.internalProvider) {
+          remaining.client.internalProvider.dispose();
+          this.removeMember(remaining.client);
+        }
+      }
+    }
     if (!this.everAuthenticated) {
       this.assumeRecoveryFromWaitingMember();
       this.promoteNextOwner();
@@ -426,7 +530,7 @@ export class OverlayBrokerTargetHost {
   }
 
   public upsertWindow(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
     state: BrokerWindowState,
   ): void {
@@ -440,12 +544,29 @@ export class OverlayBrokerTargetHost {
     ) {
       return;
     }
-    this.ensureTargetWindowId(client, localWindowId);
-    this.restoreAggregateWindowOrder();
+    const targetWindowId = this.ensureTargetWindowId(client, localWindowId);
+    const hasLaterWindow = Array.from(this.ownersByTargetWindowId.entries()).some(
+      ([id, owner]) =>
+        id !== targetWindowId &&
+        (owner.client.windows.get(owner.localWindowId)?.orderToken ?? '') >
+          state.orderToken,
+    );
+    if (hasLaterWindow) {
+      this.restoreAggregateWindowOrder(targetWindowId, state);
+      return;
+    }
+    this.safeTargetMutation(() => {
+      // A window command raises only this window and clears only its frame.
+      this.transport.addWindow(targetWindowId, cloneWindowDetails(state.details));
+      if (state.latestFrame) {
+        this.transport.sendFrameBuffer(targetWindowId, state.latestFrame.pixels,
+          state.latestFrame.width, state.latestFrame.height);
+      }
+    });
   }
 
   public updateWindowBounds(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
     geometry: NativeOverlayWindowGeometry,
   ): void {
@@ -463,7 +584,7 @@ export class OverlayBrokerTargetHost {
     );
   }
 
-  public closeWindow(client: BrokerClientSession, localWindowId: number): void {
+  public closeWindow(client: BrokerTargetClient, localWindowId: number): void {
     const mapping = this.mappingsByClient.get(client);
     const targetWindowId = mapping?.get(localWindowId);
     if (targetWindowId === undefined) {
@@ -475,7 +596,7 @@ export class OverlayBrokerTargetHost {
   }
 
   public sendFrame(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
     frame: RetainedFrame,
   ): void {
@@ -500,7 +621,7 @@ export class OverlayBrokerTargetHost {
   }
 
   public raiseWindowForSnapshot(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
   ): void {
     const targetWindowId = this.mappingsByClient
@@ -516,7 +637,9 @@ export class OverlayBrokerTargetHost {
       return;
     }
     this.disposed = true;
+    this.processIdentityEpoch++;
     for (const member of this.members.values()) {
+      member.client.internalProvider?.dispose();
       member.active = false;
     }
     this.members.clear();
@@ -544,6 +667,7 @@ export class OverlayBrokerTargetHost {
     this.recoveryTombstone = true;
     this.recoveringPinnedRoute = false;
     if (state.kind === 'valid') {
+      this.pinnedCreationTime100ns = state.claim.creationTime100ns;
       this.recoveryTombstonePath = state.claim.discoveryPath;
       this.recoveryTombstoneExpectedExecutablePath =
         state.claim.expectedExecutablePath;
@@ -593,6 +717,15 @@ export class OverlayBrokerTargetHost {
       return `Target PID ${this.pid} recovery is pinned to another executable identity.`;
     }
     if (state.mayHaveBeenConsumed) {
+      return undefined;
+    }
+    // A broker-local cached provider can resume its exact pre-consumable
+    // lease without its supplying app. Other clients may wait for that owner,
+    // but cannot outrank the claimed lease or receive a second injection grant.
+    if ([...this.members.values()].some(candidate =>
+      candidate.active && candidate.client.internalProvider &&
+      candidate.recovering && candidate.leaseId === claim.leaseId
+    )) {
       return undefined;
     }
     if (claim.leaseId === undefined) {
@@ -717,7 +850,8 @@ export class OverlayBrokerTargetHost {
     this.frozenTargetExitTimer = undefined;
   }
 
-  private pollFrozenTargetExit(): void {
+  private async pollFrozenTargetExit(): Promise<void> {
+    if (this.frozenIdentityProbePending) return;
     this.clearFrozenTargetExitTimer();
     if (
       this.disposed ||
@@ -728,6 +862,8 @@ export class OverlayBrokerTargetHost {
     ) {
       return;
     }
+    const epoch = this.processIdentityEpoch;
+    const claimState = this.recoveryClaimState;
     let alive = true;
     try {
       alive = this.isProcessAlive(this.pid);
@@ -744,11 +880,71 @@ export class OverlayBrokerTargetHost {
       queueMicrotask(() => this.onTerminal(this));
       return;
     }
+    if (this.pinnedCreationTime100ns && !this.authorizationPending && !this.processIdentityFailure) {
+      this.frozenIdentityProbePending = true;
+      const observed = await this.inspectProcessIdentity();
+      this.frozenIdentityProbePending = false;
+      if (this.disposed || this.terminalTargetExited || this.everAuthenticated ||
+        epoch !== this.processIdentityEpoch || this.recoveryClaimState !== claimState) return;
+      if (observed?.creationTime100ns !== this.pinnedCreationTime100ns) {
+        this.retainProcessIdentityFailure();
+      }
+    }
+    if (this.frozenTargetExitTimer) return;
     this.frozenTargetExitTimer = setTimeout(
       () => this.pollFrozenTargetExit(),
-      this.processExitPollIntervalMs,
+      this.pinnedCreationTime100ns ? Math.max(2000, this.processExitPollIntervalMs) : this.processExitPollIntervalMs,
     );
     this.frozenTargetExitTimer.unref();
+  }
+
+  private inspectProcessIdentity(): Promise<OverlayBrokerProcessIdentity | undefined> {
+    if (this.processIdentityProbe) return this.processIdentityProbe;
+    const pending = Promise.resolve().then(() => this.queryProcessIdentity?.(this.pid))
+      .then(observed => observed?.pid === this.pid &&
+        isValidProcessCreationTime100ns(observed.creationTime100ns) ? observed : undefined)
+      .catch(() => undefined);
+    this.processIdentityProbe = pending;
+    void pending.finally(() => {
+      if (this.processIdentityProbe === pending) this.processIdentityProbe = undefined;
+    });
+    return pending;
+  }
+
+  private async verifyLostProcessIdentity(): Promise<void> {
+    if (!this.everAuthenticated || this.targetConnected || !this.pinnedCreationTime100ns || this.processIdentityFailure) return;
+    const epoch = this.processIdentityEpoch;
+    const claim = this.recoveryClaimState;
+    // The transport diagnostic is only a prompt to inspect, never identity proof.
+    // Its mismatch notification is one-shot, so retry one unavailable confirmation.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const observed = await this.inspectProcessIdentity();
+      if (this.disposed || this.terminalTargetExited || this.targetConnected ||
+        epoch !== this.processIdentityEpoch || claim !== this.recoveryClaimState) return;
+      if (observed) {
+        if (observed.creationTime100ns !== this.pinnedCreationTime100ns) {
+          this.retainProcessIdentityFailure();
+        }
+        return;
+      }
+    }
+  }
+
+  private retainProcessIdentityFailure(): void {
+    // The old PID-only grant may already have attached a replacement instance.
+    // Mismatch never authorizes claim cleanup or a second injector.
+    this.processIdentityFailure = `Target PID ${this.pid} process identity could not be verified against its pinned recovery claim. Ownership remains pinned.`;
+    this.recoveryTombstone = true;
+    this.clearOwnerElectionTimer();
+    for (const member of [...this.members.values()]) {
+      if (!member.active || member.state === 'owner' || member.state === 'joined') continue;
+      this.sendError(member.client, 'target-authorization-failed', this.processIdentityFailure, member);
+      member.active = false;
+      this.members.delete(member.client);
+      this.onMemberRejected(this, member.client);
+    }
+    this.waiters.length = 0;
+    this.owner = undefined;
   }
 
   private rejectWaitersForExitedFrozenTarget(): void {
@@ -888,6 +1084,45 @@ export class OverlayBrokerTargetHost {
     }
   }
 
+  private handleNativeAttachmentFailure(
+    client: BrokerTargetClient,
+    error: unknown,
+  ): void {
+    if (
+      this.disposed ||
+      this.everAuthenticated ||
+      !this.frozenAuthorizationStarted ||
+      this.owner?.client !== client ||
+      this.nativeAttachmentFailure
+    ) {
+      return;
+    }
+    // An injector error is not proof of target exit or of an unconsumed route.
+    // Retain the owner, transport and durable claim; settle only pending apps.
+    this.nativeAttachmentFailure = `Cached native attachment failed for PID ${this.pid}: ${formatUnknownError(error).slice(0, 2048)}. Ownership remains pinned; a later authenticated runtime can still be joined. Check the native attachment diagnostic before retrying.`;
+    for (const member of this.waiters.splice(0)) {
+      if (
+        member.active &&
+        !member.client.internalProvider &&
+        this.members.get(member.client) === member
+      ) {
+        this.rejectNativeAttachmentWaiter(member);
+      }
+    }
+  }
+
+  private rejectNativeAttachmentWaiter(member: TargetMember): void {
+    this.sendError(
+      member.client,
+      'target-authorization-failed',
+      this.nativeAttachmentFailure!,
+      member,
+    );
+    member.active = false;
+    this.members.delete(member.client);
+    this.onMemberRejected(this, member.client);
+  }
+
   private promoteNextOwner(): void {
     if (
       this.disposed ||
@@ -918,6 +1153,11 @@ export class OverlayBrokerTargetHost {
     let release: Disposable | undefined;
     try {
       await this.ready;
+      if (candidate.client.internalProvider) {
+        const preparedDiscoveryPath = await candidate.client.internalProvider.prepare();
+        if (!candidate.recovering) candidate.discoveryPath = preparedDiscoveryPath;
+        candidate.expectedExecutablePath = candidate.client.internalProvider.executablePath;
+      }
       if (
         this.disposed ||
         !candidate.active ||
@@ -926,8 +1166,38 @@ export class OverlayBrokerTargetHost {
       ) {
         return;
       }
-      // Publishing a target authorization route is the point of no return: an
-      // injector may observe it before this asynchronous call settles.
+      if (candidate.client.internalProvider) {
+        const identity = { executablePath: candidate.expectedExecutablePath! };
+        for (const member of [...this.members.values()]) {
+          if (member.active && !member.client.internalProvider) {
+            this.rejectMismatchedMember(member, identity);
+          }
+        }
+        // A cached runtime is a provider, not an application asking to attach.
+        // No external acceptance means no new publication or injection grant.
+        if (![...this.members.values()].some(member =>
+          member.active && !member.client.internalProvider
+        )) {
+          this.removeMember(candidate.client);
+          this.onMemberRejected(this, candidate.client);
+          return;
+        }
+      }
+      const identityEpoch = this.processIdentityEpoch;
+      const observed = await this.inspectProcessIdentity();
+      const observedCreationTime100ns = observed?.creationTime100ns;
+      if (this.disposed || this.terminalTargetExited || !candidate.active ||
+        identityEpoch !== this.processIdentityEpoch || this.processIdentityFailure ||
+        this.owner !== candidate || this.members.get(candidate.client) !== candidate) {
+        return;
+      }
+      if (this.pinnedCreationTime100ns && observedCreationTime100ns !== this.pinnedCreationTime100ns) {
+        this.retainProcessIdentityFailure();
+        return;
+      }
+      if (!this.recoveryClaimState) this.pinnedCreationTime100ns = observedCreationTime100ns;
+      // Publishing is the point of no return: an injector may observe the route
+      // before authorizeTarget settles. Identity observation never binds that injector.
       this.frozenAuthorizationStarted = true;
       const recoveryClaim =
         this.recoveryClaimState?.kind === 'valid'
@@ -937,6 +1207,8 @@ export class OverlayBrokerTargetHost {
         this.recoveringPinnedRoute && recoveryClaim
           ? recoveryClaim.discoveryPath
           : candidate.discoveryPath;
+      const authorizationCreationTime100ns = recoveryClaim
+        ? recoveryClaim.creationTime100ns : observedCreationTime100ns;
       const authorizationExpectedExecutablePath =
         this.recoveringPinnedRoute && recoveryClaim
           ? recoveryClaim.expectedExecutablePath
@@ -956,6 +1228,8 @@ export class OverlayBrokerTargetHost {
         authorizationDiscoveryPath,
         authorizationExpectedExecutablePath,
         {
+          ...(authorizationCreationTime100ns === undefined
+            ? {} : { creationTime100ns: authorizationCreationTime100ns }),
           ...(candidate.leaseId === undefined
             ? {}
             : { leaseId: candidate.leaseId }),
@@ -1130,6 +1404,10 @@ export class OverlayBrokerTargetHost {
       requestId: member.requestId,
       pid: this.pid,
       disposition,
+      ...(disposition === 'injection-owner' && this.pinnedCreationTime100ns !== undefined &&
+        (member.client.internalProvider || (this.supportsProcessInstanceInjection && member.client.hello &&
+          getOverlayBrokerClientSupportedCapabilities(member.client.hello).includes(OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY)))
+        ? { expectedCreationTime100ns: this.pinnedCreationTime100ns } : {}),
       discoveryPath,
       ...(this.targetIdentity === undefined
         ? {}
@@ -1170,10 +1448,13 @@ export class OverlayBrokerTargetHost {
     this.waiters.push(...retained);
   }
 
-  private rejectMismatchedMember(member: TargetMember): boolean {
+  private rejectMismatchedMember(
+    member: TargetMember,
+    identity: Pick<OverlayBrokerTargetIdentity, 'executablePath'> | undefined = this.targetIdentity,
+  ): boolean {
     if (
-      !this.targetIdentity ||
-      memberMatchesTargetExecutable(member, this.targetIdentity)
+      !identity ||
+      memberMatchesTargetExecutable(member, identity)
     ) {
       return false;
     }
@@ -1191,14 +1472,19 @@ export class OverlayBrokerTargetHost {
     return true;
   }
 
-  private materializeClientWindows(client: BrokerClientSession): void {
-    for (const localWindowId of client.windows.keys()) {
-      this.ensureTargetWindowId(client, localWindowId);
+  private materializeClientWindows(client: BrokerTargetClient): void {
+    const ordered = Array.from(client.windows.entries()).sort((left, right) =>
+      left[1].orderToken.localeCompare(right[1].orderToken),
+    );
+    for (const [localWindowId, state] of ordered) {
+      this.upsertWindow(client, localWindowId, state);
     }
-    this.restoreAggregateWindowOrder();
   }
 
-  private restoreAggregateWindowOrder(): void {
+  private restoreAggregateWindowOrder(
+    changedWindowId: number,
+    changedState: BrokerWindowState,
+  ): void {
     const ordered = Array.from(this.ownersByTargetWindowId.entries())
       .map(([targetWindowId, owner]) => ({
         targetWindowId,
@@ -1213,6 +1499,24 @@ export class OverlayBrokerTargetHost {
         left.state.orderToken.localeCompare(right.state.orderToken),
       );
     this.safeTargetMutation(() => {
+      if (
+        this.transport.addWindowInOrder?.(
+          changedWindowId,
+          cloneWindowDetails(changedState.details),
+          ordered.map((entry) => entry.targetWindowId),
+        )
+      ) {
+        if (changedState.latestFrame) {
+          this.transport.sendFrameBuffer(
+            changedWindowId,
+            changedState.latestFrame.pixels,
+            changedState.latestFrame.width,
+            changedState.latestFrame.height,
+          );
+        }
+        return;
+      }
+      // Frozen-v1 native peers still require the original full ordered replay.
       for (const { targetWindowId, state } of ordered) {
         this.transport.addWindow(
           targetWindowId,
@@ -1233,7 +1537,7 @@ export class OverlayBrokerTargetHost {
   }
 
   private ensureTargetWindowId(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
   ): number {
     let mapping = this.mappingsByClient.get(client);
@@ -1260,7 +1564,7 @@ export class OverlayBrokerTargetHost {
     return targetWindowId;
   }
 
-  private removeClientWindows(client: BrokerClientSession): void {
+  private removeClientWindows(client: BrokerTargetClient): void {
     const mapping = this.mappingsByClient.get(client);
     if (!mapping) {
       return;
@@ -1301,6 +1605,7 @@ export class OverlayBrokerTargetHost {
       if (payload.pid !== this.pid || typeof payload.path !== 'string') {
         return;
       }
+      this.processIdentityEpoch++;
       this.clearOwnerElectionTimer();
       this.clearFrozenTargetExitTimer();
       this.everAuthenticated = true;
@@ -1314,6 +1619,7 @@ export class OverlayBrokerTargetHost {
         discoveryPath,
       });
       this.targetConnected = true;
+      this.nativeAttachmentFailure = undefined;
       this.rejectMismatchedMembers();
       for (const member of this.members.values()) {
         if (
@@ -1330,6 +1636,7 @@ export class OverlayBrokerTargetHost {
       return;
     }
     if (event === 'game.process.transport-lost') {
+      this.processIdentityEpoch++;
       this.targetConnected = false;
       this.retainedInputInterception = undefined;
       this.broadcast({ type: event, ...payload });
@@ -1340,6 +1647,7 @@ export class OverlayBrokerTargetHost {
       this.clearFrozenTargetExitTimer();
       this.targetConnected = false;
       this.terminalTargetExited = true;
+      this.processIdentityEpoch++;
       try {
         this.clearTargetRecoveryClaim(this.pid);
       } catch {
@@ -1444,7 +1752,7 @@ export class OverlayBrokerTargetHost {
     this.broadcast({ type: event as `game.${string}`, ...payload });
   }
 
-  private replayTargetSnapshot(client: BrokerClientSession): void {
+  private replayTargetSnapshot(client: BrokerTargetClient): void {
     if (!this.targetIdentity) {
       return;
     }
@@ -1560,7 +1868,7 @@ export class OverlayBrokerTargetHost {
   }
 
   private sendError(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     code: OverlayBrokerError['code'],
     message: string,
     request: Pick<TargetMember, 'requestId'> & { pid?: number },
@@ -1580,12 +1888,16 @@ export class OverlayBrokerServer {
   public readonly pipePath: string;
   public readonly capabilities: readonly string[];
 
+  private readonly nativeRuntimeProvider:
+    OverlayBrokerNativeRuntimeProvider | undefined;
   private readonly capabilitiesSet: ReadonlySet<string>;
   private readonly targetTransportFactory: OverlayBrokerTargetTransportFactory;
   private readonly sessionIdFactory: () => string;
   private readonly idleShutdownMs: number | false;
   private readonly runtimeProviderElectionWindowMs: number;
   private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly processIdentityProbes = new Map<number, Promise<OverlayBrokerProcessIdentity | undefined>>();
+  private readonly queryProcessIdentity: OverlayBrokerServerOptions['queryProcessIdentity'];
   private readonly processExitPollIntervalMs: number;
   private readonly targetRecoveryClaimProbe: (
     pid: number,
@@ -1601,6 +1913,22 @@ export class OverlayBrokerServer {
   private stopping = false;
 
   constructor(options: OverlayBrokerServerOptions = {}) {
+    this.nativeRuntimeProvider = options.nativeRuntimeProvider;
+    const queryProcessIdentity = options.queryProcessIdentity ??
+      options.nativeRuntimeProvider?.queryProcessIdentity?.bind(options.nativeRuntimeProvider);
+    // Host confirmation and the lost-transport watch share one actual OS probe.
+    const processIdentityProbes = this.processIdentityProbes;
+    this.queryProcessIdentity = queryProcessIdentity ? (pid) => {
+      const existing = processIdentityProbes.get(pid);
+      if (existing) return existing;
+      const pending = Promise.resolve().then(() => queryProcessIdentity(pid));
+      processIdentityProbes.set(pid, pending);
+      const clear = () => {
+        if (processIdentityProbes.get(pid) === pending) processIdentityProbes.delete(pid);
+      };
+      void pending.then(clear, clear);
+      return pending;
+    } : undefined;
     this.pipePath = options.pipePath ?? defaultOverlayBrokerPipePath();
     this.capabilities = Object.freeze([
       ...(options.capabilities ?? OVERLAY_BROKER_CAPABILITIES),
@@ -1656,6 +1984,7 @@ export class OverlayBrokerServer {
       options.targetTransportFactory ??
       ((pid) =>
         new OverlayLoopbackTransport({
+          queryProcessIdentity: this.queryProcessIdentity,
           discoveryPath: join(
             tmpdir(),
             'electron-game-overlay',
@@ -1723,6 +2052,7 @@ export class OverlayBrokerServer {
       target.dispose();
     }
     this.targets.clear();
+    this.nativeRuntimeProvider?.dispose();
     if (!server) {
       return;
     }
@@ -1739,7 +2069,9 @@ export class OverlayBrokerServer {
     this.clearIdleShutdown();
     socket.setNoDelay(true);
     let client: BrokerClientSession;
-    const writer = new BackpressurePacketQueue(socket, () => socket.destroy());
+    const writer = new BackpressurePacketQueue(socket, (error) => {
+      socket.destroy(error instanceof Error ? error : undefined);
+    });
     const handshakeTimer = setTimeout(() => {
       if (!client.hello) {
         this.sendError(
@@ -1763,7 +2095,11 @@ export class OverlayBrokerServer {
       targets: new Map(),
       send: (message) => {
         if (!client.closed && !socket.destroyed) {
-          writer.sendControl(encodeBrokerJsonPacket(message));
+          try {
+            writer.sendControl(encodeBrokerJsonPacket(message));
+          } catch (error) {
+            socket.destroy(error instanceof Error ? error : undefined);
+          }
         }
       },
     };
@@ -1796,6 +2132,9 @@ export class OverlayBrokerServer {
       return;
     }
     for (const packet of packets) {
+      if (client.closed || client.socket.destroyed) {
+        return;
+      }
       if (packet.kind === 'frame') {
         this.handleFrame(client, packet.frame);
         continue;
@@ -1911,6 +2250,8 @@ export class OverlayBrokerServer {
         } catch {
           initialRecoveryClaimState = Object.freeze({ kind: 'opaque' });
         }
+        // A retired host's observation must never identify a new host at the same PID.
+        this.processIdentityProbes.delete(request.pid);
         transport = this.targetTransportFactory(request.pid);
         target = new OverlayBrokerTargetHost(
           request.pid,
@@ -1922,6 +2263,7 @@ export class OverlayBrokerServer {
           this.targetRecoveryClaimProbe,
           this.clearTargetRecoveryClaim,
           (host, rejectedClient) => {
+            rejectedClient.internalProvider?.dispose();
             if (rejectedClient.targets.get(host.pid) === host) {
               rejectedClient.targets.delete(host.pid);
             }
@@ -1930,6 +2272,8 @@ export class OverlayBrokerServer {
           (host) => this.retireTerminalTarget(host),
           (raisedClient, localWindowId) =>
             this.promoteWindowOrder(raisedClient, localWindowId),
+          this.queryProcessIdentity,
+          this.capabilitiesSet.has(OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY),
         );
       } catch (error) {
         this.sendError(
@@ -1942,6 +2286,8 @@ export class OverlayBrokerServer {
         return;
       }
       this.targets.set(request.pid, target);
+      const provider = this.nativeRuntimeProvider?.createTarget(request);
+      if (provider) target.addNativeProvider(provider, request);
     }
     client.targets.set(request.pid, target);
     target.addMember(client, request);
@@ -1968,8 +2314,19 @@ export class OverlayBrokerServer {
     client: BrokerClientSession,
     message: OverlayBrokerWindowUpsert,
   ): void {
+    const details: NativeOverlayWindowDetails = {
+      name: message.name,
+      transparent: message.transparent,
+      rect: { ...message.rect },
+      ...(message.caption ? { caption: { ...message.caption } } : {}),
+      ...(message.scaleFactorMicros === undefined
+        ? {}
+        : { scaleFactorMicros: message.scaleFactorMicros }),
+    };
+    let snapshotBytes: number;
     let orderToken: string;
     try {
+      snapshotBytes = this.assertSceneFits(client, message.windowId, details);
       orderToken = this.reserveWindowOrderToken(
         client,
         message.windowId,
@@ -1981,26 +2338,43 @@ export class OverlayBrokerServer {
       this.sendError(
         client,
         'window-unavailable',
-        `Unable to assign overlay window ${message.windowId} order: ${formatUnknownError(error)}`,
+        `Unable to admit overlay window ${message.windowId}: ${formatUnknownError(error)}`,
       );
       return;
     }
-    const details: NativeOverlayWindowDetails = {
-      name: message.name,
-      transparent: message.transparent,
-      rect: { ...message.rect },
-      ...(message.caption ? { caption: { ...message.caption } } : {}),
-      ...(message.scaleFactorMicros === undefined
-        ? {}
-        : { scaleFactorMicros: message.scaleFactorMicros }),
-    };
     client.windows.delete(message.windowId);
-    const state: BrokerWindowState = { details, orderToken };
+    const state: BrokerWindowState = { details, orderToken, snapshotBytes };
     client.windows.set(message.windowId, state);
     this.sendWindowOrder(client, message.windowId, orderToken);
     for (const target of client.targets.values()) {
       target.upsertWindow(client, message.windowId, state);
     }
+  }
+
+  private assertSceneFits(
+    client: BrokerClientSession,
+    windowId: number,
+    details: NativeOverlayWindowDetails,
+  ): number {
+    // Reserve widest target IDs and a comma per entry across ALL sessions:
+    // any subset may later join one target and must still fit one frozen-v1 init.
+    const replacementBytes =
+      Buffer.byteLength(JSON.stringify({ windowId: 0xffffffff, ...details })) + 1;
+    let total =
+      Buffer.byteLength('{"type":"overlay.init","windows":[]}') + replacementBytes;
+    for (const peer of this.clients) {
+      for (const [id, state] of peer.windows) {
+        if (peer !== client || id !== windowId) {
+          total += state.snapshotBytes;
+        }
+      }
+    }
+    if (total > MAX_JSON_BODY_BYTES) {
+      throw new RangeError(
+        `Overlay aggregate snapshot requires ${total} bytes; limit is ${MAX_JSON_BODY_BYTES} bytes`,
+      );
+    }
+    return replacementBytes;
   }
 
   private handleWindowBounds(
@@ -2016,13 +2390,25 @@ export class OverlayBrokerServer {
       );
       return;
     }
-    state.details.rect = { ...message.rect };
-    if (message.caption) {
-      state.details.caption = { ...message.caption };
+    const details: NativeOverlayWindowDetails = {
+      ...state.details,
+      rect: { ...message.rect },
+      ...(message.caption ? { caption: { ...message.caption } } : {}),
+      ...(message.scaleFactorMicros !== undefined
+        ? { scaleFactorMicros: message.scaleFactorMicros }
+        : {}),
+    };
+    try {
+      state.snapshotBytes = this.assertSceneFits(
+        client,
+        message.windowId,
+        details,
+      );
+    } catch (error) {
+      this.sendError(client, 'window-unavailable', formatUnknownError(error));
+      return;
     }
-    if (message.scaleFactorMicros !== undefined) {
-      state.details.scaleFactorMicros = message.scaleFactorMicros;
-    }
+    state.details = details;
     if (message.rasterChanged) {
       state.latestFrame = undefined;
     }
@@ -2088,6 +2474,24 @@ export class OverlayBrokerServer {
       );
       return;
     }
+    // Include the target packet's 17 framing/header bytes per retained frame,
+    // so every admitted aggregate also fits the target transport's budget.
+    let retainedBytes = frame.pixels.byteLength + 17;
+    for (const peer of this.clients) {
+      for (const [id, window] of peer.windows) {
+        if ((peer !== client || id !== frame.windowId) && window.latestFrame) {
+          retainedBytes += window.latestFrame.pixels.byteLength + 17;
+        }
+      }
+    }
+    if (retainedBytes > MAX_RETAINED_FRAME_BYTES) {
+      this.sendError(
+        client,
+        'unexpected-frame',
+        `Overlay retained frames require ${retainedBytes} bytes; limit is ${MAX_RETAINED_FRAME_BYTES} bytes`,
+      );
+      return;
+    }
     const retained: RetainedFrame = Object.freeze({
       width: frame.width,
       height: frame.height,
@@ -2100,6 +2504,7 @@ export class OverlayBrokerServer {
   }
 
   private cleanupClient(client: BrokerClientSession): void {
+    client.decoder = new BrokerPacketDecoder();
     this.clients.delete(client);
     for (const target of Array.from(client.targets.values())) {
       client.targets.delete(target.pid);
@@ -2114,7 +2519,7 @@ export class OverlayBrokerServer {
   }
 
   private promoteWindowOrder(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
   ): void {
     const state = client.windows.get(localWindowId);
@@ -2130,7 +2535,7 @@ export class OverlayBrokerServer {
   }
 
   private reserveWindowOrderToken(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
     requestedToken?: string,
   ): string {
@@ -2170,7 +2575,7 @@ export class OverlayBrokerServer {
   }
 
   private releaseWindowOrderToken(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     localWindowId: number,
     orderToken: string,
   ): void {
@@ -2181,7 +2586,7 @@ export class OverlayBrokerServer {
   }
 
   private sendWindowOrder(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     windowId: number,
     orderToken: string,
   ): void {
@@ -2195,7 +2600,7 @@ export class OverlayBrokerServer {
     });
   }
 
-  private clientUsesGlobalWindowOrder(client: BrokerClientSession): boolean {
+  private clientUsesGlobalWindowOrder(client: BrokerTargetClient): boolean {
     return (
       this.capabilitiesSet.has(OVERLAY_BROKER_GLOBAL_WINDOW_ORDER_CAPABILITY) &&
       (client.hello
@@ -2265,7 +2670,7 @@ export class OverlayBrokerServer {
   }
 
   private sendError(
-    client: BrokerClientSession,
+    client: BrokerTargetClient,
     code: OverlayBrokerError['code'],
     message: string,
     requestId?: string,
@@ -2316,7 +2721,7 @@ function cloneWindowGeometry(
 
 function memberMatchesTargetExecutable(
   member: TargetMember,
-  target: OverlayBrokerTargetIdentity,
+  target: Pick<OverlayBrokerTargetIdentity, 'executablePath'>,
 ): boolean {
   return (
     member.expectedExecutablePath === undefined ||

@@ -1,3 +1,17 @@
+import {
+  targetAuthorizers,
+  globalTargetAuthorizers,
+  createSessionTargetAuthorization,
+  normalizeSessionTargetAuthorization,
+  type OverlaySessionTargetAuthorization,
+} from './overlay-session-authorization.js';
+/** @internal */
+export {
+  authorizeOverlaySessionTarget,
+  authorizeOverlaySessionGlobalTarget,
+  type OverlaySessionTargetAuthorization,
+} from './overlay-session-authorization.js';
+
 import { screen } from 'electron';
 import { physicalInputToDip } from './coordinate-space.js';
 import {
@@ -8,13 +22,7 @@ import {
   createElectronOverlayWindow,
   ElectronOverlayWindow,
 } from './electron-overlay-window.js';
-import type {
-  NativeOverlay,
-  NativeRuntimeProviderMetadata,
-  NativeTargetAuthorization,
-  NativeTargetAuthorizationDisposition,
-  NativeTargetConnection,
-} from './native.js';
+import type { NativeOverlay, NativeRuntimeProviderMetadata } from './native.js';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
 import {
   getTargetFollowPhysicalBounds,
@@ -77,117 +85,14 @@ const OVERLAY_SESSION_CONSTRUCTION_TOKEN = Symbol(
   'OverlaySession construction token',
 );
 
-/** @internal */
-export type OverlaySessionTargetAuthorization = Disposable &
-  Readonly<{
-    disposition: NativeTargetAuthorizationDisposition;
-    target?: NativeTargetConnection;
-  }>;
-
-type TargetAuthorizer = (
-  pid: number,
-  discoveryPath: string,
-  expectedExecutablePath?: string,
-  runtimeProvider?: NativeRuntimeProviderMetadata,
-  signal?: AbortSignal,
-) => Promise<Disposable | OverlaySessionTargetAuthorization>;
-type GlobalTargetAuthorizer = () => Promise<Disposable>;
-
 let constructOverlaySession:
   ((overlay: NativeOverlay) => OverlaySession) | undefined;
-const targetAuthorizers = new WeakMap<OverlaySession, TargetAuthorizer>();
-const globalTargetAuthorizers = new WeakMap<
-  OverlaySession,
-  GlobalTargetAuthorizer
->();
-
 /** @internal */
 export function createOverlaySession(overlay: NativeOverlay): OverlaySession {
   if (!constructOverlaySession) {
     throw new Error('OverlaySession construction is not initialized');
   }
   return constructOverlaySession(overlay);
-}
-
-/** @internal */
-export async function authorizeOverlaySessionTarget(
-  session: OverlaySession,
-  pid: number,
-  discoveryPath: string,
-  expectedExecutablePath?: string,
-  runtimeProvider?: NativeRuntimeProviderMetadata,
-  signal?: AbortSignal,
-): Promise<OverlaySessionTargetAuthorization> {
-  const testHarness = session as unknown as {
-    authorizeTarget?: TargetAuthorizer;
-  };
-  const authorizeTarget =
-    targetAuthorizers.get(session) ??
-    (typeof testHarness.authorizeTarget === 'function'
-      ? testHarness.authorizeTarget.bind(session)
-      : undefined);
-  if (!authorizeTarget) {
-    throw new TypeError('invalid OverlaySession instance');
-  }
-  return normalizeSessionTargetAuthorization(
-    await authorizeTarget(
-      pid,
-      discoveryPath,
-      expectedExecutablePath,
-      runtimeProvider,
-      signal,
-    ),
-  );
-}
-
-/** @internal */
-export async function authorizeOverlaySessionGlobalTarget(
-  session: OverlaySession,
-): Promise<Disposable> {
-  const testHarness = session as unknown as {
-    authorizeGlobalTarget?: GlobalTargetAuthorizer;
-  };
-  const authorizeTarget =
-    globalTargetAuthorizers.get(session) ??
-    (typeof testHarness.authorizeGlobalTarget === 'function'
-      ? testHarness.authorizeGlobalTarget.bind(session)
-      : undefined);
-  if (!authorizeTarget) {
-    throw new TypeError('invalid OverlaySession instance');
-  }
-  return authorizeTarget();
-}
-
-function createSessionTargetAuthorization(
-  release: Disposable,
-  disposition: NativeTargetAuthorizationDisposition,
-  target?: NativeTargetConnection,
-): OverlaySessionTargetAuthorization {
-  return Object.assign(release, {
-    disposition,
-    ...(target === undefined ? {} : { target }),
-  });
-}
-
-function normalizeSessionTargetAuthorization(
-  authorization: Disposable | NativeTargetAuthorization,
-): OverlaySessionTargetAuthorization {
-  if (typeof authorization === 'function') {
-    const enriched =
-      authorization as Partial<OverlaySessionTargetAuthorization>;
-    return createSessionTargetAuthorization(
-      authorization,
-      enriched.disposition === 'joined-existing'
-        ? 'joined-existing'
-        : 'injection-owner',
-      enriched.target,
-    );
-  }
-  return createSessionTargetAuthorization(
-    authorization.release,
-    authorization.disposition,
-    authorization.target,
-  );
 }
 
 async function waitForAbortable<T>(
@@ -508,6 +413,7 @@ export class OverlaySession {
       release,
       normalized.disposition,
       normalized.target,
+      normalized.expectedCreationTime100ns,
     );
   }
 

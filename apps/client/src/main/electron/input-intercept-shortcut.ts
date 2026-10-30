@@ -1,4 +1,9 @@
-export const INPUT_INTERCEPT_ACCELERATOR = "CommandOrControl+I";
+export const INPUT_INTERCEPT_ACCELERATOR = 'CommandOrControl+I';
+
+const INPUT_INTERCEPT_ACCELERATORS = [
+  INPUT_INTERCEPT_ACCELERATOR,
+  'CommandOrControl+Shift+I',
+];
 
 export type GlobalShortcutRegistry = {
   register(accelerator: string, callback: () => void): boolean;
@@ -6,28 +11,31 @@ export type GlobalShortcutRegistry = {
 };
 
 export class InputInterceptShortcut {
-  private registered = false;
+  private selectedAccelerator: string | null = null;
 
   constructor(
     private readonly registry: GlobalShortcutRegistry,
-    private readonly onToggle: () => void
+    private readonly onToggle: () => void,
   ) {}
 
+  public get accelerator(): string | null {
+    return this.selectedAccelerator;
+  }
+
   public register(): boolean {
-    if (!this.registered) {
-      this.registered = this.registry.register(
-        INPUT_INTERCEPT_ACCELERATOR,
-        this.onToggle
-      );
+    if (this.selectedAccelerator !== null) return true;
+    for (const accelerator of INPUT_INTERCEPT_ACCELERATORS) {
+      if (this.registry.register(accelerator, this.onToggle)) {
+        this.selectedAccelerator = accelerator;
+        return true;
+      }
     }
-    return this.registered;
+    return false;
   }
 
   public dispose(): void {
-    if (!this.registered) {
-      return;
-    }
-    this.registry.unregister(INPUT_INTERCEPT_ACCELERATOR);
-    this.registered = false;
+    if (this.selectedAccelerator === null) return;
+    this.registry.unregister(this.selectedAccelerator);
+    this.selectedAccelerator = null;
   }
 }

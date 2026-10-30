@@ -180,7 +180,9 @@ export function createDemoControlOverlayWindow(context: OverlayWindowContext) {
   const window = context.createWindow(name, {
     x: 24,
     y: 24,
-    ...DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
+    // Keep the backing surface fixed: resizing would replay SDK coordinates
+    // over a position maintained by native caption dragging.
+    ...DEMO_CONTROL_OVERLAY_EXPANDED_SIZE,
     frame: false,
     show: false,
     transparent: true,
@@ -256,9 +258,6 @@ export function createExampleMainOverlayWindow(context: OverlayWindowContext) {
     captionHeight: 40,
     transparent: true,
   });
-  if (context.demoPresentation) {
-    overlayWindow.followTarget({ area: 'render' });
-  }
   overlayWindow.show();
   return overlayWindow;
 }

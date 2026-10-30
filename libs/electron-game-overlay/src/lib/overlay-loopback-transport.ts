@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { isValidProcessCreationTime100ns, type OverlayBrokerProcessIdentity } from './overlay-process-identity.js';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
@@ -46,6 +47,11 @@ export const OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_SUFFIX =
   '.recovery.json';
 export const MAX_JSON_BODY_BYTES = 1024 * 1024;
 export const MAX_FRAME_BODY_BYTES = 256 * 1024 * 1024;
+/** Aggregate retained frame packets per scene (including framing bytes). */
+export const MAX_RETAINED_FRAME_BYTES = 256 * 1024 * 1024;
+/** Per-peer unsent bytes; permits a maximum frame plus a v1 init and control. */
+export const MAX_PENDING_PACKET_BYTES =
+  MAX_FRAME_BODY_BYTES + 2 * MAX_JSON_BODY_BYTES;
 
 const PACKET_KIND_JSON = 1;
 const PACKET_KIND_FRAME = 2;
@@ -82,6 +88,8 @@ export type OverlayTargetRecoveryClaim = Readonly<{
   discoveryPath: string;
   staticDiscoveryPath: string;
   expectedExecutablePath?: string;
+  /** Authoritative process creation FILETIME, retained only when initially known. */
+  creationTime100ns?: string;
   leaseId?: string;
   phase: 'intent' | 'publishing' | 'published';
   record: OverlayDiscoveryRecord;
@@ -91,6 +99,7 @@ export type OverlayTargetRecoveryClaim = Readonly<{
 
 /** @internal Broker-only context for durable target-route ownership. */
 export type OverlayTargetRouteAuthorizationContext = Readonly<{
+  creationTime100ns?: string;
   leaseId?: string;
   /** A committed route can be serviced by another compatible provider. */
   allowPublishedClaimTakeover?: boolean;
@@ -108,6 +117,7 @@ export interface OverlayLoopbackTransportOptions {
   discoveryPath?: string;
   tokenFactory?: () => string;
   isProcessAlive?: (pid: number) => boolean;
+  queryProcessIdentity?: (pid: number) => Promise<OverlayBrokerProcessIdentity | undefined>;
   processExitPollIntervalMs?: number;
   /** @internal Deterministic fault barrier used by publication-order tests. */
   targetAuthorizationPublicationHook?: (
@@ -166,11 +176,24 @@ interface QueuedPacket {
 export class BackpressurePacketQueue {
   private blocked = false;
   private readonly pending: QueuedPacket[] = [];
+  private pendingBytes = 0;
+  private overflowed = false;
 
   constructor(
     private readonly sink: PacketSink,
     private readonly onWriteError: (error: unknown) => void = () => undefined,
-  ) {}
+    private readonly maxPendingBytes: number = MAX_PENDING_PACKET_BYTES,
+  ) {
+    if (
+      !Number.isSafeInteger(maxPendingBytes) ||
+      maxPendingBytes < 1 ||
+      maxPendingBytes > MAX_PENDING_PACKET_BYTES
+    ) {
+      throw new RangeError(
+        `maxPendingBytes must be an integer between 1 and ${MAX_PENDING_PACKET_BYTES}`,
+      );
+    }
+  }
 
   public sendControl(packet: Buffer): void {
     this.send({ packet });
@@ -183,6 +206,7 @@ export class BackpressurePacketQueue {
   public dropPendingFrames(windowId: number): void {
     for (let index = this.pending.length - 1; index >= 0; index -= 1) {
       if (this.pending[index]?.frameWindowId === windowId) {
+        this.pendingBytes -= this.pending[index]!.packet.byteLength;
         this.pending.splice(index, 1);
       }
     }
@@ -196,9 +220,13 @@ export class BackpressurePacketQueue {
   public clear(): void {
     this.blocked = false;
     this.pending.length = 0;
+    this.pendingBytes = 0;
   }
 
   private send(entry: QueuedPacket): void {
+    if (this.overflowed) {
+      return;
+    }
     if (!this.blocked && this.pending.length === 0) {
       const accepted = this.write(entry.packet);
       if (accepted !== undefined) {
@@ -214,18 +242,45 @@ export class BackpressurePacketQueue {
           break;
         }
         if (candidate.frameWindowId === entry.frameWindowId) {
+          if (!this.admit(entry.packet.byteLength - candidate.packet.byteLength)) {
+            return;
+          }
+          this.pendingBytes +=
+            entry.packet.byteLength - candidate.packet.byteLength;
           this.pending[index] = entry;
           return;
         }
       }
     }
-    this.pending.push(entry);
+    if (this.admit(entry.packet.byteLength)) {
+      this.pendingBytes += entry.packet.byteLength;
+      this.pending.push(entry);
+    }
+  }
+
+  private admit(additionalBytes: number): boolean {
+    const attemptedBytes = this.pendingBytes + additionalBytes;
+    if (attemptedBytes <= this.maxPendingBytes) {
+      return true;
+    }
+    this.clear();
+    this.overflowed = true;
+    this.onWriteError(
+      Object.assign(
+        new RangeError(
+          `Overlay pending queue requires ${attemptedBytes} bytes; limit is ${this.maxPendingBytes} bytes`,
+        ),
+        { code: 'ERR_OVERLAY_QUEUE_LIMIT' },
+      ),
+    );
+    return false;
   }
 
   private flush(): void {
     while (!this.blocked && this.pending.length > 0) {
       const entry = this.pending.shift();
       if (entry) {
+        this.pendingBytes -= entry.packet.byteLength;
         const accepted = this.write(entry.packet);
         if (accepted === undefined) {
           return;
@@ -251,6 +306,7 @@ interface ClientState {
   writer: BackpressurePacketQueue;
   receiveBuffer: Buffer;
   authenticated: boolean;
+  supportsWindowOrder?: boolean;
   pid?: number;
   path?: string;
   targetAuthorization?: TargetAuthorization;
@@ -261,6 +317,10 @@ interface ClientState {
 }
 
 interface ProcessExitWatch {
+  generation: number;
+  authorization?: TargetAuthorization;
+  inFlight?: boolean;
+  identityMismatchDiagnosed?: boolean;
   pid: number;
   path: string;
   timer?: ReturnType<typeof setTimeout>;
@@ -575,6 +635,7 @@ function parseOverlayTargetRecoveryClaim(
       (typeof value.expectedExecutablePath !== 'string' ||
         value.expectedExecutablePath.includes('\0') ||
         !win32.isAbsolute(value.expectedExecutablePath))) ||
+    ('creationTime100ns' in value && !isValidProcessCreationTime100ns(value.creationTime100ns)) ||
     (value.leaseId !== undefined && !isValidRecoveryLeaseId(value.leaseId)) ||
     (value.phase !== 'intent' &&
       value.phase !== 'publishing' &&
@@ -603,6 +664,7 @@ function parseOverlayTargetRecoveryClaim(
       ? {}
       : { expectedExecutablePath: value.expectedExecutablePath }),
     ...(value.leaseId === undefined ? {} : { leaseId: value.leaseId }),
+    ...(value.creationTime100ns === undefined ? {} : { creationTime100ns: value.creationTime100ns as string }),
     phase: value.phase,
     record,
     ...(previousRecord === undefined ? {} : { previousRecord }),
@@ -631,6 +693,7 @@ function recoveryClaimsEqual(
       normalizeExecutablePathIdentity(right.staticDiscoveryPath) &&
     normalizeOptionalExecutablePathIdentity(left.expectedExecutablePath) ===
       normalizeOptionalExecutablePathIdentity(right.expectedExecutablePath) &&
+    left.creationTime100ns === right.creationTime100ns &&
     left.leaseId === right.leaseId &&
     left.phase === right.phase &&
     isOwnedDiscoveryRecord(left.record, right.record) &&
@@ -702,7 +765,11 @@ function errorCodeContext(
   if (!isJsonObject(error)) {
     return undefined;
   }
-  const errorCode = normalizeOverlayDiagnosticErrorCode(error.code);
+  // Keep the frozen diagnostic vocabulary: a full application queue is the
+  // same resource condition as an OS send-buffer exhaustion.
+  const errorCode = normalizeOverlayDiagnosticErrorCode(
+    error.code === 'ERR_OVERLAY_QUEUE_LIMIT' ? 'ENOBUFS' : error.code,
+  );
   return errorCode === undefined ? undefined : { errorCode };
 }
 
@@ -745,6 +812,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private readonly discoveryPath: string;
   private readonly tokenFactory: () => string;
   private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly queryProcessIdentity: OverlayLoopbackTransportOptions['queryProcessIdentity'];
   private readonly processExitPollIntervalMs: number;
   private readonly targetAuthorizationPublicationHook:
     | OverlayLoopbackTransportOptions['targetAuthorizationPublicationHook']
@@ -801,6 +869,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.tokenFactory =
       options.tokenFactory ?? (() => randomBytes(32).toString('hex'));
     this.isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+    this.queryProcessIdentity = options.queryProcessIdentity;
     this.processExitPollIntervalMs =
       options.processExitPollIntervalMs ??
       DEFAULT_PROCESS_EXIT_POLL_INTERVAL_MS;
@@ -949,6 +1018,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     const routeContext =
       isJsonObject(runtimeProviderOrRouteContext) &&
       ('leaseId' in runtimeProviderOrRouteContext ||
+        'creationTime100ns' in runtimeProviderOrRouteContext ||
         'allowPublishedClaimTakeover' in runtimeProviderOrRouteContext)
         ? (runtimeProviderOrRouteContext as OverlayTargetRouteAuthorizationContext)
         : undefined;
@@ -957,6 +1027,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       !isValidRecoveryLeaseId(routeContext.leaseId)
     ) {
       throw new TypeError('Overlay target route lease ID is invalid');
+    }
+    if (routeContext && 'creationTime100ns' in routeContext && !isValidProcessCreationTime100ns(routeContext.creationTime100ns)) {
+      throw new TypeError('Overlay target creation time is invalid');
     }
     const resolvedDiscoveryPath = resolve(discoveryPath);
     if (
@@ -993,11 +1066,14 @@ export class OverlayLoopbackTransport implements NativeOverlay {
 
     let authorization: TargetAuthorization;
     let pending = this.pendingTargetAuthorizationsByPid.get(pid);
+    let reusedAuthorization = false;
     if (pending) {
+      reusedAuthorization = true;
       authorization = await pending;
     } else {
       const existing = this.targetAuthorizationsByPid.get(pid);
       if (existing) {
+        reusedAuthorization = true;
         authorization = existing;
       } else {
         pending = this.createTargetAuthorization(
@@ -1041,6 +1117,20 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       throw new Error('Overlay transport stopped before target authorization');
     }
 
+    if (authorization.recoveryClaim.creationTime100ns !== undefined && routeContext?.creationTime100ns !== undefined && authorization.recoveryClaim.creationTime100ns !== routeContext.creationTime100ns) {
+      throw new Error('Overlay target process creation identity mismatch');
+    }
+    if (reusedAuthorization && authorization.recoveryClaim.creationTime100ns !== undefined && routeContext?.creationTime100ns === undefined) {
+      const claim = authorization.recoveryClaim;
+      const identity = await this.queryProcessIdentity?.(pid);
+      if (this.targetAuthorizationsByPid.get(pid) !== authorization || authorization.generation !== this.generation || this.activeClientsByPid.get(pid)?.targetAuthorization !== undefined && this.activeClientsByPid.get(pid)?.targetAuthorization !== authorization) {
+        throw new Error('Overlay target authorization changed during identity inspection');
+      }
+      const currentClaim = readOverlayTargetRecoveryClaim(pid);
+      if (!currentClaim || !recoveryClaimsEqual(claim, currentClaim)) throw new Error('Overlay target identity claim changed during inspection');
+      if (identity?.pid !== pid || !isValidProcessCreationTime100ns(identity.creationTime100ns)) throw new Error('Overlay target process identity unavailable');
+      if (identity.creationTime100ns !== claim.creationTime100ns) throw new Error('Overlay target process creation identity mismatch');
+    }
     ++authorization.references;
     let released = false;
     return () => {
@@ -1165,10 +1255,80 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         : {}),
     };
     const packet = encodeJsonTransportPacket(message);
+    this.assertSnapshotFits(windowId, message);
     this.windows.delete(windowId);
     this.windows.set(windowId, message);
     this.latestFrames.delete(windowId);
     this.broadcastWindowBarrierPacket(windowId, packet);
+  }
+
+  /**
+   * Registers only the changed window, then applies a complete bottom-to-top
+   * order without replaying peer metadata or discarding retained frames.
+   * Returns false without side effects unless every active native peer opted in.
+   */
+  public addWindowInOrder(
+    windowId: number,
+    details: NativeOverlayWindowDetails,
+    windowIds: readonly number[],
+  ): boolean {
+    const peers = Array.from(this.clients).filter((client) => client.authenticated);
+    if (peers.length === 0 || peers.some((client) => !client.supportsWindowOrder)) {
+      return false;
+    }
+    assertPositiveUnsigned32(windowId, 'windowId');
+    const expected = new Set(this.windows.keys());
+    expected.add(windowId);
+    const ids = Array.from(windowIds);
+    if (
+      ids.length !== expected.size ||
+      new Set(ids).size !== expected.size ||
+      ids.some((id) => !expected.has(id))
+    ) {
+      return false;
+    }
+    if (details.scaleFactorMicros !== undefined) {
+      assertPositiveUnsigned32(details.scaleFactorMicros, 'scaleFactorMicros');
+    }
+    const message: WindowMessage = {
+      type: 'window',
+      windowId,
+      name: details.name,
+      transparent: details.transparent,
+      rect: { ...details.rect },
+      ...(details.caption ? { caption: { ...details.caption } } : {}),
+      ...(details.scaleFactorMicros !== undefined
+        ? { scaleFactorMicros: details.scaleFactorMicros }
+        : {}),
+    };
+    const packet = encodeJsonTransportPacket(message);
+    const orderPacket = encodeJsonTransportPacket({
+      type: 'window.order',
+      windowIds: ids,
+    });
+    this.assertSnapshotFits(windowId, message);
+    const ordered = ids.map((id) =>
+      [id, id === windowId ? message : this.windows.get(id)!] as const,
+    );
+    this.windows.clear();
+    for (const [id, window] of ordered) {
+      this.windows.set(id, window);
+    }
+    this.broadcastWindowBarrierPacket(windowId, packet);
+    this.broadcastControlPacket(orderPacket);
+    return true;
+  }
+
+  private assertSnapshotFits(windowId: number, replacement: WindowMessage): void {
+    const windows = Array.from(this.windows.values()).filter(
+      (window) => window.windowId !== windowId,
+    );
+    windows.push(replacement);
+    // v1 requires a complete init, not a sequence of partial snapshots.
+    encodeJsonTransportPacket({
+      type: 'overlay.init',
+      windows: windows.map(cloneWindowMetadata),
+    });
   }
 
   public closeWindow(windowId: number): void {
@@ -1228,6 +1388,16 @@ export class OverlayLoopbackTransport implements NativeOverlay {
 
     const window = this.windows.get(windowId);
     if (window) {
+      this.assertSnapshotFits(windowId, {
+        ...window,
+        rect: { ...details.rect },
+        ...(details.caption !== undefined
+          ? { caption: { ...details.caption } }
+          : {}),
+        ...(details.scaleFactorMicros !== undefined
+          ? { scaleFactorMicros: details.scaleFactorMicros }
+          : {}),
+      });
       window.rect = { ...details.rect };
       if (details.caption !== undefined) {
         window.caption = { ...details.caption };
@@ -1253,6 +1423,18 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   ): boolean {
     if (!this.windows.has(windowId)) {
       return false;
+    }
+    let retainedBytes =
+      PACKET_PREFIX_BYTES + FRAME_HEADER_BYTES + buffer.byteLength;
+    for (const [id, frame] of this.latestFrames) {
+      if (id !== windowId) {
+        retainedBytes += frame.byteLength;
+      }
+    }
+    if (retainedBytes > MAX_RETAINED_FRAME_BYTES) {
+      throw new RangeError(
+        `Overlay retained frames require ${retainedBytes} bytes; limit is ${MAX_RETAINED_FRAME_BYTES} bytes`,
+      );
     }
     const packet = encodeFrameTransportPacket(windowId, width, height, buffer);
     this.latestFrames.set(windowId, packet);
@@ -1356,6 +1538,22 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       );
     }
     const priorClaim = readOverlayTargetRecoveryClaim(pid);
+    if (priorClaim?.creationTime100ns !== undefined) {
+      let observed = routeContext?.creationTime100ns;
+      if (observed === undefined) {
+        const identity = await this.queryProcessIdentity?.(pid);
+        this.assertTargetAuthorizationActive(generation, readyRecord);
+        if (identity?.pid === pid && isValidProcessCreationTime100ns(identity.creationTime100ns)) {
+          observed = identity.creationTime100ns;
+        }
+        const currentClaim = readOverlayTargetRecoveryClaim(pid);
+        if (!currentClaim || !recoveryClaimsEqual(priorClaim, currentClaim)) {
+          throw new Error('Overlay target identity claim changed during inspection');
+        }
+      }
+      if (observed === undefined) throw new Error('Overlay target process identity unavailable');
+      if (observed !== priorClaim.creationTime100ns) throw new Error('Overlay target process creation identity mismatch');
+    }
     const staticDiscoveryPath =
       priorClaim?.staticDiscoveryPath ?? defaultOverlayTargetDiscoveryPath(pid);
     const staticDiscoveryEndpointReservation =
@@ -1410,6 +1608,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         targetPid: pid,
         discoveryPath,
         staticDiscoveryPath,
+        ...((priorClaim ? priorClaim.creationTime100ns : routeContext?.creationTime100ns) === undefined
+          ? {}
+          : { creationTime100ns: priorClaim ? priorClaim.creationTime100ns : routeContext?.creationTime100ns }),
         ...(expectedExecutablePath === undefined
           ? {}
           : { expectedExecutablePath }),
@@ -1499,6 +1700,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         targetPid: pid,
         discoveryPath,
         staticDiscoveryPath,
+        ...(publishingClaim.creationTime100ns === undefined ? {} : { creationTime100ns: publishingClaim.creationTime100ns }),
         ...(expectedExecutablePath === undefined
           ? {}
           : { expectedExecutablePath }),
@@ -2011,6 +2213,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     const inputTranslator = new InputEventTranslator();
     this.cancelProcessExitWatch(hello.pid);
     client.authenticated = true;
+    client.supportsWindowOrder =
+      Array.isArray(hello.capabilities) &&
+      hello.capabilities.includes('window-order-v1');
     client.pid = hello.pid;
     client.path = hello.path;
     client.targetAuthorization = targetAuthorization;
@@ -2152,13 +2357,13 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     targetPath: string,
   ): ProcessExitWatch {
     this.cancelProcessExitWatch(pid);
-    const watch: ProcessExitWatch = { pid, path: targetPath };
+    const watch: ProcessExitWatch = { pid, path: targetPath, generation: this.generation, authorization: this.targetAuthorizationsByPid.get(pid) };
     this.processExitWatchesByPid.set(pid, watch);
     return watch;
   }
 
   private pollProcessExit(watch: ProcessExitWatch): void {
-    if (this.processExitWatchesByPid.get(watch.pid) !== watch) {
+    if (this.processExitWatchesByPid.get(watch.pid) !== watch || watch.generation !== this.generation || watch.authorization !== this.targetAuthorizationsByPid.get(watch.pid) || this.activeClientsByPid.has(watch.pid) || watch.inFlight) {
       return;
     }
 
@@ -2187,6 +2392,38 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return;
     }
 
+    const claim = watch.authorization?.recoveryClaim;
+    if (claim?.creationTime100ns !== undefined && this.queryProcessIdentity) {
+      watch.inFlight = true;
+      void this.inspectWatchedProcessIdentity(watch, claim);
+      return;
+    }
+    this.scheduleProcessExitPoll(watch);
+  }
+
+  private async inspectWatchedProcessIdentity(watch: ProcessExitWatch, claim: OverlayTargetRecoveryClaim): Promise<void> {
+    try {
+      const identity = await this.queryProcessIdentity!(watch.pid);
+      if (!this.isProcessExitWatchCurrent(watch)) return;
+      const currentClaim = readOverlayTargetRecoveryClaim(watch.pid);
+      if (!currentClaim || !recoveryClaimsEqual(claim, currentClaim)) return;
+      if (identity?.pid === watch.pid && isValidProcessCreationTime100ns(identity.creationTime100ns) && identity.creationTime100ns !== claim.creationTime100ns && !watch.identityMismatchDiagnosed) {
+        watch.identityMismatchDiagnosed = true;
+        this.publishDiagnostic({ code: 'target-process-inspection-failed', pid: watch.pid });
+      }
+    } catch {
+      // Inspection failure is unknown, never permission to release ownership.
+    } finally {
+      watch.inFlight = false;
+      if (this.isProcessExitWatchCurrent(watch)) this.scheduleProcessExitPoll(watch);
+    }
+  }
+
+  private isProcessExitWatchCurrent(watch: ProcessExitWatch): boolean {
+    return this.processExitWatchesByPid.get(watch.pid) === watch && watch.generation === this.generation && watch.authorization === this.targetAuthorizationsByPid.get(watch.pid) && !this.activeClientsByPid.has(watch.pid);
+  }
+
+  private scheduleProcessExitPoll(watch: ProcessExitWatch): void {
     watch.timer = setTimeout(
       () => this.pollProcessExit(watch),
       this.processExitPollIntervalMs,

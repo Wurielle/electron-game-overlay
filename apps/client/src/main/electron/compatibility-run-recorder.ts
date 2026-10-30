@@ -157,6 +157,7 @@ export class CompatibilityRunRecorder {
   private nextAttemptNumber = 1;
   private descriptor: number | null = null;
   private watcherStatus: string | null = null;
+  private watcherErrorMessage: string | null = null;
   private watcherFailed = false;
   private inputRequested: boolean | null = null;
   private inputEffective: boolean | null = null;
@@ -382,12 +383,18 @@ export class CompatibilityRunRecorder {
   }
 
   public recordAutoAttachState(state: CompatibilityAutoAttachState): void {
-    if (state.watcherStatus !== this.watcherStatus) {
+    const watcherErrorMessage = sanitizeErrorMessage(state.watcherError);
+    if (
+      state.watcherStatus !== this.watcherStatus ||
+      watcherErrorMessage !== this.watcherErrorMessage
+    ) {
       this.watcherStatus = state.watcherStatus;
+      this.watcherErrorMessage = watcherErrorMessage;
       this.watcherFailed ||= state.watcherStatus === 'failed';
       this.record('watcher.status', {
         status: state.watcherStatus,
         errorPresent: state.watcherError !== null,
+        errorMessage: watcherErrorMessage,
       });
     }
 
@@ -397,11 +404,13 @@ export class CompatibilityRunRecorder {
         continue;
       }
       nextPids.add(snapshot.pid);
+      const errorMessage = sanitizeErrorMessage(snapshot.error);
       const fingerprint = JSON.stringify({
-        processName: snapshot.processName,
+        processName: safeProcessName(snapshot.processName),
         phase: snapshot.phase,
         diagnosticCode: snapshot.diagnostic?.code ?? null,
         errorPresent: snapshot.error !== null,
+        errorMessage,
       });
       if (this.autoAttachFingerprints.get(snapshot.pid) === fingerprint) {
         continue;
@@ -418,6 +427,7 @@ export class CompatibilityRunRecorder {
         {
           phase: snapshot.phase,
           errorPresent: snapshot.error !== null,
+          errorMessage,
           diagnostic:
             snapshot.diagnostic === null
               ? null
@@ -468,6 +478,7 @@ export class CompatibilityRunRecorder {
         processName: safeProcessName(state.processName),
         reason: boundedOptionalString(reason, 80),
         errorPresent: state.error !== null,
+        errorMessage: sanitizeErrorMessage(state.error),
         diagnostic:
           state.diagnostic === null
             ? null
@@ -1106,6 +1117,47 @@ export class CompatibilityRunRecorder {
 function createRunId(started: Date, clientPid: number): string {
   const timestamp = started.toISOString().replace(/[-:]/g, '').replace('.', '');
   return `compatibility-${timestamp}-${clientPid}-${randomBytes(5).toString('hex')}`;
+}
+
+function sanitizeErrorMessage(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  // Only fixed summaries and bounded OS codes leave this boundary, never raw text.
+  const inspected = value.slice(0, 4096);
+  const categories: readonly [RegExp, string][] = [
+    [/\boverlay session readiness failed\b/i, 'Overlay session readiness failed'],
+    [
+      /Failed to open target application process!/i,
+      'Injector could not open target application process (OpenProcess)',
+    ],
+    [
+      /Failed to execute 'LoadLibrary' in target application!/i,
+      'Injector could not execute LoadLibrary in target application',
+    ],
+    [/\bspawn [^\r\n]*\bENOENT\b/, 'Executable not found (ENOENT)'],
+    [
+      /No validated standalone overlay broker could be started/i,
+      'No validated standalone overlay broker could be started',
+    ],
+    [
+      /Unable to prove medium Windows integrity; trusted OS probe failed/i,
+      'Shared overlay broker Windows integrity proof failed',
+    ],
+    [
+      /Shared overlay broker requires proven medium Windows integrity/i,
+      'Shared overlay broker requires medium Windows integrity',
+    ],
+    [/\bloaded-module inspection failed\b/i, 'loaded-module inspection failed'],
+    [/\baccess denied\b/i, 'Access denied'],
+  ];
+  const message =
+    categories.find(([pattern]) => pattern.test(inspected))?.[1] ??
+    'Error details omitted';
+  const windowsCode = /\bWindows error (\d{1,10})\b/i.exec(inspected)?.[1];
+  return windowsCode && Number(windowsCode) <= 0xffffffff
+    ? `${message} with Windows error ${windowsCode}`
+    : message;
 }
 
 function sanitizeReShadeDiagnostic(diagnostic: ReShadeDiagnostic): JsonObject {

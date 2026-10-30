@@ -256,7 +256,7 @@ test('the demo prearms Steam injection and still attempts every detected executa
   assert.doesNotMatch(watcher, /bin:\s*\{\s*filter:/);
 });
 
-test('the normal demo presents an always-visible Ctrl+I dock and an interception menu', () => {
+test('the normal demo presents a shortcut dock without full-target test windows or automatic focus raising', () => {
   const appEntry = readClientFile('src', 'main', 'electron', 'app-entry.ts');
   const devLaunch = readClientFile('src', 'main', 'dev-launch.mts');
   const windowNames = readClientFile(
@@ -281,18 +281,33 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(windowNames, /demoControlOverlay = ["']demo-control-overlay/);
   assert.match(windowFactories, /createDemoControlOverlayWindow/);
   assert.match(windowFactories, /demo-control-overlay\.html/);
-  assert.match(
+  const mainFactory = sourceSection(
     windowFactories,
-    /if \(context\.demoPresentation\)[\s\S]{0,100}followTarget\(\{ area: 'render' \}\)/,
+    'export function createExampleMainOverlayWindow',
+    'export function createExampleStatusOverlayWindow',
   );
+  assert.doesNotMatch(mainFactory, /followTarget/);
+  assert.match(mainFactory, /width:\s*640/);
+  assert.match(mainFactory, /height:\s*360/);
   assert.match(appEntry, /DEMO_PRESENTATION_FLAG/);
   assert.match(
     appEntry,
     /process\.argv\.includes\(DEMO_PRESENTATION_FLAG\)[\s\S]{0,100}!this\.gunFrogInputProof/,
   );
-  assert.match(
+  assert.match(windowFactories, /\.\.\.DEMO_CONTROL_OVERLAY_EXPANDED_SIZE/);
+  const controlSync = sourceSection(
     appEntry,
-    /this\.inputInterceptRequested[\s\S]{0,100}DEMO_CONTROL_OVERLAY_EXPANDED_SIZE[\s\S]{0,100}DEMO_CONTROL_OVERLAY_COMPACT_SIZE/,
+    'private syncDemoControlOverlay()',
+    'private getDemoState()',
+  );
+  assert.doesNotMatch(controlSync, /setBounds/);
+  assert.match(
+    controlOverlay,
+    /body\s*\{[^}]*width: 320px;[^}]*height: 170px;[^}]*contain: paint;/,
+  );
+  assert.match(
+    controlOverlay,
+    /body\.expanded\s*\{[^}]*width: 390px;[^}]*height: 390px;/,
   );
   assert.match(appEntry, /this\.syncDemoControlOverlay\(\)/);
   assert.match(appEntry, /for \(const window of this\.windows\.values\(\)\)/);
@@ -302,8 +317,11 @@ test('the normal demo presents an always-visible Ctrl+I dock and an interception
   assert.match(appEntry, /targetSurfaceRemoved/);
   assert.match(appEntry, /ipcMain\.handle\('overlay:create-popup'/);
   assert.match(appEntry, /this\.overlaySession\.on\('windowFocused'/);
-  assert.match(appEntry, /this\.keepDemoControlOverlayOnTop\(windowId\)/);
-  assert.match(
+  assert.doesNotMatch(
+    appEntry,
+    /keepDemoControlOverlayOnTop|demoControlRaiseQueued/,
+  );
+  assert.doesNotMatch(
     appEntry,
     /current\.hide\(\);[\s\S]{0,80}?current\.show\(\);[\s\S]{0,100}?webContents\.invalidate\(\)/,
   );

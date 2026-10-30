@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { createConnection } = require('node:net');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const test = require('node:test');
 
 const { OverlayBrokerClient } = require('../dist/lib/overlay-broker-client.js');
@@ -22,6 +24,8 @@ const {
   parseOverlayBrokerClientMessage,
 } = require('../dist/lib/overlay-broker-protocol.js');
 const { OverlayBrokerServer } = require('../dist/lib/overlay-broker-server.js');
+
+const fixtureDiscoveryPath = (relativePath) => join(tmpdir(), relativePath);
 
 const TARGET_PID = 43_210;
 const TARGET_EXE = 'C:\\Games\\Shared Game\\game.exe';
@@ -389,7 +393,7 @@ test('broker protocol framing is incremental and version negotiation is capabili
     requestId: 'provider-and-recovery',
     pid: TARGET_PID,
     discoveryPath:
-      'C:\\broker-tests\\provider-and-recovery\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/provider-and-recovery/electron-overlay-transport-v1.json'),
     expectedExecutablePath: TARGET_EXE,
     runtimeGeneration: 41,
     targetTransportMin: 1,
@@ -620,7 +624,7 @@ test('broker-issued aggregate order survives a restart with applications reconne
       requestId: 'recovered-a',
       pid: TARGET_PID,
       discoveryPath:
-        'C:\\broker-tests\\restart-order-a\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/restart-order-a/electron-overlay-transport-v1.json'),
       expectedExecutablePath: TARGET_EXE,
     });
     await waitFor(
@@ -642,7 +646,7 @@ test('broker-issued aggregate order survives a restart with applications reconne
       requestId: 'recovered-b',
       pid: TARGET_PID,
       discoveryPath:
-        'C:\\broker-tests\\restart-order-b\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/restart-order-b/electron-overlay-transport-v1.json'),
       expectedExecutablePath: TARGET_EXE,
     });
     await waitFor(() =>
@@ -718,8 +722,8 @@ test('the highest compatible runtime generation wins the bounded election regard
         }),
       };
       const paths = {
-        v1: 'C:\\broker-tests\\election-v1\\electron-overlay-transport-v1.json',
-        v99: 'C:\\broker-tests\\election-v99\\electron-overlay-transport-v1.json',
+        v1: fixtureDiscoveryPath('broker-tests/election-v1/electron-overlay-transport-v1.json'),
+        v99: fixtureDiscoveryPath('broker-tests/election-v99/electron-overlay-transport-v1.json'),
       };
       const pending = {};
       const first = arrivalOrder[0];
@@ -775,7 +779,7 @@ test('legacy provider metadata defaults to generation one and preserves arrival-
       },
     );
     const legacyPath =
-      'C:\\broker-tests\\legacy-provider\\electron-overlay-transport-v1.json';
+      fixtureDiscoveryPath('broker-tests/legacy-provider/electron-overlay-transport-v1.json');
     legacy.send({
       type: 'broker.target.authorize',
       requestId: 'legacy-provider',
@@ -789,7 +793,7 @@ test('legacy provider metadata defaults to generation one and preserves arrival-
       requestId: 'explicit-v1-provider',
       pid: TARGET_PID,
       discoveryPath:
-        'C:\\broker-tests\\explicit-v1-provider\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/explicit-v1-provider/electron-overlay-transport-v1.json'),
       expectedExecutablePath: TARGET_EXE,
     });
 
@@ -828,7 +832,7 @@ test('package sdkVersion does not influence runtime-provider election', async ()
     olderPackage = await connectRawClient(fixture.pipePath, '0.0.1');
     newerPackage = await connectRawClient(fixture.pipePath, '999.0.0');
     const olderPath =
-      'C:\\broker-tests\\older-package\\electron-overlay-transport-v1.json';
+      fixtureDiscoveryPath('broker-tests/older-package/electron-overlay-transport-v1.json');
     olderPackage.send({
       type: 'broker.target.authorize',
       requestId: 'older-package',
@@ -845,7 +849,7 @@ test('package sdkVersion does not influence runtime-provider election', async ()
       requestId: 'newer-package',
       pid: TARGET_PID,
       discoveryPath:
-        'C:\\broker-tests\\newer-package\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/newer-package/electron-overlay-transport-v1.json'),
       expectedExecutablePath: TARGET_EXE,
       runtimeGeneration: 7,
       targetTransportMin: 1,
@@ -893,12 +897,12 @@ test('an incompatible newer provider loses to a compatible generation-one provid
     });
     const incompatiblePending = incompatible.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\incompatible-newer\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/incompatible-newer/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     void incompatiblePending.catch(() => undefined);
     const compatiblePath =
-      'C:\\broker-tests\\compatible-v1\\electron-overlay-transport-v1.json';
+      fixtureDiscoveryPath('broker-tests/compatible-v1/electron-overlay-transport-v1.json');
     const compatiblePending = compatible.authorizeTarget(
       TARGET_PID,
       compatiblePath,
@@ -930,7 +934,7 @@ test('an election with no compatible runtime provider fails clearly', async () =
     await assert.rejects(
       incompatible.authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\only-incompatible\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/only-incompatible/electron-overlay-transport-v1.json'),
         TARGET_EXE,
       ),
       /No connected application can provide target transport v1/,
@@ -965,7 +969,7 @@ test('authorization start freezes ownership so a later higher generation cannot 
     });
     const lowPending = low.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\frozen-v1\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/frozen-v1/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const transport = await (async () => {
@@ -974,7 +978,7 @@ test('authorization start freezes ownership so a later higher generation cannot 
     })();
     const highPending = high.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\late-v99\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/late-v99/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     let highSettled = false;
@@ -1020,13 +1024,13 @@ test('a pre-authorization owner disconnect promotes the best waiting provider', 
     high.addWindow(2, overlayWindow('pre-route-high'));
     const lowPending = low.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\pre-route-v1\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/pre-route-v1/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     void lowPending.catch(() => undefined);
     await waitFor(() => fixture.transports.length === 1);
     const highPath =
-      'C:\\broker-tests\\pre-route-v99\\electron-overlay-transport-v1.json';
+      fixtureDiscoveryPath('broker-tests/pre-route-v99/electron-overlay-transport-v1.json');
     const highPending = high.authorizeTarget(TARGET_PID, highPath, TARGET_EXE);
     void highPending.catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -1070,12 +1074,12 @@ test('a frozen owner disconnect waits for definitive process exit instead of rei
     });
     await owner.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\vanished-owner\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/vanished-owner/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const followerPending = follower.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\waiting-follower\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/waiting-follower/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     owner.stop();
@@ -1111,7 +1115,7 @@ test('definitive PID exit terminates an already-settled unauthenticated lease wi
     );
     const authorization = await client.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\settled-exit\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/settled-exit/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     assert.equal(authorization.disposition, 'injection-owner');
@@ -1153,7 +1157,7 @@ test('an established survivor outranks a fresh generation 99 app in either recon
         `99.0.0-${arrivalOrder}`,
       );
       const survivorPath =
-        'C:\\broker-tests\\established-survivor\\electron-overlay-transport-v1.json';
+        fixtureDiscoveryPath('broker-tests/established-survivor/electron-overlay-transport-v1.json');
       const sendSurvivor = () =>
         sendRawTargetAuthorization(survivor, {
           requestId: `survivor-${arrivalOrder}`,
@@ -1167,7 +1171,7 @@ test('an established survivor outranks a fresh generation 99 app in either recon
         sendRawTargetAuthorization(fresh, {
           requestId: `fresh-${arrivalOrder}`,
           discoveryPath:
-            'C:\\broker-tests\\fresh-v99\\electron-overlay-transport-v1.json',
+            fixtureDiscoveryPath('broker-tests/fresh-v99/electron-overlay-transport-v1.json'),
           runtimeGeneration: 99,
           targetTransportMax: 99,
           leaseId: 'ffffffffffffffffffffffffffffffff',
@@ -1231,8 +1235,8 @@ test('stable modern lease ordering reproduces an in-flight winner after replay',
       clientA = await connectRawClient(fixture.pipePath, '5.0.0-a');
       clientB = await connectRawClient(fixture.pipePath, '5.0.0-b');
       const paths = {
-        a: 'C:\\broker-tests\\stable-a\\electron-overlay-transport-v1.json',
-        b: 'C:\\broker-tests\\stable-b\\electron-overlay-transport-v1.json',
+        a: fixtureDiscoveryPath('broker-tests/stable-a/electron-overlay-transport-v1.json'),
+        b: fixtureDiscoveryPath('broker-tests/stable-b/electron-overlay-transport-v1.json'),
       };
       const clients = { a: clientA, b: clientB };
       for (const name of arrivalOrder) {
@@ -1267,12 +1271,12 @@ test('stable modern lease ordering reproduces an in-flight winner after replay',
 
 test('a published crash claim lets a fresh provider republish only the pinned route and never reinject', async () => {
   const claimedPath =
-    'C:\\broker-tests\\orphan-survivor\\electron-overlay-transport-v1.json';
+    fixtureDiscoveryPath('broker-tests/orphan-survivor/electron-overlay-transport-v1.json');
   const orphanedClaim = {
     schemaVersion: 1,
     targetPid: TARGET_PID,
     discoveryPath: claimedPath,
-    staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+    staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
     expectedExecutablePath: TARGET_EXE,
     leaseId: '00000000000000000000000000000001',
     phase: 'published',
@@ -1294,7 +1298,7 @@ test('a published crash claim lets a fresh provider republish only the pinned ro
     sendRawTargetAuthorization(fresh, {
       requestId: 'fresh-before-survivor',
       discoveryPath:
-        'C:\\broker-tests\\orphan-fresh\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/orphan-fresh/electron-overlay-transport-v1.json'),
       runtimeGeneration: 99,
       targetTransportMax: 99,
       leaseId: 'ffffffffffffffffffffffffffffffff',
@@ -1339,13 +1343,13 @@ test('a published crash claim lets a fresh provider republish only the pinned ro
 test('a may-consumed claim never regrants injection even to its exact unsettled lease', async () => {
   const run = async (arrivalOrder, lateExactLease = false) => {
     const claimedPath =
-      'C:\\broker-tests\\published-owner\\electron-overlay-transport-v1.json';
+      fixtureDiscoveryPath('broker-tests/published-owner/electron-overlay-transport-v1.json');
     const claimedLease = '22222222222222222222222222222222';
     const claim = {
       schemaVersion: 1,
       targetPid: TARGET_PID,
       discoveryPath: claimedPath,
-      staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+      staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
       expectedExecutablePath: TARGET_EXE,
       leaseId: claimedLease,
       phase: 'published',
@@ -1373,7 +1377,7 @@ test('a may-consumed claim never regrants injection even to its exact unsettled 
           discoveryPath:
             name === 'exact'
               ? claimedPath
-              : 'C:\\broker-tests\\fresh-provider\\electron-overlay-transport-v1.json',
+              : fixtureDiscoveryPath('broker-tests/fresh-provider/electron-overlay-transport-v1.json'),
           runtimeGeneration: name === 'exact' ? 1 : 99,
           targetTransportMax: name === 'exact' ? 1 : 99,
           leaseId:
@@ -1435,12 +1439,12 @@ test('a may-consumed claim never regrants injection even to its exact unsettled 
 
 test('an incomplete claim rejects another lease but its exact replay resumes the original grant', async () => {
   const claimedPath =
-    'C:\\broker-tests\\intent-owner\\electron-overlay-transport-v1.json';
+    fixtureDiscoveryPath('broker-tests/intent-owner/electron-overlay-transport-v1.json');
   let claim = {
     schemaVersion: 1,
     targetPid: TARGET_PID,
     discoveryPath: claimedPath,
-    staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+    staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
     expectedExecutablePath: TARGET_EXE,
     leaseId: '11111111111111111111111111111111',
     phase: 'intent',
@@ -1467,7 +1471,7 @@ test('an incomplete claim rejects another lease but its exact replay resumes the
     sendRawTargetAuthorization(wrongLease, {
       requestId: 'wrong-lease',
       discoveryPath:
-        'C:\\broker-tests\\wrong\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/wrong/electron-overlay-transport-v1.json'),
       runtimeGeneration: 99,
       targetTransportMax: 99,
       leaseId: '99999999999999999999999999999999',
@@ -1522,7 +1526,7 @@ test('an opaque or future recovery claim fails closed while the target PID is li
     sendRawTargetAuthorization(client, {
       requestId: 'opaque-claim',
       discoveryPath:
-        'C:\\broker-tests\\opaque\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/opaque/electron-overlay-transport-v1.json'),
       runtimeGeneration: 99,
       targetTransportMax: 99,
       leaseId: '99999999999999999999999999999999',
@@ -1554,12 +1558,12 @@ test('an opaque or future recovery claim fails closed while the target PID is li
 
 test('a durable claim repins divergent established survivors without ambiguity', async () => {
   const claimedPath =
-    'C:\\broker-tests\\authoritative-claim\\electron-overlay-transport-v1.json';
+    fixtureDiscoveryPath('broker-tests/authoritative-claim/electron-overlay-transport-v1.json');
   const claim = {
     schemaVersion: 1,
     targetPid: TARGET_PID,
     discoveryPath: claimedPath,
-    staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+    staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
     expectedExecutablePath: TARGET_EXE,
     leaseId: '55555555555555555555555555555555',
     phase: 'published',
@@ -1581,7 +1585,7 @@ test('a durable claim repins divergent established survivors without ambiguity',
     sendRawTargetAuthorization(conflicting, {
       requestId: 'conflicting-established',
       discoveryPath:
-        'C:\\broker-tests\\conflict\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/conflict/electron-overlay-transport-v1.json'),
       leaseId: '66666666666666666666666666666666',
       recovery: true,
       routeEstablished: true,
@@ -1621,12 +1625,12 @@ test('recovery accepts constrained and unconstrained members but keeps the claim
     [undefined, false],
   ]) {
     const claimedPath =
-      'C:\\broker-tests\\optional-executable\\electron-overlay-transport-v1.json';
+      fixtureDiscoveryPath('broker-tests/optional-executable/electron-overlay-transport-v1.json');
     const claim = {
       schemaVersion: 1,
       targetPid: TARGET_PID,
       discoveryPath: claimedPath,
-      staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+      staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
       ...(claimExpectedExecutablePath === undefined
         ? {}
         : { expectedExecutablePath: claimExpectedExecutablePath }),
@@ -1669,12 +1673,12 @@ test('recovery accepts constrained and unconstrained members but keeps the claim
   }
 
   const claimedPath =
-    'C:\\broker-tests\\mismatched-executable\\electron-overlay-transport-v1.json';
+    fixtureDiscoveryPath('broker-tests/mismatched-executable/electron-overlay-transport-v1.json');
   const claim = {
     schemaVersion: 1,
     targetPid: TARGET_PID,
     discoveryPath: claimedPath,
-    staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+    staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
     expectedExecutablePath: TARGET_EXE,
     leaseId: '44444444444444444444444444444444',
     phase: 'published',
@@ -1715,12 +1719,12 @@ test('recovery accepts constrained and unconstrained members but keeps the claim
 
 test('a recovered owner is rejected when authentication disproves its executable constraint', async () => {
   const claimedPath =
-    'C:\\broker-tests\\unconstrained-claim\\electron-overlay-transport-v1.json';
+    fixtureDiscoveryPath('broker-tests/unconstrained-claim/electron-overlay-transport-v1.json');
   const claim = {
     schemaVersion: 1,
     targetPid: TARGET_PID,
     discoveryPath: claimedPath,
-    staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+    staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
     leaseId: '45454545454545454545454545454545',
     phase: 'published',
     record: {
@@ -1787,7 +1791,7 @@ test('a matching established follower can assume a vanished recovery tombstone w
   let recoveryB;
   try {
     const recoveryPath =
-      'C:\\broker-tests\\shared-recovery-route\\electron-overlay-transport-v1.json';
+      fixtureDiscoveryPath('broker-tests/shared-recovery-route/electron-overlay-transport-v1.json');
     recoveryA = await connectRawClient(fixture.pipePath, '1.0.0-recovery-a');
     sendRawTargetAuthorization(recoveryA, {
       requestId: 'recovery-a',
@@ -1852,7 +1856,7 @@ test('authentication during route authorization can only join and never grants i
     const client = await fixture.makeClient('1.0.0-auth-race');
     const authorization = await client.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\auth-race\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/auth-race/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     assert.equal(authorization.disposition, 'joined-existing');
@@ -1888,7 +1892,7 @@ test('definitive exit while authorization is pending rejects the owner and never
     sendRawTargetAuthorization(client, {
       requestId: 'exit-during-authorization',
       discoveryPath:
-        'C:\\broker-tests\\exit-race\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/exit-race/electron-overlay-transport-v1.json'),
       leaseId: '77777777777777777777777777777777',
       recovery: false,
       routeEstablished: false,
@@ -1944,7 +1948,7 @@ test('transport loss while authorization is pending waits for fresh authenticati
     sendRawTargetAuthorization(client, {
       requestId: 'loss-during-authorization',
       discoveryPath:
-        'C:\\broker-tests\\loss-race\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/loss-race/electron-overlay-transport-v1.json'),
       leaseId: '88888888888888888888888888888888',
       recovery: false,
       routeEstablished: false,
@@ -2005,7 +2009,7 @@ test('authorization rejection after transport loss remains queued for reauthenti
     sendRawTargetAuthorization(client, {
       requestId: 'reject-after-transport-loss',
       discoveryPath:
-        'C:\\broker-tests\\reject-race\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/reject-race/electron-overlay-transport-v1.json'),
       leaseId: '99999999999999999999999999999999',
       recovery: false,
       routeEstablished: false,
@@ -2066,7 +2070,7 @@ test('independent SDK versions share one exact-PID target with isolated window I
     clientA.sendFrameBuffer(7, Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]), 2, 1);
     const authorizationA = await clientA.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\app-a\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/app-a/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     assert.equal(authorizationA.disposition, 'injection-owner');
@@ -2082,7 +2086,7 @@ test('independent SDK versions share one exact-PID target with isolated window I
     const authorizationBPromise = clientB
       .authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\app-b\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/app-b/electron-overlay-transport-v1.json'),
         TARGET_EXE.toLowerCase(),
       )
       .then((authorization) => {
@@ -2130,7 +2134,7 @@ test('independent SDK versions share one exact-PID target with isolated window I
       pid: TARGET_PID,
       executablePath: TARGET_EXE,
       discoveryPath:
-        'C:\\broker-tests\\app-a\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/app-a/electron-overlay-transport-v1.json'),
     });
 
     transport.emit('game.input', {
@@ -2221,12 +2225,12 @@ test('one application crash removes only its scene and keeps the surviving app i
     clientB.addWindow(5, overlayWindow('surviving-app', 30));
     await clientA.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\crashing-app\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/crashing-app/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const joined = clientB.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\surviving-app\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/surviving-app/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const transport = fixture.transports[0];
@@ -2284,7 +2288,7 @@ test('an incompatible SDK is rejected without disturbing an active target', asyn
     compatible.addWindow(3, overlayWindow('compatible-app'));
     const authorization = await compatible.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\compatible-app\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/compatible-app/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const transport = fixture.transports[0];
@@ -2346,13 +2350,13 @@ test('an unauthenticated wrong-executable member never reaches the target scene 
 
     const correctAuthorizationPromise = correct.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\validated-scene\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/validated-scene/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const wrongAuthorizationOutcome = wrong
       .authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\wrong-scene\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/wrong-scene/electron-overlay-transport-v1.json'),
         'C:\\Games\\Different.exe',
       )
       .then(
@@ -2402,12 +2406,12 @@ test('joined apps with a conflicting executable identity are rejected', async ()
     const clientB = await fixture.makeClient('5.1.0');
     const authorizationA = await clientA.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\identity-a\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/identity-a/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const authorizationBPromise = clientB.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\identity-b\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/identity-b/electron-overlay-transport-v1.json'),
       'C:\\Games\\Different Game\\different.exe',
     );
     const transport = fixture.transports[0];
@@ -2432,7 +2436,7 @@ test('an authenticated target survives zero apps and replays state before a late
     clientA.addWindow(12, overlayWindow('first-app'));
     const authorizationA = await clientA.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\persistent-owner\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/persistent-owner/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const transport = fixture.transports[0];
@@ -2489,7 +2493,7 @@ test('an authenticated target survives zero apps and replays state before a late
     const authorizationC = await clientC
       .authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\late-client\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/late-client/electron-overlay-transport-v1.json'),
         `\\\\?\\${TARGET_EXE}`,
       )
       .then((authorization) => {
@@ -2502,7 +2506,7 @@ test('an authenticated target survives zero apps and replays state before a late
       pid: TARGET_PID,
       executablePath: TARGET_EXE,
       discoveryPath:
-        'C:\\broker-tests\\persistent-owner\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/persistent-owner/electron-overlay-transport-v1.json'),
     });
     assert.equal(transport.authorizations.length, 1);
     assert.deepEqual(
@@ -2547,7 +2551,7 @@ test('a late app waits through transport loss and joins only after runtime reaut
     const clientA = await fixture.makeClient('7.0.0');
     const authorizationA = await clientA.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\transport-owner\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/transport-owner/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const transport = fixture.transports[0];
@@ -2571,7 +2575,7 @@ test('a late app waits through transport loss and joins only after runtime reaut
     const authorizationBPromise = clientB
       .authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\transport-waiter\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/transport-waiter/electron-overlay-transport-v1.json'),
         TARGET_EXE,
       )
       .then((authorization) => {
@@ -2610,7 +2614,7 @@ test('a late app waiting through transport loss is rejected if the target exits'
     const clientA = await fixture.makeClient('7.1.0');
     await clientA.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\exiting-owner\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/exiting-owner/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     const transport = fixture.transports[0];
@@ -2623,7 +2627,7 @@ test('a late app waiting through transport loss is rejected if the target exits'
     const clientB = await fixture.makeClient('7.2.0');
     const waitingAuthorization = clientB.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\exiting-waiter\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/exiting-waiter/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2660,7 +2664,7 @@ test('idle shutdown waits for the last authenticated target anchor to exit', asy
     await client.whenReady();
     await client.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\idle-anchor\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/idle-anchor/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     transport.emit('game.process', { pid: TARGET_PID, path: TARGET_EXE });
@@ -2712,7 +2716,7 @@ test('a settled lease recovers from broker loss and retries transient reauthoriz
     const authorization = await client
       .authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\restart-owner\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/restart-owner/electron-overlay-transport-v1.json'),
         TARGET_EXE,
       )
       .then((value) => {
@@ -2776,9 +2780,9 @@ test('a settled lease recovers from broker loss and retries transient reauthoriz
 
     await waitFor(() => reauthorizationAttempts === 3, 4_000);
     assert.deepEqual(attemptedDiscoveryPaths, [
-      'C:\\broker-tests\\restart-owner\\electron-overlay-transport-v1.json',
-      'C:\\broker-tests\\restart-owner\\electron-overlay-transport-v1.json',
-      'C:\\broker-tests\\restart-owner\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/restart-owner/electron-overlay-transport-v1.json'),
+      fixtureDiscoveryPath('broker-tests/restart-owner/electron-overlay-transport-v1.json'),
+      fixtureDiscoveryPath('broker-tests/restart-owner/electron-overlay-transport-v1.json'),
     ]);
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(reauthorizationAttempts, 3);
@@ -2840,7 +2844,7 @@ test('a settled replay is retired terminally when the target exits before reauth
     );
     await client.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\terminal-replay\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/terminal-replay/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     initialTransport.emit('game.process', {
@@ -2902,7 +2906,7 @@ test('a caught pre-consumable intent failure does not strand the PID for a new a
             schemaVersion: 1,
             targetPid: TARGET_PID,
             discoveryPath: args[1],
-            staticDiscoveryPath: `C:\\broker-tests\\temp\\electron-overlay-transport-v1.pid-${TARGET_PID}.json`,
+            staticDiscoveryPath: fixtureDiscoveryPath(`broker-tests/temp/electron-overlay-transport-v1.pid-${TARGET_PID}.json`),
             expectedExecutablePath: args[2],
             leaseId: args[3]?.leaseId,
             phase: 'intent',
@@ -2926,7 +2930,7 @@ test('a caught pre-consumable intent failure does not strand the PID for a new a
     await assert.rejects(
       first.authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\caught-intent\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/caught-intent/electron-overlay-transport-v1.json'),
         TARGET_EXE,
       ),
       /caught intent publication failure/i,
@@ -2935,7 +2939,7 @@ test('a caught pre-consumable intent failure does not strand the PID for a new a
     const second = await fixture.makeClient('2.0.0-new-lease');
     const authorization = await second.authorizeTarget(
       TARGET_PID,
-      'C:\\broker-tests\\caught-intent\\electron-overlay-transport-v1.json',
+      fixtureDiscoveryPath('broker-tests/caught-intent/electron-overlay-transport-v1.json'),
       TARGET_EXE,
     );
     assert.equal(authorization.disposition, 'injection-owner');
@@ -2974,7 +2978,7 @@ test('an initial target authorization failure remains terminal and is not retrie
     await assert.rejects(
       client.authorizeTarget(
         TARGET_PID,
-        'C:\\broker-tests\\initial-failure\\electron-overlay-transport-v1.json',
+        fixtureDiscoveryPath('broker-tests/initial-failure/electron-overlay-transport-v1.json'),
         TARGET_EXE,
       ),
       /target-authorization-failed:.*initial authorization failure/i,

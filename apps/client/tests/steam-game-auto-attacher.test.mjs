@@ -1,6 +1,36 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
+
+test('packaged watcher factory selects bundled Node without PATH and preserves development resolution', () => {
+  const source = fs.readFileSync(new URL('../src/main/electron/app-entry.ts', import.meta.url), 'utf8');
+  const expression = source.match(/new ForkedProcessWatcher\([\s\S]*?\n\s+\),/)[0].slice(0, -1);
+  const resourcesPath = path.resolve('portable-demo/resources');
+  const factoryArgs = (isPackaged) => new Function('app', 'process', 'path', 'ForkedProcessWatcher', 'resolveProcessWatcherEntry', 'reshadeConfig', `return ${expression}`)(
+    { isPackaged }, { resourcesPath }, path, function (...args) { return args; },
+    () => path.resolve('watcher.cjs'), { injectorPath: path.resolve('inject.exe') },
+  );
+  for (const env of [{ PATH: '' }, { PATH: '', npm_node_execpath: path.resolve('external/node.exe') }]) {
+    assert.equal(resolveNodeExecutable(factoryArgs(true)[3], env, path.resolve('ElectronGameOverlayDemo.exe')), path.join(resourcesPath, 'node/node.exe'));
+  }
+  assert.equal(resolveNodeExecutable(factoryArgs(false)[3], { PATH: '' }, path.resolve('ElectronGameOverlayDemo.exe')), 'node');
+  assert.equal(resolveNodeExecutable(factoryArgs(false)[3], { npm_node_execpath: process.execPath }, path.resolve('electron.exe')), process.execPath);
+});
+test('broker test mode disables the exclusive prearmed lane without changing default Steam attachment', () => {
+  const source = fs.readFileSync(new URL('../src/main/electron/app-entry.ts', import.meta.url), 'utf8');
+  const assignment = source.match(/this\.steamGameAutoAttacher =[\s\S]*?: null;/)[0];
+  const configure = new Function('SteamGameAutoAttacher', 'steamAutoAttachRequested', 'reshadeConfig', 'process', `${assignment}\nreturn this.steamGameAutoAttacher;`);
+  const capture = function (options) { return options; };
+  const context = { overlaySession: {} };
+  assert.equal(configure.call(context, capture, true, {}, { argv: ['--steam-exact-pid-only'] }).prearmedPathInjection, false);
+  assert.equal(configure.call(context, capture, true, {}, { argv: ['--steam-exact-pid-only'] }).waitForSessionReady, true);
+  assert.equal(configure.call(context, capture, true, {}, { argv: [] }).prearmedPathInjection, true);
+  assert.equal(configure.call(context, capture, true, {}, { argv: [] }).waitForSessionReady, false);
+  assert.equal(configure.call(context, capture, false, {}, { argv: ['--steam-exact-pid-only'] }), null);
+});
+
 import { ReShadeOperationError } from 'electron-game-overlay';
 import { createReShadeOperationError } from '../../../libs/electron-game-overlay/dist/lib/reshade-launcher.js';
 import {
@@ -10,6 +40,22 @@ import {
   SteamGameAutoAttacher,
   stripAutomaticTargeting,
 } from '../src/main/electron/steam-game-auto-attacher.ts';
+
+test('watcher fork strips inherited preload hooks case-insensitively and parent flags', async () => {
+  const keys = ['NoDe_OpTiOnS', 'node_path', 'Electron_Run_As_Node'];
+  const saved = keys.map(key => process.env[key]);
+  let options;
+  const child = createFakeChildProcess();
+  try {
+    for (const key of keys) process.env[key] = 'untrusted';
+    const watcher = new ForkedProcessWatcher(path.resolve('watcher.cjs'), path.resolve('inject.exe'), (_entry, _args, opts) => { options = opts; return child; }, process.execPath);
+    watcher.start({ onEvent() {}, onStatus() {} });
+    assert.equal(Object.keys(options.env).some(key => /^(NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE)$/i.test(key)), false);
+    assert.deepEqual(options.execArgv, []);
+    child.emit('exit', 0, null);
+    await watcher.stop();
+  } finally { keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; }); }
+});
 
 test('Node executable resolution avoids Electron and has a PATH fallback', () => {
   assert.equal(
@@ -51,8 +97,8 @@ test('forked watcher uses real Node and preserves a detailed startup failure', (
   const calls = [];
   const statuses = [];
   const watcher = new ForkedProcessWatcher(
-    'C:\\client\\process-watcher\\index.cjs',
-    'C:\\runtime\\inject.exe',
+    path.resolve('client/process-watcher/index.cjs'),
+    path.resolve('runtime/inject.exe'),
     (...args) => {
       calls.push(args);
       return child;
@@ -66,7 +112,7 @@ test('forked watcher uses real Node and preserves a detailed startup failure', (
   });
 
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0][1], ['C:\\runtime\\inject.exe']);
+  assert.deepEqual(calls[0][1], [path.resolve('runtime/inject.exe')]);
   assert.equal(calls[0][2].execPath, 'C:\\Program Files\\nodejs\\node.exe');
   assert.equal(Object.hasOwn(calls[0][2].env, 'ELECTRON_RUN_AS_NODE'), false);
 
@@ -726,6 +772,140 @@ test('an exact startup-grace loser waits for its prearmed owner outcome', async 
   );
 
   await autoAttacher.dispose();
+});
+
+test('broker readiness gate stages in parallel and starts observation after session and first prepared launcher', { timeout: 2000 }, async (t) => {
+  for (const sessionFirst of [true, false]) {
+    const ready = createDeferred();
+    const preparations = [createDeferred(), createDeferred()];
+    const session = new FakeOverlaySession();
+    session.whenReady = () => ready.promise;
+    const watcher = new FakeProcessWatcher();
+    const launchers = [];
+    const attacher = new SteamGameAutoAttacher({
+      session, reshadeConfig: createConfig(), watcherFactory: () => watcher,
+      waitForSessionReady: true, prearmedPathInjection: false, preparedLauncherPoolSize: 2,
+      launcherFactory: config => {
+        const index = launchers.length;
+        const launcher = new FakeLauncher(config, [], () => preparations[index]?.promise ?? Promise.resolve());
+        launchers.push(launcher);
+        return launcher;
+      },
+    });
+    t.after(() => attacher.dispose());
+    attacher.start();
+    assert.equal(launchers.length, 2, 'pool staging starts while session readiness is pending');
+    assert.equal(watcher.handlers, null, 'native watcher started before broker readiness');
+    (sessionFirst ? ready : preparations[1]).resolve();
+    await flushMicrotasks();
+    assert.equal(watcher.handlers, null, 'both readiness conditions are required');
+    assert.equal(attacher.watcherStatus, 'starting');
+    (sessionFirst ? preparations[1] : ready).resolve();
+    await flushMicrotasks();
+    assert.notEqual(watcher.handlers, null, 'one prepared success is sufficient; the other remains pending');
+    assert.equal(attacher.watcherStatus, 'starting');
+    watcher.ready();
+    assert.equal(attacher.watcherStatus, 'running');
+    const info = processInfo(9901, 'D:/Steam/steamapps/common/Game/UnityCrashHandler64.exe');
+    watcher.create(info);
+    await flushMicrotasks();
+    assert.deepEqual(launchers[1].target, { processName: info.process, pid: info.pid, executablePath: info.filepath });
+    assert.equal(launchers[0].target, null);
+    await attacher.dispose();
+    preparations[0].resolve();
+    await flushMicrotasks();
+  }
+});
+
+test('broker readiness rejection fails closed even when native preparation finishes later', { timeout: 2000 }, async (t) => {
+  const ready = createDeferred();
+  const preparation = createDeferred();
+  const session = new FakeOverlaySession();
+  session.whenReady = () => ready.promise;
+  const watcher = new FakeProcessWatcher();
+  const attacher = new SteamGameAutoAttacher({
+    session, reshadeConfig: createConfig(), watcherFactory: () => watcher,
+    waitForSessionReady: true, preparedLauncherPoolSize: 1,
+    launcherFactory: config => new FakeLauncher(config, [], () => preparation.promise),
+  });
+  t.after(() => attacher.dispose());
+  attacher.start();
+  await flushMicrotasks();
+  ready.reject(new Error('private filesystem detail ' + 'x'.repeat(5000)));
+  await flushMicrotasks();
+  assert.equal(attacher.watcherStatus, 'failed');
+  assert.equal(attacher.watcherError, 'overlay session readiness failed');
+  preparation.resolve();
+  await flushMicrotasks();
+  assert.equal(watcher.handlers, null);
+  assert.equal(attacher.watcherStatus, 'failed');
+});
+
+test('broker readiness gate ignores settlement after disposal and supports a disabled pool', { timeout: 2000 }, async (t) => {
+  for (const disposeEarly of [false, true]) {
+    const ready = createDeferred();
+    const session = new FakeOverlaySession();
+    session.whenReady = () => ready.promise;
+    const watcher = new FakeProcessWatcher();
+    const attacher = new SteamGameAutoAttacher({
+      session, reshadeConfig: createConfig(), watcherFactory: () => watcher,
+      waitForSessionReady: true, preparedLauncherPoolSize: 0,
+      launcherFactory: () => assert.fail('disabled pool must not stage launchers'),
+    });
+    t.after(() => attacher.dispose());
+    attacher.start();
+    assert.equal(watcher.handlers, null);
+    if (disposeEarly) await attacher.dispose();
+    ready.resolve();
+    await flushMicrotasks();
+    assert.equal(watcher.handlers === null, disposeEarly);
+    assert.equal(attacher.watcherStatus, disposeEarly ? 'stopped' : 'starting');
+    await attacher.dispose();
+    assert.ok([...session.handlers.values()].every(handlers => handlers.size === 0));
+  }
+});
+
+test('broker readiness gate fails explicitly when session readiness is unavailable', { timeout: 2000 }, async (t) => {
+  const session = new FakeOverlaySession();
+  session.whenReady = undefined;
+  const watcher = new FakeProcessWatcher();
+  const attacher = new SteamGameAutoAttacher({
+    session, reshadeConfig: createConfig(), watcherFactory: () => watcher,
+    waitForSessionReady: true, preparedLauncherPoolSize: 0,
+  });
+  t.after(() => attacher.dispose());
+  attacher.start();
+  await flushMicrotasks();
+  assert.equal(attacher.watcherStatus, 'failed');
+  assert.equal(watcher.handlers, null);
+});
+
+test('broker readiness gate keeps starting through preparation failure until a retry succeeds', { timeout: 2000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const watcher = new FakeProcessWatcher();
+  const launchers = [];
+  const attacher = new SteamGameAutoAttacher({
+    session: new FakeOverlaySession(), reshadeConfig: createConfig(), watcherFactory: () => watcher,
+    waitForSessionReady: true, preparedLauncherPoolSize: 1,
+    preparedLauncherRetryBaseDelayMs: 50,
+    launcherFactory: config => {
+      const first = launchers.length === 0;
+      const launcher = new FakeLauncher(config, [], () => first ? Promise.reject(new Error('staging failed')) : Promise.resolve());
+      launchers.push(launcher);
+      return launcher;
+    },
+  });
+  t.after(() => attacher.dispose());
+  attacher.start();
+  await flushMicrotasks();
+  assert.equal(attacher.watcherStatus, 'starting');
+  assert.equal(watcher.handlers, null);
+  t.mock.timers.tick(50);
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+  assert.notEqual(watcher.handlers, null);
+  watcher.ready();
+  assert.equal(attacher.watcherStatus, 'running');
 });
 
 test('the watcher starts before prewarm and queued targets consume immediately replenished slots', async () => {

@@ -100,9 +100,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "F2A88AD705204DBB8E18D86E7147A13C"
+$ExpectedAddonBuildId = "31D321732C1B424796593C0778FB722E"
 # Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 1
+$RuntimeGeneration = 2
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -159,6 +159,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-injector-exact-target-path.patch"
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
+    injectorProcessInstanceBindingPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
 }
 
 $CMake = Resolve-Executable "cmake.exe"
@@ -244,7 +246,8 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 27 -or
+if ($BuildStamp.schemaVersion -ne 28 -or
+    $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -271,11 +274,12 @@ if (-not (Test-Path -LiteralPath $ManagerSourcePath -PathType Leaf)) {
 }
 Assert-NotReparsePoint $ManagerSourcePath
 $PackageBuildStamp = [ordered]@{
-    schemaVersion = 3
+    schemaVersion = 4
     kind = "electron-game-overlay-runtime-build"
     platform = $ArchitectureConfig.PackagePlatform
     configuration = "RelWithDebInfo"
     addonBuildId = $ExpectedAddonBuildId
+    injectorProcessInstanceBinding = 1
     managerProtocolSchemaVersion = 1
     runtimeGeneration = $RuntimeGeneration
     targetTransportMin = $TargetTransportMin

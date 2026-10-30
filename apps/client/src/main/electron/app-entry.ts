@@ -13,8 +13,6 @@ import {
   createExamplePopupOverlayWindow,
   createExampleStatusOverlayWindow,
   createExampleVideoOverlayWindow,
-  DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
-  DEMO_CONTROL_OVERLAY_EXPANDED_SIZE,
 } from './example-overlay-windows';
 import type { OverlayWindowContext } from './example-overlay-windows';
 import {
@@ -36,7 +34,6 @@ import {
   type ReShadeTarget,
 } from 'electron-game-overlay';
 import {
-  INPUT_INTERCEPT_ACCELERATOR,
   InputInterceptShortcut,
 } from './input-intercept-shortcut';
 import {
@@ -102,7 +99,6 @@ class Application {
   private gunFrogButtonsReady = false;
   private gunFrogTargetConnected = false;
   private gunFrogProofReadyLogged = false;
-  private demoControlRaiseQueued = false;
   private disposed = false;
 
   constructor(reshadeConfig: ReShadeLaunchConfig | null = null) {
@@ -137,12 +133,18 @@ class Application {
         ? new SteamGameAutoAttacher({
             session: this.overlaySession,
             reshadeConfig,
+            prearmedPathInjection: !process.argv.includes('--steam-exact-pid-only'),
+            waitForSessionReady: process.argv.includes('--steam-exact-pid-only'),
             launcherEventHandler: (event) =>
               this.handleReShadeLauncherEvent(event),
             watcherFactory: () =>
               new ForkedProcessWatcher(
                 resolveProcessWatcherEntry(),
                 reshadeConfig.injectorPath,
+                undefined,
+                app.isPackaged
+                  ? path.join(process.resourcesPath, 'node', 'node.exe')
+                  : undefined,
               ),
           })
         : null;
@@ -209,7 +211,6 @@ class Application {
         pid,
         focusWindowId: windowId,
       });
-      this.keepDemoControlOverlayOnTop(windowId);
     });
   }
 
@@ -643,12 +644,12 @@ class Application {
     try {
       if (!this.inputInterceptShortcut.register()) {
         console.warn(
-          `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`,
+          'Global input interception shortcut unavailable',
         );
       }
     } catch (error) {
       console.warn(
-        `Cannot register global input interception shortcut ${INPUT_INTERCEPT_ACCELERATOR}`,
+        'Global input interception shortcut unavailable',
         error,
       );
     }
@@ -682,9 +683,6 @@ class Application {
     if (visible) {
       const overlayWindow = this.ensureExampleOverlayWindow(name);
       overlayWindow.show();
-      if (name !== AppWindows.demoControlOverlay) {
-        this.keepDemoControlOverlayOnTop(overlayWindow.nativeId);
-      }
     } else {
       this.overlayWindows.get(name)?.hide();
     }
@@ -745,11 +743,6 @@ class Application {
       AppWindows.demoControlOverlay,
     );
     overlayWindow.show();
-    overlayWindow.setBounds(
-      this.inputInterceptRequested
-        ? DEMO_CONTROL_OVERLAY_EXPANDED_SIZE
-        : DEMO_CONTROL_OVERLAY_COMPACT_SIZE,
-    );
   }
 
   private getDemoState() {
@@ -760,10 +753,11 @@ class Application {
       inputInterceptRequested: this.inputInterceptRequested,
       inputInterceptEffective: this.inputInterceptEffective,
       runtime: this.reshadeLauncher ? 'reshade' : null,
+      inputInterceptAccelerator: this.inputInterceptShortcut.accelerator,
       presentation: this.demoPresentationEnabled
         ? {
             enabled: true as const,
-            shortcut: INPUT_INTERCEPT_ACCELERATOR,
+            shortcut: this.inputInterceptShortcut.accelerator,
             menuExpanded: this.inputInterceptRequested,
           }
         : null,
@@ -937,40 +931,6 @@ class Application {
       `HUDHOOK_CLIENT_INPUT_INTERCEPT_ACK intercepting=${intercepting}`,
     );
     this.maybeLogGunFrogProofReady();
-  }
-
-  private keepDemoControlOverlayOnTop(focusWindowId: number) {
-    if (
-      !this.demoPresentationEnabled ||
-      this.demoControlRaiseQueued ||
-      !Number.isSafeInteger(focusWindowId) ||
-      focusWindowId <= 0
-    ) {
-      return;
-    }
-    const controlOverlay = this.overlayWindows.get(
-      AppWindows.demoControlOverlay,
-    );
-    if (!controlOverlay?.visible || focusWindowId === controlOverlay.nativeId) {
-      return;
-    }
-
-    this.demoControlRaiseQueued = true;
-    queueMicrotask(() => {
-      this.demoControlRaiseQueued = false;
-      const current = this.overlayWindows.get(AppWindows.demoControlOverlay);
-      if (
-        this.disposed ||
-        current !== controlOverlay ||
-        !current.visible ||
-        current.browserWindow.isDestroyed()
-      ) {
-        return;
-      }
-      current.hide();
-      current.show();
-      current.browserWindow.webContents.invalidate();
-    });
   }
 
   private handleTargetTransportEnded(pid: number) {

@@ -1,4 +1,5 @@
 export { ElectronGameOverlay } from './electron-game-overlay.js';
+export type { ElectronGameOverlayOptions } from './electron-game-overlay.js';
 export { ElectronOverlayWindow } from './electron-overlay-window.js';
 export { OverlaySession } from './overlay-session.js';
 export {

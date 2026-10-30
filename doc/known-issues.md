@@ -4,6 +4,26 @@ Since we need to inject a dll into an existing game process, it will definitely 
 
 known issues:
 
+### Antivirus detection of injection helpers
+
+The Windows validation demo can be flagged by antivirus software during
+injection. Microsoft Defender has been observed reporting
+`Behavior:Win32/DefenseEvasion.A!ml` and removing temporary
+`reshade-runs\path-watch-…\inject.exe` helpers. Subsequent attachment attempts
+can fail even while the demo and its process watcher remain running.
+
+In a reported Gun Frog test, explicitly allowing the detected item locally
+restored operation. This is a user-confirmed testing workaround, not a Microsoft
+false-positive determination or a guarantee that every build is safe. Review
+the exact affected file before overriding a detection; do not disable antivirus
+protection or broadly exclude temporary folders. See Microsoft's
+[Protection History guidance](https://support.microsoft.com/en-us/windows/security/windows-security/protection-history-in-the-windows-security-app).
+
+For distribution, submit the flagged binary and reproduction steps for
+[Microsoft's software-developer review](https://learn.microsoft.com/en-us/defender-xdr/developer-faq).
+Consistent code signing helps identify the publisher but does not guarantee
+that behavioral detections will stop.
+
 ### Same-PID multi-application boundary
 
 Independent applications can share one target only when every participant uses
@@ -36,11 +56,19 @@ still be confused with an unusually fast PID reuse if no broker observed the
 intervening exit.
 
 The current broker trust boundary is the Windows user account. It does not yet
-verify the hello PID against the named-pipe peer, apply a custom pipe ACL, or
-enforce per-client scene/queue memory quotas. It must not run elevated relative
-to clients. Process-creation identity, bounded stalled-owner diagnostics, a
-dedicated non-RunAsNode broker binary, and package-install acceptance remain
-hardening work. See
+verify the hello PID against the named-pipe peer or apply a custom pipe ACL.
+Standalone startup rejects elevated or unknown-integrity callers; cross-user or
+cross-integrity delegation is unsupported. The standalone broker no longer
+depends on Electron's RunAsNode fuse. Optional registration and independent
+cached distributions do not remove the pre-graphics attachment deadline.
+
+Broker-wide metadata/frame admission and per-peer pending-queue limits provide
+basic memory/backpressure protection, not per-app scheduling or a total process
+memory guarantee. More elaborate quotas are deferred unless concrete usage
+justifies them. Process-creation identity, further stalled-owner diagnostics,
+and published-package install acceptance remain hardening work. Controlled
+broker tests and a production package build are not real-game native acceptance.
+See
 [`multi-application-broker.md`](multi-application-broker.md) for the internal
 state and versioning contract.
 
