@@ -45,7 +45,7 @@ import {
 import type { OverlayBrokerInstallationOptions } from './overlay-broker-installation.js';
 import type { OverlayDiagnostic, Disposable } from './types.js';
 
-const SDK_VERSION = '0.1.0-rc.2';
+const SDK_VERSION = '0.1.0-rc.7';
 const HANDSHAKE_TIMEOUT_MS = 5_000;
 const MIN_RETRY_DELAY_MS = 25;
 const MAX_RETRY_DELAY_MS = 500;
@@ -156,6 +156,8 @@ export class OverlayBrokerClient implements NativeOverlay {
   private brokerSpawnRetryAttempt = 0;
   private nextBrokerSpawnAttemptAt = 0;
   private inputIntercept: boolean | undefined;
+  private targetAdmissionPolicy?: (pid:number,path:string,creationTime100ns?:string)=>boolean;
+  private readonly suppressedTargetPids = new Set<number>();
   private legacyTransport: OverlayLoopbackTransport | undefined;
   private legacyReferences = 0;
   private legacyLockRelease: Disposable | undefined;
@@ -348,6 +350,17 @@ export class OverlayBrokerClient implements NativeOverlay {
    * Preserves pre-creation name/path watcher support. This lane is deliberately
    * exclusive; same-PID multi-app multiplexing requires an exact PID lease.
    */
+  /** Application-local early-lane admission; unrelated broker members are unaffected. */
+  public setTargetAdmissionPolicy(policy:(pid:number,path:string,creationTime100ns?:string)=>boolean):void {
+    this.targetAdmissionPolicy=policy;this.legacyTransport?.setTargetAdmissionPolicy(policy);
+  }
+
+  /** Local early-lane gate only; broker exact-PID leases retain existing release semantics. */
+  public setTargetSuppressed(pid:number,suppressed:boolean):void {
+    if(suppressed)this.suppressedTargetPids.add(pid);else this.suppressedTargetPids.delete(pid);
+    this.legacyTransport?.setTargetSuppressed(pid,suppressed);
+  }
+
   public async authorizeGlobalTarget(): Promise<Disposable> {
     if (!this.started || this.fatal) {
       throw new Error('Overlay broker client is not running');
@@ -377,10 +390,15 @@ export class OverlayBrokerClient implements NativeOverlay {
             );
           }
         }
-        if (this.requestedFocusWindowId !== undefined) transport.setWindowFocus(this.requestedFocusWindowId, true);
+        for (const [windowId, cursor] of this.cursors)
+          transport.setWindowCursor?.(windowId, cursor);
+        if (this.requestedFocusWindowId !== undefined)
+          transport.setWindowFocus(this.requestedFocusWindowId, true);
         if (this.inputIntercept !== undefined) {
           transport.setInputIntercept(this.inputIntercept);
         }
+        if(this.targetAdmissionPolicy)transport.setTargetAdmissionPolicy(this.targetAdmissionPolicy);
+        for(const pid of this.suppressedTargetPids)transport.setTargetSuppressed(pid,true);
         transport.start();
         await transport.whenReady();
       } catch (error) {
@@ -447,6 +465,7 @@ export class OverlayBrokerClient implements NativeOverlay {
     this.targetLeases.clear();
     this.leasesByRequestId.clear();
     this.windows.clear();
+    this.cursors.clear();
     this.requestedFocusWindowId = undefined;
     this.inputTranslatorsByPid.clear();
     this.inputIntercept = undefined;
@@ -490,6 +509,15 @@ export class OverlayBrokerClient implements NativeOverlay {
     this.legacyTransport?.setInputIntercept(intercept);
   }
 
+  private supportsWindowCursor = false;
+  private readonly cursors = new Map<number, number>();
+  public setWindowCursor(windowId: number, cursor: number): void {
+    if (!this.windows.has(windowId)) return;
+    this.cursors.set(windowId, cursor);
+    if (this.welcomed && this.supportsWindowCursor)
+      this.sendJson({ type: 'broker.window.cursor', windowId, cursor });
+    this.legacyTransport?.setWindowCursor?.(windowId, cursor);
+  }
   private supportsWindowFocus = false;
   private requestedFocusWindowId: number | undefined;
 
@@ -530,7 +558,9 @@ export class OverlayBrokerClient implements NativeOverlay {
   }
 
   public closeWindow(windowId: number): void {
-    if (this.requestedFocusWindowId === windowId) this.requestedFocusWindowId = undefined;
+    this.cursors.delete(windowId);
+    if (this.requestedFocusWindowId === windowId)
+      this.requestedFocusWindowId = undefined;
     assertPositiveUint32(windowId, 'windowId');
     const packet = encodeBrokerJsonPacket({
       type: 'broker.window.close',
@@ -845,6 +875,8 @@ export class OverlayBrokerClient implements NativeOverlay {
     }
     this.clearHandshakeTimer();
     this.supportsWindowFocus = welcome.capabilities.includes('window-focus-v1');
+    this.supportsWindowCursor =
+      welcome.capabilities.includes('window-cursor-v1');
     this.welcomed = true;
     for (const lease of this.targetLeases.values()) {
       this.clearTargetReauthorizationRetry(lease);
@@ -879,6 +911,11 @@ export class OverlayBrokerClient implements NativeOverlay {
       if (retained.latestFrame) {
         this.writer?.sendFrame(windowId, retained.latestFrame);
       }
+    }
+    if (this.supportsWindowCursor) {
+      for (const [windowId, cursor] of this.cursors)
+        if (this.windows.has(windowId))
+          this.sendJson({ type: 'broker.window.cursor', windowId, cursor });
     }
     if (this.requestedFocusWindowId !== undefined && this.supportsWindowFocus) {
       this.sendJson({ type: 'broker.window.focus', windowId: this.requestedFocusWindowId, focused: true });

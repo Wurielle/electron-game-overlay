@@ -20,12 +20,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Storage::FileSystem::{
     MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
-use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor,
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, KillTimer, PostMessageW, PostQuitMessage,
@@ -679,6 +679,13 @@ impl ElectronFrameBridge {
     }
 
     /// Returns a diagnostic snapshot of the current input routing state.
+    pub fn cursor_at(&self, x: i32, y: i32) -> i32 {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cursor_at(crate::electron_input::InputPoint::new(x, y))
+    }
+
     pub fn input_state(&self) -> InputRouterState {
         self.input_router
             .lock()
@@ -1797,6 +1804,14 @@ impl BridgeThreadState {
             "window.order" => serde_json::from_str::<WindowOrderMessage>(json)
                 .map_err(DispatchError::Json)
                 .map(|message| self.on_window_order(message)),
+            "window.cursor" => serde_json::from_str::<WindowCursorMessage>(json)
+                .map_err(DispatchError::Json)
+                .map(|message| {
+                    self.update_input_router(|router| {
+                        router.set_window_cursor(message.window_id, message.cursor);
+                        Vec::new()
+                    });
+                }),
             "window.focus" => serde_json::from_str::<WindowFocusMessage>(json)
                 .map_err(DispatchError::Json)
                 .map(|message| {
@@ -2342,6 +2357,13 @@ struct WindowIdMessage {
 #[serde(rename_all = "camelCase")]
 struct WindowOrderMessage {
     window_ids: Vec<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowCursorMessage {
+    window_id: u32,
+    cursor: u32,
 }
 
 #[derive(Deserialize)]
@@ -2983,10 +3005,19 @@ fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
         .map_err(NetworkError::CurrentExecutable)?
         .to_string_lossy()
         .into_owned();
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user) }
+        .map_err(|error| NetworkError::CurrentProcessIdentity(io::Error::other(error)))?;
+    let creation_time = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+    if creation_time == 0 { return Err(NetworkError::CurrentProcessIdentity(io::Error::other("zero creation time"))); }
     let json = serde_json::json!({
         "type": "game.process",
         "protocolVersion": TRANSPORT_VERSION,
-        "capabilities": ["window-order-v1", "window-focus-v1"],
+        "creationTime100ns": creation_time.to_string(),
+        "capabilities": ["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"],
         "token": token,
         "pid": unsafe { GetCurrentProcessId() },
         "path": path,
@@ -3240,6 +3271,7 @@ impl fmt::Display for DiscoveryError {
 #[derive(Debug)]
 enum NetworkError {
     CurrentExecutable(io::Error),
+    CurrentProcessIdentity(io::Error),
     Wire(crate::electron_wire::WireError),
 }
 
@@ -3249,6 +3281,7 @@ impl fmt::Display for NetworkError {
             Self::CurrentExecutable(error) => {
                 write!(formatter, "cannot resolve target executable path: {error}")
             }
+            Self::CurrentProcessIdentity(error) => write!(formatter, "cannot query current process incarnation: {error}"),
             Self::Wire(error) => error.fmt(formatter),
         }
     }
@@ -4807,9 +4840,10 @@ mod tests {
         };
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(value["protocolVersion"], 1);
+        assert!(value["creationTime100ns"].as_str().unwrap().parse::<u64>().unwrap() > 0);
         assert_eq!(
             value["capabilities"],
-            serde_json::json!(["window-order-v1", "window-focus-v1"])
+            serde_json::json!(["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"])
         );
     }
 

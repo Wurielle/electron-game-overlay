@@ -825,7 +825,8 @@ async function readManifest(
   };
 }
 
-async function validateDistribution(
+/** @internal Read-only full sealed distribution verification; starts no service. */
+export async function validateDistribution(
   directory: string,
   deadline = Infinity,
 ): Promise<OverlayBrokerManifest> {

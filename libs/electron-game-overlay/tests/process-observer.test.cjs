@@ -36,7 +36,7 @@ function fixture(options = {}) {
             }
           : id === './reshade-launcher.js'
             ? {
-                parseReShadeLaunchConfig() {
+                createReShadeLaunchConfig() {
                   return {
                     injectorPath: 'C:\\SDK\\inject.exe',
                     injectorFutureTargets: 1,

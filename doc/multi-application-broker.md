@@ -114,6 +114,25 @@ on interception toggles, avoiding a resize that would resend stale Electron
 coordinates. Pixels outside the collapsed panel must remain fully transparent;
 verify actual offscreen paint rather than merely hiding DOM controls.
 
+## Per-window cursor updates
+
+Runtime generation 5 adds optional `window-cursor-v1` on both the broker and
+target transport. A capable SDK retains Chromium cursor state per local window,
+sends `broker.window.cursor { windowId, cursor }` only to a capable coordinator,
+and the coordinator translates only that member's owned window ID. The target
+transport sends `window.cursor` only after native capability negotiation and
+replays retained cursors after the window snapshot on reconnect. Frozen required
+v1 capabilities and target ownership/recovery meanings are unchanged.
+
+The runtime selects the cursor with the same alpha hit-test and pointer capture
+as mouse routing, independently of keyboard focus. A target-thread subclass
+applies bounded Windows system cursor resources and balances its own visibility
+increments when returning to the game. No HCURSOR or arbitrary bitmap is accepted
+from another process. Common Chromium shapes are mapped; custom bitmap and
+unmapped exotic shapes fall back to arrow. Older coordinators/runtimes retain
+their existing cursor behavior without reinjection or preemption. See
+[rc.3 wheel/cursor evidence](sdk-rc3-wheel-and-cursor.md).
+
 ## Attachment sequence
 
 Runtime generation 4 adds optional `window-focus-v1` support. A capable client
@@ -751,3 +770,47 @@ rather than accepted feature claims:
   promoting another injector after route publication;
 - add tarball/install acceptance and oldest-v1/latest package matrices in both
   startup orders when package publishing begins.
+
+## rc.4 raster scale compatibility
+
+Runtime generation 6 retains transport v1 and the optional window-cursor-v1
+contract. Modern Electron OSR representation scale is independent of display DPI;
+texture pixel extents may differ from destination physical extents. The SDK sends
+genuine bitmap dimensions and retains display scale for input localization. This
+requires no new mandatory broker capability. Existing generation election and
+no-hot-replacement rules apply. See [rc.4 validation](sdk-rc4-fractional-scaling.md).
+
+
+## Managed application attachment
+
+rc.5 adds application-side OverlayTargetWatcher orchestration over the existing
+launcher and authoritative process observer. It does not alter v1 discovery,
+election, ownership, native generation or required capabilities. Fully authorized
+future selectors retain the exclusive legacy lane; post-creation policy uses the
+existing exact-PID multi-application route and remains best effort. Cancellation
+is never target exit and cannot permit a second uncertain injection. See the
+[API and migration guide](sdk-rc5-managed-attachment.md).
+
+
+## Optional process-instance hello
+
+rc.6 runtime generation 7 adds the optional `process-instance-hello-v1`
+capability. A peer advertising it supplies its own OS process creation FILETIME
+as the decimal string `creationTime100ns`. Ordinary v1 peers remain compatible.
+Managed native policy admission binds this value to the native selected PID,
+image path and creation time. It is admission evidence only: it does not release
+broker recovery claims, prove process exit, authorize a second injection, change
+election or permit runtime replacement. The early policy lane remains exclusive.
+Per-target policy revocation stops private legacy delivery and releases input;
+it is never an exit event. See [rc.6 scope and evidence](sdk-rc6-process-policy.md).
+
+
+## Unused application discovery watchers
+
+rc.7 can retire an unselected private legacy policy watcher after its owned
+injector child has exited and its complete checked output proves it selected no
+target. This is not an authoritative game-exit observation and does not release
+selected/uncertain PID claims. Active target authorization is independent of
+future discovery replacement; discovery-blocked preserves authorized routes and
+reports no new readiness. No v1 wire, election or native generation changes are
+introduced. See [rc.7 policy updates](sdk-rc7-discovery-policy.md).

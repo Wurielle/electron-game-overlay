@@ -18,6 +18,8 @@ export type WindowDisplayScale = {
 
 export type WindowScaleState = {
   activeDisplay: WindowDisplayScale;
+  activeRasterScaleFactor: number;
+  desiredRasterScaleFactor: number;
   desiredDisplay: WindowDisplayScale;
   activeRasterBounds: Rect;
   desiredRasterBounds: Rect;
@@ -68,14 +70,17 @@ export type WindowFrameReconciliation =
 export function createWindowScaleState(
   display: WindowDisplayScale,
   rasterBounds: Rect,
+  rasterScaleFactor = display.scaleFactor,
 ): WindowScaleState {
   const bounds = copyRect(rasterBounds);
   return {
     activeDisplay: copyDisplay(display),
+    activeRasterScaleFactor: rasterScaleFactor,
+    desiredRasterScaleFactor: rasterScaleFactor,
     desiredDisplay: copyDisplay(display),
     activeRasterBounds: bounds,
     desiredRasterBounds: copyRect(rasterBounds),
-    activeFrameSize: expectedWindowFrameSize(bounds, display.scaleFactor),
+    activeFrameSize: expectedWindowFrameSize(bounds, rasterScaleFactor),
     ambiguousPaintBarrier: 'idle',
   };
 }
@@ -84,17 +89,18 @@ export function reconcileWindowScale(
   current: WindowScaleState,
   desiredDisplay: WindowDisplayScale,
   desiredRasterBounds: Rect,
+  desiredRasterScaleFactor = desiredDisplay.scaleFactor,
 ): WindowScaleReconciliation {
   const desiredRasterChanged = !sameRasterDefinition(
-    current.desiredDisplay,
+    current.desiredRasterScaleFactor,
     current.desiredRasterBounds,
-    desiredDisplay,
+    desiredRasterScaleFactor,
     desiredRasterBounds,
   );
   const desiredMatchesActiveRaster = sameRasterDefinition(
-    current.activeDisplay,
+    current.activeRasterScaleFactor,
     current.activeRasterBounds,
-    desiredDisplay,
+    desiredRasterScaleFactor,
     desiredRasterBounds,
   );
 
@@ -103,6 +109,8 @@ export function reconcileWindowScale(
   const state: WindowScaleState = desiredMatchesActiveRaster
     ? {
         activeDisplay: copyDisplay(desiredDisplay),
+        activeRasterScaleFactor: desiredRasterScaleFactor,
+        desiredRasterScaleFactor,
         desiredDisplay: copyDisplay(desiredDisplay),
         activeRasterBounds: copyRect(desiredRasterBounds),
         desiredRasterBounds: copyRect(desiredRasterBounds),
@@ -111,6 +119,8 @@ export function reconcileWindowScale(
       }
     : {
         activeDisplay: copyDisplay(current.activeDisplay),
+        activeRasterScaleFactor: current.activeRasterScaleFactor,
+        desiredRasterScaleFactor,
         desiredDisplay: copyDisplay(desiredDisplay),
         activeRasterBounds: {
           ...current.activeRasterBounds,
@@ -140,7 +150,7 @@ export function reconcileWindowFrame(
   const activeSize = current.activeFrameSize;
   const desiredSize = expectedWindowFrameSize(
     current.desiredRasterBounds,
-    current.desiredDisplay.scaleFactor,
+    current.desiredRasterScaleFactor,
   );
   const pending = isWindowScaleTransitionPending(current);
   const matchesActive = frameSizeMatches(frameSize, activeSize);
@@ -236,7 +246,7 @@ export function getActivePhysicalBounds(state: WindowScaleState): Rect {
   );
   return {
     ...rect,
-    ...state.activeFrameSize,
+    ...displayFrameSize(state.activeFrameSize, state.activeDisplay.scaleFactor, state.activeRasterScaleFactor),
   };
 }
 
@@ -245,6 +255,7 @@ export function getPhysicalWindowGeometry(
   display: WindowDisplayScale,
   options: WindowGeometryOptions,
   frameSize = expectedWindowFrameSize(rasterBounds, display.scaleFactor),
+  rasterScaleFactor = display.scaleFactor,
 ): WindowGeometry {
   const scaleFactor = display.scaleFactor;
   const rect = dipRectToPhysical(rasterBounds, scaleFactor);
@@ -252,7 +263,7 @@ export function getPhysicalWindowGeometry(
   return {
     rect: {
       ...rect,
-      ...frameSize,
+      ...displayFrameSize(frameSize, scaleFactor, rasterScaleFactor),
     },
     caption: {
       left: dipExtentToPhysical(options.dragBorder, scaleFactor),
@@ -285,9 +296,9 @@ export function isWindowScaleTransitionPending(
   state: WindowScaleState,
 ): boolean {
   return !sameRasterDefinition(
-    state.activeDisplay,
+    state.activeRasterScaleFactor,
     state.activeRasterBounds,
-    state.desiredDisplay,
+    state.desiredRasterScaleFactor,
     state.desiredRasterBounds,
   );
 }
@@ -318,13 +329,13 @@ export function resolveInputScaleFactor(
 }
 
 function sameRasterDefinition(
-  leftDisplay: WindowDisplayScale,
+  leftScale: number,
   leftBounds: Pick<Rect, 'width' | 'height'>,
-  rightDisplay: WindowDisplayScale,
+  rightScale: number,
   rightBounds: Pick<Rect, 'width' | 'height'>,
 ): boolean {
   return (
-    leftDisplay.scaleFactor === rightDisplay.scaleFactor &&
+    leftScale === rightScale &&
     leftBounds.width === rightBounds.width &&
     leftBounds.height === rightBounds.height
   );
@@ -360,6 +371,8 @@ function commitDesiredRaster(
     accepted: true,
     state: {
       activeDisplay: copyDisplay(current.desiredDisplay),
+      activeRasterScaleFactor: current.desiredRasterScaleFactor,
+      desiredRasterScaleFactor: current.desiredRasterScaleFactor,
       desiredDisplay: copyDisplay(current.desiredDisplay),
       activeRasterBounds: copyRect(current.desiredRasterBounds),
       desiredRasterBounds: copyRect(current.desiredRasterBounds),
@@ -368,6 +381,14 @@ function commitDesiredRaster(
     },
     scaleFactor: current.desiredDisplay.scaleFactor,
     rasterChanged: true,
+  };
+}
+
+function displayFrameSize(frame: FrameSize, displayScale: number, rasterScale: number): FrameSize {
+  if (displayScale === rasterScale) return copyFrameSize(frame);
+  return {
+    width: Math.floor(frame.width * scaleFactorToMicros(displayScale) / scaleFactorToMicros(rasterScale)),
+    height: Math.floor(frame.height * scaleFactorToMicros(displayScale) / scaleFactorToMicros(rasterScale)),
   };
 }
 

@@ -1,0 +1,285 @@
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -302,14 +302,160 @@
+ 	return false;
+ }
+ 
+-static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path, const wchar_t *required_name = nullptr, const wchar_t *exact_path = nullptr, scoped_handle *retained_identity = nullptr)
++
++// Closed policy grammar shared with process-policy.ts. No shell, regex engine,
++// script predicate, helper-name heuristic or filesystem executable catalog.
++struct process_image_policy
++{
++    std::vector<std::wstring> allow, deny;
++    uint64_t cutoff = 0;
++    std::unordered_map<DWORD, uint64_t> excluded_instances;
++};
++static std::wstring policy_normalize(std::wstring value)
++{
++    for (wchar_t &c : value) {
++        if (c == L'\\') c = L'/';
++        else if (c >= L'A' && c <= L'Z') c += L'a' - L'A';
++    }
++    return value;
++}
++static std::vector<std::wstring> policy_components(const std::wstring &value)
++{
++    std::vector<std::wstring> result;
++    size_t start = 0;
++    for (;;) {
++        const size_t end = value.find(L'/', start);
++        result.push_back(value.substr(start, end == std::wstring::npos ? end : end - start));
++        if (end == std::wstring::npos) return result;
++        start = end + 1;
++    }
++}
++static bool policy_pattern_valid(const std::wstring &pattern)
++{
++    if (pattern.empty() || pattern.size() > 4096 ||
++        !(pattern.compare(0, 3, L"**/") == 0 || pattern.compare(0, 2, L"//") == 0 ||
++          (pattern.size() >= 3 && pattern[0] >= L'a' && pattern[0] <= L'z' && pattern[1] == L':' && pattern[2] == L'/')))
++        return false;
++    for (wchar_t c : pattern)
++        if (c < 32 || c == 127 || wcschr(L"[]{}", c) != nullptr) return false;
++    for (size_t i = 1; i < pattern.size(); ++i)
++        if (pattern[i] == L'(' && wcschr(L"?*+@!", pattern[i-1]) != nullptr) return false;
++    const auto parts = policy_components(pattern);
++    if (parts.size() > 128) return false;
++    for (const auto &part : parts)
++        if (part == L"." || part == L".." || (part.find(L"**") != std::wstring::npos && part != L"**")) return false;
++    return true;
++}
++static bool policy_component_match(const std::wstring &p, const std::wstring &v)
++{
++    size_t i = 0, j = 0, star = std::wstring::npos, retry = 0;
++    while (j < v.size()) {
++        if (i < p.size() && (p[i] == L'?' || p[i] == v[j])) { ++i; ++j; }
++        else if (i < p.size() && p[i] == L'*') { star = i++; retry = j; }
++        else if (star != std::wstring::npos) { i = star + 1; j = ++retry; }
++        else return false;
++    }
++    while (i < p.size() && p[i] == L'*') ++i;
++    return i == p.size();
++}
++static bool policy_visit(const std::vector<std::wstring> &p, const std::vector<std::wstring> &v,
++    size_t i, size_t j, std::vector<signed char> &memo)
++{
++    auto &cached = memo[i * (v.size() + 1) + j];
++    if (cached >= 0) return cached != 0;
++    const bool result = i == p.size() ? j == v.size() :
++        p[i] == L"**" ? policy_visit(p, v, i + 1, j, memo) ||
++            (j < v.size() && policy_visit(p, v, i, j + 1, memo)) :
++        j < v.size() && policy_component_match(p[i], v[j]) && policy_visit(p, v, i + 1, j + 1, memo);
++    cached = result ? 1 : 0;
++    return result;
++}
++static bool policy_matches(const std::wstring &pattern, const std::vector<std::wstring> &path)
++{
++    const auto parts = policy_components(pattern);
++    std::vector<signed char> memo((parts.size() + 1) * (path.size() + 1), -1);
++    return policy_visit(parts, path, 0, 0, memo);
++}
++static bool policy_allows(const process_image_policy &policy, const std::wstring &image)
++{
++    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, image.data(), static_cast<int>(image.size()), nullptr, 0, nullptr, nullptr) <= 0) return false;
++    const auto normalized = policy_normalize(image);
++    if (!(normalized.compare(0, 2, L"//") == 0 || (normalized.size() >= 3 && normalized[0] >= L'a' && normalized[0] <= L'z' && normalized[1] == L':' && normalized[2] == L'/'))) return false;
++    const auto parts = policy_components(normalized);
++    if (parts.size() > 512) return false;
++    for (const auto &pattern : policy.deny) if (policy_matches(pattern, parts)) return false;
++    for (const auto &pattern : policy.allow) if (policy_matches(pattern, parts)) return true;
++    return false;
++}
++static DWORD read_process_image_policy(const wchar_t *file, process_image_policy &policy)
++{
++    const scoped_handle input = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
++    if (input == INVALID_HANDLE_VALUE) return GetLastError();
++    LARGE_INTEGER length{};
++    if (!GetFileSizeEx(input, &length) || length.QuadPart < 1 || length.QuadPart > 262144) return ERROR_INVALID_DATA;
++    std::string utf8(static_cast<size_t>(length.QuadPart), '\0');
++    DWORD read = 0;
++    if (!ReadFile(input, utf8.data(), static_cast<DWORD>(utf8.size()), &read, nullptr) || read != utf8.size()) return ERROR_READ_FAULT;
++    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
++    if (size <= 0) return ERROR_NO_UNICODE_TRANSLATION;
++    std::wstring document(size, L'\0');
++    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), document.data(), size)) return GetLastError();
++    if (document.compare(0, std::wstring(L"EGO_PROCESS_POLICY_V1\n").size(), L"EGO_PROCESS_POLICY_V1\n") != 0) return ERROR_INVALID_DATA;
++    // Header length is computed rather than inferred from a supplied record.
++    size_t offset = std::wstring(L"EGO_PROCESS_POLICY_V1\n").size();
++    unsigned int records = 0;
++    unsigned int pattern_bytes = static_cast<unsigned int>(std::wstring(L"EGO_PROCESS_POLICY_V1\n").size());
++    while (offset < document.size()) {
++        const size_t end = document.find(L'\n', offset);
++        if (end == std::wstring::npos) return ERROR_INVALID_DATA;
++        const std::wstring line = document.substr(offset, end - offset);
++        offset = end + 1;
++        if (line.size() < 3 || line[1] != L'\t') return ERROR_INVALID_DATA;
++        const std::wstring value = line.substr(2);
++        if (line[0] == L'A' || line[0] == L'D') {
++            const int encoded = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
++            if (encoded <= 0 || (pattern_bytes += static_cast<unsigned int>(encoded) + 3) > 65536) return ERROR_INVALID_DATA;
++            if (++records > 256 || !policy_pattern_valid(value) || value != policy_normalize(value)) return ERROR_INVALID_DATA;
++            (line[0] == L'A' ? policy.allow : policy.deny).push_back(value);
++        } else if (line[0] == L'B') {
++            if (policy.cutoff != 0 || !parse_creation_time_100ns(value.c_str(), policy.cutoff)) return ERROR_INVALID_DATA;
++        } else if (line[0] == L'X') {
++            const auto separator = value.find(L'\t');
++            DWORD pid = 0; uint64_t created = 0;
++            if (separator == std::wstring::npos || !parse_process_id(value.substr(0, separator).c_str(), pid) ||
++                !parse_creation_time_100ns(value.substr(separator + 1).c_str(), created) ||
++                policy.excluded_instances.size() >= 4096 || !policy.excluded_instances.emplace(pid, created).second) return ERROR_INVALID_DATA;
++        } else return ERROR_INVALID_DATA;
++    }
++    return policy.allow.empty() ? ERROR_INVALID_DATA : ERROR_SUCCESS;
++}
++
++static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path, const wchar_t *required_name = nullptr, const wchar_t *exact_path = nullptr, scoped_handle *retained_identity = nullptr, process_image_policy *policy = nullptr)
+ {
+ 	FILETIME cutoff{}; GetSystemTimeAsFileTime(&cutoff);
+-    const uint64_t creation_cutoff = (static_cast<uint64_t>(cutoff.dwHighDateTime) << 32) | cutoff.dwLowDateTime;
++    uint64_t creation_cutoff = (static_cast<uint64_t>(cutoff.dwHighDateTime) << 32) | cutoff.dwLowDateTime;
+     std::unordered_map<DWORD, scoped_handle> ignored_processes;
+ 	if (const DWORD error = snapshot_process_identities(ignored_processes); error != ERROR_SUCCESS)
+ 		return error;
+ 
++    if (policy != nullptr) {
++        if (policy->cutoff == 0) {
++            FILETIME armed{}; GetSystemTimeAsFileTime(&armed);
++            policy->cutoff = (static_cast<uint64_t>(armed.dwHighDateTime) << 32) | armed.dwLowDateTime;
++        } else {
++            // A successor scan retains the ORIGINAL future-only baseline. It
++            // does not drop unattempted processes created while staging it.
++            for (auto it = ignored_processes.begin(); it != ignored_processes.end();) {
++                FILETIME created{}, exited{}, kernel{}, user{};
++                if (it->second != nullptr && GetProcessTimes(it->second, &created, &exited, &kernel, &user) &&
++                    ((static_cast<uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime) > policy->cutoff)
++                    it = ignored_processes.erase(it);
++                else ++it;
++            }
++        }
++        creation_cutoff = policy->cutoff;
++        wprintf(L"EGO_POLICY_BASELINE_V1\t%llu\n", static_cast<unsigned long long>(creation_cutoff));
++    }
+ 	const std::wstring normalized_fragment = normalize_path_separators(fragment);
+ 	wprintf(required_name != nullptr ? L"ReShade process watcher armed.\n" : L"ReShade path watcher armed.\n");
+ 	fflush(stdout);
+@@ -351,9 +497,16 @@
+ 			FILETIME created{}, exited{}, kernel{}, user{};
+             if (!GetProcessTimes(candidate, &created, &exited, &kernel, &user)) continue;
+             const uint64_t creation_time = (static_cast<uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
++            if (policy != nullptr && policy->excluded_instances.count(process.th32ProcessID) != 0 &&
++                policy->excluded_instances.at(process.th32ProcessID) != creation_time) {
++                print_injection_not_started(); return ERROR_REVISION_MISMATCH;
++            }
++
+             if (creation_time <= creation_cutoff || !path_contains_case_insensitive(normalize_path_separators(candidate_path), normalized_fragment) ||
+                 (required_name != nullptr && _wcsicmp(process.szExeFile, required_name) != 0) ||
+-                (exact_path != nullptr && _wcsicmp(candidate_path, exact_path) != 0))
++                (exact_path != nullptr && _wcsicmp(candidate_path, exact_path) != 0) ||
++                (policy != nullptr && (!policy_allows(*policy, candidate_path) ||
++                    (policy->excluded_instances.count(process.th32ProcessID) != 0 && policy->excluded_instances.at(process.th32ProcessID) == creation_time))))
+ 			{
+ 				ignored_processes.emplace(process.th32ProcessID, std::move(candidate));
+ 				continue;
+@@ -366,7 +519,7 @@
+ 		}
+ 
+ 		if (pid == 0)
+-			Sleep(required_name != nullptr ? 1 : 50); // Keep prelaunch polling responsive without busy-looping over the process table
++			Sleep(required_name != nullptr || policy != nullptr ? 1 : 50); // Keep prelaunch polling responsive without busy-looping over the process table
+ 	}
+ 
+ 	return ERROR_SUCCESS;
+@@ -3006,7 +3159,7 @@
+ 		"ElectronGameOverlayReShadeAddonBuildId";
+ 	constexpr unsigned int supported_addon_abi = 1;
+ 	constexpr char expected_addon_build_id[] =
+-		"1CAEA7482B41451AB31FC2F91B46F2DD";
++		"12EE788081A34E00B10862242DF38893";
+ 	static_assert(sizeof(expected_addon_build_id) == 33);
+ 	bool found_addon = false;
+ 
+@@ -3882,13 +4035,30 @@
+ 		return ERROR_SUCCESS;
+ 	}
+ 
++    if (argc >= 2 && wcscmp(argv[1], L"--check-process-policy") == 0) {
++        process_image_policy policy;
++        if (argc != 4) return ERROR_INVALID_PARAMETER;
++        const DWORD error = read_process_image_policy(argv[2], policy);
++        if (error != ERROR_SUCCESS) return error;
++        wprintf(policy_allows(policy, argv[3]) ? L"EGO_PROCESS_POLICY_ALLOW\n" : L"EGO_PROCESS_POLICY_DENY\n");
++        return ERROR_SUCCESS;
++    }
++
+ 	const bool path_watcher_requested = argc >= 2 && wcscmp(argv[1], L"--path-contains") == 0;
+ 	bool use_path_watcher = argc >= 3 && path_watcher_requested && argv[2][0] != L'\0';
+ 	std::vector<std::wstring> excluded_process_names;
++    process_image_policy image_policy; bool has_image_policy = false;
+ 	if (use_path_watcher)
+ 	{
+ 		for (int argument = 3; argument < argc; argument += 2)
+ 		{
++            if (argument + 1 < argc && wcscmp(argv[argument], L"--policy-file") == 0) {
++                if (has_image_policy) { print_injection_not_started(); return ERROR_INVALID_PARAMETER; }
++                const DWORD error = read_process_image_policy(argv[argument + 1], image_policy);
++                if (error != ERROR_SUCCESS) { print_injection_not_started(); return error; }
++                has_image_policy = true;
++                continue;
++            }
+ 			if (argument + 1 >= argc ||
+ 				wcscmp(argv[argument], L"--exclude-name") != 0 ||
+ 				argv[argument + 1][0] == L'\0' ||
+@@ -3968,7 +4138,7 @@
+             exact_path ? argv[1] : nullptr, std::addressof(retained_selected_identity));
+         if (error != ERROR_SUCCESS) { print_injection_not_started(); return error; }
+ 	}
+-	else if (const DWORD error = wait_for_path_match(argv[2], excluded_process_names, pid, matched_image_path, nullptr, nullptr, std::addressof(retained_selected_identity)); error != ERROR_SUCCESS)
++	else if (const DWORD error = wait_for_path_match(argv[2], excluded_process_names, pid, matched_image_path, nullptr, nullptr, std::addressof(retained_selected_identity), has_image_policy ? &image_policy : nullptr); error != ERROR_SUCCESS)
+ 	{
+ 		wprintf(L"Failed to monitor process creation for path matches!\n");
+ 		print_injection_not_started();
+@@ -3980,6 +4150,16 @@
+ 		wprintf(L"Matched executable path: %s\n", matched_image_path.c_str());
+ 		fflush(stdout);
+ 	}
++
++    if (retained_selected_identity != nullptr && retained_selected_identity != INVALID_HANDLE_VALUE) {
++        FILETIME created{}, exited{}, kernel{}, user{};
++        if (!GetProcessTimes(retained_selected_identity, &created, &exited, &kernel, &user)) {
++            const DWORD error = GetLastError(); print_injection_not_started(); return error;
++        }
++        expected_creation_time = (static_cast<uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
++        if (expected_creation_time == 0) { print_injection_not_started(); return ERROR_INVALID_DATA; }
++        process_instance_binding_requested = true;
++    }
+ 
+ 	// Open target application process
+ 	DWORD desired_process_access =
+@@ -4045,6 +4225,13 @@
+ 		}
+ 	}
+ 
++    if (use_path_watcher &&
++        (_wcsicmp(selected_image_path.c_str(), matched_image_path.c_str()) != 0 ||
++            !path_contains_case_insensitive(normalize_path_separators(selected_image_path.c_str()), normalize_path_separators(argv[2])) ||
++            (has_image_policy && !policy_allows(image_policy, selected_image_path)))) {
++        print_injection_not_started(); return ERROR_INVALID_NAME;
++    }
++
+ 	// Bind the retained mutation handle only after its real image is validated.
+ 	// This must precede architecture/module inspection, claims, ACLs and VM work.
+ 	if (process_instance_binding_requested)
+@@ -4064,7 +4251,11 @@
+ 		}
+ 	}
+ 
+-	if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) return ERROR_WRITE_FAULT;
++	    if (retained_selected_identity != nullptr && retained_selected_identity != INVALID_HANDLE_VALUE && !write_utf8_stdout_line(
++        L"EGO_TARGET_SELECTED_V2\t" + std::to_wstring(pid) + L"\t" +
++        std::to_wstring(expected_creation_time) + L"\t" + selected_image_path)) return ERROR_WRITE_FAULT;
++
++if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) return ERROR_WRITE_FAULT;
+ 
+ 	// Check process architecture
+ 	BOOL remote_is_wow64 = FALSE;

@@ -43,7 +43,7 @@ function fixture(t) {
         kind: 'electron-game-overlay-runtime-build',
         platform: bits === 64 ? 'win32-x64' : 'win32-ia32',
         configuration: 'RelWithDebInfo',
-        addonBuildId: 'B6A6721DEF914B38A040AC08A87F31A2',
+        addonBuildId: '12EE788081A34E00B10862242DF38893',
         managerProtocolSchemaVersion: 1,
         managerSourceSha256: 'A'.repeat(64),
         runtimeGeneration: 1,

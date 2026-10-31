@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { win32 } from 'node:path';
-import { parseReShadeLaunchConfig } from './reshade-launcher.js';
+import { createReShadeLaunchConfig } from './reshade-launcher.js';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
 
 /** Exact process incarnation observed through retained Windows process handles. */
@@ -41,12 +41,12 @@ export function observeOverlayProcesses(
   const fragment = options.pathContains ?? '\\';
   if (!fragment || fragment.includes('\0') || !/[\\/]/.test(fragment))
     throw new Error('pathContains must contain a path separator');
-  const config = parseReShadeLaunchConfig(['--reshade-overlay'], {
+  const config = createReShadeLaunchConfig({
     ...(options.runtimeDirectory === undefined
       ? {}
       : { bundledRuntimeDirectory: options.runtimeDirectory }),
-  })!;
-  if (config.injectorFutureTargets !== 1)
+  });
+  if (config.injectorFutureTargets === undefined)
     throw new Error(
       'Process observation requires validated future-target injector support',
     );

@@ -7,11 +7,11 @@ are needed. Electron is pinned to **39.8.10**.
 ## Install a candidate
 
 Copy this entire folder **outside the checkout** (for example to
-`C:\overlay-consumer`). Obtain `electron-game-overlay-0.1.0-rc.2.tgz` from the
+`C:\overlay-consumer`). Obtain `electron-game-overlay-0.1.0-rc.7.tgz` from the
 SDK candidate artifact, then run in the copied folder:
 
 ```powershell
-npm install --save-exact "C:\downloads\electron-game-overlay-0.1.0-rc.2.tgz"
+npm install --save-exact "C:\downloads\electron-game-overlay-0.1.0-rc.7.tgz"
 npm start -- --smoke
 ```
 
@@ -71,3 +71,7 @@ points into that copy's `node_modules` (not the repository), then run smoke mode
 When using the repository's existing TypeScript compiler for an additional
 `checkJs` gate, resolve all SDK/Electron declarations from the installed consumer,
 not source path mappings. No TypeScript dependency is required to run the app.
+
+Current process-policy behavior and fast-start limitations: [rc.6 guide](../../doc/sdk-rc6-process-policy.md).
+
+The basename-glob update fix and discovery readiness contract are documented in [rc.7](../../doc/sdk-rc7-discovery-policy.md).

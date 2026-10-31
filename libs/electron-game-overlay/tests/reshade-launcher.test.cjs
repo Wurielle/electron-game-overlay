@@ -28,6 +28,7 @@ const {
   defaultReShadeRuntimeDirectory,
   isReShadeOperationError,
   parseReShadeLaunchConfig,
+  createReShadeLaunchConfig,
 } = require('../dist/lib/reshade-launcher.js');
 const existingReShadeInstallation = require('../dist/lib/existing-reshade-installation.js');
 
@@ -126,7 +127,7 @@ const officialAddonSuccessFor = (
     runtimeModulePath,
     addonModulePath,
     addonAbi: 1,
-    addonBuildId: 'B6A6721DEF914B38A040AC08A87F31A2',
+    addonBuildId: '12EE788081A34E00B10862242DF38893',
     reshadeBasePath: path.win32.dirname(runtimeModulePath),
     addonDirectoryPath: path.win32.dirname(addonModulePath),
     electronGameOverlayAddonDisabled: false,
@@ -5681,7 +5682,7 @@ function writeRuntimePackageBuildStamp(runtimeDirectory, spec) {
       kind: 'electron-game-overlay-runtime-build',
       platform: spec.platform,
       configuration: 'RelWithDebInfo',
-      addonBuildId: 'B6A6721DEF914B38A040AC08A87F31A2',
+      addonBuildId: '12EE788081A34E00B10862242DF38893',
       managerProtocolSchemaVersion: 1,
       runtimeGeneration: 1,
       targetTransportMin: 1,
@@ -6274,3 +6275,192 @@ function settleWithin(promise, timeoutMs) {
     );
   });
 }
+
+
+test('direct configuration validates exact runtime bytes with the same contract as CLI without starting work', () => {
+  const f=createRuntime(),options={bundledRuntimeDirectory:f.runtimeDirectory,runsRootDirectory:f.runsRootDirectory};
+  const direct=createReShadeLaunchConfig(options), cli=parseReShadeLaunchConfig(['--reshade-overlay'],options);
+  assert.deepEqual(direct,cli);assert.equal(Object.isFrozen(direct),true);
+  assert.equal(Object.hasOwn(direct,'autoTargetProcess'),false);
+  writeFileSync(path.join(f.runtimeDirectory,'inject32.exe'),'corrupted');
+  assert.throws(()=>createReShadeLaunchConfig(options),/hash|SHA-256|match/i);
+  assert.throws(()=>createReShadeLaunchConfig({bundledRuntimeDirectory:'relative'}),/absolute/);
+});
+
+test('native policy selection preserves UTF-8 incarnation evidence through x86 handoff', async () => {
+  const fixture = createBindingRuntime();
+  for (const name of [
+    'electron_game_overlay_runtime.build.json',
+    'electron_game_overlay_runtime32.build.json',
+  ])
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, (stamp) => {
+      stamp.injectorFutureTargets = 2;
+    });
+  const execution = stubExecFile(),
+    harness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const events = [];
+  launcher.onEvent((event) => events.push(event));
+  const selected = 'C:\\Steam\\steamapps\\Ã©æ—¥æœ¬èªž\\game.exe',
+    created = '9007199254740993';
+  try {
+    const attachment = launcher.attach(harness.session, {
+      pathContains: '\\',
+      processPolicy: { allow: ['**/steamapps/**'], deny: ['**/helper.exe'] },
+    });
+    const settled = attachment.catch(() => {});
+    await waitFor(() => execution.calls.length === 1);
+    const first = execution.calls[0];
+    const index = first.arguments.indexOf('--policy-file');
+    assert.ok(index >= 0);
+    assert.match(
+      readFileSync(first.arguments[index + 1], 'utf8'),
+      /D\t\*\*\/helper.exe/,
+    );
+    first.emitStdout(
+      'EGO_POLICY_BASELINE_V1\t9007199254740990\nReShade path watcher armed.\n',
+    );
+    assert.equal(
+      events.find((e) => e.type === 'injector-watcher-ready')
+        .creationCutoff100ns,
+      '9007199254740990',
+    );
+    const marker = Buffer.from(
+      `EGO_TARGET_SELECTED_V2\t4242\t${created}\t${selected}\nEGO_TARGET_SELECTED\t4242\n`,
+    );
+    const split = marker.indexOf(Buffer.from('Ã©')) + 1;
+    first.emitStdout(marker.subarray(0, split));
+    first.emitStdout(marker.subarray(split));
+    assert.deepEqual(
+      events
+        .filter((e) => e.type === 'target-selected')
+        .map((e) => ({
+          pid: e.pid,
+          executablePath: e.executablePath,
+          creationTime100ns: e.creationTime100ns,
+        })),
+      [{ pid: 4242, executablePath: selected, creationTime100ns: created }],
+    );
+    first.callback(
+      Object.assign(new Error('x86'), { code: 706 }),
+      architectureMismatchFor(4242, selected, {}, false),
+      '',
+    );
+    await waitFor(() => execution.calls.length === 2);
+    assert.deepEqual(execution.calls[1].arguments, [
+      selected,
+      '--pid',
+      '4242',
+      '--expected-creation-time-100ns',
+      created,
+    ]);
+    execution.calls[1].callback(
+      null,
+      pathInjectorSuccessFor(4242, selected),
+      '',
+    );
+    harness.emitNative('game.process', { pid: 4242, path: selected });
+    await settled;
+    assert.equal(launcher.state, 'connected');
+    await attachment;
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+test('native process policy cannot run on an older validated future-target injector', async () => {
+  const fixture = createBindingRuntime();
+  for (const name of [
+    'electron_game_overlay_runtime.build.json',
+    'electron_game_overlay_runtime32.build.json',
+  ])
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, (stamp) => {
+      stamp.injectorFutureTargets = 1;
+    });
+  const execution = stubExecFile(),
+    harness = createSessionHarness(),
+    launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  try {
+    await assert.rejects(
+      launcher.attach(harness.session, {
+        pathContains: '\\',
+        processPolicy: { allow: ['**/steamapps/**'] },
+      }),
+      /policy|capability|support/i,
+    );
+    assert.equal(execution.calls.length, 0);
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+
+function policyRuntime() {
+  const fixture=createBindingRuntime();
+  for(const name of ['electron_game_overlay_runtime.build.json','electron_game_overlay_runtime32.build.json'])
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory,name,stamp=>{stamp.injectorFutureTargets=2;});
+  return fixture;
+}
+const nativePolicyTarget={pathContains:'\\',processPolicy:{allow:['**/steamapps/**']}};
+
+test('quiescence before any native invocation invalidates delayed attachment without executing a child', async()=>{
+  const execution=stubExecFile(),wait=deferred(),harness=createSessionHarness(wait.promise),launcher=new ReShadeOverlayLauncher(createConfig(policyRuntime()));
+  try {
+    const attachment=launcher.attach(harness.session,nativePolicyTarget);const rejection=assert.rejects(attachment);
+    assert.equal(await launcher.quiesceUnselectedPolicyWatcher(),true);wait.resolve();await rejection;await tickForQuiescence();
+    assert.equal(execution.calls.length,0);
+  } finally {launcher.dispose();execution.restore();}
+});
+async function tickForQuiescence(){await new Promise(resolve=>setImmediate(resolve));}
+
+for(const scenario of ['complete-unused','not-drained','max-buffer','selected','malformed-selection','abnormal-exit','kill-failed'])
+ test('policy watcher quiescence: '+scenario,async()=>{
+  const execution=stubExecFile(),harness=createSessionHarness(),launcher=new ReShadeOverlayLauncher(createConfig(policyRuntime()));
+  const events=[];launcher.onEvent(e=>events.push(e));
+  try {
+    const attachment=launcher.attach(harness.session,nativePolicyTarget);const settled=attachment.catch(()=>{});
+    await waitFor(()=>execution.calls.length===1);const call=execution.calls[0];
+    if(scenario==='kill-failed')call.child.kill=()=>false;
+    const stop=launcher.quiesceUnselectedPolicyWatcher();
+    let stopped=false;stop.then(()=>{stopped=true;});await flushMicrotasks();
+    if(scenario!=='kill-failed')assert.equal(stopped,false,'kill request alone is not drained-exit proof');
+    call.child.exitCode=1;
+    call.child.stdout.readableEnded=scenario!=='not-drained';
+    let stdout='EGO_POLICY_BASELINE_V1\t10\nReShade path watcher armed.\n';
+    if(scenario==='selected'){
+      stdout+='EGO_TARGET_SELECTED_V2\t4242\t100\tC:\\steamapps\\game.exe\nEGO_TARGET_SELECTED\t4242\n';
+      call.emitStdout(stdout);
+    }
+    if(scenario==='malformed-selection')stdout+='EGO_TARGET_SELECTED_V2\tbroken';
+    const error=Object.assign(new Error('terminated'),{killed:scenario!=='abnormal-exit',code:scenario==='max-buffer'?'ERR_CHILD_PROCESS_STDIO_MAXBUFFER':1});
+    call.callback(error,stdout,'');
+    assert.equal(await stop,scenario==='complete-unused');
+    assert.equal(execution.calls.length,1,'quiescing cannot start an x86 handoff or retry');
+    if(scenario==='selected')assert.equal(events.some(e=>e.type==='target-selected'&&e.pid===4242),true);
+    launcher.dispose();await settled;
+  } finally {launcher.dispose();execution.restore();}
+ });
+
+test('an older injector capability cannot claim safe native policy quiescence',async()=>{
+ const fixture=createBindingRuntime();
+ for(const name of ['electron_game_overlay_runtime.build.json','electron_game_overlay_runtime32.build.json'])
+   rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory,name,stamp=>{stamp.injectorFutureTargets=1;});
+ const launcher=new ReShadeOverlayLauncher(createConfig(fixture));
+ try {assert.equal(await launcher.quiesceUnselectedPolicyWatcher(),false);} finally {launcher.dispose();}
+});
+
+
+test('quiescence never kills a policy watcher whose selected incarnation is already known',async()=>{
+ const execution=stubExecFile(),harness=createSessionHarness(),launcher=new ReShadeOverlayLauncher(createConfig(policyRuntime()));
+ try {
+  const attachment=launcher.attach(harness.session,nativePolicyTarget);const settled=attachment.catch(()=>{});
+  await waitFor(()=>execution.calls.length===1);const call=execution.calls[0];
+  call.emitStdout('EGO_TARGET_SELECTED_V2\t4242\t100\tC:\\steamapps\\game.exe\n');
+  assert.equal(await launcher.quiesceUnselectedPolicyWatcher(),false);assert.equal(call.child.killed,false);
+  call.callback(null,pathInjectorSuccessFor(4242,'C:\\steamapps\\game.exe'),'');
+  harness.emitNative('game.process',{pid:4242,path:'C:\\steamapps\\game.exe'});await settled;await attachment;
+  assert.equal(launcher.state,'connected');
+ } finally {launcher.dispose();execution.restore();}
+});

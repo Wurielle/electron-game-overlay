@@ -18,8 +18,8 @@ function fixture(t) {
   write(path.join(pkg, 'package.json'), JSON.stringify(metadata));
   write(path.join(root, 'repo/LICENSE'), 'GPL fixture license: NON-NATIVE CONTROLLED FIXTURE');
   write(path.join(pkg, 'README.md'), '# NON-NATIVE CONTROLLED SDK FIXTURE');
-  for (const name of ['index.js', 'broker.js']) write(path.join(dist, name), 'module.exports = {};\n');
-  for (const name of ['index.d.ts', 'broker.d.ts']) write(path.join(dist, name), 'export {};\n');
+  for (const name of ['index.js', 'broker.js', 'packaging.js']) write(path.join(dist, name), 'module.exports = {};\n');
+  for (const name of ['index.d.ts', 'broker.d.ts', 'packaging.d.ts']) write(path.join(dist, name), 'export {};\n');
   // Parser-only headers, never executable or evidence of genuine Windows/native execution.
   const pe = machine => { const bytes = Buffer.alloc(128); bytes.write('MZ'); bytes.writeUInt32LE(64, 60); bytes.writeUInt32LE(0x4550, 64); bytes.writeUInt16LE(machine, 68); return bytes; };
   const leaf = path.join(dist, 'broker/win32-x64');
@@ -128,12 +128,12 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.report.status, 'passed');
   assert.equal(result.report.nativeExecuted, false);
-  assert.equal(result.report.version, '0.1.0-rc.2');
+  assert.equal(result.report.version, '0.1.0-rc.7');
   assert.ok(fs.statSync(result.report.tarball).size > 0);
   const stage = result.report.stageRoot;
   const metadata = JSON.parse(fs.readFileSync(path.join(stage, 'package.json')));
   assert.equal(metadata.private, false);
-  assert.equal(metadata.version, '0.1.0-rc.2');
+  assert.equal(metadata.version, '0.1.0-rc.7');
   assert.equal(metadata.exports['.'].gelectron, undefined);
   assert.equal(metadata.types, './dist/index.d.ts');
   assert.equal(metadata.scripts, undefined);
@@ -148,4 +148,46 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   assert.ok(files.includes('package/README.md'));
   assert.ok(files.includes('package/dist/runtime/THIRD-PARTY-NOTICES.txt'));
   assert.ok(!files.some(file => /secret|postinstall|old\.exe|\/tests\//.test(file)));
+});
+
+test('source snapshot provenance rejects substituted artifacts before distribution', t => {
+  const f=fixture(t),file=path.join(f.root,'provenance.json');
+  const prov={schemaVersion:2,version:'0.1.0-rc.7',baseCommit:'1'.repeat(40),workingTreeDirty:true,
+    sourceSnapshot:{file:'source.zip',sha256:'0'.repeat(64)},sourceManifest:{file:'sources.json',sha256:'0'.repeat(64)}};
+  f.write(file,JSON.stringify(prov));f.write(path.join(f.root,'source.zip'),'substituted bytes');
+  const result=run(f,['--source-provenance',file]);
+  assert.equal(result.status,1);assert.match(result.report.error,/source provenance.*SHA-256/i);
+  assert.equal(result.report.stageRoot,null);
+});
+test('source provenance cannot label a dirty snapshot as a committed source', t => {
+  const f=fixture(t),file=path.join(f.root,'provenance.json');f.write(file,'{}');
+  const result=run(f,['--source-provenance',file,'--source-commit','1'.repeat(40)]);
+  assert.equal(result.status,1);assert.match(result.report.error,/not both/);
+});
+
+
+test('dirty-source provenance is included in the actual npm archive', t => {
+  const f=fixture(t), file=path.join(f.root,'provenance.json');
+  for (const bits of [64,32]) {
+    const stamps={
+      [`electron_game_overlay_runtime${bits===64?'':'32'}.build.json`]:{addonBuildId:'fixture-only',runtimeGeneration:6},
+      [`ReShade${bits}.build.json`]:{commit:'2'.repeat(40)}
+    };
+    for (const [name,value] of Object.entries(stamps)) {
+      const relative='runtime/win32-x64/reshade/'+name, bytes=Buffer.from(JSON.stringify(value));
+      for(const base of [f.dist,f.leaf])f.write(path.join(base,relative),bytes);
+      f.manifest.files.push({path:relative,size:bytes.length,sha256:hash(bytes)});
+    }
+  }
+  f.write(f.manifestPath,JSON.stringify(f.manifest));
+  const snapshot=Buffer.from('controlled source archive fixture'), manifest=Buffer.from('controlled manifest fixture');
+  f.write(path.join(f.root,'source.zip'),snapshot);f.write(path.join(f.root,'sources.json'),manifest);
+  const provenance={schemaVersion:2,version:'0.1.0-rc.7',baseCommit:'1'.repeat(40),workingTreeDirty:true,
+    sourceSnapshot:{file:'source.zip',sha256:hash(snapshot)},sourceManifest:{file:'sources.json',sha256:hash(manifest)}};
+  f.write(file,JSON.stringify(provenance));
+  const result=run(f,['--source-provenance',file]);assert.equal(result.status,0,result.stdout);
+  assert.ok(result.report.packFiles.includes('SDK_PROVENANCE.json'));
+  const actual=JSON.parse(spawnSync('tar',['-xOzf',result.report.tarball,'package/SDK_PROVENANCE.json'],{encoding:'utf8'}).stdout);
+  assert.deepEqual(actual.sourceSnapshot,provenance.sourceSnapshot);assert.equal(actual.workingTreeDirty,true);
+  assert.equal(actual.sourceCommit,undefined);assert.equal(actual.native.length,2);
 });

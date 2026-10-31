@@ -1,3 +1,4 @@
+import { isCursorCode } from './cursor.js';
 import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { win32 } from 'node:path';
@@ -19,7 +20,7 @@ export const OVERLAY_BROKER_LEGACY_TARGET_TRANSPORT_MAX = 1 as const;
  * Monotonic generation of the runtime provider shipped by this SDK. Bump this
  * only with the matching staged-artifact manifests, never for package semver.
  */
-export const OVERLAY_BROKER_RUNTIME_GENERATION = 4 as const;
+export const OVERLAY_BROKER_RUNTIME_GENERATION = 7 as const;
 /** Current target transport spoken by the broker and injected runtime. */
 export const OVERLAY_BROKER_TARGET_TRANSPORT_VERSION = 1 as const;
 /**
@@ -52,6 +53,7 @@ export const OVERLAY_BROKER_REQUIRED_CAPABILITIES = Object.freeze([
 export const OVERLAY_BROKER_CAPABILITIES = Object.freeze([
   ...OVERLAY_BROKER_REQUIRED_CAPABILITIES,
   'window-focus-v1',
+  'window-cursor-v1',
   OVERLAY_BROKER_PROCESS_INSTANCE_INJECTION_CAPABILITY,
 ] as const);
 
@@ -202,6 +204,12 @@ export type OverlayBrokerWindowClose = Readonly<{
   windowId: number;
 }>;
 
+export type OverlayBrokerWindowCursor = Readonly<{
+  type: 'broker.window.cursor';
+  windowId: number;
+  cursor: number;
+}>;
+
 export type OverlayBrokerWindowFocus = Readonly<{
   type: 'broker.window.focus';
   windowId: number;
@@ -220,6 +228,7 @@ export type OverlayBrokerClientMessage =
   | OverlayBrokerWindowUpsert
   | OverlayBrokerWindowBounds
   | OverlayBrokerWindowClose
+  | OverlayBrokerWindowCursor
   | OverlayBrokerWindowFocus
   | OverlayBrokerInputIntercept;
 
@@ -417,6 +426,14 @@ export function parseOverlayBrokerClientMessage(
       return parseWindowBounds(value);
     case 'broker.window.close':
       return parseWindowClose(value);
+    case 'broker.window.cursor':
+      return isPositiveUint32(value.windowId) && isCursorCode(value.cursor)
+        ? Object.freeze({
+            type: 'broker.window.cursor',
+            windowId: value.windowId,
+            cursor: value.cursor,
+          })
+        : null;
     case 'broker.window.focus':
       return isPositiveUint32(value.windowId) && typeof value.focused === 'boolean'
         ? Object.freeze({ type: 'broker.window.focus', windowId: value.windowId, focused: value.focused })

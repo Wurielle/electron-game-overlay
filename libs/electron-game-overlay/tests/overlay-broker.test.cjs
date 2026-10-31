@@ -2990,3 +2990,95 @@ test('an initial target authorization failure remains terminal and is not retrie
     await server.stop();
   }
 });
+
+test('optional cursor updates retain per-member ownership with colliding local IDs', async () => {
+  const fixture = await startFixture({ runtimeProviderElectionWindowMs: 0 });
+  try {
+    const a = await fixture.makeClient('1.0.0');
+    const b = await fixture.makeClient('99.0.0');
+    a.addWindow(1, overlayWindow('cursor-a'));
+    b.addWindow(1, overlayWindow('cursor-b', 100));
+    a.setWindowCursor(1, 32649);
+    b.setWindowCursor(1, 32513);
+    await a.authorizeTarget(
+      TARGET_PID,
+      fixtureDiscoveryPath('cursor-a.json'),
+      TARGET_EXE,
+    );
+    const transport = fixture.transports[0];
+    transport.cursors = [];
+    transport.setWindowCursor = (windowId, cursor) =>
+      transport.cursors.push({ windowId, cursor });
+    transport.emit('game.process', { pid: TARGET_PID, path: TARGET_EXE });
+    await b.authorizeTarget(
+      TARGET_PID,
+      fixtureDiscoveryPath('cursor-b.json'),
+      TARGET_EXE,
+    );
+    await waitFor(() => transport.cursors.length >= 2);
+    const idA = [...transport.windows].find(
+      ([, w]) => w.name === 'cursor-a',
+    )[0];
+    const idB = [...transport.windows].find(
+      ([, w]) => w.name === 'cursor-b',
+    )[0];
+    assert.notEqual(idA, idB);
+    assert.ok(
+      transport.cursors.some((c) => c.windowId === idA && c.cursor === 32649),
+    );
+    assert.ok(
+      transport.cursors.some((c) => c.windowId === idB && c.cursor === 32513),
+    );
+    a.setWindowCursor(1, 32644);
+    a.setWindowCursor(idB + 500, 0);
+    await waitFor(() =>
+      transport.cursors.some((c) => c.windowId === idA && c.cursor === 32644),
+    );
+    assert.equal(
+      transport.cursors.some((c) => c.windowId === idB && c.cursor !== 32513),
+      false,
+    );
+    b.stop();
+    a.setWindowCursor(1, 32512);
+    await waitFor(() =>
+      transport.cursors.some((c) => c.windowId === idA && c.cursor === 32512),
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('cursor extension validates bounded system IDs without changing frozen capabilities', () => {
+  assert.equal(
+    OVERLAY_BROKER_REQUIRED_CAPABILITIES.includes('window-cursor-v1'),
+    false,
+  );
+  assert.ok(
+    negotiateOverlayBrokerProtocol({
+      type: 'broker.hello',
+      protocolMin: 1,
+      protocolMax: 1,
+      requiredCapabilities: OVERLAY_BROKER_REQUIRED_CAPABILITIES,
+      clientPid: process.pid,
+      sdkVersion: 'old',
+    }).accepted,
+  );
+  for (const cursor of [-1, 1, 32516, 999999, NaN, '32513', null]) {
+    assert.equal(
+      parseOverlayBrokerClientMessage({
+        type: 'broker.window.cursor',
+        windowId: 1,
+        cursor,
+      }),
+      null,
+    );
+  }
+  assert.deepEqual(
+    parseOverlayBrokerClientMessage({
+      type: 'broker.window.cursor',
+      windowId: 1,
+      cursor: 32513,
+    }),
+    { type: 'broker.window.cursor', windowId: 1, cursor: 32513 },
+  );
+});
