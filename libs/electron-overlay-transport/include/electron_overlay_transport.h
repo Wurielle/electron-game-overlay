@@ -160,6 +160,8 @@ ego_status EGO_CALL ego_scene_snapshot_get_window(
     uint64_t index,
     ego_window_frame_v1 *inout_frame);
 
+ego_status EGO_CALL ego_transport_cursor_at(const ego_transport *transport, int32_t x, int32_t y, int32_t *out_cursor);
+
 ego_status EGO_CALL ego_transport_desired_interception(
     const ego_transport *transport,
     uint32_t *out_desired);

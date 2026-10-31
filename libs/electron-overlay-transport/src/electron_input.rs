@@ -5,7 +5,7 @@
 //! the stateful decisions: effective interception, Electron focus, pointer
 //! capture, coordinate localization, and outbound ordering.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -626,6 +626,7 @@ struct DragValidation {
 
 #[derive(Debug)]
 pub struct InputRouter {
+    cursors: HashMap<u32, u32>,
     requested_interception: bool,
     desired_interception: bool,
     effective_interception: bool,
@@ -633,6 +634,7 @@ pub struct InputRouter {
     /// Ordered back-to-front. The final hit window is visually topmost.
     windows: Vec<InputWindow>,
     focused_window_id: Option<u32>,
+    explicit_focus_window_id: Option<u32>,
     captured_window_id: Option<u32>,
     captured_buttons: u8,
     last_captured_point: Option<InputPoint>,
@@ -653,6 +655,7 @@ pub struct InputRouter {
 impl Default for InputRouter {
     fn default() -> Self {
         Self {
+            cursors: HashMap::new(),
             requested_interception: false,
             desired_interception: false,
             effective_interception: false,
@@ -661,6 +664,7 @@ impl Default for InputRouter {
             target_focused: false,
             windows: Vec::new(),
             focused_window_id: None,
+            explicit_focus_window_id: None,
             captured_window_id: None,
             captured_buttons: 0,
             last_captured_point: None,
@@ -680,6 +684,32 @@ impl Default for InputRouter {
 impl InputRouter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_window_cursor(&mut self, window_id: u32, cursor: u32) {
+        if self.windows.iter().any(|w| w.window_id == window_id)
+            && matches!(cursor, 0 | 32512..=32515 | 32642..=32646 | 32648..=32651)
+        {
+            self.cursors.insert(window_id, cursor);
+        }
+    }
+
+    // -1 hands cursor ownership back to the game. Query the same hit-test and
+    // capture owner used for pointer input, never the keyboard-focused window.
+    pub fn cursor_at(&self, point: InputPoint) -> i32 {
+        if !self.effective_interception || !self.requested_interception || !self.target_focused {
+            return -1;
+        }
+        let target = if self.captured_buttons != 0 {
+            self.windows
+                .iter()
+                .find(|w| Some(w.window_id) == self.captured_window_id)
+        } else {
+            self.windows.iter().rev().find(|w| w.hit_test(point))
+        };
+        target
+            .map(|w| *self.cursors.get(&w.window_id).unwrap_or(&32512) as i32)
+            .unwrap_or(-1)
     }
 
     pub fn state(&self) -> InputRouterState {
@@ -788,6 +818,8 @@ impl InputRouter {
     /// occurrence of a duplicate id wins at its final stack position.
     pub fn replace_windows(&mut self, windows: Vec<InputWindow>) -> Vec<OutboundMessage> {
         let windows = normalize_windows(windows);
+        self.cursors
+            .retain(|id, _| windows.iter().any(|w| w.window_id == *id));
         let mut outbound = Vec::new();
 
         let drag_remains_live = self
@@ -825,6 +857,7 @@ impl InputRouter {
 
         self.windows = windows;
         self.recompute_desired_interception(false);
+        self.restore_explicit_focus(&mut outbound);
         outbound
     }
 
@@ -832,9 +865,11 @@ impl InputRouter {
     /// Unlike [`Self::replace_windows`], reused native IDs do not retain focus,
     /// capture, or a pending click-to-front intent from the previous session.
     pub fn reset_windows(&mut self, windows: Vec<InputWindow>) -> Vec<OutboundMessage> {
+        self.explicit_focus_window_id = None;
         let mut outbound = self.cancel_pointer_capture();
         self.clear_electron_focus(&mut outbound);
         self.pending_raise_window_id = None;
+        self.cursors.clear();
         self.windows = normalize_windows(windows);
         self.recompute_desired_interception(false);
         outbound
@@ -843,6 +878,10 @@ impl InputRouter {
     /// Removes one window. Removing the capture owner synthesizes releases
     /// before clearing its focus; unrelated focus/capture state is preserved.
     pub fn remove_window(&mut self, window_id: u32) -> Vec<OutboundMessage> {
+        self.cursors.remove(&window_id);
+        if self.explicit_focus_window_id == Some(window_id) {
+            self.explicit_focus_window_id = None;
+        }
         if !self
             .windows
             .iter()
@@ -983,6 +1022,7 @@ impl InputRouter {
         }
 
         self.recompute_desired_interception(true);
+        self.restore_explicit_focus(&mut outbound);
         outbound
     }
 
@@ -1002,6 +1042,7 @@ impl InputRouter {
             self.clear_electron_focus(&mut outbound);
         }
         self.recompute_desired_interception(false);
+        self.restore_explicit_focus(&mut outbound);
         outbound
     }
 
@@ -1029,6 +1070,7 @@ impl InputRouter {
         }
 
         self.effective_interception = effective;
+        self.restore_explicit_focus(&mut outbound);
         self.atomic_interception
             .effective
             .store(effective, Ordering::Release);
@@ -1151,6 +1193,7 @@ impl InputRouter {
         if matches!(transition, Some(PointerTransition::Down(_)))
             && self.focused_window_id != Some(target.window_id)
         {
+            self.explicit_focus_window_id = None;
             self.focused_window_id = Some(target.window_id);
             outbound.push(OutboundMessage::WindowFocused {
                 focus_window_id: target.window_id,
@@ -1389,6 +1432,42 @@ impl InputRouter {
         vec![OutboundMessage::input_for(window, msg, wparam, lparam)]
     }
 
+    /// The caller validates registration; first-frame arrival may make this
+    /// window routable later. Blur is conditional so a stale member cannot
+    /// clear another application's current keyboard owner.
+    pub fn request_window_focus(&mut self, window_id: u32, focused: bool) -> Vec<OutboundMessage> {
+        let mut outbound = Vec::new();
+        if focused {
+            self.explicit_focus_window_id = Some(window_id);
+            if self.focused_window_id != Some(window_id) {
+                self.clear_electron_focus(&mut outbound);
+            }
+            self.restore_explicit_focus(&mut outbound);
+        } else {
+            if self.explicit_focus_window_id == Some(window_id) {
+                self.explicit_focus_window_id = None;
+            }
+            if self.focused_window_id == Some(window_id) {
+                self.clear_electron_focus(&mut outbound);
+            }
+        }
+        outbound
+    }
+
+    fn restore_explicit_focus(&mut self, outbound: &mut Vec<OutboundMessage>) {
+        if !self.requested_interception || !self.effective_interception || !self.target_focused {
+            return;
+        }
+        if let Some(id) = self.explicit_focus_window_id {
+            if contains_window(&self.windows, id) && self.focused_window_id != Some(id) {
+                self.focused_window_id = Some(id);
+                outbound.push(OutboundMessage::WindowFocused {
+                    focus_window_id: id,
+                });
+            }
+        }
+    }
+
     fn clear_electron_focus(&mut self, outbound: &mut Vec<OutboundMessage>) {
         if self.focused_window_id.take().is_some() {
             outbound.push(OutboundMessage::WindowFocused { focus_window_id: 0 });
@@ -1528,6 +1607,42 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn cursor_follows_hit_test_capture_and_lifecycle_instead_of_keyboard_focus() {
+        let back = InputWindow::new(1, InputRect::new(0, 0, 100, 100));
+        let front = InputWindow::new(2, InputRect::new(50, 0, 100, 100));
+        let mut router = router_with_windows(vec![back.clone(), front.clone()]);
+        router.set_window_cursor(1, 32649);
+        router.set_window_cursor(2, 32513);
+        router.request_window_focus(1, true);
+        assert_eq!(router.cursor_at(InputPoint::new(75, 20)), 32513);
+        assert_eq!(router.cursor_at(InputPoint::new(20, 20)), 32649);
+        assert_eq!(router.cursor_at(InputPoint::new(200, 20)), -1);
+        router.route_win32_message(
+            WM_LBUTTONDOWN,
+            1,
+            encode_signed_lparam_point(InputPoint::new(75, 20)),
+            Some,
+        );
+        assert_eq!(router.cursor_at(InputPoint::new(20, 20)), 32513);
+        router.route_win32_message(
+            WM_LBUTTONUP,
+            0,
+            encode_signed_lparam_point(InputPoint::new(20, 20)),
+            Some,
+        );
+        router.set_window_cursor(1, 0);
+        assert_eq!(router.cursor_at(InputPoint::new(20, 20)), 0);
+        router.remove_window(2);
+        router.replace_windows(vec![back, front]);
+        assert_eq!(router.cursor_at(InputPoint::new(75, 20)), 32512);
+        router.set_target_focused(false);
+        assert_eq!(router.cursor_at(InputPoint::new(20, 20)), -1);
+        router.set_target_focused(true);
+        router.request_interception(false);
+        assert_eq!(router.cursor_at(InputPoint::new(20, 20)), -1);
+    }
 
     const WINDOW_ID: u32 = 17;
     const RECT: InputRect = InputRect::new(-20, 30, 100, 50);

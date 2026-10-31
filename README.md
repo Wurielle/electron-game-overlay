@@ -56,6 +56,18 @@ Independent applications attaching to the same exact PID share one injected
 runtime automatically. Their windows and input remain isolated by application;
 applications do not create or manage a broker instance.
 
+## SDK distribution candidate
+
+For a standalone consumer without the workspace build tools, use the local
+`electron-game-overlay-0.1.0-rc.1.tgz` candidate artifact. This is not a public npm
+release. Follow the [package install guide](libs/electron-game-overlay/README.md)
+and copy [`examples/basic-overlay`](examples/basic-overlay) outside this checkout
+before installing the tarball. The example includes a noninjecting Electron/DOM
+smoke mode and an explicitly opted-in Windows name-watcher flow; it does not
+attach to already-running games.
+
+The validation app download below is a separate artifact, not the SDK tarball.
+
 ## Try a demo
 
 ### Download the Windows validation app

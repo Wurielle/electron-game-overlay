@@ -51,6 +51,7 @@ import {
   type OverlayBrokerTargetRelease,
   type OverlayBrokerWindowBounds,
   type OverlayBrokerWindowClose,
+  type OverlayBrokerWindowFocus,
   type OverlayBrokerWindowUpsert,
 } from './overlay-broker-protocol.js';
 import type { Disposable } from './types.js';
@@ -88,6 +89,8 @@ export interface OverlayBrokerTargetTransport {
   setDiagnosticCallback?(callback: (diagnostic: unknown) => void): void;
   setEventCallback(callback: (event: string, payload: unknown) => void): void;
   setInputIntercept(intercept: boolean): void;
+  setWindowCursor?(windowId: number, cursor: number): void;
+  setWindowFocus?(windowId: number, focused: boolean): void;
   addWindow(windowId: number, details: NativeOverlayWindowDetails): void;
   /** Registers only this window in a complete order if all native peers opt in. */
   addWindowInOrder?(
@@ -160,6 +163,7 @@ type RetainedFrame = Readonly<{
 
 type BrokerWindowState = {
   details: NativeOverlayWindowDetails;
+  cursor?: number;
   orderToken: string;
   snapshotBytes: number;
   latestFrame?: RetainedFrame;
@@ -189,7 +193,15 @@ interface BrokerWindowOwner {
 
 type BrokerTargetClient = Pick<
   BrokerClientSession,
-  'id' | 'internalProvider' | 'hello' | 'closed' | 'inputIntercept' | 'windows' | 'targets' | 'send'
+  | 'id'
+  | 'internalProvider'
+  | 'hello'
+  | 'closed'
+  | 'inputIntercept'
+  | 'requestedFocusWindowId'
+  | 'windows'
+  | 'targets'
+  | 'send'
 >;
 
 interface BrokerClientSession {
@@ -202,6 +214,7 @@ interface BrokerClientSession {
   hello?: OverlayBrokerClientHello;
   closed: boolean;
   inputIntercept: boolean;
+  requestedFocusWindowId?: number;
   windows: Map<number, BrokerWindowState>;
   targets: Map<number, OverlayBrokerTargetHost>;
   send(message: OverlayBrokerServerMessage): void;
@@ -213,6 +226,7 @@ interface BrokerClientSession {
  * the only layer that allocates IDs visible inside the injected runtime.
  */
 export class OverlayBrokerTargetHost {
+  private selectedFocusOwner: BrokerWindowOwner | undefined;
   private readonly members = new Map<BrokerTargetClient, TargetMember>();
   private readonly mappingsByClient = new Map<
     BrokerTargetClient,
@@ -474,6 +488,7 @@ export class OverlayBrokerTargetHost {
   }
 
   public removeMember(client: BrokerTargetClient): void {
+    if (this.selectedFocusOwner?.client === client) this.selectedFocusOwner = undefined;
     const member = this.members.get(client);
     if (!member) {
       return;
@@ -514,7 +529,9 @@ export class OverlayBrokerTargetHost {
     this.recomputeInputIntercept();
     if (
       !client.internalProvider &&
-      ![...this.members.values()].some(member => !member.client.internalProvider)
+      ![...this.members.values()].some(
+        (member) => !member.client.internalProvider,
+      )
     ) {
       for (const remaining of [...this.members.values()]) {
         if (remaining.client.internalProvider) {
@@ -585,6 +602,7 @@ export class OverlayBrokerTargetHost {
   }
 
   public closeWindow(client: BrokerTargetClient, localWindowId: number): void {
+    if (this.selectedFocusOwner?.client === client && this.selectedFocusOwner.localWindowId === localWindowId) this.selectedFocusOwner = undefined;
     const mapping = this.mappingsByClient.get(client);
     const targetWindowId = mapping?.get(localWindowId);
     if (targetWindowId === undefined) {
@@ -593,6 +611,40 @@ export class OverlayBrokerTargetHost {
     mapping?.delete(localWindowId);
     this.ownersByTargetWindowId.delete(targetWindowId);
     this.safeTargetMutation(() => this.transport.closeWindow(targetWindowId));
+  }
+
+  public setWindowCursor(
+    client: BrokerTargetClient,
+    localWindowId: number,
+    cursor: number,
+  ): void {
+    const id = this.mappingsByClient.get(client)?.get(localWindowId);
+    if (id !== undefined)
+      this.safeTargetMutation(() =>
+        this.transport.setWindowCursor?.(id, cursor),
+      );
+  }
+
+  public setWindowFocus(
+    client: BrokerTargetClient,
+    localWindowId: number,
+    focused: boolean,
+  ): void {
+    const id = this.mappingsByClient.get(client)?.get(localWindowId);
+    if (id === undefined) return;
+    if (focused) this.selectedFocusOwner = { client, localWindowId };
+    else if (this.selectedFocusOwner?.client === client && this.selectedFocusOwner.localWindowId === localWindowId) this.selectedFocusOwner = undefined;
+    this.safeTargetMutation(() => this.transport.setWindowFocus?.(id, focused && client.inputIntercept));
+  }
+
+  public refreshMemberFocus(client: BrokerTargetClient): void {
+    const selected = this.selectedFocusOwner;
+    if (selected?.client === client) {
+      const id = this.mappingsByClient.get(client)?.get(selected.localWindowId);
+      if (id !== undefined) this.safeTargetMutation(() => this.transport.setWindowFocus?.(id, client.inputIntercept));
+    } else if (!selected && client.inputIntercept && client.requestedFocusWindowId !== undefined) {
+      this.setWindowFocus(client, client.requestedFocusWindowId, true);
+    }
   }
 
   public sendFrame(
@@ -722,10 +774,15 @@ export class OverlayBrokerTargetHost {
     // A broker-local cached provider can resume its exact pre-consumable
     // lease without its supplying app. Other clients may wait for that owner,
     // but cannot outrank the claimed lease or receive a second injection grant.
-    if ([...this.members.values()].some(candidate =>
-      candidate.active && candidate.client.internalProvider &&
-      candidate.recovering && candidate.leaseId === claim.leaseId
-    )) {
+    if (
+      [...this.members.values()].some(
+        (candidate) =>
+          candidate.active &&
+          candidate.client.internalProvider &&
+          candidate.recovering &&
+          candidate.leaseId === claim.leaseId,
+      )
+    ) {
       return undefined;
     }
     if (claim.leaseId === undefined) {
@@ -900,9 +957,14 @@ export class OverlayBrokerTargetHost {
 
   private inspectProcessIdentity(): Promise<OverlayBrokerProcessIdentity | undefined> {
     if (this.processIdentityProbe) return this.processIdentityProbe;
-    const pending = Promise.resolve().then(() => this.queryProcessIdentity?.(this.pid))
-      .then(observed => observed?.pid === this.pid &&
-        isValidProcessCreationTime100ns(observed.creationTime100ns) ? observed : undefined)
+    const pending = Promise.resolve()
+      .then(() => this.queryProcessIdentity?.(this.pid))
+      .then((observed) =>
+        observed?.pid === this.pid &&
+        isValidProcessCreationTime100ns(observed.creationTime100ns)
+          ? observed
+          : undefined,
+      )
       .catch(() => undefined);
     this.processIdentityProbe = pending;
     void pending.finally(() => {
@@ -1175,9 +1237,11 @@ export class OverlayBrokerTargetHost {
         }
         // A cached runtime is a provider, not an application asking to attach.
         // No external acceptance means no new publication or injection grant.
-        if (![...this.members.values()].some(member =>
-          member.active && !member.client.internalProvider
-        )) {
+        if (
+          ![...this.members.values()].some(
+            (member) => member.active && !member.client.internalProvider,
+          )
+        ) {
           this.removeMember(candidate.client);
           this.onMemberRejected(this, candidate.client);
           return;
@@ -1478,6 +1542,11 @@ export class OverlayBrokerTargetHost {
     );
     for (const [localWindowId, state] of ordered) {
       this.upsertWindow(client, localWindowId, state);
+      if (state.cursor !== undefined)
+        this.setWindowCursor(client, localWindowId, state.cursor);
+    }
+    if (client.requestedFocusWindowId !== undefined && client.inputIntercept) {
+      this.setWindowFocus(client, client.requestedFocusWindowId, true);
     }
   }
 
@@ -1738,6 +1807,7 @@ export class OverlayBrokerTargetHost {
       if (!owner || !this.members.has(owner.client)) {
         return;
       }
+      this.selectedFocusOwner = owner.client.hello && getOverlayBrokerClientSupportedCapabilities(owner.client.hello).includes('window-focus-v1') ? owner : undefined;
       this.onWindowRaised(owner.client, owner.localWindowId);
       for (const member of this.members.values()) {
         member.client.send({
@@ -2178,6 +2248,29 @@ export class OverlayBrokerServer {
         case 'broker.window.close':
           this.handleWindowClose(client, message);
           break;
+        case 'broker.window.cursor':
+          if (
+            getOverlayBrokerClientSupportedCapabilities(client.hello).includes(
+              'window-cursor-v1',
+            )
+          ) {
+            const state = client.windows.get(message.windowId);
+            if (state) {
+              state.cursor = message.cursor;
+              for (const target of client.targets.values())
+                target.setWindowCursor(
+                  client,
+                  message.windowId,
+                  message.cursor,
+                );
+            }
+          }
+          break;
+        case 'broker.window.focus':
+          if (getOverlayBrokerClientSupportedCapabilities(client.hello).includes('window-focus-v1')) {
+            this.handleWindowFocus(client, message);
+          }
+          break;
         case 'broker.input.intercept':
           this.handleInputIntercept(client, message);
           break;
@@ -2342,8 +2435,14 @@ export class OverlayBrokerServer {
       );
       return;
     }
+    const cursor = client.windows.get(message.windowId)?.cursor;
     client.windows.delete(message.windowId);
-    const state: BrokerWindowState = { details, orderToken, snapshotBytes };
+    const state: BrokerWindowState = {
+      details,
+      orderToken,
+      snapshotBytes,
+      cursor,
+    };
     client.windows.set(message.windowId, state);
     this.sendWindowOrder(client, message.windowId, orderToken);
     for (const target of client.targets.values()) {
@@ -2436,6 +2535,7 @@ export class OverlayBrokerServer {
       return;
     }
     client.windows.delete(message.windowId);
+    if (client.requestedFocusWindowId === message.windowId) client.requestedFocusWindowId = undefined;
     this.releaseWindowOrderToken(client, message.windowId, state.orderToken);
     for (const target of client.targets.values()) {
       target.closeWindow(client, message.windowId);
@@ -2449,6 +2549,16 @@ export class OverlayBrokerServer {
     client.inputIntercept = message.intercept;
     for (const target of client.targets.values()) {
       target.refreshInputIntercept();
+      target.refreshMemberFocus(client);
+    }
+  }
+
+  private handleWindowFocus(client: BrokerClientSession, message: OverlayBrokerWindowFocus): void {
+    if (!client.windows.has(message.windowId)) return;
+    if (message.focused) client.requestedFocusWindowId = message.windowId;
+    else if (client.requestedFocusWindowId === message.windowId) client.requestedFocusWindowId = undefined;
+    for (const target of client.targets.values()) {
+      target.setWindowFocus(client, message.windowId, message.focused);
     }
   }
 

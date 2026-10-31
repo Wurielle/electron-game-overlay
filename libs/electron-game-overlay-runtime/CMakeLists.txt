@@ -3,10 +3,10 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "31D321732C1B424796593C0778FB722E"
+    "12EE788081A34E00B10862242DF38893"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "87A6F9A1BA8548F86025EC05905A189ACDB0925568E16C55A7762E791C4994CD"
+    "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
     "07A76311F29A7A20E54D305BCA1F384A035C84D620BF201C3CACBAC9681BA7B6"
@@ -110,6 +110,8 @@ set(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH
 set(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-name-watcher-ready.patch"
 )
+set(RESHAPE_FUTURE_TARGETS_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-future-targets.patch")
+set(RESHAPE_PROCESS_POLICY_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-policy.patch")
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -159,6 +161,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
     "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
     "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
+    "${RESHAPE_FUTURE_TARGETS_PATCH}"
+    "${RESHAPE_PROCESS_POLICY_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -317,11 +321,39 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
+# Normalize only an exact prior terminal injector before peeling the stack.
+# The terminal future-target patch also pins the add-on build ID. Historical
+# lower-stack migration cannot recognize it until this terminal seam is peeled.
+set(EGO_TERMINAL_INJECTOR "${reshade_SOURCE_DIR}/tools/injector.cpp")
+file(READ "${EGO_TERMINAL_INJECTOR}" EGO_TERMINAL_CONTENT)
+string(REPLACE "\r\n" "\n" EGO_TERMINAL_CONTENT "${EGO_TERMINAL_CONTENT}")
+string(REGEX REPLACE
+    "(constexpr char expected_addon_build_id\\[\\] =[\t\r\n ]*\")[0-9A-F]+(\")"
+    "\\1${ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID}\\2"
+    EGO_TERMINAL_NORMALIZED "${EGO_TERMINAL_CONTENT}")
+string(SHA256 EGO_TERMINAL_HASH "${EGO_TERMINAL_NORMALIZED}")
+string(TOUPPER "${EGO_TERMINAL_HASH}" EGO_TERMINAL_HASH)
+if(EGO_TERMINAL_HASH STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 AND
+   NOT EGO_TERMINAL_CONTENT STREQUAL EGO_TERMINAL_NORMALIZED)
+    file(WRITE "${EGO_TERMINAL_INJECTOR}" "${EGO_TERMINAL_NORMALIZED}")
+endif()
+
+# The policy seam is terminal. Peel it before older future/binding migrations.
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" RESULT_VARIABLE POLICY_PRESENT OUTPUT_QUIET ERROR_QUIET)
+if(POLICY_PRESENT EQUAL 0)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+endif()
+
 # Peel the watcher-readiness marker and exact-target path proof first, then the
 # architecture diagnostic and architecture patch, from an existing fetched
 # tree before migrating or validating the historical stack below. They are
 # reapplied in the opposite order after those patches, so repeated configure
 # runs and earlier trees remain idempotent.
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" RESULT_VARIABLE FUTURE_PRESENT OUTPUT_QUIET ERROR_QUIET)
+if(FUTURE_PRESENT EQUAL 0)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+endif()
+
 # Peel the new terminal seam before replaying historical migrations.
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
@@ -1895,6 +1927,9 @@ execute_process(
 if(NOT RESHAPE_BINDING_APPLY EQUAL 0)
     message(FATAL_ERROR "Unable to apply process-instance binding patch.")
 endif()
+
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and

@@ -2,7 +2,7 @@ name: Broker compatibility
 
 on:
   pull_request:
-    branches: [feat/overlay-pocs]
+    branches: [dev, feat/overlay-pocs]
   workflow_dispatch:
     inputs:
       build-demo:
@@ -236,6 +236,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force test-results | Out-Null
           @{ status = 'failed'; stage = 'before-dependency-setup'; nativeExecuted = $false; electronPeerInstalled = $false } | ConvertTo-Json -Compress | Set-Content -LiteralPath test-results/broker-package-install.json -Encoding utf8
+          foreach ($kind in @('package', 'install', 'consumer')) {
+            @{ status = 'failed'; stage = 'before-dependency-setup'; nativeExecuted = $false } | ConvertTo-Json -Compress | Set-Content -LiteralPath "test-results/sdk-preview-$kind.json" -Encoding utf8
+          }
       - name: Seed native-binding failure evidence
         shell: pwsh
         run: |
@@ -287,6 +290,21 @@ jobs:
         run: |
           Get-Command Get-FileHash -ErrorAction Stop | Out-Null
           npm exec --yes=false -- nx run electron-game-overlay:build
+      - name: Package SDK release candidate
+        shell: pwsh
+        run: |
+          & node libs/electron-game-overlay/scripts/package-sdk.cjs --package-root libs/electron-game-overlay --built-dist libs/electron-game-overlay/dist --output artifacts/sdk-preview --source-commit $env:GITHUB_SHA
+          $status = $LASTEXITCODE
+          if (Test-Path artifacts/sdk-preview/sdk-preview-report.json) { Copy-Item artifacts/sdk-preview/sdk-preview-report.json test-results/sdk-preview-package.json }
+          if ($status -ne 0) { exit $status }
+      - name: Check installed SDK candidate
+        shell: pwsh
+        run: |
+          $candidate = Get-Content -Raw artifacts/sdk-preview/sdk-preview-report.json | ConvertFrom-Json
+          & node libs/electron-game-overlay/tests/broker-package-install.acceptance.cjs --package-root $candidate.stageRoot --sdk-root (Join-Path $candidate.stageRoot 'dist') --tslib-root node_modules/tslib --typescript-root node_modules/typescript --scratch-root $env:TMPDIR --report test-results/sdk-preview-install.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('artifacts/sdk-preview/sdk-preview-report.json','utf8'));const i=JSON.parse(fs.readFileSync('test-results/sdk-preview-install.json','utf8'));if(i.status!=='passed'||i.tarballSha256!==p.tarballSha256)throw Error('Installed candidate differs from delivered tarball');"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check installed SDK tarball
         shell: pwsh
         run: |
@@ -355,12 +373,10 @@ jobs:
           & cmake --build build/electron-game-overlay-runtime-production-x86 --config RelWithDebInfo --target d3d9_overlay_test_host d3d10_overlay_test_host --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/setup-node@v7.1.0
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         with:
           node-version: 24.22.1
           package-manager-cache: false
       - name: Install the locked Electron runtime for the manual demo
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         shell: pwsh
         run: |
           Remove-Item Env:ELECTRON_SKIP_BINARY_DOWNLOAD, Env:ELECTRON_OVERRIDE_DIST_PATH, Env:npm_config_platform, Env:npm_config_arch -ErrorAction SilentlyContinue
@@ -369,10 +385,38 @@ jobs:
           & node -e "const fs=require('node:fs');const executable=require('electron');if(typeof executable!=='string'||!fs.statSync(executable).isFile()||fs.statSync(executable).size===0)throw Error('Electron runtime installation incomplete');"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/setup-node@v7.1.0
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}
         with:
           node-version: 26.12.1
           package-manager-cache: false
+      - name: Check standalone SDK consumer
+        shell: pwsh
+        run: |
+          & node --test examples/basic-overlay/tests/main.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node libs/electron-game-overlay/tests/sdk-preview-consumer.acceptance.cjs --candidate-report artifacts/sdk-preview/sdk-preview-report.json --example-root examples/basic-overlay --scratch-root $env:TMPDIR --report test-results/sdk-preview-consumer.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: sdk-preview-verification-results
+          path: test-results/sdk-preview-*.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Collect SDK candidate download
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/sdk-preview-download/consumer | Out-Null
+          Copy-Item artifacts/sdk-preview/*.tgz artifacts/sdk-preview-download/
+          foreach ($file in @('main.cjs', 'index.html', 'package.json', 'README.md')) {
+            Copy-Item (Join-Path examples/basic-overlay $file) artifacts/sdk-preview-download/consumer/
+          }
+          Copy-Item -Recurse examples/basic-overlay/tests artifacts/sdk-preview-download/consumer/
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ego-sdk-preview
+          path: artifacts/sdk-preview-download/
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify the pinned previous SDK artifact
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build-demo && inputs.build-two-app-demo }}
         shell: pwsh
