@@ -4465,6 +4465,11 @@ void prepare_own_frame(effect_runtime *runtime)
         // a coherent active frame or actual owner destruction may acknowledge.
         deactivate_dormant_input(*data);
         data->cooperative_incarnations.clear();
+        // A producer epoch ends its registrations, not just their pixels.
+        // publish_windows(empty) intentionally retains ranks through a raster
+        // gap, so it cannot retire the departed session's rank ownership.
+        static_cast<void>(g_cooperative.reconcile_registrations(g_participant_id, nullptr, 0));
+        g_producer_registration_order.clear();
         data->retired_session_textures +=
             retire_all_electron_textures(runtime, *data);
 

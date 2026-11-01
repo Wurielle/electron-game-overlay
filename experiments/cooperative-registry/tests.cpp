@@ -337,6 +337,46 @@ int main()
             first.set_focus(next_focus_a) && !first.set_focus(focus_a_key),
             "Recreated unpainted registration accepted stale focus identity");
         require(first.leave(focus_a_id) && second.leave(focus_b_id), "Focus-gap fixture cleanup failed");
+        owner epoch_owner{7, false, &draws}, epoch_survivor{8, false, &draws};
+        const auto epoch_id = first.join(callbacks, &epoch_owner);
+        const auto survivor_id = second.join(callbacks, &epoch_survivor);
+        require(epoch_id != 0 && survivor_id != 0, "Epoch-retirement participants failed to join");
+        const window_key old_epoch_key{epoch_id, 1, 0, 1};
+        const window_key survivor_keys[]{{survivor_id, 1, 0, 1}, {survivor_id, 2, 0, 1}};
+        const auto old_epoch_frame = window(1);
+        const window_v1 survivor_frames[]{window(1), window(2)};
+        require(first.reconcile_registrations(epoch_id, &old_epoch_key, 1) &&
+            first.publish_windows(epoch_id, &old_epoch_frame, 1) &&
+            second.reconcile_registrations(survivor_id, survivor_keys, 2) &&
+            second.publish_windows(survivor_id, survivor_frames, 2) &&
+            second.set_focus(survivor_keys[1]) && second.set_capture(survivor_keys[1], 1),
+            "Epoch-retirement registration setup failed");
+        const auto before_epoch_retirement = first.snapshot_windows();
+        require(before_epoch_retirement.size() == 3 && first.publish_windows(epoch_id, nullptr, 0, true) &&
+            first.set_focus(old_epoch_key) && second.set_focus(survivor_keys[1]),
+            "A temporary raster gap incorrectly discarded its live registration");
+        // Native epoch retirement must reconcile authoritative registrations:
+        // empty compositable frames alone preserve rank history by design.
+        require(first.reconcile_registrations(epoch_id, nullptr, 0) && !first.set_focus(old_epoch_key) &&
+            first.focus() == survivor_keys[1] && first.capture() == survivor_keys[1],
+            "Closed producer epoch retained registration or disturbed survivor ownership");
+        auto after_epoch_retirement = first.snapshot_windows();
+        require(after_epoch_retirement.size() == 2 &&
+            after_epoch_retirement[0].key == survivor_keys[0] && after_epoch_retirement[1].key == survivor_keys[1] &&
+            after_epoch_retirement[0].window.order == before_epoch_retirement[1].window.order &&
+            after_epoch_retirement[1].window.order == before_epoch_retirement[2].window.order,
+            "Producer epoch retirement reordered a surviving participant");
+        const window_key next_epoch_key{epoch_id, 1, 0, 2};
+        const auto next_epoch_frame = window(1, 2);
+        require(first.reconcile_registrations(epoch_id, &next_epoch_key, 1) &&
+            first.publish_windows(epoch_id, &next_epoch_frame, 1, true) && !first.set_focus(old_epoch_key),
+            "Replacement producer epoch accepted stale registration identity");
+        after_epoch_retirement = first.snapshot_windows();
+        require(after_epoch_retirement.size() == 3 && after_epoch_retirement[2].key == next_epoch_key &&
+            after_epoch_retirement[2].window.order > before_epoch_retirement[2].window.order &&
+            first.focus() == survivor_keys[1] && first.capture() == survivor_keys[1] &&
+            first.leave(epoch_id) && second.leave(survivor_id),
+            "Replacement epoch revived old order or changed survivor input ownership");
         for (std::uint64_t surface = 1; surface <= max_surfaces; ++surface)
             require(first.observe_surface(1000 + surface, 2000 + surface), "Surface inventory bound fixture setup failed");
         require(!second.observe_surface(999999, 999999), "Surface inventory accepted an untracked entry beyond its bound");
