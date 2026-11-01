@@ -2,20 +2,18 @@ const test = require('node:test'),
   assert = require('node:assert/strict'),
   fs = require('node:fs/promises'),
   path = require('node:path'),
-  os = require('node:os'),
-  { createHash } = require('node:crypto');
+  os = require('node:os');
 const {
   packageOverlayForElectronBuilder,
   verifyOverlayPackage,
   createOverlayAfterPack,
 } = require('../dist/packaging.js');
-const sha = (b) => createHash('sha256').update(b).digest('hex');
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ego-packaging-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 3 }));
   const sdk = path.join(root, 'pnpm-store', 'electron-game-overlay'),
     out = path.join(root, 'out'),
-    leaf = path.join(sdk, 'dist/broker/win32-x64');
+    leaf = path.join(sdk, 'dist');
   const write = async (relative, bytes) => {
     const f = path.join(sdk, relative);
     await fs.mkdir(path.dirname(f), { recursive: true });
@@ -30,41 +28,13 @@ async function fixture(t) {
   await write('SDK_PROVENANCE.json', '{"workingTreeDirty":true}');
   await write('node_modules/.bin/electron.cmd', 'peer wrapper must not copy');
   await write('private-source.txt', 'not distributed');
-  const payload = {
-    'electron-game-overlay-broker.exe': 'inert fixture, never executed',
-    'node_modules/tslib/CopyrightNotice.txt': 'immutable nested notice',
-    'node_modules/tslib/tslib.js': 'fixture module',
-    'licenses/node.txt': 'node notice',
-    'lib/module.js': 'module',
-    'runtime/THIRD-PARTY-NOTICES.txt': 'runtime notice',
-  };
-  const files = [];
-  for (const [name, value] of Object.entries(payload)) {
-    const bytes = Buffer.from(value);
-    await write('dist/broker/win32-x64/' + name, bytes);
-    files.push({ path: name, size: bytes.length, sha256: sha(bytes) });
-    if (/^(lib|runtime)\//.test(name)) await write('dist/' + name, bytes);
-  }
-  await write('dist/index.js', 'module.exports={}');
-  await write('dist/index.d.ts', 'export {}');
-  await write(
-    'dist/broker/win32-x64/broker-manifest.json',
-    JSON.stringify({
-      schema: 1,
-      version: '0.1.0-rc.5',
-      protocolMin: 1,
-      protocolMax: 1,
-      platform: 'win32',
-      arch: 'x64',
-      executable: 'electron-game-overlay-broker.exe',
-      files,
-    }),
-  );
+  const payload = require('./helpers/cooperative-package-fixture.cjs').writeCooperativeDistribution(path.join(sdk, 'dist'), { packageVersion: '0.1.0-rc.5' });
   return {
     root,
     sdk,
     out,
     leaf,
+    sealedCount: payload.files.length,
     write,
     context: { appOutDir: out, electronPlatformName: 'win32' },
     destination: path.join(
@@ -83,16 +53,16 @@ test('afterPack restores pruned sealed notices and copies the full distribution 
   const result = await packageOverlayForElectronBuilder(f.context, {
     packageRoot: f.sdk,
   });
-  assert.equal(result.sealedPayloads, 6);
+  assert.equal(result.sealedPayloads, f.sealedCount);
   assert.equal(
     await fs.readFile(
       path.join(
         f.destination,
-        'dist/broker/win32-x64/node_modules/tslib/CopyrightNotice.txt',
+        'dist/node_modules/tslib/CopyrightNotice.txt',
       ),
       'utf8',
     ),
-    'immutable nested notice',
+    'Controlled immutable dependency notice\n',
   );
   await assert.rejects(
     fs.stat(path.join(f.destination, 'node_modules/.bin/electron.cmd')),
@@ -106,11 +76,11 @@ test('afterPack restores pruned sealed notices and copies the full distribution 
     fs.stat(path.join(f.destination, 'obsolete.txt')),
     /ENOENT/,
   );
-  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, 6);
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
   const original = await fs.readFile(
     path.join(f.leaf, 'node_modules/tslib/CopyrightNotice.txt'),
   );
-  assert.equal(original.toString(), 'immutable nested notice');
+  assert.equal(original.toString(), 'Controlled immutable dependency notice\n');
   // Repeated afterPack remains safe and produces the same complete package.
   await createOverlayAfterPack({ packageRoot: f.sdk })(f.context);
 });
@@ -123,21 +93,21 @@ test('tampered source fails before replacing existing build output; packaged tam
     packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }),
     /hash|size|payload/i,
   );
-  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, 6);
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
   await fs.unlink(
     path.join(
       f.destination,
-      'dist/broker/win32-x64/node_modules/tslib/CopyrightNotice.txt',
+      'dist/node_modules/tslib/CopyrightNotice.txt',
     ),
   );
   await assert.rejects(verifyOverlayPackage(f.destination), /ENOENT|payload/i);
 });
-test('SDK/provider root mirror mismatch is rejected even when standalone payload remains sealed', async (t) => {
+test('changed compiled SDK payload is rejected before replacing output', async (t) => {
   const f = await fixture(t);
   await f.write('dist/lib/module.js', 'different');
   await assert.rejects(
     packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }),
-    /mirror mismatch/,
+    /hash|size|payload/i,
   );
   await assert.rejects(fs.stat(f.destination), /ENOENT/);
 });
@@ -155,7 +125,7 @@ test('pnpm package-root junction is supported; payload/output junctions and over
     throw e;
   }
   await packageOverlayForElectronBuilder(f.context, { packageRoot: link });
-  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, 6);
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
   const escape = path.join(f.root, 'escape');
   await fs.mkdir(escape);
   const out2 = path.join(f.root, 'out2');

@@ -44,6 +44,7 @@ function copyProductionGraph(root, output, graph, sdkPackage) {
     const relative = path.relative(root, node.path);
     if (!relative.startsWith(`node_modules${path.sep}`) || relative.includes(`..${path.sep}`)) throw new Error(`Dependency outside node_modules: ${node.path}`);
     const real = fs.realpathSync(sdkPackage && name === 'electron-game-overlay' ? sdkPackage : node.path);
+    if (name === 'electron-game-overlay') validateSDKPackage(real, output);
     const workspace = real !== path.resolve(node.path);
     copyTree(real, path.join(output, relative), (file) => {
       const rel = path.relative(real, file).split(path.sep);
@@ -78,7 +79,11 @@ function validateClientAssets(dist) {
   for (const name of ['main/main.js', 'process-watcher/index.cjs']) regular(path.join(dist, name));
 }
 function validateSDKPayloads(sdk) {
-  for (const name of ['index.js', 'broker.js']) regular(path.join(sdk, name));
+  regular(path.join(sdk, 'index.js'));
+  // The validator is part of this trusted build checkout, not code from a
+  // caller-supplied SDK. Inspect incoming bytes before executing any of them.
+  const { validateOverlayDistributionSync } = require(path.join(repo, 'libs/electron-game-overlay/dist/lib/overlay-package-manifest.js'));
+  const manifest = validateOverlayDistributionSync(sdk);
   const runtime = path.join(sdk, 'runtime/win32-x64/reshade');
   regular(path.join(runtime, 'ReShade.ini'));
   for (const bits of [32, 64]) {
@@ -86,17 +91,6 @@ function validateSDKPayloads(sdk) {
     for (const name of [`electron_game_overlay.addon${bits}`, `electron_game_overlay_reshade_manager${suffix}.exe`, `inject${suffix}.exe`, `ReShade${bits}.dll`]) pe(path.join(runtime, name));
     for (const name of [`electron_game_overlay_runtime${suffix}.build.json`, `ReShade${bits}.build.json`]) regular(path.join(runtime, name));
   }
-  const broker = path.join(sdk, 'broker/win32-x64');
-  const manifest = JSON.parse(fs.readFileSync(path.join(broker, 'broker-manifest.json'), 'utf8'));
-  if (manifest.schema !== 1 || manifest.platform !== 'win32' || manifest.arch !== 'x64' || !manifest.files?.length || manifest.executable !== 'electron-game-overlay-broker.exe') throw new Error('Invalid sealed Windows broker manifest');
-  for (const entry of manifest.files) {
-    if (entry.path.includes('..') || path.isAbsolute(entry.path)) throw new Error('Unsafe broker manifest path');
-    const file = path.join(broker, entry.path);
-    regular(file);
-    const bytes = fs.readFileSync(file);
-    if (bytes.length !== entry.size || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw new Error(`Broker seal mismatch: ${entry.path}`);
-  }
-  pe(path.join(broker, manifest.executable));
   return manifest;
 }
 function validatePayloads(app) {
@@ -113,15 +107,46 @@ function validateSDKPackage(root, output) {
   const metadata = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (metadata.name !== 'electron-game-overlay' || !/^\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$/.test(metadata.version) || !['./dist/index.js', 'dist/index.js'].includes(metadata.main)) throw new Error('Invalid SDK package metadata or root output');
   const manifest = validateSDKPayloads(path.join(root, 'dist'));
-  if (!manifest.files.some(entry => entry.path.startsWith('node_modules/tslib/')) || !manifest.files.some(entry => entry.path === manifest.executable)) throw new Error('SDK seal lacks broker executable or dependencies');
+  if (manifest.packageVersion !== metadata.version) throw new Error('SDK seal package version mismatch');
+  if (!manifest.files.some(entry => entry.path.startsWith('node_modules/tslib/'))) throw new Error('SDK seal lacks its compiled helper dependency');
   return metadata;
 }
-function copyNodeRuntime(output, source, license) {
+function supportedNodeVersion(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]), minor = Number(match[2]);
+  return major === 20 && minor >= 19 || major === 22 && minor >= 12 || major > 22;
+}
+function copyNodeRuntime(output, source, license, version = process.versions.node) {
   pe(source); regular(license);
+  if (!supportedNodeVersion(version)) throw new Error('Portable watcher requires a supported Node.js runtime (^20.19.0 || >=22.12.0)');
   const destination = path.join(output, 'resources/node');
   fs.mkdirSync(destination, { recursive: true });
   fs.copyFileSync(source, path.join(destination, 'node.exe'));
   fs.copyFileSync(license, path.join(destination, 'LICENSE'));
+  fs.writeFileSync(path.join(destination, 'runtime.json'), JSON.stringify({
+    schemaVersion: 1,
+    kind: 'electron-game-overlay-watcher-runtime',
+    version,
+    executableSha256: createHash('sha256').update(fs.readFileSync(path.join(destination, 'node.exe'))).digest('hex'),
+    licenseSha256: createHash('sha256').update(fs.readFileSync(path.join(destination, 'LICENSE'))).digest('hex'),
+  }, null, 2));
+}
+function resolveNodeRuntime(options) {
+  const source = fs.realpathSync(path.resolve(options.nodeRuntime ?? process.execPath));
+  pe(source);
+  const license = options.nodeLicense !== undefined
+    ? path.resolve(options.nodeLicense)
+    : [path.join(path.dirname(source), 'LICENSE'), path.join(path.dirname(source), '..', 'LICENSE')]
+      .find(file => { try { return fs.lstatSync(file).isFile(); } catch { return false; } });
+  if (!license) throw new Error('Supply the matching Node.js license with --node-license <path>; it is independent of the SDK distribution.');
+  try { regular(license); }
+  catch { throw new Error('Supply the matching Node.js license with --node-license <path>; it is independent of the SDK distribution.'); }
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (/^(NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE)$/i.test(key)) delete env[key];
+  const version = execFileSync(source, ['--version'], { env, timeout: 5000, encoding: 'utf8', windowsHide: true }).trim().replace(/^v/, '');
+  if (!supportedNodeVersion(version)) throw new Error('Portable watcher requires a supported Node.js runtime (^20.19.0 || >=22.12.0)');
+  return { source, license, version };
 }
 function copyRecoveryDiagnostic(source, app) {
   const names = ['broker-recovery-diagnostic.cjs', 'windows-broker-identity.cjs'];
@@ -153,7 +178,7 @@ require('./dist/main/main.js');
   fs.writeFileSync(path.join(output, 'Start Manual Test.cmd'), '@echo off\r\nstart "" "%~dp0ElectronGameOverlayDemo.exe" --manual-test-profile --reshade-overlay --demo-presentation %*\r\n');
   fs.copyFileSync(path.join(repo, 'libs/electron-game-overlay-runtime/scripts/test-cases/broker-recovery-diagnostic.cmd'), path.join(output, 'Start Broker Recovery Diagnostic.cmd'));
 }
-function packageDemo(output, sdkPackage) {
+function packageDemo(output, sdkPackage, options = {}) {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Portable demo packaging requires genuine Windows x64 build inputs');
   if (!path.isAbsolute(output)) throw new Error('--output must be an absolute job-owned directory');
   output = path.resolve(output);
@@ -163,6 +188,7 @@ function packageDemo(output, sdkPackage) {
   if (repo === output || repo.startsWith(output + path.sep)) throw new Error('Output must not contain repository');
   const sdkMetadata = sdkPackage ? validateSDKPackage(sdkPackage, output) : undefined;
   validateClientAssets(path.join(repo, 'apps/client/dist'));
+  const nodeRuntime = resolveNodeRuntime(options);
   const graph = JSON.parse(execFileSync('npm.cmd', ['ls', '--omit=dev', '--all', '--json', '--long'], { cwd: repo, encoding: 'utf8', shell: true, maxBuffer: 16 * 1024 * 1024 }));
   const electron = path.join(repo, 'node_modules/electron/dist');
   pe(path.join(electron, 'electron.exe'));
@@ -180,19 +206,18 @@ function packageDemo(output, sdkPackage) {
   copyRecoveryDiagnostic(path.join(repo, 'apps/client/scripts'), app);
   copyProductionGraph(repo, app, graph, sdkPackage);
   fs.copyFileSync(path.join(repo, 'LICENSE'), path.join(app, 'LICENSE'));
-  if (process.versions.node !== '26.12.1') throw new Error('Portable watcher requires pinned Node 26.12.1');
-  copyNodeRuntime(output, process.execPath, path.join(app, 'node_modules/electron-game-overlay/dist/broker/win32-x64/licenses/node.txt'));
+  copyNodeRuntime(output, nodeRuntime.source, nodeRuntime.license, nodeRuntime.version);
   validatePayloads(app);
   validateClientAssets(path.join(app, 'dist'));
   writeLaunchers(output);
   fs.writeFileSync(path.join(output, 'README.txt'), 'Electron Game Overlay portable Windows x64 demo\r\nExtract ALL files before running Start Demo.cmd as a normal user (not Administrator).\r\nNo Node.js/npm installation is needed. Close using the tray menu Quit.\r\nSteam auto-attach attempts detected Steam executables. Test only games you own and are permitted to modify.\r\nAvoid anti-cheat/protected/multiplayer games: injection may violate game rules or trigger bans.\r\nExisting ReShade installations are fail-closed; this is an experimental demo.\r\nCI packaging/runtime smoke is NOT proof of real-game attachment.\r\n');
   return { output, executable, scope: 'portable packaging; no game attachment' };
 }
-module.exports = { writeLaunchers, copyRecoveryDiagnostic, copyNodeRuntime, createAppManifest, copyProductionGraph, validateClientAssets, validatePayloads, packageDemo };
+module.exports = { writeLaunchers, copyRecoveryDiagnostic, copyNodeRuntime, supportedNodeVersion, createAppManifest, copyProductionGraph, validateClientAssets, validatePayloads, packageDemo };
 if (require.main === module) {
   try {
-    const { values } = parseArgs({ options: { output: { type: 'string' }, 'sdk-package': { type: 'string' } } });
+    const { values } = parseArgs({ options: { output: { type: 'string' }, 'sdk-package': { type: 'string' }, 'node-runtime': { type: 'string' }, 'node-license': { type: 'string' } } });
     if (!values.output) throw new Error('Usage: node apps/client/scripts/package-demo.cjs --output <absolute-new-job-owned-folder>');
-    console.log(JSON.stringify(packageDemo(values.output, values['sdk-package']), null, 2));
+    console.log(JSON.stringify(packageDemo(values.output, values['sdk-package'], { nodeRuntime: values['node-runtime'], nodeLicense: values['node-license'] }), null, 2));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

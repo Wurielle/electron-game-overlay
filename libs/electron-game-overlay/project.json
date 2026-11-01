@@ -22,7 +22,7 @@
           "tsc --build tsconfig.lib.json",
           "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-game-overlay-runtime.ps1 -Architecture x64",
           "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stage-game-overlay-runtime.ps1 -Architecture x86",
-          "node scripts/build-standalone-broker.cjs"
+          "node scripts/seal-sdk-distribution.cjs"
         ],
         "parallel": false
       }

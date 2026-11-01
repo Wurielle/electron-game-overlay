@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { validateDistribution } from './overlay-broker-installation.js';
+import { validateOverlayDistributionSync } from './overlay-package-manifest.js';
 
 /** Structural electron-builder context; no electron-builder runtime dependency. */
 export type OverlayAfterPackContext = Readonly<{
@@ -19,7 +19,7 @@ export type OverlayPackagingResult = Readonly<{
 }>;
 
 /**
- * Verifies all sealed payloads and their root runtime/module mirrors, without
+ * Verifies the directly sealed SDK and both native architectures, without
  * caching, registering, executing or starting any broker/native code.
  */
 export async function verifyOverlayPackage(
@@ -29,18 +29,10 @@ export async function verifyOverlayPackage(
   const metadata = JSON.parse(
     await fs.readFile(path.join(root, 'package.json'), 'utf8'),
   );
-  if (metadata.name !== 'electron-game-overlay')
+  if (metadata.name !== 'electron-game-overlay' || typeof metadata.version !== 'string')
     throw new Error('Expected electron-game-overlay package');
   const dist = path.join(root, 'dist');
-  const manifest = await validateDistribution(
-    path.join(dist, 'broker', 'win32-x64'),
-  );
-  for (const file of manifest.files) {
-    if (!/^(lib|runtime)\//.test(file.path)) continue;
-    const bytes = await fs.readFile(path.join(dist, file.path));
-    if (bytes.length !== file.size || digest(bytes) !== file.sha256)
-      throw new Error('SDK/provider mirror mismatch: ' + file.path);
-  }
+  const manifest = validateOverlayDistributionSync(dist, metadata.version);
   return Object.freeze({ sealedPayloads: manifest.files.length });
 }
 

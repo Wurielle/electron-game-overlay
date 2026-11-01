@@ -79,41 +79,19 @@ function main() {
     const pkg = fs.realpathSync(values['package-root']);
     const dist = fs.realpathSync(values['built-dist']);
     const metadata = readJson(path.join(pkg, 'package.json'));
-    const files = tree(dist);
-    const leafPrefix = 'broker/win32-x64/';
-    const leaf = path.join(dist, leafPrefix);
-    const manifestBytes = fs.readFileSync(path.join(leaf, 'broker-manifest.json'));
-    const manifest = JSON.parse(manifestBytes);
     if (metadata.name !== 'electron-game-overlay' || metadata.private !== true) throw Error('Expected private electron-game-overlay workspace package');
-    if (manifest.schema !== 1 || manifest.platform !== 'win32' || manifest.arch !== 'x64' || !Array.isArray(manifest.files) || manifest.files.length === 0) throw Error('Invalid Windows broker manifest');
-    const portable = file => typeof file === 'string' && file.length > 0 && !/[\\\\:\x00-\x1f]/.test(file) && file.split('/').every(part => part && part !== '.' && part !== '..' && !/[. ]$/.test(part));
-    const sealed = new Map();
-    for (const entry of manifest.files) {
-      if (!portable(entry.path) || sealed.has(entry.path.toLowerCase()) || !Number.isSafeInteger(entry.size) || entry.size < 0 || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw Error('Invalid sealed payload path or declaration');
-      sealed.set(entry.path.toLowerCase(), entry);
-      const bytes = fs.readFileSync(path.join(leaf, entry.path));
-      if (bytes.length !== entry.size || sha(bytes) !== entry.sha256) throw Error(`Sealed payload mismatch: ${entry.path}`);
-      if (/^(lib|runtime)\//.test(entry.path) && sha(fs.readFileSync(path.join(dist, entry.path))) !== entry.sha256) throw Error(`SDK/provider identity mismatch: ${entry.path}`);
-    }
-    for (const file of files.filter(file => file.startsWith(leafPrefix)).map(file => file.slice(leafPrefix.length))) {
-      if (file !== 'broker-manifest.json' && !sealed.has(file.toLowerCase())) throw Error(`Undeclared broker payload: ${file}`);
-    }
-    function pe(file, machine) {
-      if (!sealed.has(file.toLowerCase())) throw Error(`Required sealed native payload missing: ${file}`);
-      const bytes = fs.readFileSync(path.join(leaf, file));
-      const offset = bytes.length >= 64 ? bytes.readUInt32LE(60) : -1;
-      if (bytes.toString('ascii', 0, 2) !== 'MZ' || offset < 0 || offset + 6 > bytes.length || bytes.readUInt32LE(offset) !== 0x4550 || bytes.readUInt16LE(offset + 4) !== machine) throw Error(`Invalid PE architecture: ${file}`);
-    }
-    if (manifest.executable !== 'electron-game-overlay-broker.exe') throw Error('Unexpected broker executable path');
-    pe(manifest.executable, 0x8664);
-    for (const [name, machine] of [['electron_game_overlay_reshade_manager.exe', 0x8664], ['electron_game_overlay_reshade_manager32.exe', 0x14c], ['inject.exe', 0x8664], ['inject32.exe', 0x14c], ['electron_game_overlay.addon64', 0x8664], ['electron_game_overlay.addon32', 0x14c], ['ReShade64.dll', 0x8664], ['ReShade32.dll', 0x14c]]) pe('runtime/win32-x64/reshade/' + name, machine);
+    // Use only this packager's trusted, built validator. Never require a module
+    // from --package-root or --built-dist before its bytes have been verified.
+    const { validateOverlayDistributionSync } = require('../dist/lib/overlay-package-manifest.js');
+    const manifest = validateOverlayDistributionSync(dist, metadata.version);
+    const manifestBytes = fs.readFileSync(path.join(dist, 'overlay-manifest.json'));
     metadata.version = values.version;
     metadata.private = false;
     metadata.files = ['dist', 'README.md', 'LICENSE'];
     if (values['source-commit'] || sourceProvenance) metadata.files.push('SDK_PROVENANCE.json');
     delete metadata.exports['.'].gelectron;
     delete metadata.scripts;
-    const selected = files.filter(file => file.startsWith(leafPrefix) || (file.startsWith('runtime/') && sealed.has(file.toLowerCase())) || /^(?:index|broker|packaging)\.(?:js|d\.ts)(?:\.map)?$/.test(file) || (file.startsWith('lib/') && /\.(?:js|d\.ts)(?:\.map)?$/.test(file) && !/(?:^|\/)(?:src|test|tests|scripts|validationapp)(?:\/|$)/.test(file)));
+    const selected = manifest.files.map(entry => entry.path);
     const exportTargets = value => typeof value === 'string' ? [value] : value && typeof value === 'object' ? Object.values(value).flatMap(exportTargets) : [];
     for (const target of [metadata.main, metadata.module, metadata.types, ...exportTargets(metadata.exports)]) {
       if (typeof target !== 'string' || !target.startsWith('./') || (target !== './package.json' && !selected.includes(target.slice(7))) || (target !== './package.json' && !target.startsWith('./dist/'))) throw Error(`Invalid or missing public export: ${target}`);
@@ -125,6 +103,10 @@ function main() {
     report.stageRoot = stage;
     const copy = (source, target) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(source, target); };
     for (const file of selected) copy(path.join(dist, file), path.join(stage, 'dist', file));
+    // A candidate version override changes metadata only in this new stage.
+    // The input's sealed implementation bytes and manifest remain untouched.
+    const stagedManifestBytes = Buffer.from(JSON.stringify({ ...manifest, packageVersion: values.version }, null, 2) + '\n');
+    fs.writeFileSync(path.join(stage, 'dist', 'overlay-manifest.json'), stagedManifestBytes);
     copy(license, path.join(stage, 'LICENSE'));
     if (fs.existsSync(path.join(pkg, 'README.md'))) copy(path.join(pkg, 'README.md'), path.join(stage, 'README.md'));
     fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify(metadata, null, 2) + '\n');
@@ -143,6 +125,7 @@ function main() {
       fs.writeFileSync(path.join(stage, 'SDK_PROVENANCE.json'), JSON.stringify({ schemaVersion: 1, version: values.version, repository: 'https://github.com/Wurielle/electron-game-overlay', sourceCommit: values['source-commit'], native }, null, 2) + '\n');
       }
     }
+    validateOverlayDistributionSync(path.join(stage, 'dist'), values.version);
     report.stage = 'pack';
     const command = [npmCli(), 'pack', '--json', '--ignore-scripts', '--offline', '--pack-destination', output];
     const env = { ...process.env, npm_config_ignore_scripts: 'true', npm_config_offline: 'true', npm_config_audit: 'false', npm_config_fund: 'false', npm_config_cache: path.join(output, 'npm-cache'), NODE_OPTIONS: '' };
@@ -154,11 +137,13 @@ function main() {
     report.packFiles = packed.files.map(file => file.path).sort();
     const expectedFiles = tree(stage).sort();
     if (JSON.stringify(report.packFiles) !== JSON.stringify(expectedFiles)) throw Error('npm tarball file allowlist differs from staged files');
-    if (sha(fs.readFileSync(path.join(stage, 'dist', leafPrefix, 'broker-manifest.json'))) !== sha(manifestBytes)) throw Error('Staged broker manifest changed');
+    if (sha(fs.readFileSync(path.join(stage, 'dist', 'overlay-manifest.json'))) !== sha(stagedManifestBytes)) throw Error('Staged SDK manifest changed');
     for (const entry of manifest.files) {
-      if (sha(fs.readFileSync(path.join(stage, 'dist', leafPrefix, entry.path))) !== entry.sha256) throw Error(`Staged sealed payload mismatch: ${entry.path}`);
+      if (sha(fs.readFileSync(path.join(stage, 'dist', entry.path))) !== entry.sha256) throw Error(`Staged sealed payload mismatch: ${entry.path}`);
     }
-    report.manifestSha256 = sha(manifestBytes);
+    validateOverlayDistributionSync(path.join(stage, 'dist'), values.version);
+    report.sourceManifestSha256 = sha(manifestBytes);
+    report.manifestSha256 = sha(stagedManifestBytes);
     report.sealedPayloadCount = manifest.files.length;
     report.tarballSha256 = sha(fs.readFileSync(report.tarball));
     report.status = 'passed';
