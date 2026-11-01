@@ -241,6 +241,33 @@ fn optional_id(value: Option<u32>) -> (u32, u32) {
     value.map_or((0, 0), |id| (1, id))
 }
 
+fn input_state_record(state: crate::InputRouterState, desired: bool) -> FfiResult<EgoInputStateV1> {
+    let (has_topmost_window, topmost_window_id) = optional_id(state.topmost_window_id);
+    let (has_focused_window, focused_window_id) = optional_id(state.focused_window_id);
+    let (has_captured_window, captured_window_id) = optional_id(state.captured_window_id);
+    Ok(EgoInputStateV1 {
+        struct_size: std::mem::size_of::<EgoInputStateV1>() as u32,
+        abi_version: EGO_ABI_VERSION,
+        requested_interception: bool_u32(state.requested_interception),
+        desired_interception: bool_u32(desired),
+        effective_interception: bool_u32(state.effective_interception),
+        target_focused: bool_u32(state.target_focused),
+        window_count: u64::try_from(state.window_count).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_INTERNAL_ERROR,
+                "input window count does not fit the ABI",
+            )
+        })?,
+        pointer_captured: bool_u32(state.pointer_captured),
+        has_topmost_window,
+        topmost_window_id,
+        has_focused_window,
+        focused_window_id,
+        has_captured_window,
+        captured_window_id,
+    })
+}
+
 fn private_directory_from_utf8(bytes: &[u8]) -> FfiResult<PathBuf> {
     if bytes.is_empty() || bytes.len() > EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES as usize {
         return Err(FfiError::new(
@@ -950,30 +977,36 @@ pub unsafe extern "C" fn ego_transport_get_input_state(
             EGO_ABI_VERSION,
         )?;
         let state = transport.bridge.input_state();
-        let (has_topmost_window, topmost_window_id) = optional_id(state.topmost_window_id);
-        let (has_focused_window, focused_window_id) = optional_id(state.focused_window_id);
-        let (has_captured_window, captured_window_id) = optional_id(state.captured_window_id);
-        *inout_state = EgoInputStateV1 {
-            struct_size: std::mem::size_of::<EgoInputStateV1>() as u32,
-            abi_version: EGO_ABI_VERSION,
-            requested_interception: bool_u32(state.requested_interception),
-            desired_interception: bool_u32(transport.bridge.desired_interception()),
-            effective_interception: bool_u32(state.effective_interception),
-            target_focused: bool_u32(state.target_focused),
-            window_count: u64::try_from(state.window_count).map_err(|_| {
-                FfiError::new(
-                    EGO_STATUS_INTERNAL_ERROR,
-                    "input window count does not fit the ABI",
-                )
-            })?,
-            pointer_captured: bool_u32(state.pointer_captured),
-            has_topmost_window,
-            topmost_window_id,
-            has_focused_window,
-            focused_window_id,
-            has_captured_window,
-            captured_window_id,
-        };
+        *inout_state = input_state_record(state, transport.bridge.desired_interception())?;
+        Ok(())
+    })
+}
+
+/// # Safety
+/// The transport must remain live; the initialized v1 record and revision
+/// output must be writable. The revision and state share one router lock.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_get_cooperative_input_state(
+    transport: *const EgoTransport,
+    inout_state: *mut EgoInputStateV1,
+    out_revision: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        let inout_state = inout_state.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "input state pointer is null")
+        })?;
+        let out_revision = out_revision.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_revision pointer is null")
+        })?;
+        validate_output_record::<EgoInputStateV1>(
+            inout_state.struct_size,
+            inout_state.abi_version,
+            EGO_ABI_VERSION,
+        )?;
+        let (state, desired, revision) = transport.bridge.cooperative_input_state();
+        *inout_state = input_state_record(state, desired)?;
+        *out_revision = revision;
         Ok(())
     })
 }
@@ -1228,6 +1261,31 @@ pub unsafe extern "C" fn ego_transport_set_cooperative_interception(
         transport
             .bridge
             .set_cooperative_interception(global_requested != 0);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// The transport must remain live. `sampled_revision` is the token returned
+/// with the input state used to compute this aggregate grant. Stale decisions
+/// still apply their actual filter phase, but cannot acknowledge newer input.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_set_cooperative_interception_checked(
+    transport: *mut EgoTransport,
+    global_requested: u32,
+    sampled_revision: u64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if global_requested > 1 {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "global interception request must be zero or one",
+            ));
+        }
+        transport
+            .bridge
+            .set_cooperative_interception_for_revision(global_requested != 0, sampled_revision);
         Ok(())
     })
 }
@@ -1503,6 +1561,7 @@ mod tests {
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(3)))
                             .unwrap();
@@ -1675,6 +1734,79 @@ mod tests {
         assert_eq!(
             unsafe { ego_transport_set_target_focused(transport_a.0, 1) },
             EGO_STATUS_OK
+        );
+        // Native prepared a disabled aggregate before a newer producer command.
+        // Its stale terminal phase must not enqueue a false ACK ahead of the
+        // true acknowledgement once that command has been sampled and applied.
+        let mut input_state: EgoInputStateV1 = unsafe { std::mem::zeroed() };
+        input_state.struct_size = std::mem::size_of::<EgoInputStateV1>() as u32;
+        input_state.abi_version = EGO_ABI_VERSION;
+        let mut sampled_revision = 0;
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        peer_a
+            .write_all(
+                &crate::electron_wire::encode_json(
+                    r#"{"type":"command.input.intercept","intercept":true}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        wait_for(|| unsafe { (*transport_a.0).bridge.input_state().requested_interception });
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(
+                    transport_a.0,
+                    0,
+                    sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 0, 1) },
+            EGO_STATUS_OK
+        );
+        let previous_revision = sampled_revision;
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_ne!(sampled_revision, previous_revision);
+        assert_eq!(input_state.requested_interception, 1);
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(
+                    transport_a.0,
+                    1,
+                    sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            hello(&mut peer_a),
+            serde_json::json!({
+                "type":"game.input.intercept", "intercepting":true,
+            })
         );
         assert_eq!(
             unsafe { ego_transport_set_cooperative_interception(transport_a.0, 1) },

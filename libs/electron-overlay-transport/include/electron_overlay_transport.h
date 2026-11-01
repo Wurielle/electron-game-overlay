@@ -211,6 +211,11 @@ ego_status EGO_CALL ego_transport_apply_input_filter(
 ego_status EGO_CALL ego_transport_get_input_state(
     const ego_transport *transport,
     ego_input_state_v1 *inout_state);
+/* Atomically samples input eligibility/request state with its revision token. */
+ego_status EGO_CALL ego_transport_get_cooperative_input_state(
+    const ego_transport *transport,
+    ego_input_state_v1 *inout_state,
+    uint64_t *out_revision);
 
 ego_status EGO_CALL ego_transport_publish_target_surface(
     ego_transport *transport,
@@ -272,6 +277,11 @@ ego_status EGO_CALL ego_transport_set_cooperative_focus(
 ego_status EGO_CALL ego_transport_set_cooperative_interception(
     ego_transport *transport,
     uint32_t global_requested);
+/* A stale token cannot acknowledge a newer producer request/eligibility state. */
+ego_status EGO_CALL ego_transport_set_cooperative_interception_checked(
+    ego_transport *transport,
+    uint32_t global_requested,
+    uint64_t sampled_revision);
 
 /* Full participant retirement, including capture/drag cleanup and blur. */
 ego_status EGO_CALL ego_transport_release_cooperative_ownership(

@@ -740,6 +740,20 @@ impl ElectronFrameBridge {
             .state()
     }
 
+    /// Samples the eligibility/request state and revision under one router
+    /// lock, so native aggregate decisions cannot acknowledge a newer command.
+    pub fn cooperative_input_state(&self) -> (InputRouterState, bool, u64) {
+        let router = self
+            .input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            router.state(),
+            self.interception.desired(),
+            router.cooperative_input_revision(),
+        )
+    }
+
     /// Tests one owned window using this implementation's current geometry
     /// and alpha pixels. Cooperation never borrows another module's scene.
     pub fn window_incarnation(&self, window_id: u32) -> u64 {
@@ -774,6 +788,12 @@ impl ElectronFrameBridge {
 
     pub fn set_cooperative_interception(&self, requested: bool) {
         self.publish_input_update(|router| router.set_cooperative_interception(requested));
+    }
+
+    pub fn set_cooperative_interception_for_revision(&self, requested: bool, revision: u64) {
+        self.publish_input_update(|router| {
+            router.set_cooperative_interception_for_revision(requested, revision)
+        });
     }
 
     /// Retires the participant, including pointer/caption ownership. Keyboard
