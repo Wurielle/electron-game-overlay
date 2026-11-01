@@ -76,49 +76,102 @@ physical-key gate requires physical input, not a relabeled synthetic event.
 
 ## Implementation status
 
-Work is in progress on `codex/explore-independent-overlay-instances`.
+The rewrite on `codex/explore-independent-overlay-instances` is implemented and
+accepted within the recorded test scope. Four original real-game cases passed
+on generation 11; the user explicitly waived its final physical-key rerun.
+Selected broad feature and mixed-implementation passes are detailed below.
 
 - Explicit private-directory Rust transport, registered-window metadata,
   incarnation-checked routing and logical focus across raster gaps: implemented;
-  158 Rust tests passed on each of x64 and x86, including cooperative
+  164 Rust tests passed on each of x64 and x86, including cooperative
   interception acknowledgement races.
 - App-private TypeScript transport and default SDK/launcher activation:
   implemented and tested with real socket peers. The normal sealed SDK package
-  no longer starts or requires a broker executable.
+  no longer starts or requires a broker executable. The coordinated SDK and
+  packaging test run reports 526 passing tests, separate from native/game runs.
 - Per-engine native registry/composition/input integration and member attachment:
   implemented and compiled for x64 and x86. Registry protocol, transport ABI and
   loader/claim fixtures passed on both architectures. These controlled checks do
   not establish rendering or game acceptance.
-- Candidate native package: built and sealed for both architectures. Earlier
+- Candidate generation-11 native package: normal Nx build passed for both
+  architectures, SDK sealing and client output at source
+  `cdc6e80f0aa0cede23e4ba7272b9f8afa3e795ed`. Earlier
   controlled SDK input cycles passed after fixing acknowledgement ordering and
   test harness environment/readiness issues. Their recorded backend/generation
   boundaries remain separate from current-candidate acceptance.
-- Generation 9 fixes internal-reset/session-transition ACK provenance. Its
+- Generation 9 fixed internal-reset/session-transition ACK provenance. Its
   build `3309FB779CFC4E39BA7681AA4A7F8A6B` has passed all five original Gun Frog
   cases: full SDK interaction, low-level Electron scene, automatic no-click
   focus, human physical first-show/reopen keys, and stock-ReShade coexistence.
   The stock case retains exact module identities, foreign add-on/effect
   coexistence and protected-file preservation/restoration. Automatic and
   physical focus runs recorded zero pointer-downs; later gates in the physical
-  case used SendInput.
+  case used SendInput. These are retained generation-9 results, not relabeled
+  as current generation 11.
+- Generation-11 build `E16461475E524DBA83398B19CDD95EBB` has passed four original
+  Gun Frog cases: automatic focus, full SDK interaction, low-level Electron
+  scene and stock-host coexistence with strict release/preservation checks. A
+  physical-mode attempt reached rendering/focus with zero pointer-downs but
+  timed out without the first human key. The user subsequently explicitly waived
+  the final physical-keyboard rerun. Its final status is waived, not passed;
+  the earlier generation-9 human pass remains separate and no synthetic input
+  is relabeled as physical-key evidence.
 - Actual mixed-implementation Gun Frog acceptance passed all four startup-order
-  and graceful/crash cells with generation-8 and generation-9 native engines,
+  and graceful/crash cells with generation-8 and generation-11 native engines,
   different JavaScript/native hashes, private authenticated routes and one
   ReShade host. Interleaved rendering/input, owner disappearance, survivor
   operation and fresh-game relaunch passed in each cell. Both are unreleased
   development snapshots with the same package-version label; this does not
   claim independently released-package compatibility.
-- Surface-lifetime and delayed-source fixes passed actual generation-9 two-app
+- Surface-lifetime and delayed-source fixes passed actual generation-11 two-app
   D3D11 acceptance. A late participant survived primary destruction with a
   never-presented secondary and unchanged authenticated TCP connections. Final
-  destruction cleared surfaces/focus in 66 ms; recreated windows retained IDs
+  destruction cleared surfaces/focus in 85 ms; recreated windows retained IDs
   without reviving old implicit focus, then accepted explicit focus and survivor
   input. Pixel checks and direct foreground guards were retained.
-- Full controlled feature acceptance is still in progress: raw registration and
-  buffered input, fractional raster/attached windows, D3D12 lifetime/session
-  closure, managed discovery/policy and existing-installation rejection and
-  maintenance need their current-candidate results recorded. See the
-  [acceptance evidence and pending matrix](cooperative-addons-acceptance.md).
+- Generation-10 before-injection and NULL-target registration passed both raw
+  modes on D3D11/D3D12, as did explicit session close and final surface drain on
+  both APIs. Its attached 125% display-scale pointer case passed eleven strict
+  rendering/input checks; observed raster scale was 1.25 on Electron 39 despite
+  requested OSR 1.5, so mismatched-raster coverage is not claimed. Generation-11
+  D3D12 multi-swapchain promotion also passed.
+- Generation-11 D3D11 WM_INPUT/buffered input and D3D11/12 session deactivation
+  passed. Attached 125% and SDK-created 150% pointer cases each passed eleven
+  strict feature checks; the requested 150% attached raster was still observed
+  at 125%. Managed early and best-effort observers each passed two exact target
+  lifetimes, baseline exclusion, authoritative exit/rearm and cancellation.
+- Generation-11 WM_INPUT and buffered pointer lanes each passed all eleven
+  strict cursor/wheel/pixel/no-click/reopen/release checks on unchanged mapped
+  native bytes. D3D9 and D3D10, each x64/x86, passed two fresh SDK cycles per
+  cell. The D3D11/D3D12 two-app/two-target isolation case and fail-closed inactive
+  ReShade installation rejection also passed.
+- The concurrent two-app/one-target D3D11 gate passed with App B supplying the
+  sole ReShade host, both early requests, exact private engines/routes, colliding
+  IDs, the interception OR matrix and isolated text. Force-killing A left B's
+  credential and input route unchanged and B interactive.
+- The controlled future-target focus gate passed after 130 seconds of idle
+  observation before target creation. Automatic first show/reopen, blur/release,
+  foreground rejection and resumed typing passed with zero pointer-downs.
+- Existing-host changed-runtime-hash acceptance passed with exact retained
+  process identity, one existing ReShade runtime, a preserved installed adapter
+  and an independent private participant. The owned fixture models a still-loadable
+  runtime upgrade using a benign PE overlay byte; all protected seed bytes,
+  attributes and timestamps remained unchanged through normal exit. This is
+  distinct from testing every reserved-file mutation/rollback transaction.
+- Current x64/x86 registry fixtures and generation-11 packaged injector/claim
+  loader fixtures passed in their protocol/console scopes. Native watcher
+  quiescence passed without creating or injecting a target. They remain
+  separate from desktop/game evidence.
+- Additional raster/backend, managed-policy and reserved-file transaction
+  variants remain available as future release coverage; the complete launcher
+  matrix is not claimed executed. The fast unbarriered managed-folder run at `151225` timed out
+  before native startup/authentication; its generation-11 rerun at `152840`
+  passed initial input/policy retention but failed the fresh target's graphics
+  startup/authentication. Reliable fast-start attachment was already excluded by
+  the [pre-rewrite RC6 process-policy evidence](sdk-rc6-process-policy.md); the
+  current failures' exact cause is not established. The complete fast lifecycle and
+  final revocation are not claimed passed. See the
+  [acceptance evidence and additional coverage](cooperative-addons-acceptance.md).
 - One generation-9 full SDK attempt failed with a graphics-device hang and
   contemporaneous NVIDIA display-driver events; its dump/events were preserved.
   A fresh run passed on unchanged bytes. The earlier failure's cause remains

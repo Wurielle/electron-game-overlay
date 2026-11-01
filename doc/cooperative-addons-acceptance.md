@@ -2,9 +2,9 @@
 
 Inventory and recorded Windows evidence updated on 2026-11-01 for the
 per-application add-on implementation. Results below identify the artifacts
-actually tested; unrecorded matrix cells remain pending. The user permits a clean rewrite without an
-old-package migration layer, while requiring preservation of overlay features
-and all real-game E2E behavior.
+actually tested; unrecorded matrix cells are additional release coverage. The
+user permits a clean rewrite without an old-package migration layer, while
+requiring preservation of overlay features and all real-game E2E behavior.
 
 ## Available targets and artifacts
 
@@ -50,7 +50,7 @@ both app startup orders, each with graceful and abrupt first-app exit. It accept
 `-FirstAppExit graceful|crash|both`, optional informational source revisions,
 and `-RequireDifferentImplementations`. Default candidate paths are this
 worktree's SDK `dist`; same bytes are explicitly reported as same implementation,
-not mixed released-version evidence. The generation-8/generation-9 run recorded
+not mixed released-version evidence. The generation-8/generation-11 run recorded
 below passes all four cells with different JavaScript and native implementation
 bytes; independently released-package compatibility is not claimed.
 
@@ -153,8 +153,28 @@ target; the review did not launch extra games or reuse unrelated processes.
 
 | Actual case | Artifact | Observed result and boundary |
 | --- | --- | --- |
-| Gun Frog, different generation-8/9 implementations | [Four-cell report](../build/cooperative-two-app-game-20261101-134225-24c148e1/report.json) | All `a-first`/`b-first` × graceful/crash cells passed. Exact PID/creation identity, distinct private routes, two own-stage engines and one ReShade; actual pixels and Windows SendInput for interleaving, alpha hit testing, raising, isolated text, capture, three cursor types, both wheel axes, caption drag, retained placement, interception OR and focused-peer removal. Survivor typing and a fresh game with the same surviving Electron process passed in every cell; the fresh game contained exactly one EGO engine. |
-| D3D11 controlled two-app surface lifetime, generation 9 | [Tightened rerun report](../build/electron-game-overlay-runtime/client-sdk-two-app-surface-lifecycle-20261101-134348-f5be493b/report.json) | B joined after a secondary swapchain existed but had zero Presents. Destroying the primary preserved both original authenticated TCP tuples, with one authentication and no transport loss, while both apps rendered and accepted fresh clicked input on the secondary. Final destruction removed both surfaces and emitted focus `0` in **66 ms**. Recreated windows retained their local IDs; an actual `z` changed neither value nor DOM keydown count, with direct OS foreground guards before/after. Explicit focus resumed typing; B reached `bpes` after A exited without another connection change. All four strict pixel checks passed. This is a same-build controlled-host result, separate from the mixed game run. |
+| Gun Frog, different generation-8/11 implementations | [Final four-cell report](../build/cooperative-two-app-game-20261101-141822-6dc6e68b/report.json) | All `a-first`/`b-first` × graceful/crash cells passed. Exact PID/creation identity, distinct private routes, two own-stage engines and one ReShade; actual pixels and Windows SendInput for interleaving, alpha hit testing, raising, isolated text, capture, three cursor types, both wheel axes, caption drag, retained placement, interception OR and focused-peer removal. Survivor typing and a fresh game with the same surviving Electron process passed in every cell; the fresh game contained exactly one EGO engine. |
+| D3D11 controlled two-app surface lifetime, generation 11 | [Final strict report](../build/electron-game-overlay-runtime/client-sdk-two-app-surface-lifecycle-20261101-141927-46d48419/report.json) | B joined after a secondary swapchain existed but had zero Presents. Destroying the primary preserved both original authenticated TCP tuples, with one authentication and no transport loss, while both apps rendered and accepted fresh clicked input on the secondary. Final destruction removed both surfaces and emitted focus `0` in **85 ms**. Recreated windows retained their local IDs; an actual `z` changed neither value nor DOM keydown count, with direct OS foreground guards before/after. Explicit focus resumed typing; B reached `bpes` after A exited without another connection change. All four strict pixel checks passed. This is a same-build controlled-host result, separate from the mixed game run. |
+| Gun Frog automatic explicit focus, generation 11 | [Current focus report](../build/explicit-focus-20261101-152003/report.json) | PASS with Windows SendInput, zero pointer-downs and released keys through first show, reopen, blur/release and foreign-foreground gates. Physical-first-key and other original-game reruns are recorded independently; this row does not relabel the generation-9 results below. |
+| Long-idle future controlled target, generation 11 | [130-second idle focus report](../build/explicit-focus-20261101-160217/report.json) | PASS after the armed observer waited 130 seconds before exact target PID 40356 was created. First show, reopen, blur/release rejection, foreign-foreground rejection and restored typing passed with Windows SendInput, final value `bgi`, no held keys and zero pointer-downs. This is controlled-host future-target evidence, not physical-key input. |
+| Gun Frog full SDK interaction, generation 11 | [Current SDK PASS marker](../build/electron-game-overlay-runtime/client-Gun-Frog-20261101-152422/result.txt) | All four overlay clicks exactly once, disabled acknowledgement after Ctrl+I, and normal real Quit after release. |
+| Gun Frog stock ReShade coexistence, generation 11 | [Current coexistence result](../build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20261101-152525-0e247577/result.json) | Exact build `E16461475E524DBA83398B19CDD95EBB`, one official runtime, API-18 FPS Limiter and enabled witness effect; strict click/release acknowledgements and real Quit passed. Protected files remained byte/attribute/timestamp identical and the original clean game directory was restored. |
+| Gun Frog low-level Electron scene, generation 11 | [Current producer log](../build/electron-game-overlay-runtime/injected-Gun-Frog-20261101-152643/electron-producer.stdout.log) | All four exact overlay clicks, manual release with interception-disabled acknowledgement, lifecycle completion and normal released real Quit. This is the interactive low-level lane, not a structured SDK or physical-key result. |
+| D3D12 multi-swapchain, generation 11 | [Controlled PASS marker](../build/electron-game-overlay-runtime/client-sdk-d3d12-multi-swapchain-20261101-151952/result.txt) | PASS for shared device/queue lifetime, primary release and secondary promotion, fresh surface/FPS, intercepted input and normal released exit. |
+| Raw registration, explicit session close and final surface drain, generation 10 | [Eight-launcher results](../build/cooperative-gen10-controlled-results.json) | All eight rows passed: D3D11/12 before-injection explicit-HWND registration and NULL focus-following registration, each with WM_INPUT and buffered raw modes; D3D11/12 session deactivation; D3D11/12 final-surface drain. These are generation-10 results, not silent generation-11 reruns. |
+| Raw input, session close, scale and managed observer reruns, generation 11 | [Current controlled results](../build/cooperative-gen11-controlled-results.json) | Seven rows passed: D3D11 after-injection WM_INPUT and buffered raw input, D3D11/12 session deactivation, both scale cases below, and managed early/best-effort lifecycles. The eighth row, the fast managed-folder case, failed its fresh relaunch and is described below; this batch is not an all-pass result. |
+| Current scale cases, generation 11 | [125% attached](../build/native-pointer-20261101-152826/report.json), [150% SDK-created](../build/native-pointer-20261101-152831/report.json) | Eleven strict feature checks passed in each case. Actual rasters were 750×600 at DPR 1.25 and 900×720 at DPR 1.5. The attached case again requested OSR 1.5 but observed 1.25; independent display/raster mismatch is not established. |
+| Managed observer lifecycles, generation 11 | [Early](../build/managed-targets-20261101-152836/report.json), [best effort](../build/managed-targets-20261101-152838/report.json) | Each passed two fresh target lifetimes with exact path/authenticated scene/creation identity, baseline exclusion, authoritative exit/rearm and watcher cancellation. These controlled observer cases do not guarantee attachment before arbitrary unbarriered graphics startup. |
+| Raw wheel/cursor paths, generation 11 | [WM_INPUT pointer report](../build/native-pointer-20261101-155925/report.json), [buffered pointer report](../build/native-pointer-20261101-155955/report.json) | Both passed all eleven strict pixel/no-click/cursor/wheel/reopen/release checks. Only diagnostic point/rectangle metadata was extended before these runs; acceptance colors/input checks and mapped native SHA-256 `f807e8e16e3997463a1ca99c29d44e7f8806d07cfdf8878be7a15e5b982d862e` were unchanged. These passes do not assign the earlier white-pixel failure's cause. |
+| D3D9/D3D10 backend and architecture matrix, generation 11 | [D3D9 x64](../build/electron-game-overlay-runtime/client-sdk-d3d9-legacy-20261101-153047/result.txt), [D3D9 x86](../build/electron-game-overlay-runtime/client-sdk-d3d9-x86-legacy-20261101-153108/result.txt), [D3D10 x64](../build/electron-game-overlay-runtime/client-sdk-d3d10-legacy-20261101-153128/result.txt), [D3D10 x86](../build/electron-game-overlay-runtime/client-sdk-d3d10-x86-legacy-20261101-153148/result.txt) | Each backend/architecture case passed two fresh SDK/input/release/normal-exit cycles. These are four native cells, not one duplicated pass label. |
+| Two apps, D3D11 and D3D12 targets, generation 11 | [Two-target summary](../build/electron-game-overlay-runtime/client-sdk-two-app-two-target-20261101-155345/summary.json) | PASS with distinct exact target processes, private stage routes/ports/credentials, independent scenes and unique text. Cross-target connections/input deliveries and peer scene mutation were zero; exiting A's target did not disconnect B. The cross-target message oracle explicitly excludes global `GetAsyncKeyState`, cursor position and confinement observations. |
+| Two concurrent apps, one controlled D3D11 target, generation 11 | [Same-target summary](../build/electron-game-overlay-runtime/client-sdk-two-app-one-target-20261101-160059/summary.json) | PASS with both requests recorded before graphics startup, App B supplying the one full ReShade host, two exact own-stage engines and colliding local window IDs 2/3. All four interception-OR states, isolated typing and unchanged intercepted game-input counters passed. App A was force-killed; B retained its exact private credential/route and accepted survivor input, then released real game input. |
+| Existing inactive ReShade installation rejection, generation 11 | [Rejection summary](../build/electron-game-overlay-runtime/client-sdk-d3d11-existing-reshade-installation-20261101-155531/summary.json) | PASS: exact target preflight rejected before injection, no project runtime/add-on was mapped, existing installation manifests remained unchanged and the target exited normally. This is separate from accepting an active stock host or applying reserved-file upgrade maintenance. |
+| Existing ReShade changed-hash coexistence, generation 11 | [Upgrade summary](../build/electron-game-overlay-runtime/client-sdk-d3d11-existing-reshade-upgrade-20261101-160757-55ccd51b/summary.json) | PASS for a modeled still-loadable runtime upgrade: a benign PE overlay byte changed an owned fixture copy's runtime hash before launch. All phases retained exact PID 30312 and creation FILETIME; captured native proof and mapped modules identified one existing runtime, the preserved installed adapter and this app's private generation-11 participant. Completion and authentication were independently required after graphics startup release. Protected seed hashes, attributes and timestamps were identical through normal exit; the source runtime was preserved. No maintenance transaction journal was created, so this does not claim a reserved-file replacement transaction or compatibility with every ReShade release. |
+| Native watcher quiescence, generation 11 injectors | [Quiescence report](../build/rc7-native-policy-quiescence.json) | PASS for SDK/native x64 and native x86 owned watcher cancellation, authoritative child exit and draining unused output. No target was created and no injection executed. |
+| Cooperative registry protocol, current sources | [Registry report](../build/cooperative-registry-evidence.json) | x64/x86 passed the same-process registry protocol fixture. Its report expressly excludes injection, graphics and game acceptance. |
+| Packaged injector/claim loader, generation 11 | [Packaged loader summary](../build/cooperative-addon-loader/gen11-packaged-summary.json) | Both architectures passed owned console/inert-DLL fixtures for simultaneous first starts, independent member images, durable claims through injector exit/creator crash, stale-build/process-instance rejection and target-exit release. These are not real ReShade, rendering or input results. |
+| Attached BrowserWindow at 125% display scale, generation 10 | [Strict pointer report](../build/native-pointer-20261101-151136/report.json) | Eleven feature checks passed: actual native red/blue pixels, no-click keys/reopen, three Windows cursors, cursor transitions, both wheel axes, reverse/partial/nested/outer scrolling and released game input. Actual paint and retained published frame were both 750×600 with stride 3000 and equal hash; actual transport rect was 25,75,750,600. Electron 39.8.10 reported DPR 1.25 and raster scale 1.25 despite requested OSR 1.5; this does not prove a 125%/150% raster mismatch. |
 | Gun Frog with stock ReShade, foreign add-on and effect, generation 9 | [Coexistence result](../build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20261101-141430-9d69da8c/result.json) | PASS: one stock runtime, original API-18 FPS Limiter, enabled witness effect, installed cooperative adapter and exact private participant. All four overlay clicks occurred while the game remained alive; release followed by the real Quit closed it. Protected bytes, attributes and timestamps remained identical and owned seeds were restored. |
 | Gun Frog low-level Electron scene, generation 9 | [Producer log](../build/electron-game-overlay-runtime/injected-Gun-Frog-20261101-143731/electron-producer.stdout.log) | All four aligned overlay click markers, manual release request, interception-disabled acknowledgement and lifecycle completion were recorded; the owned game exited normally. This interactive log is separate from the structured SDK four-click gate or physical-key evidence. |
 | Gun Frog full SDK interaction, generation 9 | [PASS marker](../build/electron-game-overlay-runtime/client-Gun-Frog-20261101-144859/result.txt) | Four overlay buttons clicked exactly once while the game remained alive, Ctrl+I produced the disabled acknowledgement, and released real Quit closed the game normally. This unchanged-byte rerun passed after the earlier device-hang attempt described below. |
@@ -164,19 +184,19 @@ target; the review did not launch extra games or reuse unrelated processes.
 The mixed game used two unreleased development SDK snapshots, both labeled
 `0.1.0-rc.7`. Its provenance declares source revisions
 `7b6e5208d40d1f401a399bda43cf8eab36746951` and
-`79b29cfe477bb7de3f7afec70e278934ec4cc2f8` as informational caller claims.
+`cdc6e80f0aa0cede23e4ba7272b9f8afa3e795ed` as informational caller claims.
 The observed implementation identities, rather than those labels, establish
 that the binaries differ:
 
 | Member | Native generation/build ID | Native SHA-256 | JavaScript graph SHA-256 |
 | --- | --- | --- | --- |
 | A, retained snapshot | 8 / `A8E9DA12477741B9979D9B1B51994EF3` | `c304b044525b8ff0e9ae11bf3bb20f1c0ba8a2e4fe4add032ccd80b2e640a4f1` | `c7a8bf87c7ebdbe5bd3a0e8ba2005c1217160fbf44adbfa258c7827fddd1e855` |
-| B, current candidate | 9 / `3309FB779CFC4E39BA7681AA4A7F8A6B` | `3f29d359b34edf0a95fc91348698007984376a75f88d1635517a1663a3353e29` | `f5c4ee68bdcc4f5955443aebb55b271272d0adb4a7f417ce1e4ad4d116f37d05` |
+| B, current candidate | 11 / `E16461475E524DBA83398B19CDD95EBB` | `f807e8e16e3997463a1ca99c29d44e7f8806d07cfdf8878be7a15e5b982d862e` | `8abcbc25191c3371b4efcda26233d4dc68361e103e77066d30e23751a68877e4` |
 
 Both startup orders passed with the first app's packaged ReShade host:
 `783bedb3d441e4ab985317e393cbaabb4e46a8cf02ce5bcca4df681bc94da657`
 for A-first, and
-`a506d5b3bbd27c127550d6b1501f2feac744d4cc8112a77c4b0aae837702f9bf`
+`5851d903abfacd7deba7de4aac580c0ea648ad6f2ae5e6de85bcff1ad990769a`
 for B-first. The later app still mapped its own engine. Module evidence checks
 current mapped paths and file/export identities; it is not a historical
 injection-count measurement or native fault-containment proof.
@@ -188,8 +208,19 @@ proved after fresh clicks. The keyboard-only no-implicit-focus check applies
 after true final destruction and recreation, not to click-free focus continuity
 across primary-to-secondary promotion.
 
-The original five Gun Frog launchers therefore have current-candidate results
-with their distinct interaction/input-source boundaries above. A prior full
+The original five Gun Frog launchers have generation-9 results with their
+distinct interaction/input-source boundaries above. Four have passed on
+generation 11: automatic focus, full SDK, low-level scene and stock-host
+coexistence. The generation-11 physical-mode
+[attempt at 152054](../build/explicit-focus-20261101-152054/report.json) reached
+rendering/native focus with zero pointer-downs but timed out without receiving
+the first human `a`. It is not a physical-key pass. The user subsequently
+explicitly waived the final physical-keyboard rerun. Final status for that case
+is **waived by user**, not passed or simulated; the confirmed generation-9 human
+result remains separately labeled. The four other original cases have current
+generation-11 passes above. Earlier
+[generation-8/9 mixed acceptance](../build/cooperative-two-app-game-20261101-134225-24c148e1/report.json)
+also passed all four cells. A prior full
 SDK attempt, `client-Gun-Frog-20261101-144539`, failed with a graphics-device
 hang. Its dump and contemporaneous NVIDIA display-driver events were retained;
 the cause remains unassigned. The later `144859` pass used unchanged SDK/native
@@ -198,25 +229,69 @@ pixel timeouts have likewise not been attributed. Harness failures from Windows
 state-file sharing, ambiguous Node lookup and hash letter case were corrected
 without relaxing feature checks; those unsuccessful attempts are not passes.
 
-## Remaining feature acceptance
+The generation-10 fast managed-folder case
+[native-pointer-20261101-151225](../build/native-pointer-20261101-151225/report.json)
+failed before authenticated/rendering startup, with a 10000 ms connection timeout
+and no native startup record. The generation-11
+[fast-folder rerun at 152840](../build/native-pointer-20261101-152840/report.json)
+passed seventeen initial rendering/input/policy checks, including no artificial
+startup barrier and redundant-rule removal preserving immediate typing. Its
+new target PID 7800 was selected/injected but did not produce D3D constructor
+hooks or authenticate; the case timed out on fresh relaunch. Final revocation
+and the complete fast lifecycle therefore are not passes.
 
-The recorded passes do not complete the full preservation matrix. Current
-generation-9 results still need to be recorded for:
+These failures remain within the fast-start limitation documented before the
+rewrite at base `90d5bb4` in the
+[RC6 process-policy evidence](sdk-rc6-process-policy.md): one
+unbarriered lifecycle passed while another selected and loaded the intended
+incarnation without authentication. That prior contract explicitly did not
+accept reliable fast-start attachment. The inherited limit remains recorded;
+the current failures' exact cause is not established. It is not claimed fixed,
+and no test oracle was relaxed to accept it. Neither
+timeout makes reinjection of that possibly consumed live PID safe.
+Earlier native-pointer white-pixel
+failures likewise remain separate from later strict pixel passes; the passes
+alone do not assign their cause.
 
-- D3D11/D3D12 WM_INPUT and buffered raw input, registered before and after
-  injection, including NULL focus-following registrations and raw wheel/cursor
-  delivery.
-- Fractional display/raster scales and SDK-created versus attached
-  BrowserWindows, including mismatched scale factors.
-- D3D12 multi-swapchain/final-drain paths and explicit `session.close()` with a
-  living producer/target, separately from app exit and the D3D11 two-app case.
-- Managed early/best-effort admission, folder/basename rules, baseline exclusion,
-  cancellation/rearm/revocation and native watcher quiescence.
-- Fail-closed existing-installation rejection, reserved add-on maintenance and
-  upgrade transactions, plus their protected-file/preflight checks. The stock
-  game coexistence pass does not replace these rejection/maintenance cases.
-- Remaining backend/architecture, two-target and long-idle cases from the table
-  below. A generation-8 pass is not silently relabeled as generation 9.
+The coordinated normal generation-11 build completed both native architectures,
+SDK sealing and client output. The source test run reports 164 Rust tests on
+each of x64/x86 and 526 SDK/packaging tests. These counts establish their test
+scopes, not additional desktop/game results.
+
+## Acceptance status and additional release coverage
+
+The implementation is accepted within the recorded scope: four original
+real-game cases passed on generation 11, the final physical-key rerun was
+explicitly waived by the user, and the mixed-implementation, isolation,
+surface-lifetime and selected broad feature cases above passed. This does not
+claim every launcher/backend combination, independently published-version
+compatibility or the 500-participant design goal.
+
+The following catalog is additional unrun release coverage, not unfinished
+core rewrite work. Older passes retain their actual generation labels:
+
+- Additional raw registration/backend cases where needed; generation-10
+  before-injection/NULL and generation-11 D3D11 after-injection results remain
+  labeled above. Generation-11 raw wheel/cursor-specific cases are now recorded
+  separately above.
+- Additional fractional display/raster combinations, especially an actually
+  observed independent raster/display mismatch. The observed 125% attached and
+  150% SDK-created cases are recorded above.
+- Final-drain reruns where needed; generation-10 passes, generation-11 explicit
+  session close and generation-11 D3D12 promotion are recorded separately above.
+- Folder/basename policy revocation as applicable.
+  Managed early/best-effort baseline/rearm/cancel passes do not remove the
+  inherited fast-start boundary or complete the failed fast lifecycle; native
+  watcher quiescence has its separate noninjecting pass above.
+- Reserved add-on mutation/rollback transaction variants and additional
+  preflight cases. Existing-installation rejection, stock game coexistence and
+  changed-runtime-hash acceptance have separate passes and do not replace every
+  maintenance transaction case.
+- Remaining unrecorded backend/input-mode combinations. The long-idle future
+  target, four
+  D3D9/10 architecture cells and controlled same-target/two-target cases are
+  recorded above; older-generation results are not silently relabeled as
+  current.
 
 Run desktop gates sequentially in fresh PowerShell processes. Raw pair wrappers
 already execute both WM_INPUT and buffered modes; DPI/pointer wrappers use
@@ -225,10 +300,10 @@ durations are roughly 15–25 seconds per raw pair and 5–25 seconds per other
 controlled case; these are scheduling estimates, not newly measured capacity
 or deadline claims.
 
-## Controlled gates still required for feature preservation
+## Controlled launcher catalog for future release coverage
 
-Real-game cases do not exercise every accepted native behavior. Retain and run
-the human-facing controlled launchers appropriate to changes:
+Real-game cases do not exercise every accepted native behavior. Keep these
+human-facing controlled launchers available and select them for future changes:
 
 | Behavior | Existing launcher families |
 | --- | --- |
@@ -240,7 +315,7 @@ the human-facing controlled launchers appropriate to changes:
 | Fractional raster/DPI scale, attached surfaces | `d3d11-x64-wheel-cursor-dpi125*.ps1`, `d3d11-x64-wheel-cursor-dpi150.ps1` |
 | No-click focus, reopen, blur and long-idle future target | `d3d11-explicit-keyboard-focus.ps1`, `d3d11-idle-future-target-focus.ps1` |
 | Session deactivation, primary-surface replacement/drain, target relaunch | `*-client-sdk-session-deactivation.ps1`, `*-client-sdk-multi-swapchain.ps1`, `*-client-sdk-target-surface-drain.ps1`, `d3d12-client-sdk-reinjection.ps1` |
-| Two private engines across never-presented secondary promotion and final recreation | `d3d11-client-sdk-two-app-surface-lifecycle.ps1`; recorded generation-9 pass above |
+| Two private engines across never-presented secondary promotion and final recreation | `d3d11-client-sdk-two-app-surface-lifecycle.ps1`; recorded generation-11 pass above |
 | Managed policy, basenames/folders, cancellation and lifecycle | `d3d11-x64-managed-*.ps1`, `native-policy-watcher-quiescence.ps1` |
 | Existing host/install safety and reserved add-on transactions | `d3d11-client-sdk-existing-reshade-*.ps1`, `d3d11-client-sdk-official-reshade-addon.ps1`, `d3d11-official-reshade-addon-preflight.ps1`, `reshade-addon-manager.ps1`, installation/global-layer preflights |
 
