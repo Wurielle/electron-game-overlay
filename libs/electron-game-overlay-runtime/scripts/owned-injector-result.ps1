@@ -139,6 +139,85 @@ function Read-OwnedOverlayInitialResult {
     }
 }
 
+function Get-OwnedOverlayMappedEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$InjectorStdoutPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedRuntimePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAddonPath,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedRuntimeSha256,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedAddonSha256
+    )
+    foreach ($Path in @($ExpectedExecutablePath, $ExpectedRuntimePath, $ExpectedAddonPath)) {
+        if (-not [IO.Path]::IsPathRooted($Path) -or [IO.Path]::GetPathRoot($Path).Length -lt 3) {
+            throw 'Owned module proof requires absolute expected module and target paths.'
+        }
+    }
+    # Retain the OS process handle throughout inspection; PID reuse must not
+    # substitute another process while module file hashes are being checked.
+    $PinnedHandle = $Process.Handle
+    $Process.Refresh()
+    if ($PinnedHandle -eq [IntPtr]::Zero -or $Process.HasExited) { throw 'The retained owned target is not live.' }
+    $Creation = $Process.StartTime.ToFileTimeUtc().ToString()
+    if (-not [IO.Path]::GetFullPath($Process.MainModule.FileName).Equals(
+            [IO.Path]::GetFullPath($ExpectedExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The retained owned target has an unexpected executable image.'
+    }
+    $Selections = @([IO.File]::ReadAllText($InjectorStdoutPath) -split '\r?\n' | Where-Object {
+        $_.StartsWith("EGO_TARGET_SELECTED_V2`t", [StringComparison]::Ordinal)
+    })
+    if ($Selections.Count -ne 1) { throw 'Owned module proof requires one exact native watcher selection.' }
+    $Selection = $Selections[0] -split "`t", 4
+    if ($Selection.Count -ne 4 -or $Selection[1] -cne [string]$Process.Id -or
+        $Selection[2] -cne $Creation -or -not [IO.Path]::IsPathRooted($Selection[3]) -or
+        -not [IO.Path]::GetFullPath($Selection[3]).Equals(
+            [IO.Path]::GetFullPath($ExpectedExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The mapped target does not match the native watcher PID, creation time and image.'
+    }
+    $Modules = @($Process.Modules)
+    $RuntimeModules = @($Modules | Where-Object {
+        $_.ModuleName -match '^ReShade(?:32|64)\.dll$' -or
+        $_.FileVersionInfo.ProductName -eq 'ReShade' -or
+        [string]::Equals($_.FileName, $ExpectedRuntimePath, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($RuntimeModules.Count -ne 1 -or -not [IO.Path]::GetFullPath($RuntimeModules[0].FileName).Equals(
+            [IO.Path]::GetFullPath($ExpectedRuntimePath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The retained target did not map exactly one ReShade at the expected owned staging path.'
+    }
+    $AddonModules = @($Modules | Where-Object {
+        $_.ModuleName -match '^electron_game_overlay\.addon(?:32|64)$' -or
+        [string]::Equals($_.FileName, $ExpectedAddonPath, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($AddonModules.Count -ne 1 -or -not [IO.Path]::GetFullPath($AddonModules[0].FileName).Equals(
+            [IO.Path]::GetFullPath($ExpectedAddonPath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The retained target did not map its one exact private engine at the owned staging path.'
+    }
+    $RuntimeHash = (Get-FileHash -LiteralPath $RuntimeModules[0].FileName -Algorithm SHA256).Hash
+    $AddonHash = (Get-FileHash -LiteralPath $AddonModules[0].FileName -Algorithm SHA256).Hash
+    if (-not $RuntimeHash.Equals($ExpectedRuntimeSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $AddonHash.Equals($ExpectedAddonSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Mapped owned runtime or private-engine bytes differ from the source payloads.'
+    }
+    $Process.Refresh()
+    if ($Process.HasExited -or $Process.StartTime.ToFileTimeUtc().ToString() -cne $Creation) {
+        throw 'The retained target exited or changed identity during module inspection.'
+    }
+    return [pscustomobject]@{
+        scope = 'Retained OS target handle, exact native watcher selection, mapped paths and current module-file hashes; not a historical injection-count proof.'
+        targetPid = $Process.Id
+        targetCreationTime100ns = $Creation
+        targetExecutablePath = [IO.Path]::GetFullPath($ExpectedExecutablePath)
+        runtimeCount = 1
+        runtimeModulePath = $RuntimeModules[0].FileName
+        runtimeSha256 = $RuntimeHash
+        addonCount = 1
+        addonModulePath = $AddonModules[0].FileName
+        addonSha256 = $AddonHash
+    }
+}
+
 # Bind the SDK's displayed exact-PID arguments to one producer's structured
 # attachment attempt. This proves bootstrap completion, before graphics starts;
 # the caller separately proves the one exact mapped runtime and later features.

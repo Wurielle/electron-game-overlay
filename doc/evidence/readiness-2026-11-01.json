@@ -1,0 +1,1670 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-readiness-follow-up",
+  "recordedAt": "2026-11-01T21:08:29Z",
+  "status": "accepted-within-recorded-scope",
+  "scope": "All requested readiness acceptance work is complete for the exact built/sealed generation16 Windows candidate: 32 script cases, three additional manually exercised original game lanes and four installed mixed-game cells passed. Unit/console tests, old failures and explicit unsupported/causal/capacity limits retain their separate scopes.",
+  "finalAcceptanceComplete": true,
+  "candidate": {
+    "runtimeGeneration": 16,
+    "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+    "cooperativeAddonProtocol": 1,
+    "targetTransport": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "sdkPackageVersionInformational": "0.1.0-rc.7",
+    "sdkSealSha256": "8cc9cc84091ddbcc5c03bd5ef136c02ae4f1fdfeb02a6151f85322bdde691b50",
+    "sdkJavascriptGraphSha256": "a401e62322b9fc5c3feaa53962121a7a8ee9fdeaf0b607535d00bc70054f8b32",
+    "sealedPayloads": 148,
+    "sealedPayloadBytes": 20262743,
+    "sealArtifact": "sdkSealGen16",
+    "ownedIniBytes": 209,
+    "ownedIniSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+    "injectorNormalizedSourceSha256": "f286cdc1b9d138e4429a50c3e82749292b39f51b42592bfd9b738c889a6fa074",
+    "native": [
+      {
+        "architecture": "x64",
+        "addonSha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122",
+        "reshadeSha256": "c403a8b113485eec6cc3b2c0b384c3f9b17fe2b76aad0385f5dd2ac61cc1be66",
+        "injectorSha256": "960f96bf663b8aefd5f69c92843d3d88c7dbc2f6b5ddd489ddeada0648442767"
+      },
+      {
+        "architecture": "x86",
+        "addonSha256": "fcab046c07b573a030753f73cc678c56da5507cd142b804b76d2eab935b95684",
+        "reshadeSha256": "e6d8f723882dea97f1d62d0b3368639ea65a2dad346d4db1b462808d56af0830",
+        "injectorSha256": "0cf7dfe1b24ba8a17a96a60dcbb60c53195fdd65c6244abee3949678d1d8d69b"
+      }
+    ],
+    "identityScope": "Exact built/sealed generation16 candidate accepted by all recorded original/mixed games, owned late/busy/control/input/backend, eight-cycle resource recovery, console and pure checks.",
+    "sourceMilestoneCommit": "2eba041",
+    "addonSourceRawSha256": "85ff6d48e793d64a467de85966be5b0df527822c4b1dfb9e0cbcbb8efbef1e56"
+  },
+  "currentChecks": {
+    "fullNxBuild": {
+      "status": "passed",
+      "durationSeconds": 117,
+      "artifact": "fullBuildGen16"
+    },
+    "sdkNode26Tests": {
+      "status": "passed",
+      "tests": 1045,
+      "passed": 1035,
+      "failed": 0,
+      "skipped": 10,
+      "durationMs": 63242.3644,
+      "artifact": "sdkUnitTestsGen16PostHarness",
+      "scope": "Authoritative post-harness source/fixture suite; native and sealed SDK payloads remain unchanged. The earlier1044-test run is retained separately."
+    },
+    "sdkAndClientTypechecks": {
+      "status": "passed",
+      "mode": "noEmit",
+      "evidence": "Reported by the active acceptance controller; separate log not supplied in this draft."
+    },
+    "nativeConsole": {
+      "status": "passed",
+      "artifact": "nativeConsoleGen16",
+      "ctests": 4,
+      "ctestsPassed": 4,
+      "classicLoaderSuites": 2,
+      "ownedLateLoaderSuites": 2,
+      "ownedLateNamedCases": 16,
+      "ownedLateNamedCasesPassed": 16,
+      "firstHostResultFieldCount": 4,
+      "privateJoinResultFieldCount": 9,
+      "failedBootstrapSuccessRecords": 0,
+      "productionBinaryHashesUnchanged": true,
+      "scope": "x64/x86 ABI, registry and inert loader fixtures only."
+    },
+    "uiBusyRecovery": {
+      "status": "passed",
+      "artifact": "uiBusyMatrixGen16",
+      "architectures": 2,
+      "passed": 2,
+      "oldNegativeArtifact": "uiBusyOldGen15Negative",
+      "scope": "Actual controlled self-loading graphics fixtures, Windows SendInput; no automatic process attachment or physical-key claim.",
+      "cases": [
+        {
+          "architecture": "x64",
+          "artifact": "uiBusyPositiveX64Gen16",
+          "requestedUiBusyMs": 2800,
+          "measuredUiBusyMs": 2828,
+          "recoveryProven": true,
+          "productionOwnedAbiProven": true,
+          "sameHwndInputPromotionProven": true,
+          "renderedOverlayPixelsProven": true,
+          "stageIniBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "finalGeneratedConfigs": 0
+        },
+        {
+          "architecture": "x86",
+          "artifact": "uiBusyPositiveX86Gen16",
+          "requestedUiBusyMs": 2800,
+          "measuredUiBusyMs": 2860,
+          "recoveryProven": true,
+          "productionOwnedAbiProven": true,
+          "sameHwndInputPromotionProven": true,
+          "renderedOverlayPixelsProven": true,
+          "stageIniBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "finalGeneratedConfigs": 0
+        }
+      ],
+      "portableArtifact": "uiBusyPairedPortable",
+      "acceptanceOracles": {
+        "interceptedHeldKey": "Both architectures received one DOM keydown/up while native legacy/character/raw deltas and all three polled-down counters stayed zero.",
+        "release": "Explicit release restored native key/raw/polled input without DOM delivery; after producer exit, stale producer ACK snapshots are not authoritative and native withdrawal/restoration is checked.",
+        "acknowledgementScope": "True observed before the blocked input window and false before explicit release, not a continuous temporal observation of every startup instant.",
+        "cursorAndClip": "Windows IDC_IBEAM asserted for overlay text; released cursor and clip returned to recorded baseline.",
+        "registration": "Native window1 replaced by2 with only new windows/ranks, no implicit focus, same TCP endpoint, one authentication/connection and zero loss.",
+        "retirement": "Two native retirements, zero quarantine/render failures/state mismatches, no windows/ranks/focus after producer exit, normal owned child exits, unchanged canonical template and zero generated INIs."
+      }
+    },
+    "installedPairPreparation": {
+      "status": "passed",
+      "artifact": "installedPairGen16",
+      "npmCommandExitCodes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "sealedPayloadsVerified": 293,
+      "nativeAssetBindingsVerified": 28,
+      "peHeadersVerified": 16,
+      "nativeExecuted": false,
+      "independentlyReleasedPackagesVerified": false,
+      "gameAcceptance": "passed-four-cell-game-matrix",
+      "participants": [
+        {
+          "id": "a",
+          "version": "0.1.0-development.baseline.gen11.cdc6e80",
+          "runtimeGeneration": 11,
+          "addonBuildId": "E16461475E524DBA83398B19CDD95EBB",
+          "sealedPayloads": 145,
+          "javascriptGraphSha256": "8abcbc25191c3371b4efcda26233d4dc68361e103e77066d30e23751a68877e4",
+          "installedSealSha256": "da2738656c93390d992a01b0cc9fc8d013154ce400c89c85b2f3f426f654b2d6",
+          "tarballSha256": "d5862f7bb3e95e5ebceef2997ba8139bda64b52f7401c0ab04cf8d9535a06a0b"
+        },
+        {
+          "id": "b",
+          "version": "0.1.0-development.candidate.gen16.e8fe3783.async",
+          "runtimeGeneration": 16,
+          "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+          "sealedPayloads": 148,
+          "javascriptGraphSha256": "a401e62322b9fc5c3feaa53962121a7a8ee9fdeaf0b607535d00bc70054f8b32",
+          "installedSealSha256": "31dc67d055c7b2933f6b9b021b75bf0dedc4474078231358a8551930edf08ce1",
+          "tarballSha256": "74b0b3c9079c373243396d1946d44c6cf08f8090f55b145d89ec103e07d62cac"
+        }
+      ],
+      "gameArtifact": "installedMixedGameGen16"
+    },
+    "installedMixedGameGen16": {
+      "status": "passed",
+      "artifact": "installedMixedGameGen16",
+      "scope": "Actual x64 Gun Frog with separately installed gen11 and generation16 SDKs; Windows SendInput.",
+      "startupOrders": 2,
+      "exitModes": 2,
+      "cases": 4,
+      "checksPerCase": 18,
+      "totalChecks": 72,
+      "errors": 0,
+      "cells": [
+        {
+          "order": "a-first",
+          "firstAppExit": "graceful",
+          "status": "passed",
+          "checks": 18,
+          "originalPid": 27988,
+          "relaunchPid": 43452
+        },
+        {
+          "order": "a-first",
+          "firstAppExit": "crash",
+          "status": "passed",
+          "checks": 18,
+          "originalPid": 23240,
+          "relaunchPid": 47756
+        },
+        {
+          "order": "b-first",
+          "firstAppExit": "graceful",
+          "status": "passed",
+          "checks": 18,
+          "originalPid": 46392,
+          "relaunchPid": 50916
+        },
+        {
+          "order": "b-first",
+          "firstAppExit": "crash",
+          "status": "passed",
+          "checks": 18,
+          "originalPid": 26368,
+          "relaunchPid": 3056
+        }
+      ],
+      "physicalInputProven": false,
+      "independentlyReleasedPackagesVerified": false,
+      "portableAuditArtifact": "installedMixedGameGen16Portable",
+      "portableAuditMarkdownArtifact": "installedMixedGameGen16PortableMd",
+      "criticalFilesRetainedByPortableAudit": 456
+    },
+    "gunFrogSdkGen16": {
+      "status": "passed",
+      "artifact": "gunFrogSdkGen16",
+      "displayArtifact": "gunFrogSdkGen16Display",
+      "passMarker": "GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS",
+      "scope": "Actual full SDK four overlay-button interactions, interception release and normal real Quit; no physical-key claim.",
+      "deviceLossMonitorArtifact": "gunFrogSdkGen16DeviceLoss",
+      "deviceLossObserved": false,
+      "monitorStatus": "target-exited-without-observed-device-loss",
+      "historicalD3D11HangRootCauseClaimed": false
+    },
+    "gunFrogStockGen16": {
+      "status": "passed",
+      "artifact": "gunFrogStockGen16",
+      "displayArtifact": "gunFrogStockGen16Display",
+      "result": "GUN_FROG_REAL_CLIENT_OFFICIAL_RESHADE_COEXISTENCE_GATE_PASS",
+      "targetPid": 5456,
+      "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "addonSha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122",
+      "reShadeRuntimeCount": 1,
+      "foreignAddon": {
+        "name": "FPS Limiter",
+        "apiVersion": 18,
+        "loaded": true
+      },
+      "witnessEffectCompiledAndEnabled": true,
+      "input": {
+        "capturedButtons": [
+          "continue",
+          "new-game",
+          "settings",
+          "quit"
+        ],
+        "overlayClicksWhileTargetAlive": true,
+        "releaseWhileTargetAlive": true,
+        "releasedQuitClosedTarget": true
+      },
+      "protectedBytesAttributesAndTimestampsIdentical": true,
+      "cleanGameDirectoryRestored": "Confirmed by the active controller after successful wrapper completion."
+    },
+    "gunFrogFocusGen16": {
+      "status": "passed",
+      "artifact": "gunFrogFocusGen16",
+      "wrapperArtifact": "gunFrogFocusGen16Wrapper",
+      "checks": 7,
+      "clicksSent": 0,
+      "inputSource": "Windows SendInput virtual keys",
+      "physicalInputProven": false
+    },
+    "originalRealGameLaneProgress": {
+      "required": 4,
+      "passed": 4,
+      "passedLanes": [
+        "public SDK",
+        "stock ReShade coexistence",
+        "automatic explicit focus",
+        "low-level Electron scene"
+      ],
+      "pendingLanes": [],
+      "physicalFirstKeyGate": "waived-by-user"
+    },
+    "ownedLateMatrix": {
+      "status": "passed",
+      "artifact": "ownedLateMatrixGen16",
+      "uniqueCases": 8,
+      "passed": 8,
+      "failed": 0,
+      "architectures": 2,
+      "allExactCandidatePeIdentities": true,
+      "allStageIniBeforeAndAfterExact": true,
+      "generatedIniCountEveryCase": 0,
+      "automaticProcessAttachmentProven": false,
+      "physicalInputProven": false,
+      "cases": [
+        {
+          "name": "owned-late-d3d11-overlay-proof",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case01",
+          "renderedOverlayPixelsProven": true,
+          "nativeSwapchainDiscoveryProven": true
+        },
+        {
+          "name": "late-d3d11-same-hwnd-primary-resize",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case02",
+          "renderedOverlayPixelsProven": true,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "late-d3d11-same-hwnd-primary-final-destroy",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case03",
+          "renderedOverlayPixelsProven": true,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "late-d3d11-same-hwnd-primary-paused",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case04",
+          "renderedOverlayPixelsProven": true,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "owned-late-d3d11-overlay-proof",
+          "architecture": "Win32",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case05",
+          "renderedOverlayPixelsProven": true,
+          "nativeSwapchainDiscoveryProven": true
+        },
+        {
+          "name": "late-d3d11-same-hwnd-primary-resize",
+          "architecture": "Win32",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case06",
+          "renderedOverlayPixelsProven": true,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "late-d3d11-same-hwnd-primary-final-destroy",
+          "architecture": "Win32",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case07",
+          "renderedOverlayPixelsProven": true,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "late-d3d11-same-hwnd-primary-paused",
+          "architecture": "Win32",
+          "status": "passed",
+          "artifact": "ownedLateGen16Case08",
+          "renderedOverlayPixelsProven": true,
+          "sameHwndInputPromotionProven": true
+        }
+      ]
+    },
+    "gunFrogLowLevelSceneGen16": {
+      "status": "passed",
+      "artifact": "gunFrogLowLevelSceneGen16",
+      "identityArtifact": "gunFrogLowLevelSceneGen16Identity",
+      "injectorResultArtifact": "gunFrogLowLevelSceneGen16InjectorResult",
+      "displayArtifact": "gunFrogLowLevelSceneGen16Display",
+      "targetPid": 50808,
+      "targetCreationTime100ns": "134380400326401296",
+      "capturedOverlayButtons": [
+        "continue",
+        "new-game",
+        "settings",
+        "quit"
+      ],
+      "releaseObserved": true,
+      "lifecycleCompleteObserved": true,
+      "releasedNativeQuitClosedTarget": true,
+      "normalControllerExitCode": 0,
+      "runtimeCountAtIdentitySnapshot": 1,
+      "addonCountAtIdentitySnapshot": 1,
+      "exactCandidateRuntimeAndAddonModuleFileHashes": true,
+      "legacyFirstHostResultFields": 4,
+      "identityScope": "Retained OS target handle, creation identity, exact watcher selection, mapped paths and module-file hashes; not a historical injection-count proof.",
+      "physicalInputProven": false
+    },
+    "sdkNode26PreviousRun": {
+      "status": "passed",
+      "tests": 1044,
+      "passed": 1034,
+      "failed": 0,
+      "skipped": 10,
+      "artifact": "sdkUnitTestsGen16",
+      "scope": "Pure/fixture suite with generation16 built dependencies, not game acceptance."
+    },
+    "controlMatrix": {
+      "status": "passed",
+      "artifact": "controlMatrixGen16",
+      "cases": 10,
+      "passed": 10,
+      "failed": 0,
+      "scope": "Actual final-generation controlled graphics/process/input cases; separate from game and console acceptance."
+    },
+    "scriptCaseMatrix": {
+      "plannedTotal": 32,
+      "passedSoFar": 32,
+      "groups": [
+        {
+          "name": "control",
+          "planned": 10,
+          "passed": 10,
+          "artifact": "controlMatrixGen16"
+        },
+        {
+          "name": "owned late lifecycle",
+          "planned": 8,
+          "passed": 8,
+          "artifact": "ownedLateMatrixGen16"
+        },
+        {
+          "name": "delayed UI-thread recovery",
+          "planned": 2,
+          "passed": 2,
+          "artifact": "uiBusyMatrixGen16"
+        },
+        {
+          "name": "input/scaling",
+          "planned": 6,
+          "passed": 6,
+          "artifact": "inputMatrixGen16"
+        },
+        {
+          "name": "D3D9/D3D10 backend/architecture",
+          "planned": 4,
+          "passed": 4,
+          "artifact": "backendMatrixGen16"
+        },
+        {
+          "name": "real-game automatic focus",
+          "planned": 1,
+          "passed": 1,
+          "artifact": "gunFrogFocusGen16"
+        },
+        {
+          "name": "resource recovery",
+          "planned": 1,
+          "cyclesWithinOneCase": 8,
+          "passed": 1,
+          "artifact": "resourceMatrixGen16"
+        }
+      ],
+      "countingBoundary": "This script count includes the original real-game focus lane. Three other original manually exercised game lanes and four installed mixed-game cells are recorded separately; unit/console tests are separate counts.",
+      "status": "passed",
+      "additionalOriginalManuallyExercisedGameLanes": 3,
+      "installedMixedGameCells": 4
+    },
+    "inputMatrix": {
+      "status": "passed",
+      "artifact": "inputMatrixGen16",
+      "cases": 6,
+      "passed": 6,
+      "failed": 0,
+      "scope": "Actual D3D11 x64 WM_INPUT/buffered pointer, attached125% and created150% scaling, owned/stock capability acceptance; Windows SendInput."
+    },
+    "backendMatrix": {
+      "status": "passed",
+      "artifact": "backendMatrixGen16",
+      "cases": 4,
+      "passed": 4,
+      "failed": 0,
+      "backends": [
+        "D3D9 x64",
+        "D3D9 x86",
+        "D3D10 x64",
+        "D3D10 x86"
+      ],
+      "scope": "Actual controlled pointer/feature cases, separate from real-game acceptance."
+    },
+    "ownedInputCapabilities": {
+      "status": "passed",
+      "artifact": "ownedInputCapabilitiesGen16",
+      "runtimeGeneration": 16,
+      "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "addonSha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122",
+      "capabilities": {
+        "copiedWmInput": "supported",
+        "copiedRawInputBuffer": "supported"
+      },
+      "authenticationCount": 1,
+      "connectionCount": 1,
+      "transportLosses": 0,
+      "actualPixel": [
+        198,
+        40,
+        40
+      ],
+      "interceptedGameInputCountersUnchanged": true,
+      "releasedRawBufferCount": 3,
+      "releasedRawBufferErrorCount": 0
+    },
+    "stockInputCapabilities": {
+      "status": "passed",
+      "artifact": "stockInputCapabilitiesGen16",
+      "runtimeGeneration": 16,
+      "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "addonSha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122",
+      "capabilities": {
+        "copiedWmInput": "supported",
+        "copiedRawInputBuffer": "unsupported"
+      },
+      "strict": {
+        "required": [
+          "copied-raw-input-buffer"
+        ],
+        "errorCode": "target-input-capability-unsupported",
+        "nativeHellos": 2,
+        "outboundBytes": 0,
+        "outboundPackets": 0,
+        "outboundFrames": 0,
+        "interceptTruePackets": 0,
+        "actualSocketBytesWritten": [
+          0,
+          0
+        ],
+        "authenticationCount": 0,
+        "renderingCount": 0,
+        "trueAcknowledgements": 0
+      },
+      "permissivePeer": {
+        "tcpTupleAndTransportIdentityUnchanged": true,
+        "connectionCount": 1,
+        "authenticationCount": 1,
+        "transportLosses": 0,
+        "domValueBefore": " ",
+        "domValueAfter": "  ",
+        "actualPixel": [
+          21,
+          101,
+          192
+        ]
+      },
+      "protectedForeignEntries": 7,
+      "protectedBytesLengthAttributesAndTimestampsIdenticalThroughCleanup": true
+    },
+    "resourceRecovery": {
+      "status": "passed",
+      "artifact": "resourceRecoveryGen16",
+      "matrixArtifact": "resourceMatrixGen16",
+      "initialArtifact": "resourceInitialGen16",
+      "finalArtifact": "resourceFinalGen16",
+      "startupArtifact": "resourceStartupGen16",
+      "scriptCases": 1,
+      "cycles": 8,
+      "freshElectronProcesses": 4,
+      "publicSessionRecreations": 4,
+      "firstCheckpointUtc": "2026-11-01T21:01:41.371994Z",
+      "finalCheckpointUtc": "2026-11-01T21:02:49.8699561Z",
+      "elapsedBetweenCheckpointsMs": 68497.9621,
+      "initialRuntimeMode": "injected-runtime",
+      "initialFirstHostResultFields": 4,
+      "exactCandidateJavascriptGraphAndAddonIdentity": true,
+      "survivorPrivateRouteAndTcpUnchangedEveryCycle": true,
+      "survivorFpsAdvancedEveryCycle": true,
+      "ownWindowsAndRanksClearedEveryCycle": true,
+      "final": {
+        "pinnedModules": 9,
+        "lifetimeSlots": 9,
+        "publishedParticipants": 9,
+        "frameThreads": 9,
+        "tcpThreads": 0,
+        "establishedTcpConnections": 0,
+        "windows": 0,
+        "ranks": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "diagnosticResources": {
+        "initialPrivateBytes": 78036992,
+        "finalPrivateBytes": 106860544,
+        "initialHandles": 938,
+        "finalHandles": 1000
+      },
+      "cleanupErrors": [],
+      "scope": "Actual owned D3D11 graphics target and genuine Electron/public-SDK producers; intentional pinned native lifetime state is retained until target exit. This eight-cycle run is not a500-app capacity measurement.",
+      "portableArtifact": "resourceRecoveryGen16Portable",
+      "portableArtifacts": 83,
+      "portableReviewedSourceFingerprints": 6,
+      "independentArtifactAuditsPassed": 2,
+      "survivor": {
+        "electronPid": 40648,
+        "frameWorker": 51068,
+        "tcpWorker": 31120,
+        "identityRouteAndTcpUnchanged": true,
+        "fpsAdvancedEachCycle": true
+      },
+      "retainedConfiguration": {
+        "files": 9,
+        "bytesEach": 209,
+        "sha256Each": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      "producerCleanup": {
+        "normalChildExits": 5,
+        "exitCodeEveryChild": 0,
+        "errors": []
+      }
+    },
+    "postAcceptanceSeal": {
+      "status": "passed",
+      "artifact": "postAcceptanceSealGen16",
+      "verifiedAt": "2026-11-01T21:07:50.732Z",
+      "sealedPayloads": 148,
+      "sealSha256": "8cc9cc84091ddbcc5c03bd5ef136c02ae4f1fdfeb02a6151f85322bdde691b50",
+      "scope": "Read-only public package verification after all native and GUI acceptance; no native execution or package writes.",
+      "allAcceptanceUsedUnchangedSealedCandidate": true
+    }
+  },
+  "tracks": [
+    {
+      "id": "rendering-and-device-loss",
+      "status": "validated-scope-complete-historical-d3d11-hang-unattributed",
+      "implemented": [
+        "Exact-runtime-queue D3D12 initial upload",
+        "Observed-ON display precondition and bounded temporary display requests",
+        "Exact-process first-device-loss capture"
+      ],
+      "historicalSupportingArtifacts": [
+        "d3d12Upload",
+        "renderingDisplay",
+        "deviceLossMonitor"
+      ],
+      "causalLimit": "The historical Gun Frog D3D11 GPU hang is unattributed. Display controls, a D3D12 upload regression and synthetic dump capture do not establish its cause or resolution.",
+      "previousGeneration15Artifacts": [],
+      "currentArtifacts": [
+        "gunFrogSdkGen16",
+        "gunFrogStockGen16",
+        "gunFrogFocusGen16",
+        "gunFrogLowLevelSceneGen16"
+      ],
+      "pending": []
+    },
+    {
+      "id": "automatic-attachment-and-relaunch",
+      "status": "validated-owned-d3d11-and-relaunch-scope-complete",
+      "implemented": [
+        "Owned late-D3D11 bootstrap and swap-chain discovery",
+        "Same-HWND rendering/input-driver and lifetime handling",
+        "Readiness withdrawn before actual dispatcher unregistration"
+      ],
+      "pending": [],
+      "limitation": "Generic late D3D12 queue recovery and a production deterministic launch API are not implemented or accepted.",
+      "previousGeneration15Artifacts": [
+        "fastFolder",
+        "bestEffort",
+        "ownedLateAttempt",
+        "ownedLateResume",
+        "controlFinalCase",
+        "installedMixedGameFirstGen15",
+        "uiBusyOldGen15Negative"
+      ],
+      "currentArtifacts": [
+        "uiBusyMatrixGen16",
+        "uiBusyPositiveX64Gen16",
+        "uiBusyPositiveX86Gen16",
+        "installedMixedGameGen16",
+        "gunFrogFocusGen16",
+        "ownedLateMatrixGen16",
+        "gunFrogLowLevelSceneGen16",
+        "controlMatrixGen16",
+        "inputMatrixGen16",
+        "backendMatrixGen16"
+      ]
+    },
+    {
+      "id": "input-capabilities",
+      "status": "capability-negotiation-and-rejection-validated-stock-buffered-input-unsupported",
+      "implemented": [
+        "Immutable required input capabilities",
+        "Host-derived negotiated capability report",
+        "Typed rejection before overlay initialization and outbound commands"
+      ],
+      "historicalSupportingArtifacts": [
+        "inputCapabilities"
+      ],
+      "limitation": "Stock ReShade copied GetRawInputBuffer input remains unsupported. Capability rejection is explicit compatibility behavior, not proof of stock buffered-input parity.",
+      "pending": [],
+      "previousGeneration15Artifacts": [
+        "inputMatrix",
+        "ownedInputCapabilities",
+        "stockInputCapabilities"
+      ],
+      "currentArtifacts": [
+        "inputMatrixGen16",
+        "ownedInputCapabilitiesGen16",
+        "stockInputCapabilitiesGen16"
+      ]
+    },
+    {
+      "id": "independent-installation-and-resource-recovery",
+      "status": "mixed-installed-development-packages-and-bounded-resource-recovery-validated",
+      "historicalSupportingArtifacts": [
+        "installedGen11Gen14",
+        "resourceSoakGen14"
+      ],
+      "pending": [],
+      "limitation": "Development package snapshots are independently installed; independently released-package compatibility and 500-app capacity are not claimed.",
+      "previousGeneration15Artifacts": [
+        "installedPair",
+        "resourceSoakFirstGen15",
+        "resourceSoakFirstGen15Portable",
+        "installedMixedGameFirstGen15"
+      ],
+      "currentArtifacts": [
+        "installedPairGen16",
+        "installedMixedGameGen16",
+        "installedMixedGameGen16Portable",
+        "resourceRecoveryGen16",
+        "resourceMatrixGen16"
+      ]
+    }
+  ],
+  "pendingFinalAcceptance": [],
+  "physicalKeyboardGate": {
+    "status": "waived-by-user",
+    "syntheticInputRelabeledAsPhysical": false
+  },
+  "limits": [
+    "One ReShade host and one game address space remain shared; per-application implementation and transport isolation are not native fault containment.",
+    "Existing foreign ReShade installations remain unchanged; owned source patches cannot be applied to them to manufacture missing capabilities.",
+    "Native participant modules and their lifetime state remain mapped until authoritative game exit; the ABI has 512 lifetime participant slots, 8192 window slots and 512 surfaces.",
+    "Eight restart/recreation cycles are a bounded acceptance run, not a 500-application or 500-version capacity measurement.",
+    "Historical white samples are not all assigned a cause: the old power observation was later than the failing sample and an older decoded white sample did not retain raw COLORREF validity."
+  ],
+  "artifacts": {
+    "fullBuild": {
+      "path": "build/readiness-gen15-full-build.log",
+      "sha256": "495ce591903ce6f0eafe3c0d6e17a9076ee5597371651945ff57bd583ecc5795"
+    },
+    "sdkUnitTests": {
+      "path": "build/sdk-unit-gen15-node26-final.log",
+      "sha256": "c93400d6bacc43ac3aaa1e3903b454e8d657cec003b6355b13c28a40dddeaf41"
+    },
+    "nativeConsole": {
+      "path": "build/native-gen15-final/evidence.json",
+      "sha256": "236adb0db3c39cef11d92916b9fbe9322f94c92ca92987f16dbc5f442578d53e"
+    },
+    "fastFolder": {
+      "path": "build/native-pointer-20261101-203942/report.json",
+      "sha256": "734b1561f18bfcf8f012b102fc7016f9462af21e1166a1f3d599552226a3fe04"
+    },
+    "bestEffort": {
+      "path": "build/managed-targets-20261101-204009/report.json",
+      "sha256": "61142ae8270751b5db9f62a35895cd8703a6eff9c23bd45733eeff3d4359c5d8"
+    },
+    "controlAttempt": {
+      "path": "build/readiness-gen15-control-20261101-193941/report.json",
+      "sha256": "0fdab915ff24d116f237ae2b714b00a20996406619808f1719004fba9eb89e87"
+    },
+    "installedPair": {
+      "path": "build/installed-cooperative-pair-gen11-gen15-owned-late-20261101-final/report.json",
+      "sha256": "a6bc5d097b659ecf3e5e5b050ae27e997dbcaf958e44da1591093366e0dd4718"
+    },
+    "sdkSeal": {
+      "path": "build/installed-cooperative-pair-gen11-gen15-owned-late-20261101-final/consumer-b/node_modules/electron-game-overlay/SOURCE_OVERLAY_MANIFEST.json",
+      "sha256": "a661ee2ec8a0c6602ef63c15cbd9cb151b80aef2140143ce46febf432e16bfc3",
+      "scope": "Immutable retained source seal of the first generation-15 package; not the mutable workspace dist seal."
+    },
+    "renderingDisplay": {
+      "path": "doc/rendering-display-power-evidence.json",
+      "sha256": "4e863f43346160b8cf7699fa02a6ca09993a8cecbfc300034fd9724eaece2d2c",
+      "generation": "historical gen12/gen13 observations"
+    },
+    "deviceLossMonitor": {
+      "path": "doc/device-loss-monitor-evidence.json",
+      "sha256": "9545e98932a0b2572e69360bdc82883621c22e5a2d91afdd16353b15fa369f6c",
+      "scope": "Historical controlled cycles and synthetic capture, not a genuine GPU-fault diagnosis"
+    },
+    "d3d12Upload": {
+      "path": "libs/electron-game-overlay-runtime/tests/d3d12-initial-upload-queue/evidence-2026-11-01.json",
+      "sha256": "cf2ef357d704800fef1b8319caa57d9695b6e2bc5806201d6f0c70d1282aa95d",
+      "scope": "Historical x64/x86 exact-queue regression, not game acceptance"
+    },
+    "inputCapabilities": {
+      "path": "libs/electron-game-overlay-runtime/tests/input-capabilities/evidence-2026-11-01.json",
+      "sha256": "28f0de8d230fac08d4abb7d77fc9a785ebe4bf4642fccb7c503f6d3fa624342a",
+      "runtimeGeneration": 14
+    },
+    "resourceSoakGen14": {
+      "path": "libs/electron-game-overlay-runtime/tests/cooperative-resource-soak/sdk-evidence-2026-11-01.json",
+      "sha256": "4ce282b5fb8f85e7a7d3b3538151fde462d31e6fb9a7685876371c34ab168310",
+      "runtimeGeneration": 14
+    },
+    "installedGen11Gen14": {
+      "path": "doc/evidence/installed-gen11-gen14-session-2026-11-01.json",
+      "sha256": "03a013b799a03e736a8268060e91cae486a5400a9c036d3064a882157839dae9",
+      "generations": [
+        11,
+        14
+      ]
+    },
+    "inputMatrix": {
+      "path": "build/readiness-gen15-input-20261101-194143/report.json",
+      "sha256": "66686926a394cbc5b2e9b67b24b64ff79411595b75055a219a7a43896ac96ce1"
+    },
+    "ownedInputCapabilities": {
+      "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-owned-20261101-194213-0d5a03ef/report.json",
+      "sha256": "71736a32902607cb0ff20d942bed80f00dd18a9493773c67b13fe1d4f08e0908"
+    },
+    "stockInputCapabilities": {
+      "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-194224-db93ac29/report.json",
+      "sha256": "85b7d346ae61858836c602f003918443a3457dbd9c2366f278b29652e55a3a11"
+    },
+    "ownedLateStandaloneX64": {
+      "path": "build/late-d3d11-owned/owned-overlay-proof-x64-4ab3c78e86ec4224a90804c3d94546ca/evidence.json",
+      "sha256": "9245a229a071c8b71e89f2bf729ca52449a7427690c8804a0f772a327ceaa21f"
+    },
+    "sameHwndResizeX64": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-resize-x64-f5929e65711d4ecbaf54911cd1d12cd8/evidence.json",
+      "sha256": "7ff15dcd9a129f6fc4071f843f6946bdbec20a6812a9335105a0e09fb3ec45e3"
+    },
+    "sameHwndFinalDestroyFirstAttempt": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-final-destroy-x64-d2ff9b929b174e7dab8aee8cf423505a/evidence.json",
+      "sha256": "496f6bb0f8555ea337f86d54214858fa29fc614bdf4ca84a71dd4e64ef86124b"
+    },
+    "controlResume": {
+      "path": "build/readiness-gen15-control-20261101-194547/report.json",
+      "sha256": "cfd596e61f83bd7d4491cc8f7e0277673fc3c4071d63a737ba3dfb73e3dacd4e"
+    },
+    "backendMatrix": {
+      "path": "build/readiness-gen15-backend-20261101-195013/report.json",
+      "sha256": "bb909154fcf649b4a031872e7548ba4a41599d6b6a95e9f3ce4f43205b9aecf7"
+    },
+    "ownedStandaloneX64Canonical": {
+      "path": "build/late-d3d11-owned/owned-overlay-proof-x64-4bebe1fc95374ed5ab2bd7dd573c4cf9/evidence.json",
+      "sha256": "9e5f826b92a3b14011a27ffaf249a23f0efc429249b01b52c82f031257b283c5"
+    },
+    "sameHwndResizeX64Canonical": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-resize-x64-121952bd6b08421cba8fd9b48d677d85/evidence.json",
+      "sha256": "59030772333b1ed8e9870ca101b55c94063e949e283ddfeb65dd038400177038"
+    },
+    "sameHwndFinalDestroyX64Canonical": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-final-destroy-x64-f6125008f8744d3fa3be65fc3fa599bf/evidence.json",
+      "sha256": "34e9d4cbb15e625933cb01ec390f96b6efcef10edfd0172a39fa02b91200eb01"
+    },
+    "sameHwndPausedX64Canonical": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-paused-x64-e4e7a94fe2a84664888d7a8274cee785/evidence.json",
+      "sha256": "59f0f27cd9467ad8d59a5f6feecec164dff0ec1228ac90ddfc7363dfda54f6a2"
+    },
+    "ownedStandaloneX86Canonical": {
+      "path": "build/late-d3d11-owned/owned-overlay-proof-Win32-40e2c963eb1846ff9b3d54f7fdc840f3/evidence.json",
+      "sha256": "c36e61fc055e661d3065571cb834213fee5a31ed5d960f84c88f813c56fd154f"
+    },
+    "sameHwndResizeX86Canonical": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-resize-Win32-d80033099b0b4d1d81ffd3a968ba4903/evidence.json",
+      "sha256": "2014477cea7107facc1ce3e66367eab41dfd6609ccca8ff9da9ef4a619c6bec6"
+    },
+    "sameHwndFinalDestroyX86Canonical": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-final-destroy-Win32-772055fa468b43a7bd6eae3943c9d562/evidence.json",
+      "sha256": "a10aff6f9ca0696289c6ae858df1ffee5097b40646e0558dc50ef59a67616784"
+    },
+    "sameHwndPausedX86Canonical": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-paused-Win32-ea21f28c2932447980aa8c148759b5fa/evidence.json",
+      "sha256": "8511383b9993c46fff464b85ebdabc48400b89a342cf0b010d2ca52358135e0d"
+    },
+    "controlFinalCase": {
+      "path": "build/readiness-gen15-control-20261101-195527/report.json",
+      "sha256": "2758a9be8b5aa72373f9794f63bcd0862a514c5403c8c99aa56f318cb2bdd095"
+    },
+    "twoAppOneTarget": {
+      "path": "build/electron-game-overlay-runtime/client-sdk-two-app-one-target-20261101-205528/summary.json",
+      "sha256": "e35e80656e48d5699ed5f7fe1d86dfcc06d5f21ab1715446d06fe858939c7d22"
+    },
+    "ownedLateAttempt": {
+      "path": "build/readiness-gen15-late-20261101-195307/report.json",
+      "sha256": "103f955cda3d85244db3069595a501dcec59ca2e1fccaffa6bef18c9e1b58fbd"
+    },
+    "ownedLateResume": {
+      "path": "build/readiness-gen15-late-20261101-195747/report.json",
+      "sha256": "71593fe659a6838cb680002b766747337bfb2df50ecaa46910ac8c23ca192ba4"
+    },
+    "installedMixedGameFirstGen15": {
+      "path": "build/cooperative-two-app-game-20261101-201049-368b2092/report.json",
+      "sha256": "c2e41671b03fc7fa0acdfe76f6b1bcc532be163ca9f8fe1321644957f53755c6"
+    },
+    "gunFrogFocusFirstGen15": {
+      "path": "build/explicit-focus-20261101-210748/report.json",
+      "sha256": "17ad39a2c2cf59b70ef20f260a84ebb595b3b1af7a9c041396454f6eb96b952e"
+    },
+    "resourceSoakFirstGen15": {
+      "path": "build/cooperative-resource-soak/r-1ee771525b5c4a23/evidence.json",
+      "sha256": "5fbb55b0e2879628ae2161334d40460354c7f7058891495309774534bef4f829"
+    },
+    "resourceSoakFirstGen15Portable": {
+      "path": "libs/electron-game-overlay-runtime/tests/cooperative-resource-soak/sdk-evidence-gen15-2026-11-01.json",
+      "sha256": "03c9f896b90d4ccf15b1b2c1506280a18c9b5bafcf991bbb22e747a4ee163b82"
+    },
+    "uiBusyOldGen15Negative": {
+      "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-02b84a1547d342d19589a14c3a5abe50/evidence.json",
+      "sha256": "48f88b035dabd188c674795e9c5911f140a5d30ed5da7cab0c530bb73bfd4e2b"
+    },
+    "uiBusyOldGen15NegativeDisplay": {
+      "path": "build/readiness-gen15-ui-busy-negative.display.json",
+      "sha256": "847b7e6f70310f73d75dbd88a371846a8c4fdf5cf15cfc946990a416399589a9"
+    },
+    "uiBusyOldGen15NegativeNativeLog": {
+      "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-02b84a1547d342d19589a14c3a5abe50/stage/ReShade.log",
+      "sha256": "7b978ed14cce5da10b8206aec5ca176b90b7d4b61daf46fd542a9fe1e6582a01"
+    },
+    "fullBuildGen16": {
+      "path": "build/readiness-gen16-full-build.log",
+      "sha256": "8950abfdadf015f2140c7aaacca2f421e0d59bc0534f730ba6129fd657fddcd4"
+    },
+    "sdkUnitTestsGen16": {
+      "path": "build/sdk-unit-gen16-node26-final.log",
+      "sha256": "9096e071b5228221be8771c7838dd8f8a8658291e80e6e46435613b5e8b75855"
+    },
+    "nativeConsoleGen16": {
+      "path": "build/native-gen16-final/evidence.json",
+      "sha256": "6c8c09cb190c33e5e34323a4f3eeadf1e4b84098891a57cfc93689af7db81e9d"
+    },
+    "uiBusyMatrixGen16": {
+      "path": "build/readiness-gen16-busy-20261101-204104/report.json",
+      "sha256": "a6990fc10cc1ac997732a5f772799b7caa136c7cf71c71a44a8f5721876edc8e"
+    },
+    "uiBusyPositiveX64Gen16": {
+      "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-7b03bbb1e71248ea8dcb9f68bc193ee0/evidence.json",
+      "sha256": "70ac8432e0f821832d27369dd5ad3741210afd479c777ed921482cf45761b9c8"
+    },
+    "uiBusyPositiveX86Gen16": {
+      "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-Win32-b6c6af20384d4d65a9fcaef77179f8ea/evidence.json",
+      "sha256": "1de90623f5f24f74038dc9c025632556e25b11c5b894b36138c347ae06cd9dae"
+    },
+    "installedPairGen16": {
+      "path": "build/installed-cooperative-pair-gen11-gen16-async-20261101-final/report.json",
+      "sha256": "1ae29b92fcd54ad145fe434a3d8144491e84d0fc16d5982a7f9f1acfeb1593f5"
+    },
+    "sdkSealGen16": {
+      "path": "build/installed-cooperative-pair-gen11-gen16-async-20261101-final/consumer-b/node_modules/electron-game-overlay/SOURCE_OVERLAY_MANIFEST.json",
+      "sha256": "8cc9cc84091ddbcc5c03bd5ef136c02ae4f1fdfeb02a6151f85322bdde691b50",
+      "scope": "Retained source seal of the built generation16 candidate, independent of mutable workspace dist."
+    },
+    "installedMixedGameGen16": {
+      "path": "build/cooperative-two-app-game-20261101-204235-13b581c3/report.json",
+      "sha256": "9dc88d9f533d8a7ff6600048d2f5afe34de583a9c3e64123a2ca1688ba21da9d"
+    },
+    "uiBusyPairedPortable": {
+      "path": "libs/electron-game-overlay-runtime/tests/late-d3d11-same-hwnd/evidence-ui-busy-2026-11-01.json",
+      "sha256": "27c4b4980cb3af901f2e3a05346b2809d12b7d6758f841151d707cd5cf0a716c"
+    },
+    "gunFrogSdkGen16": {
+      "path": "build/electron-game-overlay-runtime/client-Gun-Frog-20261101-214505/result.txt",
+      "sha256": "5f83639747d6501274e2719e5f64d42a33db01cb02724c86e9adef8eb6b5e8d0"
+    },
+    "gunFrogSdkGen16Display": {
+      "path": "build/readiness-gen16-gun-frog-sdk.display.json",
+      "sha256": "f1310d09672986a9f63fe881fad219bf369c29e1cf8017a9d4e409036bcbdf78"
+    },
+    "gunFrogSdkGen16DeviceLoss": {
+      "path": "build/device-loss-monitor/gun-frog-20261101-214504-1b5b579b/e771074238d845a3b7858db9aae579e1/report.json",
+      "sha256": "6e76c9982d28be0af87240667059cad3ae7b703e44a366a8c3fc0bb000546426"
+    },
+    "gunFrogStockGen16": {
+      "path": "build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20261101-214632-fd129786/result.json",
+      "sha256": "0e8b1d30bea75ad7720b8a1a3877d7f0819564e0c044f8ac7f6cba116802852e"
+    },
+    "gunFrogStockGen16Display": {
+      "path": "build/readiness-gen16-gun-frog-stock.display.json",
+      "sha256": "01fd1ba7b6b92af5c5628b0fb59899d2a297f9bf855b8822629cc3955dfbf586"
+    },
+    "gunFrogFocusGen16": {
+      "path": "build/explicit-focus-20261101-214955/report.json",
+      "sha256": "4891837bdda49b570559329a51e178ace3c6d6474e5f13276d3c69065efaa268"
+    },
+    "gunFrogFocusGen16Wrapper": {
+      "path": "build/readiness-gen16-focus-20261101-204954/report.json",
+      "sha256": "d2c4dec29a14c6d4636feba0492c9bf946fa4717c436dffa220719166b873ddf"
+    },
+    "ownedLateGen16Case01": {
+      "path": "build/late-d3d11-owned/owned-overlay-proof-x64-22707bfc7b784cd893fac24a2bb8c245/evidence.json",
+      "sha256": "d7831372af4e900b919e733de9dd4f441a1a39d52bca17019bd41fb0c800fb6e"
+    },
+    "ownedLateGen16Case02": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-resize-x64-9191a5fe55544bf2bd6aa4b0b250e29b/evidence.json",
+      "sha256": "49fe36665d48cef59be8a6421ad9c0cd5c855e10bbd0ecc2c3121c3c1b831383"
+    },
+    "ownedLateGen16Case03": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-final-destroy-x64-a55fcb12202a4999983db4c5733e2ddd/evidence.json",
+      "sha256": "2e0ef8872adfc5c196415039e5af0d3bac6c28fc44f96dd7f57e5400f43a8910"
+    },
+    "ownedLateGen16Case04": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-paused-x64-4c534eede6ce40a5850281ed8bfa3f66/evidence.json",
+      "sha256": "a4e20b627df07e926c6b4f9b903600658f43fb604e9916c0233e89b75c89a104"
+    },
+    "ownedLateGen16Case05": {
+      "path": "build/late-d3d11-owned/owned-overlay-proof-Win32-01578d9b2b734fcd9ec1500bddb68831/evidence.json",
+      "sha256": "daacbd6757c103297d63f47c82b8b2534563266c1a748756456f276680f739d8"
+    },
+    "ownedLateGen16Case06": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-resize-Win32-c24e3baf6f8e4661a244b53e4563e83d/evidence.json",
+      "sha256": "3aceb20e28552ad54dec1304586cbfa5f82d4f0e258334c8ff134320424dd02b"
+    },
+    "ownedLateGen16Case07": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-final-destroy-Win32-184f1a4f4a044b6b9d0b93b56ebbe7d8/evidence.json",
+      "sha256": "afaf041fdc45b0e0f008fa11e4846abe2abd511515414a299658e111b95a10fc"
+    },
+    "ownedLateGen16Case08": {
+      "path": "build/late-d3d11-same-hwnd/proof-primary-paused-Win32-7bdbe317aa9e441089e9187bf3d837d3/evidence.json",
+      "sha256": "bf76ad810e981e08d126c2a11c7bf6cfec15844ec389a6ca2dfdc614daaa709f"
+    },
+    "ownedLateMatrixGen16": {
+      "path": "build/readiness-gen16-late-20261101-205021/report.json",
+      "sha256": "f7f2fd97363c075c3a89d67d91d0b06326302cfd53193c56caf58d7321b9124b"
+    },
+    "gunFrogLowLevelSceneGen16": {
+      "path": "build/electron-game-overlay-runtime/injected-Gun-Frog-20261101-215350/electron-producer.stdout.log",
+      "sha256": "474c9632493ad33628dc98914a39024a8b5e2ffc9055c067c3abe1f4f729d11a"
+    },
+    "gunFrogLowLevelSceneGen16Identity": {
+      "path": "build/electron-game-overlay-runtime/injected-Gun-Frog-20261101-215350/initial-native-identity.json",
+      "sha256": "56edc0b766347402f9dfb48cbec8fc5b5a085b7edfff86c6576b895b0b1aeb38"
+    },
+    "gunFrogLowLevelSceneGen16InjectorResult": {
+      "path": "build/electron-game-overlay-runtime/injected-Gun-Frog-20261101-215350/injector-result.json",
+      "sha256": "0e82ca0b0f1109ea16a6450c7451a9d72828bbfd1cb0f374ee6eb3486a941601"
+    },
+    "gunFrogLowLevelSceneGen16Display": {
+      "path": "build/readiness-gen16-gun-frog-scene.display.json",
+      "sha256": "a8a371821e034b86084dae8bdc379656964c123097747d071e2ef042b562c768"
+    },
+    "sdkUnitTestsGen16PostHarness": {
+      "path": "build/sdk-unit-gen16-node26-final-postharness.log",
+      "sha256": "78cd282ec0a16a049eaf220da8c931a1299899ea7fdefa18ffdba9ad533f3a88"
+    },
+    "controlMatrixGen16": {
+      "path": "build/readiness-gen16-control-20261101-205505/report.json",
+      "sha256": "d0ff18ccc317090326ca8e7c5e382b294a5e8b91f32c2b859c047d368ac378e2"
+    },
+    "installedMixedGameGen16Portable": {
+      "path": "doc/evidence/installed-gen11-gen16-async-2026-11-01.json",
+      "sha256": "1b07bbc8089cfeda05641a5d6aa37d0832e3430d606f5ce55cfda30d037f53c5"
+    },
+    "installedMixedGameGen16PortableMd": {
+      "path": "doc/installed-gen11-gen16-async-acceptance-2026-11-01.md",
+      "sha256": "2fbf177ea325488e335f864b54a026df20bd27d79fd9761668333710df85b869"
+    },
+    "inputMatrixGen16": {
+      "path": "build/readiness-gen16-input-20261101-205823/report.json",
+      "sha256": "48d5a4ec9a26e91cdd1d4747506a785de8db27c356ad5de2da67ccfa2db4c89f"
+    },
+    "backendMatrixGen16": {
+      "path": "build/readiness-gen16-backend-20261101-205959/report.json",
+      "sha256": "e2cbfb0092fd48ba45eec80d44c0b725ae0d63af0087fd543ed23c7ef82cb2a9"
+    },
+    "ownedInputCapabilitiesGen16": {
+      "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-owned-20261101-205848-3869adf2/report.json",
+      "sha256": "9bcebdc5a3fa4475c9ff71c307bcfcf9a6750cfa92b520c3780f578678b5d93d"
+    },
+    "stockInputCapabilitiesGen16": {
+      "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-205858-b5f384f7/report.json",
+      "sha256": "e52e50e5c59ea660902ca7aa140f0725543e959ce50c4a2421b075fcb430944b"
+    },
+    "resourceRecoveryGen16": {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/evidence.json",
+      "sha256": "8cedd9564b6b28dc6fb9c377a3ad21dd4a12d28587303680bf36efb4f5622f36"
+    },
+    "resourceMatrixGen16": {
+      "path": "build/readiness-gen16-soak-20261101-210134/report.json",
+      "sha256": "a712a09ac7c1fdc58c9b9ca4c682b440687ad93a26fd864a5136376e1c73feec"
+    },
+    "resourceInitialGen16": {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/initial-survivor-resources.json",
+      "sha256": "4e2d9541c73518e9bfe62453bf07b2be176190fb4b32cbb0796b0f99b6abbb52"
+    },
+    "resourceFinalGen16": {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/final-all-dormant-resources.json",
+      "sha256": "20b663e090879cd8dadadf358cef28bc8150805f3841fff69d3652ffeaf5ec24"
+    },
+    "resourceStartupGen16": {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/startup-full-runtime-proof.json",
+      "sha256": "5d0d64358805d7f45df16c31e583c33ae4560069caaa770bd11fb256989b0ba9"
+    },
+    "resourceRecoveryGen16Portable": {
+      "path": "libs/electron-game-overlay-runtime/tests/cooperative-resource-soak/sdk-evidence-gen16-2026-11-01.json",
+      "sha256": "ae3efa533424b4b28882e0054456bde898cbc685203156bf55f8b7faf53e8967"
+    },
+    "displayMasterCleanup01": {
+      "path": "build/readiness-display-master-20261101-1745.json",
+      "sha256": "dd0adb5ed911855ae47d5141d13eab49d2a323cbc652cb70b25f7f50de203f87"
+    },
+    "displayMasterCleanup02": {
+      "path": "build/readiness-display-master-20261101-1816.json",
+      "sha256": "57ba38c0b4864c0739d37e48925be65297f193c71365f85197ccea6301f43426"
+    },
+    "displayMasterCleanup03": {
+      "path": "build/readiness-display-master-20261101-1843.json",
+      "sha256": "a7049c5986722cb7800a611d7d115c046847249fc95ae776cf959ed62158e6a5"
+    },
+    "displayMasterCleanup04": {
+      "path": "build/readiness-display-master-20261101-1910.json",
+      "sha256": "b2611fd3aaf65404590c648d0f7dc6c8aab7ba7b4f720002d39f0199f383c3fb"
+    },
+    "displayMasterCleanup05": {
+      "path": "build/readiness-display-master-20261101-1934.json",
+      "sha256": "6568348bf0cea09def6387403503c382353f0f0d4fc4c13150e4f1ba8852e455"
+    },
+    "displayMasterCleanup06": {
+      "path": "build/readiness-display-master-20261101-2002.json",
+      "sha256": "34f6c1965a76072eed5438aca59b31bd436ad64bb6eca8dc852251455e706fec"
+    },
+    "displayMasterCleanup07": {
+      "path": "build/readiness-display-master-20261101-2027.json",
+      "sha256": "06325c26278050b9c43dc67e9967da8c26d6f30d89afff537f9f7095d2d9aed2"
+    },
+    "displayMasterCleanup08": {
+      "path": "build/readiness-display-master-20261101-2052.json",
+      "sha256": "00a5880bc4a8e3f8f5df617163b8b0c9e490237abbbc9c0261aab9b4b56133f7"
+    },
+    "postAcceptanceSealGen16": {
+      "path": "build/readiness-gen16-post-acceptance-seal.json",
+      "sha256": "d7bae8879c3a3d0229d744dbb90645e3c8645a863c74152247880ee411866970"
+    }
+  },
+  "activeCandidate": {
+    "runtimeGeneration": 16,
+    "status": "accepted-within-recorded-scope",
+    "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+    "reason": "The first generation-15 installed Gun Frog matrix exposed a permanent input-hook failure after a two-second cross-thread window-subclass setup timeout.",
+    "requiredProof": [
+      "Pending setup retries without publishing false ready/interception acknowledgement",
+      "Cursor/input features preserved",
+      "Actual delayed UI-thread fixture",
+      "Final build, installed-package and real-game reruns"
+    ],
+    "injectorPinnedSourceSha256": "f286cdc1b9d138e4429a50c3e82749292b39f51b42592bfd9b738c889a6fa074",
+    "ownedHostTailPatchSha256": "51e1fa4abe6cc35158dc9b347e1ff3fb29cd838fe6040a48ee108c48ad8693ce",
+    "ownedIniSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+    "buildLogPath": "build/readiness-gen16-full-build.log",
+    "sourceCorrection": {
+      "state": "actual-delayed-ui-thread-positive-passed-both-architectures",
+      "mechanism": "Asynchronous owner-thread posted input setup with pending/ready states, a reported five-second deadline, late-acknowledgement rescue and cookie/window-property HWND-incarnation checks; old-member callback gate protects shared callbacks.",
+      "abiOrWireChanged": false
+    },
+    "controllerReportedPrerequisites": {
+      "nativeSourceGuardsPassed": 30,
+      "privateObjectArchitectureCompiles": 2,
+      "warningLevel": "/W4",
+      "independentAuditsClear": 2,
+      "delayedUiThreadFixtureArchitectureCompiles": 2,
+      "actualNewRuntimePositiveProven": true
+    },
+    "sdkSealSha256": "8cc9cc84091ddbcc5c03bd5ef136c02ae4f1fdfeb02a6151f85322bdde691b50"
+  },
+  "previousCandidates": [
+    {
+      "runtimeGeneration": 15,
+      "addonBuildId": "BCE6C5C8746F4300861300B2BDA3594E",
+      "cooperativeAddonProtocol": 1,
+      "targetTransport": {
+        "minimum": 1,
+        "maximum": 1
+      },
+      "sdkPackageVersionInformational": "0.1.0-rc.7",
+      "sdkSealSha256": "a661ee2ec8a0c6602ef63c15cbd9cb151b80aef2140143ce46febf432e16bfc3",
+      "sdkJavascriptGraphSha256": "bbd9585094a2ddda96407367143a28eae5e7de02becead46480bb93c07bfeded",
+      "sealedPayloads": 148,
+      "sealedPayloadBytes": 20238334,
+      "native": [
+        {
+          "architecture": "x64",
+          "addonSha256": "845695b6b855e7a892b081cc440319e50cd931ce1cfb3242618b55206838ec22",
+          "reshadeSha256": "3596918808a1b13e3e6fd13c085ed647d9f206bf7d1c649c420a0278eb1a27a4",
+          "injectorSha256": "c448a0266924b65b5f81eb02f211129f901c383c759bb615b29cfc9a81ea2e15"
+        },
+        {
+          "architecture": "x86",
+          "addonSha256": "a5dba7c1b3d0d45cad4064c302510399f6603e65cbedd2d13627e1934d6498a1",
+          "reshadeSha256": "499b96ff46a890160e8109bf4ed55fe60f7816161df68948b68767136ed2571c",
+          "injectorSha256": "b3437dd2139a712c981e30757261a6d793538d44ece6ab45a4448f66d14ad044"
+        }
+      ],
+      "identityScope": "Retained first-sealed generation15 SDK/PE snapshot used for the explicitly scoped prior checks; superseded by the built generation16 candidate.",
+      "milestoneCommit": "74f27cb",
+      "ownedConfiguration": {
+        "sealedSnapshotBytes": 207,
+        "sealedSnapshotSha256": "2a3bdabdf7a36155b3f5eacd641525810d0998520677d26105924197523465d1",
+        "canonicalSourceBytes": 209,
+        "canonicalSourceSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      "followupCliCommit": "72ebae1",
+      "supersededByGeneration": 16
+    }
+  ],
+  "previousGeneration15Checks": {
+    "fullNxBuild": {
+      "status": "passed",
+      "durationSeconds": 171,
+      "artifact": "fullBuild"
+    },
+    "sdkNode26Tests": {
+      "status": "passed",
+      "tests": 970,
+      "passed": 960,
+      "failed": 0,
+      "skipped": 10,
+      "artifact": "sdkUnitTests",
+      "scope": "Pure/fixture suite with built generation-15 dependencies; separate from desktop acceptance."
+    },
+    "sdkAndClientTypechecks": {
+      "status": "passed",
+      "mode": "noEmit",
+      "evidence": "Reported by the active acceptance controller; separate log not supplied in this draft."
+    },
+    "nativeConsole": {
+      "status": "passed",
+      "artifact": "nativeConsole",
+      "ctests": 4,
+      "ctestsPassed": 4,
+      "classicLoaderSuites": 2,
+      "ownedLateLoaderSuites": 2,
+      "ownedLateNamedCases": 16,
+      "ownedLateNamedCasesPassed": 16,
+      "productionBinaryHashesUnchanged": true,
+      "scope": "x64/x86 ABI, registry and inert-loader fixtures only; no game rendering or input proof."
+    },
+    "fastFolder": {
+      "status": "passed",
+      "artifact": "fastFolder",
+      "backend": "D3D11",
+      "architecture": "x64",
+      "inputSource": "Windows SendInput",
+      "checks": 22,
+      "artificialStartupBarrierUsed": false,
+      "freshRelaunchPassed": true,
+      "physicalKeyEvidence": false
+    },
+    "bestEffortObserver": {
+      "status": "passed",
+      "artifact": "bestEffort",
+      "freshTargets": 2
+    },
+    "controlledMatrixAttempt": {
+      "status": "failed",
+      "artifact": "controlAttempt",
+      "passedCases": [
+        "d3d11-x64-managed-folder-policy-fast",
+        "d3d11-x64-managed-best-effort",
+        "d3d11-client-sdk-multi-swapchain"
+      ],
+      "failedCase": "d3d11-client-sdk-session-deactivation",
+      "failure": "The injector did not report a normal successful injection.",
+      "failureRun": "build/electron-game-overlay-runtime/client-sdk-d3d11-session-deactivation-20261101-204028",
+      "unresolvedInThisDraft": false,
+      "diagnosis": "The active controller identified and corrected a stale human-readable injection-success parser in the acceptance harness.",
+      "resolution": "The active controller corrected only the stale human-readable success parser; the exact session-deactivation case passed in the resumed run."
+    },
+    "installedPairPreparation": {
+      "status": "passed",
+      "artifact": "installedPair",
+      "npmCommandExitCodes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "nativeExecuted": false,
+      "gameAcceptance": "failed-generation15-attempt",
+      "participants": [
+        {
+          "id": "a",
+          "version": "0.1.0-development.baseline.gen11.cdc6e80",
+          "runtimeGeneration": 11,
+          "addonBuildId": "E16461475E524DBA83398B19CDD95EBB",
+          "sealedPayloads": 145,
+          "javascriptGraphSha256": "8abcbc25191c3371b4efcda26233d4dc68361e103e77066d30e23751a68877e4",
+          "installedSealSha256": "da2738656c93390d992a01b0cc9fc8d013154ce400c89c85b2f3f426f654b2d6",
+          "tarballSha256": "d5862f7bb3e95e5ebceef2997ba8139bda64b52f7401c0ab04cf8d9535a06a0b"
+        },
+        {
+          "id": "b",
+          "version": "0.1.0-development.candidate.gen15.bce6c5c8",
+          "runtimeGeneration": 15,
+          "addonBuildId": "BCE6C5C8746F4300861300B2BDA3594E",
+          "sealedPayloads": 148,
+          "javascriptGraphSha256": "bbd9585094a2ddda96407367143a28eae5e7de02becead46480bb93c07bfeded",
+          "installedSealSha256": "1d28b3904470b22238c1fc574adc903407eb802a7e79859e246d4e8dcd275a37",
+          "tarballSha256": "54cd5b67059f594ac7c84e1d17483d7aab76eb89742858c9720522cdce194a90"
+        }
+      ]
+    },
+    "inputMatrix": {
+      "status": "passed",
+      "artifact": "inputMatrix",
+      "cases": 6,
+      "passed": 6,
+      "failed": 0,
+      "scope": "Actual x64 D3D11 WM_INPUT/buffered pointer, attached125%, created150%, and owned/stock capability lanes; Windows SendInput."
+    },
+    "ownedInputCapabilities": {
+      "status": "passed",
+      "artifact": "ownedInputCapabilities",
+      "runtimeGeneration": 15,
+      "capabilities": {
+        "copiedWmInput": "supported",
+        "copiedRawInputBuffer": "supported"
+      },
+      "connections": 1,
+      "authentications": 1,
+      "transportLosses": 0,
+      "actualOverlayPixel": [
+        198,
+        40,
+        40
+      ],
+      "scope": "Actual controlled target, authenticated SDK scene, DOM input, interception and released buffered input."
+    },
+    "stockInputCapabilities": {
+      "status": "passed",
+      "artifact": "stockInputCapabilities",
+      "runtimeGeneration": 15,
+      "capabilities": {
+        "copiedWmInput": "supported",
+        "copiedRawInputBuffer": "unsupported"
+      },
+      "strict": {
+        "required": [
+          "copied-raw-input-buffer"
+        ],
+        "rejected": true,
+        "errorCode": "target-input-capability-unsupported",
+        "nativeHellos": 2,
+        "outboundBytes": 0,
+        "outboundPackets": 0,
+        "outboundFrames": 0,
+        "interceptionTruePackets": 0,
+        "connectionsAuthenticated": 0,
+        "renderingCount": 0
+      },
+      "permissiveSurvivor": {
+        "tcpTupleUnchanged": true,
+        "connections": 1,
+        "authentications": 1,
+        "transportLosses": 0,
+        "beforeValue": " ",
+        "afterValue": "  ",
+        "actualOverlayPixel": [
+          21,
+          101,
+          192
+        ]
+      },
+      "protectedForeignEntries": 7,
+      "protectedBytesAndMetadataUnchangedAfterCleanup": true
+    },
+    "controlResume": {
+      "status": "failed",
+      "evidencePath": "build/readiness-gen15-control-20261101-194547/report.json",
+      "passedCases": [
+        "d3d11-client-sdk-session-deactivation",
+        "d3d11-client-sdk-target-surface-drain",
+        "d3d12-client-sdk-multi-swapchain",
+        "d3d12-client-sdk-session-deactivation",
+        "d3d12-client-sdk-target-surface-drain",
+        "d3d11-client-sdk-two-app-surface-lifecycle"
+      ],
+      "artifact": "controlResume",
+      "failedCase": "d3d11-client-sdk-two-app-one-target",
+      "failure": "The graphics startup barrier could not be released after exact full-runtime injection. No completed full-runtime injection was recorded.",
+      "failureRun": "build/electron-game-overlay-runtime/client-sdk-two-app-one-target-20261101-204712",
+      "unresolvedInThisDraft": false,
+      "diagnosis": "The active controller confirmed that the harness required runtimeMode=injected-runtime while the owned initializer correctly returned participant-addon; a harness-only correction retaining exact native/module proof is awaiting rerun.",
+      "resolution": "The strict harness correction and exact two-app/one-target case passed in controlFinalCase; the old failed attempt is retained."
+    },
+    "ownedLateStandaloneX64": {
+      "status": "passed",
+      "artifact": "ownedLateStandaloneX64",
+      "nativeSwapchainDiscoveryProven": true,
+      "graphicsPointersSuppliedToBootstrap": false,
+      "automaticProcessAttachmentProven": false,
+      "physicalInputProven": false,
+      "framesBeforeLoad": 60,
+      "framesAfterLoad": 1792,
+      "framesAfterResize": 1192,
+      "stateChecks": 1792,
+      "stateMismatches": 0,
+      "adoptions": 1,
+      "retirements": 1,
+      "quarantines": 0,
+      "renderFailures": 0,
+      "generatedConfigFilesAfterRetirement": 0,
+      "desktopPixelAndSyntheticInputProven": true
+    },
+    "sameHwndResizeX64": {
+      "status": "passed",
+      "artifact": "sameHwndResizeX64",
+      "productionOwnedAbiProven": true,
+      "sameHwndInputPromotionProven": true,
+      "renderedOverlayPixelsProven": true,
+      "automaticProcessAttachmentProven": false,
+      "physicalInputProven": false,
+      "generatedConfigFilesAfterRetirement": 0
+    },
+    "sameHwndFinalDestroyFirstAttempt": {
+      "status": "failed",
+      "artifact": "sameHwndFinalDestroyFirstAttempt",
+      "failure": "The production owned runtime changed its staged ReShade.ini template.",
+      "templateBeforeSha256": "2a3bdabdf7a36155b3f5eacd641525810d0998520677d26105924197523465d1",
+      "templateAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+      "observedDesktopRgbBeforeAndAfter": [
+        198,
+        40,
+        40
+      ],
+      "formalAcceptanceFlagsRemainFalse": true,
+      "diagnosis": "The active controller identified a final blank separator inserted by the pinned stock serializer when setting unchanged TutorialProgress=4. Owned template canonicalization and rerun remain pending; no native implementation change was reported.",
+      "resolution": "The source template was canonicalized without changing the native implementation; both architectures passed the final-destroy case with the canonical stage template in ownedLateMatrix."
+    },
+    "ownedIniCanonicalization": {
+      "status": "source-canonicalization-accepted-and-included-in-generation16-package",
+      "bytes": 209,
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+      "sourcePath": "libs/electron-game-overlay-runtime/config/ReShade.ini",
+      "nativeImplementationChanged": false,
+      "controllerReportedSerializerProof": "Two consecutive real pinned-serializer saves preserved bytes and file identity; proof artifact not yet supplied in this draft."
+    },
+    "backendMatrix": {
+      "status": "passed",
+      "artifact": "backendMatrix",
+      "cases": 4,
+      "passed": 4,
+      "failed": 0,
+      "backends": [
+        "D3D9 x64",
+        "D3D9 x86",
+        "D3D10 x64",
+        "D3D10 x86"
+      ],
+      "scope": "Actual controlled graphics pointer/feature cases using Windows SendInput; not real games."
+    },
+    "controlOverall": {
+      "status": "passed",
+      "uniqueCases": 10,
+      "passed": 10,
+      "failed": 0,
+      "sourceArtifacts": [
+        "controlAttempt",
+        "controlResume",
+        "controlFinalCase"
+      ],
+      "aggregation": "Only passed cases are selected from the three retained runs; the first two run reports themselves remain failed.",
+      "nativeGameAcceptance": false
+    },
+    "controlFinalCase": {
+      "status": "passed",
+      "artifact": "controlFinalCase",
+      "case": "d3d11-client-sdk-two-app-one-target",
+      "actualSummaryArtifact": "twoAppOneTarget",
+      "appAForceKilled": true,
+      "survivorConnected": true,
+      "survivorInteractive": true
+    },
+    "ownedLateMatrix": {
+      "status": "passed",
+      "uniqueCases": 8,
+      "passed": 8,
+      "failed": 0,
+      "sourceArtifacts": [
+        "ownedLateAttempt",
+        "ownedLateResume"
+      ],
+      "scope": "Two architectures, each with production-owned standalone discovery, same-HWND primary resize, primary final destruction and paused-primary cases.",
+      "nativePeSnapshot": "Exact first-sealed generation15 identities at JSON pointer /previousCandidates/0/native, not candidate.native.",
+      "stageIniBytes": 209,
+      "stageIniSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+      "sealedSdkIniSnapshotBytes": 207,
+      "automaticProcessAttachmentProven": false,
+      "physicalInputProven": false,
+      "retainedFailedAttempt": {
+        "case": "x64 primary-paused",
+        "cause": "The private scene producer exited cleanly before acceptance completed. The later opt-in fixture keepalive correction passed; no production implementation change was reported."
+      },
+      "cases": [
+        {
+          "name": "owned-standalone",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "ownedStandaloneX64Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "nativeSwapchainDiscoveryProven": true
+        },
+        {
+          "name": "primary-resize",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "sameHwndResizeX64Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "primary-final-destroy",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "sameHwndFinalDestroyX64Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "primary-paused",
+          "architecture": "x64",
+          "status": "passed",
+          "artifact": "sameHwndPausedX64Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "owned-standalone",
+          "architecture": "x86",
+          "status": "passed",
+          "artifact": "ownedStandaloneX86Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "nativeSwapchainDiscoveryProven": true
+        },
+        {
+          "name": "primary-resize",
+          "architecture": "x86",
+          "status": "passed",
+          "artifact": "sameHwndResizeX86Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "primary-final-destroy",
+          "architecture": "x86",
+          "status": "passed",
+          "artifact": "sameHwndFinalDestroyX86Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "sameHwndInputPromotionProven": true
+        },
+        {
+          "name": "primary-paused",
+          "architecture": "x86",
+          "status": "passed",
+          "artifact": "sameHwndPausedX86Canonical",
+          "stageTemplateBeforeAndAfterSha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+          "renderedOverlayPixelsProven": true,
+          "generatedConfigFilesAfterRetirement": 0,
+          "sameHwndInputPromotionProven": true
+        }
+      ]
+    },
+    "installedMixedGameFirstGen15": {
+      "status": "failed",
+      "artifact": "installedMixedGameFirstGen15",
+      "packageSnapshot": "The separately installed gen11/first-sealed-gen15 pair identified by installedPair.",
+      "cells": [
+        {
+          "order": "a-first",
+          "firstAppExit": "graceful",
+          "status": "passed",
+          "checks": 18,
+          "originalPid": 36308,
+          "relaunchPid": 44216
+        },
+        {
+          "order": "a-first",
+          "firstAppExit": "crash",
+          "status": "failed",
+          "checksCompletedBeforeFailure": 16,
+          "originalPid": 36616,
+          "relaunchPid": 44036,
+          "survivorInOriginalGamePassed": true,
+          "failurePhase": "Fresh survivor-only game relaunch",
+          "diagnostic": "runtime-input-routing-failed"
+        }
+      ],
+      "remainingCellsNotAccepted": [
+        "b-first/graceful",
+        "b-first/crash"
+      ],
+      "controllerDiagnosis": "A two-second SendMessageTimeoutW during cross-thread subclass installation returned ERROR_TIMEOUT1460 and permanently left the new HWND unready. This is a native defect, not a passing game result.",
+      "generation16FixPending": false,
+      "resolutionArtifact": "installedMixedGameGen16",
+      "resolution": "The subsequent installed gen11/gen16 matrix passed all four cells, including survivor-only fresh relaunch; the old generation15 report remains failed."
+    },
+    "gunFrogFocusFirstGen15": {
+      "status": "passed",
+      "artifact": "gunFrogFocusFirstGen15",
+      "inputSource": "Windows SendInput virtual keys",
+      "checks": 7,
+      "clicksSent": 0,
+      "scope": "Real Gun Frog no-click show/reopen, blur/release/foreign-foreground and restored typing checks on the first generation-15 package; not final generation-16 acceptance."
+    },
+    "resourceSoakFirstGen15": {
+      "status": "passed",
+      "artifact": "resourceSoakFirstGen15",
+      "portableArtifact": "resourceSoakFirstGen15Portable",
+      "portableArtifactCount": 83,
+      "freshStageCycles": 8,
+      "freshElectronProcesses": 4,
+      "publicSessionRecreations": 4,
+      "elapsedBetweenCheckpointsMs": 75442,
+      "final": {
+        "retainedNativeModulesParticipantsSlotsAndFrameWorkers": 9,
+        "tcpWorkers": 0,
+        "establishedTcpConnections": 0,
+        "windows": 0,
+        "ranks": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "diagnosticResourceMeasurements": {
+        "initialPrivateBytes": 78544896,
+        "finalPrivateBytes": 107769856,
+        "initialHandles": 984,
+        "finalHandles": 1051
+      },
+      "acceptanceBoundary": "First generation-15 x64 PE payloads, original nine-field participant CLI result and retained207-byte INI; not the pending final rebuilt/native16 package.",
+      "independentReadOnlyAudit": {
+        "artifactsVerified": 83,
+        "reviewedSourceHashesVerified": 6,
+        "missing": 0,
+        "mismatches": 0,
+        "scope": "Verified at the time of this draft; later source changes do not retroactively change the retained first-generation15 acceptance boundary."
+      }
+    },
+    "uiBusyOldGen15Negative": {
+      "status": "failed-as-expected",
+      "originalEvidenceStatus": "failed",
+      "artifact": "uiBusyOldGen15Negative",
+      "displayArtifact": "uiBusyOldGen15NegativeDisplay",
+      "nativeLogArtifact": "uiBusyOldGen15NegativeNativeLog",
+      "scenario": "ui-busy-hook-recovery",
+      "architecture": "x64",
+      "requestedUiBusyMilliseconds": 2800,
+      "oldCrossThreadTimeoutMilliseconds": 2000,
+      "observedWin32Error": 1460,
+      "uiBusyHookRecoveryProven": false,
+      "productionOwnedAbiProven": false,
+      "oldNativeIdentity": {
+        "runtimeSha256": "3596918808a1b13e3e6fd13c085ed647d9f206bf7d1c649c420a0278eb1a27a4",
+        "addonSha256": "845695b6b855e7a892b081cc440319e50cd931ce1cfb3242618b55206838ec22"
+      },
+      "meaning": "Actual expected-old-runtime regression reproduction only. The original report remains failed; it does not establish positive recovery on generation16.",
+      "displayRequestClearedAndClosed": true
+    }
+  },
+  "finalAcceptanceMeaning": "Completion of the recorded acceptance matrix, not universal compatibility, native fault containment, a measured500-app capacity, stock buffered-input parity, generic lateD3D12 support or retrospective diagnosis of the old D3D11 GPU hang.",
+  "ownedTestCleanup": {
+    "displayMasterRequests": 8,
+    "allCompleted": true,
+    "allClearSucceeded": true,
+    "allCloseSucceeded": true,
+    "lastCompletedAtUtc": "2026-11-01T21:04:20.9107323Z",
+    "persistentPowerOrSecuritySettingsChanged": false,
+    "remainingOwnedGunFrogProcesses": "None, confirmed by the active controller.",
+    "displayArtifacts": [
+      "displayMasterCleanup01",
+      "displayMasterCleanup02",
+      "displayMasterCleanup03",
+      "displayMasterCleanup04",
+      "displayMasterCleanup05",
+      "displayMasterCleanup06",
+      "displayMasterCleanup07",
+      "displayMasterCleanup08"
+    ]
+  }
+}

@@ -1,0 +1,792 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "status": "passed",
+  "architecture": "x64",
+  "backend": "D3D11",
+  "scope": "Actual owned controlled graphics process, genuine Electron/public-SDK producers and mapped native EGO engines; exact resource/identity checkpoints.",
+  "sourceRun": "build/cooperative-resource-soak/r-9a447278524a431b",
+  "candidate": {
+    "runtimeGeneration": 16,
+    "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+    "addonSha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122",
+    "addonBytes": 4166144,
+    "addonAbi": 1,
+    "runtimeSha256": "c403a8b113485eec6cc3b2c0b384c3f9b17fe2b76aad0385f5dd2ac61cc1be66",
+    "runtimeManifestSha256": "edc9677616fa61071738b13f422283e04c7521bf5a1a67a900d21bbe6de1fa9c",
+    "javascriptGraphSha256": "a401e62322b9fc5c3feaa53962121a7a8ee9fdeaf0b607535d00bc70054f8b32",
+    "packageVersionInformational": "0.1.0-rc.7",
+    "electron": "39.8.10",
+    "acceptanceBoundary": "Recorded final generation-16 x64 payloads and SDK graph, original four-field injected-runtime CLI startup result and current 209-byte staged INI. This resource result is separate from other backend, mixed-package and real-game feature acceptance."
+  },
+  "controlledHostSha256": "9589BCABAB07257272D3FB71E9E1D637B63669022E1D888D57163ECD4E9201B2",
+  "fixes": {
+    "nativeEpochRegistrationRetirement": "fed59e6ca3afc8b4b6da511187e9b69c7b4f5051",
+    "freshSessionPrivateNamespace": "82faedb5905c76838892431ab6a6e9a4d3701c61"
+  },
+  "reviewedSourceHashes": [
+    {
+      "path": "apps/client/scripts/cooperative-resource-soak-evidence.cjs",
+      "sha256": "192c72a3d5391e163f076e663e3f14a08f8b2d5ce2ab2fdbf5765f2dfda538f4"
+    },
+    {
+      "path": "apps/client/scripts/cooperative-resource-soak-fixture.cjs",
+      "sha256": "bf743319338a0872f4b6d5601bc3112322f5ad203c64847b25f4933bd5e00e00"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/cooperative-resource-snapshot.ps1",
+      "sha256": "4cfbe90c012b27a7c8143a34af6a04d4445e82e49ef802a329adc32acfa3dde8"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-cooperative-resource-soak-gate.ps1",
+      "sha256": "7cf87f4f85e948fc1016744b2c1adf6b90c49080c005c8f160d0f540ccba6abb"
+    },
+    {
+      "path": "libs/electron-game-overlay/src/lib/electron-game-overlay.ts",
+      "sha256": "495115d07484e267ec9dd033db3b036734fda6674f77d900723ca44bf63ead9a"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/owned-injector-result.ps1",
+      "sha256": "e062323e586ef9518ca73a7a673e604b6e8c37f833b03dbf7b17742c0cfa7a05"
+    }
+  ],
+  "target": {
+    "pid": 43056,
+    "creationTime100ns": "134380404955460314"
+  },
+  "observations": {
+    "freshStageCycles": 8,
+    "freshChurnElectronProcesses": 4,
+    "publicSessionRecreations": 4,
+    "sameNativeBytesAcrossStages": true,
+    "firstCheckpointUtc": "2026-11-01T21:01:41.3719940Z",
+    "finalCheckpointUtc": "2026-11-01T21:02:49.8699561Z",
+    "elapsedBetweenCheckpointsMs": 68498,
+    "survivor": {
+      "processId": 40648,
+      "nativeWindowId": 1,
+      "tokenFingerprint": "5b44c1fa60bd0f9277107e2776cb46e4b86d5d992c78be34a3e9a3bb52934eab",
+      "serverPort": 49720,
+      "frameWorker": 51068,
+      "tcpWorker": 31120,
+      "checkpointIdentityAndRouteUnchanged": true,
+      "liveControllerAssertedTcpTupleUnchanged": true,
+      "fpsAdvancedEachCycle": true
+    },
+    "initial": {
+      "modulesParticipantsSlotsAndFrameWorkers": 1,
+      "tcpWorkers": 1,
+      "windows": 1,
+      "ranks": 1,
+      "privateBytesDiagnostic": 78036992,
+      "totalHandlesDiagnostic": 938
+    },
+    "cycles": [
+      {
+        "cycle": 1,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 51052,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 2,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566906807,
+        "privateBytesDiagnostic": 77492224,
+        "totalHandlesDiagnostic": 949
+      },
+      {
+        "cycle": 2,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 51052,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 3,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566914805,
+        "privateBytesDiagnostic": 82055168,
+        "totalHandlesDiagnostic": 959
+      },
+      {
+        "cycle": 3,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 40652,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 4,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566923804,
+        "privateBytesDiagnostic": 85688320,
+        "totalHandlesDiagnostic": 969
+      },
+      {
+        "cycle": 4,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 40652,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 5,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566931806,
+        "privateBytesDiagnostic": 90218496,
+        "totalHandlesDiagnostic": 977
+      },
+      {
+        "cycle": 5,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 33960,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 6,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566940804,
+        "privateBytesDiagnostic": 94752768,
+        "totalHandlesDiagnostic": 984
+      },
+      {
+        "cycle": 6,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 33960,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 7,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566948806,
+        "privateBytesDiagnostic": 99520512,
+        "totalHandlesDiagnostic": 995
+      },
+      {
+        "cycle": 7,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 41640,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 8,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566957805,
+        "privateBytesDiagnostic": 103710720,
+        "totalHandlesDiagnostic": 1000
+      },
+      {
+        "cycle": 8,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 41640,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 9,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 51068,
+        "survivorTcpWorker": 31120,
+        "survivorFpsObservedAtMs": 1793566965807,
+        "privateBytesDiagnostic": 107995136,
+        "totalHandlesDiagnostic": 1012
+      }
+    ],
+    "final": {
+      "modulesParticipantsSlotsAndFrameWorkers": 9,
+      "tcpWorkers": 0,
+      "establishedTcpConnections": 0,
+      "windows": 0,
+      "ranks": 0,
+      "focus": 0,
+      "capture": 0,
+      "interceptionRequests": 0,
+      "privateBytesDiagnostic": 106860544,
+      "totalHandlesDiagnostic": 1000
+    },
+    "nativeRuntimeCountAtEveryRecordedActiveCheckpoint": 1
+  },
+  "failureHistory": [
+    {
+      "run": "build/cooperative-resource-soak/r-30687a2972724fb5",
+      "title": "Native stale registration rank",
+      "finding": "Inactive session skipped registration reconciliation; empty compositable frames preserved old rank history intended only for raster gaps.",
+      "fix": "Epoch transition now reconciles empty authoritative registrations and resets the private order cache; survivor/raster-gap regression plus final actual cycles pass.",
+      "runtimeGeneration": 13,
+      "addonBuildId": "4127FD92CC904E0AA75C7784189AE969",
+      "addonSha256": "ff32d5e1ea4ace85ca7a94246b057122a3174a9c86b9a505a617648e0317f2fa",
+      "runtimeSha256": "68fe4c27addaabd842ef0d179756916a535adca7b2223ee9a559a2d748be3baf",
+      "javascriptGraphSha256": "7bd9525fc2a6169ad33b559e4825b755690b8f195c9b874a68c4749a18313484",
+      "completedCycles": 0,
+      "retainedFailureSummary": "First dormant checkpoint: 2 slots/participants/frame workers, 1 TCP worker, 1 painted window, 2 ranks."
+    },
+    {
+      "run": "build/cooperative-resource-soak/r-d764eea4845947ac",
+      "title": "SDK private namespace reused by a new session",
+      "finding": "A closed public session retained its consumed private route claim; reusing the owner backend rejected the next fresh stage as another route.",
+      "fix": "Each new public session gets a fresh private backend/namespace while old consumed claims remain unchanged; real-TCP owner/survivor regression and final actual recreation cycles pass.",
+      "runtimeGeneration": 14,
+      "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+      "addonSha256": "a5e15a093f4c04287b2220b0850717625261e26eb92c4875f8c68732ac76be8b",
+      "runtimeSha256": "d3b18c80eab3dc255a2de2fdaeb01926b4695feb5a9dd564a6ec136fe2e94cca",
+      "javascriptGraphSha256": "7afdd2183b9a8c57a15ba1135df91a79e927853d976512a148af22e2dbe7a3ff",
+      "completedCycles": 1,
+      "retainedFailureSummary": "First dormant checkpoint passed with 1 rank; second session failed target authorization before injection."
+    },
+    {
+      "run": "build/cooperative-resource-soak/r-7b98806d7be54813",
+      "classification": "Harness initial-mode mismatch before graphics release",
+      "finding": "New owned-host initialization completed via participant-addon with exact native paths/creation, while the old harness required only injected-runtime.",
+      "fix": "The bounded common result helper plus pre-graphics OS/module/file proof accept the two known owned modes; feature/resource assertions remain unchanged."
+    }
+  ],
+  "limitations": [
+    "Eight short fresh-stage cycles, not a long-duration reliability run.",
+    "Private bytes and total handles grew as pinned engines/frame workers accumulated; no flat-memory or complete reclamation claim.",
+    "Same implementation/native bytes across stages; no mixed-version or released-package interoperability claim.",
+    "No same-module reconnect capacity, pixel correctness, physical input or GPU resource reclamation proof.",
+    "The real SDK run reached 9 lifetime slots, not the 512 lifetime admission bound or 500-app capacity. Controlled registry exhaustion is separate.",
+    "OS/registry snapshots prove recorded checkpoints; the live controller separately asserted its survivor TCP tuple. They are not historical injection-count or native fault-containment proof."
+  ],
+  "artifacts": [
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/evidence.json",
+      "sha256": "8cedd9564b6b28dc6fb9c377a3ad21dd4a12d28587303680bf36efb4f5622f36"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/initial-survivor-resources.json",
+      "sha256": "4e2d9541c73518e9bfe62453bf07b2be176190fb4b32cbb0796b0f99b6abbb52"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/initial-survivor-state.json",
+      "sha256": "d2f075912cfe72155481d395d2a8090790c2105c0f15b2d9f18104b690a23117"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/final-all-dormant-resources.json",
+      "sha256": "20b663e090879cd8dadadf358cef28bc8150805f3841fff69d3652ffeaf5ec24"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-008-native-evidence.json",
+      "sha256": "260d3dc6f31080d0e67101dab686d030b8c0951707f0d4808935019d820ad30e"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-001-active-resources.json",
+      "sha256": "730fd5f6ce914f8f405c6465e0ba972df532745f69a79a222933bee795efcbae"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-001-dormant-resources.json",
+      "sha256": "0e67156b437c4791ef1363add9054025c9d0093a567cb09e00961fe24e627f98"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-001-churn-state.json",
+      "sha256": "d564ca5556218b0a0a21499ee65004213445dcf7c16a079ec1d0f6579df349a5"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-001-survivor-state.json",
+      "sha256": "eb5573301248fdbb2083f592149dcd1d6783d2e26d4be760883bb788f9eece0e"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-001-expected-native.json",
+      "sha256": "92d8dbec19665d7eb6a8a9310a159d0137be5f690d3e98869aa4d95bdfab4e63"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-001-native-evidence.json",
+      "sha256": "f5548329458e46d753a4250f49758480d07b10b89ea5f3f08e5541eb0de9f3c1"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-002-active-resources.json",
+      "sha256": "91e9c109042d89dd746e6e8293d625d0cecd2d96819f434e5d5e96da0955db5d"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-002-dormant-resources.json",
+      "sha256": "b7497e27290d1b57f88f2fdf45812ce31f5438a0287879c702ae533836cfdc4b"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-002-churn-state.json",
+      "sha256": "380a1b567689a99310bd780bce7b98d0935718aa9aaf57570b37a2a2888ab05a"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-002-survivor-state.json",
+      "sha256": "336bc42744eaeb172e893bfa626f4341c51f146769400ed85238f074cdf579c1"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-002-expected-native.json",
+      "sha256": "42229f1aff85a5bb1cfa1def54ca0cab24012c88c340e1d9b9bff4518aeaade9"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-002-native-evidence.json",
+      "sha256": "cdbbb8ac51167e72b615ef1d6766cee1956c1d8e2389ea341ab2569080c7f4a0"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-003-active-resources.json",
+      "sha256": "0f5f211b78c6ba6cc71704c26f04572ba7e229541e9e755e3653de749f1c54e0"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-003-dormant-resources.json",
+      "sha256": "66cfa7c5f53713ac83a452d11cdce26e6487efd36632408df7b1b261a605a17f"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-003-churn-state.json",
+      "sha256": "177ee76af77e9abb7cbe70893360701b66e2495f9d6752cf319bab9a55a1d7f5"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-003-survivor-state.json",
+      "sha256": "ff8714ac5e8e79ae6b319f4ad3d1f5f5934a3fa289f4a214af58df690528ecc3"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-003-expected-native.json",
+      "sha256": "f26b6eb096bbf4656d11a6c9d4adeb21ec593374dc883b1f8ddc64540ac07aba"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-003-native-evidence.json",
+      "sha256": "f639e8359003aaf26ad25c955a7d2da2c17db69d360548da51646891676bdae1"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-004-active-resources.json",
+      "sha256": "2e206ff78a3668d35ab3b5dcf13979562a239068d39a183151c4170e3313b68f"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-004-dormant-resources.json",
+      "sha256": "259bf8544938a673525ef326425dd5045e13441c16711830412379ce0a846aa3"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-004-churn-state.json",
+      "sha256": "51278589e17aeeb74867aeb87e29ac3548e9778f2d913300a852f9079b9612e2"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-004-survivor-state.json",
+      "sha256": "b827e088a7dbf0a0b00968706ff60bcd29a7d89866daffcdc4cdb62a500efdbc"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-004-expected-native.json",
+      "sha256": "866acdbbc8186e90c6459e682a28a1ee72c007451459a25edd9dcfdaff232d05"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-004-native-evidence.json",
+      "sha256": "9b3397db8c2d325b80fe8169874d31b9ae55cee5130093b6ec3313924ef622f4"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-005-active-resources.json",
+      "sha256": "73a633346f3f16943085ed58427c738e8efbd11208214b3cd5d355a0b2bcc305"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-005-dormant-resources.json",
+      "sha256": "3f6f76566461fc9be0001c267c40cf8040d8ec23e00c4e992798e4c9ec895c18"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-005-churn-state.json",
+      "sha256": "8adde5379ace7f92ab28ab588e2cb200f6203bd3264facea27fd28d5388d5639"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-005-survivor-state.json",
+      "sha256": "03fb26904dd79648a02a13339a0c2d2cb961c8a24fee9495cc585105d1490928"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-005-expected-native.json",
+      "sha256": "e639927f1befa7e52e14307aecede8144b6c8538e4713c2e0be2b18054fb69e6"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-005-native-evidence.json",
+      "sha256": "3ab2e36b489518a699f01e1294defc2e34fb66815f3ebc1cfaabb819505fd217"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-006-active-resources.json",
+      "sha256": "ac6ebf1b9e5b9fad13c177f2e1d4c7d2aa202ed17b35ac1c8b2d2c1285f1b0bf"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-006-dormant-resources.json",
+      "sha256": "8e8ec4dbf3e4c1c0d71ca5f945b7cc451b901b5137d3b7d01b8f88c80cbf1268"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-006-churn-state.json",
+      "sha256": "004ea07305e3abb89912f76abe1347d8c119f9a94c26ed97252245194914e34a"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-006-survivor-state.json",
+      "sha256": "ec640385eb1f54e393e7b91983d6e8c991033c322659598b0cf8e91a7db745a9"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-006-expected-native.json",
+      "sha256": "3c879ad1de6879ef4bc81dd1e41ba102e822f31c442b1078187af830c0aff012"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-006-native-evidence.json",
+      "sha256": "509562ee51b587f356cd3999d955cb7763e5903b92b9a1ac75be78aeb23e046b"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-007-active-resources.json",
+      "sha256": "365d8c9ca7b10131842b8bcfb90084ddc6b80c025a2e9e766ef773c82f313163"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-007-dormant-resources.json",
+      "sha256": "ec9bb02a3e317f91b0f35490d01968bd637bdb975bd339306c9e61f1a39217f9"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-007-churn-state.json",
+      "sha256": "9c6382b7eacac3003112ec6f8626401ea67c1f0bd7c278d3124f7fd900eca54e"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-007-survivor-state.json",
+      "sha256": "42e7a2f3602a3fda24d7af5dc9942dfcee1e12688f563824fb9153f0c3130ee7"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-007-expected-native.json",
+      "sha256": "55d00a39c17586a72529e1204def1df78c3e1fc2a01f005486e70c92e2b44850"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-007-native-evidence.json",
+      "sha256": "c26f2793cf4cd5e600d256683fbd60e31a91438fc3f0b1bc07865b5f70462cf2"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-008-active-resources.json",
+      "sha256": "e47ff2cdc32d4f49662d390c2af049ccc18ae367cd31eb847bc1b92de48fdfd6"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-008-dormant-resources.json",
+      "sha256": "14ca07234f1f6b5b3a2a70c4268259fe4c4ea04f79c12e940da92a198d72d998"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-008-churn-state.json",
+      "sha256": "775f8b6ea6df641ae04ac6c5f0dcb4a370d41a7b1db6125fc93451432c08e9a0"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-008-survivor-state.json",
+      "sha256": "6103534a795724f87d4061e6a0f13f3560751df679f66fbe3ff0802e0066d9d2"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/cycle-008-expected-native.json",
+      "sha256": "1c2164fef983ab72c19c60bf832a237024ffb9cebdc575a87160c5b474ce084a"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-30687a2972724fb5/evidence.json",
+      "sha256": "8a6eeb318af4f872af278bd387d599f6537378aba0f2785015ff7c7c0753ddd3"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-30687a2972724fb5/cycle-001-native-evidence.json",
+      "sha256": "af0563fc86283df8a4cf35f672f8bff6cddb93cf3c0c382e1bc603c73b447905"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-d764eea4845947ac/evidence.json",
+      "sha256": "b930c5954c6917962286c56333e7226b29ead94c57cd21203c0f645173f93067"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-d764eea4845947ac/cycle-001-native-evidence.json",
+      "sha256": "4e3d46324f065f3eba73a0860132a8cd558285f4f56d66213742465498d6078a"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/startup-full-runtime-proof.json",
+      "sha256": "5d0d64358805d7f45df16c31e583c33ae4560069caaa770bd11fb256989b0ba9"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/startup-native-resources.json",
+      "sha256": "d8bbdb00e93eeb174ec1f6cc18a030f7d117de97cdb001ac85aa6114fcb645eb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/startup-native-evidence.json",
+      "sha256": "aa10e073e35cd99d60a52915ef290645193efe1ced1581b4a240e53ea8badb9b"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/startup-expected-native.json",
+      "sha256": "4f9937488c56d498e41d394f2fa39c33f482edfa8b5edbb5b6e0d68ea80dc807"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/survivor-1/runs-survivor/cycle-1/ego-soak-0fbfc7bb.exe-UH4Kga/inject.stdout.log",
+      "sha256": "736071c6d3fe21b9c4cc9193dbc462a4e8ae285e03093dad6b55cd09e3c962a4"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/survivor-1/runs-survivor/cycle-1/ego-soak-0fbfc7bb.exe-UH4Kga/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-1/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-CuhjqV/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-1/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-KU8pN2/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-2/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-6L2FWG/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-2/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-Ab5iI2/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-3/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-OHvmCL/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-3/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-baolTz/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-4/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-l88xtW/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-4/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-k18nOt/ReShade.ini",
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/survivor-1/survivor-state.json",
+      "sha256": "aec1c49679095c9d6d6ac1f63d6aa5c74dcdb83f956cbbfaf25bf452b4d7c65b"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/survivor-1/process-lifecycle-latest.json",
+      "sha256": "35630916918c8c52810177c8c84ac7d91b5bb4fddfe776b09150ea2e4d7dd643"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-1/churn-state.json",
+      "sha256": "8ff542d4e2f9351c5c4eb5a71cb1a25e6d00191579334bb8fed8ae15d9bd75ef"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-1/process-lifecycle-latest.json",
+      "sha256": "e94ff77db762e5aaeac65390b5fd4a3e2ee743e5309ed5b9b56da6154d7bbcc0"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-2/churn-state.json",
+      "sha256": "b98d558a3972245287d6e2ec802a62c81ebfca283cf95a64b003170df1af2572"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-2/process-lifecycle-latest.json",
+      "sha256": "0c18b7ea5cbf776b3d4f80f16a661f715c347baea9a8bd4f6db383e696ccdc68"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-3/churn-state.json",
+      "sha256": "42e99be5b1c62b475e4da8cb1a896ebe241529a59f34dbfde7bf6f5842db72c6"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-3/process-lifecycle-latest.json",
+      "sha256": "d17c5335fd6694001da6a62872f3d3c1b9af61b388f1fa4b44e91c9ba7ca7a59"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-4/churn-state.json",
+      "sha256": "0a1bd462dc01b7d6c02aa1e5d7eba5a065b504632031927aaaf23cdcbecc5ab4"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-4/process-lifecycle-latest.json",
+      "sha256": "ba0410497d65b06730a46e5ea855296ea94a99cfa8362f038bb4e9507f9f415d"
+    },
+    {
+      "path": "build/readiness-gen16-soak-20261101-210134/report.json",
+      "sha256": "a712a09ac7c1fdc58c9b9ca4c682b440687ad93a26fd864a5136376e1c73feec"
+    },
+    {
+      "path": "build/readiness-gen16-soak-20261101-210134/01-client-sdk-cooperative-resource-soak.display.json",
+      "sha256": "0b76fd7df78161ae9c60b46edc1ad08e9447f3349545884f8e2a572303ff96a3"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-7b98806d7be54813/evidence.json",
+      "sha256": "4a73db9660540e8a87b81ef07b10d7efbc3bdcc1bf18f001310e2851d4268743"
+    }
+  ],
+  "priorEvidence": [
+    {
+      "path": "libs/electron-game-overlay-runtime/tests/cooperative-resource-soak/sdk-evidence-2026-11-01.json",
+      "sha256": "4ce282b5fb8f85e7a7d3b3538151fde462d31e6fb9a7685876371c34ab168310",
+      "unchanged": true
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/tests/cooperative-resource-soak/sdk-evidence-gen15-2026-11-01.json",
+      "sha256": "03c9f896b90d4ccf15b1b2c1506280a18c9b5bafcf991bbb22e747a4ee163b82",
+      "unchanged": true
+    }
+  ],
+  "sourceRevisionInformational": "2eba041380992aa03d2453d51745f21845b966e4",
+  "startup": {
+    "runtimeMode": "injected-runtime",
+    "nativeResultFieldCount": 4,
+    "nativeResultFields": [
+      "pid",
+      "runtimeMode",
+      "schemaVersion",
+      "targetExecutablePath"
+    ],
+    "exactCreationBound": true,
+    "preGraphicsMappedRuntimes": 1,
+    "preGraphicsMappedPrivateEngines": 1,
+    "preGraphicsParticipants": 1,
+    "preGraphicsFrameWorkers": 0,
+    "preGraphicsTcpWorkers": 0,
+    "preGraphicsWindows": 0,
+    "preGraphicsRanks": 0,
+    "oneMatchingRuntimeAndPrivateEngineHashesVerifiedBeforeRelease": true,
+    "pathAndHashAuthority": "Retained exact-process OS module snapshot and checked backing-file evidence; four-field CLI does not carry or invent module paths."
+  },
+  "retainedStagedConfiguration": {
+    "observationMeaning": "Retained current owned staged INI bytes after this final generation-16 run.",
+    "count": 9,
+    "bytesEach": 209,
+    "sha256Each": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb",
+    "files": [
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/survivor-1/runs-survivor/cycle-1/ego-soak-0fbfc7bb.exe-UH4Kga/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-1/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-CuhjqV/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-1/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-KU8pN2/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-2/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-6L2FWG/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-2/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-Ab5iI2/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-3/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-OHvmCL/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-3/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-baolTz/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-4/runs-churn/cycle-1/ego-soak-0fbfc7bb.exe-l88xtW/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      {
+        "path": "build/cooperative-resource-soak/r-9a447278524a431b/producers/churn-4/runs-churn/cycle-2/ego-soak-0fbfc7bb.exe-k18nOt/ReShade.ini",
+        "bytes": 209,
+        "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      }
+    ]
+  },
+  "producerCleanup": [
+    {
+      "member": "survivor",
+      "processId": 40648,
+      "sessionCycles": 1,
+      "exitCode": 0,
+      "emptyWindowState": true
+    },
+    {
+      "member": "churn",
+      "processId": 51052,
+      "sessionCycles": 2,
+      "exitCode": 0,
+      "emptyWindowState": true
+    },
+    {
+      "member": "churn",
+      "processId": 40652,
+      "sessionCycles": 2,
+      "exitCode": 0,
+      "emptyWindowState": true
+    },
+    {
+      "member": "churn",
+      "processId": 33960,
+      "sessionCycles": 2,
+      "exitCode": 0,
+      "emptyWindowState": true
+    },
+    {
+      "member": "churn",
+      "processId": 41640,
+      "sessionCycles": 2,
+      "exitCode": 0,
+      "emptyWindowState": true
+    }
+  ],
+  "wrapper": {
+    "report": "build/readiness-gen16-soak-20261101-210134/report.json",
+    "status": "passed",
+    "exitCode": 0,
+    "elapsedMs": 76862,
+    "displayBeforeAndDuringObservedOn": true,
+    "displayRequestCleared": true,
+    "displayHandleClosed": true
+  }
+}

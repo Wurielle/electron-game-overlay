@@ -1,10 +1,29 @@
-# Late graphics attachment: evidence and remaining design work
+# Late graphics attachment: owned D3D11 support and D3D12 limits
 
-Fast unbarriered process discovery is still a readiness issue. Polling or ETW
-can reduce detection latency, but neither makes an independently launched game's
-graphics initialization wait for the SDK. A passing test with an explicit host
-startup barrier proves a different boundary. It must not replace the existing
-unbarriered folder-watcher/relaunch acceptance case.
+The owned runtime now supports late D3D11 swap-chain discovery and adoption.
+Generation 16, build `E8FE3783F29E4FB297D8B006D0087725`, passed eight actual
+x64/Win32 standalone and same-HWND resize/final-destroy/paused-primary cases,
+plus delayed-UI-thread recovery on both architectures. All four original Gun
+Frog lanes and the independently installed gen11/gen16 startup-order ×
+graceful/crash matrix passed, including survivor-only fresh-game relaunch.
+The [readiness record](readiness-acceptance-2026-11-01.md) retains exact hashes
+and separates each case from the complete final control/input/backend/resource
+acceptance and its explicit limits.
+
+The implementation is a pinned, owned-only patch on upstream ReShade, with a
+guarded bootstrap, exact stage marker and native swap-chain discovery. It
+deduplicates automatically created runtimes and handles resize, retirement and
+same-HWND input ownership. It does not require the application to supply native
+graphics pointers or place files in a clean game's directory. It never enables
+late adoption by changing a foreign ReShade installation.
+
+The unbarriered folder-watcher/relaunch case passed on generations 15 and 16;
+the [final control report](../build/readiness-gen16-control-20261101-205505/report.json)
+retains the current pass. Polling or ETW alone still cannot
+make an independently launched game's graphics initialization wait. A passing
+pre-device test barrier must not be substituted for this unbarriered case.
+Generic late D3D12 attachment remains unavailable: authoritative presentation
+queue provenance has not been recovered through a documented general API.
 
 The [cooperative contract](cooperative-addons.md) still applies: retain one
 possibly consumed ReShade initialization claim for the exact live process,
@@ -21,19 +40,22 @@ also owns the native objects' lifetime and the reset/destruction sequence.
 These calls must not be used to update or destroy automatically created
 runtimes. See the [pinned public header](https://github.com/crosire/reshade/blob/4a50d1eddace85734871d91792ff214f13f66c01/include/reshade.hpp).
 
-The isolated [D3D11 fixture](../libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/README.md)
-has completed an x64 hardware API lifecycle run after 60 native presents:
+The initial isolated [D3D11 fixture](../libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/README.md)
+completed an x64 hardware API lifecycle run after 60 native presents:
 599 manual render/state checks, zero sampled state mismatches, and successful
-destroy/recreate around resize. Its separate authenticated SDK scene test
-failed a strict desktop red-pixel sample with white pixels. That failure remains
-open; API lifecycle success does not establish overlay pixels, input, automatic
-swap-chain discovery, or real-game acceptance. Optional source-bitmap and GPU
-readback diagnostics were added after that failed run.
+destroy/recreate around resize. Its first authenticated SDK scene attempt
+failed a strict desktop sample. Later observed-ON controls passed exact pixels,
+input and resize using retained generation-12 native bytes; the
+[display evidence](rendering-display-power-evidence.md) preserves the causal
+limits. Those controls do not diagnose every earlier white sample or the
+historical D3D11 GPU hang.
 
-Generic D3D11 adoption still needs a separate implementation and acceptance for
-discovery, automatic/manual-runtime deduplication, presentation, resize, COM
-lifetime, multiple swap chains, and input. The fixture receives the host's exact
-graphics pointers directly and is not enabled in production packaging.
+The manual fixture receives exact graphics pointers and remains isolated
+research evidence. The separately integrated owned-runtime path discovers
+native D3D11 swap chains itself and has the generation-16 lifecycle/input
+acceptance described above. Neither self-loading fixture should be labeled
+automatic process attachment; the watcher and real-game cases establish their
+own boundaries.
 
 ## D3D12 queue provenance
 

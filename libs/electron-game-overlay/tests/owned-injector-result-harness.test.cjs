@@ -97,13 +97,29 @@ foreach ($Case in $Fixture.cases) {
 });
 
 for (const leaf of ['run-client-sdk-session-deactivation-gate.ps1', 'run-injected-electron-scene.ps1']) {
-  test(`${leaf} retains exact structured proof before starting its producer`, () => {
+  test(`${leaf} binds initial result and mapped module evidence before starting its producer`, () => {
     const source = fs.readFileSync(path.join(scripts, leaf), 'utf8');
-    assert.ok(source.indexOf('$InjectorResult = Read-OwnedOverlayInjectorResult') < source.indexOf('$ProducerProcess = Start-Process'));
+    const resultIndex = source.indexOf('$InjectorResult = Read-OwnedOverlayInitialResult');
+    const mappedIndex = source.indexOf('= Get-OwnedOverlayMappedEvidence');
+    const producerIndex = source.indexOf('$ProducerProcess = Start-Process');
+    assert.ok(resultIndex >= 0, 'both current initial result shapes need authoritative structured validation');
+    assert.ok(mappedIndex > resultIndex, 'legacy result lacks module paths, so actual OS mapped evidence is required');
+    assert.ok(producerIndex > mappedIndex, 'producer activation must follow exact result and module identity proof');
     assert.ok(source.includes("Join-Path $PSScriptRoot 'owned-injector-result.ps1'"));
     assert.equal(source.includes('-SimpleMatch "Injecting ReShade ... Succeeded!"'), false);
     for (const parameter of ['StdoutPath', 'ExpectedPid', 'ExpectedExecutablePath', 'ExpectedRuntimePath', 'ExpectedAddonPath', 'ExpectedBasePath']) {
       assert.match(source, new RegExp(`-${parameter}\\b`));
+    }
+    for (const parameter of ['Process', 'InjectorStdoutPath', 'ExpectedRuntimeSha256', 'ExpectedAddonSha256']) {
+      assert.match(source, new RegExp(`-${parameter}\\b`));
+    }
+    assert.ok(source.indexOf('initial-native-identity.json') > mappedIndex);
+    assert.ok(source.indexOf('initial-native-identity.json') < producerIndex);
+    const runtimeVariable = leaf.includes('session-deactivation') ? 'RuntimeSource' : 'Runtime';
+    const addonVariable = leaf.includes('session-deactivation') ? 'AddonSource' : 'Addon';
+    for (const variable of [runtimeVariable, addonVariable]) {
+      assert.match(source, new RegExp(`Get-FileHash\\s+-LiteralPath\\s+\\$${variable}\\b`),
+        'expected mapped hashes must come from the independently selected source artifacts');
     }
   });
 }

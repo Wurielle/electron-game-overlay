@@ -104,3 +104,47 @@ foreach($Case in $Cases) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('mapped evidence rejects a forged creation identity and a live process without the owned modules', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-mapped-proof-'));
+  try {
+    const runner = path.join(directory, 'mapped.ps1');
+    fs.writeFileSync(runner, String.raw`
+$ErrorActionPreference='Stop'
+. $env:EGO_INITIAL_HELPER
+$TaskSelf=Get-Process -Id $PID
+try {
+  $TaskImage=$TaskSelf.MainModule.FileName
+  $TaskCreation=$TaskSelf.StartTime.ToFileTimeUtc()
+  $TaskLog=Join-Path $env:EGO_INITIAL_DIRECTORY 'inject.log'
+  $TaskResults=@()
+  foreach($TaskCase in @(
+      @{name='forged creation time';creation=($TaskCreation+1).ToString();expected='native watcher PID, creation time and image'},
+      @{name='no mapped runtime';creation=$TaskCreation.ToString();expected='exactly one ReShade'})) {
+    [IO.File]::WriteAllText($TaskLog,('EGO_TARGET_SELECTED_V2'+[char]9+$TaskSelf.Id+[char]9+$TaskCase.creation+[char]9+$TaskImage),[Text.UTF8Encoding]::new($false))
+    try {
+      $TaskProof=Get-OwnedOverlayMappedEvidence -Process $TaskSelf -InjectorStdoutPath $TaskLog -ExpectedExecutablePath $TaskImage -ExpectedRuntimePath (Join-Path $env:EGO_INITIAL_DIRECTORY 'ReShade64.dll') -ExpectedAddonPath (Join-Path $env:EGO_INITIAL_DIRECTORY 'electron_game_overlay.addon64') -ExpectedRuntimeSha256 ('0'*64) -ExpectedAddonSha256 ('0'*64)
+      $TaskResults += [pscustomobject]@{name=$TaskCase.name;accepted=$true}
+    } catch {$TaskResults += [pscustomobject]@{name=$TaskCase.name;accepted=$false;error=$_.Exception.Message;expected=$TaskCase.expected}}
+  }
+  [Console]::WriteLine(($TaskResults|ConvertTo-Json -Compress))
+} finally {$TaskSelf.Dispose()}
+`);
+    const result = spawnSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-File', runner], {
+      encoding: 'utf8', timeout: 30000, windowsHide: true,
+      env: { ...process.env, EGO_INITIAL_HELPER: path.resolve(__dirname, '../../electron-game-overlay-runtime/scripts/owned-injector-result.ps1'), EGO_INITIAL_DIRECTORY: directory },
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    const observed = JSON.parse(result.stdout.trim());
+    assert.equal(observed.length, 2);
+    for (const value of observed) {
+      assert.equal(value.accepted, false, value.name);
+      assert.ok(value.error.includes(value.expected), `${value.name}: ${value.error}`);
+    }
+  } finally {
+    assert.equal(path.dirname(directory).toLowerCase(), os.tmpdir().replace(/[\\/]$/, '').toLowerCase());
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

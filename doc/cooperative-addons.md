@@ -19,11 +19,13 @@ same-process callback tables. Each owner renders its own windows and handles its
 own input. Global order is per window, including interleaved windows from
 different apps. It must not be reduced to fixed whole-application layers.
 
-A module registered with ReShade before graphics initialization supplies only
-the baseline event trampoline. Later engine modules can join the cooperative
-registry without racing mutation of stock ReShade's callback vectors. That
-trampoline is embedded in a participating module, not a separately installed
-feature host. Modules remain mapped until target exit; producer disconnection
+The first registered module supplies only the baseline event trampoline.
+On an owned host, the guarded bootstrap completes this registration before late
+manual runtimes are adopted; the existing-stock lane preserves its ordinary
+installed adapter. Later engine modules join the cooperative registry without
+racing mutation of stock ReShade's callback vectors. The trampoline is embedded
+in a participating module, not a separately installed feature host. Modules
+remain mapped until target exit; producer disconnection
 deactivates only that participant's state/resources. A first participant losing
 its application must not disable the event source for surviving participants.
 
@@ -76,10 +78,34 @@ physical-key gate requires physical input, not a relabeled synthetic event.
 
 ## Implementation status
 
-The rewrite on `codex/explore-independent-overlay-instances` is implemented and
-accepted within the recorded test scope. Four original real-game cases passed
-on generation 11; the user explicitly waived its final physical-key rerun.
-Selected broad feature and mixed-implementation passes are detailed below.
+The current sealed candidate is generation 16, build
+`E8FE3783F29E4FB297D8B006D0087725`. All four original Gun Frog cases and all
+four independently installed gen11/gen16 startup-order × graceful/crash cells
+passed. The mixed run retained one ReShade, both apps' exact private engines,
+isolated/interleaved windows and input, continued survivor operation and fresh
+game relaunch in every cell. The user waived the final physical-key rerun; no
+synthetic result is relabeled as physical input.
+
+The normal x64/x86 build and sealed SDK passed, with 1,035 of 1,045 Node tests
+passing and ten expected skips. Four native ABI/registry CTests and four loader
+suites passed separately from GUI acceptance. Owned late D3D11 passed all eight
+standalone/same-HWND lifecycle cells, and actual delayed-UI-thread hook recovery
+passed on both architectures. All ten final control cases passed, including
+unbarriered folder discovery/relaunch, as did all six final input/scaling,
+four backend cases and the final eight-cycle resource run. The 32-script matrix,
+three additional manually exercised original game lanes and four installed
+mixed-game cells are complete within their recorded scopes. See the
+[current readiness evidence](readiness-acceptance-2026-11-01.md) for exact
+candidate hashes, completed cases, retained failed attempts and remaining work.
+
+Generic late D3D12 queue recovery remains unsupported, stock copied buffered
+input remains an explicit capability limit, and the historical D3D11 GPU hang
+is still unattributed. The 500-app/500-version scenario has not been measured.
+
+### Earlier acceptance milestones
+
+The following records retain their original generations and scopes; they are
+not silent reruns against the current candidate.
 
 - Explicit private-directory Rust transport, registered-window metadata,
   incarnation-checked routing and logical focus across raster gaps: implemented;
@@ -169,8 +195,10 @@ Selected broad feature and mixed-implementation passes are detailed below.
   passed initial input/policy retention but failed the fresh target's graphics
   startup/authentication. Reliable fast-start attachment was already excluded by
   the [pre-rewrite RC6 process-policy evidence](sdk-rc6-process-policy.md); the
-  current failures' exact cause is not established. The complete fast lifecycle and
-  final revocation are not claimed passed. See the
+  historical failures' exact cause was not established by those runs. A later
+  generation-15 unbarriered lifecycle/relaunch case passed, and the
+  generation-16 rerun also passed in the current readiness record. Those earlier
+  reports remain failed. See the
   [acceptance evidence and additional coverage](cooperative-addons-acceptance.md).
 - One generation-9 full SDK attempt failed with a graphics-device hang and
   contemporaneous NVIDIA display-driver events; its dump/events were preserved.

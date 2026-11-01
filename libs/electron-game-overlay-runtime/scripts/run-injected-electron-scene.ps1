@@ -233,7 +233,7 @@ try {
     if ($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) {
         throw "The injector exited with code $InjectorExitCode. Inspect $InjectorStdout."
     }
-    $InjectorResult = Read-OwnedOverlayInjectorResult `
+    $InjectorResult = Read-OwnedOverlayInitialResult `
         -StdoutPath $InjectorStdout `
         -ExpectedPid $TargetProcessId `
         -ExpectedExecutablePath $TargetExecutablePath `
@@ -242,6 +242,19 @@ try {
         -ExpectedBasePath $RunDirectory
     $InjectorResult | ConvertTo-Json -Depth 3 |
         Set-Content -LiteralPath (Join-Path $RunDirectory 'injector-result.json') -Encoding UTF8
+    $NativeTarget = [Diagnostics.Process]::GetProcessById($TargetProcessId)
+    try {
+        $InitialNativeEvidence = Get-OwnedOverlayMappedEvidence `
+            -Process $NativeTarget -InjectorStdoutPath $InjectorStdout `
+            -ExpectedExecutablePath $TargetExecutablePath `
+            -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+            -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+            -ExpectedRuntimeSha256 (Get-FileHash -LiteralPath $Runtime -Algorithm SHA256).Hash `
+            -ExpectedAddonSha256 (Get-FileHash -LiteralPath $Addon -Algorithm SHA256).Hash
+    }
+    finally { $NativeTarget.Dispose() }
+    $InitialNativeEvidence | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'initial-native-identity.json') -Encoding UTF8
 
     $ProducerArguments = @(
         "`"$ElectronDemo`"",

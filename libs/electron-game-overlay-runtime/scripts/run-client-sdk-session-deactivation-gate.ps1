@@ -259,7 +259,7 @@ try {
     if ($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) {
         throw "The injector did not report a normal successful injection. Inspect $InjectorStdout and $InjectorStderr."
     }
-    $InjectorResult = Read-OwnedOverlayInjectorResult `
+    $InjectorResult = Read-OwnedOverlayInitialResult `
         -StdoutPath $InjectorStdout `
         -ExpectedPid $HostProcess.Id `
         -ExpectedExecutablePath $TargetExecutablePath `
@@ -268,6 +268,15 @@ try {
         -ExpectedBasePath $RunDirectory
     $InjectorResult | ConvertTo-Json -Depth 3 |
         Set-Content -LiteralPath (Join-Path $RunDirectory 'injector-result.json') -Encoding UTF8
+    $InitialNativeEvidence = Get-OwnedOverlayMappedEvidence `
+        -Process $HostProcess -InjectorStdoutPath $InjectorStdout `
+        -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+        -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+        -ExpectedRuntimeSha256 (Get-FileHash -LiteralPath $RuntimeSource -Algorithm SHA256).Hash `
+        -ExpectedAddonSha256 (Get-FileHash -LiteralPath $AddonSource -Algorithm SHA256).Hash
+    $InitialNativeEvidence | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'initial-native-identity.json') -Encoding UTF8
     Remove-Item -LiteralPath $StartupBarrierPath -Force -ErrorAction Stop
     Remove-Item -LiteralPath $InjectionWaitPath -Force -ErrorAction Stop
 
@@ -427,6 +436,7 @@ try {
         runtimeModule = $ExpectedRuntime
         addonModule = $ExpectedAddon
         injectorResult = $InjectorResult
+        initialNativeIdentity = $InitialNativeEvidence
         baselineTitle = $BaselineTitle
         releasedTitle = $Released.Title
     } |

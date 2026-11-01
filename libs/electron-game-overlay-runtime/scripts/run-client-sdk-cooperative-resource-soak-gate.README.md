@@ -119,12 +119,36 @@ All five Electron producers exited with code 0 and cleanup reported no errors.
 
 This pass covers those first generation-15 PE payloads and the retained staged
 207-byte INI (SHA-256 `2a3bdabdf7a36155b3f5eacd641525810d0998520677d26105924197523465d1`).
-It does not accept the pending new-CLI/configuration and Win32/final package
-rebuild, which remains blocked for user antivirus review. The checkpoint
+It does not accept the later new-CLI/configuration and Win32/final package
+rebuild, which was pending user antivirus review at that time. The checkpoint
 interval was 75.442 seconds; diagnostic private bytes grew from 78,544,896 to
 107,769,856 and handles from 984 to 1,051. This is neither a final-release claim
 nor flat-resource, long-duration or 500-app evidence. The generation-14 record
 remains unchanged.
+
+A separate [final generation-16 resource result](../tests/cooperative-resource-soak/sdk-evidence-gen16-2026-11-01.json)
+passed eight cycles with add-on build `E8FE3783F29E4FB297D8B006D0087725`
+(SHA-256 `a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122`)
+and JavaScript graph `a401e62322b9fc5c3feaa53962121a7a8ee9fdeaf0b607535d00bc70054f8b32`.
+This run used the four-field `injected-runtime` CLI result. Exact selected
+PID/image/creation binding and separate pre-graphics OS/module/file evidence
+verified one SDK runtime and one owned engine before barrier release. All nine
+staged INIs were the current 209-byte configuration (SHA-256
+`a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb`).
+
+Independent review checked 83 artifact hashes and all eight active/dormant
+checkpoints. Module/participant/slot/frame-worker counts rose to nine; active
+TCP/window/rank counts were two and dormant counts one throughout. The survivor
+kept its process, route, stage and native worker identities with advancing FPS.
+Final app closure left nine pinned engines/frame workers and zero TCP
+workers/connections, windows, ranks, focus, capture and interception requests.
+All five producers exited with code 0 and cleanup reported no errors. The
+checkpoint interval was 68.498 seconds; diagnostic private bytes grew from
+78,036,992 to 106,860,544 and handles from 938 to 1,000. This resource result
+covers the recorded final Gen16 x64 payloads and configuration; other backend,
+mixed-package and real-game feature acceptance remains separate. It does not
+establish flat resource use, long-duration reliability or 500-app capacity.
+The Gen14 and first Gen15 evidence files remain unchanged.
 
 Owned run/target names use short GUID-derived identifiers. Before launch, the
 gate projects the longest packaged/runtime control filename through cycle 1,024
