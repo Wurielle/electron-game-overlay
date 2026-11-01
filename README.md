@@ -16,7 +16,7 @@ keyboard input back to the correct Electron window.
 | Target architecture          | x64 and x86/PE32                      |
 | Graphics APIs                | Direct3D 9, 10, 11, and 12            |
 | Existing official ReShade    | x64, when its public add-on API works |
-| Multiple apps in one process | Exact-PID attachment                  |
+| Multiple apps in one process | Cooperative native add-ons; exact PID recommended |
 | Anti-cheat                   | Unsupported                           |
 
 OpenGL, Vulkan, VR, and other Electron 40+ versions are not currently supported.
@@ -27,21 +27,23 @@ OpenGL, Vulkan, VR, and other Electron 40+ versions are not currently supported.
 flowchart LR
   Page["HTML / CSS / JavaScript"] --> Window["Offscreen BrowserWindow"]
   Window --> Session["OverlaySession"]
-  Session --> Broker["Per-user broker"]
-  Broker --> Runtime["One runtime per game PID"]
-  Runtime --> ImGui["Dear ImGui compositor"]
+  Session --> Transport["App-private authenticated transport"]
+  Transport --> Engine["This app's native engine"]
+  Engine <-->|"order / focus / capture"| Registry["Stable cooperative registry"]
+  Host["One ReShade host per game process"] -->|"presentation callbacks"| Engine
+  Engine --> ImGui["This engine's Dear ImGui composition"]
   ImGui --> Game["Game swap chain"]
 
-  GameInput["Mouse and keyboard"] --> Runtime
-  Runtime -->|"intercepted input"| Broker
-  Broker -->|"owning window"| Session
+  GameInput["Mouse and keyboard"] --> Engine
+  Engine -->|"owning window input"| Transport
+  Transport --> Session
 ```
 
 The browser never runs inside the game. Electron renders each overlay page to
 an offscreen bitmap in your application process. `OverlaySession` publishes
-those frames, their bounds, visibility, and order to the injected runtime. The
-runtime uploads the frames and draws them through Dear ImGui during the game's
-normal presentation.
+those frames, their bounds, visibility, and order through an application-private
+transport to that application's native engine. Each engine owns its textures
+and draws its windows through Dear ImGui during the game's normal presentation.
 
 `ReShadeOverlayLauncher` connects the two sides. It must attach near process
 creation, before the game creates the graphics device or swap chain. The
@@ -52,23 +54,30 @@ When input interception is enabled, supported game input is consumed by the
 runtime and translated back to Electron. Hit testing, focus, text input,
 scrolling, dragging, and normal DOM events continue to work in the overlay.
 
-Independent applications attaching to the same exact PID share one injected
-runtime automatically. Their windows and input remain isolated by application;
-applications do not create or manage a broker instance.
+Independent applications can load their own SDK and native engine versions into
+the same exact game process. They share one ReShade host and a small fixed-layout
+coordination protocol for per-window order, focus, capture and interception.
+Their transports, scene resources and feature implementations remain separate.
+Normal SDK startup does not start a broker service or elect one application's
+engine to serve the others.
 
 ## SDK distribution candidate
 
 For a standalone consumer without the workspace build tools, use the local
 `electron-game-overlay-0.1.0-rc.7.tgz` candidate artifact. This is not a public npm
-release. Follow the [package install guide](libs/electron-game-overlay/README.md)
+release. Use an artifact built from the matching cooperative-implementation
+revision; older artifacts with the same rc.7 label can contain the historical
+broker implementation. Follow the [package install guide](libs/electron-game-overlay/README.md)
 and copy [`examples/basic-overlay`](examples/basic-overlay) outside this checkout
 before installing the tarball. The example includes a noninjecting Electron/DOM
 smoke mode and an explicitly opted-in Windows name-watcher flow; it does not
 attach to already-running games.
 
 The [SDK API guide](doc/sdk-api.md) covers all three public entry points, managed
-attachment, native allow/deny policy, read-only process observation, packaging and
-optional broker registration. The [managed consumer](examples/managed-overlay)
+attachment, native allow/deny policy, read-only process observation and packaging.
+Its retained broker sections describe the historical implementation; the active
+multi-app contract is [cooperative add-ons](doc/cooperative-addons.md).
+The [managed consumer](examples/managed-overlay)
 is the starting example for applications that update targeting policy at runtime.
 
 The validation app download below is a separate artifact, not the SDK tarball.
@@ -106,15 +115,16 @@ operation; this is not a verified false-positive determination. See the
 before overriding a detection. Do not disable antivirus or exclude your entire
 Temp folder.
 
-For the shared-broker game test, also enable **build-two-app-demo** to obtain a
-second app carrying the pinned previous SDK revision. Use **Start Broker
-Test.cmd** in each folder, not the ordinary launcher. Follow the
-[two-application game test](doc/two-application-game-test.md) for launch order,
-profile separation, input checks and survivor acceptance.
+The workflow's **build-two-app-demo** and **Start Broker Test.cmd** lane retains
+the historical broker/package comparison. It is separate from the new
+[cooperative acceptance cases](doc/cooperative-addons-acceptance.md), which
+record each app's own JavaScript/native implementation, private route and
+survivor behavior.
 
 ### Run a focused example from source
 
-On Windows, use Node.js **26.12.1** and the [native build prerequisites](#build-and-test).
+On Windows, use a Node.js version in the workspace's supported range and the
+[native build prerequisites](#build-and-test).
 Install the workspace and prepare the runtime once:
 
 ```powershell
@@ -233,8 +243,9 @@ before treating a resolved update as permission to launch another game.
 
 `ready`/`armed` means discovery is available, not guaranteed attachment before
 graphics startup. Native future polling remains intermittent for fast hosts.
-The early lane remains exclusive; exact-PID broker attachment supplies the shared
-multi-application route.
+Use exact PID/path identity when your application already observes processes.
+Native attachment ownership is validated for the exact process incarnation in
+every lane; independent apps join the same host with their own engines.
 
 ## Attach to a target
 
@@ -243,7 +254,7 @@ application discovers games.
 
 | Target             | When to use it                                                        |
 | ------------------ | --------------------------------------------------------------------- |
-| Exact PID and path | Recommended for a process watcher and required for multi-app sharing  |
+| Exact PID and path | Recommended for a process watcher and unambiguous multi-app targeting |
 | Executable name    | Arm the launcher before a known game starts                           |
 | Path fragment      | Watch a directory family such as `steamapps` before matching launches |
 
@@ -334,7 +345,8 @@ supported path.
 | `injected-runtime` | This application initialized the isolated bundled runtime      |
 | `existing-runtime` | A compatible project runtime was already loaded                |
 | `official-addon`   | An existing official ReShade loaded the overlay add-on         |
-| `shared-runtime`   | Another application initialized the runtime for this exact PID |
+| `participant-addon` | This application's private engine joined the existing ReShade host |
+| `shared-runtime`   | Historical broker-owned target sharing; not the default cooperative lane |
 
 ## Create overlay windows
 
@@ -539,98 +551,65 @@ exported TypeScript union gives the current codes and payload fields.
 Applications that observe the same process can each call `attach()` with the
 same exact PID. They do not need to discover or communicate with one another.
 
-The SDK guarantees that compatible applications:
+The cooperative implementation lets compatible applications:
 
-- share one injected runtime and one target connection;
-- may reuse the same application-local window IDs safely;
+- share one ReShade host while retaining their own native engines and
+  authenticated target connections;
+- reuse the same application-local window IDs safely;
 - receive input and focus only for windows they own;
 - combine interception requests so the game is released only after every app
   releases or disconnects;
 - keep working when another participating application exits or crashes.
 
 Multi-application, multi-version coexistence is a fundamental library contract,
-not a same-version convenience. Broker/bootstrap code must remain small and
-stable, and new releases must preserve backward-compatible client APIs and the
-shared ownership rules.
+not a same-version convenience. Each app ships its SDK and native engine without
+requiring a coordinated upgrade of other apps. The small cooperative ABI uses
+explicit sizes/versions and fixed-layout POD records with owned callbacks and
+handles; private C++ layouts and allocator ownership do not cross versions.
+Windows from different apps can interleave in global order rather than being
+flattened into one layer per app.
 
-The first compatible running broker remains in charge. Before a service starts,
-the bootstrap can select a newer compatible implementation from the optional
-per-user catalog. For each exact target PID, the bounded initial election then
-selects the highest eligible compatible **native runtime generation**, not the
-highest npm version label. Broker implementation selection and native-provider
-election are separate operations.
+ReShade remains a shared dependency. The first eligible initialization supplies
+the host when none exists; later apps keep that mapped host and load their own
+engines. There is no election of one app's overlay feature implementation.
+One pinned module supplies the baseline ReShade event trampoline even after its
+application exits. This preserves callbacks for survivors; it does not move
+their rendering or input implementation into that module. All native modules
+share the game's address space, so this is state/lifetime isolation, not process
+fault containment.
 
-Once target-route publication may have begun, ownership stays pinned for that
-target lifecycle. Later arrivals, including newer versions, join the selected
-runtime instead of injecting another one. New optional behavior is used only
-when both sides support it. Versions from before broker support cannot join a
-broker-owned target.
+The native injector validates the target's image and creation identity. Once
+initialization may have started, possibly consumed host ownership stays pinned
+until authoritative target exit. A timeout, app exit or lost socket never
+authorizes a second ReShade injection.
 
-The broker is a standalone executable with its own pinned runtime. It does not
-use the application's Electron executable, open its UI, or require Electron's
-RunAsNode fuse. Keep the complete generated `dist/broker/win32-x64` distribution,
-not just its `.exe`, in the packaged application; its manifest covers the service
-modules, licenses, and native assets as well as the executable. Keep
-`electron-game-overlay` external in the main-process bundler, as the validation
-client does, so the SDK's relative asset paths remain valid. In an ASAR-based
-package, unpack the broker distribution onto the real filesystem. Retain the
-SDK's ordinary `dist/runtime` assets too: an application can still be elected
-as a live native provider.
+See the [cooperative contract](doc/cooperative-addons.md) and
+[acceptance evidence](doc/cooperative-addons-acceptance.md) for implementation
+status and the distinction between protocol, controlled-host and actual-game
+results. Mixed development-build results do not claim compatibility with the
+retired broker architecture or a measured 500-app/500-version capacity.
 
-### Optional advance registration
+### Independent application packaging
 
-Registration lets another app discover the implementation even while its
-supplying app is stopped. It is **not required**: ordinary startup can use its
-own bundled distribution when there is no usable catalog. Stale or malformed
-optional entries must not alone disable normal startup. This does not remove
-the early graphics-attachment deadline or permit replacing an active owner.
+Keep `electron-game-overlay` external in the main-process bundler so relative
+asset paths remain valid. Package the complete sealed SDK `dist`, including both
+native architectures and its nested JavaScript dependency. In ASAR builds, use the
+SDK's `/packaging` helpers and unpack pattern to retain those files on the real
+filesystem. Each application ships its own package; normal startup needs no
+standalone broker executable, broker catalog registration or separate Node.js
+runtime.
 
-Installer or main-process setup code can register without creating a session:
+### Retained historical broker APIs
 
-```ts
-import {
-  registerOverlayBrokerInstallation,
-} from 'electron-game-overlay/broker';
+The `/broker` entry point and `registerOverlayBrokerInstallation()` /
+`unregisterOverlayBrokerInstallation()` remain exported for the historical
+broker implementation and its tests. They do not register or select engines for
+the default cooperative SDK. The retained `allowPrereleaseBroker` constructor
+option likewise does not affect cooperative engine selection. Ordinary apps use
+`new ElectronGameOverlay()`.
 
-const registrationId = await registerOverlayBrokerInstallation();
-// Persist this opaque ID in the application's installation metadata.
-```
-
-During uninstall, call `unregisterOverlayBrokerInstallation(registrationId)`
-from the same entry point before removing the supplying application.
-
-The `/broker` entry point does not import Electron. Installers without a Node
-installation can use the same operations through the standalone executable's
-`--register` and `--unregister <registrationId>` commands; `--help` describes the
-syntax. Run setup for the intended Windows user, not a system-service account.
-Unregistration removes that registration, not another app's registration,
-running service, active dependencies, or game ownership claims.
-
-Startup selection uses stable releases by default. Preview testing requires an
-explicit application-level opt-in:
-
-```ts
-import { ElectronGameOverlay } from 'electron-game-overlay';
-
-const overlay = new ElectronGameOverlay({ allowPrereleaseBroker: true });
-```
-
-Registering a preview also requires `{ allowPrerelease: true }`; that permission
-does not silently opt unrelated starting applications into preview selection.
-An already-running compatible broker still wins, including after this setting
-changes. Shared startup is supported at normal medium Windows integrity; it
-rejects elevated or unknown-integrity callers rather than running per-user
-cached code with extra privileges.
-
-Name-only and path-watcher attachment cannot share a known PID ahead of time,
-so those legacy modes remain exclusive. Use an application process watcher and
-exact-PID attachment whenever overlap is possible.
-
-See [`doc/multi-application-broker.md`](doc/multi-application-broker.md) for the
-mandatory compatibility contract, election/recovery design,
-advance-registration behavior, and required regression coverage. The
-500-app/500-version scenario expresses the design goal; it is not a tested
-capacity guarantee.
+The [historical broker contract](doc/multi-application-broker.md) documents that
+separate implementation's bootstrap, catalog, election and recovery rules.
 
 ## Existing ReShade installations
 
@@ -703,15 +682,15 @@ so signatures and option fields stay synchronized with the implementation.
 | `createOverlayAfterPack` | `/packaging` | Compose an electron-builder hook preserving the complete SDK |
 | `packageOverlayForElectronBuilder` | `/packaging` | Restore and verify the SDK under explicit Windows build output |
 | `verifyOverlayPackage` | `/packaging` | Verify all sealed files/mirrors without native execution |
-| `registerOverlayBrokerInstallation`, `unregisterOverlayBrokerInstallation` | `/broker` | Optional per-user advance discovery; registration is not required |
+| `registerOverlayBrokerInstallation`, `unregisterOverlayBrokerInstallation` | `/broker` | Retained historical broker registration; unused by default cooperative startup |
 
 See the [complete API guide](doc/sdk-api.md) for options, return values, events,
 cleanup, public type families, packaging examples and internal-only boundaries.
 
 Start from [`src/index.ts`](libs/electron-game-overlay/src/index.ts), the overlay
 export list in [`src/lib/sdk.ts`](libs/electron-game-overlay/src/lib/sdk.ts), or
-the Node-only [`src/broker.ts`](libs/electron-game-overlay/src/broker.ts) setup
-entry point. The declaration sites for the main API are:
+the retained Node-only [`src/broker.ts`](libs/electron-game-overlay/src/broker.ts)
+historical setup entry point. The declaration sites for the main API are:
 
 - [`ElectronGameOverlay`](libs/electron-game-overlay/src/lib/electron-game-overlay.ts)
 - [`OverlaySession`](libs/electron-game-overlay/src/lib/overlay-session.ts)
@@ -722,7 +701,7 @@ entry point. The declaration sites for the main API are:
 - [native allow/deny policy](libs/electron-game-overlay/src/lib/process-policy.ts)
 - [read-only process observer](libs/electron-game-overlay/src/lib/process-observer.ts)
 - [Node-only packaging helpers](libs/electron-game-overlay/src/packaging.ts)
-- [optional broker installation setup and options](libs/electron-game-overlay/src/lib/overlay-broker-installation.ts)
+- [historical broker installation setup and options](libs/electron-game-overlay/src/lib/overlay-broker-installation.ts)
 
 Use editor autocomplete or the emitted `.d.ts` declarations for exact
 signatures instead of copying type definitions from this README.
@@ -740,8 +719,9 @@ signatures instead of copying type definitions from this README.
   engine-specific input paths are not universally intercepted.
 - Existing official-ReShade integration is currently x64 only.
 - Runtime and add-on code is not unloaded while the target remains alive.
-- Same-PID multi-application sharing requires exact-PID attachment and a
-  protocol-v1-compatible SDK.
+- Same-process multi-application operation requires compatible cooperative
+  native engines. Use exact PID/path attachment when your app already knows
+  the process identity; package-version equality is not required.
 - Electron 40 and newer require a new offscreen-raster and DPI compatibility
   pass before support can be widened.
 
@@ -750,10 +730,10 @@ hardening boundaries.
 
 ## Build and test
 
-General repository tooling accepts Node.js `^20.19.0 || >=22.12.0`, but a full
-SDK build requires **Node.js 26.12.1** to embed the standalone broker's pinned
-runtime. Consumers do not need a separate Node.js installation, and the broker
-does not depend on their application's Electron runtime or RunAsNode fuse.
+Repository tooling accepts Node.js `^20.19.0 || >=22.12.0`. The normal SDK build
+seals the compiled SDK and native assets directly; it does not build a standalone
+broker or require its pinned Node runtime. Consumers use their application's
+supported Electron runtime and do not need a separate Node.js installation.
 Building the native runtime from source additionally requires Visual Studio 2022 with the
 C++ desktop workload, Rust, CMake 3.24 or newer, and both Rust Windows targets:
 
