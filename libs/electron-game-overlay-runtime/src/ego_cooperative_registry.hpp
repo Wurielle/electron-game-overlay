@@ -412,12 +412,46 @@ public:
         if (state_->primary_native_surface == 0) state_->primary_native_surface = native_surface;
         return state_->primary_native_surface == native_surface;
     }
-    void release_primary_surface(std::uint64_t native_surface)
+    surface_entry primary_surface()
+    {
+        // Rendering peers may follow the selected HWND, but this query never
+        // elects one. Unknown inventory cannot authorize another presenter.
+        if (!available()) return {};
+        detail::lock guard(mutex_);
+        if (!guard || state_->primary_native_surface == 0 ||
+            InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&state_->surface_inventory_uncertain), 0, 0) != 0)
+            return {};
+        for (const auto &surface : state_->surfaces)
+            if (surface.native_id == state_->primary_native_surface && surface.hwnd != 0)
+                return surface;
+        return {};
+    }
+    void release_primary_surface(std::uint64_t native_surface,
+        std::uint64_t surviving_driver = 0, std::uint64_t retired_hwnd = 0)
     {
         if (!available() || native_surface == 0) return;
         detail::lock guard(mutex_);
         if (!guard || state_->primary_native_surface != native_surface) return;
         state_->primary_native_surface = 0;
+        bool preserve_capture = false;
+        if (surviving_driver != 0 && surviving_driver != native_surface && retired_hwnd != 0 &&
+            InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&state_->surface_inventory_uncertain), 0, 0) == 0)
+            for (const auto &surface : state_->surfaces)
+                if (surface.native_id == surviving_driver && surface.hwnd == retired_hwnd)
+                { preserve_capture = true; break; }
+        if (!preserve_capture)
+        {
+            state_->draining_buttons |= state_->capture_buttons;
+            state_->capture = {};
+            state_->capture_buttons = 0;
+        }
+        ++state_->revision;
+    }
+    void retire_input_driver_capture()
+    {
+        if (!available()) return;
+        detail::lock guard(mutex_);
+        if (!guard) return;
         state_->draining_buttons |= state_->capture_buttons;
         state_->capture = {};
         state_->capture_buttons = 0;

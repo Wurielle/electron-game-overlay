@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.24)
+project(input_frame_consumer_fixture LANGUAGES CXX)
+
+set(INPUT_CONSUMER_HEADER "" CACHE FILEPATH "Exact input_frame_consumer.hpp under test")
+if(NOT EXISTS "${INPUT_CONSUMER_HEADER}")
+    message(FATAL_ERROR "Supply INPUT_CONSUMER_HEADER naming the exact header under test.")
+endif()
+get_filename_component(INPUT_CONSUMER_HEADER "${INPUT_CONSUMER_HEADER}" REALPATH)
+file(TO_CMAKE_PATH "${INPUT_CONSUMER_HEADER}" INPUT_CONSUMER_HEADER_INCLUDE)
+
+find_package(Threads REQUIRED)
+add_executable(input_frame_consumer_fixture fixture.cpp)
+target_compile_features(input_frame_consumer_fixture PRIVATE cxx_std_17)
+target_compile_definitions(input_frame_consumer_fixture PRIVATE
+    "INPUT_CONSUMER_HEADER=\"${INPUT_CONSUMER_HEADER_INCLUDE}\"")
+target_link_libraries(input_frame_consumer_fixture PRIVATE Threads::Threads)
+if(MSVC)
+    target_compile_options(input_frame_consumer_fixture PRIVATE /W4 /permissive- /EHsc)
+    target_link_options(input_frame_consumer_fixture PRIVATE /INCREMENTAL:NO)
+else()
+    target_compile_options(input_frame_consumer_fixture PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+enable_testing()
+add_test(NAME input_frame_consumer COMMAND input_frame_consumer_fixture)

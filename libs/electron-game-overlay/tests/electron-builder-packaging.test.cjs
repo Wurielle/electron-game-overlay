@@ -3,12 +3,13 @@ const test = require('node:test'),
   fs = require('node:fs/promises'),
   path = require('node:path'),
   os = require('node:os');
+require('./helpers/source-packaging-loader.cjs');
 const {
   packageOverlayForElectronBuilder,
   verifyOverlayPackage,
   createOverlayAfterPack,
 } = require('../dist/packaging.js');
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ego-packaging-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 3 }));
   const sdk = path.join(root, 'pnpm-store', 'electron-game-overlay'),
@@ -28,12 +29,13 @@ async function fixture(t) {
   await write('SDK_PROVENANCE.json', '{"workingTreeDirty":true}');
   await write('node_modules/.bin/electron.cmd', 'peer wrapper must not copy');
   await write('private-source.txt', 'not distributed');
-  const payload = require('./helpers/cooperative-package-fixture.cjs').writeCooperativeDistribution(path.join(sdk, 'dist'), { packageVersion: '0.1.0-rc.5' });
+  const payload = require('./helpers/cooperative-package-fixture.cjs').writeCooperativeDistribution(path.join(sdk, 'dist'), { packageVersion: '0.1.0-rc.5', ...options });
   return {
     root,
     sdk,
     out,
     leaf,
+    payload,
     sealedCount: payload.files.length,
     write,
     context: { appOutDir: out, electronPlatformName: 'win32' },
@@ -159,4 +161,23 @@ test('non-Windows afterPack is a no-op and Node-only packaging import starts no 
     ),
     false,
   );
+});
+
+test('public package verifier keeps retained schema-29 SDKs valid without adding new patch provenance', async t => {
+  const f = await fixture(t, { runtimeGeneration: 14, addonBuildId: '412D57BEA49440738CC4C3903038F2E7' });
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+  const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade64.build.json')));
+  assert.equal(stamp.schemaVersion, 29);
+  assert.equal(stamp.ownedLateD3d11PatchSha256, undefined);
+});
+test('public package verifier rejects schema-30 missing provenance even after legitimate hashes are rebound', async t => {
+  const f = await fixture(t);
+  const relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(await fs.readFile(path.join(f.leaf, relative)));
+  delete stamp.ownedLateD3d11PatchSha256;
+  f.payload.write(relative, JSON.stringify(stamp)); f.payload.bindNativeHashes(); f.payload.seal();
+  await assert.rejects(verifyOverlayPackage(f.sdk), /owned late D3D11 patch provenance/i);
+  await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /owned late D3D11 patch provenance/i);
+  await assert.rejects(fs.stat(f.destination), /ENOENT/);
 });

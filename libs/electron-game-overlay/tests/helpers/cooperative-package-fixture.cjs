@@ -8,8 +8,10 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
-  addonBuildId = '412D57BEA49440738CC4C3903038F2E7',
-  runtimeGeneration = 14,
+  addonBuildId = 'BCE6C5C8746F4300861300B2BDA3594E',
+  runtimeGeneration = 15,
+  reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
+  ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
 } = {}) {
   dist = path.resolve(dist);
   fs.mkdirSync(dist, { recursive: true });
@@ -32,6 +34,7 @@ function writeCooperativeDistribution(dist, {
   }
   write('lib/module.js', '// controlled compiled SDK module\n');
   write('lib/reshade-launcher.js', `const OFFICIAL_ADDON_BUILD_ID = '${addonBuildId}';\n`);
+  write('lib/overlay-broker-protocol.js', `exports.OVERLAY_BROKER_RUNTIME_GENERATION = ${runtimeGeneration};\n`);
   json('node_modules/tslib/package.json', { name: 'tslib', version: '2.8.1', main: 'tslib.js' });
   write('node_modules/tslib/tslib.js', '// controlled dependency, never executed\n');
   write('node_modules/tslib/LICENSE.txt', 'Controlled immutable dependency license\n');
@@ -56,22 +59,27 @@ function writeCooperativeDistribution(dist, {
       const packageName = `electron_game_overlay_runtime${suffix}.build.json`;
       const read = name => {
         try { return JSON.parse(fs.readFileSync(path.join(dist, runtime, name), 'utf8')); }
-        catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+        catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
       };
+      const previousReShade = read(reshadeName);
+      const previousPackage = read(packageName);
       json(runtime + reshadeName, {
-        schemaVersion: 29, commit: '4a50d1eddace85734871d91792ff214f13f66c01',
+        ...(previousReShade ?? {
+        schemaVersion: reshadeSchemaVersion, commit: '4a50d1eddace85734871d91792ff214f13f66c01',
+        ...(reshadeSchemaVersion === 30 ? { ownedLateD3d11PatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
-        ...read(reshadeName),
+        }),
         runtimeSha256: digest(`ReShade${bits}.dll`), injectorSha256: digest(`inject${suffix}.exe`),
       });
       json(runtime + packageName, {
+        ...(previousPackage ?? {
         schemaVersion: 4, kind: 'electron-game-overlay-runtime-build',
         platform: bits === 64 ? 'win32-x64' : 'win32-ia32', configuration: 'RelWithDebInfo',
         addonBuildId, cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1,
         injectorFutureTargets: 2, managerProtocolSchemaVersion: 1, runtimeGeneration,
         targetTransportMin: 1, targetTransportMax: 1, managerSourceSha256: sha('controlled manager source'),
-        ...read(packageName),
+        }),
         addonSha256: digest(`electron_game_overlay.addon${bits}`),
         managerSha256: digest(`electron_game_overlay_reshade_manager${suffix}.exe`),
         injectorSha256: digest(`inject${suffix}.exe`),

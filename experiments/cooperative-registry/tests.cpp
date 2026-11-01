@@ -1,7 +1,9 @@
 #include <ego_cooperative_registry.hpp>
 #include <ego_cooperative_input.hpp>
+#include <ego_cooperative_frame_policy.hpp>
 #include <atomic>
 #include <cstdio>
+#include <future>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -48,12 +50,200 @@ window_v1 window(std::uint32_t id, std::uint64_t incarnation = 1)
     result.width = result.height = 100;
     return result;
 }
+
+void frame_policy_tests()
+{
+    using role = presentation_role;
+    static_assert(classify_presentation(10, 300, true, 10, 300) == role::logical_owner);
+    static_assert(classify_presentation(20, 300, false, 10, 300) == role::replica);
+    static_assert(drives_logical_frame(role::logical_owner));
+    static_assert(drives_logical_frame(role::replica));
+    static_assert(!drives_logical_frame(role::excluded));
+    struct presentation_case
+    {
+        std::uint64_t native, hwnd;
+        bool logical_owner;
+        std::uint64_t primary_native, primary_hwnd;
+        role expected;
+    };
+    constexpr presentation_case cases[] = {
+        {10, 300, true, 10, 300, role::logical_owner},
+        {10, 300, true, 0, 0, role::logical_owner}, // Unknown peer inventory never transfers an existing owner.
+        {20, 300, false, 10, 300, role::replica},
+        {10, 300, false, 20, 300, role::replica}, // The former owner can become a rendering peer.
+        {10, 300, false, 10, 300, role::excluded}, // A replica cannot impersonate the selected native identity.
+        {20, 301, false, 10, 300, role::excluded}, // Related/root-like HWNDs are not an exact HWND match.
+        {20, 500, false, 10, 300, role::excluded},
+        {20, 0, false, 10, 300, role::excluded},
+        {0, 300, false, 10, 300, role::excluded},
+        {20, 300, false, 0, 300, role::excluded},
+        {20, 300, false, 10, 0, role::excluded},
+        {20, 300, false, 0, 0, role::excluded},
+    };
+    for (const auto &test : cases)
+        require(classify_presentation(test.native, test.hwnd, test.logical_owner,
+            test.primary_native, test.primary_hwnd) == test.expected,
+            "Presentation policy confused exact-HWND rendering with logical ownership");
+
+    struct frame_model
+    {
+        logical_epoch_tracker logical;
+        presentation_driver driver;
+        unsigned observations = 0, cleanups = 0, progress = 0, phase_changes = 0;
+        bool intercepting = false;
+        epoch_observation present(role current_role, std::uint64_t native,
+            std::uint64_t epoch, bool requested)
+        {
+            // Resource epochs remain per presenter, while every eligible
+            // presentation drives this single participant control stream.
+            if (!drives_logical_frame(current_role))
+                return {};
+            ++observations;
+            const auto result = logical.observe(epoch);
+            if (result.stale) return result;
+            driver.activate(native);
+            ++progress;
+            if (result.changed) ++cleanups;
+            if (intercepting != requested) { intercepting = requested; ++phase_changes; }
+            return result;
+        }
+    };
+    frame_model frames;
+    frames.present(classify_presentation(30, 301, false, 10, 300), 30, 99, true);
+    require(frames.observations == 0 && frames.progress == 0 && frames.driver.native_id() == 0,
+        "An unrelated presenter activated or advanced the shared logical stream");
+    auto observation = frames.present(classify_presentation(10, 300, true, 10, 300), 10, 1, false);
+    require(observation.first && !observation.changed && !observation.stale && observation.previous == 0,
+        "The first eligible presentation did not initialize the logical stream");
+    require(frames.driver.native_id() == 10 && frames.progress == 1,
+        "The first eligible presenter did not become the current driver");
+    // A remains selected/live but stops presenting. B alone must continue
+    // metadata, epoch cleanup and input progress for the same exact HWND.
+    observation = frames.present(classify_presentation(20, 300, false, 10, 300), 20, 3, true);
+    require(!observation.first && observation.changed && !observation.stale &&
+        observation.previous == 1 && frames.cleanups == 1 && frames.driver.native_id() == 20 &&
+        frames.progress == 2 && frames.phase_changes == 1 && frames.intercepting,
+        "A same-HWND peer failed to advance the shared state while its anchor paused");
+    observation = frames.present(role::replica, 20, 3, true);
+    require(!observation.first && !observation.changed && !observation.stale &&
+        observation.previous == 3 && frames.cleanups == 1 && frames.phase_changes == 1,
+        "Repeated peer presentation duplicated epoch cleanup or interception transitions");
+    require(!frames.driver.release(10) && frames.driver.native_id() == 20,
+        "Retiring an old presenter disabled the still-active same-HWND driver");
+    const auto progress_before_excluded = frames.progress;
+    frames.present(classify_presentation(30, 301, false, 10, 300), 30, 5, false);
+    require(frames.progress == progress_before_excluded && frames.driver.native_id() == 20 &&
+        frames.cleanups == 1 && frames.phase_changes == 1 && frames.intercepting,
+        "An excluded HWND stole driver identity or advanced shared metadata/input");
+    observation = frames.present(role::logical_owner, 10, 2, false);
+    require(observation.stale && !observation.changed && observation.previous == 3 &&
+        frames.driver.native_id() == 20 && frames.progress == progress_before_excluded,
+        "A delayed anchor frame rolled back the peer's active logical state");
+    frames.present(role::logical_owner, 10, 3, true);
+    frames.present(role::replica, 20, 3, true);
+    require(frames.driver.native_id() == 20 && frames.cleanups == 1 && frames.phase_changes == 1,
+        "Alternating eligible presenters created independent logical cleanup or phase state");
+    observation = frames.present(classify_presentation(20, 300, true, 20, 300), 20, 3, true);
+    require(!observation.changed && !observation.stale && frames.cleanups == 1,
+        "Promoting the current peer repeated an already-applied shared epoch transition");
+    frames.present(role::logical_owner, 20, 3, false);
+    require(frames.phase_changes == 2 && !frames.intercepting && !frames.driver.release(10) &&
+        frames.driver.release(20) && frames.driver.native_id() == 0 && !frames.driver.release(20),
+        "Only current-driver retirement should clear the presentation driver exactly once");
+
+    frame_model replica_first;
+    observation = replica_first.present(role::replica, 20, 3, true);
+    require(observation.first && replica_first.driver.native_id() == 20 && replica_first.progress == 1,
+        "The first eligible same-HWND peer could not drive the shared stream");
+    observation = replica_first.present(role::logical_owner, 10, 1, false);
+    require(observation.stale && observation.previous == 3 && replica_first.driver.native_id() == 20,
+        "A late anchor overwrote the newer logical epoch established by its peer");
+    replica_first.driver.reset();
+    replica_first.logical.reset();
+    require(replica_first.driver.native_id() == 0 && !replica_first.driver.release(20),
+        "Bridge reset retained a former presentation driver");
+    observation = replica_first.present(role::logical_owner, 10, 1, false);
+    require(observation.first && !observation.changed && !observation.stale && observation.previous == 0,
+        "A genuinely new bridge could not restart its logical epoch at one");
+}
+
+void logical_control_concurrency_tests()
+{
+    constexpr std::uint64_t old_presenter = 10, next_presenter = 20;
+    presentation_driver ungated_driver;
+    ungated_driver.activate(old_presenter);
+    std::atomic<bool> ungated_enabled = true;
+    std::atomic<bool> ungated_release_succeeded = false;
+    std::promise<void> ungated_released, ungated_next_enabled;
+    auto ungated_released_signal = ungated_released.get_future();
+    auto ungated_next_enabled_signal = ungated_next_enabled.get_future();
+    std::thread old_ungated([&] {
+        ungated_release_succeeded.store(ungated_driver.release(old_presenter));
+        ungated_released.set_value();
+        // Reproduce the actual bad ordering: A has relinquished identity, B
+        // has enabled input, and only then A finishes its old disable tail.
+        ungated_next_enabled_signal.wait();
+        ungated_enabled.store(false);
+    });
+    std::thread next_ungated([&] {
+        ungated_released_signal.wait();
+        ungated_driver.activate(next_presenter);
+        ungated_enabled.store(true);
+        ungated_next_enabled.set_value();
+    });
+    old_ungated.join();
+    next_ungated.join();
+    require(ungated_release_succeeded.load() && ungated_driver.native_id() == next_presenter &&
+        !ungated_enabled.load(),
+        "The ungated retirement control did not reproduce stale-tail disabling of a new presenter");
+
+    logical_control control;
+    presentation_driver gated_driver;
+    control.run([&] { gated_driver.activate(old_presenter); });
+    std::atomic<bool> gated_enabled = true;
+    std::atomic<bool> gated_release_succeeded = false;
+    std::atomic<bool> retirement_finished = false;
+    std::atomic<bool> next_entered_before_retirement = false;
+    std::promise<void> retirement_entered, next_attempt_started;
+    auto retirement_entered_signal = retirement_entered.get_future();
+    auto next_attempt_started_signal = next_attempt_started.get_future();
+    std::thread old_gated([&] {
+        control.run([&] {
+            gated_release_succeeded.store(gated_driver.release(old_presenter));
+            retirement_entered.set_value();
+            // B announces its admission attempt outside the boundary. A may
+            // finish cleanup without waiting for B to acquire the same mutex.
+            next_attempt_started_signal.wait();
+            gated_enabled.store(false);
+            retirement_finished.store(true);
+        });
+    });
+    std::thread next_gated([&] {
+        retirement_entered_signal.wait();
+        next_attempt_started.set_value();
+        control.run([&] {
+            next_entered_before_retirement.store(!retirement_finished.load());
+            gated_driver.activate(next_presenter);
+            gated_enabled.store(true);
+        });
+    });
+    old_gated.join();
+    next_gated.join();
+    require(gated_release_succeeded.load() && !next_entered_before_retirement.load() &&
+        gated_driver.native_id() == next_presenter && gated_enabled.load(),
+        "Control-only serialization let an old retirement tail disable the newly admitted presenter");
+    const bool stale_release = control.run([&] { return gated_driver.release(old_presenter); });
+    require(!stale_release && gated_driver.native_id() == next_presenter && gated_enabled.load(),
+        "A stale presenter's release changed the new presenter's committed input state");
+}
 }
 
 int main()
 {
     try
     {
+        frame_policy_tests();
+        logical_control_concurrency_tests();
         registry first;
         registry second;
         require(first.open() && second.open(), "Independent registry handles did not open one target mapping");
@@ -137,6 +327,38 @@ int main()
         first.release_primary_surface(10);
         require(second.claim_primary_surface(20) && first.claim_primary_surface(20),
             "Final primary destruction did not allow a surviving surface to promote");
+        require(first.primary_surface().native_id == 0 && first.primary_surface().hwnd == 0,
+            "A selected native identity without inventory fabricated a target HWND");
+        first.release_primary_surface(20);
+        require(first.observe_surface(30, 300) && second.observe_surface(40, 300) &&
+            first.observe_surface(50, 500) && first.observe_surface(60, 0),
+            "Primary-window presentation query fixture setup failed");
+        require(first.primary_surface().native_id == 0 && second.primary_surface().hwnd == 0,
+            "Reading the primary presentation target elected an unclaimed surface");
+        require(first.claim_primary_surface(30), "The logical primary could not be selected");
+        auto selected_surface = second.primary_surface();
+        require(selected_surface.native_id == 30 && selected_surface.hwnd == 300 &&
+            second.observe_surface(30, 300) && first.primary_surface().native_id == 30,
+            "Independent copies did not see the exact primary HWND across idempotent initialization");
+        second.release_primary_surface(40);
+        require(first.primary_surface().native_id == 30 && first.primary_surface().hwnd == 300,
+            "Retiring a same-HWND rendering peer changed logical ownership");
+        require(first.remove_surface(30) && second.primary_surface().native_id == 0 &&
+            second.primary_surface().hwnd == 0 && !second.claim_primary_surface(40),
+            "A missing selected presenter silently promoted its same-HWND peer");
+        first.release_primary_surface(30);
+        require(second.primary_surface().native_id == 0 && second.claim_primary_surface(40) &&
+            first.primary_surface().native_id == 40 && first.primary_surface().hwnd == 300,
+            "Explicit primary release/promotion lost the surviving peer's exact target HWND");
+        require(first.remove_surface(50) && second.primary_surface().native_id == 40,
+            "Destroying a different-HWND presenter changed the selected presentation target");
+        second.release_primary_surface(40);
+        require(first.claim_primary_surface(60) && second.primary_surface().native_id == 0 &&
+            second.primary_surface().hwnd == 0,
+            "A selected offscreen/unknown HWND authorized rendering peers");
+        first.release_primary_surface(60);
+        require(first.remove_surface(40) && second.remove_surface(60) && !first.has_live_surfaces(),
+            "Primary presentation query fixture did not retire its live surfaces");
         std::vector<std::uint32_t> draws;
         owner a{1, false, &draws};
         owner b{2, true, &draws};
@@ -377,17 +599,110 @@ int main()
             first.focus() == survivor_keys[1] && first.capture() == survivor_keys[1] &&
             first.leave(epoch_id) && second.leave(survivor_id),
             "Replacement epoch revived old order or changed survivor input ownership");
+        owner capture_owner{9, false, &draws};
+        const auto capture_id = first.join(callbacks, &capture_owner);
+        const window_key drag_key{capture_id, 1, 0, 1};
+        const auto drag_frame = window(1);
+        require(capture_id != 0 && first.reconcile_registrations(capture_id, &drag_key, 1) &&
+            first.publish_windows(capture_id, &drag_frame, 1) && first.set_interception(capture_id, true),
+            "Same-HWND capture preservation fixture setup failed");
+        constexpr std::uint64_t anchor_surface = 2010, peer_surface = 2020,
+            foreign_surface = 2030, offscreen_surface = 2040, shared_hwnd = 3000;
+        require(first.observe_surface(anchor_surface, shared_hwnd) &&
+            second.observe_surface(peer_surface, shared_hwnd) && first.observe_surface(foreign_surface, 4000) &&
+            first.observe_surface(offscreen_surface, 0) && first.claim_primary_surface(anchor_surface),
+            "Same-HWND driver inventory setup failed");
+        std::uint64_t drag_sequence = 1000;
+        const auto begin_drag = [&] {
+            require(first.decide_input(drag_sequence++, 0, WM_LBUTTONDOWN, 10, 10) == drag_key &&
+                first.capture() == drag_key && first.focus() == drag_key,
+                "Physical down did not establish the fixture's captured drag");
+        };
+        begin_drag();
+        const auto before_anchor_retirement = first.snapshot_windows();
+        const auto retired_anchor = second.primary_surface();
+        require(retired_anchor.native_id == anchor_surface && first.remove_surface(anchor_surface),
+            "The retired anchor's exact HWND was not snapshotted before inventory removal");
+        second.release_primary_surface(anchor_surface, peer_surface, retired_anchor.hwnd);
+        const auto after_anchor_retirement = first.snapshot_windows();
+        require(first.capture() == drag_key && first.focus() == drag_key &&
+            before_anchor_retirement.size() == 1 && after_anchor_retirement.size() == 1 &&
+            before_anchor_retirement[0].window.order == after_anchor_retirement[0].window.order &&
+            second.decide_input(drag_sequence++, 0, WM_MOUSEMOVE, 500, 500) == drag_key &&
+            first.decide_input(drag_sequence++, 0, WM_LBUTTONUP, 500, 500) == drag_key &&
+            first.capture().participant == 0,
+            "Removing an old anchor broke its live same-HWND driver's captured drag or logical scene");
+
+        const auto expect_retirement_clears = [&](std::uint64_t surviving_driver,
+            std::uint64_t retired_window, bool legacy_default = false) {
+            require(first.observe_surface(anchor_surface, shared_hwnd) && first.claim_primary_surface(anchor_surface),
+                "Capture cancellation fixture could not restore its anchor");
+            begin_drag();
+            const auto before = first.snapshot_windows();
+            require(first.remove_surface(anchor_surface), "Capture cancellation fixture lost its retiring anchor");
+            if (legacy_default) second.release_primary_surface(anchor_surface);
+            else second.release_primary_surface(anchor_surface, surviving_driver, retired_window);
+            const auto after = first.snapshot_windows();
+            require(first.capture().participant == 0 && first.focus() == drag_key &&
+                before.size() == 1 && after.size() == 1 && before[0].window.order == after[0].window.order &&
+                first.decide_input(drag_sequence++, 0, WM_LBUTTONUP, 10, 10).participant == 0,
+                "Unproven driver continuity retained capture, leaked a held release, or changed focus/order");
+        };
+        expect_retirement_clears(999999, shared_hwnd); // Missing driver.
+        require(first.remove_surface(peer_surface), "Stale driver fixture could not remove its peer");
+        expect_retirement_clears(peer_surface, shared_hwnd); // Stale inventory identity.
+        require(first.observe_surface(peer_surface, shared_hwnd), "Capture fixture could not restore its live peer");
+        expect_retirement_clears(foreign_surface, shared_hwnd);
+        expect_retirement_clears(offscreen_surface, shared_hwnd);
+        expect_retirement_clears(peer_surface, 0);
+        expect_retirement_clears(anchor_surface, shared_hwnd);
+        expect_retirement_clears(0, 0, true);
+
+        require(first.observe_surface(anchor_surface, shared_hwnd) && first.claim_primary_surface(anchor_surface),
+            "Current-driver cleanup fixture could not restore its anchor");
+        begin_drag();
+        require(first.remove_surface(anchor_surface), "Current-driver cleanup fixture lost its old anchor");
+        first.release_primary_surface(anchor_surface, peer_surface, shared_hwnd);
+        require(second.capture() == drag_key, "Authoritative same-HWND continuity did not retain the current drag");
+        const auto before_driver_retirement = first.snapshot_windows();
+        second.retire_input_driver_capture();
+        const auto after_driver_retirement = first.snapshot_windows();
+        require(first.capture().participant == 0 && first.focus() == drag_key &&
+            before_driver_retirement[0].window.order == after_driver_retirement[0].window.order &&
+            first.decide_input(drag_sequence++, 0, WM_LBUTTONUP, 10, 10).participant == 0 &&
+            first.decide_input(drag_sequence++, 0, WM_MOUSEMOVE, 10, 10) == drag_key,
+            "Actual current-driver cleanup failed to clear/drain preserved capture without changing logical focus");
+        first.retire_input_driver_capture();
+        require(first.remove_surface(peer_surface) && first.remove_surface(foreign_surface) &&
+            first.remove_surface(offscreen_surface) && !first.has_live_surfaces(),
+            "Capture preservation fixture left live surfaces behind");
         for (std::uint64_t surface = 1; surface <= max_surfaces; ++surface)
             require(first.observe_surface(1000 + surface, 2000 + surface), "Surface inventory bound fixture setup failed");
+        require(first.claim_primary_surface(1001) && second.primary_surface().native_id == 1001 &&
+            second.primary_surface().hwnd == 2001,
+            "A complete bounded inventory lost its exact selected surface");
         require(!second.observe_surface(999999, 999999), "Surface inventory accepted an untracked entry beyond its bound");
+        require(first.primary_surface().native_id == 0 && second.primary_surface().hwnd == 0,
+            "Uncertain inventory authorized a presentation peer through a stale selected target");
         require(first.observe_surface(1001, 2001) && first.snapshot_surfaces().size() == max_surfaces,
             "A duplicate surface consumed capacity after an overflow observation");
+        begin_drag();
+        require(first.observe_surface(1002, 2001) && first.remove_surface(1001),
+            "Uncertain same-HWND driver fixture setup failed");
+        first.release_primary_surface(1001, 1002, 2001);
+        require(first.capture().participant == 0 && first.focus() == drag_key &&
+            first.decide_input(drag_sequence++, 0, WM_LBUTTONUP, 10, 10).participant == 0 &&
+            first.observe_surface(1001, 2001),
+            "Unknown inventory preserved a drag or leaked its release despite exact-looking stale metadata");
         for (std::uint64_t surface = 1; surface <= max_surfaces; ++surface)
             require(first.remove_surface(1000 + surface), "Known surface retirement after overflow failed");
         require(first.snapshot_surfaces().empty() && second.has_live_surfaces(),
             "Incomplete surface inventory was mistaken for proof of a final surface exit");
+        require(first.leave(capture_id), "Capture preservation participant cleanup failed");
         registry unopened;
         require(unopened.has_live_surfaces(), "Unavailable inventory was mistaken for an empty target");
+        require(unopened.primary_surface().native_id == 0 && unopened.primary_surface().hwnd == 0,
+            "An unavailable registry fabricated a selected presentation target");
         std::puts("Cooperative registry protocol tests passed.");
         return 0;
     }

@@ -36,6 +36,14 @@ then proves another caller retains the pinned ownership rather than injecting
 a second host. A separate target containing only a pinned empty claim likewise
 cannot receive a replacement runtime after the bounded wait expires.
 
+The failed-member cases reject eight distinct staged modules from an explicit
+initializer return. Each reports the additive unload-safety query as exactly
+one, is detached, and does not increase the three admitted inert modules.
+A repeated load of an existing inert module proves cleanup releases only the
+reference acquired by that load. A zero query and an absent query retain their
+modules. These fixtures verify loader decisions; they do not establish the
+production engine's callback/publication/PIN safety predicate.
+
 The session guard unit queries the actual current process token, accepts the
 same retained process token, and rejects an invalid target handle. A pure policy
 check rejects differing session IDs. It never creates sessions or changes token
@@ -53,3 +61,8 @@ independently released SDK packages. Attachment across Windows sessions is
 unsupported and rejected before ownership/mutation. An actual second-session
 process rejection run was not performed; the OS query/failure and mismatch
 policy branches were tested as described above.
+
+The [failed-member cleanup evidence](evidence-failed-member-cleanup-2026-11-01.json)
+records separate private Release authoring builds for both architectures. Their
+inert payload validation used the generation-11 build ID; that is not a final
+packaged result after mapped add-on implementation changes.

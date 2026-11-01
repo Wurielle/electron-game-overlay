@@ -136,27 +136,55 @@ $CooperativeMembersPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-cooperative-members.patch"
 $CooperativeMembersPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $CooperativeMembersPatch).Hash
+$OwnedLateD3d11Patch =
+    Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11.patch"
+$OwnedLateD3d11PatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedLateD3d11Patch).Hash
+if ($OwnedLateD3d11PatchHash -cne
+    "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE") {
+    throw "The owned late D3D11 production patch does not match its frozen source."
+}
 $ExpectedPatchedFiles = @(
+    "ReShade.vcxproj"
     "include/reshade.hpp"
     "include/reshade_api.hpp"
     "include/reshade_events.hpp"
+    "source/addon.cpp"
     "source/addon_manager.cpp"
     "source/addon_manager.hpp"
+    "source/d3d11/d3d11_impl_swapchain.cpp"
+    "source/d3d11/d3d11_impl_swapchain.hpp"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl"
+    "source/input_frame_consumer.hpp"
     "source/input.cpp"
     "source/input.hpp"
+    "source/runtime.cpp"
+    "source/runtime.hpp"
     "source/runtime_gui.cpp"
     "tools/injector.cpp"
 )
 $ExpectedPatchedContentSha256 = [ordered]@{
+    "ReShade.vcxproj" = "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp" = "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
     "include/reshade_events.hpp" = "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
-    "source/addon_manager.cpp" = "28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
+    "source/addon.cpp" = "DF69C9E8BE88244B54D92849A183B8A149A74FA959ED49A7109824EF0D8E3D9C"
+    "source/addon_manager.cpp" = "E6524902A07A0B4E2947B372503679A84CAA0FD1840329E89564559C3160349E"
     "source/addon_manager.hpp" = "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/input.cpp" = "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
-    "source/input.hpp" = "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
-    "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1"
+    "source/d3d11/d3d11_impl_swapchain.cpp" = "6F9EA10B4621F37F2D4DAFA2E3F3575973DFDB6B566725BBD8B0BC8187DB52D3"
+    "source/d3d11/d3d11_impl_swapchain.hpp" = "60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp" = "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp" = "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "AEA939BCC391BC5C2F63683558B78A88222BD5E9C4B81EFB5069CAA346F724BE"
+    "source/input_frame_consumer.hpp" = "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
+    "source/input.cpp" = "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
+    "source/input.hpp" = "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
+    "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
+    "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
+    "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
+    "tools/injector.cpp" = "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -192,17 +220,11 @@ function Test-ReShadePatchedSourceState {
         return $false
     }
 
-    # Terminal injector patches overlap the historical stack, so lower patches
-    # cannot all be reverse-checked independently in the final tree. The
-    # independently reversible terminal seams below plus exact content hashes
-    # prove the complete ordered stack instead.
+    # The owned late-runtime tail overlaps injector and input patches, so lower
+    # seams cannot be reverse-checked independently in the final tree. Its exact
+    # reversal check and all nineteen content hashes prove the ordered stack.
     foreach ($Patch in @(
-        $RawInputFocusFollowingRootPatch,
-        $SuppressSplashPatch,
-        $X86RuntimePatch,
-        $X86TargetArchitectureDiagnosticPatch,
-        $InjectorExactTargetPathPatch,
-        $CooperativeMembersPatch
+        $OwnedLateD3d11Patch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -258,7 +280,7 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 29 -and
+        return $Stamp.schemaVersion -eq 30 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -288,6 +310,7 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorFutureTargetsPatchSha256 -eq $FutureTargetsPatchHash -and
             $Stamp.injectorProcessPolicyPatchSha256 -eq $ProcessPolicyPatchHash -and
             $Stamp.injectorCooperativeMembersPatchSha256 -eq $CooperativeMembersPatchHash -and
+            $Stamp.ownedLateD3d11PatchSha256 -eq $OwnedLateD3d11PatchHash -and
             $Stamp.cooperativeAddonProtocol -eq 1 -and
             $Stamp.injectorProcessInstanceBinding -eq 1 -and
             $Stamp.injectorFutureTargets -eq 2 -and
@@ -400,7 +423,7 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 29
+    schemaVersion = 30
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -429,6 +452,7 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorFutureTargetsPatchSha256 = $FutureTargetsPatchHash
     injectorProcessPolicyPatchSha256 = $ProcessPolicyPatchHash
     injectorCooperativeMembersPatchSha256 = $CooperativeMembersPatchHash
+    ownedLateD3d11PatchSha256 = $OwnedLateD3d11PatchHash
     cooperativeAddonProtocol = 1
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash
     injectorProcessInstanceBinding = 1

@@ -3,13 +3,16 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "412D57BEA49440738CC4C3903038F2E7"
+    "BCE6C5C8746F4300861300B2BDA3594E"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1"
+    "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C"
+)
+set(RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256
+    "F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B"
 )
 set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
-    "AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4"
+    "3D51024529834F539601F4E2573E29591954CF5906C704C980086108DB51373B"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
     "07A76311F29A7A20E54D305BCA1F384A035C84D620BF201C3CACBAC9681BA7B6"
@@ -121,10 +124,17 @@ set(RESHAPE_COOPERATIVE_MEMBERS_PATCH
 set(RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-cooperative-members-v3.patch"
 )
+set(RESHAPE_OWNED_LATE_D3D11_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-owned-late-d3d11.patch"
+)
+set(RESHAPE_OWNED_LATE_D3D11_PATCH_SHA256
+    "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE"
+)
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
-set(RESHAPE_EXPECTED_PATCHED_FILES
+# BEGIN EGO_SOURCE_CACHE_MIGRATION_TABLES
+set(RESHAPE_PRE_LATE_PATCHED_FILES
     "include/reshade.hpp"
     "include/reshade_api.hpp"
     "include/reshade_events.hpp"
@@ -135,17 +145,91 @@ set(RESHAPE_EXPECTED_PATCHED_FILES
     "source/runtime_gui.cpp"
     "tools/injector.cpp"
 )
-set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+set(RESHAPE_PRE_LATE_CONTENT_SHA256
+    "ReShade.vcxproj=685BE751EFA61EEFDE92EF4DDFD8932A7B9E3C10BF07077099421D502BEA1C57"
     "include/reshade.hpp=CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp=80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
     "include/reshade_events.hpp=8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
+    "source/addon.cpp=32A338204CF1D99C70F8769011E44DF8D9C8E94277437DD91C9002D972A8ED39"
     "source/addon_manager.cpp=28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
     "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
+    "source/d3d11/d3d11_impl_swapchain.cpp=6D8DCC7CD787D49C46D7244CC1E83BA8C26351BD6A65216D96C16D60296A250D"
+    "source/d3d11/d3d11_impl_swapchain.hpp=FF21425B350A5005DFF6EAB2BE026245BEEA78B64CACF6478D37F6B9514C8D55"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp=ABSENT"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp=ABSENT"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl=ABSENT"
     "source/input.cpp=3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
     "source/input.hpp=FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
+    "source/input_frame_consumer.hpp=ABSENT"
+    "source/runtime.cpp=8FD6C3A54592F11CD50FC57FDB29F1181DE9F2F428ADB2133693F96C8E372628"
+    "source/runtime.hpp=8599103DE7D8C0F6AD468066BCDEBC1761720A7E009CA6E4BF531BED30D87E0F"
     "source/runtime_gui.cpp=84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
+    "tools/injector.cpp=${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+)
+set(RESHAPE_PRISTINE_CONTENT_SHA256
+    "ReShade.vcxproj=685BE751EFA61EEFDE92EF4DDFD8932A7B9E3C10BF07077099421D502BEA1C57"
+    "include/reshade.hpp=DCB22F29CA7D7B2E4A9EA2F19CF98CE2911141659E525D3417F5FFADA75899C8"
+    "include/reshade_api.hpp=8D83EC8A620C48DA7A20D975BD27B3345B24D3F0D5B78AE4C4FE633D61B804EB"
+    "include/reshade_events.hpp=64608864E68FAF8E01B896B7726A1B0FC5AEC3CD802B49BA19E1B58F2BCEBDFE"
+    "source/addon.cpp=32A338204CF1D99C70F8769011E44DF8D9C8E94277437DD91C9002D972A8ED39"
+    "source/addon_manager.cpp=822F7D151C55A40B9FAF4C9C93A5F50789422E8A164670AD5DA1DC54423B5C0F"
+    "source/addon_manager.hpp=58E17E986E8A9CE007922F92C49B6144185BDEAE66627D576F674F1F6C416F2A"
+    "source/d3d11/d3d11_impl_swapchain.cpp=6D8DCC7CD787D49C46D7244CC1E83BA8C26351BD6A65216D96C16D60296A250D"
+    "source/d3d11/d3d11_impl_swapchain.hpp=FF21425B350A5005DFF6EAB2BE026245BEEA78B64CACF6478D37F6B9514C8D55"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp=ABSENT"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp=ABSENT"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl=ABSENT"
+    "source/input.cpp=AED8904412A8F54E340C64FBA09E80EA0DAB3B246C7E8969B27C2AF284442AB7"
+    "source/input.hpp=8CF526402B7B0E1BF5367A865A89F92D2DE9D59C2AFD92508797A22095BFF6A1"
+    "source/input_frame_consumer.hpp=ABSENT"
+    "source/runtime.cpp=8FD6C3A54592F11CD50FC57FDB29F1181DE9F2F428ADB2133693F96C8E372628"
+    "source/runtime.hpp=8599103DE7D8C0F6AD468066BCDEBC1761720A7E009CA6E4BF531BED30D87E0F"
+    "source/runtime_gui.cpp=B6D3B8969FF2D36CC014B2E8BB2C272DA9FFA9BF973524F4A09609A024B0B157"
+    "tools/injector.cpp=26CFBBFFD692ACFB24BD19CBD93B3C7F81F24555EA67B75C55FAD14861E38B00"
+)
+set(RESHAPE_EXPECTED_PATCHED_FILES
+    "ReShade.vcxproj"
+    "include/reshade.hpp"
+    "include/reshade_api.hpp"
+    "include/reshade_events.hpp"
+    "source/addon.cpp"
+    "source/addon_manager.cpp"
+    "source/addon_manager.hpp"
+    "source/d3d11/d3d11_impl_swapchain.cpp"
+    "source/d3d11/d3d11_impl_swapchain.hpp"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl"
+    "source/input.cpp"
+    "source/input.hpp"
+    "source/input_frame_consumer.hpp"
+    "source/runtime.cpp"
+    "source/runtime.hpp"
+    "source/runtime_gui.cpp"
+    "tools/injector.cpp"
+)
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "ReShade.vcxproj=9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
+    "include/reshade.hpp=CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
+    "include/reshade_api.hpp=80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
+    "include/reshade_events.hpp=8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
+    "source/addon.cpp=DF69C9E8BE88244B54D92849A183B8A149A74FA959ED49A7109824EF0D8E3D9C"
+    "source/addon_manager.cpp=E6524902A07A0B4E2947B372503679A84CAA0FD1840329E89564559C3160349E"
+    "source/addon_manager.hpp=C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
+    "source/d3d11/d3d11_impl_swapchain.cpp=6F9EA10B4621F37F2D4DAFA2E3F3575973DFDB6B566725BBD8B0BC8187DB52D3"
+    "source/d3d11/d3d11_impl_swapchain.hpp=60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp=98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp=99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl=AEA939BCC391BC5C2F63683558B78A88222BD5E9C4B81EFB5069CAA346F724BE"
+    "source/input.cpp=B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
+    "source/input.hpp=6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
+    "source/input_frame_consumer.hpp=50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
+    "source/runtime.cpp=96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
+    "source/runtime.hpp=1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
+    "source/runtime_gui.cpp=6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
     "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
 )
+# END EGO_SOURCE_CACHE_MIGRATION_TABLES
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
@@ -174,6 +258,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_PROCESS_POLICY_PATCH}"
     "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
     "${RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH}"
+    "${RESHAPE_OWNED_LATE_D3D11_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -244,9 +329,10 @@ function(verify_reshade_patched_source source_dir)
         RESHAPE_EXPECTED_FILES_TEXT)
     list(JOIN RESHAPE_ACTUAL_PATCHED_FILES "\n"
         RESHAPE_ACTUAL_FILES_TEXT)
+    list(LENGTH RESHAPE_EXPECTED_PATCHED_FILES RESHAPE_EXPECTED_PATCHED_FILE_COUNT)
     if(NOT RESHAPE_ACTUAL_FILES_TEXT STREQUAL RESHAPE_EXPECTED_FILES_TEXT)
         message(FATAL_ERROR
-            "The fetched ReShade tree does not contain exactly the nine "
+            "The fetched ReShade tree does not contain exactly the ${RESHAPE_EXPECTED_PATCHED_FILE_COUNT} "
             "pinned modified files.\n"
             "Expected:\n${RESHAPE_EXPECTED_FILES_TEXT}\n"
             "Actual:\n${RESHAPE_ACTUAL_FILES_TEXT}"
@@ -332,6 +418,524 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
+# BEGIN EGO_SOURCE_CACHE_MIGRATION_HELPERS
+function(ego_write_lf_source_cache_file filename content)
+    string(LENGTH "${content}" content_length)
+    if(content_length LESS 1)
+        message(FATAL_ERROR "Empty source-cache staging content is not permitted.")
+    endif()
+    math(EXPR last_offset "${content_length} - 1")
+    string(SUBSTRING "${content}" ${last_offset} 1 last_character)
+    if(NOT last_character STREQUAL "\n")
+        message(FATAL_ERROR "Only frozen LF-terminated files may use normalized staging.")
+    endif()
+    # CONFIGURE selects LF explicitly on Windows. Protect every literal @ so
+    # @ONLY cannot substitute source or patch text that happens to contain it.
+    set(EGO_SOURCE_LITERAL_AT "@")
+    string(REPLACE "@" "@EGO_SOURCE_LITERAL_AT@" escaped_content "${content}")
+    file(CONFIGURE OUTPUT "${filename}" CONTENT "${escaped_content}" @ONLY NEWLINE_STYLE LF)
+endfunction()
+
+function(ego_normalize_reshade_patch_file original_path output_dir result_var)
+    get_filename_component(patch_directory "${original_path}" DIRECTORY)
+    get_filename_component(patch_name "${original_path}" NAME)
+    ego_read_source_cache_file("${patch_directory}" "${patch_name}" patch_hash patch_text)
+    get_property(copy_index GLOBAL PROPERTY EGO_PATCH_EXECUTION_COPY_INDEX)
+    if(NOT DEFINED copy_index OR "${copy_index}" STREQUAL "")
+        set(copy_index 0)
+    endif()
+    set(copy_path "${output_dir}/p${copy_index}.patch")
+    string(LENGTH "${copy_path}" copy_path_length)
+    if(copy_path_length GREATER 240)
+        message(FATAL_ERROR "The normalized patch execution path exceeds the Windows-safe bound.")
+    endif()
+    math(EXPR next_copy_index "${copy_index} + 1")
+    set_property(GLOBAL PROPERTY EGO_PATCH_EXECUTION_COPY_INDEX "${next_copy_index}")
+    ego_write_lf_source_cache_file("${copy_path}" "${patch_text}")
+    file(SHA256 "${copy_path}" copy_hash)
+    string(TOUPPER "${copy_hash}" copy_hash)
+    if(NOT copy_hash STREQUAL patch_hash)
+        message(FATAL_ERROR "Normalized patch execution copy changed frozen content: ${patch_name}")
+    endif()
+    set(${result_var} "${copy_path}" PARENT_SCOPE)
+endfunction()
+
+function(ego_normalize_reshade_patch_inputs)
+    # Original paths have already been captured by CMAKE_CONFIGURE_DEPENDS.
+    # Build provenance continues to hash those originals; only execution paths
+    # in this configure are replaced by verified, explicitly LF copies.
+    string(RANDOM LENGTH 8 ALPHABET "0123456789abcdef" patch_suffix)
+    set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/.ep-${patch_suffix}")
+    while(EXISTS "${output_dir}")
+        string(RANDOM LENGTH 8 ALPHABET "0123456789abcdef" patch_suffix)
+        set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/.ep-${patch_suffix}")
+    endwhile()
+    string(LENGTH "${output_dir}/p999.patch" execution_path_bound)
+    if(execution_path_bound GREATER 240)
+        message(FATAL_ERROR "The normalized patch execution directory exceeds the Windows-safe bound.")
+    endif()
+    file(MAKE_DIRECTORY "${output_dir}")
+    get_cmake_property(patch_variables VARIABLES)
+    foreach(variable_name IN LISTS patch_variables)
+        if(variable_name MATCHES "^RESHAPE_.*_PATCH$")
+            ego_normalize_reshade_patch_file("${${variable_name}}" "${output_dir}" copy_path)
+            set(${variable_name} "${copy_path}" PARENT_SCOPE)
+        endif()
+    endforeach()
+    set(source_patch_copies)
+    foreach(original_path IN LISTS RESHAPE_SOURCE_PATCHES)
+        ego_normalize_reshade_patch_file("${original_path}" "${output_dir}" copy_path)
+        list(APPEND source_patch_copies "${copy_path}")
+    endforeach()
+    set(RESHAPE_SOURCE_PATCHES "${source_patch_copies}" PARENT_SCOPE)
+endfunction()
+
+function(ego_source_cache_path source_dir relative_path result_var)
+    string(REPLACE "\\" "/" normalized_path "${relative_path}")
+    if(NOT normalized_path STREQUAL relative_path OR
+       IS_ABSOLUTE "${relative_path}" OR relative_path MATCHES "^[A-Za-z]:" OR
+       relative_path STREQUAL "" OR relative_path MATCHES "//|/$")
+        message(FATAL_ERROR "Invalid source-cache relative path: ${relative_path}")
+    endif()
+    string(REPLACE "/" ";" components "${relative_path}")
+    set(cursor "${source_dir}")
+    foreach(component IN LISTS components)
+        if(component STREQUAL "." OR component STREQUAL "..")
+            message(FATAL_ERROR "Source-cache paths cannot escape their source root.")
+        endif()
+        set(cursor "${cursor}/${component}")
+        if(IS_SYMLINK "${cursor}")
+            message(FATAL_ERROR "Source-cache paths cannot pass through symbolic links or junctions: ${cursor}")
+        endif()
+    endforeach()
+    set(${result_var} "${cursor}" PARENT_SCOPE)
+endfunction()
+
+function(ego_read_source_cache_file source_dir relative_path hash_var text_var)
+    ego_source_cache_path("${source_dir}" "${relative_path}" filename)
+    if(NOT EXISTS "${filename}" OR IS_DIRECTORY "${filename}")
+        message(FATAL_ERROR "Missing regular source-cache file: ${relative_path}")
+    endif()
+    file(SIZE "${filename}" file_size)
+    if(file_size LESS 1 OR file_size GREATER 4194304)
+        message(FATAL_ERROR "Source-cache file size is out of bounds: ${relative_path}")
+    endif()
+    math(EXPR last_byte_offset "${file_size} - 1")
+    file(READ "${filename}" last_byte OFFSET ${last_byte_offset} LIMIT 1 HEX)
+    string(TOLOWER "${last_byte}" last_byte)
+    if(last_byte STREQUAL "0d")
+        message(FATAL_ERROR "A terminal bare CR is unsupported in source caches: ${relative_path}")
+    endif()
+    file(READ "${filename}" prefix LIMIT 3 HEX)
+    string(TOLOWER "${prefix}" prefix)
+    if(prefix STREQUAL "efbbbf")
+        file(READ "${filename}" content OFFSET 3)
+    else()
+        file(READ "${filename}" content)
+    endif()
+    string(REPLACE "\r\n" "\n" content "${content}")
+    string(FIND "${content}" "\r" bare_cr_index)
+    if(NOT bare_cr_index EQUAL -1)
+        message(FATAL_ERROR "Bare-CR source caches are unsupported: ${relative_path}")
+    endif()
+    string(SHA256 content_hash "${content}")
+    string(TOUPPER "${content_hash}" content_hash)
+    set(${hash_var} "${content_hash}" PARENT_SCOPE)
+    set(${text_var} "${content}" PARENT_SCOPE)
+endfunction()
+
+function(ego_assert_source_cache_vector source_dir)
+    foreach(entry IN LISTS ARGN)
+        string(FIND "${entry}" "=" separator)
+        if(separator LESS 1)
+            message(FATAL_ERROR "Invalid source-cache vector entry.")
+        endif()
+        string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+        math(EXPR offset "${separator} + 1")
+        string(SUBSTRING "${entry}" ${offset} -1 expected_hash)
+        ego_source_cache_path("${source_dir}" "${relative_path}" filename)
+        if(expected_hash STREQUAL "ABSENT")
+            if(EXISTS "${filename}")
+                message(FATAL_ERROR "A foreign or partial source-cache file must remain absent: ${relative_path}")
+            endif()
+        else()
+            ego_read_source_cache_file("${source_dir}" "${relative_path}" actual_hash ignored_text)
+            if(NOT actual_hash STREQUAL expected_hash)
+                message(FATAL_ERROR
+                    "Unknown source-cache edit before historical patch peeling: ${relative_path}\n"
+                    "Expected: ${expected_hash}\nActual: ${actual_hash}")
+            endif()
+        endif()
+    endforeach()
+endfunction()
+
+function(ego_recover_owned_late_source_cache source_root journal_path)
+    if(NOT EXISTS "${journal_path}")
+        return()
+    endif()
+    if(IS_SYMLINK "${journal_path}" OR IS_DIRECTORY "${journal_path}")
+        message(FATAL_ERROR "Unknown source-cache recovery record; no files were changed.")
+    endif()
+    file(SIZE "${journal_path}" journal_size)
+    if(journal_size LESS 1 OR journal_size GREATER 65536)
+        message(FATAL_ERROR "Invalid source-cache recovery record size.")
+    endif()
+    file(READ "${journal_path}" journal)
+    file(SHA256 "${journal_path}" journal_raw_hash)
+    string(JSON schema GET "${journal}" schemaVersion)
+    string(JSON recorded_source GET "${journal}" sourceRoot)
+    string(JSON scratch GET "${journal}" scratchRoot)
+    string(JSON recorded_pin GET "${journal}" finalInjectorHash)
+    string(JSON before_count LENGTH "${journal}" before)
+    string(JSON after_count LENGTH "${journal}" after)
+    list(LENGTH RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 expected_count)
+    get_filename_component(scratch_name "${scratch}" NAME)
+    string(REGEX REPLACE "^ego-owned-late-peel-" "" scratch_suffix "${scratch_name}")
+    string(LENGTH "${scratch_suffix}" suffix_length)
+    if(NOT schema EQUAL 1 OR NOT recorded_source STREQUAL source_root OR
+       NOT recorded_pin STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       NOT before_count EQUAL expected_count OR NOT after_count EQUAL expected_count OR
+       NOT IS_ABSOLUTE "${scratch}" OR IS_SYMLINK "${scratch}" OR
+       NOT scratch_name MATCHES "^ego-owned-late-peel-[0-9a-f]+$" OR
+       NOT suffix_length EQUAL 24 OR IS_SYMLINK "${scratch}/before")
+        message(FATAL_ERROR "The source-cache recovery record is not bound to this exact implementation.")
+    endif()
+    ego_assert_source_cache_vector("${scratch}/before" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
+    execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain=v1
+        --untracked-files=all --ignore-submodules=none WORKING_DIRECTORY "${source_root}"
+        RESULT_VARIABLE status_result OUTPUT_VARIABLE status_text ERROR_VARIABLE status_error)
+    if(NOT status_result EQUAL 0)
+        message(FATAL_ERROR "Unable to inspect source-cache recovery ownership: ${status_error}")
+    endif()
+    string(REPLACE "\r\n" "\n" status_text "${status_text}")
+    string(REPLACE "\n" ";" status_lines "${status_text}")
+    foreach(line IN LISTS status_lines)
+        if(line STREQUAL "")
+            continue()
+        endif()
+        string(SUBSTRING "${line}" 3 -1 relative_path)
+        if(NOT relative_path IN_LIST RESHAPE_EXPECTED_PATCHED_FILES)
+            message(FATAL_ERROR "Unknown source edit blocks recovery; no files were changed: ${relative_path}")
+        endif()
+    endforeach()
+    # Validate every backup and current image before restoring even one file.
+    set(index 0)
+    foreach(entry IN LISTS RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256)
+        string(FIND "${entry}" "=" separator)
+        string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+        string(JSON before_hash GET "${journal}" before ${index})
+        string(JSON after_hash GET "${journal}" after ${index})
+        file(SHA256 "${scratch}/before/${relative_path}" backup_hash)
+        if(NOT backup_hash STREQUAL before_hash)
+            message(FATAL_ERROR "A recovery preimage changed; no files were restored.")
+        endif()
+        ego_source_cache_path("${source_root}" "${relative_path}" target)
+        if(EXISTS "${target}")
+            if(IS_DIRECTORY "${target}")
+                message(FATAL_ERROR "A foreign recovery target is not a file; no files were restored.")
+            endif()
+            file(SHA256 "${target}" current_hash)
+        else()
+            set(current_hash "ABSENT")
+        endif()
+        if(NOT current_hash STREQUAL before_hash AND NOT current_hash STREQUAL after_hash)
+            message(FATAL_ERROR "Unknown source edit blocks recovery; no files were restored: ${relative_path}")
+        endif()
+        if(NOT current_hash STREQUAL before_hash)
+            list(GET RESHAPE_PRE_LATE_CONTENT_SHA256 ${index} base_entry)
+            string(FIND "${base_entry}" "=" base_separator)
+            math(EXPR base_offset "${base_separator} + 1")
+            string(SUBSTRING "${base_entry}" ${base_offset} -1 expected_base_hash)
+            if(current_hash STREQUAL "ABSENT")
+                if(NOT expected_base_hash STREQUAL "ABSENT")
+                    message(FATAL_ERROR "A required recovery target is missing; no files were restored.")
+                endif()
+            else()
+                ego_read_source_cache_file("${source_root}" "${relative_path}" current_normalized ignored_text)
+                if(NOT current_normalized STREQUAL expected_base_hash)
+                    message(FATAL_ERROR "An unknown recovery postimage was preserved; no files were restored.")
+                endif()
+            endif()
+        endif()
+        set("recover_before_${index}" "${before_hash}")
+        set("recover_current_${index}" "${current_hash}")
+        math(EXPR index "${index} + 1")
+    endforeach()
+    string(RANDOM LENGTH 24 ALPHABET "0123456789abcdef" recovery_suffix)
+    set(recovery_stage "${CMAKE_CURRENT_BINARY_DIR}/ego-source-recovery-${recovery_suffix}")
+    set(index 0)
+    foreach(entry IN LISTS RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256)
+        string(FIND "${entry}" "=" separator)
+        string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+        if(NOT recover_current_${index} STREQUAL recover_before_${index})
+            ego_source_cache_path("${source_root}" "${relative_path}" target)
+            if(EXISTS "${target}")
+                file(SHA256 "${target}" current_hash)
+            else()
+                set(current_hash "ABSENT")
+            endif()
+            if(NOT current_hash STREQUAL recover_current_${index})
+                message(FATAL_ERROR "Source changed during recovery; unknown edits were preserved.")
+            endif()
+            get_filename_component(parent "${recovery_stage}/${relative_path}" DIRECTORY)
+            file(MAKE_DIRECTORY "${parent}")
+            file(COPY_FILE "${scratch}/before/${relative_path}" "${recovery_stage}/${relative_path}")
+            file(RENAME "${recovery_stage}/${relative_path}" "${target}" RESULT recovery_result)
+            if(NOT recovery_result STREQUAL "0")
+                message(FATAL_ERROR "Source-cache recovery remains journaled: ${recovery_result}")
+            endif()
+        endif()
+        math(EXPR index "${index} + 1")
+    endforeach()
+    ego_assert_source_cache_vector("${source_root}" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
+    verify_reshade_patched_source("${source_root}")
+    file(SHA256 "${journal_path}" current_journal_hash)
+    if(NOT current_journal_hash STREQUAL journal_raw_hash)
+        message(FATAL_ERROR "The recovery record changed; it was not removed.")
+    endif()
+    file(REMOVE "${journal_path}")
+endfunction()
+
+function(ego_prepare_owned_late_source_cache source_dir)
+    if(NOT IS_ABSOLUTE "${source_dir}" OR NOT IS_DIRECTORY "${source_dir}" OR
+       IS_SYMLINK "${source_dir}")
+        message(FATAL_ERROR "An absolute regular source-cache directory is required.")
+    endif()
+    file(REAL_PATH "${source_dir}" source_root)
+    get_filename_component(source_parent "${source_root}" DIRECTORY)
+    string(SHA256 lock_key "${source_root}")
+    # This lock is outside the fetched Git tree and remains held through the
+    # complete configure, including the legacy patch replay after this helper.
+    get_property(already_locked GLOBAL PROPERTY "EGO_SOURCE_CACHE_LOCK_${lock_key}")
+    if(NOT already_locked)
+        file(LOCK "${source_parent}/.ego-source-cache-${lock_key}.lock"
+            GUARD PROCESS TIMEOUT 30 RESULT_VARIABLE lock_result)
+        if(NOT lock_result STREQUAL "0")
+            message(FATAL_ERROR "Unable to lock the exact source cache: ${lock_result}")
+        endif()
+        set_property(GLOBAL PROPERTY "EGO_SOURCE_CACHE_LOCK_${lock_key}" TRUE)
+    endif()
+    verify_reshade_pinned_commit("${source_root}")
+    set(journal_path "${source_parent}/.ego-source-cache-${lock_key}.journal.json")
+    ego_recover_owned_late_source_cache("${source_root}" "${journal_path}")
+    ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    get_filename_component(late_patch_dir "${RESHAPE_OWNED_LATE_D3D11_PATCH}" DIRECTORY)
+    get_filename_component(late_patch_name "${RESHAPE_OWNED_LATE_D3D11_PATCH}" NAME)
+    ego_read_source_cache_file("${late_patch_dir}" "${late_patch_name}" late_patch_hash late_patch_text)
+    if(NOT late_patch_hash STREQUAL RESHAPE_OWNED_LATE_D3D11_PATCH_SHA256)
+        message(FATAL_ERROR "The terminal owned-late patch hash is not the frozen implementation.")
+    endif()
+
+    if(injector_hash STREQUAL "26CFBBFFD692ACFB24BD19CBD93B3C7F81F24555EA67B75C55FAD14861E38B00")
+        ego_assert_source_cache_vector("${source_root}" ${RESHAPE_PRISTINE_CONTENT_SHA256})
+        execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain=v1
+            --untracked-files=all --ignore-submodules=none
+            WORKING_DIRECTORY "${source_root}" RESULT_VARIABLE status_result
+            OUTPUT_VARIABLE status_text ERROR_VARIABLE status_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT status_result EQUAL 0 OR NOT status_text STREQUAL "")
+            message(FATAL_ERROR "The pristine source cache contains unknown edits; it was not changed.\n${status_text}\n${status_error}")
+        endif()
+        return()
+    endif()
+
+    if(NOT injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
+        set(known_old_injectors
+            "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135"
+            "88E5980C5737539918CDFD0A4070802780B44FA5FBCA2BB251B79952F180C621"
+            "5F4C08D04AB5E720851326EB72DED1D59D9E1924036B866CAC6E56602417C377"
+            "5265F91C9308F755CF585EA7C3083E60DF48AED6CDC435C25518B7130A748F5B"
+            "D0A885F093B5364FF7ED1D84761E758E7544579185E9EEA8517B4058D7C29B94"
+            "C436078556B22BDAD9DFCD662A745E73339758E227F0178234B41D1392956974"
+            "3A58324E3AE6CE96F3F312D965A384CB825B27B64CE3E4E95CF4B4194032946C"
+            "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1"
+            "007B4DF39CEB0C7E6777B990A9A24D352DBC399C79DCA8488E9F4E49C58FB166"
+            "956A8530DD5C4C9F73C3372CE6C25A13E1AB230746B6A8CC26E7EC349CE50309"
+            "816BF5F33495D3B280A2E319D565FA2D310BF10A409FDC580B6ED8B4358B71C8"
+            "1903E98A0462431D4A355A3CCE0E3B69AB8E5C67B7895080DA9F9EF8D75CA410"
+            "0BAE44EE68E401993FA662BAF8BE79F985F6BCB87DC3A0818BFD80FD9574DDEB"
+            "4EEA17F39E3BFF425CCD08246DDA121FE256A61B37D0FD5D93565FC83E9DAA7D"
+            "AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4"
+            "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359"
+            "${RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+        if(NOT injector_hash IN_LIST known_old_injectors)
+            message(FATAL_ERROR "Unrecognized complete source-cache state; no files were changed.")
+        endif()
+        string(REPLACE "tools/injector.cpp=${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+            "tools/injector.cpp=${injector_hash}" old_vector "${RESHAPE_PRE_LATE_CONTENT_SHA256}")
+        ego_assert_source_cache_vector("${source_root}" ${old_vector})
+        set(old_content)
+        foreach(entry IN LISTS old_vector)
+            string(FIND "${entry}" "=" separator)
+            string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+            if(relative_path IN_LIST RESHAPE_PRE_LATE_PATCHED_FILES)
+                list(APPEND old_content "${entry}")
+            endif()
+        endforeach()
+        set(RESHAPE_EXPECTED_PATCHED_FILES "${RESHAPE_PRE_LATE_PATCHED_FILES}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${old_content}")
+        verify_reshade_patched_source("${source_root}")
+        return()
+    endif()
+
+    # A matching injector is not sufficient. Every host file, owned header and
+    # Git status entry must match this one complete terminal implementation.
+    ego_assert_source_cache_vector("${source_root}" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
+    verify_reshade_patched_source("${source_root}")
+    string(RANDOM LENGTH 24 ALPHABET "0123456789abcdef" scratch_suffix)
+    set(scratch "${CMAKE_CURRENT_BINARY_DIR}/ego-owned-late-peel-${scratch_suffix}")
+    file(MAKE_DIRECTORY "${scratch}/candidate" "${scratch}/before" "${scratch}/removed")
+    set(index 0)
+    foreach(entry IN LISTS RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256)
+        string(FIND "${entry}" "=" separator)
+        string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+        ego_read_source_cache_file("${source_root}" "${relative_path}" ignored_hash content)
+        get_filename_component(parent "${scratch}/candidate/${relative_path}" DIRECTORY)
+        file(MAKE_DIRECTORY "${parent}")
+        ego_write_lf_source_cache_file("${scratch}/candidate/${relative_path}" "${content}")
+        get_filename_component(parent "${scratch}/before/${relative_path}" DIRECTORY)
+        file(MAKE_DIRECTORY "${parent}")
+        file(COPY_FILE "${source_root}/${relative_path}" "${scratch}/before/${relative_path}")
+        file(SHA256 "${source_root}/${relative_path}" "original_raw_${index}")
+        math(EXPR index "${index} + 1")
+    endforeach()
+    ego_write_lf_source_cache_file("${scratch}/late.patch" "${late_patch_text}")
+    foreach(check_argument IN ITEMS "--check" "--apply")
+        execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR
+            --unset=GIT_WORK_TREE --unset=GIT_INDEX_FILE
+            "GIT_CEILING_DIRECTORIES=${scratch}"
+            "${GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf apply --whitespace=nowarn --reverse
+            "${check_argument}" "${scratch}/late.patch"
+            WORKING_DIRECTORY "${scratch}/candidate"
+            RESULT_VARIABLE peel_result OUTPUT_VARIABLE peel_output ERROR_VARIABLE peel_error)
+        if(NOT peel_result EQUAL 0)
+            message(FATAL_ERROR "The frozen owned-late tail cannot be peeled in scratch; live source was not changed.\n${peel_output}${peel_error}")
+        endif()
+    endforeach()
+    ego_assert_source_cache_vector("${scratch}/candidate" ${RESHAPE_PRE_LATE_CONTENT_SHA256})
+
+    # Recheck all raw preimages before publishing any verified replacement.
+    set(index 0)
+    foreach(entry IN LISTS RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256)
+        string(FIND "${entry}" "=" separator)
+        string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+        file(SHA256 "${source_root}/${relative_path}" raw_hash)
+        if(NOT raw_hash STREQUAL original_raw_${index})
+            message(FATAL_ERROR "The source cache changed during staged peeling; live source was not replaced.")
+        endif()
+        math(EXPR index "${index} + 1")
+    endforeach()
+    verify_reshade_patched_source("${source_root}")
+    set(journal_before "")
+    set(journal_after "")
+    set(index 0)
+    foreach(entry IN LISTS RESHAPE_PRE_LATE_CONTENT_SHA256)
+        string(FIND "${entry}" "=" separator)
+        string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+        math(EXPR offset "${separator} + 1")
+        string(SUBSTRING "${entry}" ${offset} -1 base_hash)
+        if(base_hash STREQUAL "ABSENT")
+            set(after_hash "ABSENT")
+        else()
+            ego_read_source_cache_file("${source_root}" "${relative_path}" current_hash ignored_text)
+            if(current_hash STREQUAL base_hash)
+                set(after_hash "${original_raw_${index}}")
+            else()
+                file(SHA256 "${scratch}/candidate/${relative_path}" after_hash)
+            endif()
+        endif()
+        if(index GREATER 0)
+            string(APPEND journal_before ",")
+            string(APPEND journal_after ",")
+        endif()
+        string(APPEND journal_before "\"${original_raw_${index}}\"")
+        string(APPEND journal_after "\"${after_hash}\"")
+        math(EXPR index "${index} + 1")
+    endforeach()
+    # Valid Windows/CMake paths are forward-slashed here; quote backslashes
+    # and quotes as well so the recovery record remains data, never CMake code.
+    string(REPLACE "\\" "\\\\" journal_source "${source_root}")
+    string(REPLACE "\"" "\\\"" journal_source "${journal_source}")
+    string(REPLACE "\\" "\\\\" journal_scratch "${scratch}")
+    string(REPLACE "\"" "\\\"" journal_scratch "${journal_scratch}")
+    file(WRITE "${scratch}/journal.tmp"
+        "{\"schemaVersion\":1,\"sourceRoot\":\"${journal_source}\",\"scratchRoot\":\"${journal_scratch}\",\"finalInjectorHash\":\"${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}\",\"before\":[${journal_before}],\"after\":[${journal_after}]}\n")
+    file(RENAME "${scratch}/journal.tmp" "${journal_path}" NO_REPLACE RESULT journal_result)
+    if(NOT journal_result STREQUAL "0")
+        message(FATAL_ERROR "Unable to retain source-cache recovery preimages before publication: ${journal_result}")
+    endif()
+    file(SHA256 "${journal_path}" published_journal_hash)
+    set(index 0)
+    set(published_indices)
+    set(publication_error "")
+    foreach(entry IN LISTS RESHAPE_PRE_LATE_CONTENT_SHA256)
+        string(FIND "${entry}" "=" separator)
+        string(SUBSTRING "${entry}" 0 ${separator} relative_path)
+        math(EXPR offset "${separator} + 1")
+        string(SUBSTRING "${entry}" ${offset} -1 base_hash)
+        ego_source_cache_path("${source_root}" "${relative_path}" target)
+        file(SHA256 "${target}" raw_hash)
+        if(NOT raw_hash STREQUAL original_raw_${index})
+            set(publication_error "Source changed before publication: ${relative_path}")
+            break()
+        endif()
+        if(base_hash STREQUAL "ABSENT")
+            get_filename_component(parent "${scratch}/removed/${relative_path}" DIRECTORY)
+            file(MAKE_DIRECTORY "${parent}")
+            file(RENAME "${target}" "${scratch}/removed/${relative_path}" RESULT publish_result)
+            set("published_raw_${index}" "ABSENT")
+        else()
+            ego_read_source_cache_file("${source_root}" "${relative_path}" current_hash ignored_text)
+            if(current_hash STREQUAL base_hash)
+                math(EXPR index "${index} + 1")
+                continue()
+            endif()
+            file(SHA256 "${scratch}/candidate/${relative_path}" "published_raw_${index}")
+            file(RENAME "${scratch}/candidate/${relative_path}" "${target}" RESULT publish_result)
+        endif()
+        if(NOT publish_result STREQUAL "0")
+            set(publication_error "Unable to publish ${relative_path}: ${publish_result}")
+            break()
+        endif()
+        list(APPEND published_indices "${index}")
+        math(EXPR index "${index} + 1")
+    endforeach()
+    if(NOT publication_error STREQUAL "")
+        message(FATAL_ERROR "${publication_error}; validated preimages remain journaled for the next attempt, unknown edits were preserved.")
+    endif()
+    ego_assert_source_cache_vector("${source_root}" ${RESHAPE_PRE_LATE_CONTENT_SHA256})
+    file(SHA256 "${journal_path}" current_journal_hash)
+    if(NOT current_journal_hash STREQUAL published_journal_hash)
+        message(FATAL_ERROR "The publication recovery record changed; it was not removed.")
+    endif()
+    file(REMOVE "${journal_path}")
+endfunction()
+
+function(ego_apply_owned_late_source_tail source_dir)
+    ego_assert_source_cache_vector("${source_dir}" ${RESHAPE_PRE_LATE_CONTENT_SHA256})
+    get_filename_component(patch_directory "${RESHAPE_OWNED_LATE_D3D11_PATCH}" DIRECTORY)
+    get_filename_component(patch_name "${RESHAPE_OWNED_LATE_D3D11_PATCH}" NAME)
+    ego_read_source_cache_file("${patch_directory}" "${patch_name}" patch_hash patch_text)
+    if(NOT patch_hash STREQUAL RESHAPE_OWNED_LATE_D3D11_PATCH_SHA256)
+        message(FATAL_ERROR "The owned-late patch changed before final replay.")
+    endif()
+    string(RANDOM LENGTH 24 ALPHABET "0123456789abcdef" replay_suffix)
+    set(replay_patch "${CMAKE_CURRENT_BINARY_DIR}/ego-owned-late-replay-${replay_suffix}.patch")
+    ego_write_lf_source_cache_file("${replay_patch}" "${patch_text}")
+    foreach(apply_argument IN ITEMS "--check" "--apply")
+        execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf
+            apply --whitespace=nowarn "${apply_argument}" "${replay_patch}"
+            WORKING_DIRECTORY "${source_dir}"
+            RESULT_VARIABLE replay_result OUTPUT_VARIABLE replay_output ERROR_VARIABLE replay_error)
+        if(NOT replay_result EQUAL 0)
+            message(FATAL_ERROR "Unable to replay the frozen owned-late tail.\n${replay_output}${replay_error}")
+        endif()
+    endforeach()
+    ego_assert_source_cache_vector("${source_dir}" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
+endfunction()
+
 # Recognize the complete injector before any live historical patch is peeled.
 # A v3 body must migrate its terminal implementation before its identity can
 # match the current v4 pin. Every transformation stays in private scratch space
@@ -367,7 +971,7 @@ function(ego_rollover_known_addon_build_id source_path)
     # their fixed meanings to the existing ordered historical migration below.
     if(source_hash STREQUAL "26CFBBFFD692ACFB24BD19CBD93B3C7F81F24555EA67B75C55FAD14861E38B00" OR
        source_hash STREQUAL RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256 OR
-       source_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       source_hash STREQUAL RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 OR
        source_hash STREQUAL RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256)
         return()
     endif()
@@ -383,20 +987,22 @@ function(ego_rollover_known_addon_build_id source_path)
         "816BF5F33495D3B280A2E319D565FA2D310BF10A409FDC580B6ED8B4358B71C8"
         "1903E98A0462431D4A355A3CCE0E3B69AB8E5C67B7895080DA9F9EF8D75CA410"
         "0BAE44EE68E401993FA662BAF8BE79F985F6BCB87DC3A0818BFD80FD9574DDEB"
-        "4EEA17F39E3BFF425CCD08246DDA121FE256A61B37D0FD5D93565FC83E9DAA7D")
+        "4EEA17F39E3BFF425CCD08246DDA121FE256A61B37D0FD5D93565FC83E9DAA7D"
+        "AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4")
     list(FIND previous_v3_full "${source_hash}" previous_v3_index)
     set(replacement "${source_text}")
     if(NOT previous_v3_index EQUAL -1)
         list(GET previous_pre_cooperative ${previous_v3_index} expected_previous_pre_hash)
-        set(expected_hash "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
+        set(expected_hash "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
     elseif(source_hash IN_LIST previous_pre_cooperative OR
            source_hash STREQUAL "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359")
         set(expected_hash "${RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}")
     elseif(source_hash STREQUAL "D0A885F093B5364FF7ED1D84761E758E7544579185E9EEA8517B4058D7C29B94" OR
            source_hash STREQUAL "C436078556B22BDAD9DFCD662A745E73339758E227F0178234B41D1392956974" OR
-           source_hash STREQUAL "3A58324E3AE6CE96F3F312D965A384CB825B27B64CE3E4E95CF4B4194032946C")
-        # Frozen v4 bodies with the generation-11 through generation-13 identities.
-        set(expected_hash "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
+           source_hash STREQUAL "3A58324E3AE6CE96F3F312D965A384CB825B27B64CE3E4E95CF4B4194032946C" OR
+           source_hash STREQUAL "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1")
+        # Frozen v4 bodies with the generation-11 through generation-14 identities.
+        set(expected_hash "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
     else()
         message(FATAL_ERROR
             "Unrecognized injector source hash before historical patch peeling; source was not changed.\n"
@@ -407,7 +1013,7 @@ function(ego_rollover_known_addon_build_id source_path)
     set(scratch "${CMAKE_CURRENT_BINARY_DIR}/ego-injector-rollover-${scratch_suffix}")
     file(MAKE_DIRECTORY "${scratch}/tools")
     set(candidate "${scratch}/tools/injector.cpp")
-    file(WRITE "${candidate}" "${replacement}")
+    ego_write_lf_source_cache_file("${candidate}" "${replacement}")
 
     if(NOT previous_v3_index EQUAL -1)
         if(DEFINED RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH)
@@ -438,15 +1044,15 @@ function(ego_rollover_known_addon_build_id source_path)
             if(NOT patch_hash STREQUAL expected_patch_hash)
                 message(FATAL_ERROR "The exact ${version} cooperative injector migration patch hash does not match; source was not changed.")
             endif()
-            file(WRITE "${scratch}/${version}.patch" "${patch_text}")
+            ego_write_lf_source_cache_file("${scratch}/${version}.patch" "${patch_text}")
         endforeach()
 
         # Ceiling the scratch tree so Git cannot discover the enclosing SDK
         # repository and interpret patch paths relative to that working tree.
         execute_process(
             COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
-                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
-                "${GIT_EXECUTABLE}" apply --reverse --check "${scratch}/v3.patch"
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_BINARY_DIR}"
+                "${GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf apply --reverse --check "${scratch}/v3.patch"
             WORKING_DIRECTORY "${scratch}"
             RESULT_VARIABLE reverse_check OUTPUT_VARIABLE reverse_output ERROR_VARIABLE reverse_error)
         if(NOT reverse_check EQUAL 0)
@@ -454,8 +1060,8 @@ function(ego_rollover_known_addon_build_id source_path)
         endif()
         execute_process(
             COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
-                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
-                "${GIT_EXECUTABLE}" apply --reverse "${scratch}/v3.patch"
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_BINARY_DIR}"
+                "${GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf apply --reverse "${scratch}/v3.patch"
             WORKING_DIRECTORY "${scratch}"
             RESULT_VARIABLE reverse_result OUTPUT_VARIABLE reverse_output ERROR_VARIABLE reverse_error)
         if(NOT reverse_result EQUAL 0)
@@ -469,8 +1075,8 @@ function(ego_rollover_known_addon_build_id source_path)
         endif()
         execute_process(
             COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
-                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
-                "${GIT_EXECUTABLE}" apply --check "${scratch}/v4.patch"
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_BINARY_DIR}"
+                "${GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf apply --check "${scratch}/v4.patch"
             WORKING_DIRECTORY "${scratch}"
             RESULT_VARIABLE apply_check OUTPUT_VARIABLE apply_output ERROR_VARIABLE apply_error)
         if(NOT apply_check EQUAL 0)
@@ -478,8 +1084,8 @@ function(ego_rollover_known_addon_build_id source_path)
         endif()
         execute_process(
             COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
-                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
-                "${GIT_EXECUTABLE}" apply "${scratch}/v4.patch"
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_BINARY_DIR}"
+                "${GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf apply "${scratch}/v4.patch"
             WORKING_DIRECTORY "${scratch}"
             RESULT_VARIABLE apply_result OUTPUT_VARIABLE apply_output ERROR_VARIABLE apply_error)
         if(NOT apply_result EQUAL 0)
@@ -509,7 +1115,7 @@ function(ego_rollover_known_addon_build_id source_path)
     if(NOT replacement_hash STREQUAL expected_hash)
         message(FATAL_ERROR "Known injector migration does not match the new pinned source hash; source was not changed.")
     endif()
-    file(WRITE "${candidate}" "${replacement}")
+    ego_write_lf_source_cache_file("${candidate}" "${replacement}")
     file(SHA256 "${source_path}" current_file_hash)
     if(NOT current_file_hash STREQUAL original_file_hash)
         message(FATAL_ERROR "The injector source changed during staged migration; the live source was not replaced.")
@@ -519,18 +1125,21 @@ function(ego_rollover_known_addon_build_id source_path)
         message(FATAL_ERROR "Unable to publish the verified injector migration: ${migration_rename_result}")
     endif()
 endfunction()
+# END EGO_SOURCE_CACHE_MIGRATION_HELPERS
+ego_normalize_reshade_patch_inputs()
+ego_prepare_owned_late_source_cache("${reshade_SOURCE_DIR}")
 ego_rollover_known_addon_build_id("${reshade_SOURCE_DIR}/tools/injector.cpp")
 
 # Member attachment is the terminal injector seam. Peel it before the existing
 # independently verified historical stack is replayed on repeated configure.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE EGO_COOPERATIVE_MEMBERS_PRESENT OUTPUT_QUIET ERROR_QUIET
 )
 if(EGO_COOPERATIVE_MEMBERS_PRESENT EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY
     )
 endif()
@@ -554,9 +1163,9 @@ if((EGO_TERMINAL_HASH STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
 endif()
 
 # The policy seam is terminal. Peel it before older future/binding migrations.
-execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" RESULT_VARIABLE POLICY_PRESENT OUTPUT_QUIET ERROR_QUIET)
+execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" RESULT_VARIABLE POLICY_PRESENT OUTPUT_QUIET ERROR_QUIET)
 if(POLICY_PRESENT EQUAL 0)
-    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 endif()
 
 # Peel the watcher-readiness marker and exact-target path proof first, then the
@@ -564,14 +1173,14 @@ endif()
 # tree before migrating or validating the historical stack below. They are
 # reapplied in the opposite order after those patches, so repeated configure
 # runs and earlier trees remain idempotent.
-execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" RESULT_VARIABLE FUTURE_PRESENT OUTPUT_QUIET ERROR_QUIET)
+execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" RESULT_VARIABLE FUTURE_PRESENT OUTPUT_QUIET ERROR_QUIET)
 if(FUTURE_PRESENT EQUAL 0)
-    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 endif()
 
 # Peel the new terminal seam before replaying historical migrations.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_BINDING_PRESENT
@@ -579,7 +1188,7 @@ execute_process(
 )
 if(RESHAPE_BINDING_PRESENT EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
             "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_BINDING_PEEL
@@ -590,7 +1199,7 @@ if(RESHAPE_BINDING_PRESENT EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PRESENT_AT_ENTRY
@@ -599,7 +1208,7 @@ execute_process(
 )
 if(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PRESENT_AT_ENTRY EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
             "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PEEL
@@ -616,7 +1225,7 @@ if(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_PRESENT_AT_ENTRY EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PRESENT_AT_ENTRY
@@ -625,7 +1234,7 @@ execute_process(
 )
 if(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PRESENT_AT_ENTRY EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
             "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PEEL
@@ -642,7 +1251,7 @@ if(RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_PRESENT_AT_ENTRY EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PRESENT_AT_ENTRY
@@ -651,7 +1260,7 @@ execute_process(
 )
 if(RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PRESENT_AT_ENTRY EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
             "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PEEL
@@ -668,7 +1277,7 @@ if(RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_PRESENT_AT_ENTRY EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_X86_RUNTIME_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_PRESENT_AT_ENTRY
@@ -677,7 +1286,7 @@ execute_process(
 )
 if(RESHAPE_X86_RUNTIME_PATCH_PRESENT_AT_ENTRY EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
             "${RESHAPE_X86_RUNTIME_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_PEEL
@@ -703,7 +1312,7 @@ endif()
 # exact-PID and original watcher trees can migrate without replacing those
 # ignored source trees.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED
@@ -798,7 +1407,7 @@ if(NOT RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED EQUAL 0)
                     # concurrent configure may have completed the same
                     # idempotent migration.
                     execute_process(
-                        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+                        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
                             "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
                         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
                         RESULT_VARIABLE
@@ -823,7 +1432,7 @@ endif()
 
 if(NOT RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED EQUAL 0)
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED
@@ -834,7 +1443,7 @@ if(RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     set(RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED 0)
 else()
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_PROCESS_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED
@@ -848,7 +1457,7 @@ if(RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED 0)
 else()
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
@@ -859,7 +1468,7 @@ endif()
 if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
 list(GET RESHAPE_SOURCE_PATCHES 4 RESHAPE_PATH_WATCHER_PATCH)
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_PATH_WATCHER_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLIED
@@ -870,7 +1479,7 @@ execute_process(
 if(RESHAPE_PATH_WATCHER_PATCH_APPLIED EQUAL 0)
     list(GET RESHAPE_SOURCE_PATCHES 2 RESHAPE_POINTER_INPUT_PATCH)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_POINTER_INPUT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_POINTER_INPUT_PATCH_APPLIED
@@ -887,7 +1496,7 @@ else()
 # terminal watcher patch.
 list(GET RESHAPE_SOURCE_PATCHES 3 RESHAPE_EXACT_PID_PATCH)
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_EXACT_PID_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_PATCH_STACK_ALREADY_APPLIED
@@ -898,7 +1507,7 @@ execute_process(
 if(RESHAPE_PATCH_STACK_ALREADY_APPLIED EQUAL 0)
     list(GET RESHAPE_SOURCE_PATCHES 2 RESHAPE_POINTER_INPUT_PATCH)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_POINTER_INPUT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_POINTER_INPUT_PATCH_APPLIED
@@ -914,7 +1523,7 @@ else()
 list(GET RESHAPE_SOURCE_PATCHES 1 RESHAPE_INJECTOR_BASE_PATH_PATCH)
 list(GET RESHAPE_SOURCE_PATCHES 2 RESHAPE_POINTER_INPUT_PATCH)
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_BASE_PATH_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_BASE_PATH_PATCH_APPLIED
@@ -922,7 +1531,7 @@ execute_process(
     ERROR_QUIET
 )
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_POINTER_INPUT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_POINTER_INPUT_PATCH_APPLIED
@@ -933,7 +1542,7 @@ execute_process(
 if(RESHAPE_INJECTOR_BASE_PATH_PATCH_APPLIED EQUAL 0 AND
     RESHAPE_POINTER_INPUT_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_EXACT_PID_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_EXACT_PID_PATCH_CHECK
@@ -949,7 +1558,7 @@ if(RESHAPE_INJECTOR_BASE_PATH_PATCH_APPLIED EQUAL 0 AND
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_EXACT_PID_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_EXACT_PID_PATCH_APPLY
@@ -968,7 +1577,7 @@ foreach(RESHAPE_SOURCE_PATCH IN LISTS RESHAPE_SOURCE_PATCHES)
     get_filename_component(RESHAPE_SOURCE_PATCH_NAME
         "${RESHAPE_SOURCE_PATCH}" NAME)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_SOURCE_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHADE_SOURCE_PATCH_ALREADY_APPLIED
@@ -977,7 +1586,7 @@ foreach(RESHAPE_SOURCE_PATCH IN LISTS RESHAPE_SOURCE_PATCHES)
     )
     if(NOT RESHADE_SOURCE_PATCH_ALREADY_APPLIED EQUAL 0)
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --check
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
                 "${RESHAPE_SOURCE_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHADE_SOURCE_PATCH_CHECK
@@ -993,7 +1602,7 @@ foreach(RESHAPE_SOURCE_PATCH IN LISTS RESHAPE_SOURCE_PATCHES)
         endif()
 
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
                 "${RESHAPE_SOURCE_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHADE_SOURCE_PATCH_APPLY
@@ -1013,7 +1622,7 @@ endif()
 endif()
 
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_PATH_WATCHER_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLIED
@@ -1022,7 +1631,7 @@ execute_process(
 )
 if(NOT RESHAPE_PATH_WATCHER_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_PATH_WATCHER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_CHECK
@@ -1038,7 +1647,7 @@ if(NOT RESHAPE_PATH_WATCHER_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_PATH_WATCHER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PATH_WATCHER_PATCH_APPLY
@@ -1065,7 +1674,7 @@ if(RESHAPE_TERMINAL_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     set(RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED 0)
 else()
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED
@@ -1075,7 +1684,7 @@ else()
 endif()
 if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_CHECK
@@ -1091,7 +1700,7 @@ if(NOT RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_PATH_WATCHER_IDENTITY_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PATH_WATCHER_IDENTITY_PATCH_APPLY
@@ -1118,7 +1727,7 @@ set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE FALSE)
 macro(restore_reshade_legacy_process_observer)
     if(RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSED)
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
                 "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_RESTORE
@@ -1137,7 +1746,7 @@ macro(restore_reshade_legacy_process_observer)
 
     if(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED)
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
                 "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_RESTORE
@@ -1158,7 +1767,7 @@ endmacro()
 macro(rollback_reshade_resilient_observer_migration)
     if(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED_BY_CONFIGURE)
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
                 "${RESHAPE_PROCESS_OBSERVER_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_ROLLBACK
@@ -1181,7 +1790,7 @@ if(RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     set(RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED 0)
 else()
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_PROCESS_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED
@@ -1191,7 +1800,7 @@ else()
 endif()
 if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_APPLIED
@@ -1200,7 +1809,7 @@ if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     )
     if(RESHAPE_LEGACY_OBSERVER_CADENCE_APPLIED EQUAL 0)
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
                 "${RESHAPE_LEGACY_LOW_LATENCY_OBSERVER_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSE
@@ -1218,7 +1827,7 @@ if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_APPLIED
@@ -1227,7 +1836,7 @@ if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     )
     if(RESHAPE_LEGACY_PROCESS_OBSERVER_APPLIED EQUAL 0)
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --reverse
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse
                 "${RESHAPE_LEGACY_PROCESS_OBSERVER_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHAPE_LEGACY_PROCESS_OBSERVER_REVERSE
@@ -1254,7 +1863,7 @@ endif()
 
 if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_PROCESS_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_CHECK
@@ -1271,7 +1880,7 @@ if(NOT RESHAPE_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_PROCESS_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_PROCESS_OBSERVER_PATCH_APPLY
@@ -1292,7 +1901,7 @@ endif()
 # Layer resilient identity retention and retry backoff over both freshly applied
 # and previously fetched persistent-observer trees.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED
@@ -1301,7 +1910,7 @@ execute_process(
 )
 if(NOT RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_CHECK
@@ -1318,7 +1927,7 @@ if(NOT RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_RESILIENT_PROCESS_OBSERVER_PATCH_APPLY
@@ -1343,7 +1952,7 @@ set(RESHAPE_LEGACY_OBSERVER_CADENCE_REVERSED FALSE)
 # conflict preflight, and the per-PID claim, so it proves all lower injector
 # patches are present in an existing fetched tree.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED
@@ -1356,7 +1965,7 @@ if(RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0)
     set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED 0)
 else()
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED
@@ -1368,7 +1977,7 @@ else()
         set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED 0)
     else()
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+            COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
                 "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
             WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
             RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
@@ -1379,7 +1988,7 @@ else()
             set(RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED 0)
         else()
             execute_process(
-                COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+                COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
                     "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
                 WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
                 RESULT_VARIABLE RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED
@@ -1391,7 +2000,7 @@ else()
 endif()
 if(NOT RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_CHECK
@@ -1408,7 +2017,7 @@ if(NOT RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_CONFLICT_PREFLIGHT_PATCH_APPLY
@@ -1430,7 +2039,7 @@ endif()
 if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0 AND
     NOT RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED
@@ -1440,7 +2049,7 @@ if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0 AND
 endif()
 if(NOT RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_CHECK
@@ -1457,7 +2066,7 @@ if(NOT RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_PER_PID_CLAIM_PATCH_APPLY
@@ -1476,7 +2085,7 @@ endif()
 # The product renders its own startup/status UI. Keep ReShade's full GUI and
 # add-on callback path enabled, but suppress only its built-in splash window.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_APPLIED
@@ -1485,7 +2094,7 @@ execute_process(
 )
 if(NOT RESHAPE_SUPPRESS_SPLASH_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_CHECK
@@ -1501,7 +2110,7 @@ if(NOT RESHAPE_SUPPRESS_SPLASH_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_SUPPRESS_SPLASH_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SUPPRESS_SPLASH_PATCH_APPLY
@@ -1524,7 +2133,7 @@ if(RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0)
     set(RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED 0)
 else()
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
             "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED
@@ -1534,7 +2143,7 @@ else()
 endif()
 if(NOT RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_CHECK
@@ -1550,7 +2159,7 @@ if(NOT RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_SHARED_RUNTIME_HOST_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HOST_PATCH_APPLY
@@ -1570,7 +2179,7 @@ endif()
 # terminal hardening avoids crossing sparse PE image pages while retaining the
 # lexical binary search used by shared-runtime capability inspection.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED
@@ -1579,7 +2188,7 @@ execute_process(
 )
 if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_CHECK
@@ -1595,7 +2204,7 @@ if(NOT RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_EXPORT_READ_BOUNDS_PATCH_APPLY
@@ -1615,7 +2224,7 @@ endif()
 # measure the copied x64 loader thunk from unwind metadata instead of relying
 # on an unchecked byte-count estimate.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLIED
@@ -1624,7 +2233,7 @@ execute_process(
 )
 if(NOT RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_CHECK
@@ -1640,7 +2249,7 @@ if(NOT RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_SHARED_RUNTIME_HARDENING_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_SHARED_RUNTIME_HARDENING_PATCH_APPLY
@@ -1660,7 +2269,7 @@ endif()
 # exports beside the selected executable. A validated inactive ReShade install
 # takes precedence and remains untouched for its next normal launch.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLIED
@@ -1669,7 +2278,7 @@ execute_process(
 )
 if(NOT RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_CHECK
@@ -1686,7 +2295,7 @@ if(NOT RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_EXISTING_INSTALLATION_PREFLIGHT_PATCH_APPLY
@@ -1706,7 +2315,7 @@ endif()
 # normal startup. Recognize its exact exported ABI marker as a no-mutation
 # success while keeping the private compatible-host path authoritative.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLIED
@@ -1715,7 +2324,7 @@ execute_process(
 )
 if(NOT RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_CHECK
@@ -1732,7 +2341,7 @@ if(NOT RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_OFFICIAL_ADDON_HOST_PATCH_APPLY
@@ -1752,7 +2361,7 @@ endif()
 # mutation. The same terminal preflight also resolves target-owned
 # [INSTALL] BasePath compatibility installs without following reparse points.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLIED
@@ -1761,7 +2370,7 @@ execute_process(
 )
 if(NOT RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_CHECK
@@ -1778,7 +2387,7 @@ if(NOT RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_GLOBAL_LAYER_PREFLIGHT_PATCH_APPLY
@@ -1805,7 +2414,7 @@ endif()
 # hunks. A tree from the previous build-stamp schema remains exactly at the
 # reconciliation layer and can accept this incremental patch directly.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLIED
@@ -1816,7 +2425,7 @@ if(NOT RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLIED EQUAL 0)
 # The reconciliation patch is terminal over the lower normalized raw-input
 # stack. Detect it before asking superseded normalization hunks to reverse.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED
@@ -1828,7 +2437,7 @@ if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED EQUAL 0)
 # clean fetch. This terminal delta migrates an exact older fetched tree without
 # deleting user/build caches; on a clean tree it is already reverse-applicable.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply -p2 --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply -p2 --reverse --check
         "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLIED
@@ -1837,7 +2446,7 @@ execute_process(
 )
 if(NOT RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply -p2 --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply -p2 --check
             "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_CHECK
@@ -1853,7 +2462,7 @@ if(NOT RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply -p2 --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply -p2 --whitespace=nowarn
             "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_RAW_INPUT_NORMALIZATION_PATCH_APPLY
@@ -1875,7 +2484,7 @@ endif()
 # injection and then mirrors each completed process-global registration call.
 if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_CHECK
@@ -1891,7 +2500,7 @@ if(NOT RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_RAW_INPUT_REGISTRATION_RECONCILIATION_PATCH_APPLY
@@ -1910,7 +2519,7 @@ endif()
 # Constrain focus-following registrations to their focused foreground window
 # root while retaining the established process-wide explicit-HWND fallback.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
         "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK
@@ -1926,7 +2535,7 @@ if(NOT RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_CHECK EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
         "${RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_RAW_INPUT_FOCUS_FOLLOWING_ROOT_PATCH_APPLY
@@ -1947,7 +2556,7 @@ endif()
 # already-audited x64 patches, while making both Win32 and x64 builds consume
 # the same target-width-aware injector source.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_X86_RUNTIME_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_APPLIED
@@ -1956,7 +2565,7 @@ execute_process(
 )
 if(NOT RESHAPE_X86_RUNTIME_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_X86_RUNTIME_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_CHECK
@@ -1972,7 +2581,7 @@ if(NOT RESHAPE_X86_RUNTIME_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_X86_RUNTIME_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_X86_RUNTIME_PATCH_APPLY
@@ -1992,7 +2601,7 @@ endif()
 # fetched trees built before this diagnostic can migrate without deleting their
 # pinned ReShade checkout. This is terminal over the x86 runtime patch.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLIED
@@ -2001,7 +2610,7 @@ execute_process(
 )
 if(NOT RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_CHECK
@@ -2017,7 +2626,7 @@ if(NOT RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_X86_TARGET_ARCHITECTURE_DIAGNOSTIC_PATCH_APPLY
@@ -2037,7 +2646,7 @@ endif()
 # This closes the architecture hand-off identity window before the x86 injector
 # can claim or mutate a replacement process.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLIED
@@ -2046,7 +2655,7 @@ execute_process(
 )
 if(NOT RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_CHECK
@@ -2062,7 +2671,7 @@ if(NOT RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_EXACT_TARGET_PATH_PATCH_APPLY
@@ -2082,7 +2691,7 @@ endif()
 # its watcher branch. SDK consumers use this terminal seam to launch a process
 # without racing the native watcher's first scan.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --reverse --check
         "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLIED
@@ -2091,7 +2700,7 @@ execute_process(
 )
 if(NOT RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLIED EQUAL 0)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --check
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
             "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_CHECK
@@ -2107,7 +2716,7 @@ if(NOT RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLIED EQUAL 0)
     endif()
 
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn
+        COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --whitespace=nowarn
             "${RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH}"
         WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
         RESULT_VARIABLE RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH_APPLY
@@ -2125,7 +2734,7 @@ endif()
 
 # Binding is terminal over the complete pinned historical stack for both widths.
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply --check
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply --check
         "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_BINDING_CHECK
@@ -2134,7 +2743,7 @@ if(NOT RESHAPE_BINDING_CHECK EQUAL 0)
     message(FATAL_ERROR "Pinned process-instance binding patch cannot apply.")
 endif()
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" apply
+    COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply
         "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
     WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
     RESULT_VARIABLE RESHAPE_BINDING_APPLY
@@ -2143,9 +2752,11 @@ if(NOT RESHAPE_BINDING_APPLY EQUAL 0)
     message(FATAL_ERROR "Unable to apply process-instance binding patch.")
 endif()
 
-execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
-execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
-execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=crlf apply "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+
+ego_apply_owned_late_source_tail("${reshade_SOURCE_DIR}")
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and
@@ -2419,6 +3030,7 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
         src/electron_game_overlay_addon.cpp
         src/ego_cooperative_registry.hpp
         src/ego_cooperative_input.hpp
+        src/ego_cooperative_frame_policy.hpp
     )
     target_compile_features(electron_game_overlay PRIVATE cxx_std_20)
     target_compile_definitions(electron_game_overlay PRIVATE

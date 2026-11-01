@@ -6,10 +6,11 @@ const path = require('node:path');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { preloadArgs } = require('./helpers/source-packaging-loader.cjs');
 const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
 const cli = path.resolve(__dirname, '../scripts/package-sdk.cjs');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-function fixture(t) {
+function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-pack-nonnative-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const pkg = path.join(root, 'repo/libs/sdk');
@@ -19,7 +20,7 @@ function fixture(t) {
   write(path.join(pkg, 'package.json'), JSON.stringify(metadata));
   write(path.join(root, 'repo/LICENSE'), 'GPL fixture license: NON-NATIVE CONTROLLED FIXTURE');
   write(path.join(pkg, 'README.md'), '# NON-NATIVE CONTROLLED SDK FIXTURE');
-  const distribution = writeCooperativeDistribution(dist, { packageVersion: metadata.version });
+  const distribution = writeCooperativeDistribution(dist, { packageVersion: metadata.version, ...options });
   return {
     root, pkg, dist, leaf: dist, manifestPath: distribution.manifestPath,
     get manifest() { return distribution.manifest; },
@@ -28,7 +29,7 @@ function fixture(t) {
   };
 }
 function run(f, extra = []) {
-  const result = spawnSync(process.execPath, [cli, '--package-root', f.pkg, '--built-dist', f.dist, '--output', f.output, ...extra], { encoding: 'utf8', timeout: 30000 });
+  const result = spawnSync(process.execPath, [...preloadArgs, cli, '--package-root', f.pkg, '--built-dist', f.dist, '--output', f.output, ...extra], { encoding: 'utf8', timeout: 30000 });
   return { ...result, report: fs.existsSync(path.join(f.output, 'sdk-preview-report.json')) ? JSON.parse(fs.readFileSync(path.join(f.output, 'sdk-preview-report.json'))) : null };
 }
 test('rejects non-preview versions before staging and invalidates stale success', t => {
@@ -106,7 +107,7 @@ for (const [name, argumentsFor] of [
     return fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).map(entry => [entry.name, entry.isDirectory() ? snapshot(path.join(root, entry.name)) : hash(fs.readFileSync(path.join(root, entry.name)))]);
   }
   const before = hash(JSON.stringify(snapshot(f.root)));
-  const result = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', timeout: 30000 });
+  const result = spawnSync(process.execPath, [...preloadArgs, cli, ...args], { encoding: 'utf8', timeout: 30000 });
   assert.equal(hash(JSON.stringify(snapshot(f.root))), before, 'input directory layout and every file byte must remain unchanged');
   assert.equal(result.status, 1, result.stdout);
   const report = JSON.parse(result.stdout);
@@ -146,6 +147,22 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   assert.ok(files.includes('package/dist/node_modules/tslib/CopyrightNotice.txt'));
   assert.ok(!files.some(file => file.startsWith('package/dist/broker/')));
   assert.ok(!files.some(file => /secret|postinstall|old\.exe|\/tests\//.test(file)));
+  const nativeStamp = JSON.parse(fs.readFileSync(path.join(stage, 'dist/runtime/win32-x64/reshade/ReShade64.build.json')));
+  assert.equal(nativeStamp.schemaVersion, 30);
+  assert.equal(nativeStamp.ownedLateD3d11PatchSha256, '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE');
+});
+
+test('real npm packaging preserves a retained generation-14 schema-29 SDK without adding current provenance', t => {
+  const f = fixture(t, { runtimeGeneration: 14, addonBuildId: '412D57BEA49440738CC4C3903038F2E7' });
+  const original = fs.readFileSync(f.manifestPath);
+  const result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.schemaVersion, 29);
+    assert.equal(stamp.ownedLateD3d11PatchSha256, undefined);
+  }
 });
 
 test('candidate version override changes only staged package and seal metadata', t => {

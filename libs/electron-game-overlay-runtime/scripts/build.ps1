@@ -100,9 +100,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "412D57BEA49440738CC4C3903038F2E7"
+$ExpectedAddonBuildId = "BCE6C5C8746F4300861300B2BDA3594E"
 # Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 14
+$RuntimeGeneration = 15
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -162,10 +162,16 @@ $ExpectedPatchProvenance = [ordered]@{
     injectorProcessPolicyPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-process-policy.patch"
     injectorCooperativeMembersPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-cooperative-members.patch"
+    ownedLateD3d11PatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
 }
+Assert-Sha256Equal `
+    -Expected "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11PatchSha256).Hash `
+    -Label "frozen owned late D3D11 production patch"
 
 $CMake = Resolve-Executable "cmake.exe"
 if ($ForceReShade) {
@@ -250,7 +256,7 @@ try {
 catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 29 -or
+if ($BuildStamp.schemaVersion -ne 30 -or
     $BuildStamp.cooperativeAddonProtocol -ne 1 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.injectorFutureTargets -ne 2 -or

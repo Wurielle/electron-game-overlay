@@ -8,7 +8,7 @@ const { createHash } = require('node:crypto');
 const { app } = require('electron');
 
 const requiredArguments = new Set(['sdk-dist', 'stage-directory', 'evidence-directory']);
-const supportedArguments = new Set([...requiredArguments, 'target-pid']);
+const supportedArguments = new Set([...requiredArguments, 'target-pid', 'allow-window-recreation']);
 const arguments_ = {};
 for (const argument of process.argv.slice(2)) {
   if (!argument.startsWith('--') || !argument.includes('=')) continue;
@@ -28,6 +28,10 @@ if (arguments_['target-pid'] !== undefined &&
     !/^[1-9][0-9]*$/u.test(arguments_['target-pid'])) {
   throw new TypeError('--target-pid must be a positive integer.');
 }
+if (arguments_['allow-window-recreation'] !== undefined && arguments_['allow-window-recreation'] !== 'true') {
+  throw new TypeError('--allow-window-recreation must explicitly equal true.');
+}
+const allowWindowRecreation = arguments_['allow-window-recreation'] === 'true';
 const sdkDirectory = fs.realpathSync(arguments_['sdk-dist']);
 const stageDirectory = fs.realpathSync(arguments_['stage-directory']);
 const evidenceDirectory = fs.realpathSync(arguments_['evidence-directory']);
@@ -140,6 +144,12 @@ function fail(error) {
 process.on('uncaughtException', fail);
 process.on('unhandledRejection', fail);
 app.on('before-quit', cleanup);
+if (allowWindowRecreation) {
+  // The paused-primary fixture intentionally closes its last window before
+  // creating a new native registration. Keep this command-driven app alive
+  // across that gap; explicit exit/failure still owns process termination.
+  app.on('window-all-closed', () => {});
+}
 
 async function snapshot() {
   Object.assign(state.window, await window.browserWindow.webContents.executeJavaScript(
@@ -148,8 +158,72 @@ async function snapshot() {
   persist();
 }
 
+async function createSceneWindow() {
+  window = session.windows.create({
+    id: 'genuine-late-d3d11-scene', name: 'Genuine late D3D11 private scene',
+    bounds: state.window.bounds, focusOnReady: false, captionHeight: 0, dragBorder: 0,
+  });
+  state.window.nativeId = window.nativeId;
+  window.browserWindow.webContents.on('paint', (_event, _dirty, image) => {
+    state.window.paintCount++;
+    state.window.lastPaintBitmapSize = image.getSize();
+    // Inspect the same existing NativeImage representation used by this SDK's
+    // publication path. These bytes diagnose the source; they are not target
+    // pixel acceptance and never replace the controller's foreground sample.
+    const raster = readNativeImageRaster(image);
+    if (raster) {
+      const x = Math.floor(20 * raster.scaleFactor);
+      const y = Math.floor(20 * raster.scaleFactor);
+      const offset = (y * raster.width + x) * 4;
+      state.window.lastPaintRaster = {
+        width: raster.width, height: raster.height, scaleFactor: raster.scaleFactor,
+        byteLength: raster.bitmap.byteLength,
+        sha256: createHash('sha256').update(raster.bitmap).digest('hex'),
+        sample: { x, y, byteOrder: 'BGRA', bytes: [...raster.bitmap.subarray(offset, offset + 4)] },
+      };
+      if (state.window.paintCount <= 64) {
+        const filename = `source-scene-paint-${state.window.paintCount}.png`;
+        fs.writeFileSync(path.join(evidenceDirectory, filename), image.toPNG({ scaleFactor: raster.scaleFactor }));
+        state.window.latestPaintPng = filename;
+      }
+    }
+  });
+  window.browserWindow.webContents.on('render-process-gone', (_event, details) => {
+    fail(new Error(`Scene renderer exited: ${JSON.stringify(details)}`));
+  });
+  await window.browserWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html>
+<html><head><meta charset="utf-8"><style>
+html,body{margin:0;width:300px;height:220px;overflow:hidden;background:#c62828}
+input{position:absolute;left:20px;top:50px;box-sizing:border-box;width:180px;height:30px;font:18px sans-serif}
+</style></head><body><input autocomplete="off" spellcheck="false"><script>
+window.observed={pointerDowns:0,pointerUps:0,keyDowns:0,keyUps:0,inputEvents:0,heldKeys:[]};
+const held=new Set();
+addEventListener('pointerdown',()=>observed.pointerDowns++);
+addEventListener('pointerup',()=>observed.pointerUps++);
+addEventListener('keydown',event=>{observed.keyDowns++;held.add(event.code);observed.heldKeys=[...held]});
+addEventListener('keyup',event=>{observed.keyUps++;held.delete(event.code);observed.heldKeys=[...held]});
+document.querySelector('input').addEventListener('input',()=>observed.inputEvents++);
+document.querySelector('input').focus();
+</script></body></html>`));
+  window.show();
+}
+
 async function command(value) {
   switch (value.action) {
+    case 'recreate-window': {
+      if (!allowWindowRecreation) throw new Error('Window recreation is not enabled for this fixture.');
+      const previousNativeId = window.nativeId;
+      window.close();
+      Object.assign(state.window, {
+        nativeId: 0, paintCount: 0, value: '', pointerDowns: 0, pointerUps: 0,
+        keyDowns: 0, keyUps: 0, inputEvents: 0, heldKeys: [],
+      });
+      await createSceneWindow();
+      if (window.nativeId === previousNativeId) throw new Error('Window recreation reused its native registration ID.');
+      state.recreationCount = (state.recreationCount || 0) + 1;
+      state.previousNativeId = previousNativeId;
+      break;
+    }
     case 'focus':
       if (state.targetPid === null) throw new Error('Cannot focus before an authenticated target connects.');
       await window.browserWindow.webContents.executeJavaScript("document.querySelector('input').focus()");
@@ -246,53 +320,7 @@ app.whenReady().then(async () => {
     port: discovery.port,
     tokenFingerprint: createHash('sha256').update(discovery.token.toLowerCase()).digest('hex'),
   };
-  window = session.windows.create({
-    id: 'genuine-late-d3d11-scene', name: 'Genuine late D3D11 private scene',
-    bounds: state.window.bounds, focusOnReady: false, captionHeight: 0, dragBorder: 0,
-  });
-  state.window.nativeId = window.nativeId;
-  window.browserWindow.webContents.on('paint', (_event, _dirty, image) => {
-    state.window.paintCount++;
-    state.window.lastPaintBitmapSize = image.getSize();
-    // Inspect the same existing NativeImage representation used by this SDK's
-    // publication path. These bytes diagnose the source; they are not target
-    // pixel acceptance and never replace the controller's foreground sample.
-    const raster = readNativeImageRaster(image);
-    if (raster) {
-      const x = Math.floor(20 * raster.scaleFactor);
-      const y = Math.floor(20 * raster.scaleFactor);
-      const offset = (y * raster.width + x) * 4;
-      state.window.lastPaintRaster = {
-        width: raster.width, height: raster.height, scaleFactor: raster.scaleFactor,
-        byteLength: raster.bitmap.byteLength,
-        sha256: createHash('sha256').update(raster.bitmap).digest('hex'),
-        sample: { x, y, byteOrder: 'BGRA', bytes: [...raster.bitmap.subarray(offset, offset + 4)] },
-      };
-      if (state.window.paintCount <= 64) {
-        const filename = `source-scene-paint-${state.window.paintCount}.png`;
-        fs.writeFileSync(path.join(evidenceDirectory, filename), image.toPNG({ scaleFactor: raster.scaleFactor }));
-        state.window.latestPaintPng = filename;
-      }
-    }
-  });
-  window.browserWindow.webContents.on('render-process-gone', (_event, details) => {
-    fail(new Error(`Scene renderer exited: ${JSON.stringify(details)}`));
-  });
-  await window.browserWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html>
-<html><head><meta charset="utf-8"><style>
-html,body{margin:0;width:300px;height:220px;overflow:hidden;background:#c62828}
-input{position:absolute;left:20px;top:50px;box-sizing:border-box;width:180px;height:30px;font:18px sans-serif}
-</style></head><body><input autocomplete="off" spellcheck="false"><script>
-window.observed={pointerDowns:0,pointerUps:0,keyDowns:0,keyUps:0,inputEvents:0,heldKeys:[]};
-const held=new Set();
-addEventListener('pointerdown',()=>observed.pointerDowns++);
-addEventListener('pointerup',()=>observed.pointerUps++);
-addEventListener('keydown',event=>{observed.keyDowns++;held.add(event.code);observed.heldKeys=[...held]});
-addEventListener('keyup',event=>{observed.keyUps++;held.delete(event.code);observed.heldKeys=[...held]});
-document.querySelector('input').addEventListener('input',()=>observed.inputEvents++);
-document.querySelector('input').focus();
-</script></body></html>`));
-  window.show();
+  await createSceneWindow();
   state.ready = true;
   state.status = 'ready';
   await snapshot();

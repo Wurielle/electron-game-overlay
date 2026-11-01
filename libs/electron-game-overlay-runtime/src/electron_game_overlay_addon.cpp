@@ -6,6 +6,7 @@
 #include <reshade.hpp>
 #include "ego_cooperative_registry.hpp"
 #include "ego_cooperative_input.hpp"
+#include "ego_cooperative_frame_policy.hpp"
 #include "ego_render_readback_diagnostic.hpp"
 #include "ego_initial_texture_upload.hpp"
 
@@ -30,6 +31,7 @@
 
 extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMember(void *request);
 extern "C" { __declspec(dllexport) extern volatile LONG ElectronGameOverlayCooperativeReadyV1; }
+extern "C" { __declspec(dllexport) extern volatile LONG ElectronGameOverlayCooperativeAdapterReadyV1; }
 
 namespace
 {
@@ -60,6 +62,11 @@ std::string g_private_run_directory;
 bool g_private_route_present = false;
 std::uint64_t g_cooperative_focus_revision = 0;
 std::vector<ego::cooperative::window_key> g_producer_registration_order;
+ego::cooperative::logical_epoch_tracker g_logical_session_epoch;
+ego::cooperative::presentation_driver g_member_input_driver;
+ego::cooperative::presentation_driver g_adapter_input_driver;
+ego::cooperative::logical_control g_logical_control;
+std::uint64_t g_logical_fps_publication_tick = 0;
 DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer);
 DWORD initialize_automatic_member() noexcept;
 thread_local bool g_cooperative_owned_record = false;
@@ -504,6 +511,7 @@ enum class input_phase : std::uint8_t
     disarming,
 };
 input_phase g_cooperative_adapter_phase = input_phase::disabled;
+input_phase g_cooperative_member_phase = input_phase::disabled;
 
 constexpr std::size_t official_hook_owner_capacity = 32;
 constexpr std::size_t official_thread_hook_capacity = 16;
@@ -1236,7 +1244,6 @@ struct swapchain_data
     ego_target_surface_v1 last_target_surface = {};
     std::uint64_t target_surface_id = 0;
     std::uint64_t target_surface_revision = 0;
-    std::uint64_t last_fps_publication_tick = 0;
     std::uint64_t observed_session_epoch = 0;
     std::uint64_t retired_session_textures = 0;
     bool has_target_surface = false;
@@ -1781,7 +1788,15 @@ bool claim_official_input_owner(swapchain_data &data) noexcept
         primary = owner->primary_token.load(std::memory_order_acquire);
     }
     if (primary != data.official_hook_token)
-        return false;
+    {
+        // Presenting peers for one exact HWND share one hook/cursor lease.
+        // Transfer only its teardown token, preserving its phase and cursor
+        // bookkeeping. An older peer's destructor can no longer release it.
+        if (owner->route_window.load(std::memory_order_acquire) !=
+            reinterpret_cast<std::uintptr_t>(data.window))
+            return false;
+        owner->primary_token.store(data.official_hook_token, std::memory_order_release);
+    }
 
     // The elected rendering owner may differ from the first swap chain that
     // retained this root-window hook. Publish its exact route HWND before its
@@ -1819,12 +1834,14 @@ void release_official_hook_owner(swapchain_data &data) noexcept
     const std::scoped_lock lock(g_official_hook_mutex);
     official_hook_owner &owner =
         g_official_hook_owners[data.official_hook_slot];
-    if (owner.primary_token.load(std::memory_order_acquire) ==
-        data.official_hook_token)
-    {
-        owner.phase.store(input_phase::disabled, std::memory_order_release);
-        owner.primary_token.store(0, std::memory_order_release);
-    }
+    g_logical_control.run([&] {
+        if (owner.primary_token.load(std::memory_order_acquire) ==
+            data.official_hook_token)
+        {
+            owner.phase.store(input_phase::disabled, std::memory_order_release);
+            owner.primary_token.store(0, std::memory_order_release);
+        }
+    });
 
     if (owner.references > 0)
         --owner.references;
@@ -1962,6 +1979,10 @@ ego_transport *retain_transport()
     {
         // A new Rust bridge has a new ordered focus-command stream.
         g_cooperative_focus_revision = 0;
+        g_logical_session_epoch.reset();
+        g_member_input_driver.reset();
+        g_cooperative_member_phase = input_phase::disabled;
+        g_logical_fps_publication_tick = 0;
         // Capabilities describe this mapped host's input seam, not the app's
         // package version. Stock ReShade exposes WM_INPUT through our message
         // hook, but only the validated private observer copies buffered reads.
@@ -2019,6 +2040,10 @@ void release_transport(ego_transport *transport, bool release_reference = true)
             static_cast<void>(g_cooperative.reconcile_registrations(g_participant_id, nullptr, 0));
             g_producer_registration_order.clear();
             g_cooperative_focus_revision = 0;
+            g_logical_session_epoch.reset();
+            g_member_input_driver.reset();
+            g_cooperative_member_phase = input_phase::disabled;
+            g_logical_fps_publication_tick = 0;
         }
     }
 
@@ -3447,14 +3472,13 @@ void publish_target_surface(
 }
 
 bool update_primary_target_surface(
-    effect_runtime *runtime,
-    swapchain_data &data)
+    swapchain_data &data,
+    const ego_target_surface_v1 &surface,
+    bool captured)
 {
     if (data.transport == nullptr)
         return false;
 
-    ego_target_surface_v1 surface = {};
-    const bool captured = capture_target_surface(runtime, data, surface);
     if (!owns_primary_swapchain(data))
     {
         // Offscreen and otherwise incomplete runtimes never reserve primary
@@ -3509,8 +3533,8 @@ void publish_render_fps(swapchain_data &data)
 
     constexpr std::uint64_t publication_interval_ms = 1000;
     const std::uint64_t now = GetTickCount64();
-    if (data.last_fps_publication_tick != 0 &&
-        now - data.last_fps_publication_tick < publication_interval_ms)
+    if (g_logical_fps_publication_tick != 0 &&
+        now - g_logical_fps_publication_tick < publication_interval_ms)
     {
         return;
     }
@@ -3526,7 +3550,7 @@ void publish_render_fps(swapchain_data &data)
     if (fps_milli == 0)
         return;
 
-    data.last_fps_publication_tick = now;
+    g_logical_fps_publication_tick = now;
     const ego_status status = ego_transport_publish_fps(data.transport, fps_milli);
     if (status != EGO_STATUS_OK)
     {
@@ -4097,6 +4121,7 @@ void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknow
             g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
     }
     data.phase = input_phase::disabled;
+    g_cooperative_member_phase = input_phase::disabled;
     if (!g_has_private_input_observer && g_participant_id == 0)
         publish_official_hook_phase(data, input_phase::disabled);
 
@@ -4160,8 +4185,10 @@ void destroy_own_effect_runtime(effect_runtime *runtime)
     if (data == nullptr)
         return;
 
-    if (owns_primary_swapchain(*data))
-        deactivate_destroyed_runtime_input(*data);
+    g_logical_control.run([&] {
+        if (g_member_input_driver.release(runtime->get_native()))
+            deactivate_destroyed_runtime_input(*data);
+    });
 
     // This callback precedes both resize and final swap-chain destruction while
     // the runtime's exact graphics queue is still available. Waiting here and
@@ -4267,10 +4294,12 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
         registrations.push_back({g_participant_id, window_id, 0, incarnation});
         incarnations.emplace(window_id, incarnation);
     }
-    const bool reconciled = g_cooperative.reconcile_registrations(g_participant_id, registrations.data(), registrations.size());
-    if (reconciled && registrations != g_producer_registration_order &&
-        g_cooperative.reorder_registrations(g_participant_id, registrations.data(), registrations.size()))
-        g_producer_registration_order = registrations;
+    g_logical_control.run([&] {
+        const bool reconciled = g_cooperative.reconcile_registrations(g_participant_id, registrations.data(), registrations.size());
+        if (reconciled && registrations != g_producer_registration_order &&
+            g_cooperative.reorder_registrations(g_participant_id, registrations.data(), registrations.size()))
+            g_producer_registration_order = registrations;
+    });
     swapchain_state.cooperative_incarnations.swap(incarnations);
 
     device *const device = runtime->get_device();
@@ -4404,7 +4433,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
     }
 }
 
-void prepare_own_frame(effect_runtime *runtime)
+bool prepare_own_frame(effect_runtime *runtime, bool anchor_owner)
 {
     auto *data = find_swapchain_data(runtime);
     if (data == nullptr)
@@ -4415,22 +4444,19 @@ void prepare_own_frame(effect_runtime *runtime)
         data = find_swapchain_data(runtime);
     }
     if (data == nullptr)
-        return;
+        return false;
     data->cooperative_frame_active = false;
     data->cooperative_frames.clear();
     if (data->transport == nullptr)
-        return;
-
-    if (!update_primary_target_surface(runtime, *data))
-        return;
+        return false;
 
     std::uint64_t session_epoch = 0;
     if (!transport_session_epoch(*data, session_epoch))
     {
-        deactivate_dormant_input(*data);
+        g_logical_control.run([&] { deactivate_dormant_input(*data); });
         data->retired_session_textures +=
             retire_all_electron_textures(runtime, *data);
-        return;
+        return true;
     }
 
     const bool session_active =
@@ -4442,6 +4468,34 @@ void prepare_own_frame(effect_runtime *runtime)
     const bool session_epoch_changed =
         !first_session_observation &&
         previous_session_epoch != session_epoch;
+
+    // Every eligible Present drives one module stream, even when the anchor
+    // chain is paused. Its local texture epoch never decides shared cleanup.
+    ego_target_surface_v1 surface = {};
+    const bool captured = capture_target_surface(runtime, *data, surface);
+    const bool admitted = g_logical_control.run([&] {
+        if (anchor_owner && !owns_primary_swapchain(*data) &&
+            (!captured || !claim_primary_swapchain(*data)))
+            return false;
+        const auto logical_epoch = g_logical_session_epoch.observe(session_epoch);
+        if (logical_epoch.stale)
+            return false;
+        if (anchor_owner && !update_primary_target_surface(*data, surface, captured))
+            return false;
+        if (!anchor_owner && captured)
+            publish_target_surface(*data, surface);
+        g_member_input_driver.activate(runtime->get_native());
+        if (logical_epoch.changed)
+        {
+            deactivate_dormant_input(*data);
+            // An epoch ends registrations; an ordinary raster gap does not.
+            static_cast<void>(g_cooperative.reconcile_registrations(g_participant_id, nullptr, 0));
+            g_producer_registration_order.clear();
+        }
+        return true;
+    });
+    if (!admitted)
+        return false;
 
     if (first_session_observation)
     {
@@ -4455,21 +4509,10 @@ void prepare_own_frame(effect_runtime *runtime)
     }
     else if (session_epoch_changed)
     {
-        // An epoch can advance from one odd value to another when a complete
-        // disconnect/reconnect cycle occurs between Presents. Invalidate the
-        // old input generation and GPU resources before touching the new
-        // session's scene, regardless of the epoch's current active bit.
+        // Every runtime retires only its own queue-owned GPU resources. The
+        // module's logical stream has already handled shared input/metadata.
         data->observed_session_epoch = session_epoch;
-        // Epoch cleanup is not a terminal result for producer commands. The
-        // observed epoch can already belong to an older authentication; only
-        // a coherent active frame or actual owner destruction may acknowledge.
-        deactivate_dormant_input(*data);
         data->cooperative_incarnations.clear();
-        // A producer epoch ends its registrations, not just their pixels.
-        // publish_windows(empty) intentionally retains ranks through a raster
-        // gap, so it cannot retire the departed session's rank ownership.
-        static_cast<void>(g_cooperative.reconcile_registrations(g_participant_id, nullptr, 0));
-        g_producer_registration_order.clear();
         data->retired_session_textures +=
             retire_all_electron_textures(runtime, *data);
 
@@ -4516,17 +4559,18 @@ void prepare_own_frame(effect_runtime *runtime)
     {
         if (!session_epoch_changed)
         {
-            deactivate_dormant_input(*data);
+            g_logical_control.run([&] { deactivate_dormant_input(*data); });
             data->retired_session_textures +=
                 retire_all_electron_textures(runtime, *data);
         }
-        return;
+        return true;
     }
 
-    publish_render_fps(*data);
+    g_logical_control.run([&] { publish_render_fps(*data); });
     log_official_pointer_sequence();
     compose_electron_scene(runtime, *data);
     data->cooperative_frame_active = true;
+    return true;
 }
 
 void cooperative_prepare_frame(void *, void *opaque_runtime)
@@ -4536,11 +4580,17 @@ void cooperative_prepare_frame(void *, void *opaque_runtime)
     auto *const runtime = static_cast<effect_runtime *>(opaque_runtime);
     if (find_swapchain_data(runtime) == nullptr)
         initialize_own_surface(runtime, static_cast<HWND>(runtime->get_hwnd()));
-    if (!g_cooperative.claim_primary_surface(runtime->get_native()))
+    const bool logical_owner = g_cooperative.claim_primary_surface(runtime->get_native());
+    const auto primary = g_cooperative.primary_surface();
+    const auto role = ego::cooperative::classify_presentation(runtime->get_native(),
+        reinterpret_cast<std::uintptr_t>(runtime->get_hwnd()), logical_owner,
+        primary.native_id, primary.hwnd);
+    if (!ego::cooperative::drives_logical_frame(role))
         return;
-    prepare_own_frame(runtime);
+    if (!prepare_own_frame(runtime, logical_owner))
+        return;
     auto *const data = find_swapchain_data(runtime);
-    if (data != nullptr && !owns_primary_swapchain(*data))
+    if (logical_owner && data != nullptr && !owns_primary_swapchain(*data))
         return;
     std::vector<ego::cooperative::window_v1> windows;
     if (data != nullptr && data->cooperative_frame_active)
@@ -4557,57 +4607,66 @@ void cooperative_prepare_frame(void *, void *opaque_runtime)
             windows.push_back(window);
         }
     }
-    static_cast<void>(g_cooperative.publish_windows(g_participant_id, windows.data(), windows.size(), true));
-    static_cast<void>(g_cooperative.set_interception(g_participant_id,
-        data != nullptr && data->cooperative_frame_active && data->cooperative_requested_interception &&
-        target_window_focused(data->window)));
-    if (data == nullptr || data->transport == nullptr)
-        return;
-    for (;;)
-    {
-        std::uint64_t focus_revision = 0, focus_incarnation = 0;
-        std::uint32_t focus_window = 0, focused = 0;
-        if (ego_transport_cooperative_focus_request(data->transport, g_cooperative_focus_revision,
-            &focus_revision, &focus_window, &focus_incarnation, &focused) != EGO_STATUS_OK || focus_revision == 0)
-            break;
-        const auto found = data->cooperative_incarnations.find(focus_window);
-        if (focused != 0 && found != data->cooperative_incarnations.end() && found->second == focus_incarnation)
+    g_logical_control.run([&] {
+        static_cast<void>(g_cooperative.publish_windows(g_participant_id, windows.data(), windows.size(), true));
+        static_cast<void>(g_cooperative.set_interception(g_participant_id,
+            data != nullptr && data->cooperative_frame_active && data->cooperative_requested_interception &&
+            target_window_focused(data->window)));
+        if (data == nullptr || data->transport == nullptr)
+            return;
+        for (;;)
         {
-            if (g_cooperative.set_focus({g_participant_id, focus_window, 0, focus_incarnation}))
-                g_cooperative_focus_revision = focus_revision;
-            else
+            std::uint64_t focus_revision = 0, focus_incarnation = 0;
+            std::uint32_t focus_window = 0, focused = 0;
+            if (ego_transport_cooperative_focus_request(data->transport, g_cooperative_focus_revision,
+                &focus_revision, &focus_window, &focus_incarnation, &focused) != EGO_STATUS_OK || focus_revision == 0)
                 break;
+            const auto found = data->cooperative_incarnations.find(focus_window);
+            if (focused != 0 && found != data->cooperative_incarnations.end() && found->second == focus_incarnation)
+            {
+                if (g_cooperative.set_focus({g_participant_id, focus_window, 0, focus_incarnation}))
+                    g_cooperative_focus_revision = focus_revision;
+                else
+                    break;
+            }
+            else if (focused == 0)
+            {
+                const auto current = g_cooperative.focus();
+                if (current.participant == g_participant_id && current.window_id == focus_window && current.incarnation == focus_incarnation)
+                    static_cast<void>(g_cooperative.set_focus({}));
+                g_cooperative_focus_revision = focus_revision;
+            }
+            else break;
         }
-        else if (focused == 0)
-        {
-            const auto current = g_cooperative.focus();
-            if (current.participant == g_participant_id && current.window_id == focus_window && current.incarnation == focus_incarnation)
-                static_cast<void>(g_cooperative.set_focus({}));
-            g_cooperative_focus_revision = focus_revision;
-        }
-        else break;
-    }
-    const auto focus = g_cooperative.focus();
-    static_cast<void>(ego_transport_set_cooperative_focus(
-        data->transport, focus.participant == g_participant_id ? focus.window_id : 0,
-        focus.participant == g_participant_id ? focus.incarnation : 0));
+        const auto focus = g_cooperative.focus();
+        static_cast<void>(ego_transport_set_cooperative_focus(
+            data->transport, focus.participant == g_participant_id ? focus.window_id : 0,
+            focus.participant == g_participant_id ? focus.incarnation : 0));
+    });
 }
 
 void cooperative_flush_input(void *, void *opaque_runtime)
 {
     auto *const runtime = static_cast<effect_runtime *>(opaque_runtime);
     auto *const data = find_swapchain_data(runtime);
-    if (data == nullptr || !data->cooperative_frame_active || !owns_primary_swapchain(*data))
+    if (data == nullptr || !data->cooperative_frame_active ||
+        g_member_input_driver.native_id() != runtime->get_native())
         return;
-    const auto focus = g_cooperative.focus();
-    static_cast<void>(ego_transport_set_cooperative_focus(data->transport,
-        focus.participant == g_participant_id ? focus.window_id : 0,
-        focus.participant == g_participant_id ? focus.incarnation : 0));
-    static_cast<void>(ego_transport_set_cooperative_interception_checked(data->transport,
-        g_cooperative.interception_requested() && !g_cooperative.snapshot_windows().empty() ? 1U : 0U,
-        data->cooperative_input_revision));
-    update_input_ownership(runtime, *data);
-    drain_input_messages(data->transport, primary_target_window(*data));
+    g_logical_control.run([&] {
+        if (g_member_input_driver.native_id() != runtime->get_native())
+            return;
+        const auto focus = g_cooperative.focus();
+        static_cast<void>(ego_transport_set_cooperative_focus(data->transport,
+            focus.participant == g_participant_id ? focus.window_id : 0,
+            focus.participant == g_participant_id ? focus.incarnation : 0));
+        static_cast<void>(ego_transport_set_cooperative_interception_checked(data->transport,
+            g_cooperative.interception_requested() && !g_cooperative.snapshot_windows().empty() ? 1U : 0U,
+            data->cooperative_input_revision));
+        data->phase = g_cooperative_member_phase;
+        update_input_ownership(runtime, *data);
+        g_cooperative_member_phase = data->phase;
+        drain_input_messages(data->transport, primary_target_window(*data));
+    });
 }
 
 void cooperative_render_window(void *, void *opaque_runtime, std::uint32_t window_id, std::uint64_t incarnation)
@@ -4666,9 +4725,11 @@ std::int32_t cooperative_cursor_at(void *, std::uint32_t window_id, std::uint64_
 
 void cooperative_release_input(void *)
 {
-    if (g_transport != nullptr)
-        static_cast<void>(ego_transport_release_cooperative_ownership(g_transport));
-    discard_dormant_input();
+    g_logical_control.run([&] {
+        if (g_transport != nullptr)
+            static_cast<void>(ego_transport_release_cooperative_ownership(g_transport));
+        discard_dormant_input();
+    });
 }
 
 void cooperative_destroy_surface(void *, void *surface, std::uint32_t final_swapchain)
@@ -4687,32 +4748,62 @@ void cooperative_destroy_surface(void *, void *surface, std::uint32_t final_swap
 void on_destroy_swapchain(swapchain *surface, bool resize)
 {
     if (resize) return;
+    const auto retired_primary = g_logical_control.run([&] {
+        return g_cooperative.primary_surface();
+    });
     g_cooperative.remove_surface(surface->get_native());
     if (!g_cooperative.has_live_surfaces())
     {
         // No future Present is required to stop suppression. Source pointer
         // state is invalidated before any recreated surface can project input.
         g_source_final_reset_pending.store(true, std::memory_order_release);
-        g_cooperative_adapter_phase = input_phase::disabled;
-        if (auto *const data = find_swapchain_data(surface))
-        {
-            if (auto *const owner = get_official_hook_owner(*data))
+        g_logical_control.run([&] {
+            g_cooperative_adapter_phase = input_phase::disabled;
+            g_adapter_input_driver.reset();
+            if (auto *const data = find_swapchain_data(surface))
             {
-                owner->phase.store(input_phase::disabled, std::memory_order_release);
-                owner->cursor_code.store(-1, std::memory_order_release);
-                PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
-                    g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
+                if (auto *const owner = get_official_hook_owner(*data))
+                {
+                    owner->phase.store(input_phase::disabled, std::memory_order_release);
+                    owner->cursor_code.store(-1, std::memory_order_release);
+                    PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
+                        g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
+                }
             }
-        }
+        });
     }
     for (const auto &participant : g_cooperative.snapshot_participants())
         if (participant.callbacks.destroy_surface != nullptr)
             participant.callbacks.destroy_surface(participant.context, surface, 1);
-    g_cooperative.release_primary_surface(surface->get_native());
+    g_logical_control.run([&] {
+        g_cooperative.release_primary_surface(surface->get_native(),
+            g_adapter_input_driver.native_id(),
+            retired_primary.native_id == surface->get_native() ? retired_primary.hwnd : 0);
+    });
 }
 
 void on_destroy_effect_runtime(effect_runtime *runtime)
 {
+    g_logical_control.run([&] {
+        if (g_adapter_input_driver.release(runtime->get_native()))
+        {
+            // A former presenter may be reset after a peer has taken over. Only
+            // retirement of the current driver can release the shared adapter.
+            g_cooperative_adapter_phase = input_phase::disabled;
+            g_cooperative.retire_input_driver_capture();
+            if (auto *const data = find_swapchain_data(runtime))
+            {
+                if (!g_has_private_input_observer)
+                    publish_official_hook_phase(*data, input_phase::disabled);
+                if (auto *const owner = get_official_hook_owner(*data))
+                {
+                    owner->cursor_code.store(-1, std::memory_order_release);
+                    PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
+                        g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
+                }
+            }
+        }
+    });
     for (const auto &participant : g_cooperative.snapshot_participants())
         if (participant.callbacks.destroy_surface != nullptr)
             participant.callbacks.destroy_surface(participant.context, runtime, 0);
@@ -4723,28 +4814,49 @@ void apply_cooperative_adapter_state(effect_runtime *runtime)
     auto *const data = find_swapchain_data(runtime);
     if (data == nullptr)
         return;
-    bool requested = g_cooperative.interception_requested() && !g_cooperative.snapshot_windows().empty() && target_window_focused(data->window);
-    auto *const owner = get_official_hook_owner(*data);
-    if (!g_has_private_input_observer &&
-        (owner == nullptr || !owner->hook_ready.load(std::memory_order_acquire) || !claim_official_input_owner(*data)))
-        requested = false;
-    g_cooperative_adapter_phase = next_phase(g_cooperative_adapter_phase, requested);
-    if (!g_has_private_input_observer)
-        publish_official_hook_phase(*data, g_cooperative_adapter_phase);
-    if (g_cooperative_adapter_phase != input_phase::disabled)
-        runtime->block_input_next_frame();
+    g_logical_control.run([&] {
+        g_adapter_input_driver.activate(runtime->get_native());
+        bool requested = g_cooperative.interception_requested() && !g_cooperative.snapshot_windows().empty() && target_window_focused(data->window);
+        auto *const owner = get_official_hook_owner(*data);
+        if (!g_has_private_input_observer &&
+            (owner == nullptr || !owner->hook_ready.load(std::memory_order_acquire) || !claim_official_input_owner(*data)))
+            requested = false;
+        g_cooperative_adapter_phase = next_phase(g_cooperative_adapter_phase, requested);
+        if (!g_has_private_input_observer)
+            publish_official_hook_phase(*data, g_cooperative_adapter_phase);
+        if (g_cooperative_adapter_phase != input_phase::disabled)
+            runtime->block_input_next_frame();
+    });
+}
+
+void apply_cooperative_presentation_cursor(effect_runtime *runtime)
+{
+    auto *const data = find_swapchain_data(runtime);
+    if (data == nullptr)
+        return;
     std::int32_t cursor = -1;
     CURSORINFO info = {sizeof(CURSORINFO)};
     const bool have_cursor = GetCursorInfo(&info) != FALSE;
-    if (g_cooperative_adapter_phase == input_phase::enabled && have_cursor)
+    const bool routing = g_logical_control.run([&] {
+        return g_adapter_input_driver.native_id() == runtime->get_native() &&
+            g_cooperative_adapter_phase == input_phase::enabled;
+    });
+    if (routing && have_cursor)
     {
         POINT point = info.ptScreenPos;
         if (ScreenToClient(data->window, &point))
             cursor = g_cooperative.cursor_at(point.x, point.y);
     }
-    if (owner != nullptr && owner->cursor_code.exchange(cursor, std::memory_order_acq_rel) != cursor)
-        PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
-            g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
+    // All exact-HWND presenters drive one window-thread hardware lease. Each
+    // current ImGui presentation also needs its own software cursor output.
+    g_logical_control.run([&] {
+        if (g_adapter_input_driver.native_id() != runtime->get_native())
+            return;
+        auto *const owner = get_official_hook_owner(*data);
+        if (owner != nullptr && owner->cursor_code.exchange(cursor, std::memory_order_acq_rel) != cursor)
+            PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
+                g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
+    });
     ImGuiIO &io = ImGui::GetIO();
     io.MouseDrawCursor = cursor > 0 && (!have_cursor || (info.flags & CURSOR_SHOWING) == 0);
     if (io.MouseDrawCursor)
@@ -4769,16 +4881,33 @@ void on_reshade_overlay(effect_runtime *runtime)
 {
     if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS)
         return;
+    const bool logical_owner = g_cooperative.claim_primary_surface(runtime->get_native());
+    const auto primary = g_cooperative.primary_surface();
+    const auto role = ego::cooperative::classify_presentation(runtime->get_native(),
+        reinterpret_cast<std::uintptr_t>(runtime->get_hwnd()), logical_owner,
+        primary.native_id, primary.hwnd);
+    if (ego::cooperative::drives_logical_frame(role))
+    {
+        if (find_swapchain_data(runtime) == nullptr)
+            initialize_own_surface(runtime, static_cast<HWND>(runtime->get_hwnd()));
+        auto *const data = find_swapchain_data(runtime);
+        g_logical_control.run([&] {
+            g_adapter_input_driver.activate(runtime->get_native());
+            if (data != nullptr && !g_has_private_input_observer)
+                static_cast<void>(claim_official_input_owner(*data));
+        });
+    }
     for (const auto &participant : g_cooperative.snapshot_participants())
         if (participant.callbacks.prepare_frame != nullptr)
             participant.callbacks.prepare_frame(participant.context, runtime);
-    if (!g_cooperative.claim_primary_surface(runtime->get_native()))
+    if (!ego::cooperative::drives_logical_frame(role))
         return;
     drain_cooperative_sources(static_cast<HWND>(runtime->get_hwnd()));
     for (const auto &participant : g_cooperative.snapshot_participants())
         if (participant.callbacks.flush_input != nullptr)
             participant.callbacks.flush_input(participant.context, runtime);
     apply_cooperative_adapter_state(runtime);
+    apply_cooperative_presentation_cursor(runtime);
     for (const auto &window : g_cooperative.snapshot_windows())
         if (window.callbacks.render_window != nullptr)
             window.callbacks.render_window(window.context, runtime, window.key.window_id, window.key.incarnation);
@@ -5036,6 +5165,8 @@ void register_dispatcher_events()
     reshade::register_event<reshade::addon_event::reshade_present>(on_reshade_present_diagnostic);
     if (g_has_private_input_observer)
         reshade::register_event<reshade::addon_event::input_message>(on_input_message);
+    // Callback registration is complete independently of any private producer.
+    InterlockedExchange(&ElectronGameOverlayCooperativeAdapterReadyV1, 1);
 }
 } // namespace
 
@@ -5045,6 +5176,7 @@ extern "C" __declspec(dllexport) const char *DESCRIPTION =
 extern "C" __declspec(dllexport) const unsigned int
     ElectronGameOverlayReShadeAddonAbi = 1;
 extern "C" __declspec(dllexport) volatile LONG ElectronGameOverlayCooperativeReadyV1 = 0;
+extern "C" __declspec(dllexport) __declspec(align(4)) volatile LONG ElectronGameOverlayCooperativeAdapterReadyV1 = 0;
 
 #if defined(_M_IX86)
 #pragma comment(linker, "/EXPORT:ElectronGameOverlayInitializeMember=_ElectronGameOverlayInitializeMember@4")
@@ -5095,6 +5227,7 @@ extern "C" __declspec(dllexport) void AddonUninit(HMODULE module, HMODULE)
 {
     if (g_cooperative_dispatcher)
     {
+        InterlockedExchange(&ElectronGameOverlayCooperativeAdapterReadyV1, 0);
         shutdown_official_message_hooks(true);
         unregister_compatible_addon(module);
         g_public_registered = false;

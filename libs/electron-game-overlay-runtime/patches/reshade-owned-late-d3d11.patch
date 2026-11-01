@@ -1,0 +1,2201 @@
+diff --git a/ReShade.vcxproj b/ReShade.vcxproj
+index c114a87..911a8b9 100644
+--- a/ReShade.vcxproj
++++ b/ReShade.vcxproj
+@@ -110,7 +110,7 @@
+   <ItemDefinitionGroup>
+     <ClCompile>
+       <!-- Fix inconsistent DLL linkage warnings because of prototypes defined in "wingdi.h" and "Winsock2.h" using "__declspec(dllimport)" -->
+-      <PreprocessorDefinitions>_GDI32_;WINSOCK_API_LINKAGE=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions>RESHADE_OWNED_LATE_D3D11=1;_GDI32_;WINSOCK_API_LINKAGE=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+     </ClCompile>
+   </ItemDefinitionGroup>
+   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+@@ -534,8 +534,12 @@
+       <ForcedIncludeFiles>reshade.hpp;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+       <PreprocessorDefinitions>BUILTIN_ADDON;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+     </ClCompile>
+-    <ClCompile Include="source\addon.cpp" />
+-    <ClCompile Include="source\addon_manager.cpp" />
++    <ClCompile Include="source\addon.cpp">
++      <ExceptionHandling>Sync</ExceptionHandling>
++    </ClCompile>
++    <ClCompile Include="source\addon_manager.cpp">
++      <ExceptionHandling>Sync</ExceptionHandling>
++    </ClCompile>
+     <ClCompile Include="source\d2d1\d2d1.cpp" />
+     <ClCompile Include="source\d3d10\d3d10.cpp" />
+     <ClCompile Include="source\d3d10\d3d10_device.cpp" />
+@@ -835,4 +839,4 @@
+     </CustomBuild>
+   </ItemGroup>
+   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+-</Project>
+\ No newline at end of file
++</Project>
+diff --git a/source/addon.cpp b/source/addon.cpp
+index 5b15ae7..a9bfcd9 100644
+--- a/source/addon.cpp
++++ b/source/addon.cpp
+@@ -268,4 +268,8 @@ void ReShadeUpdateAndPresentEffectRuntime(reshade::api::effect_runtime *runtime)
+ 	runtime->get_command_queue()->flush_immediate_command_list();
+ }
+ 
++#if defined(RESHADE_OWNED_LATE_D3D11)
++#include "ego_owned_late_d3d11/owned_late_d3d11.hpp"
++#endif
++
+ #endif
+diff --git a/source/addon_manager.cpp b/source/addon_manager.cpp
+index 60cd13d..6fc1203 100644
+--- a/source/addon_manager.cpp
++++ b/source/addon_manager.cpp
+@@ -11,6 +11,7 @@
+ #include "ini_file.hpp"
+ #include <algorithm> // std::find, std::find_if, std::remove, std::remove_if
+ #include <Windows.h>
++#include <mutex>
+ 
+ extern void register_addon_depth();
+ extern void register_addon_effect_runtime_sync();
+@@ -156,9 +157,17 @@ std::vector<void *> reshade::addon_event_list[static_cast<uint32_t>(reshade::add
+ std::vector<reshade::addon_info> reshade::addon_loaded_info;
+ thread_local const reshade::addon_info *reshade::addon_current = nullptr;
+ static unsigned long s_reference_count = 0;
++#if defined(RESHADE_OWNED_LATE_D3D11)
++// Serialize reference publication with completion of first initialization and
++// final cleanup. Recursive entry permits same-thread AddonInit activity.
++static std::recursive_mutex s_owned_addon_manager_mutex;
++#endif
+ 
+ void reshade::load_addons()
+ {
++#if defined(RESHADE_OWNED_LATE_D3D11)
++	const std::lock_guard<std::recursive_mutex> manager_lock(s_owned_addon_manager_mutex);
++#endif
+ 	// Every caller must close or wait out project-owned external registration
+ 	// before it may return and dispatch events. Doing this before incrementing
+ 	// the reference count removes the gap where a second caller could return
+@@ -380,6 +389,9 @@ void reshade::load_addons()
+ }
+ void reshade::unload_addons()
+ {
++#if defined(RESHADE_OWNED_LATE_D3D11)
++	const std::lock_guard<std::recursive_mutex> manager_lock(s_owned_addon_manager_mutex);
++#endif
+ 	// Only unload add-ons after the last reference to the manager was released
+ 	if (InterlockedDecrement(&s_reference_count) != 0)
+ 		return;
+diff --git a/source/d3d11/d3d11_impl_swapchain.cpp b/source/d3d11/d3d11_impl_swapchain.cpp
+index 397bffa..9abda52 100644
+--- a/source/d3d11/d3d11_impl_swapchain.cpp
++++ b/source/d3d11/d3d11_impl_swapchain.cpp
+@@ -11,6 +11,9 @@ reshade::d3d11::swapchain_impl::swapchain_impl(device_impl *device, IDXGISwapCha
+ 	api_object_impl(swapchain),
+ 	_device_impl(device)
+ {
++	DXGI_SWAP_CHAIN_DESC description = {};
++	if (SUCCEEDED(_orig->GetDesc(&description)))
++		_window = description.OutputWindow;
+ }
+ 
+ reshade::api::device *reshade::d3d11::swapchain_impl::get_device()
+@@ -20,10 +23,7 @@ reshade::api::device *reshade::d3d11::swapchain_impl::get_device()
+ 
+ void *reshade::d3d11::swapchain_impl::get_hwnd() const
+ {
+-	DXGI_SWAP_CHAIN_DESC swap_desc = {};
+-	_orig->GetDesc(&swap_desc);
+-
+-	return swap_desc.OutputWindow;
++	return _window;
+ }
+ 
+ reshade::api::resource reshade::d3d11::swapchain_impl::get_back_buffer(uint32_t index)
+diff --git a/source/d3d11/d3d11_impl_swapchain.hpp b/source/d3d11/d3d11_impl_swapchain.hpp
+index 57002ef..88116f5 100644
+--- a/source/d3d11/d3d11_impl_swapchain.hpp
++++ b/source/d3d11/d3d11_impl_swapchain.hpp
+@@ -29,5 +29,9 @@ namespace reshade::d3d11
+ 
+ 	private:
+ 		device_impl *const _device_impl;
++		// OutputWindow is immutable for a swap chain. Keeping this identity
++		// available allows owned late-runtime teardown without calling into a
++		// chain whose destruction notifier has already begun.
++		HWND _window = nullptr;
+ 	};
+ }
+diff --git a/source/ego_owned_late_d3d11/owned_config_file.hpp b/source/ego_owned_late_d3d11/owned_config_file.hpp
+new file mode 100644
+index 0000000..425720a
+--- /dev/null
++++ b/source/ego_owned_late_d3d11/owned_config_file.hpp
+@@ -0,0 +1,179 @@
++#pragma once
++
++#include <Windows.h>
++#include <cstdint>
++#include <filesystem>
++#include <string>
++
++// Same-module file ownership only; none of these private C++ types is exported.
++namespace ego_owned_config
++{
++    struct identity
++    {
++        DWORD volume = 0, index_high = 0, index_low = 0;
++        FILETIME creation = {};
++        bool valid = false;
++    };
++
++    inline DWORD inspect(HANDLE file, identity &result)
++    {
++        BY_HANDLE_FILE_INFORMATION info = {};
++        if (!GetFileInformationByHandle(file, &info)) return GetLastError();
++        if (GetFileType(file) != FILE_TYPE_DISK || info.nNumberOfLinks != 1 ||
++            (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
++            return ERROR_ACCESS_DENIED;
++        result = { info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow, info.ftCreationTime, true };
++        return ERROR_SUCCESS;
++    }
++
++    inline bool same(const identity &a, const identity &b)
++    {
++        return a.valid && b.valid && a.volume == b.volume && a.index_high == b.index_high &&
++            a.index_low == b.index_low && a.creation.dwHighDateTime == b.creation.dwHighDateTime &&
++            a.creation.dwLowDateTime == b.creation.dwLowDateTime;
++    }
++
++    struct reserved_file
++    {
++        std::filesystem::path path;
++        identity created;
++        // Read-data access participates in Windows share checks and permits CRT
++        // SH_DENYWR saves. Metadata-only access would not block pathname rename.
++        // Withholding delete sharing protects every runtime config flush.
++        HANDLE guard = INVALID_HANDLE_VALUE;
++        bool deletion_phase = false;
++        reserved_file() = default;
++        reserved_file(const reserved_file &) = delete;
++        reserved_file &operator=(const reserved_file &) = delete;
++        ~reserved_file() { if (guard != INVALID_HANDLE_VALUE) CloseHandle(guard); }
++        bool owned() const noexcept { return created.valid && guard != INVALID_HANDLE_VALUE; }
++    };
++
++    struct temporary_handle
++    {
++        HANDLE value = INVALID_HANDLE_VALUE;
++        ~temporary_handle() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
++    };
++
++    inline DWORD write_seed(HANDLE file, const std::string &seed)
++    {
++        DWORD written = 0;
++        if (!seed.empty() && (!WriteFile(file, seed.data(), static_cast<DWORD>(seed.size()), &written, nullptr) ||
++            written != seed.size())) return ERROR_WRITE_FAULT;
++        return FlushFileBuffers(file) ? ERROR_SUCCESS : GetLastError();
++    }
++
++    // On a seed-write failure the exact owned record remains available for the
++    // caller's known-no-runtime cleanup; it is never silently abandoned.
++    template <typename Writer>
++    DWORD create_seeded(reserved_file &record, const std::filesystem::path &path,
++        const std::string &seed, Writer &&writer)
++    {
++        if (record.guard != INVALID_HANDLE_VALUE || record.created.valid || !path.is_absolute() ||
++            path.filename().wstring().find(L':') != std::wstring::npos)
++            return ERROR_INVALID_PARAMETER;
++        record.path = path; // Any allocation failure happens before CREATE_NEW.
++        record.deletion_phase = false;
++        temporary_handle file;
++        file.value = CreateFileW(path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES,
++            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW,
++            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++        if (file.value == INVALID_HANDLE_VALUE) return GetLastError();
++        record.guard = file.value; // Record ownership before identity/seed work.
++        file.value = INVALID_HANDLE_VALUE;
++        DWORD error = inspect(record.guard, record.created);
++        if (error != ERROR_SUCCESS) return error; // Retain unknown identity safely.
++        temporary_handle metadata;
++        metadata.value = CreateFileW(path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
++            nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++        if (metadata.value == INVALID_HANDLE_VALUE) return GetLastError();
++        identity actual;
++        error = inspect(metadata.value, actual);
++        if (error != ERROR_SUCCESS || !same(actual, record.created)) return ERROR_FILE_INVALID;
++        error = writer(record.guard, seed);
++        // Use a separate read-only file object, rather than a reduced-access
++        // duplicate whose original write/delete share state can block CRT saves.
++        CloseHandle(record.guard);
++        record.guard = metadata.value;
++        metadata.value = INVALID_HANDLE_VALUE;
++        return error;
++    }
++
++    inline DWORD create_seeded(reserved_file &record, const std::filesystem::path &path, const std::string &seed)
++    {
++        return create_seeded(record, path, seed, write_seed);
++    }
++
++    inline DWORD verify_current(const reserved_file &record)
++    {
++        if (!record.owned()) return ERROR_INVALID_HANDLE;
++        identity pinned;
++        DWORD error = inspect(record.guard, pinned);
++        if (error != ERROR_SUCCESS || !same(pinned, record.created)) return ERROR_FILE_INVALID;
++        temporary_handle current;
++        current.value = CreateFileW(record.path.c_str(), FILE_READ_ATTRIBUTES,
++            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++        if (current.value == INVALID_HANDLE_VALUE) return GetLastError();
++        identity actual;
++        error = inspect(current.value, actual);
++        return error == ERROR_SUCCESS && same(actual, record.created) ? ERROR_SUCCESS : ERROR_FILE_INVALID;
++    }
++
++    // Call only after all runtime users are gone. Keep a permissive metadata
++    // handle to the original object while dropping its no-delete guard, so an
++    // object renamed/replaced in this small handoff cannot reuse its file ID.
++    inline DWORD begin_retirement(reserved_file &record)
++    {
++        if (record.deletion_phase) return record.owned() ? ERROR_SUCCESS : ERROR_INVALID_HANDLE;
++        DWORD error = verify_current(record);
++        if (error != ERROR_SUCCESS) return error;
++        temporary_handle handoff;
++        handoff.value = CreateFileW(record.path.c_str(), FILE_READ_ATTRIBUTES,
++            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
++            FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++        if (handoff.value == INVALID_HANDLE_VALUE) return GetLastError();
++        identity actual;
++        error = inspect(handoff.value, actual);
++        if (error != ERROR_SUCCESS || !same(actual, record.created)) return ERROR_FILE_INVALID;
++        CloseHandle(record.guard);
++        record.guard = handoff.value;
++        handoff.value = INVALID_HANDLE_VALUE;
++        record.deletion_phase = true;
++        return ERROR_SUCCESS;
++    }
++
++    template <typename ClearCache>
++    DWORD retire(reserved_file &record, ClearCache &&clear_exact_cache)
++    {
++        DWORD error = begin_retirement(record);
++        if (error != ERROR_SUCCESS) return error;
++        temporary_handle deletion;
++        const ULONGLONG deadline = GetTickCount64() + 20;
++        for (;;)
++        {
++            deletion.value = CreateFileW(record.path.c_str(), DELETE | FILE_READ_ATTRIBUTES,
++                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++            if (deletion.value != INVALID_HANDLE_VALUE) break;
++            error = GetLastError();
++            // A concurrent stock INI flush briefly holds a CRT handle without
++            // delete sharing. The original object remains pinned by handoff;
++            // retry only this transient open failure, before any mutation.
++            if ((error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION) ||
++                GetTickCount64() >= deadline) return error;
++            Sleep(1);
++        }
++        identity actual;
++        error = inspect(deletion.value, actual);
++        if (error != ERROR_SUCCESS || !same(actual, record.created)) return ERROR_FILE_INVALID;
++        // The delete-capable handle denies replacement through cache eviction
++        // and handle-based deletion. Never delete a pathname after checking it.
++        FILE_DISPOSITION_INFO disposition { TRUE };
++        if (!SetFileInformationByHandle(deletion.value, FileDispositionInfo, &disposition, sizeof(disposition)))
++            return GetLastError();
++        clear_exact_cache(record.path);
++        CloseHandle(record.guard);
++        record.guard = INVALID_HANDLE_VALUE;
++        record.created.valid = false;
++        return ERROR_SUCCESS;
++    }
++}
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.hpp b/source/ego_owned_late_d3d11/owned_late_d3d11.hpp
+new file mode 100644
+index 0000000..a5c732e
+--- /dev/null
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.hpp
+@@ -0,0 +1,67 @@
++#pragma once
++
++// Owned-host baseline only. Include exactly once from source/addon.cpp.
++#if !defined(RESHADE_OWNED_LATE_D3D11) && !defined(RESHADE_OWNED_LATE_D3D11_ABI_ONLY)
++#error Owned late D3D11 requires the explicit owned-host build switch.
++#endif
++
++#include <windows.h>
++#include <cstdint>
++#include <type_traits>
++
++#pragma pack(push, 8)
++struct ego_owned_late_d3d11_initialize_v1
++{
++    std::uint32_t struct_size;
++    std::uint32_t abi_version;
++    std::uint32_t flags; // V1 requires zero.
++    std::uint32_t reserved; // V1 requires zero.
++};
++
++struct ego_owned_late_d3d11_stats_v1
++{
++    std::uint32_t struct_size;
++    std::uint32_t abi_version;
++    std::uint32_t status; // 0 cold; 1 installing; 2 active; 3 failed/passive; 4 normal hooks only
++    std::uint32_t last_win32_error;
++    std::uint32_t last_hresult;
++    std::uint32_t reserved;
++    std::uint64_t present_calls;
++    std::uint64_t adoption_attempts;
++    std::uint64_t adoption_successes;
++    std::uint64_t notifier_rejections;
++    std::uint64_t automatic_proxy_skips;
++    std::uint64_t resize_calls;
++    std::uint64_t resize_successes;
++    std::uint64_t retirements;
++    std::uint64_t quarantines;
++    std::uint64_t render_failures;
++};
++#pragma pack(pop)
++
++static_assert(sizeof(wchar_t) == 2);
++static_assert(sizeof(ego_owned_late_d3d11_initialize_v1) == 16);
++static_assert(sizeof(ego_owned_late_d3d11_stats_v1) == 104);
++static_assert(std::is_standard_layout_v<ego_owned_late_d3d11_initialize_v1>);
++static_assert(std::is_trivially_copyable_v<ego_owned_late_d3d11_initialize_v1>);
++static_assert(std::is_standard_layout_v<ego_owned_late_d3d11_stats_v1>);
++static_assert(std::is_trivially_copyable_v<ego_owned_late_d3d11_stats_v1>);
++
++// Caller verifies the exact owned host/stage and safely registers/initializes
++// the first cooperative adapter before this call, outside DllMain. Null selects
++// V1 defaults. Non-null requests contain no paths or target graphics pointers.
++#if !defined(RESHADE_OWNED_LATE_D3D11_ABI_ONLY)
++extern "C" __declspec(dllexport) const std::uint32_t ElectronGameOverlayOwnedLateD3D11AbiV1 = 1;
++extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeOwnedLateD3D11V1(
++    const ego_owned_late_d3d11_initialize_v1 *request);
++extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayQueryOwnedLateD3D11V1(
++    ego_owned_late_d3d11_stats_v1 *result);
++
++#if defined(_M_IX86)
++#pragma comment(linker, "/EXPORT:ElectronGameOverlayOwnedLateD3D11AbiV1=_ElectronGameOverlayOwnedLateD3D11AbiV1,DATA")
++#pragma comment(linker, "/EXPORT:ElectronGameOverlayInitializeOwnedLateD3D11V1=_ElectronGameOverlayInitializeOwnedLateD3D11V1@4")
++#pragma comment(linker, "/EXPORT:ElectronGameOverlayQueryOwnedLateD3D11V1=_ElectronGameOverlayQueryOwnedLateD3D11V1@4")
++#endif
++
++#include "owned_late_d3d11.inl"
++#endif
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+new file mode 100644
+index 0000000..40ed86d
+--- /dev/null
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -0,0 +1,892 @@
++// Owned ReShade baseline. Foreign/official hosts never activate this path.
++#include "reshade.hpp"
++#include "runtime.hpp"
++#include "addon_manager.hpp"
++#include "hook_manager.hpp"
++#include "ini_file.hpp"
++#include "com_ptr.hpp"
++#include "owned_config_file.hpp"
++#include "dxgi/dxgi_swapchain.hpp"
++#include <d3d11_4.h>
++#include <d3dcommon.h>
++#include <tlhelp32.h>
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <cstring>
++#include <cwchar>
++#include <filesystem>
++#include <iterator>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <string>
++
++extern thread_local bool g_in_dxgi_runtime;
++extern "C" const unsigned int ElectronGameOverlayReShadeHostAbi;
++extern "C" volatile LONG ElectronGameOverlayReShadeAddonGate;
++
++namespace ego_owned_late_d3d11
++{
++    namespace fs = std::filesystem;
++    constexpr std::uint32_t abi_version = 1;
++    constexpr wchar_t marker_name[] = L"electron-game-overlay-owned-runtime-v1.marker";
++    constexpr char marker_contents[] = "ELECTRON_GAME_OVERLAY_OWNED_RUNTIME_STAGE_V1\n";
++    constexpr LONG addon_gate_registered = 2, addon_gate_closed = 3;
++
++    std::mutex install_mutex;
++    std::mutex registry_mutex;
++    std::atomic<std::uint32_t> status { 0 }, last_error { ERROR_SUCCESS }, last_hresult { S_OK };
++    std::atomic<std::uint64_t> present_calls { 0 }, adoption_attempts { 0 }, adoption_successes { 0 };
++    std::atomic<std::uint64_t> notifier_rejections { 0 }, automatic_skips { 0 };
++    std::atomic<std::uint64_t> resize_calls { 0 }, resize_successes { 0 }, retirements { 0 };
++    std::atomic<std::uint64_t> quarantines { 0 }, render_failures { 0 };
++    thread_local unsigned native_depth = 0;
++    fs::path owned_stage;
++    std::string config_seed;
++    std::uint64_t process_creation_time = 0;
++    bool retained_addon_reference = false;
++    std::atomic<std::uint64_t> next_config { 0 };
++
++    struct depth_scope { depth_scope() { ++native_depth; } ~depth_scope() { --native_depth; } };
++    struct dxgi_scope
++    {
++        bool previous = g_in_dxgi_runtime;
++        dxgi_scope() { g_in_dxgi_runtime = true; }
++        ~dxgi_scope() { g_in_dxgi_runtime = previous; }
++    };
++    struct handle
++    {
++        HANDLE value = INVALID_HANDLE_VALUE;
++        ~handle() { if (value != INVALID_HANDLE_VALUE && value != nullptr) CloseHandle(value); }
++    };
++
++    struct context_scope
++    {
++        com_ptr<ID3D11Multithread> multithread;
++        bool entered = false;
++        explicit context_scope(ID3D11DeviceContext *context)
++        {
++            if (context != nullptr && SUCCEEDED(context->QueryInterface(&multithread)) &&
++                multithread->GetMultithreadProtected())
++            {
++                multithread->Enter();
++                entered = true;
++            }
++        }
++        ~context_scope()
++        {
++            if (entered) multithread->Leave();
++        }
++    };
++
++    enum class chain_phase { initializing, waiting_for_surface, ready, reset, rejected, retired, quarantined };
++    struct chain_state
++    {
++        std::recursive_mutex mutex;
++        void *identity = nullptr; // Numeric identity only; deliberately not AddRef'd.
++        std::atomic<bool> dead { false };
++        chain_phase phase = chain_phase::initializing;
++        com_ptr<ID3D11Device> device;
++        com_ptr<ID3D11DeviceContext> context;
++        void *context_identity = nullptr;
++        // Immutable after registry publication. Raw Presents on different chains
++        // may overlap even when the app itself never overlaps context commands.
++        std::shared_ptr<std::recursive_mutex> context_operation_gate;
++        reshade::api::effect_runtime *runtime = nullptr;
++        std::string owned_config_utf8;
++        ego_owned_config::reserved_file owned_config_file;
++        fs::path config_cache_key;
++        bool runtime_creation_uncertain = false;
++        HWND window = nullptr;
++        bool swapchain_event_live = false;
++        bool needs_final_removal = false;
++        bool still_drawing = false;
++        UINT notification_id = 0;
++    };
++    std::map<void *, std::shared_ptr<chain_state>> chains;
++
++    std::string utf8(const fs::path &path) { return path.u8string(); }
++
++    bool regular_file(const fs::path &path)
++    {
++        const DWORD attributes = GetFileAttributesW(path.c_str());
++        return attributes != INVALID_FILE_ATTRIBUTES &&
++            (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
++    }
++
++    DWORD read_regular_file(const fs::path &path, std::string &bytes, DWORD limit)
++    {
++        if (!regular_file(path)) return ERROR_ACCESS_DENIED;
++        handle file;
++        file.value = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
++            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++        if (file.value == INVALID_HANDLE_VALUE) return GetLastError();
++        BY_HANDLE_FILE_INFORMATION info = {};
++        if (!GetFileInformationByHandle(file.value, &info)) return GetLastError();
++        if (GetFileType(file.value) != FILE_TYPE_DISK ||
++            (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
++            info.nFileSizeHigh != 0 || info.nFileSizeLow > limit)
++            return ERROR_ACCESS_DENIED;
++        bytes.resize(info.nFileSizeLow);
++        DWORD read = 0;
++        if (info.nFileSizeLow != 0 &&
++            (!ReadFile(file.value, bytes.data(), info.nFileSizeLow, &read, nullptr) || read != info.nFileSizeLow))
++            return ERROR_READ_FAULT;
++        return ERROR_SUCCESS;
++    }
++
++    bool beneath(const fs::path &candidate, const fs::path &parent)
++    {
++        auto child = candidate.begin();
++        for (auto component = parent.begin(); component != parent.end(); ++component, ++child)
++            if (child == candidate.end() || _wcsicmp(child->c_str(), component->c_str()) != 0) return false;
++        return true;
++    }
++
++    DWORD module_path(HMODULE module, fs::path &path)
++    {
++        std::wstring name(32768, L'\0');
++        const DWORD length = GetModuleFileNameW(module, name.data(), static_cast<DWORD>(name.size()));
++        if (length == 0) return GetLastError();
++        if (length >= name.size()) return ERROR_INSUFFICIENT_BUFFER;
++        name.resize(length);
++        path = fs::path(std::move(name));
++        return ERROR_SUCCESS;
++    }
++
++    DWORD validate_owned_stage(HMODULE own_module)
++    {
++        if (ElectronGameOverlayReShadeHostAbi != 1) return ERROR_REVISION_MISMATCH;
++        fs::path dll, executable;
++        DWORD error = module_path(own_module, dll);
++        if (error != ERROR_SUCCESS) return error;
++        error = module_path(nullptr, executable);
++        if (error != ERROR_SUCCESS) return error;
++        std::error_code ec;
++        const fs::path base = fs::canonical(g_reshade_base_path, ec);
++        if (ec) return ERROR_PATH_NOT_FOUND;
++        const fs::path dll_parent = fs::canonical(dll.parent_path(), ec);
++        if (ec || _wcsicmp(base.c_str(), dll_parent.c_str()) != 0) return ERROR_ACCESS_DENIED;
++        const fs::path game_parent = fs::canonical(executable.parent_path(), ec);
++        if (ec || beneath(base, game_parent)) return ERROR_ACCESS_DENIED;
++        std::string marker;
++        error = read_regular_file(base / marker_name, marker, sizeof(marker_contents));
++        if (error != ERROR_SUCCESS) return error;
++        if (marker != marker_contents) return ERROR_ACCESS_DENIED;
++        if (!regular_file(base / L"ReShade.ini") || !regular_file(base / L".electron-game-overlay-run.json"))
++            return ERROR_ACCESS_DENIED;
++        error = read_regular_file(base / L"ReShade.ini", config_seed, 4 * 1024 * 1024);
++        if (error != ERROR_SUCCESS) return error;
++        FILETIME creation = {}, exit = {}, kernel = {}, user = {};
++        if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return GetLastError();
++        process_creation_time = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
++        owned_stage = base;
++        return ERROR_SUCCESS;
++    }
++
++    DWORD reserve_seeded_config(ego_owned_config::reserved_file &file)
++    {
++        for (unsigned attempt = 0; attempt != 64; ++attempt)
++        {
++            const auto sequence = next_config.fetch_add(1) + 1;
++            if (sequence > UINT32_MAX) return ERROR_ARITHMETIC_OVERFLOW;
++            wchar_t name[32] = {};
++            swprintf_s(name, L"ego-late-%08lx-%08lx.ini", GetCurrentProcessId(), static_cast<unsigned long>(sequence));
++            const DWORD error = ego_owned_config::create_seeded(file, owned_stage / name, config_seed);
++            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
++            return error;
++        }
++        return ERROR_FILE_EXISTS;
++    }
++
++    // The caller holds the chain lock and has proved that no runtime can still
++    // refer to this generated config. Never evict a template or another chain.
++    DWORD retire_config(chain_state &state)
++    {
++        if (state.runtime != nullptr || state.runtime_creation_uncertain) return ERROR_BUSY;
++        if (state.owned_config_file.guard == INVALID_HANDLE_VALUE) return ERROR_SUCCESS;
++        return ego_owned_config::retire(state.owned_config_file, [&](const fs::path &owned_path) {
++            if (!state.config_cache_key.empty()) reshade::ini_file::clear_cache(state.config_cache_key);
++            // A normal failed public Create resolves the already absolute path
++            // identically, but never succeeded far enough to publish a runtime.
++            else reshade::ini_file::clear_cache(owned_path);
++        });
++    }
++
++    bool ready_word(HMODULE module, const char *name)
++    {
++        auto *const word = reinterpret_cast<volatile LONG *>(GetProcAddress(module, name));
++        if (word == nullptr) return false;
++        MEMORY_BASIC_INFORMATION memory = {};
++        if (VirtualQuery(const_cast<LONG *>(word), &memory, sizeof(memory)) != sizeof(memory) ||
++            memory.State != MEM_COMMIT || (memory.Protect & PAGE_GUARD) != 0 ||
++            (memory.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) == 0)
++            return false;
++        return InterlockedCompareExchange(word, 0, 0) == 1;
++    }
++
++    bool cooperative_adapter_ready()
++    {
++        handle snapshot;
++        snapshot.value = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
++        if (snapshot.value == INVALID_HANDLE_VALUE) return false;
++        MODULEENTRY32W entry = {};
++        entry.dwSize = sizeof(entry);
++        if (!Module32FirstW(snapshot.value, &entry)) return false;
++        do
++        {
++            HMODULE module = nullptr;
++            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
++                    reinterpret_cast<LPCWSTR>(entry.modBaseAddr), &module)) continue;
++            struct module_reference { HMODULE value; ~module_reference() { FreeLibrary(value); } } reference { module };
++            const auto *const addon_abi = reinterpret_cast<const unsigned int *>(
++                GetProcAddress(module, "ElectronGameOverlayReShadeAddonAbi"));
++            if (addon_abi == nullptr || *addon_abi != 1) continue;
++            const bool has_adapter_word = GetProcAddress(module, "ElectronGameOverlayCooperativeAdapterReadyV1") != nullptr;
++            if (has_adapter_word ? ready_word(module, "ElectronGameOverlayCooperativeAdapterReadyV1") :
++                ready_word(module, "ElectronGameOverlayCooperativeReadyV1")) return true;
++        }
++        while (Module32NextW(snapshot.value, &entry));
++        return false;
++    }
++
++    void erase_if_current(const std::shared_ptr<chain_state> &state)
++    {
++        const std::lock_guard<std::mutex> lock(registry_mutex);
++        const auto it = chains.find(state->identity);
++        if (it != chains.end() && it->second.get() == state.get()) chains.erase(it);
++    }
++
++    com_ptr<ID3D11DeviceContext> retain_context(const std::shared_ptr<chain_state> &state)
++    {
++        const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++        return state->context;
++    }
++
++    void initialize_surface_events(chain_state &state, IDXGISwapChain *chain, bool resized)
++    {
++        auto *const surface = static_cast<reshade::runtime *>(state.runtime)->get_swapchain();
++        state.swapchain_event_live = true;
++        state.needs_final_removal = true;
++        reshade::invoke_addon_event<reshade::addon_event::init_swapchain>(surface, resized);
++        BOOL fullscreen = FALSE;
++        HMONITOR monitor = nullptr;
++        com_ptr<IDXGIOutput> output;
++        {
++            dxgi_scope original_scope;
++            chain->GetFullscreenState(&fullscreen, &output);
++            DXGI_OUTPUT_DESC desc = {};
++            if (output != nullptr && SUCCEEDED(output->GetDesc(&desc))) monitor = desc.Monitor;
++        }
++        reshade::invoke_addon_event<reshade::addon_event::set_fullscreen_state>(surface, fullscreen != FALSE, monitor);
++    }
++
++    void reset_surface_events(chain_state &state, bool resized)
++    {
++        if (state.runtime == nullptr) return;
++        auto *const runtime = static_cast<reshade::runtime *>(state.runtime);
++        runtime->on_reset(); // destroy_effect_runtime precedes destroy_swapchain.
++        if (!resized && state.needs_final_removal)
++        {
++            // A resize-only destroy does not release EGO's persistent chain
++            // ownership. Final removal remains mandatory after a failed resize.
++            state.needs_final_removal = false;
++            state.swapchain_event_live = false;
++            reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(runtime->get_swapchain(), false);
++        }
++        else if (resized && state.swapchain_event_live)
++        {
++            state.swapchain_event_live = false;
++            reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(runtime->get_swapchain(), true);
++        }
++    }
++
++    struct release_back_buffer_views
++    {
++        reshade::runtime *runtime;
++        ~release_back_buffer_views()
++        {
++            // The helper releases only native backbuffer RTVs. Runtime identity,
++            // resolved/effect textures, participant resources and input survive.
++            runtime->release_owned_late_d3d11_back_buffer_views();
++        }
++    };
++
++    bool attempt_manual_creation(chain_state &state, IDXGISwapChain *chain)
++    {
++        state.runtime_creation_uncertain = true;
++        const bool created = ReShadeCreateEffectRuntime(reshade::api::device_api::d3d11, state.device.get(),
++            state.context.get(), chain, state.owned_config_utf8.c_str(), &state.runtime);
++        state.runtime_creation_uncertain = false;
++        if (!created)
++        {
++            com_ptr<ID3D11Texture2D> buffer;
++            D3D11_TEXTURE2D_DESC desc = {};
++            const bool got_buffer = SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&buffer))) && buffer != nullptr;
++            if (got_buffer) buffer->GetDesc(&desc);
++            const bool tiny = got_buffer && desc.Width <= 16 && desc.Height <= 16;
++            state.phase = tiny ? chain_phase::waiting_for_surface : chain_phase::rejected;
++            last_error.store(tiny ? ERROR_RETRY : ERROR_FUNCTION_FAILED);
++            if (!tiny)
++            {
++                const DWORD cleanup_error = retire_config(state);
++                if (cleanup_error != ERROR_SUCCESS)
++                {
++                    state.phase = chain_phase::quarantined;
++                    ++quarantines;
++                    last_error.store(cleanup_error);
++                }
++            }
++            return false;
++        }
++        state.config_cache_key = static_cast<reshade::runtime *>(state.runtime)->get_config_path();
++        if (state.config_cache_key != state.owned_config_file.path)
++        {
++            // Never delete or evict a path unexpectedly selected by the runtime.
++            state.phase = chain_phase::quarantined;
++            ++quarantines;
++            last_error.store(ERROR_FILE_INVALID);
++            return false;
++        }
++        // Public Create already emits init_effect_runtime. Supply the missing
++        // managed-surface event once before the first update. The public API's
++        // first-init order differs from a stock proxy; resize below matches it.
++        const release_back_buffer_views release_views { static_cast<reshade::runtime *>(state.runtime) };
++        initialize_surface_events(state, chain, false);
++        state.phase = chain_phase::ready;
++        ++adoption_successes;
++        return true;
++    }
++
++    // The only callback context is our own same-module C++ allocation. It never
++    // crosses a cooperative SDK boundary and is not interpreted by another DLL.
++    void CALLBACK destroyed(void *opaque) noexcept
++    {
++        std::unique_ptr<std::shared_ptr<chain_state>> cookie(static_cast<std::shared_ptr<chain_state> *>(opaque));
++        const auto state = *cookie;
++        state->dead.store(true, std::memory_order_release);
++        try
++        {
++            const auto context = retain_context(state);
++            context_scope context_lock(context.get());
++            const std::lock_guard<std::recursive_mutex> operation_lock(*state->context_operation_gate);
++            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++            if (state->phase == chain_phase::quarantined) return;
++            // Never QI/GetDesc/GetBuffer/Release the destructing raw swapchain.
++            // REQUIRED integration: swapchain_impl::get_hwnd returns cached HWND.
++            // Only our audited staged EGO adapter callbacks may run in this proof.
++            if (state->runtime != nullptr)
++            {
++                // The runtime destructor saves its config. Keep the no-delete
++                // read-only guard through that save and all final callbacks.
++                const DWORD identity_error = ego_owned_config::verify_current(state->owned_config_file);
++                if (identity_error != ERROR_SUCCESS)
++                {
++                    state->phase = chain_phase::quarantined;
++                    ++quarantines;
++                    last_error.store(identity_error);
++                    return;
++                }
++                reset_surface_events(*state, false);
++                auto *const runtime = state->runtime;
++                state->runtime_creation_uncertain = true;
++                ReShadeDestroyEffectRuntime(runtime);
++                state->runtime = nullptr;
++                state->runtime_creation_uncertain = false;
++            }
++            const DWORD cleanup_error = retire_config(*state);
++            if (cleanup_error != ERROR_SUCCESS)
++            {
++                state->phase = chain_phase::quarantined;
++                ++quarantines;
++                last_error.store(cleanup_error);
++                return;
++            }
++            state->context.reset();
++            state->device.reset();
++            state->phase = chain_phase::retired;
++            ++retirements;
++            erase_if_current(state);
++        }
++        catch (...)
++        {
++            // Keep the existing registry entry and COM refs until target exit.
++            // Do not retry partially completed teardown or unload active hooks.
++            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++            state->phase = chain_phase::quarantined;
++            ++quarantines;
++            last_error.store(ERROR_UNHANDLED_EXCEPTION);
++        }
++    }
++
++    bool automatically_managed(IDXGISwapChain *chain)
++    {
++        DXGISwapChain *proxy = nullptr;
++        UINT bytes = sizeof(proxy);
++        if (SUCCEEDED(chain->GetPrivateData(__uuidof(DXGISwapChain), &bytes, &proxy)) &&
++            bytes == sizeof(proxy) && proxy != nullptr)
++        {
++            ++automatic_skips;
++            return true;
++        }
++        return false;
++    }
++
++    std::shared_ptr<chain_state> find_chain(IDXGISwapChain *chain, bool permit_adoption)
++    {
++        // The shared DXGI implementations also receive D3D10/12 chains. Prove
++        // the actual D3D11 type and threading mode before any registry/cookie.
++        com_ptr<ID3D11Device> candidate_device;
++        if (FAILED(chain->GetDevice(IID_PPV_ARGS(&candidate_device))) || candidate_device == nullptr)
++            return {};
++        if ((candidate_device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED) != 0)
++        {
++            last_error.store(ERROR_NOT_SUPPORTED);
++            return {};
++        }
++        com_ptr<ID3D11DeviceContext> candidate_context;
++        candidate_device->GetImmediateContext(&candidate_context);
++        if (candidate_context == nullptr) return {};
++        com_ptr<IUnknown> context_identity;
++        if (FAILED(candidate_context->QueryInterface(&context_identity)) || context_identity == nullptr) return {};
++        DXGI_SWAP_CHAIN_DESC desc = {};
++        if (FAILED(chain->GetDesc(&desc))) return {};
++        com_ptr<IUnknown> identity;
++        if (FAILED(chain->QueryInterface(&identity)) || identity == nullptr) return {};
++        std::shared_ptr<chain_state> state;
++        {
++            const std::lock_guard<std::mutex> lock(registry_mutex);
++            const auto it = chains.find(identity.get());
++            if (it != chains.end()) return it->second;
++            if (!permit_adoption) return {};
++            state = std::make_shared<chain_state>();
++            state->identity = identity.get();
++            state->device = std::move(candidate_device);
++            state->context = std::move(candidate_context);
++            state->context_identity = context_identity.get();
++            for (const auto &entry : chains)
++                if (entry.second->context_identity == state->context_identity)
++                {
++                    state->context_operation_gate = entry.second->context_operation_gate;
++                    break;
++                }
++            if (!state->context_operation_gate)
++                state->context_operation_gate = std::make_shared<std::recursive_mutex>();
++            state->window = desc.OutputWindow;
++            chains.emplace(state->identity, state);
++        }
++        context_scope context_lock(state->context.get());
++        const std::lock_guard<std::recursive_mutex> operation_lock(*state->context_operation_gate);
++        const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++        struct creation_guard
++        {
++            std::shared_ptr<chain_state> state;
++            bool registered = false;
++            bool finished = false;
++            ~creation_guard()
++            {
++                if (finished) return;
++                // Failures before entering public Create have no runtime users.
++                // In particular seed-write and UTF-8 conversion failures must
++                // not orphan the already reserved file or its exact cache key.
++                DWORD cleanup_error = ERROR_UNHANDLED_EXCEPTION;
++                if (state->runtime == nullptr && !state->runtime_creation_uncertain)
++                {
++                    try { cleanup_error = retire_config(*state); }
++                    catch (...) {} // Preserve the exact record on uncertain cleanup.
++                }
++                if (cleanup_error == ERROR_SUCCESS)
++                {
++                    state->phase = chain_phase::rejected;
++                    if (!registered) erase_if_current(state);
++                    return;
++                }
++                state->phase = chain_phase::quarantined;
++                ++quarantines;
++                if (!registered) erase_if_current(state);
++            }
++        } creation { state };
++        ++adoption_attempts;
++        com_ptr<ID3DDestructionNotifier> notifier;
++        const HRESULT notifier_hr = chain->QueryInterface(&notifier);
++        if (FAILED(notifier_hr) || notifier == nullptr)
++        {
++            ++notifier_rejections;
++            last_hresult.store(static_cast<std::uint32_t>(notifier_hr));
++            state->phase = chain_phase::rejected;
++            erase_if_current(state);
++            creation.finished = true;
++            return {};
++        }
++        auto cookie = std::make_unique<std::shared_ptr<chain_state>>(state);
++        const HRESULT register_hr = notifier->RegisterDestructionCallback(destroyed, cookie.get(), &state->notification_id);
++        if (FAILED(register_hr))
++        {
++            ++notifier_rejections;
++            last_hresult.store(static_cast<std::uint32_t>(register_hr));
++            state->phase = chain_phase::rejected;
++            erase_if_current(state);
++            creation.finished = true;
++            return {};
++        }
++        cookie.release(); // The exactly-once destruction callback owns this cookie.
++        creation.registered = true;
++        notifier.reset(); // Holding this QI reference would keep the chain alive.
++        const DWORD config_error = reserve_seeded_config(state->owned_config_file);
++        if (config_error != ERROR_SUCCESS)
++        {
++            state->phase = chain_phase::rejected;
++            last_error.store(config_error);
++            const DWORD cleanup_error = retire_config(*state);
++            if (cleanup_error != ERROR_SUCCESS)
++            {
++                state->phase = chain_phase::quarantined;
++                ++quarantines;
++                last_error.store(cleanup_error);
++            }
++            creation.finished = true;
++            return state;
++        }
++        state->owned_config_utf8 = utf8(state->owned_config_file.path);
++        attempt_manual_creation(*state, chain);
++        creation.finished = true;
++        return state;
++    }
++
++    template <typename Native>
++    HRESULT present(IDXGISwapChain *chain, UINT flags, Native &&native)
++    {
++        ++present_calls;
++        if (status.load(std::memory_order_acquire) != 2 || g_in_dxgi_runtime || native_depth != 0 ||
++            (flags & DXGI_PRESENT_TEST) != 0 || automatically_managed(chain))
++            return native();
++        depth_scope scope;
++        std::shared_ptr<chain_state> state;
++        try
++        {
++            state = find_chain(chain, true);
++            if (state)
++            {
++                const auto context = retain_context(state);
++                context_scope context_lock(context.get());
++                const std::lock_guard<std::recursive_mutex> operation_lock(*state->context_operation_gate);
++                const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++                if (!state->dead.load(std::memory_order_acquire) && state->phase == chain_phase::ready &&
++                    !((flags & DXGI_PRESENT_DO_NOT_WAIT) != 0 && state->still_drawing))
++                {
++                    auto *const runtime = static_cast<reshade::runtime *>(state->runtime);
++                    // Establish cleanup before acquisition so partial acquire
++                    // failure or an update exception cannot pin the chain idle.
++                    const release_back_buffer_views release_views { runtime };
++                    if (runtime->acquire_owned_late_d3d11_back_buffer_views())
++                        ReShadeUpdateAndPresentEffectRuntime(state->runtime);
++                    else
++                    {
++                        ++render_failures;
++                        last_error.store(ERROR_FUNCTION_FAILED);
++                    }
++                }
++            }
++        }
++        catch (...)
++        {
++            ++render_failures;
++            last_error.store(ERROR_UNHANDLED_EXCEPTION);
++            if (state)
++            {
++                const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++                state->phase = chain_phase::quarantined;
++                ++quarantines;
++            }
++        }
++        HRESULT hr;
++        { dxgi_scope original_scope; hr = native(); }
++        if (state)
++        {
++            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++            state->still_drawing = hr == DXGI_ERROR_WAS_STILL_DRAWING;
++            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
++                state->phase = chain_phase::rejected;
++        }
++        last_hresult.store(static_cast<std::uint32_t>(hr));
++        return hr;
++    }
++
++    template <typename Native>
++    HRESULT resize(IDXGISwapChain *chain, Native &&native)
++    {
++        if (status.load(std::memory_order_acquire) != 2 || g_in_dxgi_runtime || native_depth != 0 ||
++            automatically_managed(chain))
++            return native();
++        depth_scope scope;
++        auto state = find_chain(chain, false);
++        if (!state) return native();
++        ++resize_calls;
++        const auto context = retain_context(state);
++        bool managed = false;
++        {
++            context_scope context_lock(context.get());
++            const std::lock_guard<std::recursive_mutex> operation_lock(*state->context_operation_gate);
++            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++            if (!state->dead.load(std::memory_order_acquire) &&
++                (state->phase == chain_phase::ready || state->phase == chain_phase::reset ||
++                    state->phase == chain_phase::waiting_for_surface))
++            {
++                managed = true;
++                if (state->runtime != nullptr)
++                {
++                    try
++                    {
++                        reset_surface_events(*state, true);
++                        state->phase = chain_phase::reset;
++                    }
++                    catch (...)
++                    {
++                        state->phase = chain_phase::quarantined;
++                        ++quarantines;
++                        last_error.store(ERROR_UNHANDLED_EXCEPTION);
++                    }
++                }
++            }
++        }
++        if (!managed) return native();
++        HRESULT hr;
++        { dxgi_scope original_scope; hr = native(); }
++        {
++            context_scope context_lock(context.get());
++            const std::lock_guard<std::recursive_mutex> operation_lock(*state->context_operation_gate);
++            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
++            if ((state->phase == chain_phase::reset || state->phase == chain_phase::waiting_for_surface) &&
++                (SUCCEEDED(hr) || hr == DXGI_ERROR_INVALID_CALL) && !state->dead.load(std::memory_order_acquire))
++            {
++                try
++                {
++                    if (state->runtime == nullptr)
++                    {
++                        if (attempt_manual_creation(*state, chain) && SUCCEEDED(hr)) ++resize_successes;
++                    }
++                    else
++                    {
++                        auto *const runtime = static_cast<reshade::runtime *>(state->runtime);
++                        const release_back_buffer_views release_views { runtime };
++                        initialize_surface_events(*state, chain, true);
++                        if (runtime->on_init())
++                        {
++                            state->phase = chain_phase::ready;
++                            if (SUCCEEDED(hr)) ++resize_successes;
++                        }
++                        else state->phase = chain_phase::reset;
++                    }
++                }
++                catch (...)
++                {
++                    state->phase = chain_phase::quarantined;
++                    ++quarantines;
++                    last_error.store(ERROR_UNHANDLED_EXCEPTION);
++                }
++            }
++        }
++        last_hresult.store(static_cast<std::uint32_t>(hr));
++        return hr;
++    }
++
++    HRESULT STDMETHODCALLTYPE raw_present(IDXGISwapChain *chain, UINT interval, UINT flags)
++    {
++        const auto original = reshade::hooks::call(raw_present);
++        return present(chain, flags, [&] { return original(chain, interval, flags); });
++    }
++    HRESULT STDMETHODCALLTYPE raw_present1(IDXGISwapChain1 *chain, UINT interval, UINT flags, const DXGI_PRESENT_PARAMETERS *parameters)
++    {
++        const auto original = reshade::hooks::call(raw_present1);
++        return present(chain, flags, [&] { return original(chain, interval, flags, parameters); });
++    }
++    HRESULT STDMETHODCALLTYPE raw_resize(IDXGISwapChain *chain, UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags)
++    {
++        const auto original = reshade::hooks::call(raw_resize);
++        return resize(chain, [&] { return original(chain, count, width, height, format, flags); });
++    }
++    HRESULT STDMETHODCALLTYPE raw_resize1(IDXGISwapChain3 *chain, UINT count, UINT width, UINT height,
++        DXGI_FORMAT format, UINT flags, const UINT *masks, IUnknown *const *queues)
++    {
++        const auto original = reshade::hooks::call(raw_resize1);
++        return resize(chain, [&] { return original(chain, count, width, height, format, flags, masks, queues); });
++    }
++
++    DWORD loaded_d3d11(HMODULE &module)
++    {
++        wchar_t system_directory[MAX_PATH] = {};
++        const UINT length = GetSystemDirectoryW(system_directory, MAX_PATH);
++        if (length == 0) return GetLastError();
++        if (length >= MAX_PATH) return ERROR_INSUFFICIENT_BUFFER;
++        const fs::path path = fs::path(system_directory) / L"d3d11.dll";
++        // This never loads an irrelevant backend. A truly absent D3D11 module
++        // cannot already own a raw D3D11 chain; normal export hooks cover future
++        // device creation and remain authoritative for every other backend.
++        return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, path.c_str(), &module) ? ERROR_SUCCESS : GetLastError();
++    }
++
++    DWORD discover_native_methods(HMODULE own_module, HMODULE d3d11, std::array<void *, 4> &targets)
++    {
++        // The only scratch window is owned by this initializer and never shown.
++        WNDCLASSW wc = {};
++        wc.hInstance = own_module;
++        wc.lpfnWndProc = DefWindowProcW;
++        wc.lpszClassName = L"EgoOwnedLateD3D11MethodDiscoveryV1";
++        if (RegisterClassW(&wc) == 0) return GetLastError();
++        const HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName,
++            L"Owned D3D11 method discovery", WS_POPUP, 0, 0, 64, 64, nullptr, nullptr, own_module, nullptr);
++        if (window == nullptr) return GetLastError();
++        struct scratch_window { HWND value; ~scratch_window() { DestroyWindow(value); } } cleanup { window };
++
++        using create_fn = decltype(&D3D11CreateDeviceAndSwapChain);
++        auto create = reinterpret_cast<create_fn>(GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain"));
++        if (create == nullptr) return ERROR_PROC_NOT_FOUND;
++        if (reshade::hooks::is_hooked(reinterpret_cast<void *>(create)))
++            create = reshade::hooks::call<create_fn>(nullptr, reinterpret_cast<void *>(create));
++        if (create == nullptr) return ERROR_PROC_NOT_FOUND;
++        DXGI_SWAP_CHAIN_DESC desc = {};
++        desc.BufferDesc.Width = 64;
++        desc.BufferDesc.Height = 64;
++        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        desc.SampleDesc.Count = 1;
++        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
++        desc.BufferCount = 2;
++        desc.OutputWindow = window;
++        desc.Windowed = TRUE;
++        desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
++        com_ptr<ID3D11Device> device;
++        com_ptr<ID3D11DeviceContext> context;
++        com_ptr<IDXGISwapChain> chain;
++        HRESULT hr;
++        {
++            dxgi_scope bypass;
++            hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
++                &desc, &chain, &device, nullptr, &context);
++        }
++        if (FAILED(hr)) { last_hresult.store(static_cast<std::uint32_t>(hr)); return ERROR_NOT_SUPPORTED; }
++        com_ptr<IDXGISwapChain3> chain3;
++        if (FAILED(chain->QueryInterface(&chain3))) return ERROR_NOT_SUPPORTED;
++        auto *const table = reshade::hooks::vtable_from_instance(chain.get());
++        auto *const table3 = reshade::hooks::vtable_from_instance(chain3.get());
++        targets = { table[8], table3[22], table[13], table3[39] };
++        for (size_t i = 0; i < targets.size(); ++i)
++        {
++            if (targets[i] == nullptr) return ERROR_PROC_NOT_FOUND;
++            for (size_t j = 0; j < i; ++j)
++                if (targets[i] == targets[j]) return ERROR_NOT_SUPPORTED;
++            HMODULE target_module = nullptr;
++            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
++                    reinterpret_cast<LPCWSTR>(targets[i]), &target_module)) return GetLastError();
++        }
++        return ERROR_SUCCESS;
++    }
++
++    DWORD install_native_methods(const std::array<void *, 4> &targets)
++    {
++        // The host was pinned before this first installation. Queued/partial
++        // hooks may become enabled by another hook-manager action, but wrappers
++        // stay passive unless all four installations and activation succeed.
++        const bool installed =
++            reshade::hooks::install("EGO owned raw D3D11 Present", targets[0], reinterpret_cast<void *>(&raw_present), true) &&
++            reshade::hooks::install("EGO owned raw D3D11 Present1", targets[1], reinterpret_cast<void *>(&raw_present1), true) &&
++            reshade::hooks::install("EGO owned raw D3D11 ResizeBuffers", targets[2], reinterpret_cast<void *>(&raw_resize), true) &&
++            reshade::hooks::install("EGO owned raw D3D11 ResizeBuffers1", targets[3], reinterpret_cast<void *>(&raw_resize1), true);
++        if (!installed || !reshade::hook::apply_queued_actions()) return ERROR_FUNCTION_FAILED;
++        return ERROR_SUCCESS;
++    }
++}
++
++extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeOwnedLateD3D11V1(
++    const ego_owned_late_d3d11_initialize_v1 *request)
++{
++    using namespace ego_owned_late_d3d11;
++    if (request != nullptr && (request->struct_size != sizeof(*request) || request->abi_version != abi_version ||
++        request->flags != 0 || request->reserved != 0))
++        return ERROR_INVALID_PARAMETER;
++    const std::lock_guard<std::mutex> lock(install_mutex);
++    const auto previous_status = status.load(std::memory_order_acquire);
++    if (previous_status == 2 || previous_status == 4) return ERROR_SUCCESS;
++    if (previous_status != 0) return last_error.load() != ERROR_SUCCESS ? last_error.load() : ERROR_INVALID_STATE;
++    try
++    {
++        HMODULE own_module = nullptr;
++        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
++                reinterpret_cast<LPCWSTR>(&ElectronGameOverlayInitializeOwnedLateD3D11V1), &own_module))
++            return GetLastError();
++        DWORD error = validate_owned_stage(own_module);
++        if (error != ERROR_SUCCESS) return error;
++        const LONG gate = InterlockedCompareExchange(&ElectronGameOverlayReShadeAddonGate, 0, 0);
++        if (gate != addon_gate_registered && gate != addon_gate_closed)
++            return gate == 1 ? ERROR_BUSY : ERROR_NOT_READY;
++        // A CLOSED gate can also mean automatic initialization raced the first
++        // external loader. Require callback-registration completion, not merely
++        // a capability export or an arbitrary caller's assertion of readiness.
++        if (!cooperative_adapter_ready()) return ERROR_NOT_READY;
++        HMODULE d3d11 = nullptr;
++        error = loaded_d3d11(d3d11);
++        if (error != ERROR_SUCCESS)
++        {
++            last_error.store(error);
++            status.store(4, std::memory_order_release);
++            return ERROR_SUCCESS;
++        }
++        status.store(1, std::memory_order_release);
++        std::array<void *, 4> targets {};
++        error = discover_native_methods(own_module, d3d11, targets);
++        if (error != ERROR_SUCCESS)
++        {
++            last_error.store(error);
++            status.store(4, std::memory_order_release);
++            return ERROR_SUCCESS;
++        }
++        // No context/state/runtime lock is held here. The caller has already
++        // completed external adapter registration and member initialization.
++        // The manager mutex makes this return completion-safe, including when
++        // another automatic device is performing first initialization.
++        reshade::load_addons();
++        retained_addon_reference = true; // Kept until authoritative target exit.
++        if (!reshade::addon_all_loaded)
++        {
++            last_error.store(ERROR_DLL_INIT_FAILED);
++            status.store(3, std::memory_order_release);
++            return ERROR_DLL_INIT_FAILED;
++        }
++        error = install_native_methods(targets);
++        last_error.store(error);
++        status.store(error == ERROR_SUCCESS ? 2 : 3, std::memory_order_release);
++        return error;
++    }
++    catch (...)
++    {
++        last_error.store(ERROR_UNHANDLED_EXCEPTION);
++        status.store(3, std::memory_order_release);
++        return ERROR_UNHANDLED_EXCEPTION;
++    }
++}
++
++extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayQueryOwnedLateD3D11V1(
++    ego_owned_late_d3d11_stats_v1 *result)
++{
++    using namespace ego_owned_late_d3d11;
++    if (result == nullptr || result->struct_size != sizeof(*result) || result->abi_version != abi_version)
++        return ERROR_INVALID_PARAMETER;
++    ego_owned_late_d3d11_stats_v1 snapshot {};
++    snapshot.struct_size = sizeof(snapshot);
++    snapshot.abi_version = abi_version;
++    snapshot.status = status.load();
++    snapshot.last_win32_error = last_error.load();
++    snapshot.last_hresult = last_hresult.load();
++    snapshot.present_calls = present_calls.load();
++    snapshot.adoption_attempts = adoption_attempts.load();
++    snapshot.adoption_successes = adoption_successes.load();
++    snapshot.notifier_rejections = notifier_rejections.load();
++    snapshot.automatic_proxy_skips = automatic_skips.load();
++    snapshot.resize_calls = resize_calls.load();
++    snapshot.resize_successes = resize_successes.load();
++    snapshot.retirements = retirements.load();
++    snapshot.quarantines = quarantines.load();
++    snapshot.render_failures = render_failures.load();
++    *result = snapshot;
++    return ERROR_SUCCESS;
++}
+diff --git a/source/input.cpp b/source/input.cpp
+index c96ea10..41ad1c6 100644
+--- a/source/input.cpp
++++ b/source/input.cpp
+@@ -321,6 +321,73 @@ std::shared_ptr<reshade::input> reshade::input::register_window(window_handle wi
+ 	}
+ }
+ 
++static void refresh_global_input_blocking_state()
++{
++	const std::shared_lock<std::shared_mutex> lock(s_windows_mutex);
++	s_block_mouse.store(std::any_of(s_windows.cbegin(), s_windows.cend(),
++		[](const std::pair<HWND, std::weak_ptr<reshade::input>> &entry) {
++			const auto instance = entry.second.lock();
++			return instance != nullptr && instance->is_blocking_mouse_input();
++		}));
++	s_block_keyboard.store(std::any_of(s_windows.cbegin(), s_windows.cend(),
++		[](const std::pair<HWND, std::weak_ptr<reshade::input>> &entry) {
++			const auto instance = entry.second.lock();
++			return instance != nullptr && instance->is_blocking_keyboard_input();
++		}));
++	s_block_cursor_warping.store(std::any_of(s_windows.cbegin(), s_windows.cend(),
++		[](const std::pair<HWND, std::weak_ptr<reshade::input>> &entry) {
++			const auto instance = entry.second.lock();
++			return instance != nullptr && instance->is_blocking_mouse_cursor_warping();
++		}));
++}
++
++void reshade::input::register_frame_consumer()
++{
++	const std::unique_lock<std::recursive_mutex> lock(_mutex);
++	_frame_consumer.register_consumer();
++}
++
++void reshade::input::unregister_frame_consumer(const void *identity)
++{
++	const std::unique_lock<std::recursive_mutex> lock(_mutex);
++	const auto released = _frame_consumer.unregister_consumer(identity);
++	if (!released.current && !released.last)
++		return;
++	// A departing current consumer cannot leave blocking latched while every
++	// survivor is paused. A stale nonconsumer cannot clear a newer presenter.
++	// Other HWND input managers still contribute to the global OR.
++	block_mouse_input(false);
++	block_keyboard_input(false);
++	block_mouse_cursor_warping(false);
++	refresh_global_input_blocking_state();
++}
++
++bool reshade::input::acquire_frame_consumer(const void *identity)
++{
++	const std::unique_lock<std::recursive_mutex> lock(_mutex);
++	return _frame_consumer.acquire(identity);
++}
++
++bool reshade::input::apply_frame_blocking(const void *identity, bool mouse, bool keyboard, bool cursor_warping)
++{
++	const std::unique_lock<std::recursive_mutex> lock(_mutex);
++	if (!_frame_consumer.is_current(identity))
++		return false;
++	block_mouse_input(mouse);
++	block_keyboard_input(keyboard);
++	block_mouse_cursor_warping(cursor_warping);
++	return true;
++}
++
++bool reshade::input::next_frame(const void *identity)
++{
++	const std::unique_lock<std::recursive_mutex> lock(_mutex);
++	if (!_frame_consumer.is_current(identity))
++		return false;
++	next_frame();
++	return true;
++}
++
+ static bool get_pointer_mouse_info(const MSG &message, POINTER_INFO &pointer_info)
+ {
+ 	switch (message.message)
+@@ -1191,21 +1258,7 @@ void reshade::input::next_frame()
+ 		(_keys[VK_SNAPSHOT] = 0x88),
+ 		(_keys_time[VK_SNAPSHOT] = time);
+ 
+-	// Run through all forms of input blocking for all windows and establish whether any of them are blocking input
+-	const std::shared_lock<std::shared_mutex> lock(s_windows_mutex);
+-
+-	s_block_mouse.store(std::any_of(s_windows.cbegin(), s_windows.cend(),
+-		[](const std::pair<HWND, std::weak_ptr<reshade::input>> &input_window) {
+-			return !input_window.second.expired() && input_window.second.lock()->is_blocking_mouse_input();
+-		}));
+-	s_block_keyboard.store(std::any_of(s_windows.cbegin(), s_windows.cend(),
+-		[](const std::pair<HWND, std::weak_ptr<reshade::input>> &input_window) {
+-			return !input_window.second.expired() && input_window.second.lock()->is_blocking_keyboard_input();
+-		}));
+-	s_block_cursor_warping.store(std::any_of(s_windows.cbegin(), s_windows.cend(),
+-		[](const std::pair<HWND, std::weak_ptr<reshade::input>> &input_window) {
+-			return !input_window.second.expired() && input_window.second.lock()->is_blocking_mouse_cursor_warping();
+-		}));
++	refresh_global_input_blocking_state();
+ }
+ 
+ std::string reshade::input::key_name(unsigned int keycode)
+diff --git a/source/input.hpp b/source/input.hpp
+index cff2878..cfe264d 100644
+--- a/source/input.hpp
++++ b/source/input.hpp
+@@ -8,6 +8,7 @@
+ #include <mutex>
+ #include <memory>
+ #include <string>
++#include "input_frame_consumer.hpp"
+ 
+ namespace reshade::api
+ {
+@@ -42,6 +43,15 @@ namespace reshade
+ 		/// <returns>Pointer to the input manager registered for this <paramref name="window"/>.</returns>
+ 		static std::shared_ptr<input> register_window(window_handle window);
+ 
++		// Runtime membership is explicit: retained shared_ptr references are not
++		// evidence that a runtime is initialized or will present again.
++		void register_frame_consumer();
++		void unregister_frame_consumer(const void *identity);
++		bool acquire_frame_consumer(const void *identity);
++		bool is_frame_consumer(const void *identity) const { return _frame_consumer.is_current(identity); }
++		bool apply_frame_blocking(const void *identity, bool mouse, bool keyboard, bool cursor_warping);
++		bool next_frame(const void *identity);
++
+ 		// Before accessing input data with any of the member functions below, first call "lock()" and keep the returned object alive while accessing it.
+ 
+ 		bool is_key_down(unsigned int keycode) const;
+@@ -150,6 +160,7 @@ namespace reshade
+ 
+ 	private:
+ 		std::recursive_mutex _mutex;
++		input_frame_consumer _frame_consumer;
+ 		window_handle _window;
+ 		bool _block_mouse = false;
+ 		bool _block_keyboard = false;
+diff --git a/source/input_frame_consumer.hpp b/source/input_frame_consumer.hpp
+new file mode 100644
+index 0000000..921fdf4
+--- /dev/null
++++ b/source/input_frame_consumer.hpp
+@@ -0,0 +1,63 @@
++/*
++ * Explicit runtime membership for one HWND input manager.
++ * Mutating operations are serialized by input::_mutex. The current identity is
++ * opaque and never dereferenced; reads can also be made outside that mutex.
++ */
++#pragma once
++
++#include <atomic>
++#include <cassert>
++#include <cstddef>
++
++namespace reshade
++{
++    class input_frame_consumer
++    {
++    public:
++        struct release_result
++        {
++            bool current = false;
++            bool last = false;
++        };
++
++        void register_consumer() noexcept
++        {
++            ++_active_count;
++        }
++
++        bool acquire(const void *identity) noexcept
++        {
++            if (identity == nullptr || _active_count == 0)
++                return false;
++            // Every presenting runtime can make progress, even if the runtime
++            // which presented previously is still initialized but paused.
++            _current.store(identity, std::memory_order_release);
++            return true;
++        }
++
++        bool is_current(const void *identity) const noexcept
++        {
++            return identity != nullptr &&
++                _current.load(std::memory_order_acquire) == identity;
++        }
++
++        release_result unregister_consumer(const void *identity) noexcept
++        {
++            assert(_active_count != 0);
++            if (_active_count == 0)
++                return {};
++            const void *expected = identity;
++            release_result result;
++            result.current = _current.compare_exchange_strong(expected, nullptr,
++                std::memory_order_acq_rel, std::memory_order_acquire);
++            result.last = --_active_count == 0;
++            if (result.last)
++                _current.store(nullptr, std::memory_order_release);
++            return result;
++        }
++
++    private:
++        std::size_t _active_count = 0;
++        std::atomic<const void *> _current { nullptr };
++    };
++}
+diff --git a/source/runtime.cpp b/source/runtime.cpp
+index 6ecefd3..3517dfc 100644
+--- a/source/runtime.cpp
++++ b/source/runtime.cpp
+@@ -242,6 +242,7 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
+ }
+ reshade::runtime::~runtime()
+ {
++	release_input_consumer();
+ 	assert(_worker_threads.empty());
+ 	assert(!_is_initialized && _techniques.empty() && _technique_sorting.empty());
+ 
+@@ -254,9 +255,24 @@ reshade::runtime::~runtime()
+ #endif
+ }
+ 
++void reshade::runtime::release_input_consumer()
++{
++	if (_input_consumer_registered && _input != nullptr)
++		_input->unregister_frame_consumer(this);
++	_input_consumer_registered = false;
++	_primary_input_handler = false;
++}
++
++bool reshade::runtime::is_input_consumer() const
++{
++	return _input != nullptr ?
++		_input_consumer_registered && _input->is_frame_consumer(this) : _primary_input_handler;
++}
++
+ bool reshade::runtime::on_init()
+ {
+ 	assert(!_is_initialized);
++	release_input_consumer();
+ 
+ 	const api::resource_desc back_buffer_desc = _device->get_resource_desc(_swapchain->get_back_buffer(0));
+ 
+@@ -444,7 +460,11 @@ bool reshade::runtime::on_init()
+ 		if (window != nullptr && !_is_vr)
+ 		{
+ 			_input = input::register_window(window);
+-			_primary_input_handler = _input.use_count() == 1;
++			if (_input != nullptr)
++			{
++				_input->register_frame_consumer();
++				_input_consumer_registered = true;
++			}
+ 		}
+ 		else
+ 		{
+@@ -521,6 +541,7 @@ exit_failure:
+ }
+ void reshade::runtime::on_reset()
+ {
++	release_input_consumer();
+ 	if (_is_initialized)
+ 		// Update initialization state immediately, so that any effect loading still in progress can abort early
+ 		_is_initialized = false;
+@@ -583,6 +604,73 @@ void reshade::runtime::on_reset()
+ 
+ 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
+ }
++#if defined(RESHADE_OWNED_LATE_D3D11)
++bool reshade::runtime::acquire_owned_late_d3d11_back_buffer_views()
++{
++	if (!_is_initialized || _device->get_api() != api::device_api::d3d11)
++		return false;
++	const size_t prefix = _back_buffer_resolved != 0 ? 2 : 0;
++	const uint32_t count = _swapchain->get_back_buffer_count();
++	if (count == 0 || count > 16 || _back_buffer_targets.size() < prefix)
++		return false;
++	if (_back_buffer_targets.size() == prefix + count * 2)
++		return true;
++	if (_back_buffer_targets.size() != prefix)
++		return false;
++
++	for (uint32_t index = 0; index < count; ++index)
++	{
++		const api::resource resource = _swapchain->get_back_buffer(index);
++		if (resource == 0)
++		{
++			release_owned_late_d3d11_back_buffer_views();
++			return false;
++		}
++		const auto desc = _device->get_resource_desc(resource);
++		if (desc.type != api::resource_type::texture_2d || desc.texture.width != _width ||
++			desc.texture.height != _height || desc.texture.samples != _back_buffer_samples)
++		{
++			release_owned_late_d3d11_back_buffer_views();
++			return false;
++		}
++		for (int srgb = 0; srgb != 2; ++srgb)
++		{
++			api::resource_view view = {};
++			if (!_device->create_resource_view(resource, api::resource_usage::render_target,
++					api::resource_view_desc(desc.texture.samples > 1 ?
++						api::resource_view_type::texture_2d_multisample : api::resource_view_type::texture_2d,
++						api::format_to_default_typed(desc.texture.format, srgb), 0, 1, 0, 1), &view))
++			{
++				release_owned_late_d3d11_back_buffer_views();
++				return false;
++			}
++			_back_buffer_targets.push_back(view);
++		}
++	}
++	return true;
++}
++
++void reshade::runtime::release_owned_late_d3d11_back_buffer_views()
++{
++	if (_device->get_api() != api::device_api::d3d11)
++		return;
++	// Resolved targets refer to our own texture, not to a native swap-chain
++	// backbuffer. Keep that prefix and every effect/GUI/input resource intact.
++	const size_t prefix = _back_buffer_resolved != 0 ? 2 : 0;
++	if (_back_buffer_targets.size() < prefix)
++		return;
++	for (size_t index = prefix; index < _back_buffer_targets.size(); ++index)
++		if (_back_buffer_targets[index] != 0)
++			_device->destroy_resource_view(_back_buffer_targets[index]);
++	const bool released_views = _back_buffer_targets.size() != prefix;
++	_back_buffer_targets.resize(prefix);
++	if (released_views)
++		// D3D11 destruction can be deferred. Flush after releasing our views,
++		// without clearing or replacing the application's restored bindings.
++		_graphics_queue->flush_immediate_command_list();
++}
++#endif
++
+ void reshade::runtime::on_present()
+ {
+ 	if (!_is_initialized)
+@@ -619,7 +707,11 @@ void reshade::runtime::on_present()
+ 	// Lock input so it cannot be modified by other threads while we are reading it here
+ 	std::unique_lock<std::recursive_mutex> input_lock;
+ 	if (_input != nullptr)
++	{
+ 		input_lock = _input->lock();
++		if (_input_consumer_registered)
++			_input->acquire_frame_consumer(this);
++	}
+ 
+ 	update_effects();
+ 
+@@ -834,9 +926,9 @@ void reshade::runtime::on_present()
+ 	_effects_rendered_this_frame = false;
+ 
+ 	// Update input status
+-	if (_primary_input_handler && _input != nullptr)
+-		_input->next_frame();
+-	if (_primary_input_handler && _input_gamepad != nullptr)
++	if (_input != nullptr)
++		_input->next_frame(this);
++	if (is_input_consumer() && _input_gamepad != nullptr)
+ 		_input_gamepad->next_frame();
+ 
+ 	// Save modified INI files
+diff --git a/source/runtime.hpp b/source/runtime.hpp
+index f743f27..89668ac 100644
+--- a/source/runtime.hpp
++++ b/source/runtime.hpp
+@@ -36,6 +36,13 @@ namespace reshade
+ 		void on_reset();
+ 		void on_present();
+ 
++#if defined(RESHADE_OWNED_LATE_D3D11)
++		// Late discovery cannot retain native backbuffer views while waiting for
++		// final swap-chain notification: those indirect references keep it alive.
++		bool acquire_owned_late_d3d11_back_buffer_views();
++		void release_owned_late_d3d11_back_buffer_views();
++#endif
++
+ 		uint64_t get_native() const final { return _swapchain->get_native(); }
+ 
+ 		void get_private_data(const uint8_t guid[16], uint64_t *data) const final { return _swapchain->get_private_data(guid, data); }
+@@ -264,6 +271,9 @@ namespace reshade
+ 		bool _ignore_shortcuts = false;
+ 		bool _force_shortcut_modifiers = true;
+ 		bool _primary_input_handler = false;
++		bool _input_consumer_registered = false;
++		void release_input_consumer();
++		bool is_input_consumer() const;
+ 		std::shared_ptr<class input> _input;
+ 		std::shared_ptr<class input_gamepad> _input_gamepad;
+ 
+diff --git a/source/runtime_gui.cpp b/source/runtime_gui.cpp
+index ea9ff84..582c06c 100644
+--- a/source/runtime_gui.cpp
++++ b/source/runtime_gui.cpp
+@@ -828,12 +828,9 @@ void reshade::runtime::draw_gui()
+ #endif
+ 		)
+ 	{
+-		if (_primary_input_handler && _input != nullptr)
+-		{
+-			_input->block_mouse_input(_block_input_next_frame);
+-			_input->block_keyboard_input(_block_input_next_frame);
+-			_input->block_mouse_cursor_warping(_block_input_next_frame);
+-		}
++		if (_input != nullptr)
++			_input->apply_frame_blocking(this, _block_input_next_frame,
++				_block_input_next_frame, _block_input_next_frame);
+ 		return; // Early-out to avoid costly ImGui calls when no GUI elements are on the screen
+ 	}
+ 
+@@ -1487,15 +1484,14 @@ void reshade::runtime::draw_gui()
+ 	// Render ImGui widgets and windows
+ 	ImGui::Render();
+ 
+-	if (_primary_input_handler && _input != nullptr)
++	if (_input != nullptr)
+ 	{
+ 		const bool block_input = _input_processing_mode != 0 && (_show_overlay || _block_input_next_frame);
+ 		const bool block_mouse_input = block_input && (imgui_io.WantCaptureMouse || _input_processing_mode == 2);
+ 		const bool block_keyboard_input = block_input && (imgui_io.WantCaptureKeyboard || _input_processing_mode == 2);
+ 
+-		_input->block_mouse_input(block_mouse_input);
+-		_input->block_keyboard_input(block_keyboard_input);
+-		_input->block_mouse_cursor_warping(_show_overlay || _block_input_next_frame || block_mouse_input);
++		_input->apply_frame_blocking(this, block_mouse_input, block_keyboard_input,
++			_show_overlay || _block_input_next_frame || block_mouse_input);
+ 	}
+ 
+ 	if (ImDrawData *const draw_data = ImGui::GetDrawData();
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 5073188..d615bac 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -4059,8 +4059,11 @@ struct participant_loading_data
+ 	decltype(&FreeLibrary) free_library = nullptr;
+ 	decltype(&GetProcAddress) get_proc_address = nullptr;
+ 	decltype(&GetLastError) get_last_error = nullptr;
++	volatile LONG *initial_adapter_gate = nullptr;
++	DWORD (WINAPI *initialize_owned_late_d3d11)(void *) = nullptr;
+ 	HMODULE loaded_module = nullptr;
+ 	DWORD initialization_error = ERROR_GEN_FAILURE;
++	DWORD late_d3d11_error = ERROR_SUCCESS;
+ };
+ 
+ #ifndef _WIN64
+@@ -4080,14 +4083,29 @@ __declspec(code_seg(".egomember$m"))
+ #endif
+ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ {
++	// Only a verified owned host with an OPEN gate permits the first public
++	// adapter registration. Losing this race never authorizes a second host.
++	if (data->initial_adapter_gate != nullptr &&
++		InterlockedCompareExchange(data->initial_adapter_gate, 1, 0) != 0)
++	{
++		data->initialization_error = ERROR_RETRY;
++		return ERROR_RETRY;
++	}
+ 	data->loaded_module = data->load_library(data->load_path);
+ 	if (data->loaded_module == nullptr)
+ 	{
+ 		data->initialization_error = data->get_last_error();
+ 		if (data->initialization_error == ERROR_SUCCESS)
+ 			data->initialization_error = ERROR_MOD_NOT_FOUND;
++		if (data->initial_adapter_gate != nullptr)
++			InterlockedCompareExchange(data->initial_adapter_gate, 0, 1);
+ 		return data->initialization_error;
+ 	}
++	// DllMain has finished registering the first adapter's public callbacks.
++	// Publish completion before either normal load_addons or our retained
++	// manager initialization may run; neither may wait on a gate we still own.
++	if (data->initial_adapter_gate != nullptr)
++		InterlockedCompareExchange(data->initial_adapter_gate, 2, 1);
+ 	const auto abi = reinterpret_cast<const unsigned int *>(
+ 		data->get_proc_address(data->loaded_module, data->abi_name));
+ 	const auto build = reinterpret_cast<const char *>(
+@@ -4128,6 +4146,12 @@ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ 			data->free_library(data->loaded_module))
+ 			data->loaded_module = nullptr;
+ 	}
++	else if (data->initialize_owned_late_d3d11 != nullptr)
++	{
++		data->late_d3d11_error = data->initialize_owned_late_d3d11(nullptr);
++		if (data->late_d3d11_error != ERROR_SUCCESS)
++			return data->late_d3d11_error;
++	}
+ 	return data->initialization_error;
+ }
+ #pragma optimize("", on)
+@@ -4199,7 +4223,8 @@ static DWORD validate_staged_participant(const std::wstring &path, char (&build)
+ 	return valid ? ERROR_SUCCESS : error != ERROR_SUCCESS ? error : ERROR_REVISION_MISMATCH;
+ }
+ 
+-static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &ready, bool *present = nullptr)
++static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &ready,
++	bool *present = nullptr, bool *adapter_ready = nullptr)
+ {
+ 	HMODULE modules[1024] = {};
+ 	DWORD bytes = 0;
+@@ -4210,6 +4235,7 @@ static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &re
+ 	runtime = nullptr;
+ 	ready = false;
+ 	if (present != nullptr) *present = false;
++	if (adapter_ready != nullptr) *adapter_ready = false;
+ 	DWORD error = ERROR_SUCCESS;
+ 	for (DWORD i = 0; i != bytes / sizeof(HMODULE); ++i)
+ 	{
+@@ -4234,12 +4260,62 @@ static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &re
+ 			if (!read_remote_bytes(process, address, &value, sizeof(value), error))
+ 				return error;
+ 			ready = ready || value == 1;
++			if (adapter_ready != nullptr)
++			{
++				const auto registered = remote_module_export_address(process, modules[i],
++					"ElectronGameOverlayCooperativeAdapterReadyV1", address, error);
++				if (registered == module_export_inspection::failed) return error;
++				if (registered == module_export_inspection::present)
++				{
++					LONG completed = 0;
++					if (!read_remote_bytes(process, address, &completed, sizeof(completed), error))
++						return error;
++					*adapter_ready = *adapter_ready || completed == 1;
++				}
++				else if (value == 1)
++					*adapter_ready = true; // Older modules expose only completed member readiness.
++			}
+ 		}
+ 	}
+ 	return ERROR_SUCCESS;
+ }
+ 
+-static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path)
++struct owned_late_d3d11_host
++{
++	uintptr_t initializer = 0;
++	uintptr_t gate_address = 0;
++	LONG gate = -1;
++};
++
++static DWORD inspect_owned_late_d3d11_host(HANDLE process, HMODULE runtime,
++	owned_late_d3d11_host &host)
++{
++	host = {};
++	if (runtime == nullptr) return ERROR_SUCCESS;
++	DWORD error = ERROR_SUCCESS;
++	uintptr_t capability = 0;
++	const auto inspection = remote_module_export_address(process, runtime,
++		"ElectronGameOverlayOwnedLateD3D11AbiV1", capability, error);
++	if (inspection == module_export_inspection::not_present) return ERROR_SUCCESS;
++	if (inspection == module_export_inspection::failed) return error;
++	unsigned int version = 0, host_abi = 0;
++	uintptr_t host_abi_address = 0;
++	if (!read_remote_bytes(process, capability, &version, sizeof(version), error) ||
++		remote_module_export_address(process, runtime, "ElectronGameOverlayReShadeHostAbi",
++			host_abi_address, error) != module_export_inspection::present ||
++		!read_remote_bytes(process, host_abi_address, &host_abi, sizeof(host_abi), error) ||
++		remote_module_export_address(process, runtime, "ElectronGameOverlayReShadeAddonGate",
++			host.gate_address, error) != module_export_inspection::present ||
++		!read_remote_bytes(process, host.gate_address, &host.gate, sizeof(host.gate), error) ||
++		remote_module_export_address(process, runtime, "ElectronGameOverlayInitializeOwnedLateD3D11V1",
++			host.initializer, error) != module_export_inspection::present)
++		return error != ERROR_SUCCESS ? error : ERROR_REVISION_MISMATCH;
++	if (version != 1 || host_abi != 1 || host.gate < 0 || host.gate > 3)
++		return ERROR_REVISION_MISMATCH;
++	return ERROR_SUCCESS;
++}
++
++static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path, bool earlier_load_consumed = false)
+ {
+ 	std::wstring addon_path;
+ 	char validated_build_id[33] = {};
+@@ -4249,139 +4325,173 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 	if (error != ERROR_SUCCESS)
+ 	{
+ 		write_injector_diagnostic(L"target-member-payload-invalid", pid, addon_path, error, image_path);
+-		print_injection_not_started();
++		if (!earlier_load_consumed) print_injection_not_started();
+ 		return error;
+ 	}
+ 	const ULONGLONG deadline = GetTickCount64() + participant_attach_timeout_ms;
+-	HMODULE runtime = nullptr;
+ 	for (;;)
+ 	{
+-		bool ready = false;
+-		error = inspect_cooperative_host(process, runtime, ready);
+-		if (error == ERROR_SUCCESS && runtime != nullptr && ready)
+-			break;
+-		if (error != ERROR_SUCCESS && error != ERROR_PARTIAL_COPY && error != ERROR_BAD_LENGTH)
+-			break;
+ 		if (GetTickCount64() >= deadline)
++			return ERROR_TIMEOUT;
++		HMODULE runtime = nullptr;
++		owned_late_d3d11_host owned_late;
++		for (;;)
+ 		{
+-			error = ERROR_TIMEOUT;
+-			break;
++			bool ready = false, adapter_ready = false;
++			error = inspect_cooperative_host(process, runtime, ready, nullptr, &adapter_ready);
++			if (error == ERROR_SUCCESS)
++				error = inspect_owned_late_d3d11_host(process, runtime, owned_late);
++			const bool owned_adapter_available = owned_late.initializer != 0 &&
++				(owned_late.gate == 0 || owned_late.gate == 2 ||
++				 (owned_late.gate == 3 && adapter_ready));
++			if (error == ERROR_SUCCESS && runtime != nullptr &&
++				(owned_adapter_available || (ready && owned_late.initializer == 0)))
++				break;
++			if (error != ERROR_SUCCESS && !is_transient_module_inspection_error(error))
++				break;
++			if (GetTickCount64() >= deadline)
++			{
++				error = ERROR_TIMEOUT;
++				break;
++			}
++			const DWORD process_wait = WaitForSingleObject(process, 10);
++			if (process_wait == WAIT_OBJECT_0)
++			{
++				error = ERROR_PROCESS_ABORTED;
++				break;
++			}
++			if (process_wait == WAIT_FAILED)
++			{
++				error = GetLastError();
++				if (error == ERROR_SUCCESS) error = ERROR_GEN_FAILURE;
++				break;
++			}
+ 		}
+-		if (WaitForSingleObject(process, 10) == WAIT_OBJECT_0)
++		if (error != ERROR_SUCCESS)
+ 		{
+-			error = ERROR_PROCESS_ABORTED;
+-			break;
++			write_injector_diagnostic(L"target-member-host-unavailable", pid, addon_path, error, image_path);
++			if (!earlier_load_consumed) print_injection_not_started();
++			return error;
+ 		}
+-	}
+-	if (error != ERROR_SUCCESS)
+-	{
+-		write_injector_diagnostic(L"target-member-host-unavailable", pid, addon_path, error, image_path);
+-		print_injection_not_started();
+-		return error;
+-	}
+-	std::wstring runtime_path;
+-	if (!remote_module_path(process, runtime, runtime_path, error))
+-	{
+-		print_injection_not_started();
+-		return error;
+-	}
+-	target_environment environment;
+-	target_reshade_configuration configuration;
+-	target_effective_reshade_settings settings;
+-	if (!inspect_target_environment(process, environment, error) ||
+-		inspect_target_reshade_configuration(image_path, environment, configuration, error) == module_export_inspection::failed ||
+-		!inspect_target_effective_reshade_settings(image_path, runtime_path, process,
+-			environment, configuration, settings, error))
+-	{
+-		write_injector_diagnostic(L"target-module-inspection-failed", pid, runtime_path, error, image_path);
+-		print_injection_not_started();
+-		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
+-	}
+-	if (settings.electron_game_overlay_addon_disabled)
+-	{
+-		write_injector_diagnostic(L"target-member-disabled", pid, runtime_path, ERROR_ACCESS_DISABLED_BY_POLICY, image_path, &settings);
+-		print_injection_not_started();
+-		return ERROR_ACCESS_DISABLED_BY_POLICY;
+-	}
+-	SIZE_T code_size = 0;
+-	if (!participant_loading_thread_size(code_size))
+-	{
+-		print_injection_not_started();
+-		return ERROR_BAD_EXE_FORMAT;
+-	}
+-	participant_loading_data data;
+-	if (wcscpy_s(data.load_path, addon_path.c_str()) != 0)
+-	{
+-		print_injection_not_started();
+-		return ERROR_FILENAME_EXCED_RANGE;
+-	}
+-	memcpy(data.expected_build_id, validated_build_id, sizeof(data.expected_build_id));
+-	data.load_library = LoadLibraryW;
+-	data.free_library = FreeLibrary;
+-	data.get_proc_address = GetProcAddress;
+-	data.get_last_error = GetLastError;
+-	const SIZE_T allocation_size = sizeof(data) + code_size;
+-	BYTE *const allocation = static_cast<BYTE *>(VirtualAllocEx(process, nullptr, allocation_size,
+-		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+-	if (allocation == nullptr ||
+-		!WriteProcessMemory(process, allocation, &data, sizeof(data), nullptr) ||
+-		!WriteProcessMemory(process, allocation + sizeof(data), participant_loading_thread, code_size, nullptr) ||
+-		!FlushInstructionCache(process, allocation + sizeof(data), code_size))
+-	{
+-		error = GetLastError();
+-		if (allocation != nullptr) VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
+-		print_injection_not_started();
+-		return error;
+-	}
+-	const scoped_handle thread = CreateRemoteThread(process, nullptr, 0,
+-		reinterpret_cast<LPTHREAD_START_ROUTINE>(allocation + sizeof(data)), allocation, 0, nullptr);
+-	if (thread == nullptr)
+-	{
+-		error = GetLastError();
++		std::wstring runtime_path;
++		if (!remote_module_path(process, runtime, runtime_path, error))
++		{
++			if (!earlier_load_consumed) print_injection_not_started();
++			return error;
++		}
++		target_environment environment;
++		target_reshade_configuration configuration;
++		target_effective_reshade_settings settings;
++		if (!inspect_target_environment(process, environment, error) ||
++			inspect_target_reshade_configuration(image_path, environment, configuration, error) == module_export_inspection::failed ||
++			!inspect_target_effective_reshade_settings(image_path, runtime_path, process,
++				environment, configuration, settings, error))
++		{
++			write_injector_diagnostic(L"target-module-inspection-failed", pid, runtime_path, error, image_path);
++			if (!earlier_load_consumed) print_injection_not_started();
++			return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
++		}
++		if (settings.electron_game_overlay_addon_disabled)
++		{
++			write_injector_diagnostic(L"target-member-disabled", pid, runtime_path, ERROR_ACCESS_DISABLED_BY_POLICY, image_path, &settings);
++			if (!earlier_load_consumed) print_injection_not_started();
++			return ERROR_ACCESS_DISABLED_BY_POLICY;
++		}
++		SIZE_T code_size = 0;
++		if (!participant_loading_thread_size(code_size))
++		{
++			if (!earlier_load_consumed) print_injection_not_started();
++			return ERROR_BAD_EXE_FORMAT;
++		}
++		participant_loading_data data;
++		if (wcscpy_s(data.load_path, addon_path.c_str()) != 0)
++		{
++			if (!earlier_load_consumed) print_injection_not_started();
++			return ERROR_FILENAME_EXCED_RANGE;
++		}
++		memcpy(data.expected_build_id, validated_build_id, sizeof(data.expected_build_id));
++		data.load_library = LoadLibraryW;
++		data.free_library = FreeLibrary;
++		data.get_proc_address = GetProcAddress;
++		data.get_last_error = GetLastError;
++		if (owned_late.initializer != 0)
++		{
++			data.initialize_owned_late_d3d11 =
++				reinterpret_cast<DWORD (WINAPI *)(void *)>(owned_late.initializer);
++			if (owned_late.gate == 0)
++				data.initial_adapter_gate = reinterpret_cast<volatile LONG *>(owned_late.gate_address);
++		}
++		const SIZE_T allocation_size = sizeof(data) + code_size;
++		BYTE *const allocation = static_cast<BYTE *>(VirtualAllocEx(process, nullptr, allocation_size,
++			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
++		if (allocation == nullptr ||
++			!WriteProcessMemory(process, allocation, &data, sizeof(data), nullptr) ||
++			!WriteProcessMemory(process, allocation + sizeof(data), participant_loading_thread, code_size, nullptr) ||
++			!FlushInstructionCache(process, allocation + sizeof(data), code_size))
++		{
++			error = GetLastError();
++			if (allocation != nullptr) VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
++			if (!earlier_load_consumed) print_injection_not_started();
++			return error;
++		}
++		const scoped_handle thread = CreateRemoteThread(process, nullptr, 0,
++			reinterpret_cast<LPTHREAD_START_ROUTINE>(allocation + sizeof(data)), allocation, 0, nullptr);
++		if (thread == nullptr)
++		{
++			error = GetLastError();
++			VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
++			if (!earlier_load_consumed) print_injection_not_started();
++			return error;
++		}
++		const ULONGLONG now = GetTickCount64();
++		const DWORD remaining = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
++		const DWORD wait = WaitForSingleObject(thread, remaining);
++		if (wait != WAIT_OBJECT_0)
++		{
++			// Remote code may still use its arguments. Keep memory/module ownership
++			// indeterminate; neither terminate it nor free it or inject a runtime.
++			error = wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
++			return error != ERROR_SUCCESS ? error : ERROR_GEN_FAILURE;
++		}
++		DWORD exit_code = ERROR_GEN_FAILURE;
++		bool read = GetExitCodeThread(thread, &exit_code) != FALSE;
++		if (!read)
++		{
++			error = GetLastError();
++			if (error == ERROR_SUCCESS) error = ERROR_GEN_FAILURE;
++		}
++		else
++			read = read_remote_bytes(process, reinterpret_cast<uintptr_t>(allocation), &data, sizeof(data), error);
+ 		VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
+-		print_injection_not_started();
+-		return error;
+-	}
+-	const DWORD wait = WaitForSingleObject(thread, participant_attach_timeout_ms);
+-	if (wait != WAIT_OBJECT_0)
+-	{
+-		// Remote code may still use its arguments. Keep memory/module ownership
+-		// indeterminate; neither terminate it nor free it or inject a runtime.
+-		error = wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+-		return error != ERROR_SUCCESS ? error : ERROR_GEN_FAILURE;
+-	}
+-	DWORD exit_code = ERROR_GEN_FAILURE;
+-	bool read = GetExitCodeThread(thread, &exit_code) != FALSE;
+-	if (!read)
+-	{
+-		error = GetLastError();
+-		if (error == ERROR_SUCCESS) error = ERROR_GEN_FAILURE;
++		if (read && exit_code == ERROR_RETRY && data.initialization_error == ERROR_RETRY &&
++			data.loaded_module == nullptr && data.initial_adapter_gate != nullptr)
++			continue; // Normal initialization won the OPEN gate; wait out its ready publication.
++		if (read && data.late_d3d11_error != ERROR_SUCCESS)
++			wprintf(L"\nOwned D3D11 late initialization failed with error 0x%lx; runtime ownership remains claimed.\n",
++				data.late_d3d11_error);
++		if (!read || exit_code != ERROR_SUCCESS || data.initialization_error != ERROR_SUCCESS)
++			return !read ? error : exit_code != ERROR_SUCCESS ? exit_code : data.initialization_error;
++		std::wstring loaded_path;
++		if (!remote_module_path(process, data.loaded_module, loaded_path, error) ||
++			!remote_module_path(process, runtime, runtime_path, error))
++			return error;
++		if (_wcsicmp(loaded_path.c_str(), addon_path.c_str()) != 0)
++			return ERROR_INVALID_NAME;
++		std::wstring result = L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
++		result += std::to_wstring(pid);
++		result += L",\"targetExecutablePath\":";
++		append_json_string(result, image_path);
++		result += L",\"runtimeMode\":\"participant-addon\",\"runtimeModulePath\":";
++		append_json_string(result, runtime_path);
++		result += L",\"addonModulePath\":";
++		append_json_string(result, loaded_path);
++		result += L",\"reshadeBasePath\":";
++		append_json_string(result, settings.reshade_base_path);
++		result += L",\"addonAbi\":1,\"memberProtocolVersion\":1}";
++		wprintf(L"Found a matching process with PID %lu! Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n", pid);
++		fflush(stdout);
++		return write_utf8_stdout_line(result) ? ERROR_SUCCESS : ERROR_WRITE_FAULT;
+ 	}
+-	else
+-		read = read_remote_bytes(process, reinterpret_cast<uintptr_t>(allocation), &data, sizeof(data), error);
+-	VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
+-	if (!read || exit_code != ERROR_SUCCESS || data.initialization_error != ERROR_SUCCESS)
+-		return !read ? error : exit_code != ERROR_SUCCESS ? exit_code : data.initialization_error;
+-	std::wstring loaded_path;
+-	if (!remote_module_path(process, data.loaded_module, loaded_path, error) ||
+-		!remote_module_path(process, runtime, runtime_path, error))
+-		return error;
+-	if (_wcsicmp(loaded_path.c_str(), addon_path.c_str()) != 0)
+-		return ERROR_INVALID_NAME;
+-	std::wstring result = L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
+-	result += std::to_wstring(pid);
+-	result += L",\"targetExecutablePath\":";
+-	append_json_string(result, image_path);
+-	result += L",\"runtimeMode\":\"participant-addon\",\"runtimeModulePath\":";
+-	append_json_string(result, runtime_path);
+-	result += L",\"addonModulePath\":";
+-	append_json_string(result, loaded_path);
+-	result += L",\"reshadeBasePath\":";
+-	append_json_string(result, settings.reshade_base_path);
+-	result += L",\"addonAbi\":1,\"memberProtocolVersion\":1}";
+-	wprintf(L"Found a matching process with PID %lu! Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n", pid);
+-	fflush(stdout);
+-	return write_utf8_stdout_line(result) ? ERROR_SUCCESS : ERROR_WRITE_FAULT;
+ }
+ 
+ enum class persistent_host_claim_result { first_owner, already_pinned, failed };
+@@ -4792,15 +4902,18 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		DWORD member_error = host_claim_is_pinned(remote_process, pid, pinned);
+ 		HMODULE host = nullptr;
+ 		bool ready = false, cooperative_present = false;
++		owned_late_d3d11_host owned_late;
+ 		if (member_error == ERROR_SUCCESS)
+ 			member_error = inspect_cooperative_host(remote_process, host, ready, &cooperative_present);
++		if (member_error == ERROR_SUCCESS)
++			member_error = inspect_owned_late_d3d11_host(remote_process, host, owned_late);
+ 		if (member_error != ERROR_SUCCESS)
+ 		{
+ 			write_injector_diagnostic(L"target-module-inspection-failed", pid, std::wstring(), member_error, selected_image_path);
+ 			print_injection_not_started();
+ 			return member_error;
+ 		}
+-		if (addon_only_requested || pinned || cooperative_present)
++		if (addon_only_requested || pinned || cooperative_present || owned_late.initializer != 0)
+ 			return load_participant_only(remote_process, pid, selected_image_path);
+ 	}
+ 
+@@ -5403,6 +5516,30 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		exit_code != NULL)
+ #endif
+ 	{
++		// A newly injected capable owned host may have missed an already-live
++		// D3D11 chain. Complete the same private member attachment as a late
++		// app; the native target-side claim remains consumed in every outcome.
++		HMODULE host_module = nullptr;
++		bool cooperative_ready = false;
++		DWORD member_error = ERROR_SUCCESS;
++		owned_late_d3d11_host owned_late;
++		for (unsigned attempt = 0; attempt != 4; ++attempt)
++		{
++			member_error = inspect_cooperative_host(remote_process, host_module, cooperative_ready);
++			if (member_error == ERROR_SUCCESS)
++				member_error = inspect_owned_late_d3d11_host(remote_process, host_module, owned_late);
++			if (member_error == ERROR_SUCCESS || !is_transient_module_inspection_error(member_error))
++				break;
++			Sleep(1);
++		}
++		if (member_error != ERROR_SUCCESS)
++		{
++			write_injector_diagnostic(L"target-member-host-inspection-failed", pid,
++				std::wstring(), member_error, selected_image_path);
++			return member_error;
++		}
++		if (owned_late.initializer != 0)
++			return load_participant_only(remote_process, pid, selected_image_path, true);
+ 		wprintf(L"Succeeded!\n");
+ 		if (!write_injector_result(
+ 				pid,

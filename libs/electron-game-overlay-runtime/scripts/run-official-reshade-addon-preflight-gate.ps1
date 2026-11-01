@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'process-environment.ps1')
-$ExpectedAddonBuildId = "412D57BEA49440738CC4C3903038F2E7"
+$ExpectedAddonBuildId = "BCE6C5C8746F4300861300B2BDA3594E"
 
 function Wait-ForCondition {
     param(

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-01",
+  "scope": "Exact stock INI serializer only; no ReShade DLL, graphics, input, injection, or game acceptance",
+  "compiler": "MSVC 19.44.35223.0",
+  "operation": "Set already-present global OVERLAY/TutorialProgress=4, flush_cache, exact clear/reload, set4 and flush again",
+  "appendedBytes": [
+    13,
+    10
+  ],
+  "fileSha256": {
+    "probeCpp": "5FC6BBC798F39BE2FD7214F1AD583D3DE0C6BC340AEC0CC9766250C1BC9665DD",
+    "cmakeLists": "1FD98DDACAE3DB47C46986086400EACB9647D62A4CA2077BA21BDC716A7B7F46",
+    "pinnedIniFileCpp": "8433D517E5D5A8A497484C8B31EE27466FE0196BEDAEB4FE756F576BB39C55CC",
+    "canonicalSourceTemplate": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB"
+  },
+  "results": {
+    "x64": {
+      "report": {
+        "schemaVersion": 1,
+        "loadsReShadeRuntime": false,
+        "runsGraphics": false,
+        "canonicalSourceBytes": 209,
+        "legacyBytes": 207,
+        "firstSaveBytes": 209,
+        "secondSaveBytes": 209,
+        "firstSaveAddsOnlyOneCrlf": true,
+        "firstSaveMatchesCanonicalSourceExactly": true,
+        "secondSaveIsByteIdentical": true,
+        "sourceTemplateUnchanged": true,
+        "passed": true
+      },
+      "snapshotSha256": {
+        "canonicalSource": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB",
+        "derivedLegacy": "2A3BDABDF7A36155B3F5EACD641525810D0998520677D26105924197523465D1",
+        "firstSave": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB",
+        "secondSave": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB"
+      }
+    },
+    "Win32": {
+      "report": {
+        "schemaVersion": 1,
+        "loadsReShadeRuntime": false,
+        "runsGraphics": false,
+        "canonicalSourceBytes": 209,
+        "legacyBytes": 207,
+        "firstSaveBytes": 209,
+        "secondSaveBytes": 209,
+        "firstSaveAddsOnlyOneCrlf": true,
+        "firstSaveMatchesCanonicalSourceExactly": true,
+        "secondSaveIsByteIdentical": true,
+        "sourceTemplateUnchanged": true,
+        "passed": true
+      },
+      "snapshotSha256": {
+        "canonicalSource": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB",
+        "derivedLegacy": "2A3BDABDF7A36155B3F5EACD641525810D0998520677D26105924197523465D1",
+        "firstSave": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB",
+        "secondSave": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB"
+      }
+    }
+  }
+}

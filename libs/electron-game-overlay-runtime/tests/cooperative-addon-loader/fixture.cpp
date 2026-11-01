@@ -45,9 +45,14 @@ extern "C" __declspec(dllexport) const unsigned int ElectronGameOverlayReShadeAd
 extern "C" __declspec(dllexport) const char ElectronGameOverlayReShadeAddonBuildId[] = ADDON_BUILD_ID;
 #ifndef _WIN64
 #pragma comment(linker, "/EXPORT:ElectronGameOverlayInitializeMember=_ElectronGameOverlayInitializeMember@4")
+#ifndef FIXTURE_no_unload_query
+#pragma comment(linker, "/EXPORT:ElectronGameOverlayCanUnloadFailedMemberV1=_ElectronGameOverlayCanUnloadFailedMemberV1@0")
+#endif
 #endif
 extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMember(void *)
 {
+    if (GetFileAttributesW((module_parent(own_module) + L"\\reject-initialization.enabled").c_str()) != INVALID_FILE_ATTRIBUTES)
+        return ERROR_TOO_MANY_SESS;
     const auto path = module_parent(own_module) + L"\\member.initialized";
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return GetLastError();
@@ -58,6 +63,12 @@ extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMembe
     CloseHandle(file);
     return error;
 }
+#ifndef FIXTURE_no_unload_query
+extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayCanUnloadFailedMemberV1()
+{
+    return GetFileAttributesW((module_parent(own_module) + L"\\failed-member-unload-safe.enabled").c_str()) != INVALID_FILE_ATTRIBUTES ? 1 : 0;
+}
+#endif
 #elif defined(FIXTURE_host)
 extern "C" __declspec(dllexport) const char *ReShadeVersion = "6.7.3";
 extern "C" __declspec(dllexport) volatile LONG ElectronGameOverlayCooperativeReadyV1 = 0;
@@ -106,6 +117,15 @@ BOOL WINAPI DllMain(HMODULE module, DWORD reason, LPVOID)
         CloseHandle(worker);
 #endif
     }
+#if defined(FIXTURE_member)
+    if (reason == DLL_PROCESS_DETACH)
+    {
+        const auto path = module_parent(module) + L"\\member.detached";
+        const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+            nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    }
+#endif
     return TRUE;
 }
 #endif

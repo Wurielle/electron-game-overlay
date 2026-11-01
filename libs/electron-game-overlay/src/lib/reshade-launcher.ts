@@ -66,6 +66,10 @@ const INJECTOR_STDOUT_FILE_NAME = 'inject.stdout.log';
 const INJECTOR_STDERR_FILE_NAME = 'inject.stderr.log';
 const RESHADE_LOG_FILE_NAME = 'ReShade.log';
 const RUNTIME_STARTUP_FILE_NAME = '.electron-game-overlay-runtime-startup.json';
+const OWNED_RUNTIME_STAGE_MARKER_FILE_NAME =
+  'electron-game-overlay-owned-runtime-v1.marker';
+const OWNED_RUNTIME_STAGE_MARKER_CONTENT =
+  'ELECTRON_GAME_OVERLAY_OWNED_RUNTIME_STAGE_V1\n';
 const INJECTOR_SUCCESS_MARKER = 'Injecting ReShade ... Succeeded!';
 const PARTICIPANT_SUCCESS_MARKER = 'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!';
 const INJECTOR_NOT_STARTED_MARKER = 'ReShade injection not started.';
@@ -74,7 +78,7 @@ const PROCESS_WATCHER_READY_MARKER = 'ReShade process watcher armed.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH = 706;
-const OFFICIAL_ADDON_BUILD_ID = '412D57BEA49440738CC4C3903038F2E7';
+const OFFICIAL_ADDON_BUILD_ID = 'BCE6C5C8746F4300861300B2BDA3594E';
 const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 3;
 // Schema 2 shipped before provider metadata. Keep accepting it permanently as
 // generation 1 / target transport 1 so copied runtime-directory overrides do
@@ -2959,6 +2963,16 @@ export class ReShadeOverlayLauncher {
             path.join(createdRunDirectory, fileName),
           ]),
         ),
+      );
+
+      // This stage-only marker is created exclusively in the fresh SDK-owned
+      // run directory after validating every copied payload. The owned host
+      // also requires its canonical DLL parent to equal its effective base path;
+      // a marker in this private stage never opts in a foreign installation.
+      await writeFile(
+        path.join(createdRunDirectory, OWNED_RUNTIME_STAGE_MARKER_FILE_NAME),
+        OWNED_RUNTIME_STAGE_MARKER_CONTENT,
+        { encoding: 'ascii', flag: 'wx' },
       );
 
       scheduleRunRetentionSweepAfterCurrentTurn(runsRootDirectory);

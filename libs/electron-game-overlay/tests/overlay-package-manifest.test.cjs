@@ -5,17 +5,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
+const { validatorSource } = require('./helpers/source-packaging-loader.cjs');
 const {
   createOverlayDistributionManifestSync,
   validateOverlayDistributionSync,
 } = require('../dist/lib/overlay-package-manifest.js');
 const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
 
-function fixture(t) {
+function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-direct-seal-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
   const dist = path.join(root, 'dist');
-  const payload = writeCooperativeDistribution(dist);
+  const payload = writeCooperativeDistribution(dist, options);
   return { root, dist, ...payload, payload };
 }
 function mutateStamp(f, name, mutate) {
@@ -30,11 +31,13 @@ function mutateStamp(f, name, mutate) {
 test('direct SDK seal validates both native architectures without executing an SDK or broker', t => {
   const f = fixture(t);
   f.write('index.js', 'throw new Error("Packaging must never execute the supplied SDK");\n');
+  f.write('lib/overlay-broker-protocol.js', fs.readFileSync(path.join(f.dist, 'lib/overlay-broker-protocol.js'), 'utf8') + 'throw new Error("Compiled generation must be read as text, never executed");\n');
   f.payload.seal();
   const manifest = validateOverlayDistributionSync(f.dist, '0.1.0-rc.7');
   assert.equal(manifest.files.length, f.payload.files.length);
   assert.equal(fs.existsSync(path.join(f.dist, 'broker')), false);
   assert.deepEqual(createOverlayDistributionManifestSync(f.dist, manifest.packageVersion), manifest);
+  for (const bits of [64, 32]) assert.equal(JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json'))).schemaVersion, 30);
 });
 
 for (const [name, mutate, error] of [
@@ -49,6 +52,11 @@ for (const [name, mutate, error] of [
   ['native capability missing after reseal', f => mutateStamp(f, 'electron_game_overlay_runtime.build.json', stamp => { delete stamp.cooperativeAddonProtocol; }), /native.*manifest/i],
   ['native package disagrees with compiled launcher after reseal', f => mutateStamp(f, 'electron_game_overlay_runtime.build.json', stamp => { stamp.addonBuildId = 'F'.repeat(32); }), /native.*manifest/i],
   ['paired native generations disagree after reseal', f => mutateStamp(f, 'electron_game_overlay_runtime32.build.json', stamp => { stamp.runtimeGeneration++; }), /disagree/i],
+  ['native generation differs from the sealed SDK literal', f => {
+    for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) mutateStamp(f, name, stamp => { stamp.runtimeGeneration = 14; });
+  }, /generation.*compiled SDK/i],
+  ['compiled generation is missing', f => { f.write('lib/overlay-broker-protocol.js', 'exports.OVERLAY_BROKER_LEGACY_RUNTIME_GENERATION = 1;\n'); f.payload.seal(); }, /generation.*missing/i],
+  ['compiled generation is ambiguous', f => { f.write('lib/overlay-broker-protocol.js', 'exports.OVERLAY_BROKER_RUNTIME_GENERATION = 15;\nexports.OVERLAY_BROKER_RUNTIME_GENERATION = 14;\n'); f.payload.seal(); }, /generation.*ambiguous/i],
   ['old ReShade capability after reseal', f => mutateStamp(f, 'ReShade32.build.json', stamp => { stamp.cooperativeAddonProtocol = 0; }), /ReShade.*manifest/i],
   ['wrong native architecture after rebinding all hashes', f => {
     const relative = 'runtime/win32-x64/reshade/inject32.exe';
@@ -59,6 +67,66 @@ for (const [name, mutate, error] of [
   const f = fixture(t);
   mutate(f);
   assert.throws(() => validateOverlayDistributionSync(f.dist, '0.1.0-rc.7'), error);
+});
+
+for (const [generation, addonBuildId] of [
+  [8, 'A8E9DA12477741B9979D9B1B51994EF3'], [9, '3309FB779CFC4E39BA7681AA4A7F8A6B'],
+  [10, '280C7D267CA94332834D85A075A453AE'], [11, 'E16461475E524DBA83398B19CDD95EBB'],
+  [12, 'E975AA8639164AED979E9770674B9546'], [13, '4127FD92CC904E0AA75C7784189AE969'],
+  [14, '412D57BEA49440738CC4C3903038F2E7'],
+]) test('retained generation ' + generation + ' preserves its schema-29 provenance and exact sealed bytes', t => {
+  const f = fixture(t, { runtimeGeneration: generation, addonBuildId });
+  const before = fs.readFileSync(f.manifestPath);
+  const manifest = validateOverlayDistributionSync(f.dist, '0.1.0-rc.7');
+  assert.deepEqual(createOverlayDistributionManifestSync(f.dist, manifest.packageVersion), manifest);
+  assert.deepEqual(fs.readFileSync(f.manifestPath), before);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.schemaVersion, 29);
+    assert.equal(stamp.ownedLateD3d11PatchSha256, undefined);
+  }
+});
+
+for (const [name, value] of [['missing', undefined], ['wrong type', 1], ['malformed', 'not-a-digest'], ['wrong valid digest', '0'.repeat(64)]]) {
+  test('schema-30 owned patch provenance rejects ' + name + ' after every native/SDK hash is rebound', t => {
+    const f = fixture(t);
+    for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => {
+      if (value === undefined) delete stamp.ownedLateD3d11PatchSha256;
+      else stamp.ownedLateD3d11PatchSha256 = value;
+    });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /owned late D3D11 patch provenance/i);
+    assert.throws(() => createOverlayDistributionManifestSync(f.dist, '0.1.0-rc.7'), /owned late D3D11 patch provenance/i);
+  });
+}
+test('current SDK cannot downgrade both ReShade stamps to legacy schema 29 after full rebinding', t => {
+  const f = fixture(t);
+  for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { stamp.schemaVersion = 29; delete stamp.ownedLateD3d11PatchSha256; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /ReShade build manifest/i);
+});
+test('paired ReShade architectures cannot mix schema 29 and 30', t => {
+  const f = fixture(t);
+  mutateStamp(f, 'ReShade32.build.json', stamp => { stamp.schemaVersion = 29; delete stamp.ownedLateD3d11PatchSha256; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /ReShade build manifest/i);
+});
+test('an unknown future ReShade schema is rejected', t => {
+  const f = fixture(t);
+  mutateStamp(f, 'ReShade64.build.json', stamp => { stamp.schemaVersion = 31; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /ReShade build manifest/i);
+});
+test('retained schema 29 cannot silently advertise a new owned-late capability', t => {
+  const f = fixture(t, { runtimeGeneration: 14, addonBuildId: '412D57BEA49440738CC4C3903038F2E7' });
+  mutateStamp(f, 'ReShade64.build.json', stamp => { stamp.ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE'; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /requires ReShade schema 30/i);
+});
+for (const [name, declaration] of [
+  ['zero', 'exports.OVERLAY_BROKER_RUNTIME_GENERATION = 0;\n'],
+  ['uint32 overflow', 'exports.OVERLAY_BROKER_RUNTIME_GENERATION = 4294967296;\n'],
+  ['computed expression', 'exports.OVERLAY_BROKER_RUNTIME_GENERATION = 14 + 1;\n'],
+  ['header export chain only', 'exports.OTHER = exports.OVERLAY_BROKER_RUNTIME_GENERATION = void 0;\n'],
+]) test('compiled SDK generation rejects ' + name + ' after resealing', t => {
+  const f = fixture(t);
+  f.write('lib/overlay-broker-protocol.js', declaration); f.payload.seal();
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /generation.*missing|generation.*ambiguous/i);
 });
 
 test('payload junctions cannot redirect integrity reads outside the SDK', t => {
@@ -80,7 +148,7 @@ test('actual seal script builds a self-contained SDK manifest on the supported b
   const tslib = path.dirname(require.resolve('tslib/package.json'));
   fs.mkdirSync(path.join(f.root, 'node_modules'));
   fs.cpSync(tslib, path.join(f.root, 'node_modules/tslib'), { recursive: true });
-  fs.copyFileSync(path.resolve(__dirname, '../dist/lib/overlay-package-manifest.js'), path.join(f.dist, 'lib/overlay-package-manifest.js'));
+  fs.writeFileSync(path.join(f.dist, 'lib/overlay-package-manifest.js'), validatorSource);
   const entry = path.join(scripts, 'seal-sdk-distribution.cjs');
   fs.copyFileSync(path.resolve(__dirname, '../scripts/seal-sdk-distribution.cjs'), entry);
   const result = spawnSync(process.execPath, [entry], { encoding: 'utf8', timeout: 10_000 });

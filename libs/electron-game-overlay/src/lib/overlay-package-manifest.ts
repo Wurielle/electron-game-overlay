@@ -11,6 +11,9 @@ const MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const NATIVE_DIGEST = /^[0-9a-fA-F]{64}$/;
+const OWNED_LATE_D3D11_FIRST_RUNTIME_GENERATION = 15;
+const OWNED_LATE_D3D11_PATCH_SHA256 =
+  '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -109,7 +112,7 @@ function verifyHash(root: string, file: string, expected: unknown): void {
 
 function validateNative(dist: string, files: ReadonlySet<string>): void {
   for (const entry of ['index.js', 'index.d.ts', 'packaging.js', 'packaging.d.ts',
-    'lib/reshade-launcher.js',
+    'lib/reshade-launcher.js', 'lib/overlay-broker-protocol.js',
     'node_modules/tslib/package.json', 'node_modules/tslib/tslib.js',
     'node_modules/tslib/LICENSE.txt', 'node_modules/tslib/CopyrightNotice.txt']) {
     if (!files.has(entry) || readRegular(path.join(dist, entry)).length === 0) {
@@ -126,6 +129,14 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
   const identities = [...launcher.matchAll(/\b(?:const|let|var)\s+OFFICIAL_ADDON_BUILD_ID\s*=\s*['"]([0-9A-F]{32})['"]/g)];
   if (identities.length !== 1) throw new Error('Compiled SDK exact native add-on identity is missing or ambiguous');
   const expectedBuildId = identities[0][1];
+  // Read the sealed compiled constant, never execute an incoming SDK. Binding
+  // the generation also prevents a current implementation's native manifests
+  // from being downgraded to the retained pre-owned-late provenance schema.
+  const protocol = readRegular(path.join(dist, 'lib/overlay-broker-protocol.js')).toString('utf8');
+  const generations = [...protocol.matchAll(/^exports\.OVERLAY_BROKER_RUNTIME_GENERATION\s*=\s*([1-9][0-9]*);\s*$/gm)];
+  const expectedGeneration = generations.length === 1 ? Number(generations[0][1]) : undefined;
+  if (!positiveInteger(expectedGeneration)) throw new Error('Compiled SDK runtime generation is missing or ambiguous');
+  const expectedReShadeSchema = expectedGeneration >= OWNED_LATE_D3D11_FIRST_RUNTIME_GENERATION ? 30 : 29;
   const native = path.join(dist, 'runtime/win32-x64/reshade');
   let paired: Record<string, unknown> | undefined;
   for (const bits of [64, 32]) {
@@ -143,6 +154,7 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
     }
     if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol']
       .some((key) => stamp[key] !== paired![key])) throw new Error('Native architecture manifests disagree');
+    if (stamp.runtimeGeneration !== expectedGeneration) throw new Error('Native runtime generation disagrees with the compiled SDK');
     paired = stamp;
     const assets: Record<string, string> = {
       addonSha256: `electron_game_overlay.addon${bits}`,
@@ -160,10 +172,19 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       nativeMachine(path.join(native, file), bits === 64 ? 0x8664 : 0x14c);
     }
     const reshade = json(path.join(native, `ReShade${bits}.build.json`));
-    if (reshade.schemaVersion !== 29 || reshade.cooperativeAddonProtocol !== 1 || reshade.injectorProcessInstanceBinding !== 1 ||
+    if (reshade.schemaVersion !== expectedReShadeSchema || reshade.cooperativeAddonProtocol !== 1 || reshade.injectorProcessInstanceBinding !== 1 ||
         reshade.injectorFutureTargets !== 2 || reshade.configuration !== 'Release' || reshade.addonLevel !== 2 ||
         reshade.platform !== (bits === 64 ? '64-bit' : '32-bit') || typeof reshade.commit !== 'string' || !/^[0-9a-f]{40}$/i.test(reshade.commit)) {
       throw new Error('Unsupported pinned ReShade build manifest: ' + bits);
+    }
+    if (expectedReShadeSchema === 30) {
+      if (typeof reshade.ownedLateD3d11PatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.ownedLateD3d11PatchSha256) ||
+          reshade.ownedLateD3d11PatchSha256.toUpperCase() !== OWNED_LATE_D3D11_PATCH_SHA256) {
+        throw new Error('Pinned owned late D3D11 patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedLateD3d11PatchSha256 !== undefined) {
+      throw new Error('Owned late D3D11 patch provenance requires ReShade schema 30: ' + bits);
     }
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);

@@ -12,7 +12,7 @@ const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?
   value => value.replace(/[^\r\n]/g, ' '));
 
 function definition(name) {
-  const signature = new RegExp(`\\bvoid\\s+${name}\\s*\\(([^)]*)\\)\\s*\\{`, 'm').exec(code);
+  const signature = new RegExp(`\\b(?:void|bool)\\s+${name}\\s*\\(([^)]*)\\)\\s*\\{`, 'm').exec(code);
   assert.ok(signature, `missing native function ${name}`);
   const start = signature.index + signature[0].length;
   let depth = 1;
@@ -43,11 +43,13 @@ test('inactive-session observations and query failures cannot retire a new sessi
   assert.doesNotMatch(prepare, /\bdeactivate_input\s*\(|\bego_transport_retire_input_filter\s*\(/);
 });
 
-test('only destruction of the actual primary owner commits terminal retirement', () => {
+test('only destruction of the current logical driver commits terminal retirement', () => {
   const destroyed = definition('deactivate_destroyed_runtime_input').body;
   assert.match(destroyed, /deactivate_input\s*\(\s*data\s*,\s*false\s*,\s*true\s*\)/);
   const destruction = definition('destroy_own_effect_runtime').body;
-  assert.match(destruction, /if\s*\(\s*owns_primary_swapchain\s*\(\s*\*data\s*\)\s*\)\s*(?:\{\s*)?deactivate_destroyed_runtime_input\s*\(\s*\*data\s*\)/);
+  assert.match(destruction, /if\s*\(\s*g_member_input_driver\.release\s*\(\s*runtime->get_native\s*\(\s*\)\s*\)\s*\)\s*(?:\{\s*)?deactivate_destroyed_runtime_input\s*\(\s*\*data\s*\)/);
+  assert.doesNotMatch(destruction, /owns_primary_swapchain/,
+    'a paused former primary must not retire input after another same-HWND presenter has taken over');
   const calls = [...code.matchAll(/\bdeactivate_input\s*\(([^)]*)\)/g)]
     .map(match => match[1].replace(/\s+/g, ''))
     .filter(argumentsText => !argumentsText.startsWith('swapchain_data&'));

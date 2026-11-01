@@ -154,6 +154,50 @@ try {
     foreach ($Stage in @($StageA,$StageB,$StageC)) {
         if (@($Modules | Where-Object { $_ -ieq (Join-Path $Stage $AddonLeaf) }).Count -ne 1) { throw "Expected a distinct loaded member at $Stage" }
     }
+    $SafeRejectedStages = @()
+    foreach ($Index in 1..8) {
+        $RejectedStage = New-Stage "safe-rejected-member-$Index"
+        $SafeRejectedStages += $RejectedStage
+        New-Item -ItemType File -Path (Join-Path $RejectedStage 'reject-initialization.enabled') | Out-Null
+        New-Item -ItemType File -Path (Join-Path $RejectedStage 'failed-member-unload-safe.enabled') | Out-Null
+        $Rejected = Invoke-OwnedInjector $Target $RejectedStage -Only
+        if ($Rejected.ExitCode -ne 69) { throw 'Explicit admission failure did not preserve the initializer error.' }
+        if (-not (Test-Path -LiteralPath (Join-Path $RejectedStage 'member.detached'))) { throw 'Positively unload-safe rejected member did not release its acquired reference.' }
+        $Target.Process.Refresh()
+        if (@($Target.Process.Modules | Where-Object { $_.FileName -ieq (Join-Path $RejectedStage $AddonLeaf) }).Count -ne 0) { throw 'Unload-safe rejected member remained mapped.' }
+    }
+    $Target.Process.Refresh()
+    $RemainingMembers = @($Target.Process.Modules | Where-Object { [IO.Path]::GetFileName($_.FileName) -ieq $AddonLeaf })
+    if ($RemainingMembers.Count -ne 3) { throw 'Repeated rejected stages increased mapped member count.' }
+    # The inert member has no callbacks or pin. Its original successful load
+    # deliberately retains one reference while a later failing load is cleaned.
+    New-Item -ItemType File -Path (Join-Path $StageC 'reject-initialization.enabled') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $StageC 'failed-member-unload-safe.enabled') | Out-Null
+    $RepeatedExisting = Invoke-OwnedInjector $Target $StageC -Only
+    if ($RepeatedExisting.ExitCode -ne 69) { throw 'Repeated existing-module failure did not preserve its initializer error.' }
+    $Target.Process.Refresh()
+    if ((Test-Path -LiteralPath (Join-Path $StageC 'member.detached')) -or
+        @($Target.Process.Modules | Where-Object { $_.FileName -ieq (Join-Path $StageC $AddonLeaf) }).Count -ne 1) {
+        throw 'Failure cleanup released an existing reference instead of only its newly acquired reference.'
+    }
+    $UnsafeRejectedStage = New-Stage 'unsafe-rejected-member'
+    New-Item -ItemType File -Path (Join-Path $UnsafeRejectedStage 'reject-initialization.enabled') | Out-Null
+    $UnsafeRejected = Invoke-OwnedInjector $Target $UnsafeRejectedStage -Only
+    if ($UnsafeRejected.ExitCode -ne 69) { throw 'Unsafe failure did not preserve the initializer error.' }
+    $MissingQueryStage = New-Stage 'no-query-rejected-member'
+    Copy-Item -LiteralPath (Join-Path $Build 'RelWithDebInfo\loader_fixture_member_no_cleanup.dll') -Destination (Join-Path $MissingQueryStage $AddonLeaf) -Force
+    New-Item -ItemType File -Path (Join-Path $MissingQueryStage 'reject-initialization.enabled') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $MissingQueryStage 'failed-member-unload-safe.enabled') | Out-Null
+    $MissingQuery = Invoke-OwnedInjector $Target $MissingQueryStage -Only
+    if ($MissingQuery.ExitCode -ne 69) { throw 'Missing-query failure did not preserve the initializer error.' }
+    $Target.Process.Refresh()
+    foreach ($Stage in @($UnsafeRejectedStage,$MissingQueryStage)) {
+        if (Test-Path -LiteralPath (Join-Path $Stage 'member.detached')) { throw 'An uncertain failed member was unloaded.' }
+        if (@($Target.Process.Modules | Where-Object { $_.FileName -ieq (Join-Path $Stage $AddonLeaf) }).Count -ne 1) { throw 'An uncertain failed member did not retain its acquired reference.' }
+    }
+    foreach ($Stage in @($StageA,$StageB,$StageC)) {
+        if (@($Target.Process.Modules | Where-Object { $_.FileName -ieq (Join-Path $Stage $AddonLeaf) }).Count -ne 1) { throw 'Rejected-member cleanup removed a successful participant.' }
+    }
     $Target.Process.Kill(); $Target.Process.WaitForExit()
     $UnexpectedClaim = $null
     try { $UnexpectedClaim = [IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting($ClaimName) } catch [IO.FileNotFoundException] { }
@@ -212,6 +256,9 @@ try {
         hostClaimSurvivedCreatorCrash=$true; staleMemberBuildRejected=$true
         processInstanceMismatchRejected=$true; uncertainClaimNeverInjected=$true
         exactTargetBasePathPreserved=$true
+        unloadSafeRejectedStages=8; rejectedStagesDidNotGrowMappedMembers=$true
+        onlyAcquiredLoadReferenceReleased=$true
+        unsafeFailedMemberRetained=$true; missingUnloadQueryMemberRetained=$true
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Run 'evidence.json') -Encoding UTF8
     Write-Host "Cooperative loader acceptance passed: $Run"
 } finally {

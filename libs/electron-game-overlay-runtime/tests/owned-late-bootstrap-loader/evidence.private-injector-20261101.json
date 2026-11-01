@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "buildKind": "Private CMake Release MSVC injector proof, using reviewed source and generation-14 fixture build ID; not a packaged generation-15 build.",
+  "result": "passed",
+  "architectureCount": 2,
+  "passedCases": 16,
+  "records": [
+    {
+      "schemaVersion": 1,
+      "fixture": "inert-owned-late-bootstrap-loader",
+      "status": "passed",
+      "failure": null,
+      "architecture": "x64",
+      "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+      "injectorSha256": "6FE124B0879E6320E30C08B4A4F5551B841B809592A7EC794D09E743D254FCF0",
+      "injectorNormalizedSourceSha256": "E6867A8D5023AEB06DB2F62BBFC7DE0B1E30A924A2B4448F03E5E362C6167445",
+      "artifactDirectory": "build/owned-late-bootstrap-loader/run-x64-b5a7d99607664b71ba6ad4b6845dcbd4",
+      "cases": [
+        {
+          "name": "simultaneous-first-and-private-late-member",
+          "status": "passed",
+          "hostCount": 1,
+          "memberCount": 2,
+          "bootstrapCalls": 2,
+          "firstRegistrationGateCount": 1
+        },
+        {
+          "name": "adapter-only-registered-recovery",
+          "status": "passed",
+          "memberReadyBeforeAttach": false,
+          "adapterReadyBeforeAttach": true,
+          "hostCount": 1,
+          "bootstrapCalls": 1
+        },
+        {
+          "name": "adapter-only-closed-ready-recovery",
+          "status": "passed",
+          "memberReadyBeforeAttach": false,
+          "adapterReadyBeforeAttach": true,
+          "hostCount": 1,
+          "bootstrapCalls": 1
+        },
+        {
+          "name": "closed-unready-fails-closed",
+          "status": "passed",
+          "expectedError": 1460,
+          "hostCount": 1,
+          "memberMutation": false,
+          "bootstrapCalled": false
+        },
+        {
+          "name": "malformed-capability-default-fails-before-member",
+          "status": "passed",
+          "expectedError": 1306,
+          "hostCount": 1,
+          "memberMutation": false,
+          "bootstrapCalled": false
+        },
+        {
+          "name": "malformed-capability-addon-only-fails-before-member",
+          "status": "passed",
+          "expectedError": 1306,
+          "hostCount": 1,
+          "memberMutation": false,
+          "bootstrapCalled": false
+        },
+        {
+          "name": "cap-absent-host-not-activated",
+          "status": "passed",
+          "hostCount": 1,
+          "bootstrapCalled": false,
+          "protectedStubFilesUnchanged": true
+        },
+        {
+          "name": "explicit-bootstrap-failure-never-reinjects",
+          "status": "passed",
+          "expectedError": 50,
+          "hostCount": 1,
+          "memberCount": 2,
+          "bootstrapCalls": 2
+        }
+      ],
+      "scope": "Console-only copied-loader sequencing and native module/claim boundary; inert DLLs, no ReShade graphics or add-on callback vectors.",
+      "ownedStageMarkerValidationProven": false,
+      "graphicsOrInputProven": false,
+      "realGameAcceptanceProven": false
+    },
+    {
+      "schemaVersion": 1,
+      "fixture": "inert-owned-late-bootstrap-loader",
+      "status": "passed",
+      "failure": null,
+      "architecture": "Win32",
+      "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+      "injectorSha256": "3EA8188B93C7D6DB5B18390FAE504D130B07EF003B0CDBEA82C0EB1D53E4AC49",
+      "injectorNormalizedSourceSha256": "E6867A8D5023AEB06DB2F62BBFC7DE0B1E30A924A2B4448F03E5E362C6167445",
+      "artifactDirectory": "build/owned-late-bootstrap-loader/run-Win32-76c23eaf04564f3082430fc2dd78811f",
+      "cases": [
+        {
+          "name": "simultaneous-first-and-private-late-member",
+          "status": "passed",
+          "hostCount": 1,
+          "memberCount": 2,
+          "bootstrapCalls": 2,
+          "firstRegistrationGateCount": 1
+        },
+        {
+          "name": "adapter-only-registered-recovery",
+          "status": "passed",
+          "memberReadyBeforeAttach": false,
+          "adapterReadyBeforeAttach": true,
+          "hostCount": 1,
+          "bootstrapCalls": 1
+        },
+        {
+          "name": "adapter-only-closed-ready-recovery",
+          "status": "passed",
+          "memberReadyBeforeAttach": false,
+          "adapterReadyBeforeAttach": true,
+          "hostCount": 1,
+          "bootstrapCalls": 1
+        },
+        {
+          "name": "closed-unready-fails-closed",
+          "status": "passed",
+          "expectedError": 1460,
+          "hostCount": 1,
+          "memberMutation": false,
+          "bootstrapCalled": false
+        },
+        {
+          "name": "malformed-capability-default-fails-before-member",
+          "status": "passed",
+          "expectedError": 1306,
+          "hostCount": 1,
+          "memberMutation": false,
+          "bootstrapCalled": false
+        },
+        {
+          "name": "malformed-capability-addon-only-fails-before-member",
+          "status": "passed",
+          "expectedError": 1306,
+          "hostCount": 1,
+          "memberMutation": false,
+          "bootstrapCalled": false
+        },
+        {
+          "name": "cap-absent-host-not-activated",
+          "status": "passed",
+          "hostCount": 1,
+          "bootstrapCalled": false,
+          "protectedStubFilesUnchanged": true
+        },
+        {
+          "name": "explicit-bootstrap-failure-never-reinjects",
+          "status": "passed",
+          "expectedError": 50,
+          "hostCount": 1,
+          "memberCount": 2,
+          "bootstrapCalls": 2
+        }
+      ],
+      "scope": "Console-only copied-loader sequencing and native module/claim boundary; inert DLLs, no ReShade graphics or add-on callback vectors.",
+      "ownedStageMarkerValidationProven": false,
+      "graphicsOrInputProven": false,
+      "realGameAcceptanceProven": false
+    }
+  ],
+  "excluded": [
+    "Real ReShade graphics and callback-vector safety",
+    "Real owned-stage marker/path validation",
+    "GUI/input and real-game acceptance",
+    "Final packaged generation-15 compiler flags and source/ID rollover"
+  ]
+}

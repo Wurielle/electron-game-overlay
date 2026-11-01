@@ -2,6 +2,7 @@
 // Only the extracted CMake guard runs in script mode. Fixtures are reconstructed
 // in owned temporary directories; no project configure, compiler, executable,
 // canonical source cache or installation is touched.
+// This injector-only suite targets pre-late v4, not the final multi-file late tree.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -13,9 +14,11 @@ const root = path.resolve(__dirname, '../../..');
 const runtimeRoot = path.join(root, 'libs/electron-game-overlay-runtime');
 const cmake = fs.readFileSync(path.join(runtimeRoot, 'CMakeLists.txt'), 'utf8');
 const guard = cmake.match(/^function\(ego_rollover_known_addon_build_id source_path\)\r?\n[\s\S]*?^endfunction\(\)/m)?.[0];
+const writeLf = cmake.match(/^function\(ego_write_lf_source_cache_file filename content\)\r?\n[\s\S]*?^endfunction\(\)/m)?.[0];
 const value = name => cmake.match(new RegExp(`set\\(${name}\\s+"([0-9A-F]+)"\\s*\\)`))?.[1];
 const newId = value('ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID');
-const fullHash = value('RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256');
+const fullHash = value('RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256');
+const finalLateHash = value('RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256');
 const preHash = value('RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256');
 const preX86Hash = value('RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256');
 const currentPatch = path.join(runtimeRoot, 'patches/reshade-injector-cooperative-members.patch');
@@ -34,6 +37,11 @@ const gen13Build = {
   full: '3A58324E3AE6CE96F3F312D965A384CB825B27B64CE3E4E95CF4B4194032946C',
   pre: '4EEA17F39E3BFF425CCD08246DDA121FE256A61B37D0FD5D93565FC83E9DAA7D',
 };
+const gen14Build = {
+  id: '412D57BEA49440738CC4C3903038F2E7',
+  full: 'EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1',
+  pre: 'AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4',
+};
 const normalized = text => text.replace(/\r\n?/g, '\n');
 const sha = text => createHash('sha256').update(normalized(text)).digest('hex').toUpperCase();
 const previousBuilds = [
@@ -51,16 +59,19 @@ const previousBuilds = [
     pre: '1903E98A0462431D4A355A3CCE0E3B69AB8E5C67B7895080DA9F9EF8D75CA410' },
 ];
 assert.ok(guard, 'The tracked CMake source-cache guard is required');
+assert.ok(writeLf, 'The tracked LF source-cache writer is required');
 assert.ok(fs.existsSync(baseline), 'The tracked immutable pre-cooperative fixture is required');
 assert.ok(fs.existsSync(historicalPatch), 'The tracked immutable v3 migration patch is required');
+assert.match(fullHash || '', /^[0-9A-F]{64}$/, 'The explicit pre-late v4 injector pin is required');
+assert.notEqual(fullHash, finalLateHash, 'Injector-only migration must not stand in for the final late-tree body');
 const prerequisiteReason = spawnSync('cmake', ['--version'], { windowsHide: true }).status !== 0 ? 'CMake is unavailable' :
   spawnSync('git', ['--version'], { windowsHide: true }).status !== 0 ? 'Git is unavailable' : false;
 const options = { skip: prerequisiteReason };
 
-function temporary(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-addon-id-rollover-'));
+function temporary(t, parent = os.tmpdir()) {
+  const directory = fs.mkdtempSync(path.join(parent, 'ego-addon-id-rollover-'));
   t.after(() => {
-    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
+    const relative = path.relative(path.resolve(parent), path.resolve(directory));
     assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
     assert.ok(path.basename(directory).startsWith('ego-addon-id-rollover-'));
     fs.rmSync(directory, { recursive: true, force: true });
@@ -84,7 +95,7 @@ function terminal(t, patch, id) {
   const file = path.join(directory, 'tools/injector.cpp');
   fs.mkdirSync(path.dirname(file));
   fs.writeFileSync(file, originalBaseline());
-  const gitEnvironment = { ...process.env, GIT_CEILING_DIRECTORIES: directory };
+  const gitEnvironment = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(directory) };
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete gitEnvironment[key];
   const applied = spawnSync('git', ['apply', '--whitespace=nowarn', patch], {
     cwd: directory, env: gitEnvironment, encoding: 'utf8', timeout: 10_000, windowsHide: true,
@@ -96,7 +107,7 @@ function terminal(t, patch, id) {
 
 const cmakeArgument = text => `[==[${text.replace(/\\/g, '/')}]==]`;
 function runGuard(t, input, overrides = {}) {
-  const directory = temporary(t);
+  const directory = temporary(t, overrides.workspaceNested ? path.join(root, 'build') : undefined);
   const file = path.join(directory, 'source/tools/injector.cpp');
   const binary = path.join(directory, 'scratch');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -107,7 +118,8 @@ function runGuard(t, input, overrides = {}) {
   fs.writeFileSync(script, [
     'cmake_minimum_required(VERSION 3.24)',
     `set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID "${newId}")`,
-    `set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 "${overrides.fullHash || fullHash}")`,
+    `set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 "${finalLateHash}")`,
+    `set(RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 "${overrides.fullHash || fullHash}")`,
     `set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256 "${overrides.preHash || preHash}")`,
     `set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256 "${preX86Hash}")`,
     `set(RESHAPE_COOPERATIVE_MEMBERS_PATCH ${cmakeArgument(overrides.currentPatch || currentPatch)})`,
@@ -115,6 +127,7 @@ function runGuard(t, input, overrides = {}) {
     'set(GIT_EXECUTABLE "git")',
     `set(CMAKE_CURRENT_SOURCE_DIR ${cmakeArgument(overrides.runtimeRoot || runtimeRoot)})`,
     `set(CMAKE_CURRENT_BINARY_DIR ${cmakeArgument(binary)})`,
+    writeLf,
     guard,
     `ego_rollover_known_addon_build_id(${cmakeArgument(file)})`,
   ].join('\n'));
@@ -155,6 +168,15 @@ for (const previous of previousBuilds) {
   });
 }
 
+test('workspace-nested v3 migration applies both frozen tails instead of discovering the workspace Git tree', options, t => {
+  const source = terminal(t, historicalPatch, previousBuilds[3].id);
+  assert.equal(sha(source), previousBuilds[3].full);
+  const result = runGuard(t, source, { workspaceNested: true });
+  const relative = path.relative(path.join(root, 'build'), result.directory);
+  assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+  assertAccepted(result, fullHash);
+});
+
 test('known generation 11 v4 authoring source rolls only its exact identity to the current v4 pin', options, t => {
   const source = terminal(t, currentPatch, previousBuilds[3].id);
   assert.equal(sha(source), gen11V4Hash);
@@ -182,6 +204,18 @@ test('known generation 13 v4 source rolls its independently pinned body to the c
 test('known generation 13 pre-cooperative source retains the exact historical lower-stack bridge', options, t => {
   const source = preCooperative(gen13Build.id);
   assert.equal(sha(source), gen13Build.pre);
+  assertAccepted(runGuard(t, source), preHash);
+});
+
+test('known generation 14 v4 source rolls its independently pinned body to the current pre-late v4 identity', options, t => {
+  const source = terminal(t, currentPatch, gen14Build.id);
+  assert.equal(sha(source), gen14Build.full);
+  assertAccepted(runGuard(t, source), fullHash);
+});
+
+test('known generation 14 pre-cooperative source retains the exact historical lower-stack bridge', options, t => {
+  const source = preCooperative(gen14Build.id);
+  assert.equal(sha(source), gen14Build.pre);
   assertAccepted(runGuard(t, source), preHash);
 });
 

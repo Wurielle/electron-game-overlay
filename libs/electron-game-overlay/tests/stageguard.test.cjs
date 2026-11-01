@@ -8,6 +8,8 @@ const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '../../..');
 const stage = fs.readFileSync(path.join(root, 'libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1'), 'utf8');
 const producer = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/scripts/build.ps1'), 'utf8');
+const reshadeProducer = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/scripts/build-reshade-runtime.ps1'), 'utf8');
+const ownedLatePatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
 function patches(source) {
   return [...source.matchAll(/(\w+PatchSha256)\s*=\s*Join-Path \$\w+ "patches\\([^"]+)"/g)].map(([, key, file]) => [key, file]);
 }
@@ -19,18 +21,19 @@ function numericAccepts(variable, stamp) {
   return requirements(variable).every(([key, value]) => stamp[key] === value);
 }
 test('portable source contract: staging mirrors bound cooperative native and package producers', () => {
-  assert.match(producer, /\$BuildStamp.schemaVersion -ne 29/);
-  assert.match(stage, /\$BuildStamp.schemaVersion -ne 29 -or\s*\$BuildStamp.cooperativeAddonProtocol -ne 1 -or\s*\$BuildStamp.injectorProcessInstanceBinding -ne 1 -or/);
+  assert.match(producer, /\$BuildStamp.schemaVersion -ne 30/);
+  assert.match(stage, /\$BuildStamp.schemaVersion -ne 30 -or\s*\$BuildStamp.cooperativeAddonProtocol -ne 1 -or\s*\$BuildStamp.injectorProcessInstanceBinding -ne 1 -or/);
   assert.match(stage, /\$PackageBuildStamp.schemaVersion -ne 4 -or\s*\$PackageBuildStamp.cooperativeAddonProtocol -ne 1 -or\s*\$PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or/);
   const properties = stage.match(/\$ExpectedPackageBuildStampProperties = @\(([\s\S]*?)\) \| Sort-Object/)[1];
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 28);
+  assert.equal(patches(stage).length, 29);
+  assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
   for (const [, file] of patches(stage)) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches', file))).digest('hex').length, 64);
 });
 test('portable extracted numeric guards reject old stamps and absent/incorrect capabilities', () => {
-  for (const [variable, schemaVersion] of [['BuildStamp', 29], ['PackageBuildStamp', 4]]) {
+  for (const [variable, schemaVersion] of [['BuildStamp', 30], ['PackageBuildStamp', 4]]) {
     const valid = Object.fromEntries(requirements(variable));
     assert.equal(valid.schemaVersion, schemaVersion);
     assert.equal(valid.injectorProcessInstanceBinding, 1);
@@ -73,6 +76,97 @@ test('portable structural guards retain all patch checks, architecture matching,
   assert.match(stage, /\$PackageBuildStamp.platform -ne \$ArchitectureConfig.PackagePlatform/);
   for (const name of ['runtimeSha256', 'injectorSha256', 'addonSha256', 'managerSha256', 'managerSourceSha256', 'reshadeRuntimeSha256', 'reshadeConfigSha256', 'reshadeBuildStampSha256']) assert.ok(stage.includes(name));
   for (const name of ['Assert-NotReparsePoint $Source', 'Assert-NotReparsePoint $Destination', 'Compare-Object $ExpectedArtifactNames $ActualSourceNames', 'Compare-Object $ExpectedDestinationNames $ActualDestinationNames', '-Expected $SourceHashes[$ArtifactName]', '-LiteralPath $Destination).Hash']) assert.ok(stage.includes(name), name);
+});
+
+test('current source cache binds the complete nineteen-file stack and frozen terminal patch', () => {
+  const expectedFiles = [...reshadeProducer.match(/\$ExpectedPatchedFiles = @\(([\s\S]*?)\r?\n\)/)[1].matchAll(/"([^"]+)"/g)].map(match => match[1]).sort();
+  const contentPins = [...reshadeProducer.match(/\$ExpectedPatchedContentSha256 = \[ordered\]@\{([\s\S]*?)\r?\n\}/)[1].matchAll(/"([^"]+)" = "([0-9A-F]{64})"/g)].map(([, name, digest]) => [name, digest]);
+  assert.equal(expectedFiles.length, 19);
+  assert.deepEqual(contentPins.map(([name]) => name).sort(), expectedFiles);
+  const patch = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'));
+  assert.equal(crypto.createHash('sha256').update(patch).digest('hex').toUpperCase(), ownedLatePatchSha256);
+  const changed = [...patch.toString('utf8').matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)].map(match => match[2]);
+  assert.equal(changed.length, 15);
+  for (const name of changed) assert.ok(expectedFiles.includes(name), name);
+  assert.match(reshadeProducer, /return \$Stamp.schemaVersion -eq 30 -and/);
+  assert.match(reshadeProducer, /schemaVersion = 30/);
+  assert.match(reshadeProducer, /\$Stamp.ownedLateD3d11PatchSha256 -eq \$OwnedLateD3d11PatchHash -and/);
+  assert.match(reshadeProducer, /ownedLateD3d11PatchSha256 = \$OwnedLateD3d11PatchHash/);
+  const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g), ['$OwnedLateD3d11Patch']);
+  for (const source of [reshadeProducer, producer, stage]) assert.ok(source.includes(ownedLatePatchSha256), 'Frozen production patch is pinned before packaging/cache acceptance');
+});
+
+for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted current schema/provenance guards reject a missing or substituted late patch under ' + shell, {
+  skip: process.platform !== 'win32' ? 'PowerShell execution requires Windows' : false,
+}, t => {
+  const { spawnSync } = require('node:child_process');
+  const os = require('node:os');
+  const available = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+  if (available.error?.code === 'ENOENT') { t.skip(shell + ' is unavailable'); return; }
+  assert.equal(available.status, 0, available.stderr);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-owned-late-stamp-guard-'));
+  const payload = {
+    sources: [path.join(root, 'libs/electron-game-overlay-runtime/scripts/build.ps1'), path.join(root, 'libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1')],
+    patch: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'),
+    cases: [
+      { name: 'exact required production patch', schema: 30, present: true, value: ownedLatePatchSha256, pass: true },
+      { name: 'hex case does not alter digest identity', schema: 30, present: true, value: ownedLatePatchSha256.toLowerCase(), pass: true },
+      { name: 'missing required patch', schema: 30, present: false, pass: false },
+      { name: 'null required patch', schema: 30, present: true, value: null, pass: false },
+      { name: 'boolean required patch', schema: 30, present: true, value: false, pass: false },
+      { name: 'numeric required patch', schema: 30, present: true, value: 1, pass: false },
+      { name: 'malformed required patch', schema: 30, present: true, value: 'not-a-sha256', pass: false },
+      { name: 'substituted syntactically valid digest', schema: 30, present: true, value: 'A'.repeat(64), pass: false },
+      { name: 'legacy schema cannot supply current native artifacts', schema: 29, present: true, value: ownedLatePatchSha256, pass: false },
+    ],
+  };
+  const payloadPath = path.join(directory, 'input.json');
+  fs.writeFileSync(payloadPath, JSON.stringify(payload));
+  const script = `
+$ErrorActionPreference = 'Stop'
+# A PowerShell 7 parent can supply its module path to Windows PowerShell 5.1;
+# load this shell's own hashing cmdlet rather than inheriting a Core module.
+Import-Module -Force -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')
+$InputData = Get-Content -LiteralPath '${payloadPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
+$Validated = 0
+foreach ($SourcePath in $InputData.sources) {
+    $Tokens = $null; $ParseErrors = $null
+    $Ast = [Management.Automation.Language.Parser]::ParseFile($SourcePath, [ref]$Tokens, [ref]$ParseErrors)
+    if ($ParseErrors) { throw $ParseErrors }
+    $Hasher = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Assert-Sha256Equal' }, $true)
+    $Guard = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.IfStatementAst] -and $Node.Extent.Text.StartsWith('if ($BuildStamp.schemaVersion -ne ') }, $true)
+    $Provenance = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.ForEachStatementAst] -and $Node.Extent.Text.StartsWith('foreach ($PatchEntry in $ExpectedPatchProvenance.GetEnumerator())') }, $true)
+    if (-not $Hasher -or -not $Guard -or -not $Provenance) { throw 'Current source manifest guards are missing.' }
+    . ([scriptblock]::Create($Hasher.Extent.Text))
+    $ExpectedReShadeCommit = '4a50d1eddace85734871d91792ff214f13f66c01'
+    $ArchitectureConfig = [pscustomobject]@{ RuntimePlatform = '64-bit' }
+    $BuildStampPath = 'controlled-no-runtime-fixture'
+    $ExpectedPatchProvenance = [ordered]@{ ownedLateD3d11PatchSha256 = $InputData.patch }
+    foreach ($Case in $InputData.cases) {
+        $Fields = [ordered]@{ schemaVersion = $Case.schema; cooperativeAddonProtocol = 1; injectorProcessInstanceBinding = 1; injectorFutureTargets = 2; commit = $ExpectedReShadeCommit; configuration = 'Release'; platform = '64-bit'; addonLevel = 2 }
+        if ($Case.present) { $Fields.ownedLateD3d11PatchSha256 = $Case.value }
+        $BuildStamp = [pscustomobject]$Fields
+        $Accepted = $true
+        $FailureMessage = ''
+        try { . ([scriptblock]::Create($Guard.Extent.Text)); . ([scriptblock]::Create($Provenance.Extent.Text)) }
+        catch { $Accepted = $false; $FailureMessage = $_.Exception.Message }
+        if ($Accepted -ne $Case.pass) { throw ('Unexpected current manifest result for ' + $SourcePath + ': ' + $Case.name + '; ' + $FailureMessage) }
+        $Validated++
+    }
+}
+Write-Output ('Validated ' + $Validated + ' current manifest cases without building or loading a runtime.')
+`;
+  try {
+    const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /Validated 18 current manifest cases without building or loading a runtime\./u);
+  } finally {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
+    assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 test('official coexistence fixture requires the current bound package on both source and client sides', () => {
   const source = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/scripts/run-client-sdk-gun-frog-official-reshade-coexistence-gate.ps1'), 'utf8');
