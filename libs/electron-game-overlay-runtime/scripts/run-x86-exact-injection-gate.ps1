@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
@@ -271,8 +272,8 @@ $Passed = $false
 
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -500,10 +501,7 @@ finally {
         $null = Stop-ControlledHost -Process $HostProcess
     }
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 
     if (-not $Passed) {

@@ -9,7 +9,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ExpectedAddonBuildId = "12EE788081A34E00B10862242DF38893"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
+$ExpectedAddonBuildId = "A8E9DA12477741B9979D9B1B51994EF3"
 
 # Reuse the production client gate's window, input-oracle, coordinate, and
 # process-cleanup helpers without running that gate.
@@ -658,6 +659,78 @@ function Wait-ForStaticDiscoveryRecord {
     }
 
     throw "Timed out waiting for static exact-PID discovery: $Path"
+}
+
+function Assert-CooperativeParticipantResult {
+    param(
+        [Parameter(Mandatory = $true)]$Record,
+        [Parameter(Mandatory = $true)][int]$ExpectedPid,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedRuntimePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAddonPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedBasePath
+    )
+    $Properties = @($Record.PSObject.Properties.Name | Sort-Object)
+    if (($Properties -join ',') -cne 'addonAbi,addonModulePath,memberProtocolVersion,pid,reshadeBasePath,runtimeMode,runtimeModulePath,schemaVersion,targetExecutablePath' -or
+        $Record.schemaVersion -isnot [int] -or $Record.pid -isnot [int] -or
+        $Record.addonAbi -isnot [int] -or $Record.memberProtocolVersion -isnot [int] -or
+        $Record.schemaVersion -ne 1 -or $Record.pid -ne $ExpectedPid -or
+        $Record.runtimeMode -cne 'participant-addon' -or
+        $Record.addonAbi -ne 1 -or $Record.memberProtocolVersion -ne 1) {
+        throw 'The private participant result did not match the exact cooperative schema and target identity.'
+    }
+    foreach ($Pair in @(
+            @('targetExecutablePath', $ExpectedExecutablePath),
+            @('runtimeModulePath', $ExpectedRuntimePath),
+            @('addonModulePath', $ExpectedAddonPath),
+            @('reshadeBasePath', $ExpectedBasePath))) {
+        $Actual = $Record.($Pair[0])
+        if ($Actual -isnot [string] -or -not [IO.Path]::IsPathRooted($Actual) -or
+            -not [IO.Path]::GetFullPath($Actual).Equals(
+                [IO.Path]::GetFullPath($Pair[1]), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "The private participant result reported an unexpected $($Pair[0])."
+        }
+    }
+}
+
+function Assert-OneReShadeRuntime {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Modules,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
+    )
+    $Expected = [IO.Path]::GetFullPath($ExpectedPath)
+    $RuntimeModules = @($Modules | Where-Object {
+        $_.FileName -and (
+            [IO.Path]::GetFullPath($_.FileName).Equals($Expected, [StringComparison]::OrdinalIgnoreCase) -or
+            $_.FileVersionInfo.ProductName -eq 'ReShade' -or
+            [IO.Path]::GetFileName($_.FileName) -ieq 'ReShade64.dll')
+    })
+    if ($RuntimeModules.Count -ne 1 -or
+        -not [IO.Path]::GetFullPath($RuntimeModules[0].FileName).Equals(
+            $Expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Expected exactly one ReShade runtime at '$Expected'; observed $($RuntimeModules.FileName -join ', ')."
+    }
+}
+
+function Assert-PreDeviceBoundary {
+    param(
+        [AllowEmptyString()][string]$ClientTail,
+        [AllowEmptyString()][string]$RuntimeLog,
+        [Parameter(Mandatory = $true)][string]$ConnectedLine,
+        [Parameter(Mandatory = $true)][string]$ConnectedStateLine
+    )
+    if ($ClientTail.Contains($ConnectedLine) -or $ClientTail.Contains($ConnectedStateLine)) {
+        throw 'The target transport connected before the controlled startup barrier was released.'
+    }
+    foreach ($Marker in @(
+            'Searching for add-ons', 'Loading add-on from',
+            'Electron game overlay runtime initialized its transport and input router.',
+            'Redirecting D3D11CreateDeviceAndSwapChain', 'Redirecting D3D12CreateDevice',
+            'rendered its first transported multi-window scene')) {
+        if ($RuntimeLog.Contains($Marker)) {
+            throw "ReShade graphics/add-on marker '$Marker' appeared before startup release."
+        }
+    }
 }
 
 function Wait-ForOfficialTelemetry {
@@ -1546,7 +1619,7 @@ if ($OfficialAddonMode) {
     Write-Host "  - Exact official ReShade 6.7.3 full x64 and the production API-18 add-on are installed before target launch."
     Write-Host "  - Existing configuration, preset, nested effects/textures, and a disabled foreign add-on were fingerprinted before manager preparation."
     Write-Host "  - The host reaches graphics startup before the production exact-PID attach."
-    Write-Host "  - The injector must report runtimeMode=official-addon and must not load the project ReShade64.dll."
+    Write-Host "  - The injector must report runtimeMode=participant-addon for its own staged engine and must not load the project ReShade64.dll."
     Write-Host "  - InputProcessing=0 proves suppression is owned by the add-on, not ReShade's configured blocker."
     Write-Host "  - A rapid pointer click/key pair is queued while the present thread is suspended."
 }
@@ -1573,8 +1646,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 $Summary = $null
@@ -1658,6 +1731,8 @@ try {
         -PassThru
     $ProcessCreatedUtc = [DateTime]::UtcNow
     $HostStartTimeUtc = $HostProcess.StartTime.ToUniversalTime()
+    $HostCreationTime100ns = $HostStartTimeUtc.ToFileTimeUtc().ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
     Assert-ExactTargetProcess `
         -ProcessId $HostProcess.Id `
         -ExpectedPath $TargetExecutablePath
@@ -1725,16 +1800,8 @@ try {
             -Marker "using ReShade API version 18" `
             -Deadline $OfficialStartupDeadline `
             -HostProcess $HostProcess
-        Wait-ForReShadeMarker `
-            -Path $OfficialReShadeLog `
-            -Marker "Electron game overlay runtime initialized its transport and input router." `
-            -Deadline $OfficialStartupDeadline `
-            -HostProcess $HostProcess
-        Wait-ForReShadeMarker `
-            -Path $OfficialReShadeLog `
-            -Marker "Electron game overlay installed its official-ReShade WH_GETMESSAGE and window-subclass input hooks" `
-            -Deadline $OfficialStartupDeadline `
-            -HostProcess $HostProcess
+        # The manager-installed adapter owns no producer route. Only the
+        # application's later staged participant may initialize its transport.
         $OfficialLoadedModules = @(
             ([Diagnostics.Process]::GetProcessById($HostProcess.Id)).Modules
         )
@@ -1750,6 +1817,13 @@ try {
         )
         if ($OfficialAddonLoaded.Count -ne 1) {
             throw "Official ReShade did not load the production add-on from its default add-on directory: $ExpectedOfficialAddonPath"
+        }
+        $BeforeMemberRequest = Get-ClientLogText -Path $ClientStdout
+        $BeforeMemberTail = $BeforeMemberRequest.Substring(
+            [Math]::Min($BeforeMemberRequest.Length, [Math]::Max(0, $AfterIndex + 1)))
+        if ($BeforeMemberTail.Contains("RESHADE_CLIENT_TARGET_CONNECTED pid=$($HostProcess.Id)") -or
+            $BeforeMemberTail -match "code=target-authenticated pid=$($HostProcess.Id)(?:\s|$)") {
+            throw 'The routeless official adapter authenticated before this application requested its private participant.'
         }
         $OfficialAddonLoadedBeforeAttachUtc = [DateTime]::UtcNow
     }
@@ -1819,12 +1893,24 @@ try {
         -AfterIndex $AfterIndex `
         -Deadline $AttachDeadline
     $ReShadeRunDirectory = Get-StagedRunDirectoryFromMatch -Match $Staged
+    $StagedAddonPath = Join-Path $ReShadeRunDirectory "electron_game_overlay.addon64"
+    $StagedPackagePath = Join-Path $ReShadeRunDirectory "electron_game_overlay_runtime.build.json"
+    $StagedPackage = Get-Content -LiteralPath $StagedPackagePath -Raw | ConvertFrom-Json
+    $StagedAddonHash = (Get-FileHash -LiteralPath $StagedAddonPath -Algorithm SHA256).Hash
+    $ProductionAddonHash = (Get-FileHash -LiteralPath $ProductionAddonPath -Algorithm SHA256).Hash
+    if ($StagedPackage.schemaVersion -ne 4 -or $StagedPackage.cooperativeAddonProtocol -ne 1 -or
+        $StagedPackage.injectorProcessInstanceBinding -ne 1 -or
+        $StagedPackage.addonBuildId -cne $ExpectedAddonBuildId -or
+        $StagedPackage.addonSha256 -cne $StagedAddonHash -or $StagedAddonHash -cne $ProductionAddonHash) {
+        throw 'The staged private engine does not match the current cooperative native artifact and manifest.'
+    }
     $ReShadeRunDirectory |
         Set-Content `
             -LiteralPath (Join-Path $RunDirectory "reshade-run-directory.txt") `
             -Encoding UTF8
     $ExpectedInjectorArguments = ConvertTo-Json `
-        -InputObject ([object[]]@($HostName, "--pid", [string]$HostPid)) `
+        -InputObject ([object[]]@($HostName, "--pid", [string]$HostPid,
+            "--expected-creation-time-100ns", $HostCreationTime100ns)) `
         -Compress
     $ExpectedInjectorStarted =
         "RESHADE_CLIENT_INJECTOR_STARTED target=$($HostName | ConvertTo-Json -Compress) arguments=$ExpectedInjectorArguments"
@@ -1834,17 +1920,26 @@ try {
         -Pattern "(?m)^$([regex]::Escape($ExpectedInjectorStarted))\r?`$" `
         -AfterIndex $AfterIndex `
         -Deadline $AttachDeadline
-    $StaticDiscoveryRecord = $null
+    $ParticipantDiscoveryPath = Join-Path $ReShadeRunDirectory "electron-overlay-transport-v1.json"
+    $RendezvousAuthorized = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern "(?m)^RESHADE_CLIENT_TARGET_RENDEZVOUS_AUTHORIZED pid=$HostPid path=(?<path>.+)\r?`$" `
+        -AfterIndex $AfterIndex `
+        -Deadline $AttachDeadline
+    $LoggedDiscoveryPath = $RendezvousAuthorized.Groups['path'].Value | ConvertFrom-Json
+    if (-not [IO.Path]::GetFullPath($LoggedDiscoveryPath).Equals(
+            [IO.Path]::GetFullPath($ParticipantDiscoveryPath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The production client authorized another participant route instead of its staged add-on directory.'
+    }
+    $StaticDiscoveryRecord = Wait-ForStaticDiscoveryRecord `
+        -Path $ParticipantDiscoveryPath `
+        -ExpectedProducerPid $ClientProcess.Id `
+        -ExpectedTargetPid $HostPid `
+        -Process $ClientProcess `
+        -Deadline $AttachDeadline
     if ($OfficialAddonMode) {
-        $OfficialStaticDiscoveryPath = Join-Path `
-            (Join-Path ([IO.Path]::GetTempPath()) "electron-game-overlay") `
-            "electron-overlay-transport-v1.pid-$HostPid.json"
-        $StaticDiscoveryRecord = Wait-ForStaticDiscoveryRecord `
-            -Path $OfficialStaticDiscoveryPath `
-            -ExpectedProducerPid $ClientProcess.Id `
-            -ExpectedTargetPid $HostPid `
-            -Process $ClientProcess `
-            -Deadline $AttachDeadline
+        $OfficialStaticDiscoveryPath = $ParticipantDiscoveryPath
         [IO.File]::ReadAllText($OfficialStaticDiscoveryPath) |
             Set-Content `
                 -LiteralPath (
@@ -1873,11 +1968,8 @@ try {
     if ($SelectionMatches.Count -ne 1) {
         throw "The injector did not select exact controlled PID $HostPid exactly once. Inspect $InjectorStdout."
     }
-    $ExpectedRuntimeMode = if ($OfficialAddonMode) {
-        "official-addon"
-    }
-    elseif ($ExistingCompatibleRuntime) {
-        "existing-runtime"
+    $ExpectedRuntimeMode = if ($OfficialAddonMode -or $ExistingCompatibleRuntime) {
+        "participant-addon"
     }
     else {
         "injected-runtime"
@@ -1889,7 +1981,7 @@ try {
         throw "The SDK injector did not report runtime mode '$ExpectedRuntimeMode'. Inspect $InjectorStdout."
     }
     $OfficialInjectorResult = $null
-    if ($OfficialAddonMode) {
+    if ($OfficialAddonMode -or $ExistingCompatibleRuntime) {
         $InjectorResultPrefix =
             "ELECTRON_GAME_OVERLAY_INJECTOR_RESULT "
         $InjectorResultLines = @(
@@ -1901,70 +1993,23 @@ try {
                 }
         )
         if ($InjectorResultLines.Count -ne 1) {
-            throw "Expected exactly one structured official-add-on injector result. Inspect $InjectorStdout."
+            throw "Expected exactly one structured private-participant injector result. Inspect $InjectorStdout."
         }
         $OfficialInjectorResult = $InjectorResultLines[0].Substring(
             $InjectorResultPrefix.Length
         ) | ConvertFrom-Json
-        $OfficialResultProperties = @(
-            $OfficialInjectorResult.PSObject.Properties.Name |
-                Sort-Object
-        )
-        if (($OfficialResultProperties -join ",") -cne
-            "addonAbi,addonBuildId,addonDirectoryPath,addonModulePath,electronGameOverlayAddonDisabled,pid,reshadeBasePath,runtimeMode,runtimeModulePath,schemaVersion,targetExecutablePath") {
-            throw "The official-add-on injector result schema was not exact: $($OfficialResultProperties -join ',')"
-        }
         $ExpectedEffectiveDirectory = [IO.Path]::GetFullPath(
             $TargetDirectory
         )
-        if ($OfficialInjectorResult.schemaVersion -ne 1 -or
-            $OfficialInjectorResult.pid -ne $HostPid -or
-            $OfficialInjectorResult.runtimeMode -cne "official-addon" -or
-            $OfficialInjectorResult.addonAbi -ne 1 -or
-            $OfficialInjectorResult.addonBuildId -cne
-                $ExpectedAddonBuildId -or
-            ([string]$OfficialInjectorResult.addonBuildId) -cnotmatch
-                '^[0-9A-F]{32}$' -or
-            $OfficialInjectorResult.electronGameOverlayAddonDisabled -ne
-                $false -or
-            -not ([string]$OfficialInjectorResult.targetExecutablePath).Equals(
-                [IO.Path]::GetFullPath($TargetExecutablePath),
-                [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$OfficialInjectorResult.reshadeBasePath).Equals(
-                $ExpectedEffectiveDirectory,
-                [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$OfficialInjectorResult.addonDirectoryPath).Equals(
-                $ExpectedEffectiveDirectory,
-                [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$OfficialInjectorResult.runtimeModulePath).Equals(
-                [IO.Path]::GetFullPath($OfficialTargetRuntimePath),
-                [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$OfficialInjectorResult.addonModulePath).Equals(
-                [IO.Path]::GetFullPath($OfficialTargetAddonPath),
-                [StringComparison]::OrdinalIgnoreCase)) {
-            throw "The official-add-on injector result identified unexpected modules: $($OfficialInjectorResult | ConvertTo-Json -Compress)"
-        }
-        $EffectiveAddonPrefix = $ExpectedEffectiveDirectory
-        if (-not $EffectiveAddonPrefix.EndsWith(
-                [IO.Path]::DirectorySeparatorChar
-            )) {
-            $EffectiveAddonPrefix += [IO.Path]::DirectorySeparatorChar
-        }
-        $LoadedAddonPath = [IO.Path]::GetFullPath(
-            $OfficialTargetAddonPath
-        )
-        if (-not $LoadedAddonPath.StartsWith(
-                $EffectiveAddonPrefix,
-                [StringComparison]::OrdinalIgnoreCase) -and
-            -not $LoadedAddonPath.Equals(
-                $ExpectedEffectiveDirectory,
-                [StringComparison]::OrdinalIgnoreCase)) {
-            throw "The loaded official add-on was outside the effective add-on directory."
-        }
+        $ParticipantRuntimePath = if ($OfficialAddonMode) { $OfficialTargetRuntimePath } else { $ExpectedExistingRuntimePath }
+        Assert-CooperativeParticipantResult -Record $OfficialInjectorResult `
+            -ExpectedPid $HostPid -ExpectedExecutablePath $TargetExecutablePath `
+            -ExpectedRuntimePath $ParticipantRuntimePath -ExpectedAddonPath $StagedAddonPath `
+            -ExpectedBasePath $ExpectedEffectiveDirectory
         if ($InjectorLog.Contains(
                 "ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ") -or
             $InjectorLog.Contains("ReShade injection not started.")) {
-            throw "The official-add-on injector success contract was ambiguous. Inspect $InjectorStdout."
+            throw "The private-participant injector success contract was ambiguous. Inspect $InjectorStdout."
         }
     }
 
@@ -2001,6 +2046,7 @@ try {
     $LoadedModules = @(
         ([Diagnostics.Process]::GetProcessById($HostPid)).Modules
     )
+    Assert-OneReShadeRuntime -Modules $LoadedModules -ExpectedPath $ExpectedRuntimePath
     $LoadedRuntime = $LoadedModules |
         Where-Object {
             $_.FileName -and
@@ -2012,21 +2058,27 @@ try {
     if ($LoadedRuntime.Count -ne 1) {
         throw "The exact ReShade runtime was not loaded in controlled PID $HostPid before startup release: $ExpectedRuntimePath"
     }
+    $ExpectedAddonPath = [IO.Path]::GetFullPath($StagedAddonPath)
+    $LoadedParticipant = @($LoadedModules | Where-Object {
+        $_.FileName -and [IO.Path]::GetFullPath($_.FileName).Equals(
+            $ExpectedAddonPath, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($LoadedParticipant.Count -ne 1) {
+        throw "This application's exact staged engine was not mapped in target PID ${HostPid}: $ExpectedAddonPath"
+    }
     if ($OfficialAddonMode) {
-        $ExpectedAddonPath =
-            [IO.Path]::GetFullPath($OfficialTargetAddonPath)
-        $LoadedAddon = @(
+        $LoadedOfficialAdapter = @(
             $LoadedModules |
                 Where-Object {
                     $_.FileName -and
                     [string]::Equals(
                         [IO.Path]::GetFullPath($_.FileName),
-                        $ExpectedAddonPath,
+                        [IO.Path]::GetFullPath($OfficialTargetAddonPath),
                         [StringComparison]::OrdinalIgnoreCase)
                 }
         )
-        if ($LoadedAddon.Count -ne 1) {
-            throw "The production Electron add-on was not loaded by official ReShade: $ExpectedAddonPath"
+        if ($LoadedOfficialAdapter.Count -ne 1) {
+            throw "The preinstalled official adapter did not remain loaded: $OfficialTargetAddonPath"
         }
         $UnexpectedProjectRuntime = @(
             $LoadedModules |
@@ -2089,10 +2141,9 @@ try {
     $ConnectedStateLine =
         "RESHADE_CLIENT_ATTACHMENT_STATE phase=connected processName=`"$HostName`" pid=$HostPid"
     if ($OfficialAddonMode) {
-        # A stock ReShade add-on is loaded during graphics initialization, so
-        # this path intentionally releases the pre-device barrier before the
-        # exact-PID request. Static per-PID authorization then lets the already
-        # running add-on authenticate without target environment variables.
+        # Graphics starts with a routeless official adapter before the request.
+        # The application then loads its own staged engine and authenticates
+        # only through that engine's private, exact-PID credential.
         $PreResumeClientLogBoundaryIndex = $AfterIndex
         $PreResumeBoundaryUtc = $OfficialAddonLoadedBeforeAttachUtc
     }
@@ -2104,22 +2155,9 @@ try {
                 [Math]::Max(0, $AfterIndex + 1)
             )
         )
-        if ($PreResumeClientTail.Contains($ConnectedLine) -or
-            $PreResumeClientTail.Contains($ConnectedStateLine)) {
-            throw "The target transport connected before the controlled startup barrier was released."
-        }
         $PreResumeReShadeLog = Get-Content -Raw -LiteralPath $ReShadeLog
-        foreach ($ForbiddenMarker in @(
-                "Searching for add-ons",
-                "Loading add-on from",
-                "Electron game overlay runtime initialized its transport and input router.",
-                "Redirecting D3D11CreateDeviceAndSwapChain",
-                "Redirecting D3D12CreateDevice"
-            )) {
-            if ($PreResumeReShadeLog.Contains($ForbiddenMarker)) {
-                throw "ReShade graphics/add-on marker '$ForbiddenMarker' appeared before startup release."
-            }
-        }
+        Assert-PreDeviceBoundary -ClientTail $PreResumeClientTail -RuntimeLog $PreResumeReShadeLog `
+            -ConnectedLine $ConnectedLine -ConnectedStateLine $ConnectedStateLine
         $PreResumeClientLogBoundaryIndex = $PreResumeClientLog.Length - 1
         $PreResumeBoundaryUtc = [DateTime]::UtcNow
 
@@ -2128,9 +2166,9 @@ try {
         $StartupReleasedUtc = [DateTime]::UtcNow
     }
 
-    # In injected/shared mode the transport starts after graphics release. In
-    # official mode the already-running add-on connects after static exact-PID
-    # discovery is published by the production session.
+    # Injected/shared modes remain unauthenticated before graphics release.
+    # Official mode joins a running host through this app's staged engine;
+    # the preinstalled adapter never becomes a producer transport.
     $Connected = Wait-ForClientRegex `
         -Path $ClientStdout `
         -Process $ClientProcess `
@@ -2366,13 +2404,13 @@ try {
             }
             StartupBarrier = "pre-device marker"
             OrderingProof = if ($OfficialAddonMode) {
-                "official runtime and API-18 add-on were loaded from the target directory after startup release and before the production exact-PID request; the native injector then returned an exact official-addon result without loading ReShade64.dll"
+                "the official runtime and routeless API-18 adapter were loaded before the production exact-PID request; native attachment then mapped this application's exact staged participant and authenticated its private route without loading another ReShade"
             }
             else {
-                "exact injector result and loaded runtime modules were observed before removal of the pre-device marker; transport, graphics-API hook, add-on initialization, and first-scene markers appeared only after that startup release"
+                "exact injector result, one ReShade runtime and this application's staged engine were observed before removal of the pre-device marker; authenticated transport, graphics initialization and first-scene rendering appeared only after startup release"
             }
             ExcludesKnownCase = if ($OfficialAddonMode) {
-                "hot-loading an add-on into a running official ReShade host"
+                "arbitrary third-party add-on hot loading outside the cooperative member protocol"
             }
             else {
                 "+3s post-swapchain injection"
@@ -2420,6 +2458,19 @@ try {
                 $TargetAuthenticatedDiagnostic.Index
             InjectorSelection = "Found a matching process with PID $HostPid!"
             InjectorStdout = $InjectorStdout
+            ProcessCreationTime100ns = $HostCreationTime100ns
+        }
+        PrivateParticipantProof = [pscustomobject]@{
+            RuntimeMode = $ExpectedRuntimeMode
+            StageDirectory = $ReShadeRunDirectory
+            LoadedEnginePath = $ExpectedAddonPath
+            LoadedEngineSha256 = $StagedAddonHash
+            ExactAddonBuildId = $StagedPackage.addonBuildId
+            CooperativeAddonProtocol = [int]$StagedPackage.cooperativeAddonProtocol
+            DiscoveryPath = $ParticipantDiscoveryPath
+            DiscoveryRecord = $StaticDiscoveryRecord
+            PreinstalledAdapterHasNoProducerRoute = [bool]$OfficialAddonMode
+            ReShadeRuntimeCount = 1
         }
         GraphicsApiProof = [pscustomobject]@{
             Expected = $BackendLabel
@@ -2453,6 +2504,7 @@ try {
                 SourceRuntimePath = $OfficialRuntimePath
                 LoadedRuntimePath = $ExpectedRuntimePath
                 LoadedAddonPath = $ExpectedAddonPath
+                LoadedAdapterPath = $OfficialTargetAddonPath
                 RuntimeMode = [string]$OfficialInjectorResult.runtimeMode
                 AddonAbi = [int]$OfficialInjectorResult.addonAbi
                 AddonApi = 18
@@ -2460,6 +2512,10 @@ try {
                 StaticDiscoveryPath = $OfficialStaticDiscoveryPath
                 StaticDiscoveryRecord = $StaticDiscoveryRecord
                 StaticDiscoveryReleased = $true
+                ParticipantRoute = $ParticipantDiscoveryPath
+                ParticipantImageCreationTime100ns = $HostCreationTime100ns
+                StagedAddonSha256 = $StagedAddonHash
+                CooperativeMemberProtocol = [int]$OfficialInjectorResult.memberProtocolVersion
                 PreExistingTargetFilesPreserved = $true
                 InputProcessing = 0
                 InputOwner =
@@ -2516,10 +2572,7 @@ finally {
     }
     finally {
         foreach ($VariableName in $ControlledEnvironmentVariables) {
-            [Environment]::SetEnvironmentVariable(
-                $VariableName,
-                $PreviousEnvironment[$VariableName],
-                "Process")
+            Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
         }
     }
 }

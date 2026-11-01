@@ -9,7 +9,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ExpectedAddonBuildId = "12EE788081A34E00B10862242DF38893"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
+$ExpectedAddonBuildId = "A8E9DA12477741B9979D9B1B51994EF3"
 
 function Wait-ForCondition {
     param(
@@ -211,11 +212,7 @@ DisabledAddons=
     $AddonHash = (
         Get-FileHash -Algorithm SHA256 -LiteralPath $TargetAddon
     ).Hash
-    [Environment]::SetEnvironmentVariable(
-        "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
-        $RouteRoot,
-        "Process"
-    )
+    Set-OverlayProcessEnvironmentVariable -Name "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY" -Value $RouteRoot
 
     $Process = $null
     try {
@@ -415,14 +412,8 @@ $StartupBarrier = Join-Path $TargetDirectory (
 )
 $HostProcess = $null
 $GatePassed = $false
-$PreviousRunDirectory = [Environment]::GetEnvironmentVariable(
-    "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
-    "Process"
-)
-$PreviousBasePath = [Environment]::GetEnvironmentVariable(
-    "RESHADE_BASE_PATH_OVERRIDE",
-    "Process"
-)
+$PreviousRunDirectory = Get-OverlayProcessEnvironmentVariable -Name "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY"
+$PreviousBasePath = Get-OverlayProcessEnvironmentVariable -Name "RESHADE_BASE_PATH_OVERRIDE"
 
 try {
     New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
@@ -473,16 +464,8 @@ TechniqueSorting=
         Get-FileHash -Algorithm SHA256 -LiteralPath $TargetAddon
     ).Hash
 
-    [Environment]::SetEnvironmentVariable(
-        "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
-        $RouteDirectory,
-        "Process"
-    )
-    [Environment]::SetEnvironmentVariable(
-        "RESHADE_BASE_PATH_OVERRIDE",
-        $null,
-        "Process"
-    )
+    Set-OverlayProcessEnvironmentVariable -Name "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY" -Value $RouteDirectory
+    Set-OverlayProcessEnvironmentVariable -Name "RESHADE_BASE_PATH_OVERRIDE" -Value $null
 
     $HostProcess = Start-Process `
         -FilePath $TargetHost `
@@ -640,16 +623,8 @@ TechniqueSorting=
     )
 }
 finally {
-    [Environment]::SetEnvironmentVariable(
-        "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
-        $PreviousRunDirectory,
-        "Process"
-    )
-    [Environment]::SetEnvironmentVariable(
-        "RESHADE_BASE_PATH_OVERRIDE",
-        $PreviousBasePath,
-        "Process"
-    )
+    Set-OverlayProcessEnvironmentVariable -Name "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY" -Value $PreviousRunDirectory
+    Set-OverlayProcessEnvironmentVariable -Name "RESHADE_BASE_PATH_OVERRIDE" -Value $PreviousBasePath
 
     if ($null -ne $HostProcess) {
         try {

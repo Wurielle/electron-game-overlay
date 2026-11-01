@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Reuse the controlled host's window, input-oracle, SendInput, and process
 # helpers without running the larger interaction gate.
@@ -216,8 +217,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 Write-Host ""
@@ -454,10 +455,7 @@ finally {
         }
     }
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 

@@ -2,6 +2,7 @@
 param([switch]$SkipBuild)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Load the input gate's read-only log, window, and SendInput helpers without
 # executing that gate. Keeping these primitives shared makes the two gates use
@@ -765,8 +766,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -960,10 +961,7 @@ try {
 finally {
     Stop-ExactReinjectionProcesses
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 

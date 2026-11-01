@@ -25,6 +25,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 if ($RawRegistrationTiming -eq "before-injection" -and $InputMode -eq "legacy") {
     throw "Raw registration timing applies only to wm-input and raw-buffer modes."
@@ -1680,8 +1681,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -1732,9 +1733,6 @@ try {
 }
 finally {
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }

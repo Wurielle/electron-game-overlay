@@ -2,6 +2,7 @@
 param([switch]$SkipBuild)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Reuse the production client gate's controlled-host, log, window, coordinate,
 # and SendInput helpers without running its sequential two-attempt scenario.
@@ -923,8 +924,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -1546,11 +1547,7 @@ try {
 finally {
     Stop-OwnedProcesses
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process"
-        )
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 

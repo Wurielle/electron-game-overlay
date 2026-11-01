@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 # Reuse the controlled-host, native-input, process-discovery, and scoped
 # Electron-cleanup helpers without running the successful injection gate.
 . (Join-Path $PSScriptRoot "run-client-sdk-input-gate.ps1") `
@@ -948,8 +949,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -1434,10 +1435,7 @@ finally {
     }
     finally {
         foreach ($VariableName in $ControlledEnvironmentVariables) {
-            [Environment]::SetEnvironmentVariable(
-                $VariableName,
-                $PreviousEnvironment[$VariableName],
-                "Process")
+            Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
         }
     }
 }

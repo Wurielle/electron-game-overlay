@@ -2,6 +2,7 @@
 param([switch]$SkipBuild)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Reuse the controlled D3D11 host, input oracle, SendInput, process cleanup,
 # coordinate conversion, and production build paths without running the normal
@@ -29,6 +30,11 @@ $RunDirectories = [Collections.Generic.List[string]]::new()
 $BrokerPipeName =
     "electron-game-overlay-acceptance-$PID-$([Guid]::NewGuid().ToString('N'))"
 $BrokerPipePath = "\\.\pipe\$BrokerPipeName"
+# This unique old-protocol pipe is a negative sentinel: neither private engine
+# may start a feature broker for this acceptance run.
+$CandidateSdkDist = Join-Path $RepoRoot "libs\electron-game-overlay\dist"
+$NativeEvidenceHelper = Join-Path $RepoRoot "apps\client\scripts\cooperative-game-evidence.cjs"
+$EvidenceNode = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
 
 function Get-FreeTcpPort {
     param([int[]]$Excluded = @())
@@ -95,7 +101,7 @@ function Wait-ForClientRegex {
                     "Same-PID multi-application acceptance is blocked while " +
                     "waiting for ${Label}: the public SDK could not join the " +
                     "already-owned target session ($($KnownBlocker.Value)). " +
-                    "A shared broker/target channel is still required. " +
+                    "Its independent cooperative engine did not attach. " +
                     "Inspect $Path and $ErrorPath."
                 )
             }
@@ -112,17 +118,18 @@ function Wait-ForClientRegex {
     if ($SamePidConnection) {
         throw (
             "Timed out waiting for $Label to join the same target PID. " +
-            "This is the same-PID broker acceptance boundary. Inspect $Path " +
+            "This is the same-PID private-engine acceptance boundary. Inspect $Path " +
             "and $ErrorPath."
         )
     }
     throw "Timed out waiting for $Label pattern '$Pattern'. Inspect $Path."
 }
 
-function Wait-ForInjectionOwnerReady {
+function Wait-ForParticipantAttachmentsReady {
     param([Parameter(Mandatory = $true)][DateTime]$Deadline)
 
     while ([DateTime]::UtcNow -lt $Deadline) {
+        $Ready = [Collections.Generic.List[string]]::new()
         foreach ($Candidate in @(
                 @{
                     Label = "App A"
@@ -140,26 +147,28 @@ function Wait-ForInjectionOwnerReady {
             $Text = Get-ClientLogText -Path $Candidate.Log
             if ($Text -match
                 '(?m)^RESHADE_CLIENT_INJECTOR_RETURNED(?: .*)?\r?$') {
-                return $Candidate.Label
+                $Ready.Add($Candidate.Label)
+                continue
             }
             $ErrorText = Get-ClientLogText -Path $Candidate.ErrorLog
             if ($Text.Contains("RESHADE_CLIENT_INJECTOR_FAILED") -or
                 $Text.Contains("ReShade attachment failed") -or
                 $ErrorText.Contains("ReShade attachment failed")) {
-                throw "$($Candidate.Label) failed before the injection owner was ready."
+                throw "$($Candidate.Label) failed before its private engine was initialized."
             }
             $Candidate.Process.Refresh()
             if ($Candidate.Process.HasExited) {
-                throw "$($Candidate.Label) exited before the injection owner was ready."
+                throw "$($Candidate.Label) exited before its private engine was initialized."
             }
         }
+        if ($Ready.Count -eq 2) { return $Ready.ToArray() }
         $HostProcess.Refresh()
         if ($HostProcess.HasExited) {
-            throw "The controlled target exited before the injection owner was ready."
+            throw "The controlled target exited before both private engines were initialized."
         }
         Start-Sleep -Milliseconds 50
     }
-    throw "Neither producer completed the one permitted target injection."
+    throw "Both producers did not initialize their own engines within the one shared ReShade host."
 }
 
 function Wait-ForDevToolsTarget {
@@ -721,57 +730,101 @@ function Get-ScopedInjectors {
     )
 }
 
+function Get-PrivateParticipantRoute {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientLog,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ProducerPid,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$TargetPid
+    )
+
+    $Routes = @()
+    foreach ($Directory in @(Get-RunDirectoriesFromClientLog -Path $ClientLog | Sort-Object -Unique)) {
+        $DiscoveryPath = Join-Path $Directory 'electron-overlay-transport-v1.json'
+        if (-not (Test-Path -LiteralPath $DiscoveryPath -PathType Leaf)) { continue }
+        $Record = Get-Content -LiteralPath $DiscoveryPath -Raw | ConvertFrom-Json
+        if ($Record.version -ne 1 -or $Record.pid -ne $ProducerPid -or
+            $Record.targetPid -ne $TargetPid -or $Record.port -lt 1 -or $Record.port -gt 65535 -or
+            ($Record.version -isnot [int] -and $Record.version -isnot [long]) -or
+            ($Record.pid -isnot [int] -and $Record.pid -isnot [long]) -or
+            ($Record.targetPid -isnot [int] -and $Record.targetPid -isnot [long]) -or
+            ($Record.port -isnot [int] -and $Record.port -isnot [long]) -or
+            ([string]$Record.token) -cnotmatch '^[0-9a-fA-F]{64}$') { continue }
+        $Sha = [Security.Cryptography.SHA256]::Create()
+        try { $Fingerprint = ([BitConverter]::ToString($Sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Record.token.ToLowerInvariant())))).Replace('-', '').ToLowerInvariant() }
+        finally { $Sha.Dispose() }
+        $Routes += [pscustomobject]@{
+            RunDirectory = [IO.Path]::GetFullPath($Directory)
+            DiscoveryPath = [IO.Path]::GetFullPath($DiscoveryPath)
+            ProducerPid = $Record.pid
+            TargetPid = $Record.targetPid
+            Port = $Record.port
+            TokenFingerprint = $Fingerprint
+        }
+    }
+    if ($Routes.Count -ne 1) { throw "Expected one private route for producer $ProducerPid and target $TargetPid; found $($Routes.Count)." }
+    return $Routes[0]
+}
+
+function Assert-PrivateParticipantRoutes {
+    param(
+        [Parameter(Mandatory = $true)][object]$AppA,
+        [Parameter(Mandatory = $true)][object]$AppB
+    )
+    if ($AppA.ProducerPid -eq $AppB.ProducerPid -or $AppA.TargetPid -ne $AppB.TargetPid -or
+        $AppA.Port -eq $AppB.Port -or $AppA.TokenFingerprint -ceq $AppB.TokenFingerprint -or
+        [string]::Equals($AppA.DiscoveryPath, $AppB.DiscoveryPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The two producers must own distinct private transport endpoints and credentials for the same target.'
+    }
+}
+
 function Wait-ForRuntimeModuleEvidence {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
-        [Parameter(Mandatory = $true)][DateTime]$Deadline
+        [Parameter(Mandatory = $true)][DateTime]$Deadline,
+        [Parameter(Mandatory = $true)][object]$AppARoute,
+        [Parameter(Mandatory = $true)][object]$AppBRoute
     )
 
     $LastError = $null
+    $Attempt = 0
     while ([DateTime]::UtcNow -lt $Deadline) {
         try {
             $Process.Refresh()
             if ($Process.HasExited) {
                 throw "The controlled host exited before module inspection."
             }
-            $Modules = @($Process.Modules | ForEach-Object {
-                    [pscustomobject]@{
-                        Name = $_.ModuleName
-                        Path = $_.FileName
-                    }
-                })
-            $RuntimeModules = @(
-                $Modules | Where-Object { $_.Name -ieq "ReShade64.dll" }
-            )
-            $AddonModules = @(
-                $Modules |
-                    Where-Object {
-                        $_.Name -ieq "electron_game_overlay.addon64"
-                    }
-            )
-            if ($RuntimeModules.Count -eq 1 -and
-                $AddonModules.Count -eq 1) {
-                return [pscustomobject]@{
-                    RuntimeModules = $RuntimeModules
-                    AddonModules = $AddonModules
-                }
+            $Modules = @($Process.Modules | ForEach-Object { @{ path = $_.FileName; baseAddress = $_.BaseAddress.ToInt64().ToString() } })
+            $SnapshotPath = Join-Path $RunDirectory "native-modules-$Attempt.json"
+            $EvidencePath = Join-Path $RunDirectory "native-identities-$Attempt.json"
+            $Modules | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $SnapshotPath -Encoding UTF8
+            $HelperOutput = & $EvidenceNode $NativeEvidenceHelper `
+                --sdk-a $CandidateSdkDist --sdk-b $CandidateSdkDist `
+                --modules-json $SnapshotPath --output $EvidencePath 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Private native module evidence failed: $($HelperOutput -join ' ')" }
+            $Native = Get-Content -LiteralPath $EvidencePath -Raw | ConvertFrom-Json
+            if ($Native.mapped.runtime.sha256 -cne $Native.sdkA.runtimeManifest.reshadeRuntimeSha256 -and
+                $Native.mapped.runtime.sha256 -cne $Native.sdkB.runtimeManifest.reshadeRuntimeSha256) {
+                throw 'The clean controlled host did not load a runtime matching either candidate package.'
             }
-            if ($RuntimeModules.Count -gt 1 -or $AddonModules.Count -gt 1) {
-                throw (
-                    "The target loaded duplicate overlay runtime/add-on modules: " +
-                    "runtime=$($RuntimeModules.Count), addon=$($AddonModules.Count)."
-                )
+            foreach ($Route in @($AppARoute, $AppBRoute)) {
+                $Owned = @($Native.mapped.addons | Where-Object {
+                    [string]::Equals((Split-Path -Parent $_.path), $Route.RunDirectory, [StringComparison]::OrdinalIgnoreCase)
+                })
+                if ($Owned.Count -ne 1) { throw "Producer $($Route.ProducerPid) does not own one exact source-matching engine module beside its private route." }
+            }
+            return [pscustomobject]@{
+                RuntimeModules = @([pscustomobject]@{ Path = $Native.mapped.runtime.path; Sha256 = $Native.mapped.runtime.sha256 })
+                AddonModules = @($Native.mapped.addons | ForEach-Object { [pscustomobject]@{ Path = $_.path; Sha256 = $_.sha256; BuildId = $_.buildId; Abi = $_.abi } })
+                NativeIdentities = $Native
             }
         }
         catch {
-            if ($_.Exception.Message -like "The target loaded duplicate*") {
-                throw
-            }
             $LastError = $_.Exception.Message
         }
+        $Attempt++
         Start-Sleep -Milliseconds 100
     }
-    throw "The controlled fixture did not expose one runtime and one add-on module. Last error: $LastError"
+    throw "The controlled fixture did not expose one ReShade and two source-matching private engines. Last error: $LastError"
 }
 
 function Close-ClientThroughDevTools {
@@ -812,22 +865,14 @@ function Close-ClientThroughDevTools {
     }
 }
 
-function Wait-ForBrokerPipeClosure {
-    param([Parameter(Mandatory = $true)][DateTime]$Deadline)
-
-    while ([DateTime]::UtcNow -lt $Deadline) {
-        # Test-Path opens a named pipe and would itself reset the broker's idle
-        # shutdown timer. Namespace enumeration observes it without connecting.
-        $PipeExists = @(
-            Get-ChildItem "\\.\pipe\" -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -eq $BrokerPipeName }
-        ).Count -ne 0
-        if (-not $PipeExists) {
-            return
-        }
-        Start-Sleep -Milliseconds 250
-    }
-    throw "The isolated acceptance broker did not close $BrokerPipePath after its clients exited."
+function Assert-NoFeatureBrokerPipe {
+    # Observe the negative sentinel without connecting or affecting any broker's
+    # lifecycle. An unrelated default broker is outside this fixture's scope.
+    $PipeExists = @(
+        Get-ChildItem "\\.\pipe\" -ErrorAction Stop |
+            Where-Object { $_.Name -eq $BrokerPipeName }
+    ).Count -ne 0
+    if ($PipeExists) { throw "The cooperative producers started a forbidden feature broker at $BrokerPipePath." }
 }
 
 function Stop-OwnedProcesses {
@@ -873,8 +918,7 @@ function Stop-OwnedProcesses {
         }
     }
     try {
-        Wait-ForBrokerPipeClosure `
-            -Deadline ([DateTime]::UtcNow.AddSeconds(45))
+        Assert-NoFeatureBrokerPipe
     }
     catch {
         if (-not $Failure) {
@@ -972,7 +1016,7 @@ Write-Host "Production client/SDK two-app, one-target acceptance gate"
 Write-Host "  - Two independent Electron producers attach to one exact D3D11 PID."
 Write-Host "  - Process-local BrowserWindow ID collisions are required and recorded."
 Write-Host "  - Both labeled scenes, input routing, interception ownership, and abrupt App A loss are proved."
-Write-Host "  - The controlled target must load one ReShade runtime and one Electron add-on."
+Write-Host "  - The controlled target must load one ReShade runtime and two private Electron engines."
 Write-Host "  - Evidence is preserved in: $RunDirectory"
 Write-Host ""
 
@@ -986,14 +1030,10 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
-[Environment]::SetEnvironmentVariable(
-    "ELECTRON_GAME_OVERLAY_BROKER_PIPE",
-    $BrokerPipePath,
-    "Process"
-)
+Set-OverlayProcessEnvironmentVariable -Name "ELECTRON_GAME_OVERLAY_BROKER_PIPE" -Value $BrokerPipePath
 
 try {
     $HostProcess = Start-Process `
@@ -1197,10 +1237,9 @@ try {
     }
 
     # The fixture barrier holds device creation so both producers can publish
-    # their initial scene and exact-PID lease before ReShade initializes. A
-    # staging marker immediately precedes the public target authorization; wait
-    # for both, then give the two local pipe writes one bounded scheduling turn
-    # before accepting the elected owner's completed injection.
+    # their initial scene and private exact-PID authorization before graphics
+    # initializes. Each injector must finish its own engine initialization in
+    # the one ReShade host before the cooperating host creates a swap chain.
     foreach ($ClientCase in @(
             @{
                 Label = "App A"
@@ -1224,8 +1263,14 @@ try {
                 -Deadline $StartupDeadline)
     }
     Start-Sleep -Milliseconds 500
-    $InjectionOwnerLabel = Wait-ForInjectionOwnerReady `
-        -Deadline $StartupDeadline
+    $ParticipantAttachmentLabels = @(Wait-ForParticipantAttachmentsReady `
+        -Deadline $StartupDeadline)
+    $AppARoute = Get-PrivateParticipantRoute `
+        -ClientLog $ClientAStdout -ProducerPid $ClientA.Id -TargetPid $HostProcess.Id
+    $AppBRoute = Get-PrivateParticipantRoute `
+        -ClientLog $ClientBStdout -ProducerPid $ClientB.Id -TargetPid $HostProcess.Id
+    Assert-PrivateParticipantRoutes -AppA $AppARoute -AppB $AppBRoute
+    Assert-NoFeatureBrokerPipe
     Remove-Item -LiteralPath $StartupBarrier -Force
     $TargetWindow = Wait-ForHostWindow `
         -HostProcess $HostProcess `
@@ -1266,7 +1311,8 @@ try {
 
     $ModuleEvidence = Wait-ForRuntimeModuleEvidence `
         -Process $HostProcess `
-        -Deadline ([DateTime]::UtcNow.AddSeconds(20))
+        -Deadline ([DateTime]::UtcNow.AddSeconds(20)) `
+        -AppARoute $AppARoute -AppBRoute $AppBRoute
     $ReShadeLogCandidates = @(
         foreach ($Directory in $RunDirectories) {
             Join-Path $Directory "ReShade.log"
@@ -1300,9 +1346,9 @@ try {
     }
     # Executable validation intentionally defers each producer's target scene
     # until the runtime authenticates. The native runtime's one-shot marker can
-    # sample either the elected app's two-window scene or the fully merged
-    # four-window scene. Treat it only as render readiness; the app-local input
-    # and crash-survivor proofs below verify both producers were materialized.
+    # sample either private engine's two-window scene. Treat it only as render
+    # readiness; private routes, source-matching module identities and app-local
+    # input/crash-survivor proofs establish the two independent producers.
     Wait-ForReShadeMarker `
         -Path $ReShadeLog `
         -Marker "rendered its first transported multi-window scene (" `
@@ -1314,16 +1360,18 @@ try {
             $ReShadeLogText,
             'Registered add-on "Electron Game Overlay Runtime"'
         )).Count
-    $RuntimeInitializationCount = ([regex]::Matches(
+    $PrivateTransportInitializationCount = ([regex]::Matches(
             $ReShadeLogText,
             'Electron game overlay runtime initialized its transport and input router\.'
         )).Count
+    # Only the dispatcher registers with ReShade's public callback vectors.
+    # Each independent engine initializes its own scene/input transport.
     if ($AddonRegistrationCount -ne 1 -or
-        $RuntimeInitializationCount -ne 1) {
+        $PrivateTransportInitializationCount -ne 2) {
         throw (
-            "The controlled target did not expose exactly one runtime/add-on " +
+            "The controlled target did not expose one public registration and two private engines " +
             "initialization (registration=$AddonRegistrationCount, " +
-            "initialization=$RuntimeInitializationCount)."
+            "initialization=$PrivateTransportInitializationCount)."
         )
     }
 
@@ -1421,6 +1469,14 @@ try {
             -Requested $true `
             -Effective $true `
             -Deadline ([DateTime]::UtcNow.AddSeconds(15)))
+    Assert-NoFeatureBrokerPipe
+    $AppBSurvivorRoute = Get-PrivateParticipantRoute `
+        -ClientLog $ClientBStdout -ProducerPid $ClientB.Id -TargetPid $HostProcess.Id
+    if ($AppBSurvivorRoute.Port -ne $AppBRoute.Port -or
+        $AppBSurvivorRoute.TokenFingerprint -cne $AppBRoute.TokenFingerprint -or
+        -not [string]::Equals($AppBSurvivorRoute.DiscoveryPath, $AppBRoute.DiscoveryPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "App A loss replaced App B's independent private transport route."
+    }
     $ClientBLogAfterCrash = Get-ClientLogText -Path $ClientBStdout
     $ClientBTailAfterCrash = $ClientBLogAfterCrash.Substring(
         [Math]::Min(
@@ -1514,12 +1570,15 @@ try {
             $AppBMainProof.producerLabel
         )
         RuntimeOwnership = [ordered]@{
-            IsolatedBrokerPipe = $BrokerPipePath
-            InjectionOwner = $InjectionOwnerLabel
+            ForbiddenFeatureBrokerPipe = $BrokerPipePath
+            FeatureBrokerAbsent = $true
+            ParticipantAttachmentsCompleted = $ParticipantAttachmentLabels
+            PrivateRoutes = [ordered]@{ AppA = $AppARoute; AppB = $AppBRoute; AppBAfterPeerLoss = $AppBSurvivorRoute }
             RuntimeModules = @($ModuleEvidence.RuntimeModules.Path)
             AddonModules = @($ModuleEvidence.AddonModules.Path)
+            NativeIdentityEvidence = $ModuleEvidence.NativeIdentities
             AddonRegistrationCount = $AddonRegistrationCount
-            RuntimeInitializationCount = $RuntimeInitializationCount
+            PrivateTransportInitializationCount = $PrivateTransportInitializationCount
             ReShadeLog = $ReShadeLog
         }
         InterceptionMatrix = @($Matrix)
@@ -1574,11 +1633,7 @@ finally {
     }
     finally {
         foreach ($VariableName in $ControlledEnvironmentVariables) {
-            [Environment]::SetEnvironmentVariable(
-                $VariableName,
-                $PreviousEnvironment[$VariableName],
-                "Process"
-            )
+            Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
         }
     }
 }
