@@ -3,13 +3,13 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "A8E9DA12477741B9979D9B1B51994EF3"
+    "3309FB779CFC4E39BA7681AA4A7F8A6B"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135"
+    "88E5980C5737539918CDFD0A4070802780B44FA5FBCA2BB251B79952F180C621"
 )
 set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
-    "007B4DF39CEB0C7E6777B990A9A24D352DBC399C79DCA8488E9F4E49C58FB166"
+    "956A8530DD5C4C9F73C3372CE6C25A13E1AB230746B6A8CC26E7EC349CE50309"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
     "07A76311F29A7A20E54D305BCA1F384A035C84D620BF201C3CACBAC9681BA7B6"
@@ -327,6 +327,36 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
+
+# Change only the exact previous terminal source, never an unknown edited
+# checkout. The post-replacement hash binds the new identity to the same source
+# body before any historical patch is peeled or reapplied.
+function(ego_rollover_known_addon_build_id source_path)
+    file(READ "${source_path}" source_text)
+    string(REPLACE "\r\n" "\n" source_text "${source_text}")
+    string(REPLACE "\r" "\n" source_text "${source_text}")
+    string(SHA256 source_hash "${source_text}")
+    string(TOUPPER "${source_hash}" source_hash)
+    set(previous_full "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135")
+    set(previous_pre_cooperative "007B4DF39CEB0C7E6777B990A9A24D352DBC399C79DCA8488E9F4E49C58FB166")
+    if(source_hash STREQUAL previous_full OR source_hash STREQUAL previous_pre_cooperative)
+        string(REPLACE "A8E9DA12477741B9979D9B1B51994EF3" "${ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID}" replacement "${source_text}")
+        string(SHA256 replacement_hash "${replacement}")
+        string(TOUPPER "${replacement_hash}" replacement_hash)
+        if(source_hash STREQUAL previous_full)
+            set(expected_hash "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
+        else()
+            set(expected_hash "${RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}")
+        endif()
+        if(NOT replacement_hash STREQUAL expected_hash)
+            message(FATAL_ERROR "Known add-on build-ID rollover does not match the new pinned source hash.")
+        endif()
+        if(NOT replacement STREQUAL source_text)
+            file(WRITE "${source_path}" "${replacement}")
+        endif()
+    endif()
+endfunction()
+ego_rollover_known_addon_build_id("${reshade_SOURCE_DIR}/tools/injector.cpp")
 
 # Member attachment is the terminal injector seam. Peel it before the existing
 # independently verified historical stack is replayed on repeated configure.

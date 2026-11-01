@@ -80,7 +80,7 @@ Work is in progress on `codex/explore-independent-overlay-instances`.
 
 - Explicit private-directory Rust transport, registered-window metadata,
   incarnation-checked routing and logical focus across raster gaps: implemented;
-  150 Rust tests passed on each of x64 and x86, including cooperative
+  158 Rust tests passed on each of x64 and x86, including cooperative
   interception acknowledgement races.
 - App-private TypeScript transport and default SDK/launcher activation:
   implemented and tested with real socket peers. The normal sealed SDK package
@@ -92,11 +92,16 @@ Work is in progress on `codex/explore-independent-overlay-instances`.
 - Candidate native package: built and sealed for both architectures. Both fresh
   D3D11 SDK input cycles pass after fixing acknowledgement ordering and two test
   harness issues (environment deletion and waiting for native watcher readiness).
-  Gun Frog's automatic explicit-focus case passes with zero pointer-downs.
+  Gun Frog's automatic and physical-first-key focus cases pass with zero
+  pointer-downs on generation 8, as does its full SDK interaction case.
+- Generation 9 fixes internal-reset/session-transition ACK provenance. Its
+  stock-ReShade Gun Frog coexistence gate passes, including exact native module
+  identities, foreign add-on/effect coexistence, intercepted clicks, release and
+  protected-file preservation/restoration. Remaining generation-9 reruns and
+  mixed-build game acceptance are pending.
 - Surface-lifetime and delayed-source fixes: implemented, reviewed, compiled and
   covered by registry tests. Actual two-app multi-surface lifecycle acceptance is
-  still required. Remaining game and full feature acceptance are in progress;
-  physical-first-key evidence still requires the agreed human key presses.
+  still required. Remaining game and full feature acceptance are in progress.
 
 This status is not a claim that a complete replacement or game acceptance has
 already been achieved.

@@ -4064,7 +4064,7 @@ bool producer_session_active(std::uint64_t epoch)
     return (epoch & EGO_SESSION_EPOCH_ACTIVE_BIT) != 0;
 }
 
-void deactivate_input(swapchain_data &data, bool reset_imgui_cursor)
+void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknowledge = true)
 {
     if (auto *owner = g_participant_id == 0 ? get_official_hook_owner(data) : nullptr)
     {
@@ -4092,7 +4092,7 @@ void deactivate_input(swapchain_data &data, bool reset_imgui_cursor)
     }
 
     const ego_status status =
-        ego_transport_apply_input_filter(data.transport, 0, 1);
+        ego_transport_apply_input_filter(data.transport, 0, acknowledge ? 1U : 0U);
     if (status != EGO_STATUS_OK && status != data.last_filter_error)
     {
         data.last_filter_error = status;
@@ -4426,7 +4426,10 @@ void prepare_own_frame(effect_runtime *runtime)
         // old input generation and GPU resources before touching the new
         // session's scene, regardless of the epoch's current active bit.
         data->observed_session_epoch = session_epoch;
-        deactivate_dormant_input(*data);
+        // Active-epoch cleanup is not a terminal result for commands already
+        // received by the new session. Acknowledge them after its scene and
+        // grant are sampled rather than during the old generation's reset.
+        deactivate_input(*data, true, !session_active);
         data->cooperative_incarnations.clear();
         data->retired_session_textures +=
             retire_all_electron_textures(runtime, *data);

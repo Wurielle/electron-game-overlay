@@ -675,6 +675,8 @@ pub struct InputRouter {
     next_drag_session: u64,
     next_drag_sequence: u64,
     acknowledgement_pending: bool,
+    producer_request_seen: bool,
+    has_published_ack: bool,
     atomic_interception: Arc<AtomicInterceptionState>,
 }
 
@@ -715,6 +717,8 @@ impl Default for InputRouter {
             next_drag_session: 0,
             next_drag_sequence: 0,
             acknowledgement_pending: false,
+            producer_request_seen: false,
+            has_published_ack: false,
             atomic_interception: Arc::new(AtomicInterceptionState::default()),
         }
     }
@@ -1320,6 +1324,32 @@ impl InputRouter {
     /// Applies `command.input.intercept` and always emits an acknowledgement
     /// containing the resulting effective state.
     pub fn request_interception(&mut self, requested: bool) -> Vec<OutboundMessage> {
+        self.producer_request_seen = true;
+        self.apply_interception_request(requested, true)
+    }
+
+    /// Retires the old producer's retained request without manufacturing a new
+    /// producer command. A genuine old session can still observe its final
+    /// disabled phase until begin_producer_session starts the next session.
+    pub fn reset_interception_request(&mut self) -> Vec<OutboundMessage> {
+        self.apply_interception_request(false, false)
+    }
+
+    /// Begins a distinct producer session without fabricating a filter phase.
+    /// Pending replies and provenance from the prior socket cannot acknowledge
+    /// the next producer's initial metadata as if it had issued a command.
+    pub fn begin_producer_session(&mut self) {
+        self.producer_request_seen = false;
+        self.has_published_ack = false;
+        self.acknowledgement_pending = false;
+        self.advance_cooperative_input_revision();
+    }
+
+    fn apply_interception_request(
+        &mut self,
+        requested: bool,
+        force_acknowledgement: bool,
+    ) -> Vec<OutboundMessage> {
         self.advance_cooperative_input_revision();
         let mut outbound = Vec::new();
         self.requested_interception = requested;
@@ -1333,7 +1363,7 @@ impl InputRouter {
             self.clear_electron_focus(&mut outbound);
         }
 
-        self.recompute_desired_interception(true);
+        self.recompute_desired_interception(force_acknowledgement);
         self.restore_explicit_focus(&mut outbound);
         outbound
     }
@@ -1392,10 +1422,16 @@ impl InputRouter {
             && effective == self.desired_interception
             && (changed || self.acknowledgement_pending)
         {
-            if self.cooperative_interception.is_none()
+            if !effective && !self.producer_request_seen && !self.has_published_ack {
+                // Initial focus, metadata, and internal connection cleanup are
+                // not producer requests. A fail-open bootstrap reply must not
+                // race the first real interception command on a new session.
+                self.acknowledgement_pending = false;
+            } else if self.cooperative_interception.is_none()
                 || self.cooperative_input_revision == self.cooperative_sampled_input_revision
             {
                 self.acknowledgement_pending = false;
+                self.has_published_ack = true;
                 outbound.push(OutboundMessage::InputIntercept {
                     intercepting: effective,
                 });
@@ -2097,6 +2133,143 @@ mod tests {
     use super::*;
 
     #[test]
+    fn producer_bootstrap_metadata_and_internal_reset_do_not_manufacture_a_false_ack() {
+        let mut router = InputRouter::new();
+        router.begin_producer_session();
+        router.set_cooperative_focus(None);
+        router.reset_interception_request();
+        router.set_target_focused(true);
+        router.set_registered_windows(vec![(7, 1)]);
+        router.replace_windows(vec![
+            InputWindow::new(7, InputRect::new(0, 0, 50, 50)).with_incarnation(1)
+        ]);
+        router.set_cooperative_interception(false);
+        assert!(router.apply_input_filter(false, true).is_empty());
+        assert!(router
+            .set_cooperative_focus_for_incarnation(Some(7), 1)
+            .is_empty());
+        // A filter phase never acknowledged to a producer is not evidence that
+        // the producer issued a command, either.
+        assert!(router.apply_input_filter(true, false).is_empty());
+        router.reset_interception_request();
+        router.set_cooperative_interception(false);
+        assert!(router.apply_input_filter(false, true).is_empty());
+        assert!(!router.acknowledgement_pending);
+        assert!(!router.producer_request_seen);
+        assert!(!router.has_published_ack);
+    }
+
+    #[test]
+    fn producer_explicit_false_command_always_acknowledges_its_disabled_phase() {
+        let mut router = InputRouter::new();
+        router.begin_producer_session();
+        router.set_target_focused(true);
+        router.set_cooperative_interception(false);
+        router.request_interception(false);
+        router.set_cooperative_interception(false);
+        assert_eq!(
+            router.apply_input_filter(false, true),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+        assert!(router.producer_request_seen);
+        assert!(router.has_published_ack);
+    }
+
+    #[test]
+    fn producer_true_command_without_routable_windows_retains_fail_open_false_ack() {
+        for cooperative in [false, true] {
+            let mut router = InputRouter::new();
+            router.begin_producer_session();
+            router.set_target_focused(true);
+            router.request_interception(true);
+            if cooperative {
+                router.set_cooperative_interception(false);
+            }
+            assert_eq!(
+                router.apply_input_filter(false, true),
+                vec![OutboundMessage::InputIntercept {
+                    intercepting: false
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn producer_genuine_global_true_ack_allows_a_later_false_without_an_own_command() {
+        let mut router = InputRouter::new();
+        router.begin_producer_session();
+        router.set_target_focused(true);
+        router.set_cooperative_interception(true);
+        assert_eq!(
+            router.apply_input_filter(true, true),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
+        );
+        assert!(!router.producer_request_seen);
+        assert!(router.has_published_ack);
+        router.set_cooperative_interception(false);
+        assert_eq!(
+            router.apply_input_filter(false, true),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+    }
+
+    #[test]
+    fn producer_internal_disconnect_reset_preserves_a_genuine_old_session_terminal_ack() {
+        for cooperative in [false, true] {
+            let mut router = router_with_interception();
+            if cooperative {
+                router.set_cooperative_interception(true);
+                router.apply_input_filter(true, true);
+            }
+            router.reset_interception_request();
+            if cooperative {
+                router.set_cooperative_interception(false);
+            }
+            assert_eq!(
+                router.apply_input_filter(false, true),
+                vec![OutboundMessage::InputIntercept {
+                    intercepting: false
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn producer_new_session_retires_old_pending_false_ack_and_invalidates_native_sample() {
+        let mut router = router_with_interception();
+        router.set_cooperative_interception(true);
+        router.apply_input_filter(true, true);
+        router.reset_interception_request();
+        router.set_cooperative_interception(false);
+        let old_revision = router.cooperative_input_revision();
+        assert!(router.acknowledgement_pending);
+        let prior_effective = router.state().effective_interception;
+        router.begin_producer_session();
+        assert_eq!(router.state().effective_interception, prior_effective);
+        assert_eq!(
+            router.cooperative_input_revision(),
+            old_revision.wrapping_add(1)
+        );
+        assert!(!router.acknowledgement_pending);
+        assert!(!router.producer_request_seen);
+        assert!(!router.has_published_ack);
+        router.set_cooperative_interception_for_revision(false, old_revision);
+        assert!(router.apply_input_filter(false, true).is_empty());
+        router.set_cooperative_interception(false);
+        assert!(router.apply_input_filter(false, true).is_empty());
+        router.request_interception(true);
+        router.set_cooperative_interception(true);
+        assert_eq!(
+            router.apply_input_filter(true, true),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
+        );
+    }
+
+    #[test]
     fn cooperative_input_revision_tracks_commands_focus_and_only_window_eligibility_changes() {
         let mut router = InputRouter::new();
         let window = InputWindow::new(7, InputRect::new(0, 0, 50, 50)).with_incarnation(1);
@@ -2307,6 +2480,45 @@ mod tests {
             vec![OutboundMessage::InputIntercept {
                 intercepting: false
             }]
+        );
+    }
+
+    #[test]
+    fn active_session_retirement_is_transitional_before_the_first_coherent_grant() {
+        fn replies(acknowledge_retirement: bool) -> Vec<OutboundMessage> {
+            let mut router = InputRouter::new();
+            router.set_cooperative_focus(None);
+            router.begin_producer_session();
+            router.set_target_focused(true);
+            router.replace_windows(vec![
+                InputWindow::new(7, InputRect::new(0, 0, 10, 10)).with_incarnation(1)
+            ]);
+            // The authenticated snapshot, including its real true command,
+            // arrives before native sees the new active session epoch.
+            router.request_interception(true);
+            router.set_target_focused(false);
+            let mut replies = router.apply_input_filter(false, acknowledge_retirement);
+            router.set_target_focused(true);
+            let revision = router.cooperative_input_revision();
+            router.set_cooperative_interception_for_revision(true, revision);
+            replies.extend(router.apply_input_filter(false, false));
+            replies.extend(router.apply_input_filter(true, true));
+            replies
+        }
+        // This is the old caller sequence: artificial epoch retirement was
+        // incorrectly published as the result of the new producer's command.
+        assert_eq!(
+            replies(true),
+            vec![
+                OutboundMessage::InputIntercept {
+                    intercepting: false
+                },
+                OutboundMessage::InputIntercept { intercepting: true },
+            ]
+        );
+        assert_eq!(
+            replies(false),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
         );
     }
 

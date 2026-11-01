@@ -1213,7 +1213,7 @@ impl Drop for ElectronFrameBridge {
                 .input_router
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = input_router.request_interception(false);
+            let _ = input_router.reset_interception_request();
             let _ = input_router.replace_windows(Vec::new());
         }
         let hwnd = HWND(self.window as *mut c_void);
@@ -1765,7 +1765,7 @@ impl BridgeThreadState {
         self.closed_windows.clear();
         self.bump_state_revision();
         self.update_input_router_and_publish_scene(|router| {
-            let mut outbound = router.request_interception(false);
+            let mut outbound = router.reset_interception_request();
             outbound.extend(router.replace_windows(Vec::new()));
             outbound
         });
@@ -1807,6 +1807,10 @@ impl BridgeThreadState {
                         .as_ref()
                         .is_some_and(|transport| !transport.authenticated)
                     {
+                        self.update_input_router(|router| {
+                            router.begin_producer_session();
+                            Vec::new()
+                        });
                         advance_producer_session_epoch(&self.producer_session_epoch, true);
                     }
                     if let Some(transport) = self.transport.as_mut() {
@@ -4410,6 +4414,37 @@ mod tests {
         assert!(state.scene.read().unwrap().registrations.is_empty());
         assert_eq!(initial.registrations, vec![registration]);
         assert_eq!(awaiting_raster.registrations, vec![registration]);
+    }
+
+    #[test]
+    fn pre_auth_disconnect_does_not_fabricate_a_false_producer_acknowledgement() {
+        let mut state = test_bridge_state();
+        state
+            .input_router
+            .lock()
+            .unwrap()
+            .set_cooperative_focus(None);
+        // A provisional connection was rejected before any producer command.
+        state.disconnect();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![window_metadata(7, "awaiting-first-raster", 0)],
+            })
+            .unwrap();
+        let mut router = state.input_router.lock().unwrap();
+        router.set_target_focused(true);
+        let revision = router.cooperative_input_revision();
+        router.set_cooperative_interception_for_revision(false, revision);
+        assert!(router.apply_input_filter(false, true).is_empty());
+        router.request_interception(false);
+        let revision = router.cooperative_input_revision();
+        router.set_cooperative_interception_for_revision(false, revision);
+        assert_eq!(
+            router.apply_input_filter(false, true),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
     }
 
     #[test]
