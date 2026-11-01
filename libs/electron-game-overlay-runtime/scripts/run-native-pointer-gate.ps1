@@ -88,12 +88,14 @@ public static class EgoExplicitFocusKeys {
 Add-Type -TypeDefinition @'
 using System;
 using System.Text;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class EgoPointer {
  [StructLayout(LayoutKind.Sequential)] struct MOUSE { public int x,y; public uint data,flags,time; public UIntPtr extra; }
  [StructLayout(LayoutKind.Explicit,Size=32)] struct UNION { [FieldOffset(0)] public MOUSE mouse; }
  [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public UNION data; }
  [StructLayout(LayoutKind.Sequential)] struct POINT { public int x,y; }
+ [StructLayout(LayoutKind.Sequential)] struct RECT { public int left,top,right,bottom; }
  [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public uint size,flags; public IntPtr cursor; public POINT point; }
  [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO c);
  [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr module,IntPtr id);
@@ -107,8 +109,36 @@ public static class EgoPointer {
  [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr dc,int x,int y);
  public static int DarkColumns(IntPtr h,int x,int y,int width,int height) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p))return 0;var dc=GetDC(IntPtr.Zero);int columns=0;try{for(int col=0;col<width;col++){bool dark=false;for(int row=0;row<height;row++){uint rgb=GetPixel(dc,p.x+col,p.y+row);if((rgb&255)<100&&((rgb>>8)&255)<100&&((rgb>>16)&255)<100){dark=true;break;}}if(dark)columns++;}}finally{ReleaseDC(IntPtr.Zero,dc);}return columns; }
  public static uint Pixel(IntPtr h,int x,int y) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p))return 0xFFFFFFFF;var dc=GetDC(IntPtr.Zero);try{return GetPixel(dc,p.x,p.y);}finally{ReleaseDC(IntPtr.Zero,dc);} }
+ [DllImport("user32.dll",SetLastError=true)] static extern bool GetWindowRect(IntPtr h,out RECT rect);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool GetClientRect(IntPtr h,out RECT rect);
+ [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
+ [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h,uint flags);
+ [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h,StringBuilder value,int capacity);
+ static Dictionary<string,object> Identity(IntPtr h) {
+  uint pid;uint thread=GetWindowThreadProcessId(h,out pid);var name=new StringBuilder(256);
+  if(h!=IntPtr.Zero)GetClassName(h,name,name.Capacity);
+  return new Dictionary<string,object>{{"hwnd","0x"+h.ToInt64().ToString("x")},{"hwndDecimal",h.ToInt64().ToString()},{"pid",pid},{"threadId",thread},{"className",name.ToString()},{"valid",h!=IntPtr.Zero&&thread!=0}};
+ }
+ static Dictionary<string,object> RectMetadata(RECT rect,bool valid,int error) {
+  return new Dictionary<string,object>{{"valid",valid},{"left",rect.left},{"top",rect.top},{"right",rect.right},{"bottom",rect.bottom},{"width",rect.right-rect.left},{"height",rect.bottom-rect.top},{"win32Error",valid?0:error}};
+ }
+ public static object TargetGeometry(IntPtr h) {
+  RECT window,client;bool windowValid=GetWindowRect(h,out window);int windowError=Marshal.GetLastWin32Error();
+  bool clientValid=GetClientRect(h,out client);int clientError=Marshal.GetLastWin32Error();
+  var topLeft=new POINT{x=client.left,y=client.top};var bottomRight=new POINT{x=client.right,y=client.bottom};
+  bool topValid=clientValid&&ClientToScreen(h,ref topLeft);int topError=Marshal.GetLastWin32Error();
+  bool bottomValid=clientValid&&ClientToScreen(h,ref bottomRight);int bottomError=Marshal.GetLastWin32Error();
+  var screen=new RECT{left=topLeft.x,top=topLeft.y,right=bottomRight.x,bottom=bottomRight.y};
+  return new Dictionary<string,object>{{"window",Identity(h)},{"root",Identity(GetAncestor(h,2))},{"rootOwner",Identity(GetAncestor(h,3))},{"windowRect",RectMetadata(window,windowValid,windowError)},{"clientRect",RectMetadata(client,clientValid,clientError)},{"clientScreenRect",RectMetadata(screen,topValid&&bottomValid,!clientValid?clientError:!topValid?topError:bottomError)},{"coordinateObservation","Unmodified Win32 coordinates in the collector thread DPI context; no DPI or window mutation."}};
+ }
+ public static object PointMetadata(IntPtr h,int x,int y) {
+  var point=new POINT{x=x,y=y};bool converted=ClientToScreen(h,ref point);int error=Marshal.GetLastWin32Error();
+  var atPoint=converted?WindowFromPoint(point):IntPtr.Zero;
+  return new Dictionary<string,object>{{"clientToScreenSucceeded",converted},{"screenX",converted?(object)point.x:null},{"screenY",converted?(object)point.y:null},{"win32Error",converted?0:error},{"windowAtPoint",Identity(atPoint)},{"rootAtPoint",Identity(GetAncestor(atPoint,2))},{"rootOwnerAtPoint",Identity(GetAncestor(atPoint,3))}};
+ }
  [DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint n, INPUT[] inputs, int size);
- [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h,ref POINT p);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool ClientToScreen(IntPtr h,ref POINT p);
  [DllImport("user32.dll")] static extern int GetSystemMetrics(int n);
  [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
  public static void Place(IntPtr h,int x,int y) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p)||!SetCursorPos(p.x,p.y))throw new Exception("Place failed"); }
@@ -142,13 +172,16 @@ function Get-NativeCalibrationDiagnostics([object]$TargetProcess, [object]$Fixtu
         expectedTarget = [ordered]@{ pid = $TargetProcess.Id; hwnd = '0x' + $TargetWindow.ToInt64().ToString('x'); hwndDecimal = $TargetWindow.ToInt64().ToString() }
         requestedScaleFactor = $RequestedScaleFactor; requestedOsrScaleFactor = $RequestedOsrScaleFactor
         sampledScaleFactor = $ObservedScale; scaleSource = $ScaleSource; fixture = $FixtureState
-        foregroundTitle = $null; calibrationPoints = @()
+        foregroundTitle = $null; targetGeometry = $null; calibrationPoints = @()
         grid = [ordered]@{ width = 1280; height = 720; columns = 16; rows = 9; samples = @() }
     }
     try { $Diagnostic.foregroundTitle = [EgoPointer]::Foreground() } catch { $Diagnostic.foregroundError = $_.Exception.Message }
+    try { $Diagnostic.targetGeometry = [EgoPointer]::TargetGeometry($TargetWindow) } catch { $Diagnostic.targetGeometryError = $_.Exception.Message }
     $ReadPixel = {
         param([int]$ClientX, [int]$ClientY)
         $Sample = [ordered]@{ clientX = $ClientX; clientY = $ClientY }
+        # Adjacent metadata query only; the original desktop Pixel oracle is unchanged.
+        try { $Sample.screen = [EgoPointer]::PointMetadata($TargetWindow, $ClientX, $ClientY) } catch { $Sample.screenMetadataError = $_.Exception.Message }
         try {
             $Color = [uint32][EgoPointer]::Pixel($TargetWindow, $ClientX, $ClientY)
             $Sample.colorRef = $Color; $Sample.hex = '0x{0:x8}' -f $Color

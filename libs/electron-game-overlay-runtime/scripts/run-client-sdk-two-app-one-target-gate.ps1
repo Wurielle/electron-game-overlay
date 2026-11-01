@@ -172,6 +172,99 @@ function Wait-ForParticipantAttachmentsReady {
     throw "Both producers did not initialize their own engines within the one shared ReShade host."
 }
 
+function Wait-ForInitialRuntimeInjection {
+    param([Parameter(Mandatory = $true)][DateTime]$Deadline)
+
+    $ExpectedRuntime = Join-Path $CandidateSdkDist 'runtime\win32-x64\reshade\ReShade64.dll'
+    $ExpectedHash = (Get-FileHash -LiteralPath $ExpectedRuntime -Algorithm SHA256).Hash
+    $LastObservation = 'No completed full-runtime injection was recorded.'
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        $HostProcess.Refresh()
+        if ($HostProcess.HasExited) { throw 'The controlled target exited before graphics startup could be released.' }
+        foreach ($Candidate in @(
+                @{ Label = 'App A'; Process = $ClientA; Log = $ClientAStdout; ErrorLog = $ClientAStderr; UserData = $ClientAUserData },
+                @{ Label = 'App B'; Process = $ClientB; Log = $ClientBStdout; ErrorLog = $ClientBStderr; UserData = $ClientBUserData }
+            )) {
+            [string]$Text = Get-ClientLogText -Path $Candidate.Log
+            [string]$ErrorText = Get-ClientLogText -Path $Candidate.ErrorLog
+            if ($Text -match 'RESHADE_CLIENT_INJECTOR_FAILED|ReShade attachment failed' -or
+                $ErrorText -match 'ReShade attachment failed') {
+                throw "$($Candidate.Label) failed before the initial graphics startup release."
+            }
+            $Candidate.Process.Refresh()
+            if ($Candidate.Process.HasExited) { throw "$($Candidate.Label) exited before the initial graphics startup release." }
+            if ($Text -notmatch '(?m)^RESHADE_CLIENT_INJECTOR_RETURNED(?: .*)?\r?$') { continue }
+
+            # The display log omits runtimeMode. Require the structured event
+            # from this producer, rather than mistaking member-only completion
+            # for the full injection that makes graphics initialization safe.
+            $EventsDirectory = Join-Path $Candidate.UserData 'logs\compatibility-runs'
+            $Injection = $null
+            foreach ($EventFile in @(Get-ChildItem -LiteralPath $EventsDirectory -Filter '*.events.jsonl' -File -ErrorAction SilentlyContinue)) {
+                foreach ($Line in @(Get-Content -LiteralPath $EventFile.FullName)) {
+                    try { $Record = $Line | ConvertFrom-Json }
+                    catch { continue } # A concurrently appended last line may be incomplete.
+                    if ($Record.schemaVersion -eq 1 -and
+                        $Record.type -ceq 'attachment.injector-returned' -and
+                        $Record.data.runtimeMode -ceq 'injected-runtime' -and
+                        $Record.pid -eq $HostProcess.Id) {
+                        $Injection = $Record
+                    }
+                }
+            }
+            if (-not $Injection) { continue }
+
+            $RunPaths = @(Get-RunDirectoriesFromClientLog -Path $Candidate.Log | Sort-Object -Unique)
+            if ($RunPaths.Count -eq 0) {
+                $LastObservation = "$($Candidate.Label) has not finished publishing its staged full-runtime directory."
+                continue
+            }
+            if ($RunPaths.Count -ne 1) { throw "$($Candidate.Label) identified ambiguous staged full-runtime directories." }
+            $ExpectedMappedPath = [IO.Path]::GetFullPath((Join-Path $RunPaths[0] 'ReShade64.dll'))
+            try {
+                $RuntimeModules = @($HostProcess.Modules | Where-Object {
+                    $_.ModuleName -match '^ReShade(?:32|64)\.dll$'
+                })
+                if ($RuntimeModules.Count -ne 1 -or -not [string]::Equals(
+                        $RuntimeModules[0].FileName, $ExpectedMappedPath, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'The full-injection event does not match one exact staged runtime mapped in the target.'
+                }
+                $ObservedHash = (Get-FileHash -LiteralPath $RuntimeModules[0].FileName -Algorithm SHA256).Hash
+                Assert-CooperativeRuntimeHash -Observed $ObservedHash -Expected @($ExpectedHash)
+            }
+            catch {
+                $LastObservation = $_.Exception.Message
+                continue
+            }
+            return [pscustomobject]@{
+                OwnerLabel = $Candidate.Label
+                ProducerPid = $Candidate.Process.Id
+                TargetPid = $HostProcess.Id
+                RuntimeMode = $Injection.data.runtimeMode
+                InjectorReturnedUtc = $Injection.timestamp
+                RuntimeModulePath = $RuntimeModules[0].FileName
+                RuntimeSha256 = $ObservedHash.ToLowerInvariant()
+                EarlyParticipantRequests = @(
+                    if ((Get-ClientLogText -Path $ClientAStdout) -match '(?m)^RESHADE_CLIENT_INJECTOR_STARTED(?: .*)?\r?$') { 'App A' }
+                    if ((Get-ClientLogText -Path $ClientBStdout) -match '(?m)^RESHADE_CLIENT_INJECTOR_STARTED(?: .*)?\r?$') { 'App B' }
+                )
+            }
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    throw "The graphics startup barrier could not be released after exact full-runtime injection. $LastObservation"
+}
+
+function Release-GraphicsAfterInitialRuntimeInjection {
+    param([Parameter(Mandatory = $true)][DateTime]$Deadline)
+
+    $Evidence = Wait-ForInitialRuntimeInjection -Deadline $Deadline
+    Remove-Item -LiteralPath $StartupBarrier -Force -ErrorAction Stop
+    $Evidence | Add-Member -NotePropertyName GraphicsReleasedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o'))
+    $Evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $RunDirectory 'graphics-startup-release.json') -Encoding UTF8
+    return $Evidence
+}
+
 function Wait-ForDevToolsTarget {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
@@ -1095,6 +1188,12 @@ try {
         -RedirectStandardError $ClientBStderr
 
     $StartupDeadline = [DateTime]::UtcNow.AddSeconds(120)
+    # Both apps have started concurrently. Release the pre-device barrier as
+    # soon as the exact full injection is verified: the first add-on registers
+    # during graphics initialization, and the other app's member loader waits
+    # for that registration before its own attachment can complete.
+    $GraphicsStartupRelease = Release-GraphicsAfterInitialRuntimeInjection `
+        -Deadline $StartupDeadline
     foreach ($ClientCase in @(
             @{
                 Label = "App A"
@@ -1234,10 +1333,8 @@ try {
         }
     }
 
-    # The fixture barrier holds device creation so both producers can publish
-    # their initial scene and private exact-PID authorization before graphics
-    # initializes. Each injector must finish its own engine initialization in
-    # the one ReShade host before the cooperating host creates a swap chain.
+    # Graphics is already running. Both independent engines must now complete
+    # their private exact-PID attachment to the one initialized ReShade host.
     foreach ($ClientCase in @(
             @{
                 Label = "App A"
@@ -1269,7 +1366,6 @@ try {
         -ClientLog $ClientBStdout -ProducerPid $ClientB.Id -TargetPid $HostProcess.Id
     Assert-PrivateParticipantRoutes -AppA $AppARoute -AppB $AppBRoute
     Assert-NoFeatureBrokerPipe
-    Remove-Item -LiteralPath $StartupBarrier -Force
     $TargetWindow = Wait-ForHostWindow `
         -HostProcess $HostProcess `
         -Deadline ([DateTime]::UtcNow.AddSeconds(20))
@@ -1570,6 +1666,7 @@ try {
         RuntimeOwnership = [ordered]@{
             ForbiddenFeatureBrokerPipe = $BrokerPipePath
             FeatureBrokerAbsent = $true
+            GraphicsStartupRelease = $GraphicsStartupRelease
             ParticipantAttachmentsCompleted = $ParticipantAttachmentLabels
             PrivateRoutes = [ordered]@{ AppA = $AppARoute; AppB = $AppBRoute; AppBAfterPeerLoss = $AppBSurvivorRoute }
             RuntimeModules = @($ModuleEvidence.RuntimeModules.Path)
