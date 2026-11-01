@@ -195,7 +195,7 @@
  	constexpr unsigned int supported_addon_abi = 1;
  	constexpr char expected_addon_build_id[] =
 -		"1CAEA7482B41451AB31FC2F91B46F2DD";
-+		"BCE6C5C8746F4300861300B2BDA3594E";
++		"E8FE3783F29E4FB297D8B006D0087725";
  	static_assert(sizeof(expected_addon_build_id) == 33);
  	bool found_addon = false;
  

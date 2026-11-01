@@ -3,18 +3,30 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "BCE6C5C8746F4300861300B2BDA3594E"
+    "E8FE3783F29E4FB297D8B006D0087725"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "8EC5E249B34ACD0E6315AFADFB9E6FD698B5237AE36F0C4E11BB6DDEBB404F60"
+    "F286CDC1B9D138E4429A50C3E82749292B39F51B42592BFD9B738C889A6FA074"
 )
 set(RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256
-    "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C"
+    "A3C7F581069BF0A2AF77AAC8F2441AF98AB42073C56443C257586931F35F6AB5"
 )
 set(RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256
-    "F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B"
+    "C2F7641F12F19FD1F78ABDB608DA9EF5A8B58DB087E30552ED3EDEE42AFCDF48"
 )
 set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
+    "0A452E415E4AD37B6558D0F398A2A5A7A161D752148A70B21A4E8097740CA7D9"
+)
+set(RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256
+    "8EC5E249B34ACD0E6315AFADFB9E6FD698B5237AE36F0C4E11BB6DDEBB404F60"
+)
+set(RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256
+    "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C"
+)
+set(RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256
+    "F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B"
+)
+set(RESHAPE_GEN15_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
     "3D51024529834F539601F4E2573E29591954CF5906C704C980086108DB51373B"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
@@ -598,21 +610,36 @@ function(ego_recover_owned_late_source_cache source_root journal_path)
     string(JSON recorded_pin GET "${journal}" finalInjectorHash)
     string(JSON before_count LENGTH "${journal}" before)
     string(JSON after_count LENGTH "${journal}" after)
-    # Both exact generation-15 terminal forms may own retained preimages. The
-    # record selects only one hardcoded injector pin; it cannot authorize edits
-    # to the other eighteen files or supply an executable recovery operation.
-    if(recorded_pin STREQUAL RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256)
-        string(REPLACE "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
-            "tools/injector.cpp=${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}"
-            RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
-    elseif(NOT recorded_pin STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
-        message(FATAL_ERROR "The source-cache recovery injector pin is unknown; no files were changed.")
+    # Legacy records always published the generation-15 pre-late body. New
+    # cross-generation records identify a fixed before/after pair explicitly;
+    # neither JSON hash can authorize an arbitrary source image.
+    set(legacy_before_pins
+        "${RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+    set(current_before_pins ${legacy_before_pins}
+        "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+    if(schema EQUAL 1 AND recorded_pin IN_LIST legacy_before_pins)
+        set(post_injector_hash "${RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+    elseif(schema EQUAL 2 AND recorded_pin IN_LIST current_before_pins)
+        string(JSON post_injector_hash GET "${journal}" postInjectorHash)
+        if(NOT post_injector_hash STREQUAL RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256)
+            message(FATAL_ERROR "Unknown source-cache recovery after-state; no files were changed.")
+        endif()
+    else()
+        message(FATAL_ERROR "Unknown source-cache recovery schema or injector pair; no files were changed.")
     endif()
+    string(REPLACE "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "tools/injector.cpp=${recorded_pin}" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+    string(REPLACE "tools/injector.cpp=${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+        "tools/injector.cpp=${post_injector_hash}" recovery_after_vector
+        "${RESHAPE_PRE_LATE_CONTENT_SHA256}")
     list(LENGTH RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 expected_count)
     get_filename_component(scratch_name "${scratch}" NAME)
     string(REGEX REPLACE "^ego-owned-late-peel-" "" scratch_suffix "${scratch_name}")
     string(LENGTH "${scratch_suffix}" suffix_length)
-    if(NOT schema EQUAL 1 OR NOT recorded_source STREQUAL source_root OR
+    if(NOT recorded_source STREQUAL source_root OR
        NOT before_count EQUAL expected_count OR NOT after_count EQUAL expected_count OR
        NOT IS_ABSOLUTE "${scratch}" OR IS_SYMLINK "${scratch}" OR
        NOT scratch_name MATCHES "^ego-owned-late-peel-[0-9a-f]+$" OR
@@ -661,7 +688,7 @@ function(ego_recover_owned_late_source_cache source_root journal_path)
             message(FATAL_ERROR "Unknown source edit blocks recovery; no files were restored: ${relative_path}")
         endif()
         if(NOT current_hash STREQUAL before_hash)
-            list(GET RESHAPE_PRE_LATE_CONTENT_SHA256 ${index} base_entry)
+            list(GET recovery_after_vector ${index} base_entry)
             string(FIND "${base_entry}" "=" base_separator)
             math(EXPR base_offset "${base_separator} + 1")
             string(SUBSTRING "${base_entry}" ${base_offset} -1 expected_base_hash)
@@ -764,8 +791,12 @@ function(ego_prepare_owned_late_source_cache source_dir)
         return()
     endif()
 
-    if(NOT injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 AND
-       NOT injector_hash STREQUAL RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256)
+    set(terminal_injector_pins
+        "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+    if(NOT injector_hash IN_LIST terminal_injector_pins)
         set(known_old_injectors
             "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135"
             "88E5980C5737539918CDFD0A4070802780B44FA5FBCA2BB251B79952F180C621"
@@ -785,7 +816,9 @@ function(ego_prepare_owned_late_source_cache source_dir)
             "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359"
             "${RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256}"
             "${RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}"
-            "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+            "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_GEN15_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
         if(NOT injector_hash IN_LIST known_old_injectors)
             message(FATAL_ERROR "Unrecognized complete source-cache state; no files were changed.")
         endif()
@@ -830,7 +863,16 @@ function(ego_prepare_owned_late_source_cache source_dir)
         file(SHA256 "${source_root}/${relative_path}" "original_raw_${index}")
         math(EXPR index "${index} + 1")
     endforeach()
-    if(injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
+    if(injector_hash STREQUAL RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       injector_hash STREQUAL RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256)
+        set(host_injector_hash "${RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+        set(pre_late_injector_hash "${RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+    else()
+        set(host_injector_hash "${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+        set(pre_late_injector_hash "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+    endif()
+    if(injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       injector_hash STREQUAL RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256)
         ego_write_lf_source_cache_file("${scratch}/result.patch" "${result_patch_text}")
         foreach(check_argument IN ITEMS "--check" "--apply")
             execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR
@@ -846,7 +888,7 @@ function(ego_prepare_owned_late_source_cache source_dir)
         endforeach()
     endif()
     string(REPLACE "tools/injector.cpp=${injector_hash}"
-        "tools/injector.cpp=${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}"
+        "tools/injector.cpp=${host_injector_hash}"
         host_vector "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
     ego_assert_source_cache_vector("${scratch}/candidate" ${host_vector})
     ego_write_lf_source_cache_file("${scratch}/late.patch" "${late_patch_text}")
@@ -862,6 +904,14 @@ function(ego_prepare_owned_late_source_cache source_dir)
             message(FATAL_ERROR "The frozen owned-late tail cannot be peeled in scratch; live source was not changed.\n${peel_output}${peel_error}")
         endif()
     endforeach()
+    string(REPLACE "tools/injector.cpp=${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+        "tools/injector.cpp=${pre_late_injector_hash}" peeled_vector
+        "${RESHAPE_PRE_LATE_CONTENT_SHA256}")
+    ego_assert_source_cache_vector("${scratch}/candidate" ${peeled_vector})
+    # Normalize an old identity only after both complete terminal seams have
+    # been proved and peeled in scratch. The shared rollover guard validates
+    # the exact old v4 body and the unique ID declaration before replacement.
+    ego_rollover_known_addon_build_id("${scratch}/candidate/tools/injector.cpp")
     ego_assert_source_cache_vector("${scratch}/candidate" ${RESHAPE_PRE_LATE_CONTENT_SHA256})
 
     # Recheck all raw preimages before publishing any verified replacement.
@@ -909,7 +959,7 @@ function(ego_prepare_owned_late_source_cache source_dir)
     string(REPLACE "\\" "\\\\" journal_scratch "${scratch}")
     string(REPLACE "\"" "\\\"" journal_scratch "${journal_scratch}")
     file(WRITE "${scratch}/journal.tmp"
-        "{\"schemaVersion\":1,\"sourceRoot\":\"${journal_source}\",\"scratchRoot\":\"${journal_scratch}\",\"finalInjectorHash\":\"${injector_hash}\",\"before\":[${journal_before}],\"after\":[${journal_after}]}\n")
+        "{\"schemaVersion\":2,\"sourceRoot\":\"${journal_source}\",\"scratchRoot\":\"${journal_scratch}\",\"finalInjectorHash\":\"${injector_hash}\",\"postInjectorHash\":\"${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}\",\"before\":[${journal_before}],\"after\":[${journal_after}]}\n")
     file(RENAME "${scratch}/journal.tmp" "${journal_path}" NO_REPLACE RESULT journal_result)
     if(NOT journal_result STREQUAL "0")
         message(FATAL_ERROR "Unable to retain source-cache recovery preimages before publication: ${journal_result}")
@@ -1102,7 +1152,8 @@ function(ego_rollover_known_addon_build_id source_path)
         "1903E98A0462431D4A355A3CCE0E3B69AB8E5C67B7895080DA9F9EF8D75CA410"
         "0BAE44EE68E401993FA662BAF8BE79F985F6BCB87DC3A0818BFD80FD9574DDEB"
         "4EEA17F39E3BFF425CCD08246DDA121FE256A61B37D0FD5D93565FC83E9DAA7D"
-        "AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4")
+        "AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4"
+        "3D51024529834F539601F4E2573E29591954CF5906C704C980086108DB51373B")
     list(FIND previous_v3_full "${source_hash}" previous_v3_index)
     set(replacement "${source_text}")
     if(NOT previous_v3_index EQUAL -1)
@@ -1114,8 +1165,9 @@ function(ego_rollover_known_addon_build_id source_path)
     elseif(source_hash STREQUAL "D0A885F093B5364FF7ED1D84761E758E7544579185E9EEA8517B4058D7C29B94" OR
            source_hash STREQUAL "C436078556B22BDAD9DFCD662A745E73339758E227F0178234B41D1392956974" OR
            source_hash STREQUAL "3A58324E3AE6CE96F3F312D965A384CB825B27B64CE3E4E95CF4B4194032946C" OR
-           source_hash STREQUAL "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1")
-        # Frozen v4 bodies with the generation-11 through generation-14 identities.
+           source_hash STREQUAL "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1" OR
+           source_hash STREQUAL "F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B")
+        # Frozen v4 bodies with the generation-11 through generation-15 identities.
         set(expected_hash "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
     else()
         message(FATAL_ERROR

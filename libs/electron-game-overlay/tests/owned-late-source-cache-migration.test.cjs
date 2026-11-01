@@ -47,6 +47,7 @@ const oldIds = {
   10: '280C7D267CA94332834D85A075A453AE', 11: 'E16461475E524DBA83398B19CDD95EBB',
   12: 'E975AA8639164AED979E9770674B9546', 13: '4127FD92CC904E0AA75C7784189AE969',
   14: '412D57BEA49440738CC4C3903038F2E7',
+  15: 'BCE6C5C8746F4300861300B2BDA3594E',
 };
 const oldV3 = {
   8: '246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135',
@@ -59,6 +60,7 @@ const oldV4 = {
   12: 'C436078556B22BDAD9DFCD662A745E73339758E227F0178234B41D1392956974',
   13: '3A58324E3AE6CE96F3F312D965A384CB825B27B64CE3E4E95CF4B4194032946C',
   14: 'EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1',
+  15: 'F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B',
 };
 
 function temporary(t) {
@@ -153,6 +155,10 @@ function runGuard(f, overrides = {}) {
     `set(RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256 "${hostHash}")`,
     `set(RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 "${overrides.v4Hash || v4Hash}")`,
     `set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256 "${preHash}")`,
+    ...['CURRENT', 'PRE_RESULT', 'PRE_LATE_V4', 'PRE_COOPERATIVE'].map(stage => {
+      const name = `RESHAPE_GEN15_${stage}_INJECTOR_CONTENT_SHA256`;
+      return `set(${name} "${value(name)}")`;
+    }),
     `set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256 "${value('RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256')}")`,
     `set(RESHAPE_PINNED_COMMIT "${overrides.commit || f.commit}")`,
     'set(GIT_EXECUTABLE "git")',
@@ -221,10 +227,10 @@ test('a pristine source edit is rejected without starting historical patch repla
 for (const generation of [8,9,10,11]) test(`known generation ${generation} v3 full tree keeps host files while migrating its real injector`, options, t => {
   const f = fixture(t); setInjector(f, oldIds[generation], 'v3'); assert.equal(normalizedSha(fs.readFileSync(f.injector,'utf8')), oldV3[generation]); accepted(runGuard(f,{injector:true})); assertBase(f,v4Hash);
 });
-for (const generation of [11,12,13,14]) test(`known generation ${generation} v4 full tree reaches the exact pre-late injector`, options, t => {
+for (const generation of [11,12,13,14,15]) test(`known generation ${generation} v4 full tree reaches the exact pre-late injector`, options, t => {
   const f = fixture(t); setInjector(f,oldIds[generation]); assert.equal(normalizedSha(fs.readFileSync(f.injector,'utf8')),oldV4[generation]); accepted(runGuard(f,{injector:true})); assertBase(f,v4Hash);
 });
-for (const generation of [8,9,10,11,12,13,14]) test(`known generation ${generation} pre-cooperative tree preserves its lower-stack boundary`, options, t => {
+for (const generation of [8,9,10,11,12,13,14,15]) test(`known generation ${generation} pre-cooperative tree preserves its lower-stack boundary`, options, t => {
   const f=fixture(t); setInjector(f,oldIds[generation],'pre'); accepted(runGuard(f,{injector:true})); assertBase(f,preHash);
 });
 test('final late tree is peeled in full before legacy migration and can be replayed repeatedly', options, t => {

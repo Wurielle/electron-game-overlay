@@ -11,6 +11,7 @@ const {
   validateOverlayDistributionSync,
 } = require('../dist/lib/overlay-package-manifest.js');
 const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
+const retainedGeneration15 = Object.freeze({ runtimeGeneration: 15, addonBuildId: 'BCE6C5C8746F4300861300B2BDA3594E' });
 
 function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-direct-seal-'));
@@ -131,7 +132,7 @@ for (const [name, declaration] of [
 });
 
 test('a retained original generation-15 schema-30 package needs no later first-host-result field', t => {
-  const f = fixture(t, { firstHostResultPatch: false });
+  const f = fixture(t, { ...retainedGeneration15, firstHostResultPatch: false });
   const before = fs.readFileSync(f.manifestPath);
   assert.deepEqual(createOverlayDistributionManifestSync(f.dist, '0.1.0-rc.7'), validateOverlayDistributionSync(f.dist));
   assert.deepEqual(fs.readFileSync(f.manifestPath), before);
@@ -140,6 +141,17 @@ test('a retained original generation-15 schema-30 package needs no later first-h
     assert.equal(stamp.schemaVersion, 30);
     assert.equal(stamp.ownedLateD3d11PatchSha256, '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE');
     assert.equal(stamp.injectorFirstHostResultPatchSha256, undefined);
+  }
+});
+test('the retained generation-15 CLI-corrected package preserves its sealed implementation and B683 provenance', t => {
+  const f = fixture(t, { ...retainedGeneration15, firstHostResultPatch: true });
+  const before = fs.readFileSync(f.manifestPath);
+  assert.deepEqual(createOverlayDistributionManifestSync(f.dist, '0.1.0-rc.7'), validateOverlayDistributionSync(f.dist));
+  assert.deepEqual(fs.readFileSync(f.manifestPath), before);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.schemaVersion, 30);
+    assert.equal(stamp.injectorFirstHostResultPatchSha256, 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554');
   }
 });
 for (const [name, value] of [['missing', undefined], ['null', null], ['wrong type', 1], ['malformed', 'not-a-digest'], ['wrong valid digest', '0'.repeat(64)]]) {
@@ -159,7 +171,7 @@ test('the paired architectures cannot differ in first-host-result provenance pre
   assert.throws(() => validateOverlayDistributionSync(f.dist), /first-host result patch provenance mismatch.*32/i);
 });
 test('a retained validator implementation cannot claim the later CLI patch through metadata alone', t => {
-  const f = fixture(t, { firstHostResultPatch: false });
+  const f = fixture(t, { ...retainedGeneration15, firstHostResultPatch: false });
   mutateStamp(f, 'ReShade64.build.json', stamp => { stamp.injectorFirstHostResultPatchSha256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554'; });
   assert.throws(() => validateOverlayDistributionSync(f.dist), /requires the sealed SDK implementation pin/i);
 });
@@ -170,11 +182,11 @@ for (const [name, text] of [
   ['duplicate', "const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';\nconst INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';\n"],
   ['unsupported valid digest', "const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = '" + '0'.repeat(64) + "';\n"],
 ]) test('incoming compiled validator rejects a ' + name + ' first-host implementation pin without executing it', t => {
-  const f = fixture(t, { firstHostResultPatch: false });
+  const f = fixture(t, { ...retainedGeneration15, firstHostResultPatch: false });
   f.write('lib/overlay-package-manifest.js', text); f.payload.seal();
   assert.throws(() => validateOverlayDistributionSync(f.dist), /first-host result patch pin/i);
 });
-test('a future generation cannot silently omit the current injector implementation pin', t => {
+test('a post-legacy generation cannot silently omit the current injector implementation pin', t => {
   const f = fixture(t, { runtimeGeneration: 16, firstHostResultPatch: false });
   assert.throws(() => validateOverlayDistributionSync(f.dist), /patch pin does not match its generation/i);
 });

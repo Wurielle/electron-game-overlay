@@ -166,7 +166,7 @@ test('real npm packaging preserves a retained generation-14 schema-29 SDK withou
   }
 });
 test('real npm packaging preserves the earlier generation-15 schema-30 SDK without a later CLI patch claim', t => {
-  const f = fixture(t, { firstHostResultPatch: false });
+  const f = fixture(t, { runtimeGeneration: 15, addonBuildId: 'BCE6C5C8746F4300861300B2BDA3594E', firstHostResultPatch: false });
   const original = fs.readFileSync(f.manifestPath);
   const result = run(f);
   assert.equal(result.status, 0, result.stderr || result.stdout);

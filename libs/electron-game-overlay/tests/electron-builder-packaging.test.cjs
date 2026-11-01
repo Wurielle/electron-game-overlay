@@ -182,7 +182,7 @@ test('public package verifier rejects schema-30 missing provenance even after le
   await assert.rejects(fs.stat(f.destination), /ENOENT/);
 });
 test('public package verifier preserves the earlier generation-15 implementation without a CLI patch claim', async t => {
-  const f = await fixture(t, { firstHostResultPatch: false });
+  const f = await fixture(t, { runtimeGeneration: 15, addonBuildId: 'BCE6C5C8746F4300861300B2BDA3594E', firstHostResultPatch: false });
   await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
   assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
   const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade64.build.json')));

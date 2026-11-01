@@ -8,8 +8,8 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
-  addonBuildId = 'BCE6C5C8746F4300861300B2BDA3594E',
-  runtimeGeneration = 15,
+  addonBuildId = 'E8FE3783F29E4FB297D8B006D0087725',
+  runtimeGeneration = 16,
   reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
   ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
   firstHostResultPatch = runtimeGeneration >= 15,

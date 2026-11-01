@@ -66,6 +66,7 @@ ego::cooperative::logical_epoch_tracker g_logical_session_epoch;
 ego::cooperative::presentation_driver g_member_input_driver;
 ego::cooperative::presentation_driver g_adapter_input_driver;
 ego::cooperative::logical_control g_logical_control;
+std::atomic<bool> g_adapter_window_ready = false;
 std::uint64_t g_logical_fps_publication_tick = 0;
 DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer);
 DWORD initialize_automatic_member() noexcept;
@@ -537,6 +538,16 @@ struct official_hook_owner
     std::uint32_t references = 0;
     std::uint32_t thread_hook_slot = invalid_official_hook_slot;
     std::atomic<DWORD> install_error = ERROR_SUCCESS;
+    // Setup runs on the owning window thread. Its generation and completion
+    // are protected separately from the hook registry; no callback takes the
+    // registry mutex or waits for the render thread.
+    std::mutex setup_mutex;
+    std::atomic<std::uintptr_t> setup_cookie = 0;
+    std::uint64_t setup_deadline = 0;
+    std::uint64_t setup_next_retry = 0;
+    bool setup_pending = false;
+    bool setup_deadline_reported = false;
+    bool setup_terminal = false;
 };
 
 struct official_thread_hook
@@ -552,6 +563,7 @@ std::array<official_hook_owner, official_hook_owner_capacity>
 std::array<official_thread_hook, official_thread_hook_capacity>
     g_official_thread_hooks = {};
 std::atomic<std::uint64_t> g_official_hook_token_sequence = 0;
+std::atomic<std::uintptr_t> g_official_setup_cookie_sequence = 0;
 std::atomic<std::uint64_t> g_official_input_sequence = 0;
 std::atomic<std::uint32_t> g_official_pointer_message_mask = 0;
 std::atomic<std::uint32_t> g_official_hook_callbacks = 0;
@@ -561,6 +573,34 @@ std::atomic<UINT> g_official_control_message = 0;
 std::atomic_flag g_official_hook_error_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_official_pointer_sequence_logged = ATOMIC_FLAG_INIT;
 std::atomic_flag g_official_hook_shutdown_timeout_logged = ATOMIC_FLAG_INIT;
+constexpr std::uint64_t official_setup_timeout_ms = 5000;
+constexpr std::uint64_t official_setup_retry_ms = 250;
+bool service_official_subclass_setup(MSG &message) noexcept;
+
+const wchar_t *official_owner_property_name()
+{
+    static const std::wstring name = L"ElectronGameOverlay.WindowOwner." +
+        std::to_wstring(reinterpret_cast<std::uintptr_t>(&g_official_hook_owners));
+    return name.c_str();
+}
+
+bool official_owner_window_matches(const official_hook_owner &owner, HWND window) noexcept
+{
+    const auto cookie = owner.setup_cookie.load(std::memory_order_acquire);
+    DWORD process_id = 0;
+    const DWORD thread_id = GetWindowThreadProcessId(window, &process_id);
+    return cookie != 0 && window != nullptr && process_id == GetCurrentProcessId() &&
+        thread_id == owner.thread_id.load(std::memory_order_acquire) &&
+        reinterpret_cast<std::uintptr_t>(GetPropW(window, official_owner_property_name())) == cookie;
+}
+
+void remove_official_owner_property(const official_hook_owner &owner, HWND window) noexcept
+{
+    const auto cookie = owner.setup_cookie.load(std::memory_order_acquire);
+    if (window != nullptr && cookie != 0 &&
+        reinterpret_cast<std::uintptr_t>(GetPropW(window, official_owner_property_name())) == cookie)
+        RemovePropW(window, official_owner_property_name());
+}
 
 struct official_hook_callback_release
 {
@@ -939,7 +979,7 @@ LRESULT CALLBACK official_get_message_hook(
     g_official_hook_callbacks.fetch_add(1, std::memory_order_acquire);
     const official_hook_callback_release release_callback;
 
-    if (g_has_private_input_observer || code < 0 ||
+    if (code < 0 ||
         remove_mode != PM_REMOVE ||
         message_pointer == 0 ||
         g_official_hooks_shutting_down.load(std::memory_order_acquire))
@@ -948,6 +988,8 @@ LRESULT CALLBACK official_get_message_hook(
     }
 
     auto *const details = reinterpret_cast<MSG *>(message_pointer);
+    if (service_official_subclass_setup(*details) || g_has_private_input_observer)
+        return CallNextHookEx(nullptr, code, remove_mode, message_pointer);
     if (!is_official_overlay_input_message(details->message))
         return CallNextHookEx(nullptr, code, remove_mode, message_pointer);
 
@@ -1001,9 +1043,9 @@ constexpr WPARAM official_cursor_update = static_cast<WPARAM>(0x45474355U);
 constexpr WPARAM official_subclass_remove =
     static_cast<WPARAM>(0x45474F52454D4F56ULL);
 
-UINT_PTR official_subclass_id() noexcept
+UINT_PTR official_subclass_id(const official_hook_owner &owner) noexcept
 {
-    return reinterpret_cast<UINT_PTR>(&g_official_hook_owners);
+    return owner.setup_cookie.load(std::memory_order_acquire);
 }
 
 bool official_owner_filters_window(
@@ -1099,13 +1141,33 @@ LRESULT CALLBACK official_window_subclass(
         owner >= g_official_hook_owners.data() &&
         owner < g_official_hook_owners.data() +
             g_official_hook_owners.size() &&
-        subclass_id == official_subclass_id();
+        subclass_id != 0 && subclass_id == official_subclass_id(*owner) &&
+        official_owner_window_matches(*owner, window);
     const UINT control_message =
         g_official_control_message.load(std::memory_order_acquire);
 
+    if (owner_valid && message == WM_NCDESTROY)
+    {
+        {
+            const std::scoped_lock setup_lock(owner->setup_mutex);
+            owner->setup_pending = false;
+            owner->setup_terminal = true;
+            owner->hook_ready.store(false, std::memory_order_release);
+            owner->subclass_ready.store(false, std::memory_order_release);
+            owner->install_error.store(ERROR_INVALID_WINDOW_HANDLE, std::memory_order_release);
+        }
+        owner->phase.store(input_phase::disabled, std::memory_order_release);
+        owner->cursor_code.store(-1, std::memory_order_release);
+        apply_owner_cursor(*owner);
+        remove_official_owner_property(*owner, window);
+        RemoveWindowSubclass(window, official_window_subclass, subclass_id);
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+
     if (owner_valid &&
         message == control_message &&
-        wparam == official_subclass_remove)
+        wparam == official_subclass_remove &&
+        static_cast<UINT_PTR>(lparam) == subclass_id)
     {
         owner->cursor_code.store(-1, std::memory_order_release);
         apply_owner_cursor(*owner);
@@ -1114,7 +1176,7 @@ LRESULT CALLBACK official_window_subclass(
         RemoveWindowSubclass(
             window,
             official_window_subclass,
-            official_subclass_id());
+            subclass_id);
         return 0;
     }
     if (owner_valid &&
@@ -1171,55 +1233,55 @@ LRESULT CALLBACK official_window_subclass(
     return 0;
 }
 
-LRESULT CALLBACK official_subclass_setup_hook(
-    int code,
-    WPARAM,
-    LPARAM call_window_proc_pointer) noexcept
+bool complete_official_subclass_setup(official_hook_owner &owner, HWND window,
+    std::uintptr_t cookie) noexcept
 {
-    if (code >= 0 && call_window_proc_pointer != 0)
+    if (!owner.setup_pending || cookie == 0 || official_subclass_id(owner) != cookie ||
+        !official_owner_window_matches(owner, window) ||
+        owner.root_window.load(std::memory_order_acquire) != reinterpret_cast<std::uintptr_t>(window) ||
+        owner.thread_id.load(std::memory_order_acquire) != GetCurrentThreadId())
+        return false;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL installed = SetWindowSubclass(window, official_window_subclass,
+        static_cast<UINT_PTR>(cookie), reinterpret_cast<DWORD_PTR>(&owner));
+    DWORD error = installed != FALSE ? ERROR_SUCCESS : GetLastError();
+    if (installed == FALSE && error == ERROR_SUCCESS)
+        error = ERROR_INVALID_HOOK_HANDLE;
+    owner.install_error.store(error, std::memory_order_release);
+    owner.subclass_ready.store(installed != FALSE, std::memory_order_release);
+    owner.hook_ready.store(installed != FALSE, std::memory_order_release);
+    if (installed != FALSE)
     {
-        const auto *const details =
-            reinterpret_cast<const CWPSTRUCT *>(call_window_proc_pointer);
-        const UINT control_message =
-            g_official_control_message.load(std::memory_order_acquire);
-        if (details->message == control_message &&
-            details->wParam == official_subclass_install &&
-            details->lParam >= 0 &&
-            static_cast<std::size_t>(details->lParam) <
-                g_official_hook_owners.size())
-        {
-            official_hook_owner &owner =
-                g_official_hook_owners[
-                    static_cast<std::size_t>(details->lParam)];
-            HWND const owner_root = reinterpret_cast<HWND>(
-                owner.root_window.load(std::memory_order_acquire));
-            if (owner_root == details->hwnd &&
-                owner.thread_id.load(std::memory_order_acquire) ==
-                    GetCurrentThreadId())
-            {
-                SetLastError(ERROR_SUCCESS);
-                const BOOL installed = SetWindowSubclass(
-                    details->hwnd,
-                    official_window_subclass,
-                    official_subclass_id(),
-                    reinterpret_cast<DWORD_PTR>(&owner));
-                DWORD error = installed != FALSE
-                    ? ERROR_SUCCESS
-                    : GetLastError();
-                if (installed == FALSE && error == ERROR_SUCCESS)
-                    error = ERROR_INVALID_HOOK_HANDLE;
-                owner.install_error.store(error, std::memory_order_release);
-                owner.subclass_ready.store(
-                    installed != FALSE,
-                    std::memory_order_release);
-            }
-        }
+        owner.setup_pending = false;
+        char detail[256] = {};
+        sprintf_s(detail, "Electron game overlay acknowledged owner-thread "
+            "input/cursor setup for root HWND %p on thread %lu.", window,
+            static_cast<unsigned long>(GetCurrentThreadId()));
+        reshade::log::message(reshade::log::level::info, detail);
+        return true;
     }
-    return CallNextHookEx(
-        nullptr,
-        code,
-        0,
-        call_window_proc_pointer);
+    return false;
+}
+
+bool service_official_subclass_setup(MSG &message) noexcept
+{
+    if (message.message != g_official_control_message.load(std::memory_order_acquire) ||
+        message.wParam != official_subclass_install)
+        return false;
+    const auto cookie = static_cast<std::uintptr_t>(message.lParam);
+    for (auto &owner : g_official_hook_owners)
+    {
+        if (cookie == 0 || official_subclass_id(owner) != cookie)
+            continue;
+        const std::scoped_lock setup_lock(owner.setup_mutex);
+        if (!g_official_hooks_shutting_down.load(std::memory_order_acquire))
+            static_cast<void>(complete_official_subclass_setup(owner, message.hwnd, cookie));
+        break;
+    }
+    // Obsolete generation requests are consumed too. They never reach game
+    // code or install a subclass belonging to a recycled owner slot.
+    message.message = WM_NULL; message.wParam = 0; message.lParam = 0;
+    return true;
 }
 
 struct electron_texture
@@ -1263,6 +1325,9 @@ struct swapchain_data
     std::uint64_t official_hook_token = 0;
     std::uint32_t official_hook_slot = invalid_official_hook_slot;
     bool official_hook_failure_reported = false;
+    bool transport_initialization_complete = false;
+    bool swapchain_ready_published = false;
+    std::mutex transport_initialization_mutex;
     std::vector<ego_window_frame_v1> cooperative_frames;
     std::unordered_map<std::uint32_t, std::uint64_t> cooperative_incarnations;
     bool cooperative_frame_active = false;
@@ -1509,87 +1574,66 @@ UINT ensure_official_control_message() noexcept
 
 bool install_official_window_subclass(
     official_hook_owner &owner,
-    std::uint32_t owner_index) noexcept
+    std::uint32_t) noexcept
 {
+    const std::scoped_lock setup_lock(owner.setup_mutex);
     HWND const root = reinterpret_cast<HWND>(
         owner.root_window.load(std::memory_order_acquire));
     const DWORD thread_id =
         owner.thread_id.load(std::memory_order_acquire);
-    if (root == nullptr ||
+    if (!official_owner_window_matches(owner, root) ||
         thread_id == 0 ||
         ensure_official_control_message() == 0)
     {
         owner.install_error.store(
             ERROR_INVALID_WINDOW_HANDLE,
             std::memory_order_release);
+        owner.setup_terminal = true;
+        owner.setup_pending = false;
+        owner.hook_ready.store(false, std::memory_order_release);
         return false;
     }
+    if (owner.hook_ready.load(std::memory_order_acquire))
+        return true;
+    if (!owner.setup_pending || owner.setup_terminal || owner.setup_deadline_reported)
+        return false;
 
-    if (GetCurrentThreadId() == thread_id)
+    if (GetCurrentThreadId() == thread_id &&
+        complete_official_subclass_setup(owner, root, official_subclass_id(owner)))
+        return true;
+    const std::uint64_t now = GetTickCount64();
+    if (now >= owner.setup_deadline)
     {
+        // Report the bounded startup failure, but retain the last queued
+        // generation request so an owner thread that resumes later can rescue
+        // the dispatcher. No more messages are posted after this deadline.
+        owner.setup_deadline_reported = true;
+        owner.install_error.store(ERROR_TIMEOUT, std::memory_order_release);
+        return false;
+    }
+    if (now >= owner.setup_next_retry)
+    {
+        owner.setup_next_retry = now + official_setup_retry_ms;
         SetLastError(ERROR_SUCCESS);
-        const BOOL installed = SetWindowSubclass(
-            root,
-            official_window_subclass,
-            official_subclass_id(),
-            reinterpret_cast<DWORD_PTR>(&owner));
-        DWORD error = installed != FALSE
-            ? ERROR_SUCCESS
-            : GetLastError();
-        if (installed == FALSE && error == ERROR_SUCCESS)
-            error = ERROR_INVALID_HOOK_HANDLE;
-        owner.install_error.store(error, std::memory_order_release);
-        owner.subclass_ready.store(
-            installed != FALSE,
-            std::memory_order_release);
-        return installed != FALSE;
+        if (PostMessageW(root, g_official_control_message.load(std::memory_order_acquire),
+            official_subclass_install, static_cast<LPARAM>(official_subclass_id(owner))) == FALSE)
+            owner.install_error.store(GetLastError(), std::memory_order_release);
     }
-
-    SetLastError(ERROR_SUCCESS);
-    HHOOK const setup_hook = SetWindowsHookExW(
-        WH_CALLWNDPROC,
-        official_subclass_setup_hook,
-        nullptr, // Local-process hook: do not ask USER32 to load the add-on again.
-        thread_id);
-    if (setup_hook == nullptr)
-    {
-        DWORD error = GetLastError();
-        if (error == ERROR_SUCCESS)
-            error = ERROR_HOOK_NEEDS_HMOD;
-        owner.install_error.store(error, std::memory_order_release);
-        return false;
-    }
-
-    DWORD_PTR ignored_result = 0;
-    SetLastError(ERROR_SUCCESS);
-    const LRESULT sent = SendMessageTimeoutW(
-        root,
-        g_official_control_message.load(std::memory_order_acquire),
-        official_subclass_install,
-        static_cast<LPARAM>(owner_index),
-        SMTO_ABORTIFHUNG | SMTO_BLOCK,
-        2000,
-        &ignored_result);
-    DWORD send_error = sent != 0 ? ERROR_SUCCESS : GetLastError();
-    if (send_error == ERROR_SUCCESS && sent == 0)
-        send_error = ERROR_TIMEOUT;
-    UnhookWindowsHookEx(setup_hook);
-
-    const bool installed =
-        owner.subclass_ready.load(std::memory_order_acquire);
-    if (!installed &&
-        owner.install_error.load(std::memory_order_acquire) == ERROR_SUCCESS)
-    {
-        owner.install_error.store(send_error, std::memory_order_release);
-    }
-    return installed;
+    return false;
 }
 
 bool remove_official_window_subclass(
     official_hook_owner &owner) noexcept
 {
+    {
+        const std::scoped_lock setup_lock(owner.setup_mutex);
+        owner.setup_pending = false;
+    }
     if (!owner.subclass_ready.load(std::memory_order_acquire))
+    {
+        remove_official_owner_property(owner, reinterpret_cast<HWND>(owner.root_window.load(std::memory_order_acquire)));
         return true;
+    }
 
     owner.hook_ready.store(false, std::memory_order_release);
     HWND const root = reinterpret_cast<HWND>(
@@ -1607,9 +1651,12 @@ bool remove_official_window_subclass(
         const BOOL removed = RemoveWindowSubclass(
             root,
             official_window_subclass,
-            official_subclass_id());
+            official_subclass_id(owner));
         if (removed != FALSE)
+        {
             owner.subclass_ready.store(false, std::memory_order_release);
+            remove_official_owner_property(owner, root);
+        }
         return removed != FALSE;
     }
 
@@ -1618,12 +1665,14 @@ bool remove_official_window_subclass(
         root,
         g_official_control_message.load(std::memory_order_acquire),
         official_subclass_remove,
-        0,
+        static_cast<LPARAM>(official_subclass_id(owner)),
         SMTO_ABORTIFHUNG | SMTO_BLOCK,
         2000,
         &ignored_result);
-    return sent != 0 &&
-        !owner.subclass_ready.load(std::memory_order_acquire);
+    const bool removed = sent != 0 && !owner.subclass_ready.load(std::memory_order_acquire);
+    if (removed)
+        remove_official_owner_property(owner, root);
+    return removed;
 }
 
 bool retain_official_hook_owner(swapchain_data &data) noexcept
@@ -1654,7 +1703,9 @@ bool retain_official_hook_owner(swapchain_data &data) noexcept
         official_hook_owner &owner = g_official_hook_owners[index];
         if (owner.references == 0 ||
             reinterpret_cast<HWND>(
-                owner.root_window.load(std::memory_order_acquire)) != root)
+                owner.root_window.load(std::memory_order_acquire)) != root ||
+            owner.thread_id.load(std::memory_order_acquire) != thread_id ||
+            process_id != GetCurrentProcessId() || !official_owner_window_matches(owner, root))
         {
             continue;
         }
@@ -1662,7 +1713,10 @@ bool retain_official_hook_owner(swapchain_data &data) noexcept
         ++owner.references;
         data.official_hook_slot = index;
         data.official_hook_token = token;
-        return owner.hook_ready.load(std::memory_order_acquire);
+        if (owner.hook_ready.load(std::memory_order_acquire))
+            return true;
+        const std::scoped_lock setup_lock(owner.setup_mutex);
+        return !owner.setup_terminal && !owner.setup_deadline_reported;
     }
 
     DWORD install_error = ERROR_SUCCESS;
@@ -1691,6 +1745,12 @@ bool retain_official_hook_owner(swapchain_data &data) noexcept
             continue;
         }
 
+        std::uintptr_t cookie = g_official_setup_cookie_sequence.load(std::memory_order_relaxed);
+        while (cookie != (std::numeric_limits<std::uintptr_t>::max)() &&
+            !g_official_setup_cookie_sequence.compare_exchange_weak(cookie, cookie + 1,
+                std::memory_order_relaxed, std::memory_order_relaxed)) {}
+        cookie = cookie == (std::numeric_limits<std::uintptr_t>::max)() ? 0 : cookie + 1;
+        const std::scoped_lock setup_lock(owner.setup_mutex);
         owner.references = 1;
         owner.thread_hook_slot = thread_hook_slot;
         owner.install_error.store(install_error, std::memory_order_relaxed);
@@ -1702,36 +1762,38 @@ bool retain_official_hook_owner(swapchain_data &data) noexcept
         owner.phase.store(input_phase::disabled, std::memory_order_relaxed);
         owner.hook_ready.store(false, std::memory_order_relaxed);
         owner.subclass_ready.store(false, std::memory_order_relaxed);
+        owner.setup_cookie.store(cookie, std::memory_order_relaxed);
+        owner.setup_pending = message_hook_ready && cookie != 0;
+        owner.setup_terminal = !message_hook_ready || cookie == 0;
+        owner.setup_deadline_reported = false;
+        owner.setup_deadline = GetTickCount64() + official_setup_timeout_ms;
+        owner.setup_next_retry = 0;
+        if (cookie != 0 && SetPropW(root, official_owner_property_name(),
+            reinterpret_cast<HANDLE>(cookie)) == FALSE)
+        {
+            owner.setup_pending = false;
+            owner.setup_terminal = true;
+            owner.install_error.store(GetLastError(), std::memory_order_relaxed);
+        }
+        if (cookie == 0)
+            owner.install_error.store(ERROR_ARITHMETIC_OVERFLOW, std::memory_order_relaxed);
         owner.root_window.store(
             reinterpret_cast<std::uintptr_t>(root),
             std::memory_order_release);
         data.official_hook_slot = index;
         data.official_hook_token = token;
 
-        const bool hook_ready =
-            message_hook_ready &&
-            install_official_window_subclass(owner, index);
-        owner.hook_ready.store(hook_ready, std::memory_order_release);
-        if (hook_ready)
-        {
-            char message[256] = {};
-            sprintf_s(
-                message,
-                "Electron game overlay installed its official-ReShade "
-                "WH_GETMESSAGE and window-subclass input hooks for root HWND "
-                "%p on thread %lu.",
-                root,
-                static_cast<unsigned long>(thread_id));
-            reshade::log::message(reshade::log::level::info, message);
-        }
-        else
+        // A pending owner is a live lease, not a failed installation. The
+        // first eligible Present advances setup after releasing this registry
+        // mutex, allowing the window thread to acknowledge independently.
+        if (owner.setup_terminal)
         {
             log_official_hook_failure(
                 root,
                 thread_id,
                 owner.install_error.load(std::memory_order_acquire));
         }
-        return hook_ready;
+        return !owner.setup_terminal;
     }
 
     if (message_hook_ready &&
@@ -1765,6 +1827,22 @@ official_hook_owner *get_official_hook_owner(
     return owner.root_window.load(std::memory_order_acquire) != 0
         ? &owner
         : nullptr;
+}
+
+enum class official_setup_status { pending, ready, failed };
+
+official_setup_status advance_official_hook_setup(swapchain_data &data)
+{
+    auto *const owner = get_official_hook_owner(data);
+    if (owner == nullptr)
+        return official_setup_status::failed;
+    const std::scoped_lock registry_lock(g_official_hook_mutex);
+    static_cast<void>(install_official_window_subclass(*owner, data.official_hook_slot));
+    const std::scoped_lock setup_lock(owner->setup_mutex);
+    if (owner->hook_ready.load(std::memory_order_acquire))
+        return official_setup_status::ready;
+    return owner->setup_terminal || owner->setup_deadline_reported
+        ? official_setup_status::failed : official_setup_status::pending;
 }
 
 bool claim_official_input_owner(swapchain_data &data) noexcept
@@ -3575,6 +3653,54 @@ void publish_render_fps(swapchain_data &data)
     }
 }
 
+void initialize_own_surface_transport(swapchain_data &data, bool publish_ready = true)
+{
+    const std::scoped_lock initialization_lock(data.transport_initialization_mutex);
+    if (!data.transport_initialization_complete)
+    {
+        data.transport = retain_transport();
+        data.transport_initialization_complete = true;
+    }
+    if (publish_ready && !data.swapchain_ready_published)
+    {
+        publish_runtime_diagnostic(data.transport, EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY);
+        data.swapchain_ready_published = true;
+    }
+}
+
+bool advance_own_surface_startup(swapchain_data &data)
+{
+    if (!g_cooperative_dispatcher)
+    {
+        initialize_own_surface_transport(data);
+        return true;
+    }
+    const auto status = advance_official_hook_setup(data);
+    if (status == official_setup_status::pending)
+    {
+        if (!g_adapter_window_ready.load(std::memory_order_acquire))
+            g_source_final_reset_pending.store(true, std::memory_order_release);
+        return false;
+    }
+    // A bounded failure must reach the supplying producer, while a later UI
+    // acknowledgement can still rescue this pinned dispatcher for future apps.
+    initialize_own_surface_transport(data, status == official_setup_status::ready);
+    if (status == official_setup_status::failed)
+    {
+        if (!data.official_hook_failure_reported)
+        {
+            data.official_hook_failure_reported = true;
+            if (auto *const owner = get_official_hook_owner(data))
+                log_official_hook_failure(data.window,
+                    owner->thread_id.load(std::memory_order_acquire),
+                    owner->install_error.load(std::memory_order_acquire));
+            publish_input_routing_failure(data.transport, EGO_STATUS_INITIALIZATION_FAILED);
+        }
+        return false;
+    }
+    return true;
+}
+
 void initialize_own_surface(device_object *surface, HWND window)
 {
     if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS)
@@ -3591,17 +3717,9 @@ void initialize_own_surface(device_object *surface, HWND window)
     }
     data->window = window;
     data->ownership_token = next_swapchain_ownership_token();
-    data->transport = retain_transport();
-    if (g_cooperative_dispatcher && !retain_official_hook_owner(*data))
-    {
-        data->official_hook_failure_reported = true;
-        publish_input_routing_failure(
-            data->transport,
-            EGO_STATUS_INITIALIZATION_FAILED);
-    }
-    publish_runtime_diagnostic(
-        data->transport,
-        EGO_RUNTIME_DIAGNOSTIC_SWAPCHAIN_READY);
+    if (g_cooperative_dispatcher)
+        static_cast<void>(retain_official_hook_owner(*data));
+    static_cast<void>(advance_own_surface_startup(*data));
 }
 
 void on_init_swapchain(swapchain *surface, bool resize)
@@ -4445,6 +4563,8 @@ bool prepare_own_frame(effect_runtime *runtime, bool anchor_owner)
     }
     if (data == nullptr)
         return false;
+    if (!advance_own_surface_startup(*data))
+        return false;
     data->cooperative_frame_active = false;
     data->cooperative_frames.clear();
     if (data->transport == nullptr)
@@ -4759,6 +4879,7 @@ void on_destroy_swapchain(swapchain *surface, bool resize)
         g_source_final_reset_pending.store(true, std::memory_order_release);
         g_logical_control.run([&] {
             g_cooperative_adapter_phase = input_phase::disabled;
+            g_adapter_window_ready.store(false, std::memory_order_release);
             g_adapter_input_driver.reset();
             if (auto *const data = find_swapchain_data(surface))
             {
@@ -4790,6 +4911,7 @@ void on_destroy_effect_runtime(effect_runtime *runtime)
             // A former presenter may be reset after a peer has taken over. Only
             // retirement of the current driver can release the shared adapter.
             g_cooperative_adapter_phase = input_phase::disabled;
+            g_adapter_window_ready.store(false, std::memory_order_release);
             g_cooperative.retire_input_driver_capture();
             if (auto *const data = find_swapchain_data(runtime))
             {
@@ -4891,12 +5013,20 @@ void on_reshade_overlay(effect_runtime *runtime)
         if (find_swapchain_data(runtime) == nullptr)
             initialize_own_surface(runtime, static_cast<HWND>(runtime->get_hwnd()));
         auto *const data = find_swapchain_data(runtime);
+        if (data == nullptr || !advance_own_surface_startup(*data))
+            return;
         g_logical_control.run([&] {
+            g_adapter_window_ready.store(true, std::memory_order_release);
             g_adapter_input_driver.activate(runtime->get_native());
             if (data != nullptr && !g_has_private_input_observer)
                 static_cast<void>(claim_official_input_owner(*data));
         });
     }
+    // This also protects older participants: none of their preparation or
+    // input callbacks may advertise success before the shared cursor/input
+    // adapter has acknowledged owner-thread installation.
+    if (!g_adapter_window_ready.load(std::memory_order_acquire))
+        return;
     for (const auto &participant : g_cooperative.snapshot_participants())
         if (participant.callbacks.prepare_frame != nullptr)
             participant.callbacks.prepare_frame(participant.context, runtime);
@@ -5228,6 +5358,7 @@ extern "C" __declspec(dllexport) void AddonUninit(HMODULE module, HMODULE)
     if (g_cooperative_dispatcher)
     {
         InterlockedExchange(&ElectronGameOverlayCooperativeAdapterReadyV1, 0);
+        g_adapter_window_ready.store(false, std::memory_order_release);
         shutdown_official_message_hooks(true);
         unregister_compatible_addon(module);
         g_public_registered = false;

@@ -42,6 +42,11 @@ const gen14Build = {
   full: 'EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1',
   pre: 'AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4',
 };
+const gen15Build = {
+  id: 'BCE6C5C8746F4300861300B2BDA3594E',
+  full: 'F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B',
+  pre: '3D51024529834F539601F4E2573E29591954CF5906C704C980086108DB51373B',
+};
 const normalized = text => text.replace(/\r\n?/g, '\n');
 const sha = text => createHash('sha256').update(normalized(text)).digest('hex').toUpperCase();
 const previousBuilds = [
@@ -216,6 +221,18 @@ test('known generation 14 v4 source rolls its independently pinned body to the c
 test('known generation 14 pre-cooperative source retains the exact historical lower-stack bridge', options, t => {
   const source = preCooperative(gen14Build.id);
   assert.equal(sha(source), gen14Build.pre);
+  assertAccepted(runGuard(t, source), preHash);
+});
+
+test('known generation 15 v4 source rolls its independently pinned body to the current pre-late v4 identity', options, t => {
+  const source = terminal(t, currentPatch, gen15Build.id);
+  assert.equal(sha(source), gen15Build.full);
+  assertAccepted(runGuard(t, source), fullHash);
+});
+
+test('known generation 15 pre-cooperative source retains the exact historical lower-stack bridge', options, t => {
+  const source = preCooperative(gen15Build.id);
+  assert.equal(sha(source), gen15Build.pre);
   assertAccepted(runGuard(t, source), preHash);
 });
 

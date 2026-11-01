@@ -70,6 +70,33 @@ checks raw delivery separately. This does not claim GetRawInputBuffer coverage.
 All cases record the actual first adoption count transition around native
 Present, including the adopted raw pointer/role; A-first is checked, not assumed.
 
+## Busy UI startup recovery
+
+The separate `late-d3d11-ui-busy-hook-recovery.ps1` launcher opts into a 2.8-second
+UI stall after the owned bootstrap initializes, before its first adoption. A
+worker alone owns the immediate context and performs the first actual native
+Presents/adoptions while the real HWND owner sleeps without pumping messages.
+The host records distinct UI/presentation thread IDs, elapsed busy time, at
+least six native Presents and both adoptions during that interval. It joins the
+worker before the UI resumes pumping or touches the context again. This is a
+startup-delay regression, not a claim of concurrent context access support.
+
+After resume, the ordinary strict paused-primary lane remains intact. Target
+authentication and swapchain/input readiness must be dated after the UI resumes;
+critical native diagnostics fail the existing producer. The gate then requires
+real overlay pixels, fresh registration/focus, DOM keys/pointer, zero intercepted
+WM_INPUT/legacy/poll leakage, explicit release, an actual Windows text cursor,
+restored game cursor/clipping, producer withdrawal and final native retirement.
+Input is synthetic SendInput, never physical-key acceptance. Existing launchers
+leave this mode disabled. Root coordinates all GUI execution.
+
+```powershell
+& libs/electron-game-overlay-runtime/scripts/test-cases/late-d3d11-ui-busy-hook-recovery.ps1 `
+  -RuntimePath C:/absolute/owned/ReShade64.dll `
+  -AddonPath C:/absolute/owned/electron_game_overlay.addon64 `
+  -Architecture x64
+```
+
 Actual foreground pixel checks and HWND/PID ownership guards remain in the
 controller. Connection continuity requires one authentication and zero transport
 loss/disconnection events. The final native report requires two adoptions, the
@@ -162,3 +189,34 @@ failure path after 39 pre-load presents per chain, before either DLL was loaded;
 it establishes no graphics, lifecycle or polling result. Its artifact directory
 ends in `dce887d8e1c8424098b99846888bfe82`. Neither run is a passing same-HWND
 input-promotion result.
+
+## Recorded busy-UI regression acceptance
+
+[Portable paired evidence](evidence-ui-busy-2026-11-01.json) records the actual
+2026-11-01 generation-15 negative and generation-16 positive controls, including
+full binary/source/artifact hashes and the matched generation-16 package records.
+The x64 host, controller, producer and SDK entry shim hashes match between the
+negative and positive controls. Entry-shim equality does not establish equality
+of the complete imported SDK JavaScript graph.
+
+| Candidate | Architecture | Result | Busy UI / worker Presents | Readiness after UI resume |
+| --- | --- | --- | --- | --- |
+| Generation 15, `BCE6C5C8746F4300861300B2BDA3594E` | x64 | Failed: critical `runtime-input-routing-failed`, native Win32 1460 | Startup did not complete | No input acceptance claimed |
+| Generation 16, `E8FE3783F29E4FB297D8B006D0087725` | x64 | Passed | 2828 ms / 160 Presents, 2 adoptions | Hello +15 ms; ready +15/+17 ms |
+| Generation 16, `E8FE3783F29E4FB297D8B006D0087725` | Win32 | Passed | 2860 ms / 162 Presents, 2 adoptions | Hello +11 ms; ready +12 ms |
+
+Both positive controls delivered DOM key down/up and pointer input while native
+legacy messages, WM_INPUT and all three polling APIs remained suppressed.
+Explicit release and producer exit restored native input. Actual Windows cursor
+checks passed and restored the prior cursor/clipping rectangle. Fresh window
+IDs replaced the old rank without implicit focus or TCP reconnection; producer
+exit withdrew windows/ranks/focus and red pixels. Final cleanup recorded two
+retirements, zero render/quarantine/pipeline faults, unchanged staged INI,
+zero generated INIs and clean host/producer exits. Display evidence observed ON
+before/during each pass and released its temporary request.
+
+The stopped producer's final saved interception flag is stale; post-disconnect
+restoration is established by native polling/messages and registry/pixel
+withdrawal, not an acknowledgement from a closed socket. This is controlled
+owned-host D3D11 acceptance with synthetic foreground input. It is not a
+real-game, automatic-attachment, buffered-raw-input or physical-key result.

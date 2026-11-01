@@ -10,6 +10,7 @@
 #include "../../src/ego_cooperative_registry.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -43,6 +45,7 @@ struct options
     std::uint64_t resize_after_frames = 120;
     std::uint64_t lifetime_ms = 60'000;
     bool prototype = false;
+    std::uint64_t ui_busy_ms = 0;
 };
 
 struct polling_evidence
@@ -129,6 +132,13 @@ struct evidence
     std::uint32_t registry_focus_window = 0;
     std::vector<std::uint32_t> registry_windows;
     std::vector<std::uint32_t> registry_ranks;
+    bool ui_busy_completed = false;
+    DWORD ui_busy_owner_thread = 0;
+    DWORD ui_busy_present_thread = 0;
+    std::uint64_t ui_busy_elapsed_ms = 0;
+    std::uint64_t ui_busy_end_unix_ms = 0;
+    std::uint64_t ui_busy_present_calls = 0;
+    std::uint64_t ui_busy_adoption_successes = 0;
 };
 
 using initialize_member_fn = DWORD(WINAPI *)(void *);
@@ -400,6 +410,14 @@ bool write_report()
         << "  \"addonGateObserved\": " << g_evidence.addon_gate_observed << ",\n"
         << "  \"addonGateClaimed\": " << (g_evidence.addon_gate_claimed ? "true" : "false") << ",\n"
         << "  \"addonGateRegistered\": " << (g_evidence.addon_gate_registered ? "true" : "false") << ",\n"
+        << "  \"uiBusyRequestedMs\": " << g_options.ui_busy_ms << ",\n"
+        << "  \"uiBusyCompleted\": " << (g_evidence.ui_busy_completed ? "true" : "false") << ",\n"
+        << "  \"uiBusyOwnerThreadId\": " << g_evidence.ui_busy_owner_thread << ",\n"
+        << "  \"uiBusyPresentThreadId\": " << g_evidence.ui_busy_present_thread << ",\n"
+        << "  \"uiBusyElapsedMs\": " << g_evidence.ui_busy_elapsed_ms << ",\n"
+        << "  \"uiBusyEndUnixMs\": " << g_evidence.ui_busy_end_unix_ms << ",\n"
+        << "  \"uiBusyNativePresentCalls\": " << g_evidence.ui_busy_present_calls << ",\n"
+        << "  \"uiBusyAdoptionSuccesses\": " << g_evidence.ui_busy_adoption_successes << ",\n"
         << "  \"automaticDiscoveryProven\": false,\n"
         << "  \"nativeInputAcceptanceProven\": false,\n"
         << "  \"sameHwnd\": " << (g_evidence.same_hwnd_verified ? "true" : "false") << ",\n"
@@ -669,6 +687,10 @@ bool parse_options()
         else if (key == L"--lifetime-ms")
         {
             if (!parse_number(value, 1'000, 600'000, g_options.lifetime_ms)) return false;
+        }
+        else if (key == L"--ui-busy-ms")
+        {
+            if (!parse_number(value, 2500, 3500, g_options.ui_busy_ms)) return false;
         }
         else
             return false;
@@ -1195,6 +1217,56 @@ bool render_frame()
         render_chain(g_graphics.swapchain.Get(), g_graphics.target.Get(), true);
 }
 
+bool exercise_busy_ui_adoption()
+{
+    if (g_options.ui_busy_ms == 0) return true;
+    if (!g_graphics.bootstrap_active || g_evidence.bootstrap_stats.adoption_successes != 0)
+        return fail("The busy-UI experiment must start before the first post-load adoption.");
+
+    const DWORD owner_thread = GetCurrentThreadId();
+    const auto before_presents = g_evidence.native_present_calls;
+    const auto started = GetTickCount64();
+    std::atomic<bool> stop = false;
+    std::atomic<bool> worker_started = false;
+    DWORD present_thread = 0;
+    bool worker_ok = true;
+    // The UI owns no graphics/evidence operations until join. During this
+    // interval only the worker presents; the real window owner intentionally
+    // does not pump messages for longer than the old two-second setup timeout.
+    std::thread worker([&] {
+        present_thread = GetCurrentThreadId();
+        worker_started.store(true, std::memory_order_release);
+        try
+        {
+            while (!stop.load(std::memory_order_acquire))
+                if (!render_frame()) { worker_ok = false; break; }
+        }
+        catch (...)
+        {
+            worker_ok = false;
+            fail("The first-present worker failed during the controlled busy-UI interval.");
+        }
+    });
+    while (!worker_started.load(std::memory_order_acquire)) Sleep(1);
+    Sleep(static_cast<DWORD>(g_options.ui_busy_ms));
+    stop.store(true, std::memory_order_release);
+    worker.join(); // Return context ownership before the UI pumps or presents.
+
+    FILETIME now = {};
+    GetSystemTimeAsFileTime(&now);
+    const auto ticks = (std::uint64_t(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+    g_evidence.ui_busy_end_unix_ms = (ticks - UINT64_C(116444736000000000)) / 10000;
+    g_evidence.ui_busy_owner_thread = owner_thread;
+    g_evidence.ui_busy_present_thread = present_thread;
+    g_evidence.ui_busy_elapsed_ms = GetTickCount64() - started;
+    g_evidence.ui_busy_present_calls = g_evidence.native_present_calls - before_presents;
+    g_evidence.ui_busy_adoption_successes = g_evidence.bootstrap_stats.adoption_successes;
+    g_evidence.ui_busy_completed = worker_ok && owner_thread != present_thread &&
+        g_evidence.ui_busy_elapsed_ms >= g_options.ui_busy_ms &&
+        g_evidence.ui_busy_present_calls >= 6 && g_evidence.ui_busy_adoption_successes == 2;
+    return g_evidence.ui_busy_completed || fail("Busy-UI startup did not keep worker presentations and native adoption progressing.");
+}
+
 bool wait_for_retirements(std::uint64_t expected)
 {
     if (g_graphics.context == nullptr)
@@ -1441,9 +1513,10 @@ int run(HINSTANCE instance)
         }
         if (!render_frame())
             break;
-        if (g_evidence.loaded_at == 0 &&
-            g_evidence.frames_before_load >= g_options.frames_before_load && !load_and_adopt())
-            break;
+        if (g_evidence.loaded_at == 0 && g_evidence.frames_before_load >= g_options.frames_before_load)
+        {
+            if (!load_and_adopt() || !exercise_busy_ui_adoption()) break;
+        }
         if (!process_control_command())
             break;
         if (g_evidence.finish_requested)

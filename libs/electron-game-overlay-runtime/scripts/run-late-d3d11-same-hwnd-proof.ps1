@@ -14,6 +14,7 @@ param(
     [ValidateRange(20000, 180000)][int]$LifetimeMs = 60000,
     [ValidateRange(250, 1000)][int]$HoldMilliseconds = 400,
     [switch]$SkipBuild,
+    [Parameter(DontShow)][ValidateSet(0, 2800)][int]$UiBusyMilliseconds = 0,
     [Parameter(DontShow)][switch]$Prototype,
     [Parameter(DontShow)][switch]$DiagnosticInputOnly
 )
@@ -42,7 +43,8 @@ foreach ($File in @($BuiltHost, (Join-Path $Fixture 'host.cpp'), (Join-Path $Sdk
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { throw "Required proof file is missing: $File" }
 }
 
-$Run = Join-Path $BuildRoot ('proof-' + $Case + '-' + $Architecture + '-' + [Guid]::NewGuid().ToString('N'))
+$ProofCase = if ($UiBusyMilliseconds -ne 0) { 'ui-busy-hook-recovery' } else { $Case }
+$Run = Join-Path $BuildRoot ('proof-' + $ProofCase + '-' + $Architecture + '-' + [Guid]::NewGuid().ToString('N'))
 $Stage = Join-Path $Run 'stage'
 $TargetDirectory = Join-Path $Run 'target'
 $ProducerEvidence = Join-Path $Run 'producer'
@@ -95,6 +97,9 @@ $Proof = [ordered]@{
     schemaVersion = 1
     fixture = 'late-d3d11-same-hwnd-input-lifetime'
     case = $Case
+    scenario = $ProofCase
+    uiBusyMilliseconds = $UiBusyMilliseconds
+    uiBusyHookRecoveryProven = $false
     bootstrapMode = if ($Prototype) { 'prototype' } else { 'production-owned' }
     productionOwnedAbiProven = $false
     architecture = $Architecture
@@ -261,6 +266,8 @@ public static class EgoSameHwndD3D11ProofInputV1 {
  [StructLayout(LayoutKind.Sequential)] struct POINT { public int x,y; }
  [StructLayout(LayoutKind.Sequential)] struct MOUSE { public int dx,dy; public uint data,flags,time; public UIntPtr extra; }
  [StructLayout(LayoutKind.Sequential)] struct KEY { public ushort vk,scan; public uint flags,time; public UIntPtr extra; }
+ [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public uint size,flags; public IntPtr cursor; public POINT point; }
+ [StructLayout(LayoutKind.Sequential)] struct RECT { public int left,top,right,bottom; }
  [StructLayout(LayoutKind.Explicit)] struct UNION { [FieldOffset(0)] public MOUSE mouse; [FieldOffset(0)] public KEY key; }
  [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public UNION data; }
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -273,6 +280,9 @@ public static class EgoSameHwndD3D11ProofInputV1 {
  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from,uint to,bool attach);
  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h,ref POINT point);
  [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO cursor);
+ [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr module,IntPtr id);
+ [DllImport("user32.dll")] static extern bool GetClipCursor(out RECT rectangle);
  [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
  [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h,IntPtr dc);
  [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr dc,int x,int y);
@@ -289,6 +299,20 @@ public static class EgoSameHwndD3D11ProofInputV1 {
   return GetForegroundWindow()==h;
  }
  public static bool IsDown(ushort key) { return (GetAsyncKeyState(key)&0x8000)!=0; }
+ public static void Place(IntPtr h,int x,int y) {
+  var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p)||!SetCursorPos(p.x,p.y))throw new Exception("Pointer placement failed");
+ }
+ public static string CursorState() {
+  var c=new CURSORINFO{size=(uint)Marshal.SizeOf(typeof(CURSORINFO))};
+  if(!GetCursorInfo(ref c))throw new Exception("GetCursorInfo failed");return c.flags+":"+c.cursor.ToInt64();
+ }
+ public static bool CursorIs(int id) {
+  var c=new CURSORINFO{size=(uint)Marshal.SizeOf(typeof(CURSORINFO))};
+  return GetCursorInfo(ref c)&&c.flags==1&&c.cursor==LoadCursor(IntPtr.Zero,new IntPtr(id));
+ }
+ public static string ClipState() {
+  RECT r;if(!GetClipCursor(out r))throw new Exception("GetClipCursor failed");return r.left+":"+r.top+":"+r.right+":"+r.bottom;
+ }
  public static uint Pixel(IntPtr h,int x,int y) {
   var point=new POINT{x=x,y=y}; if(!ClientToScreen(h,ref point))throw new Exception("ClientToScreen failed");
   var dc=GetDC(IntPtr.Zero);if(dc==IntPtr.Zero)throw new Exception("GetDC failed");
@@ -501,6 +525,7 @@ try {
         '--case', $Case, '--command-file', $HostCommandFile
     )
     if ($Prototype) { $HostArguments += @('--prototype', '--config', (Join-Path $Stage 'ego-late-d3d11-same-hwnd.ini')) }
+    if ($UiBusyMilliseconds -ne 0) { $HostArguments += @('--ui-busy-ms', [string]$UiBusyMilliseconds) }
     $HostChild = Start-ProofChild $HostPath $HostArguments $TargetDirectory 'host' $true
     $TargetProcess = $HostChild.Process
     $Initial = Wait-Proof { param($Scene, $Native)
@@ -517,10 +542,31 @@ try {
     }
     if (-not [EgoSameHwndD3D11ProofInputV1]::Foreground($TargetWindow, $TargetProcess.Id)) { throw 'The retained same-HWND target could not obtain foreground.' }
     $Proof.initial = $Initial
+    if ($UiBusyMilliseconds -ne 0) {
+        if (-not $Initial.Native.uiBusyCompleted -or $Initial.Native.uiBusyRequestedMs -ne $UiBusyMilliseconds -or
+            $Initial.Native.uiBusyElapsedMs -lt $UiBusyMilliseconds -or $Initial.Native.uiBusyNativePresentCalls -lt 6 -or
+            $Initial.Native.uiBusyAdoptionSuccesses -ne 2 -or $Initial.Native.uiBusyOwnerThreadId -eq 0 -or
+            $Initial.Native.uiBusyPresentThreadId -eq $Initial.Native.uiBusyOwnerThreadId) {
+            throw 'The controlled UI stall did not prove worker-only first presentations/adoption while its owner stayed busy.'
+        }
+        $ReadyEvents = @($Initial.Scene.events | Where-Object {
+            $_.type -eq 'targetConnected' -or ($_.type -eq 'diagnostic' -and $_.code -eq 'runtime-swapchain-ready')
+        })
+        if ($ReadyEvents.Count -lt 2 -or @($ReadyEvents | Where-Object { $_.at -lt $Initial.Native.uiBusyEndUnixMs }).Count -ne 0) {
+            throw 'Target authentication or input/swapchain readiness was published before the busy UI owner resumed.'
+        }
+        $Proof.delayedUiStartup = $Initial.Native
+    }
     $Proof.privateTcpBeforeLifecycle = Get-PrivateConnectionIdentity $Initial
     Send-SceneCommand 'focus'
     Send-SceneCommand 'release'
     $null = Wait-Proof { param($Scene, $Native) $Scene -and -not $Scene.intercepting } 10 'The initial released state was not acknowledged.'
+    if ($UiBusyMilliseconds -ne 0) {
+        [EgoSameHwndD3D11ProofInputV1]::Place($TargetWindow, 500, 400)
+        Start-Sleep -Milliseconds 100
+        $Proof.cursorBaseline = [EgoSameHwndD3D11ProofInputV1]::CursorState()
+        $Proof.clipBaseline = [EgoSameHwndD3D11ProofInputV1]::ClipState()
+    }
     Assert-RedPixel 'pixelBothLive'
     Capture-HeldKey 'releasedBeforeLifecycle' $false
 
@@ -558,12 +604,26 @@ try {
     $null = Wait-Proof { param($Scene, $Native)
         $Scene -and $Scene.intercepting -and $Scene.focusedWindowId -eq $Scene.window.nativeId -and $Scene.window.domInputFocused
     } 10 'The surviving runtime did not acknowledge input focus/interception.'
+    if ($UiBusyMilliseconds -ne 0) {
+        [EgoSameHwndD3D11ProofInputV1]::Place($TargetWindow, 80, 125)
+        $null = Wait-Proof { param($Scene, $Native) [EgoSameHwndD3D11ProofInputV1]::CursorIs(32513) } 8 'Recovered hooks did not show the actual text cursor over the overlay input.'
+        $Proof.recoveredTextCursor = [EgoSameHwndD3D11ProofInputV1]::CursorState()
+    }
     Capture-HeldKey 'interceptedAfterLifecycle' $true
     if ($Case -eq 'primary-paused') { Capture-Click 'interceptedPointerAfterLifecycle' $true }
     Send-SceneCommand 'release'
     $null = Wait-Proof { param($Scene, $Native) $Scene -and -not $Scene.intercepting } 10 'The surviving runtime did not release interception.'
     Capture-HeldKey 'releasedAfterLifecycle' $false
     if ($Case -eq 'primary-paused') { Capture-Click 'releasedPointerAfterLifecycle' $false }
+    if ($UiBusyMilliseconds -ne 0) {
+        [EgoSameHwndD3D11ProofInputV1]::Place($TargetWindow, 500, 400)
+        $null = Wait-Proof { param($Scene, $Native)
+            [EgoSameHwndD3D11ProofInputV1]::CursorState() -eq $Proof.cursorBaseline -and
+            [EgoSameHwndD3D11ProofInputV1]::ClipState() -eq $Proof.clipBaseline
+        } 8 'Recovered hooks did not restore the game cursor and clipping rectangle after release.'
+        $Proof.releasedCursor = [EgoSameHwndD3D11ProofInputV1]::CursorState()
+        $Proof.releasedClip = [EgoSameHwndD3D11ProofInputV1]::ClipState()
+    }
     $Continuity = Get-ProofSnapshot
     if ($Continuity.Scene.connectionCount -ne 1 -or $Continuity.Scene.authenticationCount -ne 1 -or
         $Continuity.Scene.transportLostCount -ne 0 -or $Continuity.Scene.targetDisconnectedCount -ne 0 -or
@@ -618,6 +678,11 @@ try {
         $Proof.finalGeneratedConfigCount = $GeneratedConfigs.Count
         if ($GeneratedConfigs.Count -ne 0) { throw 'Retired production owned runtimes left generated per-chain INIs behind.' }
         $Proof.productionOwnedAbiProven = $true
+    }
+    if ($UiBusyMilliseconds -ne 0) {
+        if (-not $Final.uiBusyCompleted -or $Final.uiBusyNativePresentCalls -lt 6 -or
+            $Final.uiBusyAdoptionSuccesses -ne 2) { throw 'Final report lost its controlled busy-UI startup evidence.' }
+        $Proof.uiBusyHookRecoveryProven = -not $DiagnosticInputOnly
     }
     $Proof.privateTargetPid = $Initial.Scene.targetPid
     if ($DiagnosticInputOnly) {

@@ -117,8 +117,9 @@ test('paused acceptance requires fresh rank/window, exact TCP continuity, native
   assert.match(controller, /privateTcpAfterNewRegistration\s*-ne\s*\$Proof\.privateTcpBeforeLifecycle/);
   assert.match(controller, /Send-SceneCommand\s+'intercept'[\s\S]*beforeProducerDisconnect[\s\S]*Send-SceneCommand\s+'exit'/);
   assert.match(controller, /@\(\$Native\.registryWindowIds\)\.Count\s*-eq\s*0[\s\S]*@\(\$Native\.registryRankWindowIds\)\.Count\s*-eq\s*0/);
-  assert.match(host, /OpenFileMappingW\(FILE_MAP_READ/);
-  assert.doesNotMatch(host, /CreateFileMappingW|\.join\(/);
+  const registryInspection = host.slice(host.indexOf('void refresh_registry_evidence()'), host.indexOf('std::string json_ids('));
+  assert.match(registryInspection, /OpenFileMappingW\(FILE_MAP_READ/);
+  assert.doesNotMatch(registryInspection, /CreateFileMappingW|\.join\(/);
 });
 
 test('dedicated launcher and guarded producer extension leave historical case defaults available', () => {
