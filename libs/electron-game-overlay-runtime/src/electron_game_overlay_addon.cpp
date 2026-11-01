@@ -4064,7 +4064,7 @@ bool producer_session_active(std::uint64_t epoch)
     return (epoch & EGO_SESSION_EPOCH_ACTIVE_BIT) != 0;
 }
 
-void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknowledge = true)
+void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknowledge)
 {
     if (auto *owner = g_participant_id == 0 ? get_official_hook_owner(data) : nullptr)
     {
@@ -4094,10 +4094,10 @@ void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknow
         }
     }
 
-    // Authoritative retirement commits blur and the disabled filter together.
-    // A separate blur would advance the revision and make the old Present's
-    // sample reject the real release acknowledgement. Active-epoch cleanup
-    // remains transitional and waits for the replacement session's grant.
+    // Actual owner destruction commits blur and the disabled filter together.
+    // A separate blur would invalidate the old Present's release sample.
+    // Session observations remain transitional: a new authentication can race
+    // their epoch snapshot and must not receive the old session's false ACK.
     const ego_status status = acknowledge
         ? ego_transport_retire_input_filter(data.transport)
         : ego_transport_apply_input_filter(data.transport, 0, 0);
@@ -4120,14 +4120,14 @@ void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknow
 
 void deactivate_dormant_input(swapchain_data &data)
 {
-    deactivate_input(data, true);
+    deactivate_input(data, true, false);
 }
 
 void deactivate_destroyed_runtime_input(swapchain_data &data)
 {
     // ReShade fires destroy_effect_runtime after tearing down its ImGui device
     // resources. Fail open without touching that context.
-    deactivate_input(data, false);
+    deactivate_input(data, false, true);
 }
 
 void destroy_own_effect_runtime(effect_runtime *runtime)
@@ -4436,10 +4436,10 @@ void prepare_own_frame(effect_runtime *runtime)
         // old input generation and GPU resources before touching the new
         // session's scene, regardless of the epoch's current active bit.
         data->observed_session_epoch = session_epoch;
-        // Active-epoch cleanup is not a terminal result for commands already
-        // received by the new session. Acknowledge them after its scene and
-        // grant are sampled rather than during the old generation's reset.
-        deactivate_input(*data, true, !session_active);
+        // Epoch cleanup is not a terminal result for producer commands. The
+        // observed epoch can already belong to an older authentication; only
+        // a coherent active frame or actual owner destruction may acknowledge.
+        deactivate_dormant_input(*data);
         data->cooperative_incarnations.clear();
         data->retired_session_textures +=
             retire_all_electron_textures(runtime, *data);

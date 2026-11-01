@@ -5568,6 +5568,61 @@ mod tests {
     }
 
     #[test]
+    fn stale_inactive_epoch_cleanup_cannot_acknowledge_a_new_active_producer() {
+        fn replies(authoritative_retirement: bool) -> Vec<bool> {
+            let bridge = test_frame_bridge(
+                Arc::new(Mutex::new(())),
+                Arc::new(Mutex::new(VecDeque::new())),
+            );
+            advance_producer_session_epoch(&bridge.producer_session_epoch, true);
+            advance_producer_session_epoch(&bridge.producer_session_epoch, false);
+            let sampled_epoch = bridge.producer_session_epoch();
+            assert_eq!(sampled_epoch, 2);
+            // Native has already sampled inactive epoch 2. Before it acts,
+            // the bridge authenticates epoch 3 and accepts its true command.
+            {
+                let _order = bridge.input_order.lock().unwrap();
+                let mut router = bridge.input_router.lock().unwrap();
+                router.begin_producer_session();
+                router.set_cooperative_focus(None);
+                router.set_target_focused(true);
+                router.replace_windows(vec![
+                    InputWindow::new(7, InputRect::new(0, 0, 10, 10)).with_incarnation(1)
+                ]);
+                router.request_interception(true);
+            }
+            assert_eq!(
+                advance_producer_session_epoch(&bridge.producer_session_epoch, true),
+                3
+            );
+            assert_ne!(bridge.producer_session_epoch(), sampled_epoch);
+            if authoritative_retirement {
+                // The stale observation is not proof that the new producer's
+                // actual native input owner was destroyed.
+                bridge.retire_input_filter();
+            } else {
+                bridge.set_target_focused(false);
+                bridge.apply_input_filter(false, false);
+            }
+            bridge.set_target_focused(true);
+            let (_, _, revision) = bridge.cooperative_input_state();
+            bridge.set_cooperative_interception_for_revision(true, revision);
+            bridge.apply_input_filter(false, false);
+            bridge.apply_input_filter(true, true);
+            let mut replies = Vec::new();
+            let mut outbound = bridge.outbound.lock().unwrap();
+            while let Some(message) = outbound.pop_front() {
+                if let OutboundMessage::InputIntercept { intercepting } = message {
+                    replies.push(intercepting);
+                }
+            }
+            replies
+        }
+        assert_eq!(replies(true), vec![false, true]);
+        assert_eq!(replies(false), vec![true]);
+    }
+
+    #[test]
     fn disconnect_marks_the_session_dormant_and_resets_scene_and_input() {
         let mut state = test_bridge_state();
         state

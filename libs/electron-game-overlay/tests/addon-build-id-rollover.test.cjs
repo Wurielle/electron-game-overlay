@@ -28,6 +28,12 @@ const previousBuilds = [
     full: '88E5980C5737539918CDFD0A4070802780B44FA5FBCA2BB251B79952F180C621',
     pre: '956A8530DD5C4C9F73C3372CE6C25A13E1AB230746B6A8CC26E7EC349CE50309',
   },
+  {
+    generation: 10,
+    id: '280C7D267CA94332834D85A075A453AE',
+    full: '5F4C08D04AB5E720851326EB72DED1D59D9E1924036B866CAC6E56602417C377',
+    pre: '816BF5F33495D3B280A2E319D565FA2D310BF10A409FDC580B6ED8B4358B71C8',
+  },
 ];
 const canonical = path.join(root, 'build/electron-game-overlay-runtime/_deps/reshade-src/tools/injector.cpp');
 const baseline = path.join(root, 'build/cooperative-injector-authoring/tools/injector.base.cpp');
