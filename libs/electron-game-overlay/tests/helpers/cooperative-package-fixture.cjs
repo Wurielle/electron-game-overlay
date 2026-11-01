@@ -8,8 +8,9 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
-  addonBuildId = 'E8FE3783F29E4FB297D8B006D0087725',
-  runtimeGeneration = 16,
+  addonBuildId = '883D0F4D994A4582BC0F3EA846C2F270',
+  runtimeGeneration = 17,
+  addonPreloadProtocol = runtimeGeneration >= 17 ? 1 : undefined,
   reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
   ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
   firstHostResultPatch = runtimeGeneration >= 15,
@@ -83,6 +84,7 @@ function writeCooperativeDistribution(dist, {
         schemaVersion: 4, kind: 'electron-game-overlay-runtime-build',
         platform: bits === 64 ? 'win32-x64' : 'win32-ia32', configuration: 'RelWithDebInfo',
         addonBuildId, cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1,
+        ...(addonPreloadProtocol === undefined ? {} : { addonPreloadProtocol }),
         injectorFutureTargets: 2, managerProtocolSchemaVersion: 1, runtimeGeneration,
         targetTransportMin: 1, targetTransportMax: 1, managerSourceSha256: sha('controlled manager source'),
         }),

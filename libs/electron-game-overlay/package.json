@@ -22,6 +22,12 @@
       "import": "./dist/broker.js",
       "default": "./dist/broker.js"
     },
+    "./preload": {
+      "types": "./dist/preload.d.ts",
+      "require": "./dist/preload.js",
+      "import": "./dist/preload.js",
+      "default": "./dist/preload.js"
+    },
     "./packaging": {
       "types": "./dist/packaging.d.ts",
       "require": "./dist/packaging.js",
