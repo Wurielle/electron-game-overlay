@@ -151,6 +151,8 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   assert.equal(nativeStamp.schemaVersion, 30);
   assert.equal(nativeStamp.ownedLateD3d11PatchSha256, '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE');
   assert.equal(nativeStamp.injectorFirstHostResultPatchSha256, 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554');
+  assert.equal(nativeStamp.addonPreloadProtocol, 1);
+  assert.equal(nativeStamp.injectorAddonPreloadPatchSha256, 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D');
 });
 
 test('real npm packaging preserves a retained generation-14 schema-29 SDK without adding current provenance', t => {
@@ -175,6 +177,17 @@ test('real npm packaging preserves the earlier generation-15 schema-30 SDK witho
     const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
     assert.equal(stamp.schemaVersion, 30);
     assert.equal(stamp.injectorFirstHostResultPatchSha256, undefined);
+  }
+});
+test('real npm packaging preserves the retained generation-16 SDK without preload metadata', t => {
+  const f = fixture(t, { runtimeGeneration: 16, addonBuildId: 'E8FE3783F29E4FB297D8B006D0087725' });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.addonPreloadProtocol, undefined);
+    assert.equal(stamp.injectorAddonPreloadPatchSha256, undefined);
   }
 });
 

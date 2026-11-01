@@ -194,10 +194,17 @@ types. Current application helpers include:
 | Validate/evaluate native rules | `createOverlayProcessPolicy()`, `overlayProcessPolicyAllows()` |
 | Observe without injection | `observeOverlayProcesses()` |
 | Package with electron-builder | `/packaging`: `createOverlayAfterPack()`, `packageOverlayForElectronBuilder()`, `verifyOverlayPackage()` |
+| Preload installed app add-ons | `/preload`: `registerOverlayAddonInstallation()`, `unregisterOverlayAddonInstallation()`; opt in through `createReShadeLaunchConfig({ addonPreload: { applicationId } })` |
 | Historical broker installer registration | `/broker`: `registerOverlayBrokerInstallation()`, `unregisterOverlayBrokerInstallation()`; unused by cooperative startup |
 
 A resolved watcher update applies current authorization; `discovery-blocked`
 reports unavailable future discovery without cancelling an allowed active target.
+
+Optional [installed add-on preloading](../../doc/addon-preloading.md) lets a new
+owned ReShade host load registered applications' dormant add-ons through an
+external folder. Each app activates its own private engine when it connects.
+Registration and removal affect future host snapshots; existing ReShade
+installations retain their own configuration.
 Wait for `ready`/`armed` before a future launch. These events do not guarantee
 pre-graphics injection. The [managed example](https://github.com/Wurielle/electron-game-overlay/tree/dev/examples/managed-overlay)
 shows normal ownership and packaging; private deep imports are not required.

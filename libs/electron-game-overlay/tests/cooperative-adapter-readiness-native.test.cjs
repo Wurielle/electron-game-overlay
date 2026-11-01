@@ -47,10 +47,12 @@ test('dispatcher completion publishes only after every public and optional priva
 test('only the first dispatcher can call the registration completion path', () => {
   assert.equal((code.match(/register_dispatcher_events\(\);/gu) || []).length, 2);
   const initialize = body('AddonInit');
-  assert.match(initialize, /if\s*\(!g_cooperative_dispatcher\s*\|\|\s*g_public_registered\)\s*return\s+true\s*;/u);
+  assert.match(initialize, /if\s*\(!g_cooperative_dispatcher\s*&&\s*!is_preloaded_member\(\)\)\s*return\s+true\s*;/u);
   assert.ok(initialize.indexOf('register_compatible_addon') < initialize.indexOf('register_dispatcher_events'));
-  const attach = body('DllMain');
-  assert.match(attach, /if\s*\(!g_cooperative_dispatcher\)\s*break\s*;\s*register_dispatcher_events\(\);/u);
+  assert.match(initialize, /if\s*\(g_cooperative_dispatcher\)\s*register_dispatcher_events\(\);/u);
+  const attach = body('initialize_addon_process');
+  assert.match(attach, /if\s*\(g_cooperative_dispatcher\)\s*register_dispatcher_events\(\);/u);
+  assert.match(body('DllMain'), /case\s+DLL_PROCESS_ATTACH\s*:\s*return\s+initialize_addon_process\(module\)/u);
 });
 
 test('actual dispatcher uninitialization withdraws readiness before shutdown or callback removal', () => {
@@ -74,7 +76,8 @@ test('unregistration preserves pinned member identity and reinitialization must 
   const uninitialize = body('AddonUninit');
   assert.doesNotMatch(uninitialize, /ElectronGameOverlayCooperativeReadyV1|g_participant_id|g_module_pinned|g_cooperative\.leave/u);
   const initialize = body('AddonInit');
-  assert.match(initialize, /if\s*\(!register_compatible_addon\(module\)\)\s*return\s+false\s*;\s*register_dispatcher_events\(\)\s*;/u);
+  assert.match(initialize, /if\s*\(!g_public_registered\s*&&\s*!register_compatible_addon\(module\)\)\s*return\s+false\s*;/u);
+  assert.match(initialize, /if\s*\(g_cooperative_dispatcher\)\s*register_dispatcher_events\(\)\s*;/u);
   assert.doesNotMatch(initialize, /InterlockedExchange/u,
     'reinitialization cannot publish readiness before every callback is registered');
   assert.equal((code.match(/InterlockedExchange\(&ElectronGameOverlayCooperativeAdapterReadyV1,\s*1\)/gu) || []).length, 1);

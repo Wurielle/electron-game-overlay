@@ -1,5 +1,10 @@
 import { StringDecoder } from 'node:string_decoder';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
+import {
+  createOverlayAddonPreloadSnapshot,
+  resolveAddonPreloadSelection,
+  type OverlayAddonPreloadOptions,
+} from './overlay-addon-preload.js';
 import { resolveOverlayNativeProcessIdentity } from './overlay-native-process-query.js';
 import {
   createOverlayProcessPolicy,
@@ -12,6 +17,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import {
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   open,
@@ -78,7 +84,7 @@ const PROCESS_WATCHER_READY_MARKER = 'ReShade process watcher armed.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH = 706;
-const OFFICIAL_ADDON_BUILD_ID = 'E8FE3783F29E4FB297D8B006D0087725';
+const OFFICIAL_ADDON_BUILD_ID = '17E16E01C9A243E18EE19D814420E519';
 const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 3;
 // Schema 2 shipped before provider metadata. Keep accepting it permanently as
 // generation 1 / target transport 1 so copied runtime-directory overrides do
@@ -214,6 +220,7 @@ type RuntimePackageBuildStamp =
         injectorProcessInstanceBinding?: 1;
         injectorFutureTargets?: 1 | 2;
         cooperativeAddonProtocol?: 1;
+        addonPreloadProtocol?: 1;
         runtimeGeneration: number;
         targetTransportMin: number;
         targetTransportMax: number;
@@ -340,6 +347,8 @@ type ExactReShadeProcessTarget = ReShadeProcessTarget &
 
 /** Validated runtime paths and optional startup hints used by a launcher. */
 export type ReShadeLaunchConfig = Readonly<{
+  /** Optional app identity and registry used for each new host snapshot. */
+  addonPreload?: Readonly<OverlayAddonPreloadOptions>;
   /** Validated native host ownership and independent-member support. */
   cooperativeAddonProtocol?: 1;
   /** Binding support derived from both validated native package stamps. */
@@ -385,6 +394,8 @@ export type ReShadeLaunchConfig = Readonly<{
 
 /** Programmatic overrides for {@link parseReShadeLaunchConfig}. */
 export type ReShadeLaunchConfigOptions = Readonly<{
+  /** Preload registered app add-ons when creating a new owned ReShade host. */
+  addonPreload?: OverlayAddonPreloadOptions;
   /** Absolute packaged-runtime directory used when argv has no override. */
   bundledRuntimeDirectory?: string;
   /** Absolute writable directory used for isolated attachment runs. */
@@ -462,6 +473,8 @@ export type ReShadeAttachResult = ReShadeLaunchResult &
   }>;
 
 type StagedRuntime = Readonly<{
+  preloadedAddonName?: string;
+  x86PreloadedAddonName?: string;
   cooperativeAddonProtocol?: 1;
   expectedCreationTime100ns?: string;
   injectorProcessInstanceBinding?: 1;
@@ -1158,9 +1171,25 @@ export function createReShadeLaunchConfig(
       [CONFIG_FILE_NAME, configPath],
     ]),
   );
+  if (options.addonPreload !== undefined && runtimeProvider.addonPreloadProtocol !== 1) {
+    throw new Error('the selected native runtime does not support registered add-on preloading');
+  }
+  const addonPreload = options.addonPreload === undefined
+    ? undefined
+    : resolveAddonPreloadSelection(options.addonPreload, {
+        addonBuildId: OFFICIAL_ADDON_BUILD_ID,
+        addonPath,
+        x86AddonPath,
+      });
 
   return Object.freeze({
     runtimeDirectory,
+    ...(addonPreload === undefined
+      ? {}
+      : { addonPreload: Object.freeze({
+          applicationId: addonPreload.applicationId,
+          storageRoot: addonPreload.storageRoot,
+        }) }),
     runtimeProvider: providerMetadataOnly(runtimeProvider),
     ...(runtimeProvider.injectorProcessInstanceBinding === undefined
       ? {}
@@ -1194,11 +1223,18 @@ export function createReShadeLaunchConfig(
 export function buildReShadeInvocation(
   target: ReShadeTarget,
   runDirectory: string,
-  context: Readonly<{ expectedCreationTime100ns?: string }> = {},
+  context: Readonly<{
+    expectedCreationTime100ns?: string;
+    preloadedAddonName?: string;
+  }> = {},
 ): ReShadeInvocation {
   validateTarget(target);
   if (!path.isAbsolute(runDirectory)) {
     throw new Error('the ReShade run directory must be absolute');
+  }
+  if (context.preloadedAddonName !== undefined &&
+      !/^ego-preload-[a-f0-9]{32}-[A-Fa-f0-9]{32}-[a-f0-9]{16}\.addon(?:64|32)$/.test(context.preloadedAddonName)) {
+    throw new Error('the preloaded add-on name must be an exact registered DLL filename');
   }
 
   const arguments_ = isPathTarget(target)
@@ -1238,10 +1274,44 @@ export function buildReShadeInvocation(
 
   return Object.freeze({
     executable: path.join(runDirectory, INJECTOR_FILE_NAME),
-    arguments: Object.freeze(arguments_),
+    arguments: Object.freeze([
+      ...arguments_,
+      ...(context.preloadedAddonName === undefined
+        ? []
+        : ['--preloaded-addon-name', context.preloadedAddonName]),
+    ]),
     targetLabel: targetLabelFor(target),
     workingDirectory: runDirectory,
   });
+}
+
+function ownedAddonPreloadConfiguration(template: string, directory: string): string {
+  if (!path.isAbsolute(directory) || /[\r\n\0]/.test(directory)) {
+    throw new Error('the owned add-on preload directory must be an absolute INI-safe path');
+  }
+  const newline = template.includes('\r\n') ? '\r\n' : '\n';
+  const lines = template.split(/\r?\n/);
+  let inAddon = false;
+  let replacements = 0;
+  let sections = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const section = /^\s*\[([^\]]+)\]\s*$/.exec(lines[index]);
+    if (section !== null) {
+      inAddon = section[1].toUpperCase() === 'ADDON';
+      if (inAddon) sections++;
+    } else if (inAddon && /^\s*AddonPath\s*=/.test(lines[index])) {
+      if (!/^\s*AddonPath\s*=\s*\.\s*$/.test(lines[index])) {
+        throw new Error('the sealed owned ReShade template has an unexpected add-on path');
+      }
+      // ReShade's INI reader treats a single comma as a list separator.
+      lines[index] = `AddonPath=${directory.replace(/,/g, ',,')}`;
+      replacements++;
+    }
+  }
+  if (sections !== 1 || replacements !== 1) {
+    throw new Error('the sealed owned ReShade template must contain exactly one add-on path');
+  }
+  return lines.join(newline);
 }
 
 let requestReShadeOverlayAttachment:
@@ -2460,6 +2530,7 @@ export class ReShadeOverlayLauncher {
     }
     const invocation = buildReShadeInvocation(target, staged.runDirectory, {
       expectedCreationTime100ns,
+      preloadedAddonName: staged.preloadedAddonName,
     });
     try {
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
@@ -2647,7 +2718,7 @@ export class ReShadeOverlayLauncher {
                   const fallbackInvocation = buildReShadeInvocation(
                     fallbackTarget,
                     staged.runDirectory,
-                    { expectedCreationTime100ns },
+                    { expectedCreationTime100ns, preloadedAddonName: staged.x86PreloadedAddonName },
                   );
                   executeInvocation(
                     Object.freeze({
@@ -2965,6 +3036,24 @@ export class ReShadeOverlayLauncher {
         ),
       );
 
+      // The copied sealed template is verified above before deriving this
+      // private host configuration. Registered files never enter a game folder.
+      const preloadSnapshot = this.config.addonPreload === undefined
+        ? undefined
+        : await createOverlayAddonPreloadSnapshot(
+            path.join(createdRunDirectory, 'preloaded-addons'),
+            resolveAddonPreloadSelection(this.config.addonPreload, {
+              addonBuildId: OFFICIAL_ADDON_BUILD_ID,
+              addonPath: path.join(createdRunDirectory, ADDON_FILE_NAME),
+              x86AddonPath: path.join(createdRunDirectory, X86_ADDON_FILE_NAME),
+            }),
+          );
+      if (preloadSnapshot !== undefined) {
+        const configPath = path.join(createdRunDirectory, CONFIG_FILE_NAME);
+        const template = await readFile(configPath, 'utf8');
+        await writeFile(configPath, ownedAddonPreloadConfiguration(template, preloadSnapshot.directory), 'utf8');
+      }
+
       // This stage-only marker is created exclusively in the fresh SDK-owned
       // run directory after validating every copied payload. The owned host
       // also requires its canonical DLL parent to equal its effective base path;
@@ -2983,6 +3072,10 @@ export class ReShadeOverlayLauncher {
         }),
       );
       return Object.freeze({
+        ...(preloadSnapshot === undefined ? {} : {
+          preloadedAddonName: path.basename(preloadSnapshot.addonPath),
+          x86PreloadedAddonName: path.basename(preloadSnapshot.x86AddonPath),
+        }),
         runId,
         runsRootDirectory,
         runDirectory: createdRunDirectory,
@@ -3593,10 +3686,26 @@ export class ReShadeOverlayLauncher {
         staged.runDirectory,
         isX86Fallback ? X86_ADDON_FILE_NAME : ADDON_FILE_NAME,
       );
-      if (normalizeExecutablePathIdentity(injectorResult.addonModulePath) !==
-          normalizeExecutablePathIdentity(expectedAddonPath)) {
+      const isStagedAddon = normalizeExecutablePathIdentity(injectorResult.addonModulePath) ===
+        normalizeExecutablePathIdentity(expectedAddonPath);
+      const preloadedAddonName = isX86Fallback ? staged.x86PreloadedAddonName : staged.preloadedAddonName;
+      let isSelectedPreload = false;
+      if (!isStagedAddon && preloadedAddonName !== undefined &&
+          path.win32.basename(injectorResult.addonModulePath).toLowerCase() === preloadedAddonName.toLowerCase()) {
+        try {
+          const candidate = injectorResult.addonModulePath;
+          const info = await lstat(candidate);
+          isSelectedPreload = info.isFile() && !info.isSymbolicLink() &&
+            normalizeExecutablePathIdentity(await realpath(candidate)) === normalizeExecutablePathIdentity(candidate) &&
+            sha256(await readFile(candidate)) === sha256(await readFile(expectedAddonPath));
+        } catch {
+          // A missing or unverifiable mapped image is not evidence that it is
+          // safe to activate another DLL for this request.
+        }
+      }
+      if (!isStagedAddon && !isSelectedPreload) {
         throw this.createInjectorFailure({
-          message: 'The native participant result identified another application\'s add-on instead of this staged engine',
+          message: 'The native participant result did not identify this staged engine or its exact registered preload',
           code: 'injector-result-invalid', stage: 'runtime-initialization',
           retrySafety: 'indeterminate', targetLabel, pid: injectorTargetPid,
           addonPath: injectorResult.addonModulePath, evidence,
@@ -3908,7 +4017,7 @@ export class ReShadeOverlayLauncher {
     this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     const invocation = buildReShadeInvocation({
       processName: path.win32.basename(executablePath), executablePath, pid,
-    }, staged.runDirectory, { expectedCreationTime100ns: staged.expectedCreationTime100ns });
+    }, staged.runDirectory, { expectedCreationTime100ns: staged.expectedCreationTime100ns, preloadedAddonName: staged.preloadedAddonName });
     const memberInvocation = Object.freeze({ ...invocation,
       arguments: Object.freeze([...invocation.arguments, '--addon-only']),
     });
@@ -4532,6 +4641,7 @@ function providerMetadataOnly(
 type ValidatedRuntimeProvider = NativeRuntimeProviderMetadata &
   Readonly<{
     cooperativeAddonProtocol?: 1;
+    addonPreloadProtocol?: 1;
     injectorProcessInstanceBinding?: 1;
     injectorFutureTargets?: 1 | 2;
   }>;
@@ -4616,6 +4726,9 @@ function runtimeProviderForBuildStamp(
         ...(manifest.cooperativeAddonProtocol === 1
           ? { cooperativeAddonProtocol: 1 as const }
           : {}),
+        ...(manifest.addonPreloadProtocol === 1
+          ? { addonPreloadProtocol: 1 as const }
+          : {}),
       });
 }
 
@@ -4635,7 +4748,8 @@ function commonRuntimeProviderMetadata(
         provider.injectorProcessInstanceBinding !==
           first.injectorProcessInstanceBinding ||
         provider.injectorFutureTargets !== first.injectorFutureTargets ||
-        provider.cooperativeAddonProtocol !== first.cooperativeAddonProtocol,
+        provider.cooperativeAddonProtocol !== first.cooperativeAddonProtocol ||
+        provider.addonPreloadProtocol !== first.addonPreloadProtocol,
     )
   ) {
     throw new Error(
@@ -4699,6 +4813,9 @@ function parseRuntimePackageBuildStamp(
               ...(candidate.cooperativeAddonProtocol === undefined
                 ? []
                 : ['cooperativeAddonProtocol']),
+              ...(candidate.addonPreloadProtocol === undefined
+                ? []
+                : ['addonPreloadProtocol']),
             ]
           : undefined;
   if (
@@ -4730,6 +4847,7 @@ function parseRuntimePackageBuildStamp(
       candidate.injectorFutureTargets !== 1 &&
       candidate.injectorFutureTargets !== 2) ||
     (candidate.cooperativeAddonProtocol !== undefined && candidate.cooperativeAddonProtocol !== 1) ||
+    (candidate.addonPreloadProtocol !== undefined && candidate.addonPreloadProtocol !== 1) ||
     ((candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION ||
       candidate.schemaVersion === 4) &&
       (!isPositiveUint32(candidate.runtimeGeneration) ||

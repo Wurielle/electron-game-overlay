@@ -61,9 +61,10 @@ export interface OverlayAddonPreloadCurrentRuntime {
   x86AddonPath: string;
 }
 
-/** Frozen, validated inventory for one future owned host. */
+/** @internal Frozen, validated inventory for one future owned host. */
 export interface OverlayAddonPreloadSelection {
   readonly applicationId: string;
+  readonly storageRoot: string;
   readonly registrationId: string;
   readonly addonBuildId: string;
   readonly addonFileName: string;
@@ -206,8 +207,9 @@ export function resolveAddonPreloadSelection(
 ): OverlayAddonPreloadSelection {
   validateApplicationId(options.applicationId);
   if (!BUILD_ID.test(current.addonBuildId)) throw new TypeError('Invalid current native add-on build identity');
-  const root = storageRoot(options.storageRoot);
-  assertDirectoryChain(root);
+  const requestedRoot = storageRoot(options.storageRoot);
+  assertDirectoryChain(requestedRoot);
+  const root = fs.realpathSync(requestedRoot);
   const registry = readRegistry(root);
   assertDirectoryChain(path.dirname(current.addonPath));
   assertDirectoryChain(path.dirname(current.x86AddonPath));
@@ -227,7 +229,7 @@ export function resolveAddonPreloadSelection(
         sourcePath: path.join(root, 'payloads', entry.cacheDirectory, payload.fileName) }));
     }
   }
-  return Object.freeze({ applicationId: options.applicationId, registrationId, addonBuildId: selected.addonBuildId,
+  return Object.freeze({ applicationId: options.applicationId, storageRoot: root, registrationId, addonBuildId: selected.addonBuildId,
     addonFileName: selected.addon.fileName, x86AddonFileName: selected.x86Addon.fileName,
     payloads: Object.freeze([...payloads.values()].sort((a, b) => a.fileName.localeCompare(b.fileName))) });
 }

@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "recordedUtc": "2026-11-01T22:44:14.0130107Z",
+  "status": "PASS",
+  "scope": "Actual copied participant loader in fixture-owned console children with an inert DLL held inside DllMain; no ReShade, SDK, games or graphics",
+  "injectorNormalizedSha256": "EDFF9D0B4E3EDB505EEFA93F63BB451B1CC2AC7C2831F945EBC12C6ED6AFAA3F",
+  "fixtureBuildId": "ABCDEF0123456789ABCDEF0123456789",
+  "sourceHashes": {
+    "CMakeLists.txt": "C5823ECD98C8F9D3AA109D411E70D755950F007D17F8D58DF44B35192BA24F88",
+    "addon.cpp": "9110D2B0DADE720C06994B2A97C91BBB506F15A07002FBBEB486A4B55A9A7134",
+    "fixture.cpp": "4130CD1B72DAB48BAD8469ABD0F8FD85315B8BDFFCD2199DFB45312F1E69F707",
+    "README.md": "97C43DAACAC0A1D579F50DB3C6415EAAEEAD8378F51B86B0CEFEFCE7925F58BC"
+  },
+  "architectures": [
+    {
+      "architecture": "x64",
+      "status": "PASS",
+      "cases": 4,
+      "assertions": 352,
+      "skips": 0,
+      "memberThunkBytes": 1906,
+      "runtimeThunkBytes": 482,
+      "fixtureExeSha256": "7DD74AF7DB0976B1AA406A0CC7B4E99E6AC8F9C0CA97E5076B45B4C4FC5B0F93",
+      "inertAddonSha256": "D7BDED77A8D3119B66AE9E5B902A443BABF0FBF46178C85FE1F60C298A44D134",
+      "ctestLog": "build/preloaded-injector-loader-race/x64/Testing/Temporary/LastTest.log"
+    },
+    {
+      "architecture": "Win32",
+      "status": "PASS",
+      "cases": 4,
+      "assertions": 352,
+      "skips": 0,
+      "memberThunkBytes": 1248,
+      "runtimeThunkBytes": 368,
+      "fixtureExeSha256": "184613EBF88E6655081AFACC02426FEA0B890E368C14799D308312330ED89C08",
+      "inertAddonSha256": "F762AABFF59E3DABAEE403D6A11213767895A248002276EEF3CDB68661186B9E",
+      "ctestLog": "build/preloaded-injector-loader-race/Win32/Testing/Temporary/LastTest.log"
+    }
+  ],
+  "cases": [
+    {
+      "name": "success",
+      "observedGenericNameBeforeDllMainCompleted": true,
+      "preflightAcceptedExactBytes": true,
+      "expectedError": 0,
+      "activationCalls": 1,
+      "explicitPrivateRouteAccepted": true
+    },
+    {
+      "name": "wrong-name",
+      "observedGenericNameBeforeDllMainCompleted": true,
+      "preflightAcceptedExactBytes": true,
+      "expectedError": 1306,
+      "activationCalls": 0,
+      "explicitPrivateRouteAccepted": false
+    },
+    {
+      "name": "assigned",
+      "observedGenericNameBeforeDllMainCompleted": true,
+      "preflightAcceptedExactBytes": true,
+      "expectedError": 85,
+      "activationCalls": 1,
+      "explicitPrivateRouteAccepted": true
+    },
+    {
+      "name": "denied",
+      "observedGenericNameBeforeDllMainCompleted": true,
+      "preflightAcceptedExactBytes": true,
+      "expectedError": 5,
+      "activationCalls": 1,
+      "explicitPrivateRouteAccepted": true
+    }
+  ],
+  "commonAssertions": {
+    "copiedThreadWaitedUntilDllMainReleased": true,
+    "exactMappedModuleRetained": true,
+    "loadLibraryTrapCalls": 0,
+    "freeLibraryTrapCalls": 0,
+    "cleanOwnedChildExitCode": 0,
+    "copiedThunkMaximumBytes": 4096
+  },
+  "limitations": [
+    "Does not exercise full injector CLI/host claims/fallback loop or structured stdout modes",
+    "Does not prove production marker validation or SDK authentication",
+    "Does not execute actual AddonPath scanning, ReShade callbacks, graphics, input or game acceptance"
+  ]
+}

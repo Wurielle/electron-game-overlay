@@ -76,10 +76,10 @@ $PlatformRuntimeDirectory = Join-Path `
     "win32-x64"
 $DestinationDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "E8FE3783F29E4FB297D8B006D0087725"
+$ExpectedAddonBuildId = "17E16E01C9A243E18EE19D814420E519"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 16
+$ExpectedRuntimeGeneration = 18
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
@@ -139,6 +139,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-owned-late-d3d11.patch"
     injectorFirstHostResultPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-first-host-result.patch"
+    injectorAddonPreloadPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-preloaded-addon.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -151,6 +153,10 @@ Assert-Sha256Equal `
     -Expected "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554" `
     -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorFirstHostResultPatchSha256).Hash `
     -Label "frozen injector first-host result patch"
+Assert-Sha256Equal `
+    -Expected "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorAddonPreloadPatchSha256).Hash `
+    -Label "frozen injector add-on preload patch"
 $ExpectedArtifactNames = @(
     $ArchitectureConfig.AddonName
     "electron_game_overlay_reshade_manager.exe"
@@ -243,6 +249,8 @@ if ($BuildStamp.schemaVersion -ne 30 -or
     $BuildStamp.cooperativeAddonProtocol -ne 1 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.injectorFutureTargets -ne 2 -or
+    ($BuildStamp.addonPreloadProtocol -isnot [int] -and $BuildStamp.addonPreloadProtocol -isnot [long]) -or
+    $BuildStamp.addonPreloadProtocol -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -277,6 +285,7 @@ catch {
 }
 $ExpectedPackageBuildStampProperties = @(
     "addonBuildId"
+    "addonPreloadProtocol"
     "addonSha256"
     "configuration"
     "cooperativeAddonProtocol"
@@ -310,6 +319,8 @@ if (@(
     $PackageBuildStamp.cooperativeAddonProtocol -ne 1 -or
     $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $PackageBuildStamp.injectorFutureTargets -ne 2 -or
+    ($PackageBuildStamp.addonPreloadProtocol -isnot [int] -and $PackageBuildStamp.addonPreloadProtocol -isnot [long]) -or
+    $PackageBuildStamp.addonPreloadProtocol -ne 1 -or
     $PackageBuildStamp.kind -ne "electron-game-overlay-runtime-build" -or
     $PackageBuildStamp.platform -ne $ArchitectureConfig.PackagePlatform -or
     $PackageBuildStamp.configuration -ne "RelWithDebInfo" -or

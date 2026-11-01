@@ -3,18 +3,48 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "E8FE3783F29E4FB297D8B006D0087725"
+    "17E16E01C9A243E18EE19D814420E519"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "F286CDC1B9D138E4429A50C3E82749292B39F51B42592BFD9B738C889A6FA074"
+    "53945B0E76711393929460608B63377F43549E59B57FE02237904CDBC3E98F9B"
+)
+set(RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256
+    "0AD06624529D7683EF58637F0955FF565275C2FDD6FF751A37B693DA6D39390B"
 )
 set(RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256
-    "A3C7F581069BF0A2AF77AAC8F2441AF98AB42073C56443C257586931F35F6AB5"
+    "EC57285380625B70964F33106857C3EAAA55BFCB5A31D66C1177500D360853F4"
 )
 set(RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256
-    "C2F7641F12F19FD1F78ABDB608DA9EF5A8B58DB087E30552ED3EDEE42AFCDF48"
+    "FB85D69E1D6B97D9DC4E4A82C591425A588A99601F897B0F6316D1E5A81E0683"
 )
 set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
+    "75FF6A30283E8147A47982C61C5ADC7F080DEED7C28345D420907753DC218C25"
+)
+set(RESHAPE_GEN17_CURRENT_INJECTOR_CONTENT_SHA256
+    "B80C6E3BCF0C5EC499559BEDB9D829B08F664FBAD94E38BEC31C41DB5CC40849"
+)
+set(RESHAPE_GEN17_PRE_PRELOADED_INJECTOR_CONTENT_SHA256
+    "05045D6F8824A0105B9B6E02EFF8652075E9700DFD8E656FE7EBBA34B6F13D13"
+)
+set(RESHAPE_GEN17_PRE_RESULT_INJECTOR_CONTENT_SHA256
+    "AFE3A0C9BD7830D028A6661404DE80860CF91A35C70C4A71AE86308111B285EC"
+)
+set(RESHAPE_GEN17_PRE_LATE_V4_INJECTOR_CONTENT_SHA256
+    "B11E61F8089802A590967C03DB358B253EEA8FE84FA3DCE2849F6EC642E9AA02"
+)
+set(RESHAPE_GEN17_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
+    "35BDAB091F1D93E89BC2C65E1F7853540B81931E99A1914697418E71609CC929"
+)
+set(RESHAPE_GEN16_CURRENT_INJECTOR_CONTENT_SHA256
+    "F286CDC1B9D138E4429A50C3E82749292B39F51B42592BFD9B738C889A6FA074"
+)
+set(RESHAPE_GEN16_PRE_RESULT_INJECTOR_CONTENT_SHA256
+    "A3C7F581069BF0A2AF77AAC8F2441AF98AB42073C56443C257586931F35F6AB5"
+)
+set(RESHAPE_GEN16_PRE_LATE_V4_INJECTOR_CONTENT_SHA256
+    "C2F7641F12F19FD1F78ABDB608DA9EF5A8B58DB087E30552ED3EDEE42AFCDF48"
+)
+set(RESHAPE_GEN16_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
     "0A452E415E4AD37B6558D0F398A2A5A7A161D752148A70B21A4E8097740CA7D9"
 )
 set(RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256
@@ -151,6 +181,12 @@ set(RESHAPE_FIRST_HOST_RESULT_PATCH
 set(RESHAPE_FIRST_HOST_RESULT_PATCH_SHA256
     "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554"
 )
+set(RESHAPE_PRELOADED_ADDON_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-preloaded-addon.patch"
+)
+set(RESHAPE_PRELOADED_ADDON_PATCH_SHA256
+    "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D"
+)
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -281,6 +317,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH}"
     "${RESHAPE_OWNED_LATE_D3D11_PATCH}"
     "${RESHAPE_FIRST_HOST_RESULT_PATCH}"
+    "${RESHAPE_PRELOADED_ADDON_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -616,15 +653,33 @@ function(ego_recover_owned_late_source_cache source_root journal_path)
     set(legacy_before_pins
         "${RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256}"
         "${RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
-    set(current_before_pins ${legacy_before_pins}
+    set(generation16_before_pins ${legacy_before_pins}
+        "${RESHAPE_GEN16_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN16_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+    set(generation17_before_pins ${generation16_before_pins}
+        "${RESHAPE_GEN17_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN17_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN17_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+    set(current_before_pins ${generation17_before_pins}
         "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}"
         "${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
     if(schema EQUAL 1 AND recorded_pin IN_LIST legacy_before_pins)
         set(post_injector_hash "${RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
-    elseif(schema EQUAL 2 AND recorded_pin IN_LIST current_before_pins)
+    elseif(schema EQUAL 2)
         string(JSON post_injector_hash GET "${journal}" postInjectorHash)
-        if(NOT post_injector_hash STREQUAL RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256)
-            message(FATAL_ERROR "Unknown source-cache recovery after-state; no files were changed.")
+        if(post_injector_hash STREQUAL RESHAPE_GEN16_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 AND
+           recorded_pin IN_LIST generation16_before_pins)
+            # Retain the exact meaning of journals written by generation 16.
+        elseif(post_injector_hash STREQUAL RESHAPE_GEN17_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 AND
+               recorded_pin IN_LIST generation17_before_pins)
+            # Retain the exact meaning of journals written by generation 17.
+        elseif(post_injector_hash STREQUAL RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 AND
+               recorded_pin IN_LIST current_before_pins)
+            # New records may migrate a known old complete preimage to the
+            # current pre-late body, but never form an arbitrary cross product.
+        else()
+            message(FATAL_ERROR "Unknown source-cache recovery before/after pair; no files were changed.")
         endif()
     else()
         message(FATAL_ERROR "Unknown source-cache recovery schema or injector pair; no files were changed.")
@@ -777,6 +832,12 @@ function(ego_prepare_owned_late_source_cache source_dir)
     if(NOT result_patch_hash STREQUAL RESHAPE_FIRST_HOST_RESULT_PATCH_SHA256)
         message(FATAL_ERROR "The first-host result patch hash is not the frozen implementation.")
     endif()
+    get_filename_component(preloaded_patch_dir "${RESHAPE_PRELOADED_ADDON_PATCH}" DIRECTORY)
+    get_filename_component(preloaded_patch_name "${RESHAPE_PRELOADED_ADDON_PATCH}" NAME)
+    ego_read_source_cache_file("${preloaded_patch_dir}" "${preloaded_patch_name}" preloaded_patch_hash preloaded_patch_text)
+    if(NOT preloaded_patch_hash STREQUAL RESHAPE_PRELOADED_ADDON_PATCH_SHA256)
+        message(FATAL_ERROR "The preloaded add-on patch hash is not the frozen implementation.")
+    endif()
 
     if(injector_hash STREQUAL "26CFBBFFD692ACFB24BD19CBD93B3C7F81F24555EA67B75C55FAD14861E38B00")
         ego_assert_source_cache_vector("${source_root}" ${RESHAPE_PRISTINE_CONTENT_SHA256})
@@ -793,7 +854,13 @@ function(ego_prepare_owned_late_source_cache source_dir)
 
     set(terminal_injector_pins
         "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}"
         "${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN17_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN17_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN17_PRE_RESULT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN16_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "${RESHAPE_GEN16_PRE_RESULT_INJECTOR_CONTENT_SHA256}"
         "${RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256}"
         "${RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
     if(NOT injector_hash IN_LIST terminal_injector_pins)
@@ -818,7 +885,11 @@ function(ego_prepare_owned_late_source_cache source_dir)
             "${RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}"
             "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
             "${RESHAPE_GEN15_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}"
-            "${RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+            "${RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_GEN16_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_GEN16_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_GEN17_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_GEN17_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}")
         if(NOT injector_hash IN_LIST known_old_injectors)
             message(FATAL_ERROR "Unrecognized complete source-cache state; no files were changed.")
         endif()
@@ -867,11 +938,46 @@ function(ego_prepare_owned_late_source_cache source_dir)
        injector_hash STREQUAL RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256)
         set(host_injector_hash "${RESHAPE_GEN15_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
         set(pre_late_injector_hash "${RESHAPE_GEN15_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+    elseif(injector_hash STREQUAL RESHAPE_GEN16_CURRENT_INJECTOR_CONTENT_SHA256 OR
+           injector_hash STREQUAL RESHAPE_GEN16_PRE_RESULT_INJECTOR_CONTENT_SHA256)
+        set(host_injector_hash "${RESHAPE_GEN16_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+        set(pre_late_injector_hash "${RESHAPE_GEN16_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+    elseif(injector_hash STREQUAL RESHAPE_GEN17_CURRENT_INJECTOR_CONTENT_SHA256 OR
+           injector_hash STREQUAL RESHAPE_GEN17_PRE_PRELOADED_INJECTOR_CONTENT_SHA256 OR
+           injector_hash STREQUAL RESHAPE_GEN17_PRE_RESULT_INJECTOR_CONTENT_SHA256)
+        set(host_injector_hash "${RESHAPE_GEN17_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
+        set(pre_late_injector_hash "${RESHAPE_GEN17_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+        set(pre_preloaded_injector_hash "${RESHAPE_GEN17_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}")
     else()
         set(host_injector_hash "${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}")
         set(pre_late_injector_hash "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
+        set(pre_preloaded_injector_hash "${RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}")
     endif()
     if(injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       injector_hash STREQUAL RESHAPE_GEN17_CURRENT_INJECTOR_CONTENT_SHA256)
+        ego_write_lf_source_cache_file("${scratch}/preloaded.patch" "${preloaded_patch_text}")
+        foreach(check_argument IN ITEMS "--check" "--apply")
+            execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR
+                --unset=GIT_WORK_TREE --unset=GIT_INDEX_FILE
+                "GIT_CEILING_DIRECTORIES=${scratch}"
+                "${GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf apply --whitespace=nowarn --reverse
+                "${check_argument}" "${scratch}/preloaded.patch"
+                WORKING_DIRECTORY "${scratch}/candidate"
+                RESULT_VARIABLE preload_peel OUTPUT_VARIABLE preload_output ERROR_VARIABLE preload_error)
+            if(NOT preload_peel EQUAL 0)
+                message(FATAL_ERROR "The frozen preloaded add-on tail cannot be peeled in scratch; live source was not changed.\n${preload_output}${preload_error}")
+            endif()
+        endforeach()
+        string(REPLACE "tools/injector.cpp=${injector_hash}"
+            "tools/injector.cpp=${pre_preloaded_injector_hash}"
+            preloaded_base_vector "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+        ego_assert_source_cache_vector("${scratch}/candidate" ${preloaded_base_vector})
+    endif()
+    if(injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       injector_hash STREQUAL RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256 OR
+       injector_hash STREQUAL RESHAPE_GEN17_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       injector_hash STREQUAL RESHAPE_GEN17_PRE_PRELOADED_INJECTOR_CONTENT_SHA256 OR
+       injector_hash STREQUAL RESHAPE_GEN16_CURRENT_INJECTOR_CONTENT_SHA256 OR
        injector_hash STREQUAL RESHAPE_GEN15_CURRENT_INJECTOR_CONTENT_SHA256)
         ego_write_lf_source_cache_file("${scratch}/result.patch" "${result_patch_text}")
         foreach(check_argument IN ITEMS "--check" "--apply")
@@ -1037,25 +1143,27 @@ function(ego_apply_owned_late_source_tail source_dir)
     ego_assert_source_cache_vector("${source_dir}" ${host_vector})
 endfunction()
 
-function(ego_apply_first_host_result_source_tail source_dir)
-    get_filename_component(patch_directory "${RESHAPE_FIRST_HOST_RESULT_PATCH}" DIRECTORY)
-    get_filename_component(patch_name "${RESHAPE_FIRST_HOST_RESULT_PATCH}" NAME)
+function(ego_apply_terminal_injector_source_tail source_dir patch_path expected_patch_hash expected_before_hash expected_after_hash)
+    get_filename_component(patch_directory "${patch_path}" DIRECTORY)
+    get_filename_component(patch_name "${patch_path}" NAME)
     ego_read_source_cache_file("${patch_directory}" "${patch_name}" patch_hash patch_text)
-    if(NOT patch_hash STREQUAL RESHAPE_FIRST_HOST_RESULT_PATCH_SHA256)
-        message(FATAL_ERROR "The first-host result patch changed before final replay.")
+    if(NOT patch_hash STREQUAL expected_patch_hash)
+        message(FATAL_ERROR "The terminal injector patch changed before replay.")
     endif()
     ego_read_source_cache_file("${source_dir}" "tools/injector.cpp" injector_hash injector_text)
-    if(NOT injector_hash STREQUAL RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256 AND
-       NOT injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
-        message(FATAL_ERROR "Unknown first-host result preimage; no source files were changed.")
+    if(NOT injector_hash STREQUAL expected_before_hash AND
+       NOT injector_hash STREQUAL expected_after_hash)
+        message(FATAL_ERROR "Unknown terminal injector preimage; no source files were changed.")
     endif()
-    set(final_vector "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
     string(REPLACE "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "tools/injector.cpp=${expected_after_hash}" final_vector
+        "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+    string(REPLACE "tools/injector.cpp=${expected_after_hash}"
         "tools/injector.cpp=${injector_hash}" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
         "${final_vector}")
     ego_assert_source_cache_vector("${source_dir}" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
     verify_reshade_patched_source("${source_dir}")
-    if(injector_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
+    if(injector_hash STREQUAL expected_after_hash)
         return()
     endif()
 
@@ -1063,7 +1171,7 @@ function(ego_apply_first_host_result_source_tail source_dir)
     # complete transformed body, then publish it with one atomic rename; a
     # stopped configure therefore leaves either recognized terminal state.
     string(RANDOM LENGTH 12 ALPHABET "0123456789abcdef" result_suffix)
-    set(scratch "${CMAKE_CURRENT_BINARY_DIR}/ego-result-${result_suffix}")
+    set(scratch "${CMAKE_CURRENT_BINARY_DIR}/ego-terminal-${result_suffix}")
     file(MAKE_DIRECTORY "${scratch}/candidate/tools")
     ego_write_lf_source_cache_file("${scratch}/candidate/tools/injector.cpp" "${injector_text}")
     ego_write_lf_source_cache_file("${scratch}/result.patch" "${patch_text}")
@@ -1078,26 +1186,38 @@ function(ego_apply_first_host_result_source_tail source_dir)
             WORKING_DIRECTORY "${scratch}/candidate"
             RESULT_VARIABLE result_apply OUTPUT_VARIABLE result_output ERROR_VARIABLE result_error)
         if(NOT result_apply EQUAL 0)
-            message(FATAL_ERROR "Unable to stage the frozen first-host result tail; live source was not changed.\n${result_output}${result_error}")
+            message(FATAL_ERROR "Unable to stage the frozen terminal injector tail; live source was not changed.\n${result_output}${result_error}")
         endif()
     endforeach()
     ego_read_source_cache_file("${scratch}/candidate" "tools/injector.cpp" candidate_hash ignored_text)
-    if(NOT candidate_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256)
-        message(FATAL_ERROR "The staged first-host result body has an unexpected hash; live source was not changed.")
+    if(NOT candidate_hash STREQUAL expected_after_hash)
+        message(FATAL_ERROR "The staged terminal injector body has an unexpected hash; live source was not changed.")
     endif()
     ego_assert_source_cache_vector("${source_dir}" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
     verify_reshade_patched_source("${source_dir}")
     file(SHA256 "${target}" current_raw_hash)
     if(NOT current_raw_hash STREQUAL original_raw_hash)
-        message(FATAL_ERROR "The injector changed before first-host result publication; unknown edits were preserved.")
+        message(FATAL_ERROR "The injector changed before terminal publication; unknown edits were preserved.")
     endif()
     file(RENAME "${scratch}/candidate/tools/injector.cpp" "${target}" RESULT publish_result)
     if(NOT publish_result STREQUAL "0")
-        message(FATAL_ERROR "Unable to publish the verified first-host result body: ${publish_result}")
+        message(FATAL_ERROR "Unable to publish the verified terminal injector body: ${publish_result}")
     endif()
     ego_assert_source_cache_vector("${source_dir}" ${final_vector})
     set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${final_vector}")
     verify_reshade_patched_source("${source_dir}")
+endfunction()
+
+function(ego_apply_first_host_result_source_tail source_dir)
+    ego_apply_terminal_injector_source_tail("${source_dir}"
+        "${RESHAPE_FIRST_HOST_RESULT_PATCH}" "${RESHAPE_FIRST_HOST_RESULT_PATCH_SHA256}"
+        "${RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256}" "${RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}")
+endfunction()
+
+function(ego_apply_preloaded_addon_source_tail source_dir)
+    ego_apply_terminal_injector_source_tail("${source_dir}"
+        "${RESHAPE_PRELOADED_ADDON_PATCH}" "${RESHAPE_PRELOADED_ADDON_PATCH_SHA256}"
+        "${RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256}" "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
 endfunction()
 
 # Recognize the complete injector before any live historical patch is peeled.
@@ -1153,7 +1273,9 @@ function(ego_rollover_known_addon_build_id source_path)
         "0BAE44EE68E401993FA662BAF8BE79F985F6BCB87DC3A0818BFD80FD9574DDEB"
         "4EEA17F39E3BFF425CCD08246DDA121FE256A61B37D0FD5D93565FC83E9DAA7D"
         "AEFCC8D76B43277DDE2C0D29B3F98A6EEF03B06E99868F36B027A922CE2CA1A4"
-        "3D51024529834F539601F4E2573E29591954CF5906C704C980086108DB51373B")
+        "3D51024529834F539601F4E2573E29591954CF5906C704C980086108DB51373B"
+        "0A452E415E4AD37B6558D0F398A2A5A7A161D752148A70B21A4E8097740CA7D9"
+        "35BDAB091F1D93E89BC2C65E1F7853540B81931E99A1914697418E71609CC929")
     list(FIND previous_v3_full "${source_hash}" previous_v3_index)
     set(replacement "${source_text}")
     if(NOT previous_v3_index EQUAL -1)
@@ -1166,8 +1288,10 @@ function(ego_rollover_known_addon_build_id source_path)
            source_hash STREQUAL "C436078556B22BDAD9DFCD662A745E73339758E227F0178234B41D1392956974" OR
            source_hash STREQUAL "3A58324E3AE6CE96F3F312D965A384CB825B27B64CE3E4E95CF4B4194032946C" OR
            source_hash STREQUAL "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1" OR
-           source_hash STREQUAL "F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B")
-        # Frozen v4 bodies with the generation-11 through generation-15 identities.
+           source_hash STREQUAL "F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B" OR
+           source_hash STREQUAL "C2F7641F12F19FD1F78ABDB608DA9EF5A8B58DB087E30552ED3EDEE42AFCDF48" OR
+           source_hash STREQUAL "B11E61F8089802A590967C03DB358B253EEA8FE84FA3DCE2849F6EC642E9AA02")
+        # Frozen v4 bodies with the generation-11 through generation-17 identities.
         set(expected_hash "${RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256}")
     else()
         message(FATAL_ERROR
@@ -2924,6 +3048,7 @@ execute_process(COMMAND "${GIT_EXECUTABLE}" -c core.autocrlf=true -c core.eol=cr
 
 ego_apply_owned_late_source_tail("${reshade_SOURCE_DIR}")
 ego_apply_first_host_result_source_tail("${reshade_SOURCE_DIR}")
+ego_apply_preloaded_addon_source_tail("${reshade_SOURCE_DIR}")
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and
@@ -3198,6 +3323,7 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
         src/ego_cooperative_registry.hpp
         src/ego_cooperative_input.hpp
         src/ego_cooperative_frame_policy.hpp
+        src/ego_preloaded_addon.hpp
     )
     target_compile_features(electron_game_overlay PRIVATE cxx_std_20)
     target_compile_definitions(electron_game_overlay PRIVATE

@@ -100,9 +100,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "E8FE3783F29E4FB297D8B006D0087725"
+$ExpectedAddonBuildId = "17E16E01C9A243E18EE19D814420E519"
 # Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 16
+$RuntimeGeneration = 18
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -166,6 +166,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11.patch"
     injectorFirstHostResultPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-first-host-result.patch"
+    injectorAddonPreloadPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-addon.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -178,6 +180,10 @@ Assert-Sha256Equal `
     -Expected "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554" `
     -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorFirstHostResultPatchSha256).Hash `
     -Label "frozen injector first-host result patch"
+Assert-Sha256Equal `
+    -Expected "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorAddonPreloadPatchSha256).Hash `
+    -Label "frozen injector add-on preload patch"
 
 $CMake = Resolve-Executable "cmake.exe"
 if ($ForceReShade) {
@@ -266,6 +272,8 @@ if ($BuildStamp.schemaVersion -ne 30 -or
     $BuildStamp.cooperativeAddonProtocol -ne 1 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.injectorFutureTargets -ne 2 -or
+    ($BuildStamp.addonPreloadProtocol -isnot [int] -and $BuildStamp.addonPreloadProtocol -isnot [long]) -or
+    $BuildStamp.addonPreloadProtocol -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -300,6 +308,7 @@ $PackageBuildStamp = [ordered]@{
     cooperativeAddonProtocol = 1
     injectorProcessInstanceBinding = 1
     injectorFutureTargets = 2
+    addonPreloadProtocol = 1
     managerProtocolSchemaVersion = 1
     runtimeGeneration = $RuntimeGeneration
     targetTransportMin = $TargetTransportMin

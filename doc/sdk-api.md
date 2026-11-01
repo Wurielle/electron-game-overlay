@@ -16,6 +16,7 @@ public npm release.
 | --- | --- | --- |
 | `electron-game-overlay` | Electron main process | Owner/session/window classes, launch configuration and attachment, managed target watcher, native process observer, process-policy helpers, errors and public types |
 | `electron-game-overlay/packaging` | Node build configuration; no Electron runtime import | `createOverlayAfterPack`, `packageOverlayForElectronBuilder`, `verifyOverlayPackage` and their types |
+| `electron-game-overlay/preload` | Node installer/setup code; no Electron runtime import | `registerOverlayAddonInstallation`, `unregisterOverlayAddonInstallation`, `defaultOverlayAddonStorageRoot` and their types |
 | `electron-game-overlay/broker` | Node installer/setup code; no Electron runtime import | Optional `registerOverlayBrokerInstallation`, `unregisterOverlayBrokerInstallation`, `OverlayBrokerInstallationOptions` |
 
 | Task | Tool |
@@ -381,6 +382,28 @@ native architectures. Do not filter it down to DLLs or omit nested `node_modules
 Default runtime discovery resolves the physical ASAR-unpacked package location.
 Non-Windows cross-packaging and signing/update integration are not established
 by the current Windows acceptance.
+
+## Optional installed add-on preloading
+
+`registerOverlayAddonInstallation({ applicationId, packageRoot?, storageRoot? })`
+verifies and caches both architectures from a complete sealed preload-aware SDK.
+It returns an immutable `OverlayAddonInstallation` identifying the application,
+registration, native build and cached add-on paths. Repeated identical
+registration is idempotent; multiple builds can coexist.
+
+`createReShadeLaunchConfig({ addonPreload: { applicationId, storageRoot? } })`
+selects this app's exact registered native build. Each new owned host snapshots
+the current registered inventory. The private staged INI points to an external
+folder; a foreign ReShade installation's configuration remains unchanged.
+Offline applications' DLLs stay dormant until explicit session activation.
+
+`unregisterOverlayAddonInstallation({ applicationId, registrationId?, storageRoot? })`
+removes one registered build, or all builds for that application when its ID is
+omitted. Removal affects future host snapshots; existing targets retain mapped
+modules until target exit. `defaultOverlayAddonStorageRoot()` returns the
+current account's registry/cache root. Normal startup needs no registration.
+See [add-on preloading](addon-preloading.md) for setup, activation and lifetime
+limits.
 
 ## Optional installed broker registration
 

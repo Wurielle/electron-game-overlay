@@ -202,3 +202,20 @@ test('public package verifier rejects current CLI metadata downgrade after every
   await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /first-host result patch provenance mismatch/i);
   await assert.rejects(fs.stat(f.destination), /ENOENT/);
 });
+test('public package verification preserves retained generation-16 packages without preload capability', async t => {
+  const f = await fixture(t, { runtimeGeneration: 16, addonBuildId: 'E8FE3783F29E4FB297D8B006D0087725' });
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+  const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade64.build.json')));
+  assert.equal(stamp.addonPreloadProtocol, undefined);
+  assert.equal(stamp.injectorAddonPreloadPatchSha256, undefined);
+});
+test('current preload capability cannot disappear from one architecture before Electron packaging', async t => {
+  const f = await fixture(t);
+  const relative = 'runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json';
+  const stamp = JSON.parse(await fs.readFile(path.join(f.leaf, relative))); delete stamp.addonPreloadProtocol;
+  f.payload.write(relative, JSON.stringify(stamp)); f.payload.seal();
+  await assert.rejects(verifyOverlayPackage(f.sdk), /preload|manifests disagree/i);
+  await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /preload|manifests disagree/i);
+  await assert.rejects(fs.stat(f.destination), /ENOENT/);
+});

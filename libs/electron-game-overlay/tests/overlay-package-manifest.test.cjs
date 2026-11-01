@@ -12,6 +12,7 @@ const {
 } = require('../dist/lib/overlay-package-manifest.js');
 const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
 const retainedGeneration15 = Object.freeze({ runtimeGeneration: 15, addonBuildId: 'BCE6C5C8746F4300861300B2BDA3594E' });
+const retainedGeneration16 = Object.freeze({ runtimeGeneration: 16, addonBuildId: 'E8FE3783F29E4FB297D8B006D0087725' });
 
 function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-direct-seal-'));
@@ -194,6 +195,108 @@ test('the incoming validator is a required sealed payload', t => {
   const f = fixture(t);
   fs.unlinkSync(path.join(f.dist, 'lib/overlay-package-manifest.js')); f.payload.seal();
   assert.throws(() => validateOverlayDistributionSync(f.dist), /Required sealed SDK payload missing/i);
+});
+
+test('the retained generation-16 package remains valid without preload capability or patch provenance', t => {
+  const f = fixture(t, retainedGeneration16), before = fs.readFileSync(f.manifestPath);
+  const manifest = validateOverlayDistributionSync(f.dist);
+  assert.deepEqual(createOverlayDistributionManifestSync(f.dist, manifest.packageVersion), manifest);
+  assert.deepEqual(fs.readFileSync(f.manifestPath), before);
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    const native = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/electron_game_overlay_runtime' + suffix + '.build.json')));
+    const reshade = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(native.addonPreloadProtocol, undefined);
+    assert.equal(reshade.addonPreloadProtocol, undefined);
+    assert.equal(reshade.injectorAddonPreloadPatchSha256, undefined);
+  }
+});
+test('current preload implementation binds capability 1 and the exact injector patch in both architectures', t => {
+  const f = fixture(t);
+  validateOverlayDistributionSync(f.dist);
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    const native = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/electron_game_overlay_runtime' + suffix + '.build.json')));
+    const reshade = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(native.runtimeGeneration, 18);
+    assert.equal(native.addonPreloadProtocol, 1);
+    assert.equal(reshade.addonPreloadProtocol, 1);
+    assert.equal(reshade.injectorAddonPreloadPatchSha256, 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D');
+  }
+});
+for (const [name, value] of [['missing', undefined], ['null', null], ['zero', 0], ['future protocol', 2], ['string', '1'], ['boolean', true], ['fraction', 1.5]]) {
+  for (const target of ['native', 'ReShade']) test('current preload ' + target + ' capability rejects ' + name + ' after full hash rebinding', t => {
+    const f = fixture(t);
+    const stamp = target === 'native' ? 'electron_game_overlay_runtime32.build.json' : 'ReShade32.build.json';
+    mutateStamp(f, stamp, data => {
+      if (value === undefined) delete data.addonPreloadProtocol;
+      else data.addonPreloadProtocol = value;
+    });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /preload|Native architecture manifests disagree|native runtime manifest/i);
+  });
+}
+for (const [name, value] of [['missing', undefined], ['wrong type', 1], ['malformed', 'bad'], ['wrong valid digest', '0'.repeat(64)]]) test('current preload patch rejects ' + name + ' provenance after full hash rebinding', t => {
+  const f = fixture(t);
+  for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => {
+    if (value === undefined) delete stamp.injectorAddonPreloadPatchSha256;
+    else stamp.injectorAddonPreloadPatchSha256 = value;
+  });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /preload patch provenance mismatch/i);
+  assert.throws(() => createOverlayDistributionManifestSync(f.dist, '0.1.0-rc.7'), /preload patch provenance mismatch/i);
+});
+for (const value of [undefined, '0'.repeat(64)]) test('x86 preload patch provenance is independently required: ' + (value === undefined ? 'missing' : 'wrong digest'), t => {
+  const f = fixture(t);
+  mutateStamp(f, 'ReShade32.build.json', stamp => {
+    if (value === undefined) delete stamp.injectorAddonPreloadPatchSha256;
+    else stamp.injectorAddonPreloadPatchSha256 = value;
+  });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /preload patch provenance mismatch.*32/i);
+});
+test('removing every preload metadata field cannot downgrade the current sealed implementation', t => {
+  const f = fixture(t);
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    mutateStamp(f, 'electron_game_overlay_runtime' + suffix + '.build.json', stamp => { delete stamp.addonPreloadProtocol; });
+    mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { delete stamp.addonPreloadProtocol; delete stamp.injectorAddonPreloadPatchSha256; });
+  }
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /preload capability does not match the sealed SDK implementation/i);
+});
+test('a legacy generation-16 implementation cannot advertise preload capability through metadata alone', t => {
+  const f = fixture(t, retainedGeneration16);
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    mutateStamp(f, 'electron_game_overlay_runtime' + suffix + '.build.json', stamp => { stamp.addonPreloadProtocol = 1; });
+    mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { stamp.addonPreloadProtocol = 1; stamp.injectorAddonPreloadPatchSha256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D'; });
+  }
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /preload capability does not match the sealed SDK implementation/i);
+});
+test('a valid preload implementation marker cannot relabel a generation-16 package as preload-capable', t => {
+  const f = fixture(t, retainedGeneration16), modulePath = 'lib/overlay-package-manifest.js';
+  f.write(modulePath, fs.readFileSync(path.join(f.dist, modulePath), 'utf8') + "const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';\n");
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    mutateStamp(f, 'electron_game_overlay_runtime' + suffix + '.build.json', stamp => { stamp.addonPreloadProtocol = 1; });
+    mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { stamp.addonPreloadProtocol = 1; stamp.injectorAddonPreloadPatchSha256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D'; });
+  }
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /preload patch pin does not match its generation/i);
+});
+for (const [name, text] of [
+  ['nonliteral', 'const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 = process.env.PATCH_HASH;\n'],
+  ['uninitialized', 'const INJECTOR_ADDON_PRELOAD_PATCH_SHA256;\n'],
+  ['malformed digest', "const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 = 'bad';\n"],
+  ['duplicate', "const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';\nconst INJECTOR_ADDON_PRELOAD_PATCH_SHA256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';\n"],
+  ['wrong valid digest', "const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 = '" + '0'.repeat(64) + "';\n"],
+]) test('incoming SDK data rejects a ' + name + ' preload implementation pin', t => {
+  const f = fixture(t, retainedGeneration16);
+  const modulePath = 'lib/overlay-package-manifest.js';
+  f.write(modulePath, fs.readFileSync(path.join(f.dist, modulePath), 'utf8') + text); f.payload.seal();
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /preload patch pin/i);
+});
+test('a current SDK cannot omit its preload implementation marker', t => {
+  const f = fixture(t), modulePath = 'lib/overlay-package-manifest.js';
+  f.write(modulePath, fs.readFileSync(path.join(f.dist, modulePath), 'utf8').replace(/^const INJECTOR_ADDON_PRELOAD_PATCH_SHA256[^\n]*\n/gm, ''));
+  f.payload.seal();
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /preload patch pin does not match its generation/i);
 });
 
 test('payload junctions cannot redirect integrity reads outside the SDK', t => {

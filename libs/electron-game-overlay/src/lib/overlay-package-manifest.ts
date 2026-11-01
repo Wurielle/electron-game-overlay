@@ -16,6 +16,8 @@ const OWNED_LATE_D3D11_PATCH_SHA256 =
   '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
 const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 =
   'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
+const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 =
+  'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -156,6 +158,19 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (requiresFirstHostResultPatch && expectedReShadeSchema !== 30)) {
     throw new Error('Compiled SDK first-host result patch pin does not match its generation');
   }
+  const preloadDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_ADDON_PRELOAD_PATCH_SHA256\b/g)];
+  const preloadPins = [...validator.matchAll(/\bconst\s+INJECTOR_ADDON_PRELOAD_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (preloadDeclarations.length !== preloadPins.length || preloadDeclarations.length > 1) {
+    throw new Error('Compiled SDK add-on preload patch pin is malformed or ambiguous');
+  }
+  const requiresAddonPreloadPatch = preloadPins.length === 1;
+  if (requiresAddonPreloadPatch && preloadPins[0][1].toUpperCase() !== INJECTOR_ADDON_PRELOAD_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK add-on preload patch pin');
+  }
+  if ((!requiresAddonPreloadPatch && expectedGeneration > 16) ||
+      (requiresAddonPreloadPatch && expectedGeneration < 17)) {
+    throw new Error('Compiled SDK add-on preload patch pin does not match its generation');
+  }
   const native = path.join(dist, 'runtime/win32-x64/reshade');
   let paired: Record<string, unknown> | undefined;
   for (const bits of [64, 32]) {
@@ -165,15 +180,19 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
     if (stamp.schemaVersion !== 4 || stamp.kind !== 'electron-game-overlay-runtime-build' ||
         stamp.platform !== (bits === 64 ? 'win32-x64' : 'win32-ia32') || stamp.configuration !== 'RelWithDebInfo' ||
         stamp.cooperativeAddonProtocol !== 1 || stamp.injectorProcessInstanceBinding !== 1 || stamp.injectorFutureTargets !== 2 ||
+        (stamp.addonPreloadProtocol !== undefined && stamp.addonPreloadProtocol !== 1) ||
         stamp.managerProtocolSchemaVersion !== 1 || stamp.addonBuildId !== expectedBuildId ||
         !positiveInteger(stamp.runtimeGeneration) || !positiveInteger(stamp.targetTransportMin) ||
         !positiveInteger(stamp.targetTransportMax) || stamp.targetTransportMin !== 1 || stamp.targetTransportMax < stamp.targetTransportMin ||
         typeof stamp.managerSourceSha256 !== 'string' || !NATIVE_DIGEST.test(stamp.managerSourceSha256)) {
       throw new Error('Unsupported cooperative native runtime manifest: ' + stampName);
     }
-    if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol']
+    if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol', 'addonPreloadProtocol']
       .some((key) => stamp[key] !== paired![key])) throw new Error('Native architecture manifests disagree');
     if (stamp.runtimeGeneration !== expectedGeneration) throw new Error('Native runtime generation disagrees with the compiled SDK');
+    if (requiresAddonPreloadPatch ? stamp.addonPreloadProtocol !== 1 : stamp.addonPreloadProtocol !== undefined) {
+      throw new Error('Native add-on preload capability does not match the sealed SDK implementation: ' + bits);
+    }
     paired = stamp;
     const assets: Record<string, string> = {
       addonSha256: `electron_game_overlay.addon${bits}`,
@@ -213,6 +232,18 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.injectorFirstHostResultPatchSha256 !== undefined) {
       throw new Error('Injector first-host result patch provenance requires the sealed SDK implementation pin: ' + bits);
+    }
+    if (reshade.addonPreloadProtocol !== stamp.addonPreloadProtocol) {
+      throw new Error('ReShade and native add-on preload capabilities disagree: ' + bits);
+    }
+    if (requiresAddonPreloadPatch) {
+      if (typeof reshade.injectorAddonPreloadPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.injectorAddonPreloadPatchSha256) ||
+          reshade.injectorAddonPreloadPatchSha256.toUpperCase() !== INJECTOR_ADDON_PRELOAD_PATCH_SHA256) {
+        throw new Error('Pinned injector add-on preload patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorAddonPreloadPatchSha256 !== undefined) {
+      throw new Error('Injector add-on preload patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);

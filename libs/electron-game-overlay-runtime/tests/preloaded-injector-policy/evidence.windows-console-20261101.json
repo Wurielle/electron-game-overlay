@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-11-01T22:40:06.5947302Z",
+  "status": "passed",
+  "scope": "Directly compiled injector policy helpers; owned local files, data-only self exports and authoritative self-token queries. No target injection, runtime loading, graphics, desktop input or games.",
+  "injectorSourceNormalizedSha256": "EDFF9D0B4E3EDB505EEFA93F63BB451B1CC2AC7C2831F945EBC12C6ED6AFAA3F",
+  "fixtureSourceSha256": "8D90177316D9B7306873F38462DA65A48F3DD3655A6C176B8AAB58FCCB53D3A7",
+  "fixtureCmakeSha256": "AC9915B1FD76228AD8000A74BB10D41A8D5048176E27C777DF5CE98065281B05",
+  "toolchain": "MSVC 19.44.35223.0, Windows SDK 10.0.26100.0, Release",
+  "cases": [
+    "Strict architecture-specific leaf grammar and malformed fields",
+    "Build-ID and advertised eight-byte SHA-256 prefix binding",
+    "Unique NAME and stock wildcard filename disable rules, including the fixed reserved EGO filename",
+    "Known SHA-256 vector, full equal/changed file hashes, held deny-write/delete guards, missing/empty/directory/actual-symlink rejection and cleanup",
+    "Independent authoritative self-token privilege oracle and missing/non-process target rejection",
+    "Actual self module/export inspection distinguishes dormant member and completed adapter",
+    "Actual compiled copied-thunk bounds"
+  ],
+  "architectures": [
+    {
+      "architecture": "x64",
+      "casesPassed": 7,
+      "assertionsPassed": 387,
+      "skips": 0,
+      "exitCode": 0,
+      "memberThunkBytes": 1906,
+      "runtimeThunkBytes": 482,
+      "fixtureBinarySha256": "B738F6962E4658BC0A6AEA779C2A67316CC65A973C9CC2C40D97C95742A4B4CE"
+    },
+    {
+      "architecture": "Win32",
+      "casesPassed": 7,
+      "assertionsPassed": 387,
+      "skips": 0,
+      "exitCode": 0,
+      "memberThunkBytes": 1248,
+      "runtimeThunkBytes": 368,
+      "fixtureBinarySha256": "F0E3764C454C93BDBE5AB245267B69F7ECEE2F1328B9F54F59CB0A8FF5D0DE52"
+    }
+  ],
+  "sourceConfigureGuard": "The foreign-host loading predicate admits (ready || adapter_ready) when the owned late-host capability is absent.",
+  "compatibilityScope": {
+    "readyMeaningUnchanged": "The new injector accepts baseline AdapterReadyV1=1 without fabricating authenticated MemberReady/ReadyV1.",
+    "manualStockHostLimit": "An older injector requiring member readiness may time out on a manually configured stock-only host while every preloaded app is offline/dormant.",
+    "currentSdkScope": "The SDK preloads only the latest project-owned hosts, whose existing gate/adapter-readiness path supports older SDK joins. Universal older-injector admission on manually configured stock hosts is not claimed."
+  },
+  "warnings": [
+    "The included injector retains pre-existing C4457 variable shadowing outside this feature."
+  ],
+  "retainedEarlierAttempt": "Both initial executions reached token checks, then failed an incorrect fixture assumption that INVALID_HANDLE_VALUE was not a process handle. Windows uses the same -1 value as the current-process pseudo-handle. The fixture now uses an actual owned event handle of the wrong object type; no production guard was relaxed.",
+  "limits": [
+    "This does not prove remote activation, dormant scanner loading, route isolation, hook recovery, rendering, input or foreign-installation preservation.",
+    "The measured thunk sizes are from these helper fixtures. Standalone injectors must enforce their own compiled-size checks and controlled loader acceptance.",
+    "The source hash identifies this exact draft; later build-ID or injector changes require separately identified candidate evidence."
+  ]
+}

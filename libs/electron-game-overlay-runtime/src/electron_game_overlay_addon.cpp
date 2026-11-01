@@ -9,6 +9,7 @@
 #include "ego_cooperative_frame_policy.hpp"
 #include "ego_render_readback_diagnostic.hpp"
 #include "ego_initial_texture_upload.hpp"
+#include "ego_preloaded_addon.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -30,6 +32,9 @@
 #pragma comment(lib, "Comctl32.lib")
 
 extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMember(void *request);
+extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayActivatePreloadedMemberV1(void *request);
+extern "C" __declspec(dllexport) void AddonUninit(HMODULE module, HMODULE reshade_module);
+extern "C" { __declspec(dllexport) extern const char *NAME; }
 extern "C" { __declspec(dllexport) extern volatile LONG ElectronGameOverlayCooperativeReadyV1; }
 extern "C" { __declspec(dllexport) extern volatile LONG ElectronGameOverlayCooperativeAdapterReadyV1; }
 
@@ -58,6 +63,9 @@ std::atomic<std::uint64_t> g_input_source_cutoff = 0;
 std::mutex g_member_initialization_mutex;
 bool g_cooperative_dispatcher = false;
 bool g_public_registered = false;
+bool g_dispatcher_events_registered = false;
+ego::preloaded_addon::filename_identity g_preload_identity;
+std::wstring g_preload_bound_directory;
 std::string g_private_run_directory;
 bool g_private_route_present = false;
 std::uint64_t g_cooperative_focus_revision = 0;
@@ -68,8 +76,18 @@ ego::cooperative::presentation_driver g_adapter_input_driver;
 ego::cooperative::logical_control g_logical_control;
 std::atomic<bool> g_adapter_window_ready = false;
 std::uint64_t g_logical_fps_publication_tick = 0;
-DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer);
+DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer,
+    bool preloaded_activation = false);
 DWORD initialize_automatic_member() noexcept;
+bool is_preloaded_member() noexcept
+{
+    return g_preload_identity.kind == ego::preloaded_addon::preload_filename_kind::valid;
+}
+
+bool can_drive_dormant_adapter() noexcept
+{
+    return is_preloaded_member() && g_cooperative_dispatcher;
+}
 thread_local bool g_cooperative_owned_record = false;
 thread_local ego::cooperative::window_key g_cooperative_record_owner;
 thread_local ego::cooperative::window_key g_cooperative_record_focus;
@@ -3656,6 +3674,11 @@ void publish_render_fps(swapchain_data &data)
 void initialize_own_surface_transport(swapchain_data &data, bool publish_ready = true)
 {
     const std::scoped_lock initialization_lock(data.transport_initialization_mutex);
+    // A folder-loaded module is only an adapter until its owning application
+    // explicitly binds a private stage. Preserve the deferred initialization
+    // state so that activation can retain its transport on a later frame.
+    if (is_preloaded_member() && g_participant_id.load(std::memory_order_acquire) == 0)
+        return;
     if (!data.transport_initialization_complete)
     {
         data.transport = retain_transport();
@@ -3687,7 +3710,8 @@ bool advance_own_surface_startup(swapchain_data &data)
     initialize_own_surface_transport(data, status == official_setup_status::ready);
     if (status == official_setup_status::failed)
     {
-        if (!data.official_hook_failure_reported)
+        if (!data.official_hook_failure_reported &&
+            (!is_preloaded_member() || data.transport != nullptr))
         {
             data.official_hook_failure_reported = true;
             if (auto *const owner = get_official_hook_owner(data))
@@ -3703,7 +3727,8 @@ bool advance_own_surface_startup(swapchain_data &data)
 
 void initialize_own_surface(device_object *surface, HWND window)
 {
-    if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS)
+    if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS &&
+        !can_drive_dormant_adapter())
         return;
 
     swapchain_data *data = nullptr;
@@ -4893,9 +4918,19 @@ void on_destroy_swapchain(swapchain *surface, bool resize)
             }
         });
     }
+    bool own_surface_destroyed = false;
     for (const auto &participant : g_cooperative.snapshot_participants())
         if (participant.callbacks.destroy_surface != nullptr)
+        {
+            own_surface_destroyed = own_surface_destroyed ||
+                participant.callbacks.destroy_surface == cooperative_destroy_surface;
             participant.callbacks.destroy_surface(participant.context, surface, 1);
+        }
+    // The dormant first adapter deliberately has no participant entry. Compare
+    // the callback in the same snapshot rather than a concurrently published
+    // participant id, so activation cannot make baseline cleanup disappear.
+    if (!own_surface_destroyed)
+        cooperative_destroy_surface(nullptr, surface, 1);
     g_logical_control.run([&] {
         g_cooperative.release_primary_surface(surface->get_native(),
             g_adapter_input_driver.native_id(),
@@ -4926,9 +4961,16 @@ void on_destroy_effect_runtime(effect_runtime *runtime)
             }
         }
     });
+    bool own_surface_destroyed = false;
     for (const auto &participant : g_cooperative.snapshot_participants())
         if (participant.callbacks.destroy_surface != nullptr)
+        {
+            own_surface_destroyed = own_surface_destroyed ||
+                participant.callbacks.destroy_surface == cooperative_destroy_surface;
             participant.callbacks.destroy_surface(participant.context, runtime, 0);
+        }
+    if (!own_surface_destroyed)
+        cooperative_destroy_surface(nullptr, runtime, 0);
 }
 
 void apply_cooperative_adapter_state(effect_runtime *runtime)
@@ -5001,7 +5043,8 @@ void apply_cooperative_presentation_cursor(effect_runtime *runtime)
 
 void on_reshade_overlay(effect_runtime *runtime)
 {
-    if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS)
+    if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS &&
+        !can_drive_dormant_adapter())
         return;
     const bool logical_owner = g_cooperative.claim_primary_surface(runtime->get_native());
     const auto primary = g_cooperative.primary_surface();
@@ -5063,9 +5106,10 @@ bool register_compatible_addon(HMODULE module)
         GetProcAddress(host, "ReShadeRegisterAddon"));
     const auto unregister_addon = reinterpret_cast<void (*)(void *)>(
         GetProcAddress(host, "ReShadeUnregisterAddon"));
+    const bool register_public_metadata = g_cooperative_dispatcher || is_preloaded_member();
     if (register_addon == nullptr ||
         unregister_addon == nullptr ||
-        (g_cooperative_dispatcher && !register_addon(module, public_reshade_api_version)))
+        (register_public_metadata && !register_addon(module, public_reshade_api_version)))
     {
         g_addon_module = nullptr;
         return false;
@@ -5077,7 +5121,7 @@ bool register_compatible_addon(HMODULE module)
     if (get_imgui_table == nullptr ||
         !(imgui_function_table_instance() = get_imgui_table(IMGUI_VERSION_NUM)))
     {
-        if (g_cooperative_dispatcher)
+        if (register_public_metadata)
             unregister_addon(module);
         g_addon_module = nullptr;
         return false;
@@ -5090,7 +5134,7 @@ bool register_compatible_addon(HMODULE module)
     g_reshade_host_module = host;
     g_has_private_input_observer =
         host_abi != nullptr && *host_abi == 1 && has_private_gate;
-    g_public_registered = g_cooperative_dispatcher;
+    g_public_registered = register_public_metadata;
     return true;
 }
 
@@ -5115,6 +5159,9 @@ struct member_initialize_v1
     std::uint32_t abi_version;
     wchar_t run_directory[32768];
 };
+static_assert(sizeof(member_initialize_v1) == 65544);
+static_assert(alignof(member_initialize_v1) == 4);
+static_assert(std::is_trivially_copyable_v<member_initialize_v1>);
 
 bool has_owned_stage_marker(const std::filesystem::path &directory)
 {
@@ -5208,13 +5255,59 @@ bool has_owned_stage_marker(const std::filesystem::path &directory)
         encoded.data(), bytes, nullptr, nullptr) == bytes && fields["directoryName"] == encoded;
 }
 
-DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer)
+DWORD pin_cooperative_modules()
+{
+    HMODULE pinned_host = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(g_reshade_host_module), &pinned_host))
+        return GetLastError();
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(&g_addon_module), &pinned))
+        return GetLastError();
+    g_module_pinned.store(true, std::memory_order_release);
+    return ERROR_SUCCESS;
+}
+
+DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer,
+    bool preloaded_activation)
 {
     const std::scoped_lock lock(g_member_initialization_mutex);
+    std::wstring directory;
+    if (preloaded_activation)
+    {
+        if (!is_preloaded_member() || opaque_request == nullptr)
+            return ERROR_INVALID_FUNCTION;
+        const auto &request = *static_cast<const member_initialize_v1 *>(opaque_request);
+        if (request.struct_size != sizeof(request) || request.abi_version != 1)
+            return ERROR_INVALID_PARAMETER;
+        const auto length = wcsnlen_s(request.run_directory, std::size(request.run_directory));
+        if (length == 0 || length == std::size(request.run_directory))
+            return ERROR_INVALID_PARAMETER;
+        const auto requested = std::filesystem::path(std::wstring(request.run_directory, length));
+        if (!requested.is_absolute())
+            return ERROR_BAD_PATHNAME;
+        std::error_code error;
+        const auto canonical = std::filesystem::canonical(requested, error);
+        if (error || !has_owned_stage_marker(canonical))
+            return ERROR_ACCESS_DENIED;
+        directory = canonical.wstring();
+        if (!g_preload_bound_directory.empty() &&
+            CompareStringOrdinal(g_preload_bound_directory.c_str(),
+                static_cast<int>(g_preload_bound_directory.size()), directory.c_str(),
+                static_cast<int>(directory.size()), TRUE) != CSTR_EQUAL)
+            return ERROR_ALREADY_ASSIGNED;
+        // Reserve the binding before admission or PIN can be consumed. A
+        // failed/uncertain activation may retry this route but never retarget
+        // the mapped feature engine to a later application session.
+        if (g_preload_bound_directory.empty())
+            g_preload_bound_directory = directory;
+    }
+    else if (is_preloaded_member())
+        return ERROR_INVALID_FUNCTION;
     if (g_participant_id.load(std::memory_order_acquire) != 0)
         return ERROR_SUCCESS;
-    std::wstring directory;
-    if (opaque_request != nullptr)
+    if (!preloaded_activation && opaque_request != nullptr)
     {
         const auto &request = *static_cast<const member_initialize_v1 *>(opaque_request);
         if (request.struct_size != sizeof(request) || request.abi_version != 1)
@@ -5224,7 +5317,7 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
             return ERROR_INVALID_PARAMETER;
         directory.assign(request.run_directory, length);
     }
-    else
+    else if (!preloaded_activation)
     {
         std::array<wchar_t, 32768> path = {};
         const auto length = GetModuleFileNameW(g_addon_module, path.data(), static_cast<DWORD>(path.size()));
@@ -5259,15 +5352,9 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
         return ERROR_TOO_MANY_SESS;
     // No callback/context is visible and no registry lock is held while
     // acquiring the loader lock. Rejected admission must not pin this module.
-    HMODULE pinned_host = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-        reinterpret_cast<LPCWSTR>(g_reshade_host_module), &pinned_host))
-        return GetLastError();
-    HMODULE pinned = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-        reinterpret_cast<LPCWSTR>(&g_addon_module), &pinned))
-        return GetLastError();
-    g_module_pinned.store(true, std::memory_order_release);
+    const auto pin_error = pin_cooperative_modules();
+    if (pin_error != ERROR_SUCCESS)
+        return pin_error;
     // PIN is irreversible. If publication fails, consume the invisible slot
     // rather than admitting an unbounded number of other pinned modules.
     admission.retain_if_unpublished();
@@ -5282,12 +5369,16 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
 
 DWORD initialize_automatic_member() noexcept
 {
+    if (is_preloaded_member())
+        return ERROR_NOT_READY;
     try { return initialize_cooperative_member(nullptr, false); }
     catch (...) { return ERROR_DLL_INIT_FAILED; }
 }
 
 void register_dispatcher_events()
 {
+    if (g_dispatcher_events_registered)
+        return;
     reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
     reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
     reshade::register_event<reshade::addon_event::destroy_effect_runtime>(on_destroy_effect_runtime);
@@ -5295,6 +5386,7 @@ void register_dispatcher_events()
     reshade::register_event<reshade::addon_event::reshade_present>(on_reshade_present_diagnostic);
     if (g_has_private_input_observer)
         reshade::register_event<reshade::addon_event::input_message>(on_input_message);
+    g_dispatcher_events_registered = true;
     // Callback registration is complete independently of any private producer.
     InterlockedExchange(&ElectronGameOverlayCooperativeAdapterReadyV1, 1);
 }
@@ -5310,11 +5402,17 @@ extern "C" __declspec(dllexport) __declspec(align(4)) volatile LONG ElectronGame
 
 #if defined(_M_IX86)
 #pragma comment(linker, "/EXPORT:ElectronGameOverlayInitializeMember=_ElectronGameOverlayInitializeMember@4")
+#pragma comment(linker, "/EXPORT:ElectronGameOverlayActivatePreloadedMemberV1=_ElectronGameOverlayActivatePreloadedMemberV1@4")
 #pragma comment(linker, "/EXPORT:ElectronGameOverlayCanUnloadFailedMemberV1=_ElectronGameOverlayCanUnloadFailedMemberV1@0")
 #endif
 extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMember(void *request)
 {
     try { return initialize_cooperative_member(request, true); }
+    catch (...) { return ERROR_DLL_INIT_FAILED; }
+}
+extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayActivatePreloadedMemberV1(void *request)
+{
+    try { return initialize_cooperative_member(request, true, true); }
     catch (...) { return ERROR_DLL_INIT_FAILED; }
 }
 // The injector asks only after an explicit initializer failure. Absence,
@@ -5343,13 +5441,69 @@ static_assert(
     sizeof(ElectronGameOverlayReShadeAddonBuildId) == 33,
     "The Electron Game Overlay add-on build ID must be 32 ASCII characters.");
 
+// The loader also invokes DllMain on driver-created threads with small stacks.
+// Keep process initialization behind a non-inlined boundary and put its bounded
+// filename buffer on the heap, so every thread notification has a small frame.
+__declspec(noinline) BOOL initialize_addon_process(HMODULE module)
+{
+    constexpr DWORD path_capacity = 32768;
+    const std::unique_ptr<wchar_t[]> path(new (std::nothrow) wchar_t[path_capacity]);
+    if (!path)
+        return FALSE;
+    const auto length = GetModuleFileNameW(module, path.get(), path_capacity);
+    if (length == 0 || length == path_capacity)
+        return FALSE;
+    const std::wstring_view full_path(path.get(), length);
+    const auto separator = full_path.find_last_of(L"\\/");
+    const auto leaf = full_path.substr(separator == std::wstring_view::npos ? 0 : separator + 1);
+    g_preload_identity = ego::preloaded_addon::classify_filename(leaf,
+        ElectronGameOverlayReShadeAddonBuildId,
+#ifdef _WIN64
+        true
+#else
+        false
+#endif
+    );
+    if (g_preload_identity.kind == ego::preloaded_addon::preload_filename_kind::invalid)
+        return FALSE;
+    if (is_preloaded_member())
+        NAME = g_preload_identity.public_name.data();
+    if (!g_cooperative.open())
+        return FALSE;
+    g_cooperative_dispatcher = g_cooperative.claim_dispatcher();
+    if (!register_compatible_addon(module))
+    {
+        if (g_cooperative_dispatcher)
+            g_cooperative.abandon_dispatcher_claim();
+        return FALSE;
+    }
+
+    if (g_cooperative_dispatcher)
+        register_dispatcher_events();
+    return TRUE;
+}
+
 extern "C" __declspec(dllexport) bool AddonInit(HMODULE module, HMODULE)
 {
-    if (!g_cooperative_dispatcher || g_public_registered)
+    if (!g_cooperative_dispatcher && !is_preloaded_member())
         return true;
-    if (!register_compatible_addon(module))
+    if (!g_public_registered && !register_compatible_addon(module))
         return false;
-    register_dispatcher_events();
+    if (can_drive_dormant_adapter() && !g_module_pinned.load(std::memory_order_acquire))
+    {
+        // The scanner calls AddonInit after LoadLibrary releases the loader
+        // lock. The sole baseline adapter survives independently of any app's
+        // participant admission; offline metadata-only peers are not pinned.
+        if (pin_cooperative_modules() != ERROR_SUCCESS)
+        {
+            AddonUninit(module, g_reshade_host_module);
+            g_cooperative.abandon_dispatcher_claim();
+            g_cooperative_dispatcher = false;
+            return false;
+        }
+    }
+    if (g_cooperative_dispatcher)
+        register_dispatcher_events();
     return true;
 }
 
@@ -5360,9 +5514,13 @@ extern "C" __declspec(dllexport) void AddonUninit(HMODULE module, HMODULE)
         InterlockedExchange(&ElectronGameOverlayCooperativeAdapterReadyV1, 0);
         g_adapter_window_ready.store(false, std::memory_order_release);
         shutdown_official_message_hooks(true);
+        g_dispatcher_events_registered = false;
+        g_cooperative_adapter_phase = input_phase::disabled;
+    }
+    if (g_cooperative_dispatcher || is_preloaded_member())
+    {
         unregister_compatible_addon(module);
         g_public_registered = false;
-        g_cooperative_adapter_phase = input_phase::disabled;
     }
 }
 
@@ -5371,20 +5529,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
     switch (reason)
     {
     case DLL_PROCESS_ATTACH:
-        if (!g_cooperative.open())
-            return FALSE;
-        g_cooperative_dispatcher = g_cooperative.claim_dispatcher();
-        if (!register_compatible_addon(module))
-        {
-            if (g_cooperative_dispatcher)
-                g_cooperative.abandon_dispatcher_claim();
-            return FALSE;
-        }
-
-        if (!g_cooperative_dispatcher)
-            break;
-        register_dispatcher_events();
-        break;
+        return initialize_addon_process(module);
 
     case DLL_PROCESS_DETACH:
         if (reserved == nullptr)

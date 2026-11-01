@@ -11,6 +11,7 @@ const producer = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-run
 const reshadeProducer = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/scripts/build-reshade-runtime.ps1'), 'utf8');
 const ownedLatePatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
 const firstHostResultPatchSha256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
+const addonPreloadPatchSha256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';
 function patches(source) {
   return [...source.matchAll(/(\w+PatchSha256)\s*=\s*Join-Path \$\w+ "patches\\([^"]+)"/g)].map(([, key, file]) => [key, file]);
 }
@@ -29,9 +30,10 @@ test('portable source contract: staging mirrors bound cooperative native and pac
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 30);
+  assert.equal(patches(stage).length, 31);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorFirstHostResultPatchSha256'), [['injectorFirstHostResultPatchSha256', 'reshade-injector-first-host-result.patch']]);
+  assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorAddonPreloadPatchSha256'), [['injectorAddonPreloadPatchSha256', 'reshade-injector-preloaded-addon.patch']]);
   for (const [, file] of patches(stage)) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches', file))).digest('hex').length, 64);
 });
 test('portable extracted numeric guards reject old stamps and absent/incorrect capabilities', () => {
@@ -44,6 +46,8 @@ test('portable extracted numeric guards reject old stamps and absent/incorrect c
       assert.equal(numericAccepts(variable, { ...valid, cooperativeAddonProtocol: capability }), false);
     }
     assert.equal(valid.injectorFutureTargets, 2);
+    assert.equal(valid.addonPreloadProtocol, 1);
+    for (const capability of [undefined, null, false, true, 0, 2, 1.5, '1']) assert.equal(numericAccepts(variable, { ...valid, addonPreloadProtocol: capability }), false);
     for(const cap of [undefined,0,1,3,'2'])assert.equal(numericAccepts(variable,{...valid,injectorFutureTargets:cap}),false);
     assert.equal(numericAccepts(variable, valid), true);
     assert.equal(numericAccepts(variable, { ...valid, schemaVersion: schemaVersion - 1 }), false);
@@ -100,11 +104,21 @@ test('current source cache binds the complete nineteen-file stack and frozen ter
   assert.deepEqual(resultChanged, ['tools/injector.cpp']);
   assert.match(reshadeProducer, /\$Stamp.injectorFirstHostResultPatchSha256 -eq \$InjectorFirstHostResultPatchHash -and/);
   assert.match(reshadeProducer, /injectorFirstHostResultPatchSha256 = \$InjectorFirstHostResultPatchHash/);
+  const preloadPatch = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-addon.patch'));
+  assert.equal(crypto.createHash('sha256').update(preloadPatch).digest('hex').toUpperCase(), addonPreloadPatchSha256);
+  const preloadChanged = [...preloadPatch.toString('utf8').matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)].map(match => match[2]);
+  assert.deepEqual(preloadChanged, ['tools/injector.cpp']);
+  assert.match(reshadeProducer, /\$Stamp.injectorAddonPreloadPatchSha256 -eq \$InjectorAddonPreloadPatchHash -and/);
+  assert.match(reshadeProducer, /injectorAddonPreloadPatchSha256 = \$InjectorAddonPreloadPatchHash/);
+  assert.match(reshadeProducer, /\(\$Stamp.addonPreloadProtocol -is \[int\] -or \$Stamp.addonPreloadProtocol -is \[long\]\) -and\s*\$Stamp.addonPreloadProtocol -eq 1 -and/);
+  assert.match(reshadeProducer, /addonPreloadProtocol = 1/);
+  assert.match(producer, /addonPreloadProtocol = 1/);
   const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
-  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g), ['$InjectorFirstHostResultPatch']);
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g), ['$InjectorAddonPreloadPatch']);
   for (const source of [reshadeProducer, producer, stage]) {
     assert.ok(source.includes(ownedLatePatchSha256), 'Frozen owned-late production patch is pinned before packaging/cache acceptance');
     assert.ok(source.includes(firstHostResultPatchSha256), 'Frozen first-host result patch is pinned before packaging/cache acceptance');
+    assert.ok(source.includes(addonPreloadPatchSha256), 'Frozen preload patch is pinned before packaging/cache acceptance');
   }
 });
 
@@ -122,7 +136,10 @@ for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted curre
     requiredPatches: [
       { key: 'ownedLateD3d11PatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'), sha256: ownedLatePatchSha256 },
       { key: 'injectorFirstHostResultPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-first-host-result.patch'), sha256: firstHostResultPatchSha256 },
+      { key: 'injectorAddonPreloadPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-addon.patch'), sha256: addonPreloadPatchSha256 },
     ],
+    expectedAddonId: producer.match(/^\$ExpectedAddonBuildId = "([0-9A-F]{32})"\r?$/m)[1],
+    expectedGeneration: Number(producer.match(/^\$RuntimeGeneration = ([1-9][0-9]*)\r?$/m)[1]),
   };
   payload.cases = payload.requiredPatches.flatMap(required => [
     { name: 'exact required production patch', schema: 30, present: true, value: required.sha256, pass: true },
@@ -135,6 +152,16 @@ for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted curre
     { name: 'substituted syntactically valid digest', schema: 30, present: true, value: 'A'.repeat(64), pass: false },
     { name: 'legacy schema cannot supply current native artifacts', schema: 29, present: true, value: required.sha256, pass: false },
   ].map(candidate => ({ ...candidate, key: required.key, name: required.key + ': ' + candidate.name })));
+  payload.capabilityCases = [
+    { name: 'preload protocol integer one', present: true, value: 1, pass: true },
+    { name: 'preload protocol Int32 one', present: true, value: 1, forceType: 'int32', pass: true },
+    { name: 'preload protocol Int64 one', present: true, value: 1, forceType: 'int64', pass: true },
+    { name: 'missing preload protocol', present: false, pass: false },
+    ...[null, false, true, 0, 2, 1.5, '1'].map(value => ({ name: 'invalid preload protocol ' + JSON.stringify(value), present: true, value, pass: false })),
+    { name: 'preload protocol is a floating-point one', present: true, value: 1, forceType: 'double', pass: false },
+  ];
+  payload.cases.push(...payload.capabilityCases.map(candidate => ({ ...candidate, schema: 30, key: 'addonPreloadProtocol' })));
+  payload.nativeCases = [...payload.capabilityCases, { name: 'unknown native property cannot broaden the fixed stamp', present: true, value: 1, extraProperty: true, pass: false }];
   const payloadPath = path.join(directory, 'input.json');
   fs.writeFileSync(payloadPath, JSON.stringify(payload));
   const script = `
@@ -159,9 +186,12 @@ foreach ($SourcePath in $InputData.sources) {
     $ExpectedPatchProvenance = [ordered]@{}
     foreach ($Required in $InputData.requiredPatches) { $ExpectedPatchProvenance[$Required.key] = $Required.file }
     foreach ($Case in $InputData.cases) {
-        $Fields = [ordered]@{ schemaVersion = $Case.schema; cooperativeAddonProtocol = 1; injectorProcessInstanceBinding = 1; injectorFutureTargets = 2; commit = $ExpectedReShadeCommit; configuration = 'Release'; platform = '64-bit'; addonLevel = 2 }
+        $Fields = [ordered]@{ schemaVersion = $Case.schema; cooperativeAddonProtocol = 1; injectorProcessInstanceBinding = 1; injectorFutureTargets = 2; addonPreloadProtocol = 1; commit = $ExpectedReShadeCommit; configuration = 'Release'; platform = '64-bit'; addonLevel = 2 }
         foreach ($Required in $InputData.requiredPatches) { $Fields[$Required.key] = $Required.sha256 }
         if ($Case.present) { $Fields[$Case.key] = $Case.value } else { $Fields.Remove($Case.key) }
+        if ($Case.forceType -eq 'int32') { $Fields[$Case.key] = [int]$Case.value }
+        if ($Case.forceType -eq 'int64') { $Fields[$Case.key] = [long]$Case.value }
+        if ($Case.forceType -eq 'double') { $Fields[$Case.key] = [double]$Case.value }
         $BuildStamp = [pscustomobject]$Fields
         $Accepted = $true
         $FailureMessage = ''
@@ -170,6 +200,35 @@ foreach ($SourcePath in $InputData.sources) {
         if ($Accepted -ne $Case.pass) { throw ('Unexpected current manifest result for ' + $SourcePath + ': ' + $Case.name + '; ' + $FailureMessage) }
         $Validated++
     }
+    $PackageGuard = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.IfStatementAst] -and $Node.Extent.Text.Contains('$PackageBuildStamp.schemaVersion -ne 4') -and $Node.Extent.Text.Contains('Compare-Object') }, $true)
+    if ($PackageGuard) {
+        $PropertyList = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.AssignmentStatementAst] -and $Node.Left.Extent.Text -eq '$ExpectedPackageBuildStampProperties' }, $true)
+        if (-not $PropertyList) { throw 'Native stamp exact-key allowlist is missing.' }
+        . ([scriptblock]::Create($PropertyList.Extent.Text))
+        $ExpectedAddonBuildId = $InputData.expectedAddonId
+        $ExpectedRuntimeGeneration = $InputData.expectedGeneration
+        $ExpectedTargetTransportMin = 1; $ExpectedTargetTransportMax = 1
+        $ArchitectureConfig = [pscustomobject]@{ RuntimePlatform = '64-bit'; PackagePlatform = 'win32-x64' }
+        $PackageBuildStampPath = 'controlled-no-native-package-fixture'
+        foreach ($Case in $InputData.nativeCases) {
+            $Fields = [ordered]@{}
+            foreach ($Key in $ExpectedPackageBuildStampProperties) { $Fields[$Key] = 'A' * 64 }
+            $Fields.schemaVersion = 4; $Fields.kind = 'electron-game-overlay-runtime-build'; $Fields.platform = 'win32-x64'; $Fields.configuration = 'RelWithDebInfo'
+            $Fields.addonBuildId = $ExpectedAddonBuildId; $Fields.cooperativeAddonProtocol = 1; $Fields.injectorProcessInstanceBinding = 1; $Fields.injectorFutureTargets = 2
+            $Fields.managerProtocolSchemaVersion = 1; $Fields.runtimeGeneration = $ExpectedRuntimeGeneration; $Fields.targetTransportMin = 1; $Fields.targetTransportMax = 1
+            if ($Case.present) { $Fields.addonPreloadProtocol = $Case.value } else { $Fields.Remove('addonPreloadProtocol') }
+            if ($Case.forceType -eq 'int32') { $Fields.addonPreloadProtocol = [int]$Case.value }
+            if ($Case.forceType -eq 'int64') { $Fields.addonPreloadProtocol = [long]$Case.value }
+            if ($Case.forceType -eq 'double') { $Fields.addonPreloadProtocol = [double]$Case.value }
+            if ($Case.extraProperty) { $Fields.unexpectedFutureField = 1 }
+            $PackageBuildStamp = [pscustomobject]$Fields
+            $ActualPackageBuildStampProperties = @($PackageBuildStamp.PSObject.Properties | Select-Object -ExpandProperty Name | Sort-Object)
+            $Accepted = $true; $FailureMessage = ''
+            try { . ([scriptblock]::Create($PackageGuard.Extent.Text)) } catch { $Accepted = $false; $FailureMessage = $_.Exception.Message }
+            if ($Accepted -ne $Case.pass) { throw ('Unexpected native capability result: ' + $Case.name + '; ' + $FailureMessage) }
+            $Validated++
+        }
+    }
 }
 Write-Output ('Validated ' + $Validated + ' current manifest cases without building or loading a runtime.')
 `;
@@ -177,7 +236,7 @@ Write-Output ('Validated ' + $Validated + ' current manifest cases without build
     const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20000, windowsHide: true });
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.ok(result.stdout.includes(`Validated ${payload.cases.length * payload.sources.length} current manifest cases without building or loading a runtime.`), result.stdout);
+    assert.ok(result.stdout.includes(`Validated ${payload.cases.length * payload.sources.length + payload.nativeCases.length} current manifest cases without building or loading a runtime.`), result.stdout);
   } finally {
     const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
     assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));

@@ -47,6 +47,16 @@ const gen15Build = {
   full: 'F1B4EFB815F45A61BDCF31BC7C04D2B49ED8F060CD98CD03960E0BC222FD3E8B',
   pre: '3D51024529834F539601F4E2573E29591954CF5906C704C980086108DB51373B',
 };
+const gen16Build = {
+  id: 'E8FE3783F29E4FB297D8B006D0087725',
+  full: 'C2F7641F12F19FD1F78ABDB608DA9EF5A8B58DB087E30552ED3EDEE42AFCDF48',
+  pre: '0A452E415E4AD37B6558D0F398A2A5A7A161D752148A70B21A4E8097740CA7D9',
+};
+const gen17Build = {
+  id: '883D0F4D994A4582BC0F3EA846C2F270',
+  full: 'B11E61F8089802A590967C03DB358B253EEA8FE84FA3DCE2849F6EC642E9AA02',
+  pre: '35BDAB091F1D93E89BC2C65E1F7853540B81931E99A1914697418E71609CC929',
+};
 const normalized = text => text.replace(/\r\n?/g, '\n');
 const sha = text => createHash('sha256').update(normalized(text)).digest('hex').toUpperCase();
 const previousBuilds = [
@@ -234,6 +244,36 @@ test('known generation 15 pre-cooperative source retains the exact historical lo
   const source = preCooperative(gen15Build.id);
   assert.equal(sha(source), gen15Build.pre);
   assertAccepted(runGuard(t, source), preHash);
+});
+
+test('known generation 16 v4 source rolls its independently pinned body to the current pre-late v4 identity', options, t => {
+  const source = terminal(t, currentPatch, gen16Build.id);
+  assert.equal(sha(source), gen16Build.full);
+  assertAccepted(runGuard(t, source), fullHash);
+});
+
+test('known generation 16 pre-cooperative source retains the exact historical lower-stack bridge', options, t => {
+  const source = preCooperative(gen16Build.id);
+  assert.equal(sha(source), gen16Build.pre);
+  assertAccepted(runGuard(t, source), preHash);
+});
+
+test('known generation 17 v4 source rolls its independently pinned body to the current pre-late v4 identity', options, t => {
+  const source = terminal(t, currentPatch, gen17Build.id);
+  assert.equal(sha(source), gen17Build.full);
+  assertAccepted(runGuard(t, source), fullHash);
+});
+
+test('known generation 17 pre-cooperative source retains the exact historical lower-stack bridge', options, t => {
+  const source = preCooperative(gen17Build.id);
+  assert.equal(sha(source), gen17Build.pre);
+  assertAccepted(runGuard(t, source), preHash);
+});
+
+for (const shape of ['v4', 'pre-cooperative']) test(`unknown edits to generation 17 ${shape} source fail without rewriting its historical identity`, options, t => {
+  const source = shape === 'v4' ? terminal(t, currentPatch, gen17Build.id) : preCooperative(gen17Build.id);
+  assert.equal(sha(source), shape === 'v4' ? gen17Build.full : gen17Build.pre);
+  assertRejectedWithoutWriting(runGuard(t, source + '\r\n// unrecognized generation 17 source change\r\n'));
 });
 
 test('current v4 source is byte-for-byte idempotent on repeated guard execution', options, t => {

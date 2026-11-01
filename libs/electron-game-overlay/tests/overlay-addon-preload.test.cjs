@@ -87,7 +87,7 @@ test('default registration from ASAR uses the complete SDK restored by the exist
   assert.deepEqual(fs.readFileSync(registration.addonPath), fs.readFileSync(path.join(physical, 'dist', 'runtime', 'win32-x64', 'reshade', 'electron_game_overlay.addon64')));
 });
 
-test('stripped public declarations retain the preload inventory type for downstream consumers', t => {
+test('stripped public declarations expose the preload descriptor without implementation inventory', t => {
   const temporary = fs.mkdtempSync(path.resolve(__dirname, '../.preload-types-'));
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 3 }));
   const compiler = require.resolve('typescript/bin/tsc');
@@ -97,13 +97,15 @@ test('stripped public declarations retain the preload inventory type for downstr
     '--incremental', 'false', '--outDir', out], { encoding: 'utf8', windowsHide: true });
   assert.equal(emitted.status, 0, emitted.stdout + emitted.stderr);
   const declarations = fs.readFileSync(path.join(out, 'lib', 'overlay-addon-preload.d.ts'), 'utf8');
-  assert.match(declarations, /export interface OverlayAddonPreloadSelection/);
+  assert.doesNotMatch(declarations, /export interface OverlayAddonPreloadSelection/);
+  assert.doesNotMatch(fs.readFileSync(path.join(out, 'lib', 'reshade-launcher.d.ts'), 'utf8'), /OverlayAddonPreloadSelection/);
   const consumer = path.join(temporary, 'consumer.ts');
   fs.writeFileSync(consumer, `import type {} from 'electron';\nimport type { ReShadeLaunchConfig } from './types/lib/reshade-launcher.js';\n` +
-    `declare const config: ReShadeLaunchConfig;\nif (config.addonPreload) {\n` +
-    ` const leaf: string = config.addonPreload.addonFileName;\n` +
-    ` const hashes: string[] = config.addonPreload.payloads.map(item => item.sha256);\n` +
-    ` void leaf; void hashes;\n}\n`);
+    `import type { OverlayAddonPreloadOptions } from './types/preload.js';\n` +
+    `declare const config: ReShadeLaunchConfig;\n` +
+    `const options: OverlayAddonPreloadOptions = { applicationId: 'com.example.consumer' };\n` +
+    `if (config.addonPreload) {\n const app: string = config.addonPreload.applicationId;\n` +
+    ` const storage: string | undefined = config.addonPreload.storageRoot;\n void app; void storage;\n}\nvoid options;\n`);
   const consumerConfig = path.join(temporary, 'tsconfig.consumer.json');
   fs.writeFileSync(consumerConfig, JSON.stringify({ compilerOptions: { noEmit: true, strict: true,
     skipLibCheck: false, target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', types: ['node'] }, files: ['consumer.ts'] }));
@@ -142,6 +144,7 @@ test('snapshot freezes both architectures and offline apps; unregister only affe
   const b = await f.register('com.example.b');
   const selected = f.select('com.example.a', a);
   assert.ok(Object.isFrozen(selected));
+  assert.equal(selected.storageRoot, fs.realpathSync(f.storageRoot));
   assert.ok(Object.isFrozen(selected.payloads));
   await api.unregisterOverlayAddonInstallation({ applicationId: 'com.example.b', registrationId: b.registrationId, storageRoot: f.storageRoot });
   const snapshot = await api.createOverlayAddonPreloadSnapshot(path.join(f.directory, 'host-addons'), selected);
@@ -193,7 +196,10 @@ for (const bits of [64, 32]) test('registration rejects a sealed architecture wi
   delete stamp.addonPreloadProtocol;
   f.payload.write(relative, JSON.stringify(stamp));
   f.payload.seal();
-  await assert.rejects(f.register('com.example.a'), /preload protocol/);
+  const expected = bits === 64
+    ? /^Native add-on preload capability does not match the sealed SDK implementation: 64$/
+    : /^Native architecture manifests disagree$/;
+  await assert.rejects(f.register('com.example.a'), error => expected.test(error.message));
   assert.equal(fs.existsSync(f.storageRoot), false);
 });
 
