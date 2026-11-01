@@ -8,8 +8,8 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
-  addonBuildId = 'E975AA8639164AED979E9770674B9546',
-  runtimeGeneration = 12,
+  addonBuildId = '4127FD92CC904E0AA75C7784189AE969',
+  runtimeGeneration = 13,
 } = {}) {
   dist = path.resolve(dist);
   fs.mkdirSync(dist, { recursive: true });

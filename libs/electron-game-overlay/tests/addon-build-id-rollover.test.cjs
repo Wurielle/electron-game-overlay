@@ -24,6 +24,11 @@ const baseline = path.join(runtimeRoot, 'tests/cooperative-injector-migration/fi
 const baselineHash = 'E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359';
 const baselineId = '12EE788081A34E00B10862242DF38893';
 const gen11V4Hash = 'D0A885F093B5364FF7ED1D84761E758E7544579185E9EEA8517B4058D7C29B94';
+const gen12Build = {
+  id: 'E975AA8639164AED979E9770674B9546',
+  full: 'C436078556B22BDAD9DFCD662A745E73339758E227F0178234B41D1392956974',
+  pre: '0BAE44EE68E401993FA662BAF8BE79F985F6BCB87DC3A0818BFD80FD9574DDEB',
+};
 const normalized = text => text.replace(/\r\n?/g, '\n');
 const sha = text => createHash('sha256').update(normalized(text)).digest('hex').toUpperCase();
 const previousBuilds = [
@@ -149,6 +154,18 @@ test('known generation 11 v4 authoring source rolls only its exact identity to t
   const source = terminal(t, currentPatch, previousBuilds[3].id);
   assert.equal(sha(source), gen11V4Hash);
   assertAccepted(runGuard(t, source), fullHash);
+});
+
+test('known generation 12 v4 source rolls its independently pinned body to the current v4 identity', options, t => {
+  const source = terminal(t, currentPatch, gen12Build.id);
+  assert.equal(sha(source), gen12Build.full);
+  assertAccepted(runGuard(t, source), fullHash);
+});
+
+test('known generation 12 pre-cooperative source retains the exact historical lower-stack bridge', options, t => {
+  const source = preCooperative(gen12Build.id);
+  assert.equal(sha(source), gen12Build.pre);
+  assertAccepted(runGuard(t, source), preHash);
 });
 
 test('current v4 source is byte-for-byte idempotent on repeated guard execution', options, t => {

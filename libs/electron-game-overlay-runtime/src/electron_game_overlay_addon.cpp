@@ -7,6 +7,7 @@
 #include "ego_cooperative_registry.hpp"
 #include "ego_cooperative_input.hpp"
 #include "ego_render_readback_diagnostic.hpp"
+#include "ego_initial_texture_upload.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2956,11 +2957,13 @@ void report_frame_upload_failure(
 }
 
 bool create_texture(
-    device *device,
+    effect_runtime *runtime,
     const ego_window_frame_v1 &frame,
     electron_texture &texture,
     ego_transport *transport)
 {
+    device *const device = runtime->get_device();
+    const bool explicit_upload = device->get_api() == device_api::d3d12;
     subresource_data initial_data = {};
     initial_data.data = const_cast<std::uint8_t *>(frame.rgba);
     initial_data.row_pitch = static_cast<std::uint32_t>(frame.row_pitch);
@@ -2978,14 +2981,25 @@ bool create_texture(
 
     if (!device->create_resource(
             desc,
-            &initial_data,
-            resource_usage::shader_resource,
+            explicit_upload ? nullptr : &initial_data,
+            explicit_upload ? resource_usage::copy_dest : resource_usage::shader_resource,
             &texture.texture))
     {
         report_frame_upload_failure(
             transport,
             texture,
             "Electron game overlay runtime could not create an Electron texture.");
+        return false;
+    }
+
+    if (explicit_upload && !ego::initial_texture_upload::upload_d3d12_rgba(
+            device, runtime->get_command_queue(), texture.texture, initial_data,
+            frame.raster_width, frame.raster_height))
+    {
+        device->destroy_resource(texture.texture);
+        texture.texture = {};
+        report_frame_upload_failure(transport, texture,
+            "Electron game overlay runtime could not upload its initial texture on the runtime queue.");
         return false;
     }
 
@@ -4310,7 +4324,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
                 destroy_texture(device, texture);
             }
             if (!create_texture(
-                    device,
+                    runtime,
                     frame,
                     texture,
                     swapchain_state.transport))
