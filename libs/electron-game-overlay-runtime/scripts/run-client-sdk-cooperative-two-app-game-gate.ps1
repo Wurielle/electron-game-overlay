@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'cooperative-native-evidence.ps1')
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 if (-not $ElectronExecutable) { $ElectronExecutable = Join-Path $RepoRoot 'node_modules\electron\dist\electron.exe' }
 if (-not $SdkDistA) { $SdkDistA = Join-Path $RepoRoot 'libs\electron-game-overlay\dist' }
@@ -21,7 +22,7 @@ if ([IO.Path]::GetFileName($GameExecutable) -ine 'Gun Frog.exe') { throw 'This c
 $ElectronExecutable = (Resolve-Path -LiteralPath $ElectronExecutable).Path
 $SdkDistA = (Resolve-Path -LiteralPath $SdkDistA).Path
 $SdkDistB = (Resolve-Path -LiteralPath $SdkDistB).Path
-$Node = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
+$Node = (Get-Command node.exe -CommandType Application -All -ErrorAction Stop | Select-Object -First 1).Source
 $Fixture = Join-Path $RepoRoot 'apps\client\scripts\cooperative-two-app-game-fixture.cjs'
 $EvidenceHelper = Join-Path $RepoRoot 'apps\client\scripts\cooperative-game-evidence.cjs'
 $RunDirectory = Join-Path $RepoRoot ('build\cooperative-two-app-game-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -54,6 +55,8 @@ public static class EgoCooperativeGameInput {
  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,IntPtr p);
+ [DllImport("user32.dll",EntryPoint="GetWindowThreadProcessId")] static extern uint QueryWindowProcess(IntPtr h,out uint processId);
+ [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a,uint b,bool attach);
  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h,int command);
  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
@@ -65,6 +68,7 @@ public static class EgoCooperativeGameInput {
   return GetForegroundWindow()==h;
  }
  public static bool Foreground(IntPtr h) { return GetForegroundWindow()==h; }
+ public static bool OwnedWindow(IntPtr h,int processId) { uint owner;return h!=IntPtr.Zero&&IsWindow(h)&&QueryWindowProcess(h,out owner)!=0&&owner==(uint)processId; }
  public static bool LargeEnough(IntPtr h,int width,int height) { RECT r;return GetClientRect(h,out r)&&r.right-r.left>=width&&r.bottom-r.top>=height; }
  public static void Place(IntPtr h,int x,int y) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p)||!SetCursorPos(p.x,p.y))throw new Exception("Pointer placement failed"); }
  public static uint Pixel(IntPtr h,int x,int y) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p))throw new Exception("ClientToScreen failed");var dc=GetDC(IntPtr.Zero);try{return GetPixel(dc,p.x,p.y);}finally{ReleaseDC(IntPtr.Zero,dc);} }
@@ -81,15 +85,26 @@ function Save-Json([object]$Value, [string]$Path) {
     $Value | ConvertTo-Json -Depth 18 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 function Read-State([string]$Member) {
-    try { Get-Content -LiteralPath (Join-Path $script:CaseDirectory "$Member-state.json") -Raw | ConvertFrom-Json }
-    catch { $null }
+    $Stream = $null
+    $Reader = $null
+    try {
+        # Keep an atomic producer rename possible while reading its snapshot.
+        $Stream = [IO.FileStream]::new((Join-Path $script:CaseDirectory "$Member-state.json"), [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        if ($Stream.Length -le 0 -or $Stream.Length -gt 4MB) { throw 'Producer state size is out of bounds.' }
+        $Reader = [IO.StreamReader]::new($Stream, [Text.Encoding]::UTF8, $true, 4096, $false)
+        $Text = $Reader.ReadToEnd()
+        if ($Text.Length -gt 4MB) { throw 'Producer state size is out of bounds.' }
+        return $Text | ConvertFrom-Json
+    }
+    catch { return $null }
+    finally { if ($Reader) { $Reader.Dispose() }; if ($Stream) { $Stream.Dispose() } }
 }
 function Wait-Condition([scriptblock]$Predicate, [string]$Label, [int]$Seconds = 30) {
     $Deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     while ([DateTime]::UtcNow -lt $Deadline) {
-        foreach ($Member in @('a', 'b')) {
-            $Current = Read-State $Member
-            if ($Current -and $Current.error) { throw "App $Member failed: $($Current.error)" }
+        foreach ($ObservedMember in @('a', 'b')) {
+            $ObservedState = Read-State $ObservedMember
+            if ($ObservedState -and $ObservedState.error) { throw "App $ObservedMember failed: $($ObservedState.error)" }
         }
         if (& $Predicate) { return }
         Start-Sleep -Milliseconds 50
@@ -150,11 +165,21 @@ function Assert-NoRunningGame {
     $Existing = @(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($GameExecutable)) -ErrorAction SilentlyContinue)
     if ($Existing.Count) { throw 'Gun Frog is already running; refusing to take ownership of an existing game.' }
 }
-function Activate-Game {
-    Wait-Condition { $script:Game.Refresh(); $script:Game.MainWindowHandle -ne [IntPtr]::Zero } 'owned game HWND' 30
-    $script:GameHwnd = $script:Game.MainWindowHandle
-    if (-not [EgoCooperativeGameInput]::Activate($script:GameHwnd)) { throw 'Could not foreground the owned game.' }
-    if (-not [EgoCooperativeGameInput]::LargeEnough($script:GameHwnd, 640, 540)) { throw 'The owned game client is too small for the calibrated acceptance layout (640x540 required).' }
+function Activate-Game([ValidateRange(1, 10)][int]$TimeoutSeconds = 10) {
+    $script:GameHwnd = [IntPtr]::Zero
+    Wait-Condition {
+        $script:Game.Refresh()
+        if ($script:Game.HasExited) { throw 'The owned game exited before a foreground-ready window was available.' }
+        $CandidateWindow = $script:Game.MainWindowHandle
+        if (-not [EgoCooperativeGameInput]::OwnedWindow($CandidateWindow, $script:Game.Id) -or
+            -not [EgoCooperativeGameInput]::LargeEnough($CandidateWindow, 640, 540)) { return $false }
+        if (-not [EgoCooperativeGameInput]::Activate($CandidateWindow)) { return $false }
+        if (-not [EgoCooperativeGameInput]::OwnedWindow($CandidateWindow, $script:Game.Id) -or
+            -not [EgoCooperativeGameInput]::LargeEnough($CandidateWindow, 640, 540) -or
+            -not [EgoCooperativeGameInput]::Foreground($CandidateWindow)) { return $false }
+        $script:GameHwnd = $CandidateWindow
+        return $true
+    } 'a live owned game HWND with a 640x540 client and verified foreground ownership' $TimeoutSeconds
 }
 function Assert-Foreground {
     if (-not [EgoCooperativeGameInput]::Foreground($script:GameHwnd)) { throw 'The desktop foreground changed during controlled game input.' }
@@ -205,7 +230,9 @@ function Module-Evidence([string]$Label, [string]$Survivor = '') {
     if ($Survivor) { $Arguments += @('--survivor', $Survivor) }
     & $Node @Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "$Label native module identity validation failed." }
-    return Get-Content -LiteralPath $OutputPath -Raw | ConvertFrom-Json
+    $Evidence = Get-Content -LiteralPath $OutputPath -Raw | ConvertFrom-Json
+    Assert-CooperativeRuntimeHash -Observed $Evidence.mapped.runtime.sha256 -Expected @($Evidence.sdkA.runtimeManifest.reshadeRuntimeSha256, $Evidence.sdkB.runtimeManifest.reshadeRuntimeSha256)
+    return $Evidence
 }
 function Assert-NativeLogs([string]$Phase) {
     $Paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -316,6 +343,7 @@ try {
             Start-App $script:FirstMember first
             Wait-Condition { (Read-State $script:FirstMember).watcherReady } 'first app native watcher ready' 120
             $script:CaseResult.target = Start-Game
+            Activate-Game
             Wait-Condition { $State = Read-State $script:FirstMember; $State.attached -and $State.rendering -and $State.targetPid -eq $script:Game.Id } 'first app exact-PID authenticated rendering' 150
             Activate-Game
             Pixel 55 130 0x2828c6 'first app actual red surface'
@@ -416,6 +444,7 @@ try {
             Command $script:LateMember arm-next
             Wait-Condition { (Read-State $script:LateMember).watcherReady } 'surviving app rearms for next game' 120
             $script:CaseResult.relaunchTarget = Start-Game
+            Activate-Game
             Wait-Condition { $State = Read-State $script:LateMember; $State.attached -and $State.rendering -and $State.targetPid -eq $script:Game.Id } 'same surviving app attaches new game instance' 150
             if ((Read-State $script:LateMember).authenticatedTarget.creationTime100ns -cne $script:CaseResult.relaunchTarget.creationTime100ns) { throw 'Relaunched native hello did not identify the exact controller-owned game incarnation.' }
             Activate-Game

@@ -31,6 +31,13 @@ Use `-NoLaunch` to build and stage without starting the host and producer. The
 parameterized `scripts/run-electron-scene.ps1` is the internal automation entry
 point; human testing should use the named test-case scripts above.
 
+The real-game `test-cases/gun-frog-electron-scene.ps1` launcher also accepts
+`-SkipBuild` to exercise already built candidate artifacts without changing them
+during acceptance. Its default still builds. Skipping a build retains required
+artifact checks, isolated staging, watcher readiness, scene/input readiness and
+owned-process cleanup. It does not establish that the supplied artifacts match
+the current source.
+
 ## What to test
 
 The producer registers a green 640 x 360 BACK window and an overlapping blue

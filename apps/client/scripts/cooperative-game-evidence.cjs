@@ -156,7 +156,7 @@ function collectSdkEvidence(sdkDist, options = {}) {
   const runtimeDirectory = path.join(canonical, 'runtime', 'win32-x64', 'reshade');
   const manifestPath = path.join(runtimeDirectory, 'electron_game_overlay_runtime.build.json');
   const manifest = jsonFile(manifestPath);
-  if (manifest.schemaVersion !== 4 || manifest.kind !== 'electron-game-overlay-runtime-build' || manifest.platform !== 'win32-x64' || !/^[A-Fa-f0-9]{64}$/.test(manifest.addonSha256 || '') || !/^[A-Fa-f0-9]{32}$/.test(manifest.addonBuildId || '')) throw new Error('Invalid x64 SDK runtime manifest.');
+  if (manifest.schemaVersion !== 4 || manifest.kind !== 'electron-game-overlay-runtime-build' || manifest.platform !== 'win32-x64' || !/^[A-Fa-f0-9]{64}$/.test(manifest.addonSha256 || '') || !/^[A-Fa-f0-9]{32}$/.test(manifest.addonBuildId || '') || typeof manifest.reshadeRuntimeSha256 !== 'string' || !/^[A-Fa-f0-9]{64}$/.test(manifest.reshadeRuntimeSha256)) throw new Error('Invalid x64 SDK runtime manifest.');
   const native = readFile(path.join(runtimeDirectory, 'electron_game_overlay.addon64'));
   const nativeHash = hash(native.data);
   const image = inspectPe(native.data);
@@ -189,7 +189,7 @@ function collectSdkEvidence(sdkDist, options = {}) {
     javascriptGraphSha256: hash(JSON.stringify(javascript)),
     javascript,
     addon: { path: native.path, sha256: nativeHash, bytes: native.data.length, ...image.addon },
-    runtimeManifest: { path: fs.realpathSync(manifestPath), sha256: hash(readFile(manifestPath, MAX_JSON_BYTES).data), schemaVersion: manifest.schemaVersion, runtimeGeneration: manifest.runtimeGeneration, targetTransportMin: manifest.targetTransportMin, targetTransportMax: manifest.targetTransportMax, reshadeRuntimeSha256: manifest.reshadeRuntimeSha256 || null },
+    runtimeManifest: { path: fs.realpathSync(manifestPath), sha256: hash(readFile(manifestPath, MAX_JSON_BYTES).data), schemaVersion: manifest.schemaVersion, runtimeGeneration: manifest.runtimeGeneration, targetTransportMin: manifest.targetTransportMin, targetTransportMax: manifest.targetTransportMax, reshadeRuntimeSha256: manifest.reshadeRuntimeSha256.toLowerCase() },
   };
 }
 

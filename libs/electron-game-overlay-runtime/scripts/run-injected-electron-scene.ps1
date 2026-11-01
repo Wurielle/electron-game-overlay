@@ -10,6 +10,7 @@ param(
     [string]$LaunchUri,
     [switch]$GunFrogButtonProof,
     [switch]$NoLaunch,
+    [switch]$SkipBuild,
     [ValidateRange(30, 600)]
     [int]$LaunchTimeoutSeconds = 120
 )
@@ -69,34 +70,36 @@ if ($ExistingTargets.Count -ne 0 -or
     throw "Close the existing target/overlay test before this run (PID: $($ProcessIds -join ', '))."
 }
 
-if (-not (Test-Path -LiteralPath $Nx -PathType Leaf)) {
-    throw "The local Nx CLI is missing: $Nx. Install the workspace dependencies first."
-}
-
-& $Nx run electron-game-overlay:build
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SdkDist -PathType Leaf)) {
-    throw "electron-game-overlay build failed or did not produce $SdkDist."
-}
-
-Push-Location $RuntimeRoot
-try {
-    & cmake.exe --preset vs2022-x64-production
-    if ($LASTEXITCODE -ne 0) {
-        throw "CMake configure failed with exit code $LASTEXITCODE."
+if (-not $SkipBuild) {
+    if (-not (Test-Path -LiteralPath $Nx -PathType Leaf)) {
+        throw "The local Nx CLI is missing: $Nx. Install the workspace dependencies first."
     }
-    & cmake.exe --build $ProductionBuildRoot `
-        --config RelWithDebInfo `
-        --target electron_game_overlay `
-        --parallel
-    if ($LASTEXITCODE -ne 0) {
-        throw "Electron ReShade add-on build failed with exit code $LASTEXITCODE."
-    }
-}
-finally {
-    Pop-Location
-}
 
-& (Join-Path $PSScriptRoot "build-reshade-runtime.ps1")
+    & $Nx run electron-game-overlay:build
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SdkDist -PathType Leaf)) {
+        throw "electron-game-overlay build failed or did not produce $SdkDist."
+    }
+
+    Push-Location $RuntimeRoot
+    try {
+        & cmake.exe --preset vs2022-x64-production
+        if ($LASTEXITCODE -ne 0) {
+            throw "CMake configure failed with exit code $LASTEXITCODE."
+        }
+        & cmake.exe --build $ProductionBuildRoot `
+            --config RelWithDebInfo `
+            --target electron_game_overlay `
+            --parallel
+        if ($LASTEXITCODE -ne 0) {
+            throw "Electron ReShade add-on build failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    & (Join-Path $PSScriptRoot "build-reshade-runtime.ps1")
+}
 
 foreach ($RequiredFile in @(
         $Runtime,
@@ -104,6 +107,7 @@ foreach ($RequiredFile in @(
         $Addon,
         $Config,
         $Electron,
+        $SdkDist,
         $TargetExecutablePath)) {
     if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
         throw "Required injected-scene artifact is missing: $RequiredFile"

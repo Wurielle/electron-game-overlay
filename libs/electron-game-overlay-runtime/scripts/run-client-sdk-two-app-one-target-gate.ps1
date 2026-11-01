@@ -2,6 +2,7 @@
 param([switch]$SkipBuild)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'cooperative-native-evidence.ps1')
 . (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Reuse the controlled D3D11 host, input oracle, SendInput, process cleanup,
@@ -34,7 +35,7 @@ $BrokerPipePath = "\\.\pipe\$BrokerPipeName"
 # may start a feature broker for this acceptance run.
 $CandidateSdkDist = Join-Path $RepoRoot "libs\electron-game-overlay\dist"
 $NativeEvidenceHelper = Join-Path $RepoRoot "apps\client\scripts\cooperative-game-evidence.cjs"
-$EvidenceNode = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
+$EvidenceNode = (Get-Command node.exe -CommandType Application -All -ErrorAction Stop | Select-Object -First 1).Source
 
 function Get-FreeTcpPort {
     param([int[]]$Excluded = @())
@@ -802,10 +803,7 @@ function Wait-ForRuntimeModuleEvidence {
                 --modules-json $SnapshotPath --output $EvidencePath 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Private native module evidence failed: $($HelperOutput -join ' ')" }
             $Native = Get-Content -LiteralPath $EvidencePath -Raw | ConvertFrom-Json
-            if ($Native.mapped.runtime.sha256 -cne $Native.sdkA.runtimeManifest.reshadeRuntimeSha256 -and
-                $Native.mapped.runtime.sha256 -cne $Native.sdkB.runtimeManifest.reshadeRuntimeSha256) {
-                throw 'The clean controlled host did not load a runtime matching either candidate package.'
-            }
+            Assert-CooperativeRuntimeHash -Observed $Native.mapped.runtime.sha256 -Expected @($Native.sdkA.runtimeManifest.reshadeRuntimeSha256, $Native.sdkB.runtimeManifest.reshadeRuntimeSha256)
             foreach ($Route in @($AppARoute, $AppBRoute)) {
                 $Owned = @($Native.mapped.addons | Where-Object {
                     [string]::Equals((Split-Path -Parent $_.path), $Route.RunDirectory, [StringComparison]::OrdinalIgnoreCase)

@@ -7,6 +7,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { app } = require('electron');
 const { collectSdkEvidence } = require('./cooperative-game-evidence.cjs');
+const { publishJsonSnapshot } = require('./cooperative-atomic-state.cjs');
 const args = Object.fromEntries(process.argv.slice(2).filter(value => value.startsWith('--') && value.includes('=')).map(value => {
   const separator = value.indexOf('=');
   return [value.slice(2, separator), value.slice(separator + 1)];
@@ -33,9 +34,7 @@ const state = {
 };
 function persist() {
   const destination = path.join(evidenceRoot, `${member}-state.json`);
-  const temporary = `${destination}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(state, null, 2));
-  fs.renameSync(temporary, destination);
+  publishJsonSnapshot(destination, state);
 }
 function event(value) {
   state.events.push({ ...value, at: Date.now() });

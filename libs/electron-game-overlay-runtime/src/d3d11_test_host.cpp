@@ -36,6 +36,8 @@ constexpr wchar_t kDestroyPrimarySurfaceRequestMarker[] =
     L"electron-game-overlay-destroy-primary-surface.request";
 constexpr wchar_t kFinalSurfaceDestroyedAckMarker[] =
     L"electron-game-overlay-final-surface-destroyed.ack";
+constexpr wchar_t kRecreateSurfacesRequestMarker[] =
+    L"electron-game-overlay-recreate-surfaces.request";
 
 struct graphics_state
 {
@@ -55,6 +57,8 @@ struct host_options
 {
     bool multi_swapchain = false;
     bool release_primary = false;
+    bool defer_secondary_present_until_primary_release = false;
+    bool allow_surface_recreation = false;
     ULONGLONG release_primary_after_ms = 0;
 };
 
@@ -132,6 +136,16 @@ bool parse_host_options(host_options &options)
         {
             options.multi_swapchain = true;
         }
+        else if (std::wcscmp(
+                     argument,
+                     L"--defer-secondary-present-until-primary-release") == 0)
+        {
+            options.defer_secondary_present_until_primary_release = true;
+        }
+        else if (std::wcscmp(argument, L"--allow-surface-recreation") == 0)
+        {
+            options.allow_surface_recreation = true;
+        }
         else if (std::wcsncmp(
                      argument,
                      release_prefix,
@@ -156,7 +170,10 @@ bool parse_host_options(host_options &options)
     }
 
     LocalFree(arguments);
-    return valid && (!options.release_primary || options.multi_swapchain);
+    return valid &&
+        (!options.release_primary || options.multi_swapchain) &&
+        (!options.defer_secondary_present_until_primary_release ||
+         options.multi_swapchain);
 }
 
 bool activate_controlled_window(HWND window)
@@ -214,6 +231,16 @@ bool marker_present(const wchar_t *name)
     const DWORD attributes = GetFileAttributesW(path.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES &&
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool consume_marker(const wchar_t *name)
+{
+    std::wstring path;
+    if (!module_sibling_path(name, path))
+        return false;
+    if (DeleteFileW(path.c_str()) != FALSE)
+        return true;
+    return GetLastError() == ERROR_FILE_NOT_FOUND;
 }
 
 bool publish_final_surface_destroyed_ack()
@@ -594,7 +621,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     {
         constexpr wchar_t message[] =
             L"Invalid controlled-host options. --release-primary-after-ms requires "
-            L"--multi-swapchain and a positive integer delay.";
+            L"--multi-swapchain and a positive integer delay; "
+            L"--defer-secondary-present-until-primary-release also requires "
+            L"--multi-swapchain.";
         OutputDebugStringW(message);
         MessageBoxW(nullptr, message, kWindowTitle, MB_OK | MB_ICONERROR);
         return 1;
@@ -784,26 +813,103 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     if (!g_input_oracle.initialize(g_graphics.window))
         report_graphics_failure(L"Unable to initialize the controlled raw/pointer-input oracle.");
 
-    const auto start_time = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
     MSG message = {};
     bool final_surface_destroyed_for_test = false;
+    bool final_surface_ack_published_for_test = false;
     bool primary_released_for_test = false;
     bool both_presenting_reported = false;
     bool remaining_present_reported = false;
+    bool deferred_secondary_ready_reported = false;
     std::uint64_t secondary_presents_at_primary_release = 0;
 
     while (message.message != WM_QUIT)
     {
+        if (options.allow_surface_recreation &&
+            final_surface_destroyed_for_test &&
+            marker_present(kRecreateSurfacesRequestMarker))
+        {
+            if (IsWindow(g_graphics.window) == FALSE ||
+                (options.multi_swapchain &&
+                 IsWindow(g_graphics.secondary_window) == FALSE))
+            {
+                report_graphics_failure(
+                    L"The controlled host cannot recreate surfaces after a window was destroyed.");
+                message.wParam = 1;
+                break;
+            }
+            if (!consume_marker(kDestroyPrimarySurfaceRequestMarker) ||
+                !consume_marker(kDestroyFinalSurfaceRequestMarker) ||
+                !consume_marker(kRecreateSurfacesRequestMarker))
+            {
+                report_graphics_failure(
+                    L"Unable to consume the controlled surface recreation request markers.");
+                message.wParam = 1;
+                break;
+            }
+            if (!create_graphics_device() ||
+                (options.multi_swapchain && !create_secondary_swap_chain()))
+            {
+                destroy_graphics_device();
+                report_graphics_failure(
+                    L"Unable to recreate the controlled D3D11 graphics surfaces.");
+                message.wParam = 1;
+                break;
+            }
+            final_surface_destroyed_for_test = false;
+            primary_released_for_test = false;
+            both_presenting_reported = false;
+            remaining_present_reported = false;
+            deferred_secondary_ready_reported = false;
+            g_graphics.primary_present_count = 0;
+            g_graphics.secondary_present_count = 0;
+            secondary_presents_at_primary_release = 0;
+            start_time = std::chrono::steady_clock::now();
+            static_cast<void>(activate_controlled_window(g_graphics.window));
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_SURFACES_RECREATED backend=d3d11 "
+                "primaryHwnd=0x%llx secondaryHwnd=0x%llx "
+                "sameWindows=true processAlive=true",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(
+                        g_graphics.secondary_window)));
+            continue;
+        }
+
         if (!final_surface_destroyed_for_test &&
             marker_present(kDestroyFinalSurfaceRequestMarker))
         {
             destroy_graphics_device();
             final_surface_destroyed_for_test = true;
-            if (!publish_final_surface_destroyed_ack())
+            // Preserve the first acknowledgement as evidence across opt-in
+            // recreation cycles; later releases have their own stdout marker.
+            if (!final_surface_ack_published_for_test)
             {
-                report_graphics_failure(
-                    L"Unable to publish the controlled final-surface destruction acknowledgement.");
+                if (!publish_final_surface_destroyed_ack())
+                {
+                    report_graphics_failure(
+                        L"Unable to publish the controlled final-surface destruction acknowledgement.");
+                }
+                else
+                {
+                    final_surface_ack_published_for_test = true;
+                }
             }
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_FINAL_GRAPHICS_RELEASED backend=d3d11 "
+                "primaryHwnd=0x%llx secondaryHwnd=0x%llx "
+                "primaryHwndAlive=%s secondaryHwndAlive=%s processAlive=true",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(
+                        g_graphics.secondary_window)),
+                IsWindow(g_graphics.window) != FALSE ? "true" : "false",
+                IsWindow(g_graphics.secondary_window) != FALSE
+                    ? "true"
+                    : "false");
             continue;
         }
 
@@ -853,7 +959,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
                 ++g_graphics.primary_present_count;
             }
         }
-        if (g_graphics.secondary_swap_chain != nullptr)
+        if (g_graphics.secondary_swap_chain != nullptr &&
+            (!options.defer_secondary_present_until_primary_release ||
+             primary_released_for_test))
         {
             if (FAILED(render_surface(
                     g_graphics.secondary_swap_chain.Get(),
@@ -867,6 +975,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             {
                 ++g_graphics.secondary_present_count;
             }
+        }
+
+        if (options.defer_secondary_present_until_primary_release &&
+            !deferred_secondary_ready_reported &&
+            !primary_released_for_test &&
+            g_graphics.primary_present_count >= 3 &&
+            g_graphics.secondary_present_count == 0 &&
+            g_graphics.secondary_swap_chain != nullptr)
+        {
+            deferred_secondary_ready_reported = true;
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_DEFERRED_SECONDARY_READY backend=d3d11 "
+                "primaryPresentCount=%llu secondaryPresentCount=0 "
+                "secondarySwapchainAlive=true",
+                static_cast<unsigned long long>(
+                    g_graphics.primary_present_count));
         }
 
         if (options.multi_swapchain && !both_presenting_reported &&
@@ -900,10 +1024,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             !primary_released_for_test && options.release_primary &&
             elapsed_ms >= static_cast<std::int64_t>(
                 options.release_primary_after_ms);
+        const bool deferred_primary_release_ready =
+            options.defer_secondary_present_until_primary_release &&
+            primary_release_marker_present &&
+            g_graphics.primary_present_count != 0 &&
+            g_graphics.secondary_swap_chain != nullptr;
         if (options.multi_swapchain && !primary_released_for_test &&
-            !final_surface_destroyed_for_test && both_presenting_reported &&
-            (primary_release_marker_present ||
-             primary_release_delay_elapsed))
+            !final_surface_destroyed_for_test &&
+            ((both_presenting_reported &&
+              (primary_release_marker_present ||
+               primary_release_delay_elapsed)) ||
+             deferred_primary_release_ready))
         {
             secondary_presents_at_primary_release =
                 g_graphics.secondary_present_count;

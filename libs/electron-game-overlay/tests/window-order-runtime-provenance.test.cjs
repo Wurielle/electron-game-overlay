@@ -8,10 +8,16 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const protocol = require('../dist/lib/overlay-broker-protocol.js');
 const runtimeRoot = 'libs/electron-game-overlay-runtime';
 const previousAddonId = '1CAEA7482B41451AB31FC2F91B46F2DD';
+const generationAssignments = [...read('libs/electron-game-overlay/src/lib/overlay-broker-protocol.ts')
+  .matchAll(/^export const OVERLAY_BROKER_RUNTIME_GENERATION = ([1-9][0-9]*) as const;\r?$/gmu)];
+assert.equal(generationAssignments.length, 1, 'runtime generation must have one literal source assignment');
+const sourceRuntimeGeneration = Number(generationAssignments[0][1]);
 
 // These guards cover distribution provenance, not native execution or placement.
 test('order-capable runtime advances generation without changing frozen v1 defaults', () => {
-  assert.equal(protocol.OVERLAY_BROKER_RUNTIME_GENERATION, 7);
+  assert.ok(Number.isSafeInteger(sourceRuntimeGeneration) && sourceRuntimeGeneration >= 7,
+    'window ordering requires runtime generation seven or later');
+  assert.equal(protocol.OVERLAY_BROKER_RUNTIME_GENERATION, sourceRuntimeGeneration);
   assert.equal(protocol.OVERLAY_BROKER_LEGACY_RUNTIME_GENERATION, 1);
   assert.equal(protocol.OVERLAY_BROKER_PROTOCOL_VERSION, 1);
   assert.equal(protocol.OVERLAY_BROKER_TARGET_TRANSPORT_VERSION, 1);
@@ -41,11 +47,11 @@ test('changed mapped runtime has a fresh exact addon ID across injector and pack
   }
 });
 
-test('runtime builder and SDK staging advertise generation seven but retain target transport one', () => {
+test('runtime builder and SDK staging advertise the current source generation but retain target transport one', () => {
   const build = read(`${runtimeRoot}/scripts/build.ps1`);
   const stage = read('libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1');
-  assert.match(build, /\$RuntimeGeneration = 7\b/u);
-  assert.match(stage, /\$ExpectedRuntimeGeneration = 7\b/u);
+  assert.match(build, new RegExp(`^\\$RuntimeGeneration = ${sourceRuntimeGeneration}\\r?$`, 'mu'));
+  assert.match(stage, new RegExp(`^\\$ExpectedRuntimeGeneration = ${sourceRuntimeGeneration}\\r?$`, 'mu'));
   assert.match(build, /\$TargetTransportMin = 1\b/u);
   assert.match(build, /\$TargetTransportMax = 1\b/u);
   assert.match(stage, /\$ExpectedTargetTransportMin = 1\b/u);

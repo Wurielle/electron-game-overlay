@@ -78,7 +78,7 @@ function fixture(t) {
     fs.writeFileSync(path.join(dist, 'lib/engine.js'), 'module.exports = { feature: true };\n');
     fs.writeFileSync(path.join(runtime, 'electron_game_overlay.addon64'), native);
     const buildId = inspectPe(native).addon.buildId;
-    fs.writeFileSync(path.join(runtime, 'electron_game_overlay_runtime.build.json'), JSON.stringify({ schemaVersion: 4, kind: 'electron-game-overlay-runtime-build', platform: 'win32-x64', addonSha256: sha(native), addonBuildId: buildId, runtimeGeneration: 7, targetTransportMin: 1, targetTransportMax: 1 }));
+    fs.writeFileSync(path.join(runtime, 'electron_game_overlay_runtime.build.json'), JSON.stringify({ schemaVersion: 4, kind: 'electron-game-overlay-runtime-build', platform: 'win32-x64', addonSha256: sha(native), addonBuildId: buildId, reshadeRuntimeSha256: sha(pe([{ name: 'ReShadeVersion', data: Buffer.alloc(8) }])), runtimeGeneration: 7, targetTransportMin: 1, targetTransportMax: 1 }));
     return { base, dist, runtime, native: path.join(runtime, 'electron_game_overlay.addon64'), manifest: path.join(runtime, 'electron_game_overlay_runtime.build.json') };
   }
   function mapped(a, b) {
@@ -172,6 +172,17 @@ test('rejects SDK manifest/hash/build-ID/architecture mismatches and oversized n
   assert.throws(() => collectSdkEvidence(b.dist), /bytes or exported identity/);
   fs.truncateSync(a.native, 128 * 1024 * 1024 + 1);
   assert.throws(() => collectSdkEvidence(a.dist), /size is out of bounds/);
+});
+
+test('normalizes the valid runtime digest case and rejects malformed manifest digests', (t) => {
+  const f = fixture(t), a = f.sdk('case-runtime');
+  const manifest = JSON.parse(fs.readFileSync(a.manifest));
+  fs.writeFileSync(a.manifest, JSON.stringify({ ...manifest, reshadeRuntimeSha256: manifest.reshadeRuntimeSha256.toUpperCase() }));
+  assert.equal(collectSdkEvidence(a.dist).runtimeManifest.reshadeRuntimeSha256, manifest.reshadeRuntimeSha256);
+  for (const digest of [null, '', 'a'.repeat(63), 'a'.repeat(65), 'g'.repeat(64), ['a'.repeat(64)]]) {
+    fs.writeFileSync(a.manifest, JSON.stringify({ ...manifest, reshadeRuntimeSha256: digest }));
+    assert.throws(() => collectSdkEvidence(a.dist), /Invalid x64 SDK runtime manifest/u);
+  }
 });
 
 test('validates one runtime and two exact distinct mapped modules, including identical builds', (t) => {

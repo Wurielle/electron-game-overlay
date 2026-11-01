@@ -89,19 +89,40 @@ Work is in progress on `codex/explore-independent-overlay-instances`.
   implemented and compiled for x64 and x86. Registry protocol, transport ABI and
   loader/claim fixtures passed on both architectures. These controlled checks do
   not establish rendering or game acceptance.
-- Candidate native package: built and sealed for both architectures. Both fresh
-  D3D11 SDK input cycles pass after fixing acknowledgement ordering and two test
-  harness issues (environment deletion and waiting for native watcher readiness).
-  Gun Frog's automatic and physical-first-key focus cases pass with zero
-  pointer-downs on generation 8, as does its full SDK interaction case.
+- Candidate native package: built and sealed for both architectures. Earlier
+  controlled SDK input cycles passed after fixing acknowledgement ordering and
+  test harness environment/readiness issues. Their recorded backend/generation
+  boundaries remain separate from current-candidate acceptance.
 - Generation 9 fixes internal-reset/session-transition ACK provenance. Its
-  stock-ReShade Gun Frog coexistence gate passes, including exact native module
-  identities, foreign add-on/effect coexistence, intercepted clicks, release and
-  protected-file preservation/restoration. Remaining generation-9 reruns and
-  mixed-build game acceptance are pending.
-- Surface-lifetime and delayed-source fixes: implemented, reviewed, compiled and
-  covered by registry tests. Actual two-app multi-surface lifecycle acceptance is
-  still required. Remaining game and full feature acceptance are in progress.
+  build `3309FB779CFC4E39BA7681AA4A7F8A6B` has passed all five original Gun Frog
+  cases: full SDK interaction, low-level Electron scene, automatic no-click
+  focus, human physical first-show/reopen keys, and stock-ReShade coexistence.
+  The stock case retains exact module identities, foreign add-on/effect
+  coexistence and protected-file preservation/restoration. Automatic and
+  physical focus runs recorded zero pointer-downs; later gates in the physical
+  case used SendInput.
+- Actual mixed-implementation Gun Frog acceptance passed all four startup-order
+  and graceful/crash cells with generation-8 and generation-9 native engines,
+  different JavaScript/native hashes, private authenticated routes and one
+  ReShade host. Interleaved rendering/input, owner disappearance, survivor
+  operation and fresh-game relaunch passed in each cell. Both are unreleased
+  development snapshots with the same package-version label; this does not
+  claim independently released-package compatibility.
+- Surface-lifetime and delayed-source fixes passed actual generation-9 two-app
+  D3D11 acceptance. A late participant survived primary destruction with a
+  never-presented secondary and unchanged authenticated TCP connections. Final
+  destruction cleared surfaces/focus in 66 ms; recreated windows retained IDs
+  without reviving old implicit focus, then accepted explicit focus and survivor
+  input. Pixel checks and direct foreground guards were retained.
+- Full controlled feature acceptance is still in progress: raw registration and
+  buffered input, fractional raster/attached windows, D3D12 lifetime/session
+  closure, managed discovery/policy and existing-installation rejection and
+  maintenance need their current-candidate results recorded. See the
+  [acceptance evidence and pending matrix](cooperative-addons-acceptance.md).
+- One generation-9 full SDK attempt failed with a graphics-device hang and
+  contemporaneous NVIDIA display-driver events; its dump/events were preserved.
+  A fresh run passed on unchanged bytes. The earlier failure's cause remains
+  unassigned, as do earlier generation-8 initial pixel timeouts.
 
-This status is not a claim that a complete replacement or game acceptance has
-already been achieved.
+These passes do not mark the entire feature/backend matrix complete or provide
+native fault containment between modules sharing the game's address space.

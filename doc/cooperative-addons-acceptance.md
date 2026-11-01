@@ -1,8 +1,8 @@
 # Cooperative add-on acceptance map
 
-Inventory taken on 2026-11-01 for the per-application add-on implementation.
-This document records runnable cases and evidence boundaries, not passing
-results for that implementation. The user permits a clean rewrite without an
+Inventory and recorded Windows evidence updated on 2026-11-01 for the
+per-application add-on implementation. Results below identify the artifacts
+actually tested; unrecorded matrix cells remain pending. The user permits a clean rewrite without an
 old-package migration layer, while requiring preservation of overlay features
 and all real-game E2E behavior.
 
@@ -38,7 +38,7 @@ The five pre-existing real-game human-facing launchers are under
 
 | Launcher | Required/optional parameters | Required proof and completion evidence |
 | --- | --- | --- |
-| `gun-frog-electron-scene.ps1` | Optional `-NoLaunch` only stages | Injector succeeds; native transport/router initialize; Electron producer and aligned four-button layout become ready; first two-window transported scene renders. Then waits for normal game exit. Visual/input exercise is manual; readiness alone is not the SDK four-click PASS. |
+| `gun-frog-electron-scene.ps1` | Optional `-NoLaunch` only stages; `-SkipBuild` reuses built candidate artifacts | Injector succeeds; native transport/router initialize; Electron producer and aligned four-button layout become ready; first two-window transported scene renders. Then waits for normal game exit. Visual/input exercise is manual; readiness alone is not the SDK four-click PASS. |
 | `gun-frog-client-sdk.ps1` | Optional `-SkipBuild`, `-InteractionTimeoutSeconds` (60–900, default 600) | Real SDK/client authenticates the exact game PID/path and renders. Click each Electron Continue/New Game/Settings/Quit once while game remains on its menu; Ctrl+I releases input; the same underlying Quit position closes the game. Exact-once click/ACK markers, ordering, and no native router/input/queue fault. `result.txt` contains `GUN_FROG_REAL_CLIENT_INPUT_GATE_PASS`. |
 | `gun-frog-explicit-keyboard-focus.ps1` | Mandatory `-GameExecutable`; optional `-ElectronExecutable`, `-PhysicalKeyboard`, `-PhysicalFirstKeys` | No-click first show and hide/reopen typing; released key state and zero pointer-downs; blur/interception-off drop input; re-enable types; foreign foreground rejects input; fresh presentation and resumed typing after foreground restore. Default uses Windows SendInput. `build/explicit-focus-*/report.json` must say passed. |
 | `gun-frog-physical-first-key.ps1` | Mandatory `-GameExecutable`; optional `-ElectronExecutable` | Same focus case, with human physical lowercase `a` on initial show and `b` after reopen. Later gates use SendInput. A synthetic key run is not a physical-first-key pass. |
@@ -50,8 +50,9 @@ both app startup orders, each with graceful and abrupt first-app exit. It accept
 `-FirstAppExit graceful|crash|both`, optional informational source revisions,
 and `-RequireDifferentImplementations`. Default candidate paths are this
 worktree's SDK `dist`; same bytes are explicitly reported as same implementation,
-not mixed released-version evidence. This newly implemented gate has not yet
-been run against a game during this acceptance inventory.
+not mixed released-version evidence. The generation-8/generation-9 run recorded
+below passes all four cells with different JavaScript and native implementation
+bytes; independently released-package compatibility is not claimed.
 
 Its controller owns the game process independently of both Electron apps. The
 first app uses the exact-path native prearm needed for real-game graphics
@@ -91,7 +92,7 @@ $casesDirectory = './libs/electron-game-overlay-runtime/scripts/test-cases'
 
 Run one case at a time, closing the previous test normally. `-SkipBuild` only
 skips a build; it does not establish that staged artifacts are current. The
-electron-scene launcher always rebuilds/stages and has an unbounded
+electron-scene launcher builds by default, always stages, and has an unbounded
 `Wait-Process` after readiness, so it requires an operator to finish the visual
 exercise and close the game.
 
@@ -124,9 +125,8 @@ exercise and close the game.
 
 1. The pre-existing real-game explicit-focus path deliberately skips member B. Its
    `-GameExecutable` branch does not prove two-app native isolation or survivor
-   continuity. Add a real-game cooperative two-app case covering distinct native
-   modules, app-local IPC and state, interleaved cross-app window ordering,
-   focus/capture/cursor, late joining, member exit/crash and one ReShade runtime.
+   continuity. The dedicated cooperative two-app game case above now supplies
+   that evidence, separately from the single-app no-click focus case.
 2. `run-native-pointer-gate.ps1` accepts `-GameExecutable`, but no dedicated real
    game pointer launcher exists. It assumes the controlled host's window title
    changes after released wheel input. Gun Frog does not provide that oracle;
@@ -145,6 +145,86 @@ exercise and close the game.
    same-HWND input-handler promotion. A new implementation cannot count stock
    ReShade callback coexistence as proof that those feature cases remain intact.
 
+## Recorded Windows acceptance
+
+These artifacts were reviewed on 2026-11-01. Paths are local retained evidence,
+not distributable release packages. The interactive root runner owned each
+target; the review did not launch extra games or reuse unrelated processes.
+
+| Actual case | Artifact | Observed result and boundary |
+| --- | --- | --- |
+| Gun Frog, different generation-8/9 implementations | [Four-cell report](../build/cooperative-two-app-game-20261101-134225-24c148e1/report.json) | All `a-first`/`b-first` × graceful/crash cells passed. Exact PID/creation identity, distinct private routes, two own-stage engines and one ReShade; actual pixels and Windows SendInput for interleaving, alpha hit testing, raising, isolated text, capture, three cursor types, both wheel axes, caption drag, retained placement, interception OR and focused-peer removal. Survivor typing and a fresh game with the same surviving Electron process passed in every cell; the fresh game contained exactly one EGO engine. |
+| D3D11 controlled two-app surface lifetime, generation 9 | [Tightened rerun report](../build/electron-game-overlay-runtime/client-sdk-two-app-surface-lifecycle-20261101-134348-f5be493b/report.json) | B joined after a secondary swapchain existed but had zero Presents. Destroying the primary preserved both original authenticated TCP tuples, with one authentication and no transport loss, while both apps rendered and accepted fresh clicked input on the secondary. Final destruction removed both surfaces and emitted focus `0` in **66 ms**. Recreated windows retained their local IDs; an actual `z` changed neither value nor DOM keydown count, with direct OS foreground guards before/after. Explicit focus resumed typing; B reached `bpes` after A exited without another connection change. All four strict pixel checks passed. This is a same-build controlled-host result, separate from the mixed game run. |
+| Gun Frog with stock ReShade, foreign add-on and effect, generation 9 | [Coexistence result](../build/electron-game-overlay-runtime/client-Gun-Frog-official-reshade-coexistence-20261101-141430-9d69da8c/result.json) | PASS: one stock runtime, original API-18 FPS Limiter, enabled witness effect, installed cooperative adapter and exact private participant. All four overlay clicks occurred while the game remained alive; release followed by the real Quit closed it. Protected bytes, attributes and timestamps remained identical and owned seeds were restored. |
+| Gun Frog low-level Electron scene, generation 9 | [Producer log](../build/electron-game-overlay-runtime/injected-Gun-Frog-20261101-143731/electron-producer.stdout.log) | All four aligned overlay click markers, manual release request, interception-disabled acknowledgement and lifecycle completion were recorded; the owned game exited normally. This interactive log is separate from the structured SDK four-click gate or physical-key evidence. |
+| Gun Frog full SDK interaction, generation 9 | [PASS marker](../build/electron-game-overlay-runtime/client-Gun-Frog-20261101-144859/result.txt) | Four overlay buttons clicked exactly once while the game remained alive, Ctrl+I produced the disabled acknowledgement, and released real Quit closed the game normally. This unchanged-byte rerun passed after the earlier device-hang attempt described below. |
+| Gun Frog automatic explicit focus, generation 9 | [Focus report](../build/explicit-focus-20261101-144422/report.json) | PASS with Windows SendInput, zero pointer-downs and released keys; first show/reopen, blur/release rejection, foreground rejection and restored typing passed. The staged add-on export/hash matched build `3309FB779CFC4E39BA7681AA4A7F8A6B`. This single-app case does not stand in for two-app isolation. |
+| Gun Frog physical first-show/reopen keys, generation 9 | [Physical-first-key report](../build/explicit-focus-20261101-144442/report.json) | PASS with zero pointer-downs. The human operator physically pressed the first-show `a` and reopened `b` and confirmed completion; later gates used Windows SendInput. The staged native build/hash matched the same generation-9 candidate. |
+
+The mixed game used two unreleased development SDK snapshots, both labeled
+`0.1.0-rc.7`. Its provenance declares source revisions
+`7b6e5208d40d1f401a399bda43cf8eab36746951` and
+`79b29cfe477bb7de3f7afec70e278934ec4cc2f8` as informational caller claims.
+The observed implementation identities, rather than those labels, establish
+that the binaries differ:
+
+| Member | Native generation/build ID | Native SHA-256 | JavaScript graph SHA-256 |
+| --- | --- | --- | --- |
+| A, retained snapshot | 8 / `A8E9DA12477741B9979D9B1B51994EF3` | `c304b044525b8ff0e9ae11bf3bb20f1c0ba8a2e4fe4add032ccd80b2e640a4f1` | `c7a8bf87c7ebdbe5bd3a0e8ba2005c1217160fbf44adbfa258c7827fddd1e855` |
+| B, current candidate | 9 / `3309FB779CFC4E39BA7681AA4A7F8A6B` | `3f29d359b34edf0a95fc91348698007984376a75f88d1635517a1663a3353e29` | `f5c4ee68bdcc4f5955443aebb55b271272d0adb4a7f417ce1e4ad4d116f37d05` |
+
+Both startup orders passed with the first app's packaged ReShade host:
+`783bedb3d441e4ab985317e393cbaabb4e46a8cf02ce5bcca4df681bc94da657`
+for A-first, and
+`a506d5b3bbd27c127550d6b1501f2feac744d4cc8112a77c4b0aae837702f9bf`
+for B-first. The later app still mapped its own engine. Module evidence checks
+current mapped paths and file/export identities; it is not a historical
+injection-count measurement or native fault-containment proof.
+
+The surface gate is available independently as
+`d3d11-client-sdk-two-app-surface-lifecycle.ps1 -SkipBuild`. Its D3D11 host
+options are opt-in; existing host behavior is unchanged. Promotion input is
+proved after fresh clicks. The keyboard-only no-implicit-focus check applies
+after true final destruction and recreation, not to click-free focus continuity
+across primary-to-secondary promotion.
+
+The original five Gun Frog launchers therefore have current-candidate results
+with their distinct interaction/input-source boundaries above. A prior full
+SDK attempt, `client-Gun-Frog-20261101-144539`, failed with a graphics-device
+hang. Its dump and contemporaneous NVIDIA display-driver events were retained;
+the cause remains unassigned. The later `144859` pass used unchanged SDK/native
+bytes and does not explain the earlier failure. Earlier generation-8 initial
+pixel timeouts have likewise not been attributed. Harness failures from Windows
+state-file sharing, ambiguous Node lookup and hash letter case were corrected
+without relaxing feature checks; those unsuccessful attempts are not passes.
+
+## Remaining feature acceptance
+
+The recorded passes do not complete the full preservation matrix. Current
+generation-9 results still need to be recorded for:
+
+- D3D11/D3D12 WM_INPUT and buffered raw input, registered before and after
+  injection, including NULL focus-following registrations and raw wheel/cursor
+  delivery.
+- Fractional display/raster scales and SDK-created versus attached
+  BrowserWindows, including mismatched scale factors.
+- D3D12 multi-swapchain/final-drain paths and explicit `session.close()` with a
+  living producer/target, separately from app exit and the D3D11 two-app case.
+- Managed early/best-effort admission, folder/basename rules, baseline exclusion,
+  cancellation/rearm/revocation and native watcher quiescence.
+- Fail-closed existing-installation rejection, reserved add-on maintenance and
+  upgrade transactions, plus their protected-file/preflight checks. The stock
+  game coexistence pass does not replace these rejection/maintenance cases.
+- Remaining backend/architecture, two-target and long-idle cases from the table
+  below. A generation-8 pass is not silently relabeled as generation 9.
+
+Run desktop gates sequentially in fresh PowerShell processes. Raw pair wrappers
+already execute both WM_INPUT and buffered modes; DPI/pointer wrappers use
+existing candidate artifacts and do not accept `-SkipBuild`. Estimated healthy
+durations are roughly 15–25 seconds per raw pair and 5–25 seconds per other
+controlled case; these are scheduling estimates, not newly measured capacity
+or deadline claims.
+
 ## Controlled gates still required for feature preservation
 
 Real-game cases do not exercise every accepted native behavior. Retain and run
@@ -160,6 +240,7 @@ the human-facing controlled launchers appropriate to changes:
 | Fractional raster/DPI scale, attached surfaces | `d3d11-x64-wheel-cursor-dpi125*.ps1`, `d3d11-x64-wheel-cursor-dpi150.ps1` |
 | No-click focus, reopen, blur and long-idle future target | `d3d11-explicit-keyboard-focus.ps1`, `d3d11-idle-future-target-focus.ps1` |
 | Session deactivation, primary-surface replacement/drain, target relaunch | `*-client-sdk-session-deactivation.ps1`, `*-client-sdk-multi-swapchain.ps1`, `*-client-sdk-target-surface-drain.ps1`, `d3d12-client-sdk-reinjection.ps1` |
+| Two private engines across never-presented secondary promotion and final recreation | `d3d11-client-sdk-two-app-surface-lifecycle.ps1`; recorded generation-9 pass above |
 | Managed policy, basenames/folders, cancellation and lifecycle | `d3d11-x64-managed-*.ps1`, `native-policy-watcher-quiescence.ps1` |
 | Existing host/install safety and reserved add-on transactions | `d3d11-client-sdk-existing-reshade-*.ps1`, `d3d11-client-sdk-official-reshade-addon.ps1`, `d3d11-official-reshade-addon-preflight.ps1`, `reshade-addon-manager.ps1`, installation/global-layer preflights |
 
