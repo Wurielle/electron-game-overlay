@@ -68,8 +68,9 @@ session, create windows through `session.windows.create`, then attach. On quit o
 failure dispose the launcher, close the session and dispose the owner. See the
 [full API guide](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/README.md#application-setup)
 for window, input, targeting and lifecycle contracts. Public entry points are
-`electron-game-overlay` and `electron-game-overlay/broker`; ordinary overlay apps
-do not need to create a broker themselves.
+`electron-game-overlay` (Electron main), `electron-game-overlay/packaging` (Node
+build configuration) and `electron-game-overlay/broker` (optional installer
+registration). Ordinary overlay apps do not create a broker themselves.
 
 ## Supported boundary
 
@@ -100,3 +101,25 @@ physical filesystem using the SDK afterPack helper and ASAR unpack pattern.
 Current process-policy behavior and fast-start limitations: [rc.6 guide](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/doc/sdk-rc6-process-policy.md).
 
 The basename-glob update fix and discovery readiness contract are documented in [rc.7](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/doc/sdk-rc7-discovery-policy.md).
+
+
+## Public helper reference
+
+The [complete SDK API guide](https://github.com/Wurielle/electron-game-overlay/blob/dev/doc/sdk-api.md)
+documents every public entry point, options, results, events, cleanup and public
+types. Current application helpers include:
+
+| Task | Public helper |
+| --- | --- |
+| Configure directly | `createReShadeLaunchConfig()`; use `parseReShadeLaunchConfig()` only for real CLI flags |
+| Manage changing target policy | `OverlayTargetWatcher` with `earlyPolicy`, `earlyTargets` or `acceptBestEffort` |
+| Validate/evaluate native rules | `createOverlayProcessPolicy()`, `overlayProcessPolicyAllows()` |
+| Observe without injection | `observeOverlayProcesses()` |
+| Package with electron-builder | `/packaging`: `createOverlayAfterPack()`, `packageOverlayForElectronBuilder()`, `verifyOverlayPackage()` |
+| Optional installer registration | `/broker`: `registerOverlayBrokerInstallation()`, `unregisterOverlayBrokerInstallation()` |
+
+A resolved watcher update applies current authorization; `discovery-blocked`
+reports unavailable future discovery without cancelling an allowed active target.
+Wait for `ready`/`armed` before a future launch. These events do not guarantee
+pre-graphics injection. The [managed example](https://github.com/Wurielle/electron-game-overlay/tree/dev/examples/managed-overlay)
+shows normal ownership and packaging; private deep imports are not required.

@@ -113,7 +113,12 @@ void app
           event.type === 'cancelled'
         )
           session?.input.release();
-        if (event.type === 'error' || event.type === 'discovery-blocked')
+        if (event.type === 'discovery-blocked')
+          console.error(
+            'Future discovery blocked; authorized targets remain active.',
+            event.error.message,
+          );
+        if (event.type === 'error')
           console.error(
             'Attachment stopped; no automatic retry.',
             event.error.message,
