@@ -1,0 +1,39 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index bcb5b27..c24c1f0 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -4315,7 +4315,8 @@ static DWORD inspect_owned_late_d3d11_host(HANDLE process, HMODULE runtime,
+ 	return ERROR_SUCCESS;
+ }
+ 
+-static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path, bool earlier_load_consumed = false)
++static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path,
++	bool earlier_load_consumed = false, bool report_first_injected_runtime = false)
+ {
+ 	std::wstring addon_path;
+ 	char validated_build_id[33] = {};
+@@ -4477,6 +4478,15 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			return error;
+ 		if (_wcsicmp(loaded_path.c_str(), addon_path.c_str()) != 0)
+ 			return ERROR_INVALID_NAME;
++		if (report_first_injected_runtime)
++		{
++			// Preserve the first clean host's original four-field result only
++			// after its private member and owned bootstrap completed successfully.
++			// The caller already printed the original "Injecting ReShade ... " prefix.
++			wprintf(L"Succeeded!\n");
++			return write_injector_result(pid, false, reusable_runtime_info{}, image_path)
++				? ERROR_SUCCESS : ERROR_WRITE_FAULT;
++		}
+ 		std::wstring result = L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
+ 		result += std::to_wstring(pid);
+ 		result += L",\"targetExecutablePath\":";
+@@ -5539,7 +5549,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 			return member_error;
+ 		}
+ 		if (owned_late.initializer != 0)
+-			return load_participant_only(remote_process, pid, selected_image_path, true);
++			return load_participant_only(remote_process, pid, selected_image_path, true, !reuse_existing_runtime);
+ 		wprintf(L"Succeeded!\n");
+ 		if (!write_injector_result(
+ 				pid,

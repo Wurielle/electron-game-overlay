@@ -22,9 +22,11 @@ const normalizedSha = text => sha(normalize(text));
 const value = name => cmake.match(new RegExp(`set\\(${name}\\s+"([0-9A-F]+)"\\s*\\)`))?.[1];
 const newId = value('ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID');
 const finalHash = value('RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256');
+const hostHash = value('RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256');
 const v4Hash = value('RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256');
 const preHash = value('RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256');
 const latePatch = path.join(runtime, 'patches/reshade-owned-late-d3d11.patch');
+const resultPatch = path.join(runtime, 'patches/reshade-injector-first-host-result.patch');
 const v3Patch = path.join(runtime, 'patches/reshade-injector-cooperative-members-v3.patch');
 const v4Patch = path.join(runtime, 'patches/reshade-injector-cooperative-members.patch');
 const preFixture = path.join(runtime, 'tests/cooperative-injector-migration/fixtures/pre-cooperative-injector.cpp.txt');
@@ -148,6 +150,7 @@ function runGuard(f, overrides = {}) {
     'cmake_minimum_required(VERSION 3.24)',
     `set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID "${newId}")`,
     `set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 "${overrides.finalHash || finalHash}")`,
+    `set(RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256 "${hostHash}")`,
     `set(RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 "${overrides.v4Hash || v4Hash}")`,
     `set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256 "${preHash}")`,
     `set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256 "${value('RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256')}")`,
@@ -157,6 +160,8 @@ function runGuard(f, overrides = {}) {
     `set(CMAKE_CURRENT_BINARY_DIR ${quoted(f.binary)})`,
     `set(RESHAPE_OWNED_LATE_D3D11_PATCH ${quoted(overrides.latePatch || latePatch)})`,
     `set(RESHAPE_OWNED_LATE_D3D11_PATCH_SHA256 "${overrides.patchHash || '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE'}")`,
+    `set(RESHAPE_FIRST_HOST_RESULT_PATCH ${quoted(resultPatch)})`,
+    `set(RESHAPE_FIRST_HOST_RESULT_PATCH_SHA256 "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554")`,
     `set(RESHAPE_COOPERATIVE_MEMBERS_PATCH ${quoted(v4Patch)})`,
     `set(RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH ${quoted(v3Patch)})`,
     tables, ...expectedBlocks,
@@ -166,7 +171,7 @@ function runGuard(f, overrides = {}) {
     extractFunction('verify_reshade_pinned_commit'), extractFunction('verify_reshade_patched_source'), helpers,
     ...(overrides.prepare===false?[]:[`ego_prepare_owned_late_source_cache(${quoted(f.source)})`]),
     ...(overrides.injector ? [`ego_rollover_known_addon_build_id(${quoted(f.injector)})`] : []),
-    ...(overrides.replay ? [`ego_apply_owned_late_source_tail(${quoted(f.source)})`] : []),
+    ...(overrides.replay ? [`ego_apply_owned_late_source_tail(${quoted(f.source)})`, `ego_apply_first_host_result_source_tail(${quoted(f.source)})`] : []),
   ].filter(Boolean).join('\n'));
   const env = { ...process.env };
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[key];
@@ -190,7 +195,7 @@ function setInjector(f, id, shape = 'v4') {
   }
 }
 function applyLate(f) { runGit(f.source, ['apply', '--whitespace=nowarn', latePatch]); }
-function makeLate(f) { setInjector(f, newId); assert.equal(normalizedSha(fs.readFileSync(f.injector, 'utf8')), v4Hash); applyLate(f); assert.equal(normalizedSha(fs.readFileSync(f.injector, 'utf8')), finalHash); }
+function makeLate(f) { setInjector(f, newId); assert.equal(normalizedSha(fs.readFileSync(f.injector, 'utf8')), v4Hash); applyLate(f); assert.equal(normalizedSha(fs.readFileSync(f.injector, 'utf8')), hostHash); runGit(f.source, ['apply', '--whitespace=nowarn', resultPatch]); assert.equal(normalizedSha(fs.readFileSync(f.injector, 'utf8')), finalHash); }
 function assertBase(f, injectorHash) {
   for (const entry of fixtureManifest.entries) {
     const file = path.join(f.source, entry.path);

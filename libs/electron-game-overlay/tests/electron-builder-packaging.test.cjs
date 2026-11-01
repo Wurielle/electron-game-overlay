@@ -181,3 +181,24 @@ test('public package verifier rejects schema-30 missing provenance even after le
   await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /owned late D3D11 patch provenance/i);
   await assert.rejects(fs.stat(f.destination), /ENOENT/);
 });
+test('public package verifier preserves the earlier generation-15 implementation without a CLI patch claim', async t => {
+  const f = await fixture(t, { firstHostResultPatch: false });
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+  const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade64.build.json')));
+  assert.equal(stamp.schemaVersion, 30);
+  assert.equal(stamp.injectorFirstHostResultPatchSha256, undefined);
+});
+test('public package verifier rejects current CLI metadata downgrade after every payload hash is rebound', async t => {
+  const f = await fixture(t);
+  for (const bits of [64, 32]) {
+    const relative = 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json';
+    const stamp = JSON.parse(await fs.readFile(path.join(f.leaf, relative)));
+    delete stamp.injectorFirstHostResultPatchSha256;
+    f.payload.write(relative, JSON.stringify(stamp));
+  }
+  f.payload.bindNativeHashes(); f.payload.seal();
+  await assert.rejects(verifyOverlayPackage(f.sdk), /first-host result patch provenance mismatch/i);
+  await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /first-host result patch provenance mismatch/i);
+  await assert.rejects(fs.stat(f.destination), /ENOENT/);
+});

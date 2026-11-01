@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 . (Join-Path $PSScriptRoot 'cooperative-resource-snapshot.ps1')
+. (Join-Path $PSScriptRoot 'owned-injector-result.ps1')
 
 function ConvertTo-SoakWindowsArgument([AllowEmptyString()][string]$Argument) {
     if ($Argument.Contains([char]0)) { throw 'A process argument contains NUL.' }
@@ -46,6 +47,33 @@ function New-SoakStartInfo([string]$Executable, [string[]]$Arguments, [string]$W
 
 function Test-SoakPath([string]$Left, [string]$Right) {
     return [string]::Equals($Left, $Right, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Read-SoakInitialRuntimeProof([object]$State, [int]$ExpectedPid, [int]$ExpectedProducerPid, [string]$ExpectedCreation, [string]$ExpectedImage) {
+    $Proof = $State.injectorProof; $Binding = $State.injectorBinding; $Selected = $State.selectedTarget
+    [UInt64]$Birth = 0
+    if ($ExpectedPid -le 0 -or $ExpectedProducerPid -le 0 -or $ExpectedCreation -cnotmatch '^[1-9][0-9]{0,19}$' -or
+        -not [UInt64]::TryParse($ExpectedCreation, [ref]$Birth) -or
+        $State.processId -ne $ExpectedProducerPid -or -not $State.injectorReturned -or $State.cycle -ne 1 -or
+        $Proof.runtimeMode -cnotin @('injected-runtime', 'participant-addon') -or $Proof.injectorTargetPid -ne $ExpectedPid -or
+        $Binding.pid -ne $ExpectedPid -or $Binding.creationTime100ns -cne $ExpectedCreation -or
+        $Selected.pid -ne $ExpectedPid -or $Selected.creationTime100ns -cne $ExpectedCreation -or
+        -not (Test-SoakPath $Selected.executablePath $ExpectedImage) -or -not (Test-SoakPath $Binding.executablePath $ExpectedImage) -or
+        -not (Test-SoakPath $Proof.targetExecutablePath $ExpectedImage) -or -not (Test-SoakPath $Proof.runDirectory $Binding.runDirectory) -or
+        -not [IO.Path]::IsPathRooted($Proof.runDirectory) -or -not [IO.Path]::IsPathRooted($Proof.injectorStdoutPath) -or
+        -not (Test-SoakPath ([IO.Path]::GetDirectoryName($Proof.injectorStdoutPath)) $Proof.runDirectory)) {
+        throw 'Initial owned-host proof did not match the retained target, producer and creation-bound attempt.'
+    }
+    $Runtime = Join-Path $Proof.runDirectory 'ReShade64.dll'
+    $Addon = Join-Path $Proof.runDirectory 'electron_game_overlay.addon64'
+    if ($Proof.runtimeMode -ceq 'participant-addon' -and
+        (-not (Test-SoakPath $Proof.hostRuntimePath $Runtime) -or -not (Test-SoakPath $Proof.addonModulePath $Addon))) {
+        throw 'Initial owned-host participant result did not retain its exact staged runtime and add-on.'
+    }
+    $Result = Read-OwnedOverlayInitialResult -StdoutPath $Proof.injectorStdoutPath -ExpectedPid $ExpectedPid `
+        -ExpectedExecutablePath $ExpectedImage -ExpectedRuntimePath $Runtime -ExpectedAddonPath $Addon -ExpectedBasePath $Proof.runDirectory
+    if ($Result.runtimeMode -cne $Proof.runtimeMode) { throw 'The SDK result mode differs from its exact structured native result.' }
+    return [ordered]@{ runtimePath = $Runtime; addonPath = $Addon; result = $Result; creationTime100ns = $ExpectedCreation }
 }
 
 function New-SoakOwnedPaths([string]$Root, [string]$RunId, [string]$TargetId) {
@@ -352,10 +380,25 @@ try {
     $Report.target = @{ pid = $Target.Id; creationTime100ns = $TargetCreation; executable = $TargetPath; arguments = $TargetArguments }
     $Survivor = Start-SoakApp 'survivor' 'survivor' 1 $false
     $StartupProof = Read-SoakState $Survivor
-    if ($StartupProof.injectorProof.runtimeMode -cne 'injected-runtime' -or $StartupProof.injectorProof.injectorTargetPid -ne $Target.Id -or
-        $StartupProof.selectedTarget.pid -ne $Target.Id -or $StartupProof.selectedTarget.creationTime100ns -cne $TargetCreation -or
-        -not (Test-SoakPath $StartupProof.selectedTarget.executablePath $TargetPath)) { throw 'First-injection full-runtime proof did not match the retained controlled target instance.' }
+    $InitialRuntime = Read-SoakInitialRuntimeProof $StartupProof $Target.Id $Survivor.process.Id $TargetCreation $TargetPath
     Save-SoakJson $StartupProof (Join-Path $RunDirectory 'startup-full-runtime-proof.json')
+    $BeforeGraphics = Get-CooperativeResourceSnapshot -Process $Target -ExpectedCreationTime100ns $TargetCreation
+    Save-SoakJson $BeforeGraphics (Join-Path $RunDirectory 'startup-native-resources.json')
+    $StartupSdk = Get-Content -LiteralPath (Join-Path $Survivor.directory 'survivor-sdk.json') -Raw | ConvertFrom-Json
+    $StartupExpected = @(@{ path = $InitialRuntime.addonPath; sha256 = $StartupSdk.addon.sha256; bytes = $StartupSdk.addon.bytes; abi = $StartupSdk.addon.abi; buildId = $StartupSdk.addon.buildId })
+    $StartupModules = Join-Path $RunDirectory 'startup-modules.json'; $StartupNative = Join-Path $RunDirectory 'startup-native-evidence.json'
+    $StartupExpectedFile = Join-Path $RunDirectory 'startup-expected-native.json'
+    Save-SoakJson @($BeforeGraphics.modules) $StartupModules
+    ConvertTo-Json -InputObject @($StartupExpected) -Depth 24 | Set-Content -LiteralPath $StartupExpectedFile -Encoding UTF8
+    & $Node $EvidenceHelper '--sdk' $SdkDist '--modules-json' $StartupModules '--expected-json' $StartupExpectedFile '--output' $StartupNative | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Initial owned-host mapped runtime/add-on identities did not match the exact SDK files.' }
+    $StartupNativeProof = Get-Content -LiteralPath $StartupNative -Raw | ConvertFrom-Json
+    if (-not (Test-SoakPath $StartupNativeProof.mapped.runtime.path $InitialRuntime.runtimePath) -or
+        $StartupNativeProof.mapped.runtimeCount -ne 1 -or $StartupNativeProof.mapped.addons.Count -ne 1 -or
+        -not (Test-SoakPath $StartupNativeProof.mapped.addons[0].path $InitialRuntime.addonPath)) {
+        throw 'Initial owned-host proof did not contain exactly one matching ReShade and one private engine.'
+    }
+    $Report.initialRuntimeMode = $InitialRuntime.result.runtimeMode
     foreach ($Marker in @($StartupMarker, $RuntimeWaitMarker)) {
         if (-not [IO.Path]::GetFullPath($Marker).StartsWith(([IO.Path]::GetFullPath($TargetDirectory) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase) -or [IO.File]::ReadAllText($Marker) -cne $MarkerContents) { throw 'The controlled startup marker no longer belongs to this exact run.' }
         [IO.File]::Delete($Marker)

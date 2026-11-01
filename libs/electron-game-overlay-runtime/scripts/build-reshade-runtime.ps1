@@ -144,6 +144,14 @@ if ($OwnedLateD3d11PatchHash -cne
     "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE") {
     throw "The owned late D3D11 production patch does not match its frozen source."
 }
+$InjectorFirstHostResultPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-first-host-result.patch"
+$InjectorFirstHostResultPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorFirstHostResultPatch).Hash
+if ($InjectorFirstHostResultPatchHash -cne
+    "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554") {
+    throw "The injector first-host result patch does not match its frozen source."
+}
 $ExpectedPatchedFiles = @(
     "ReShade.vcxproj"
     "include/reshade.hpp"
@@ -184,7 +192,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
     "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
     "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
-    "tools/injector.cpp" = "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C"
+    "tools/injector.cpp" = "8EC5E249B34ACD0E6315AFADFB9E6FD698B5237AE36F0C4E11BB6DDEBB404F60"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -220,11 +228,11 @@ function Test-ReShadePatchedSourceState {
         return $false
     }
 
-    # The owned late-runtime tail overlaps injector and input patches, so lower
-    # seams cannot be reverse-checked independently in the final tree. Its exact
-    # reversal check and all nineteen content hashes prove the ordered stack.
+    # The result tail overlaps the owned late-runtime and historical injector
+    # patches, so lower seams cannot reverse independently in the final tree.
+    # Its exact reversal and all nineteen content hashes prove the ordered stack.
     foreach ($Patch in @(
-        $OwnedLateD3d11Patch
+        $InjectorFirstHostResultPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -311,6 +319,7 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorProcessPolicyPatchSha256 -eq $ProcessPolicyPatchHash -and
             $Stamp.injectorCooperativeMembersPatchSha256 -eq $CooperativeMembersPatchHash -and
             $Stamp.ownedLateD3d11PatchSha256 -eq $OwnedLateD3d11PatchHash -and
+            $Stamp.injectorFirstHostResultPatchSha256 -eq $InjectorFirstHostResultPatchHash -and
             $Stamp.cooperativeAddonProtocol -eq 1 -and
             $Stamp.injectorProcessInstanceBinding -eq 1 -and
             $Stamp.injectorFutureTargets -eq 2 -and
@@ -453,6 +462,7 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorProcessPolicyPatchSha256 = $ProcessPolicyPatchHash
     injectorCooperativeMembersPatchSha256 = $CooperativeMembersPatchHash
     ownedLateD3d11PatchSha256 = $OwnedLateD3d11PatchHash
+    injectorFirstHostResultPatchSha256 = $InjectorFirstHostResultPatchHash
     cooperativeAddonProtocol = 1
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash
     injectorProcessInstanceBinding = 1

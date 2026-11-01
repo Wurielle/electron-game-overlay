@@ -4,6 +4,7 @@ param([switch]$SkipBuild)
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'cooperative-native-evidence.ps1')
 . (Join-Path $PSScriptRoot 'process-environment.ps1')
+. (Join-Path $PSScriptRoot 'owned-injector-result.ps1')
 
 # Reuse the controlled D3D11 host, input oracle, SendInput, process cleanup,
 # coordinate conversion, and production build paths without running the normal
@@ -177,10 +178,16 @@ function Wait-ForInitialRuntimeInjection {
 
     $ExpectedRuntime = Join-Path $CandidateSdkDist 'runtime\win32-x64\reshade\ReShade64.dll'
     $ExpectedHash = (Get-FileHash -LiteralPath $ExpectedRuntime -Algorithm SHA256).Hash
-    $LastObservation = 'No completed full-runtime injection was recorded.'
+    $LastObservation = 'Both exact-target participant initializations have not completed.'
+    $Attempt = 0
     while ([DateTime]::UtcNow -lt $Deadline) {
         $HostProcess.Refresh()
         if ($HostProcess.HasExited) { throw 'The controlled target exited before graphics startup could be released.' }
+        if ($HostProcess.StartTime.ToFileTimeUtc().ToString() -cne $TargetCreationTime100ns -or
+            -not [string]::Equals($HostProcess.MainModule.FileName, $TargetPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The retained target process identity changed before graphics startup release.'
+        }
+        $Participants = @()
         foreach ($Candidate in @(
                 @{ Label = 'App A'; Process = $ClientA; Log = $ClientAStdout; ErrorLog = $ClientAStderr; UserData = $ClientAUserData },
                 @{ Label = 'App B'; Process = $ClientB; Log = $ClientBStdout; ErrorLog = $ClientBStderr; UserData = $ClientBUserData }
@@ -195,64 +202,90 @@ function Wait-ForInitialRuntimeInjection {
             if ($Candidate.Process.HasExited) { throw "$($Candidate.Label) exited before the initial graphics startup release." }
             if ($Text -notmatch '(?m)^RESHADE_CLIENT_INJECTOR_RETURNED(?: .*)?\r?$') { continue }
 
-            # The display log omits runtimeMode. Require the structured event
-            # from this producer, rather than mistaking member-only completion
-            # for the full injection that makes graphics initialization safe.
+            # A newly loaded owned host also completes through participant-addon.
+            # Bind both completed attempts to their exact producer and the
+            # retained target FILETIME; mapped native identities below establish
+            # the one host and two private engines before graphics can start.
             $EventsDirectory = Join-Path $Candidate.UserData 'logs\compatibility-runs'
-            $Injection = $null
+            $Events = @()
             foreach ($EventFile in @(Get-ChildItem -LiteralPath $EventsDirectory -Filter '*.events.jsonl' -File -ErrorAction SilentlyContinue)) {
                 foreach ($Line in @(Get-Content -LiteralPath $EventFile.FullName)) {
                     try { $Record = $Line | ConvertFrom-Json }
                     catch { continue } # A concurrently appended last line may be incomplete.
-                    if ($Record.schemaVersion -eq 1 -and
-                        $Record.type -ceq 'attachment.injector-returned' -and
-                        $Record.data.runtimeMode -ceq 'injected-runtime' -and
-                        $Record.pid -eq $HostProcess.Id) {
-                        $Injection = $Record
-                    }
+                    $Events += ,$Record
                 }
             }
-            if (-not $Injection) { continue }
-
-            $RunPaths = @(Get-RunDirectoriesFromClientLog -Path $Candidate.Log | Sort-Object -Unique)
-            if ($RunPaths.Count -eq 0) {
-                $LastObservation = "$($Candidate.Label) has not finished publishing its staged full-runtime directory."
-                continue
-            }
-            if ($RunPaths.Count -ne 1) { throw "$($Candidate.Label) identified ambiguous staged full-runtime directories." }
-            $ExpectedMappedPath = [IO.Path]::GetFullPath((Join-Path $RunPaths[0] 'ReShade64.dll'))
             try {
-                $RuntimeModules = @($HostProcess.Modules | Where-Object {
-                    $_.ModuleName -match '^ReShade(?:32|64)\.dll$'
-                })
-                if ($RuntimeModules.Count -ne 1 -or -not [string]::Equals(
-                        $RuntimeModules[0].FileName, $ExpectedMappedPath, [StringComparison]::OrdinalIgnoreCase)) {
-                    throw 'The full-injection event does not match one exact staged runtime mapped in the target.'
+                $Initialization = Read-OwnedOverlayStartupAttempt -ClientLogText $Text -Events $Events `
+                    -ExpectedPid $HostProcess.Id -ExpectedProducerPid $Candidate.Process.Id `
+                    -ExpectedCreationTime100ns $TargetCreationTime100ns -ExpectedExecutablePath $TargetPath
+                $RunPaths = @(Get-RunDirectoriesFromClientLog -Path $Candidate.Log | Sort-Object -Unique)
+                if ($RunPaths.Count -ne 1) { throw "$($Candidate.Label) did not identify one exact private staging directory." }
+                $Participants += [pscustomobject]@{
+                    Label = $Candidate.Label
+                    ProducerPid = $Candidate.Process.Id
+                    RunDirectory = [IO.Path]::GetFullPath($RunPaths[0])
+                    Initialization = $Initialization
                 }
-                $ObservedHash = (Get-FileHash -LiteralPath $RuntimeModules[0].FileName -Algorithm SHA256).Hash
-                Assert-CooperativeRuntimeHash -Observed $ObservedHash -Expected @($ExpectedHash)
             }
             catch {
                 $LastObservation = $_.Exception.Message
                 continue
             }
-            return [pscustomobject]@{
-                OwnerLabel = $Candidate.Label
-                ProducerPid = $Candidate.Process.Id
-                TargetPid = $HostProcess.Id
-                RuntimeMode = $Injection.data.runtimeMode
-                InjectorReturnedUtc = $Injection.timestamp
-                RuntimeModulePath = $RuntimeModules[0].FileName
-                RuntimeSha256 = $ObservedHash.ToLowerInvariant()
-                EarlyParticipantRequests = @(
-                    if ((Get-ClientLogText -Path $ClientAStdout) -match '(?m)^RESHADE_CLIENT_INJECTOR_STARTED(?: .*)?\r?$') { 'App A' }
-                    if ((Get-ClientLogText -Path $ClientBStdout) -match '(?m)^RESHADE_CLIENT_INJECTOR_STARTED(?: .*)?\r?$') { 'App B' }
-                )
+        }
+        if ($Participants.Count -eq 2) {
+            try {
+                if ([string]::Equals($Participants[0].RunDirectory, $Participants[1].RunDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'The two producer initializations used the same private staging directory.'
+                }
+                $Modules = @($HostProcess.Modules | ForEach-Object { @{ path = $_.FileName; baseAddress = $_.BaseAddress.ToInt64().ToString() } })
+                $SnapshotPath = Join-Path $RunDirectory "graphics-startup-native-modules-$Attempt.json"
+                $EvidencePath = Join-Path $RunDirectory "graphics-startup-native-identities-$Attempt.json"
+                $Modules | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $SnapshotPath -Encoding UTF8
+                $HelperOutput = & $EvidenceNode $NativeEvidenceHelper `
+                    --sdk-a $CandidateSdkDist --sdk-b $CandidateSdkDist `
+                    --modules-json $SnapshotPath --output $EvidencePath 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "Pre-graphics native identity verification failed: $($HelperOutput -join ' ')" }
+                $Native = Get-Content -LiteralPath $EvidencePath -Raw | ConvertFrom-Json
+                Assert-CooperativeRuntimeHash -Observed $Native.mapped.runtime.sha256 -Expected @($ExpectedHash)
+                foreach ($Participant in $Participants) {
+                    $ExpectedAddonPath = Join-Path $Participant.RunDirectory 'electron_game_overlay.addon64'
+                    $Owned = @($Native.mapped.addons | Where-Object {
+                        [string]::Equals($_.path, $ExpectedAddonPath, [StringComparison]::OrdinalIgnoreCase)
+                    })
+                    if ($Owned.Count -ne 1) { throw "$($Participant.Label) did not map its one exact source-matching private engine." }
+                }
+                $HostProviders = @($Participants | Where-Object {
+                    [string]::Equals($Native.mapped.runtime.path, (Join-Path $_.RunDirectory 'ReShade64.dll'), [StringComparison]::OrdinalIgnoreCase)
+                })
+                if ($HostProviders.Count -ne 1) { throw 'The one mapped runtime did not originate from one exact participant staging directory.' }
+                $Provider = $HostProviders[0]
+                return [pscustomobject]@{
+                    OwnerLabel = $Provider.Label
+                    OwnerMeaning = 'Provider of the one OS-mapped host; result mode does not elect runtime ownership.'
+                    ProducerPid = $Provider.ProducerPid
+                    TargetPid = $HostProcess.Id
+                    TargetCreationTime100ns = $TargetCreationTime100ns
+                    TargetExecutablePath = $TargetPath
+                    RuntimeMode = $Provider.Initialization.RuntimeMode
+                    InjectorReturnedUtc = $Provider.Initialization.InjectorReturnedUtc
+                    RuntimeModulePath = $Native.mapped.runtime.path
+                    RuntimeSha256 = $Native.mapped.runtime.sha256
+                    AddonModules = @($Native.mapped.addons)
+                    ParticipantInitializations = @($Participants)
+                    NativeModuleSnapshotPath = $SnapshotPath
+                    NativeIdentityEvidencePath = $EvidencePath
+                    EarlyParticipantRequests = @($Participants.Label)
+                }
+            }
+            catch {
+                $LastObservation = $_.Exception.Message
+                $Attempt++
             }
         }
         Start-Sleep -Milliseconds 25
     }
-    throw "The graphics startup barrier could not be released after exact full-runtime injection. $LastObservation"
+    throw "The graphics startup barrier could not be released after exact target, one-host and two-engine verification. $LastObservation"
 }
 
 function Release-GraphicsAfterInitialRuntimeInjection {
@@ -1148,6 +1181,7 @@ try {
             [StringComparison]::OrdinalIgnoreCase)) {
         throw "The controlled target PID resolved to an unexpected executable."
     }
+    $TargetCreationTime100ns = $HostProcess.StartTime.ToFileTimeUtc().ToString()
 
     $CommonArguments = @(
         "`"$RepoRoot`"",
@@ -1188,10 +1222,9 @@ try {
         -RedirectStandardError $ClientBStderr
 
     $StartupDeadline = [DateTime]::UtcNow.AddSeconds(120)
-    # Both apps have started concurrently. Release the pre-device barrier as
-    # soon as the exact full injection is verified: the first add-on registers
-    # during graphics initialization, and the other app's member loader waits
-    # for that registration before its own attachment can complete.
+    # Both apps have started concurrently. Their completed, identity-bound
+    # participant loads must map one owned host and both private engines before
+    # the controlled target is allowed to initialize graphics.
     $GraphicsStartupRelease = Release-GraphicsAfterInitialRuntimeInjection `
         -Deadline $StartupDeadline
     foreach ($ClientCase in @(

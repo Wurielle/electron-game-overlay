@@ -13,7 +13,7 @@ const loadPureFunctions = `
 $Tokens=$null;$Errors=$null
 $Ast=[Management.Automation.Language.Parser]::ParseFile($env:EGO_SOAK_CONTROLLER_SOURCE,[ref]$Tokens,[ref]$Errors)
 if($Errors.Count){throw $Errors}
-foreach($Name in @('ConvertTo-SoakWindowsArgument','New-SoakStartInfo','Test-SoakPath','New-SoakOwnedPaths','Assert-SoakStagedPathBudget','Test-SoakResourceCounts','Test-SoakCimCreation','Save-SoakJson','New-SoakProducerLaunchEvidence','New-SoakProducerLifecycleEvidence','Save-SoakProducerLifecycle')){
+foreach($Name in @('ConvertTo-SoakWindowsArgument','New-SoakStartInfo','Test-SoakPath','Read-SoakInitialRuntimeProof','New-SoakOwnedPaths','Assert-SoakStagedPathBudget','Test-SoakResourceCounts','Test-SoakCimCreation','Save-SoakJson','New-SoakProducerLaunchEvidence','New-SoakProducerLifecycleEvidence','Save-SoakProducerLifecycle')){
  $Definition=$Ast.Find({param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq $Name},$true)
  if(-not $Definition){throw ('Pure helper missing: '+$Name)}
  . ([scriptblock]::Create($Definition.Extent.Text))
@@ -40,12 +40,53 @@ test('real-SDK soak gate remains distinct and never builds, mutates registry or 
   assert.match(source, /Private bytes and total handles|privateBytesDiagnostic/u);
   assert.match(source, /\$SurvivorTcpId = 0\s+\$Final = Wait-SoakResources 'final-all-dormant' @\(\)/u);
   assert.ok(source.indexOf('[IO.File]::WriteAllText($StartupMarker') < source.indexOf('$Target = Start-SoakOwned'));
-  assert.ok(source.indexOf("runtimeMode -cne 'injected-runtime'") < source.indexOf('[IO.File]::Delete($Marker)'));
-  assert.match(source, /selectedTarget\.creationTime100ns -cne \$TargetCreation/u);
+  const initial = source.indexOf('$InitialRuntime = Read-SoakInitialRuntimeProof');
+  assert.ok(initial > 0 && initial < source.indexOf('[IO.File]::Delete($Marker)'));
+  assert.ok(source.indexOf("'startup-native-resources.json'") > initial && source.indexOf("'startup-native-resources.json'") < source.indexOf('[IO.File]::Delete($Marker)'));
+  assert.match(source, /\$Selected\.creationTime100ns -cne \$ExpectedCreation/u);
+  assert.match(source, /\$StartupNativeProof\.mapped\.runtimeCount -ne 1/u);
+  assert.match(source, /\$StartupNativeProof\.mapped\.addons\.Count -ne 1/u);
   assert.match(source, /Test-SoakCimCreation \$Child\.StartTime \$Record\.CreationDate/u);
   const controlledEntry = fs.readFileSync(path.join(path.dirname(launcher), 'cooperative-resource-soak.ps1'), 'utf8');
   assert.match(controlledEntry, /run-cooperative-resource-soak-gate\.ps1/u);
   assert.ok(!controlledEntry.includes('TargetExecutable'));
+});
+
+test('startup accepts bounded owned result modes with exact native paths and retained process/producer/creation proof', { skip: process.platform !== 'win32' }, t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-soak-initial-proof-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const common = path.join(root, 'libs/electron-game-overlay-runtime/scripts/owned-injector-result.ps1');
+  powershell(`
+$ErrorActionPreference='Stop'
+${loadPureFunctions}
+$Tokens=$null;$Errors=$null
+$Common=[Management.Automation.Language.Parser]::ParseFile($env:EGO_SOAK_COMMON_SOURCE,[ref]$Tokens,[ref]$Errors)
+if($Errors.Count){throw $Errors}
+foreach($Name in @('Read-OwnedOverlayInjectorResult','Read-OwnedOverlayInitialResult')){
+ $Definition=$Common.Find({param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq $Name},$true)
+ if(-not $Definition){throw ('Missing common native result helper: '+$Name)}
+ . ([scriptblock]::Create($Definition.Extent.Text))
+}
+$Stage=$env:EGO_SOAK_INITIAL_STAGE
+$Image=Join-Path $Stage 'owned-target.exe';$Runtime=Join-Path $Stage 'ReShade64.dll';$Addon=Join-Path $Stage 'electron_game_overlay.addon64';$Stdout=Join-Path $Stage 'inject.stdout.log'
+$Creation='132000000000000001'
+foreach($Mode in @('injected-runtime','participant-addon')){
+ $State=@{processId=654;cycle=1;injectorReturned=$true;selectedTarget=@{pid=321;creationTime100ns=$Creation;executablePath=$Image};injectorBinding=@{pid=321;creationTime100ns=$Creation;executablePath=$Image;runDirectory=$Stage};injectorProof=@{runtimeMode=$Mode;injectorTargetPid=321;targetExecutablePath=$Image;runDirectory=$Stage;injectorStdoutPath=$Stdout}}
+ $Record=@{schemaVersion=1;pid=321;targetExecutablePath=$Image;runtimeMode=$Mode}
+ if($Mode -ceq 'participant-addon'){$Record.runtimeModulePath=$Runtime;$Record.addonModulePath=$Addon;$Record.reshadeBasePath=$Stage;$Record.addonAbi=1;$Record.memberProtocolVersion=1;$State.injectorProof.hostRuntimePath=$Runtime;$State.injectorProof.addonModulePath=$Addon}
+ [IO.File]::WriteAllText($Stdout,('ELECTRON_GAME_OVERLAY_INJECTOR_RESULT '+($Record | ConvertTo-Json -Compress)))
+ $Result=Read-SoakInitialRuntimeProof $State 321 654 $Creation $Image
+ if($Result.result.runtimeMode -cne $Mode -or $Result.runtimePath -cne $Runtime -or $Result.addonPath -cne $Addon){throw 'The exact owned native proof was not preserved'}
+ foreach($Kind in @('producer','pid','creation','binding','image','stdout','mode','stage')){
+  $Changed=$State | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+  switch($Kind){'producer'{$Changed.processId=655};'pid'{$Changed.selectedTarget.pid=322};'creation'{$Changed.selectedTarget.creationTime100ns='132000000000000002'};'binding'{$Changed.injectorBinding.creationTime100ns='132000000000000002'};'image'{$Changed.injectorProof.targetExecutablePath=Join-Path $Stage 'other.exe'};'stdout'{$Changed.injectorProof.injectorStdoutPath=Join-Path (Split-Path -Parent $Stage) 'foreign.log'};'mode'{$Changed.injectorProof.runtimeMode='official-addon'};'stage'{$Changed.injectorBinding.runDirectory=Join-Path $Stage 'foreign'}}
+  $Rejected=$false;try{Read-SoakInitialRuntimeProof $Changed 321 654 $Creation $Image | Out-Null}catch{$Rejected=$true}
+  if(-not $Rejected){throw ('Startup identity drift accepted: '+$Mode+'/'+$Kind)}
+ }
+ if($Mode -ceq 'participant-addon'){$Record.addonAbi=2;[IO.File]::WriteAllText($Stdout,('ELECTRON_GAME_OVERLAY_INJECTOR_RESULT '+($Record | ConvertTo-Json -Compress)));$Rejected=$false;try{Read-SoakInitialRuntimeProof $State 321 654 $Creation $Image | Out-Null}catch{$Rejected=$true};if(-not $Rejected){throw 'Foreign native addon ABI was accepted'}}
+}
+Write-Output 'Both owned result modes retain exact native and creation-bound identity.'
+`, { EGO_SOAK_COMMON_SOURCE: common, EGO_SOAK_INITIAL_STAGE: directory });
 });
 
 test('short unique owned paths keep the longest staged asset within 240 Windows characters', { skip: process.platform !== 'win32' }, () => {

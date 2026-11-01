@@ -164,6 +164,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-injector-cooperative-members.patch"
     ownedLateD3d11PatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11.patch"
+    injectorFirstHostResultPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-first-host-result.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -172,6 +174,10 @@ Assert-Sha256Equal `
     -Expected "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE" `
     -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11PatchSha256).Hash `
     -Label "frozen owned late D3D11 production patch"
+Assert-Sha256Equal `
+    -Expected "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorFirstHostResultPatchSha256).Hash `
+    -Label "frozen injector first-host result patch"
 
 $CMake = Resolve-Executable "cmake.exe"
 if ($ForceReShade) {

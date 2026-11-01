@@ -10,6 +10,7 @@ const stage = fs.readFileSync(path.join(root, 'libs/electron-game-overlay/script
 const producer = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/scripts/build.ps1'), 'utf8');
 const reshadeProducer = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/scripts/build-reshade-runtime.ps1'), 'utf8');
 const ownedLatePatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
+const firstHostResultPatchSha256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
 function patches(source) {
   return [...source.matchAll(/(\w+PatchSha256)\s*=\s*Join-Path \$\w+ "patches\\([^"]+)"/g)].map(([, key, file]) => [key, file]);
 }
@@ -28,8 +29,9 @@ test('portable source contract: staging mirrors bound cooperative native and pac
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 29);
+  assert.equal(patches(stage).length, 30);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
+  assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorFirstHostResultPatchSha256'), [['injectorFirstHostResultPatchSha256', 'reshade-injector-first-host-result.patch']]);
   for (const [, file] of patches(stage)) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches', file))).digest('hex').length, 64);
 });
 test('portable extracted numeric guards reject old stamps and absent/incorrect capabilities', () => {
@@ -92,9 +94,18 @@ test('current source cache binds the complete nineteen-file stack and frozen ter
   assert.match(reshadeProducer, /schemaVersion = 30/);
   assert.match(reshadeProducer, /\$Stamp.ownedLateD3d11PatchSha256 -eq \$OwnedLateD3d11PatchHash -and/);
   assert.match(reshadeProducer, /ownedLateD3d11PatchSha256 = \$OwnedLateD3d11PatchHash/);
+  const resultPatch = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-first-host-result.patch'));
+  assert.equal(crypto.createHash('sha256').update(resultPatch).digest('hex').toUpperCase(), firstHostResultPatchSha256);
+  const resultChanged = [...resultPatch.toString('utf8').matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)].map(match => match[2]);
+  assert.deepEqual(resultChanged, ['tools/injector.cpp']);
+  assert.match(reshadeProducer, /\$Stamp.injectorFirstHostResultPatchSha256 -eq \$InjectorFirstHostResultPatchHash -and/);
+  assert.match(reshadeProducer, /injectorFirstHostResultPatchSha256 = \$InjectorFirstHostResultPatchHash/);
   const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
-  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g), ['$OwnedLateD3d11Patch']);
-  for (const source of [reshadeProducer, producer, stage]) assert.ok(source.includes(ownedLatePatchSha256), 'Frozen production patch is pinned before packaging/cache acceptance');
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g), ['$InjectorFirstHostResultPatch']);
+  for (const source of [reshadeProducer, producer, stage]) {
+    assert.ok(source.includes(ownedLatePatchSha256), 'Frozen owned-late production patch is pinned before packaging/cache acceptance');
+    assert.ok(source.includes(firstHostResultPatchSha256), 'Frozen first-host result patch is pinned before packaging/cache acceptance');
+  }
 });
 
 for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted current schema/provenance guards reject a missing or substituted late patch under ' + shell, {
@@ -108,19 +119,22 @@ for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted curre
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-owned-late-stamp-guard-'));
   const payload = {
     sources: [path.join(root, 'libs/electron-game-overlay-runtime/scripts/build.ps1'), path.join(root, 'libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1')],
-    patch: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'),
-    cases: [
-      { name: 'exact required production patch', schema: 30, present: true, value: ownedLatePatchSha256, pass: true },
-      { name: 'hex case does not alter digest identity', schema: 30, present: true, value: ownedLatePatchSha256.toLowerCase(), pass: true },
-      { name: 'missing required patch', schema: 30, present: false, pass: false },
-      { name: 'null required patch', schema: 30, present: true, value: null, pass: false },
-      { name: 'boolean required patch', schema: 30, present: true, value: false, pass: false },
-      { name: 'numeric required patch', schema: 30, present: true, value: 1, pass: false },
-      { name: 'malformed required patch', schema: 30, present: true, value: 'not-a-sha256', pass: false },
-      { name: 'substituted syntactically valid digest', schema: 30, present: true, value: 'A'.repeat(64), pass: false },
-      { name: 'legacy schema cannot supply current native artifacts', schema: 29, present: true, value: ownedLatePatchSha256, pass: false },
+    requiredPatches: [
+      { key: 'ownedLateD3d11PatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'), sha256: ownedLatePatchSha256 },
+      { key: 'injectorFirstHostResultPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-first-host-result.patch'), sha256: firstHostResultPatchSha256 },
     ],
   };
+  payload.cases = payload.requiredPatches.flatMap(required => [
+    { name: 'exact required production patch', schema: 30, present: true, value: required.sha256, pass: true },
+    { name: 'hex case does not alter digest identity', schema: 30, present: true, value: required.sha256.toLowerCase(), pass: true },
+    { name: 'missing required patch', schema: 30, present: false, pass: false },
+    { name: 'null required patch', schema: 30, present: true, value: null, pass: false },
+    { name: 'boolean required patch', schema: 30, present: true, value: false, pass: false },
+    { name: 'numeric required patch', schema: 30, present: true, value: 1, pass: false },
+    { name: 'malformed required patch', schema: 30, present: true, value: 'not-a-sha256', pass: false },
+    { name: 'substituted syntactically valid digest', schema: 30, present: true, value: 'A'.repeat(64), pass: false },
+    { name: 'legacy schema cannot supply current native artifacts', schema: 29, present: true, value: required.sha256, pass: false },
+  ].map(candidate => ({ ...candidate, key: required.key, name: required.key + ': ' + candidate.name })));
   const payloadPath = path.join(directory, 'input.json');
   fs.writeFileSync(payloadPath, JSON.stringify(payload));
   const script = `
@@ -142,10 +156,12 @@ foreach ($SourcePath in $InputData.sources) {
     $ExpectedReShadeCommit = '4a50d1eddace85734871d91792ff214f13f66c01'
     $ArchitectureConfig = [pscustomobject]@{ RuntimePlatform = '64-bit' }
     $BuildStampPath = 'controlled-no-runtime-fixture'
-    $ExpectedPatchProvenance = [ordered]@{ ownedLateD3d11PatchSha256 = $InputData.patch }
+    $ExpectedPatchProvenance = [ordered]@{}
+    foreach ($Required in $InputData.requiredPatches) { $ExpectedPatchProvenance[$Required.key] = $Required.file }
     foreach ($Case in $InputData.cases) {
         $Fields = [ordered]@{ schemaVersion = $Case.schema; cooperativeAddonProtocol = 1; injectorProcessInstanceBinding = 1; injectorFutureTargets = 2; commit = $ExpectedReShadeCommit; configuration = 'Release'; platform = '64-bit'; addonLevel = 2 }
-        if ($Case.present) { $Fields.ownedLateD3d11PatchSha256 = $Case.value }
+        foreach ($Required in $InputData.requiredPatches) { $Fields[$Required.key] = $Required.sha256 }
+        if ($Case.present) { $Fields[$Case.key] = $Case.value } else { $Fields.Remove($Case.key) }
         $BuildStamp = [pscustomobject]$Fields
         $Accepted = $true
         $FailureMessage = ''
@@ -161,7 +177,7 @@ Write-Output ('Validated ' + $Validated + ' current manifest cases without build
     const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20000, windowsHide: true });
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(result.stdout, /Validated 18 current manifest cases without building or loading a runtime\./u);
+    assert.ok(result.stdout.includes(`Validated ${payload.cases.length * payload.sources.length} current manifest cases without building or loading a runtime.`), result.stdout);
   } finally {
     const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
     assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));

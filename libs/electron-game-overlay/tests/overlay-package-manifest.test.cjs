@@ -32,6 +32,7 @@ test('direct SDK seal validates both native architectures without executing an S
   const f = fixture(t);
   f.write('index.js', 'throw new Error("Packaging must never execute the supplied SDK");\n');
   f.write('lib/overlay-broker-protocol.js', fs.readFileSync(path.join(f.dist, 'lib/overlay-broker-protocol.js'), 'utf8') + 'throw new Error("Compiled generation must be read as text, never executed");\n');
+  f.write('lib/overlay-package-manifest.js', fs.readFileSync(path.join(f.dist, 'lib/overlay-package-manifest.js'), 'utf8') + 'throw new Error("Incoming validator must be read as data, never executed");\n');
   f.payload.seal();
   const manifest = validateOverlayDistributionSync(f.dist, '0.1.0-rc.7');
   assert.equal(manifest.files.length, f.payload.files.length);
@@ -127,6 +128,60 @@ for (const [name, declaration] of [
   const f = fixture(t);
   f.write('lib/overlay-broker-protocol.js', declaration); f.payload.seal();
   assert.throws(() => validateOverlayDistributionSync(f.dist), /generation.*missing|generation.*ambiguous/i);
+});
+
+test('a retained original generation-15 schema-30 package needs no later first-host-result field', t => {
+  const f = fixture(t, { firstHostResultPatch: false });
+  const before = fs.readFileSync(f.manifestPath);
+  assert.deepEqual(createOverlayDistributionManifestSync(f.dist, '0.1.0-rc.7'), validateOverlayDistributionSync(f.dist));
+  assert.deepEqual(fs.readFileSync(f.manifestPath), before);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.schemaVersion, 30);
+    assert.equal(stamp.ownedLateD3d11PatchSha256, '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE');
+    assert.equal(stamp.injectorFirstHostResultPatchSha256, undefined);
+  }
+});
+for (const [name, value] of [['missing', undefined], ['null', null], ['wrong type', 1], ['malformed', 'not-a-digest'], ['wrong valid digest', '0'.repeat(64)]]) {
+  test('sealed current CLI implementation rejects ' + name + ' first-host patch provenance after full rebinding', t => {
+    const f = fixture(t);
+    for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => {
+      if (value === undefined) delete stamp.injectorFirstHostResultPatchSha256;
+      else stamp.injectorFirstHostResultPatchSha256 = value;
+    });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /first-host result patch provenance mismatch/i);
+    assert.throws(() => createOverlayDistributionManifestSync(f.dist, '0.1.0-rc.7'), /first-host result patch provenance mismatch/i);
+  });
+}
+test('the paired architectures cannot differ in first-host-result provenance presence', t => {
+  const f = fixture(t);
+  mutateStamp(f, 'ReShade32.build.json', stamp => { delete stamp.injectorFirstHostResultPatchSha256; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /first-host result patch provenance mismatch.*32/i);
+});
+test('a retained validator implementation cannot claim the later CLI patch through metadata alone', t => {
+  const f = fixture(t, { firstHostResultPatch: false });
+  mutateStamp(f, 'ReShade64.build.json', stamp => { stamp.injectorFirstHostResultPatchSha256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554'; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /requires the sealed SDK implementation pin/i);
+});
+for (const [name, text] of [
+  ['nonliteral', "const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = process.env.PATCH_HASH;\n"],
+  ['malformed digest', "const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = 'bad';\n"],
+  ['uninitialized', 'const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256;\n'],
+  ['duplicate', "const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';\nconst INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';\n"],
+  ['unsupported valid digest', "const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = '" + '0'.repeat(64) + "';\n"],
+]) test('incoming compiled validator rejects a ' + name + ' first-host implementation pin without executing it', t => {
+  const f = fixture(t, { firstHostResultPatch: false });
+  f.write('lib/overlay-package-manifest.js', text); f.payload.seal();
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /first-host result patch pin/i);
+});
+test('a future generation cannot silently omit the current injector implementation pin', t => {
+  const f = fixture(t, { runtimeGeneration: 16, firstHostResultPatch: false });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /patch pin does not match its generation/i);
+});
+test('the incoming validator is a required sealed payload', t => {
+  const f = fixture(t);
+  fs.unlinkSync(path.join(f.dist, 'lib/overlay-package-manifest.js')); f.payload.seal();
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /Required sealed SDK payload missing/i);
 });
 
 test('payload junctions cannot redirect integrity reads outside the SDK', t => {

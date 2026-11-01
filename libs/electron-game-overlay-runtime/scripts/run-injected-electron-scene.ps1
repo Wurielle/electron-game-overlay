@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'owned-injector-result.ps1')
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
@@ -232,12 +233,15 @@ try {
     if ($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) {
         throw "The injector exited with code $InjectorExitCode. Inspect $InjectorStdout."
     }
-    if (-not (Test-Path -LiteralPath $InjectorStdout -PathType Leaf) -or
-        -not (Select-String -LiteralPath $InjectorStdout `
-            -SimpleMatch "Injecting ReShade ... Succeeded!" `
-            -Quiet)) {
-        throw "The injector did not report successful injection. Inspect $InjectorStdout."
-    }
+    $InjectorResult = Read-OwnedOverlayInjectorResult `
+        -StdoutPath $InjectorStdout `
+        -ExpectedPid $TargetProcessId `
+        -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+        -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+        -ExpectedBasePath $RunDirectory
+    $InjectorResult | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'injector-result.json') -Encoding UTF8
 
     $ProducerArguments = @(
         "`"$ElectronDemo`"",

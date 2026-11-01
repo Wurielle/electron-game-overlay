@@ -23,7 +23,7 @@ graphics target belong to this run. Cleanup uses retained process objects;
 it never kills processes by name.
 
 Before target launch, the gate writes startup/injection-wait markers only in
-the owned copied target directory. It waits for successful full-runtime injector
+the owned copied target directory. It waits for completed owned-host injector
 proof and exact selected PID/image/creation identity before deleting those exact
 nonce-checked marker files. Authentication and rendering are required after the
 barrier is released. No generic unbarriered best-effort startup is treated as
@@ -35,6 +35,15 @@ which the injector enforces before mutation. The producer requires that bound
 invocation, the single selected-PID line and validated result image/PID to agree;
 the controller then compares creation to its retained target handle. A V2
 future-target identity record is validated directly when present.
+
+Owned-host startup accepts the legacy `injected-runtime` result or the current
+`participant-addon` completion from a newly initialized owned host. The shared
+native-result parser validates their bounded schemas and exact paths; a
+participant result additionally requires add-on ABI/protocol 1. Before graphics
+is released, an OS module snapshot and independent file checks must establish
+exactly one matching SDK ReShade runtime and one own-stage EGO engine with the
+expected hashes, ABI and build ID. This does not relax subsequent rendering,
+survivor, window/rank, named-thread or TCP assertions.
 
 `ElectronExecutable` and `SdkDist` default to the workspace Electron executable
 and sealed SDK dist. `Cycles` is bounded to 1–64 and defaults to 8. Run from a
@@ -93,9 +102,29 @@ raster gaps and survivor order/focus/capture. Its generation-14 rerun passed
 that dormant checkpoint, then exposed an SDK bug: a new session reused the old
 private namespace and its consumed claim rejected the new staged route.
 Commit `82faedb` gives each new public session a fresh private backend while
-preserving old claims. The final run exercised both fixes. The portable record
+preserving old claims. That generation-14 run exercised both fixes. The portable record
 distinguishes their native/JavaScript hashes and failed-run evidence; neither
 failure was resolved by weakening the acceptance checks.
+
+A separate [first generation-15 result](../tests/cooperative-resource-soak/sdk-evidence-gen15-2026-11-01.json)
+also passed eight cycles on 2026-11-01. It records add-on build
+`BCE6C5C8746F4300861300B2BDA3594E` (SHA-256 `845695b6b855e7a892b081cc440319e50cd931ce1cfb3242618b55206838ec22`)
+and JavaScript graph `bbd9585094a2ddda96407367143a28eae5e7de02becead46480bb93c07bfeded`.
+Its startup returned the original nine-field `participant-addon` result; exact
+process/creation checks and pre-graphics OS/file evidence established one SDK
+runtime and one own engine before the barrier was released. All eight
+active/dormant counts and survivor checks passed again, ending with nine pinned
+engines/frame workers and zero TCP/windows/ranks/focus/capture/interception.
+All five Electron producers exited with code 0 and cleanup reported no errors.
+
+This pass covers those first generation-15 PE payloads and the retained staged
+207-byte INI (SHA-256 `2a3bdabdf7a36155b3f5eacd641525810d0998520677d26105924197523465d1`).
+It does not accept the pending new-CLI/configuration and Win32/final package
+rebuild, which remains blocked for user antivirus review. The checkpoint
+interval was 75.442 seconds; diagnostic private bytes grew from 78,544,896 to
+107,769,856 and handles from 984 to 1,051. This is neither a final-release claim
+nor flat-resource, long-duration or 500-app evidence. The generation-14 record
+remains unchanged.
 
 Owned run/target names use short GUID-derived identifiers. Before launch, the
 gate projects the longest packaged/runtime control filename through cycle 1,024

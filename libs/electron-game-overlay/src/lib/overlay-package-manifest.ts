@@ -14,6 +14,8 @@ const NATIVE_DIGEST = /^[0-9a-fA-F]{64}$/;
 const OWNED_LATE_D3D11_FIRST_RUNTIME_GENERATION = 15;
 const OWNED_LATE_D3D11_PATCH_SHA256 =
   '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
+const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 =
+  'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -112,7 +114,7 @@ function verifyHash(root: string, file: string, expected: unknown): void {
 
 function validateNative(dist: string, files: ReadonlySet<string>): void {
   for (const entry of ['index.js', 'index.d.ts', 'packaging.js', 'packaging.d.ts',
-    'lib/reshade-launcher.js', 'lib/overlay-broker-protocol.js',
+    'lib/reshade-launcher.js', 'lib/overlay-broker-protocol.js', 'lib/overlay-package-manifest.js',
     'node_modules/tslib/package.json', 'node_modules/tslib/tslib.js',
     'node_modules/tslib/LICENSE.txt', 'node_modules/tslib/CopyrightNotice.txt']) {
     if (!files.has(entry) || readRegular(path.join(dist, entry)).length === 0) {
@@ -137,6 +139,23 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
   const expectedGeneration = generations.length === 1 ? Number(generations[0][1]) : undefined;
   if (!positiveInteger(expectedGeneration)) throw new Error('Compiled SDK runtime generation is missing or ambiguous');
   const expectedReShadeSchema = expectedGeneration >= OWNED_LATE_D3D11_FIRST_RUNTIME_GENERATION ? 30 : 29;
+  // Earlier generation-15 snapshots predate the first-host CLI correction.
+  // Its explicit sealed implementation pin distinguishes them without trusting
+  // mutable native metadata or importing the supplied validator implementation.
+  const validator = readRegular(path.join(dist, 'lib/overlay-package-manifest.js')).toString('utf8');
+  const firstHostDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256\b/g)];
+  const firstHostPins = [...validator.matchAll(/\bconst\s+INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (firstHostDeclarations.length !== firstHostPins.length || firstHostDeclarations.length > 1) {
+    throw new Error('Compiled SDK first-host result patch pin is malformed or ambiguous');
+  }
+  const requiresFirstHostResultPatch = firstHostPins.length === 1;
+  if (requiresFirstHostResultPatch && firstHostPins[0][1].toUpperCase() !== INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK first-host result patch pin');
+  }
+  if ((!requiresFirstHostResultPatch && expectedGeneration > 15) ||
+      (requiresFirstHostResultPatch && expectedReShadeSchema !== 30)) {
+    throw new Error('Compiled SDK first-host result patch pin does not match its generation');
+  }
   const native = path.join(dist, 'runtime/win32-x64/reshade');
   let paired: Record<string, unknown> | undefined;
   for (const bits of [64, 32]) {
@@ -185,6 +204,15 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.ownedLateD3d11PatchSha256 !== undefined) {
       throw new Error('Owned late D3D11 patch provenance requires ReShade schema 30: ' + bits);
+    }
+    if (requiresFirstHostResultPatch) {
+      if (typeof reshade.injectorFirstHostResultPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.injectorFirstHostResultPatchSha256) ||
+          reshade.injectorFirstHostResultPatchSha256.toUpperCase() !== INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256) {
+        throw new Error('Pinned injector first-host result patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorFirstHostResultPatchSha256 !== undefined) {
+      throw new Error('Injector first-host result patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);

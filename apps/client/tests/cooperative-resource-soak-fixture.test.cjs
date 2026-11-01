@@ -165,9 +165,15 @@ test('session close keeps Electron alive and stale attachment/events cannot cont
   assert.equal(producer.state.cycle, 1);
   assert.equal(harness.launchers[0].target.pid, 123);
   harness.launchers[0].events.emit('event', { type: 'target-selected', pid: 123, executablePath: options(directory).game, creationTime100ns: '132000000000000001' });
-  harness.launchers[0].events.emit('event', { type: 'injector-returned', result: { injectorTargetPid: 123, runtimeMode: 'injected-runtime', runDirectory: path.join(directory, 'stage-1'), token: 'RAW-TOKEN-MUST-NOT-BE-RECORDED' } });
+  const staged = path.join(directory, 'stage-1');
+  harness.launchers[0].events.emit('event', { type: 'injector-returned', result: { injectorTargetPid: 123, runtimeMode: 'participant-addon', runDirectory: staged,
+    targetExecutablePath: options(directory).game, injectorStdoutPath: path.join(staged, 'inject.stdout.log'),
+    hostRuntimePath: path.join(staged, 'ReShade64.dll'), addonModulePath: path.join(staged, 'electron_game_overlay.addon64'), token: 'RAW-TOKEN-MUST-NOT-BE-RECORDED' } });
   assert.equal(producer.state.injectorReturned, true);
-  assert.equal(producer.state.injectorProof.runtimeMode, 'injected-runtime');
+  assert.equal(producer.state.injectorProof.runtimeMode, 'participant-addon');
+  assert.equal(producer.state.injectorProof.hostRuntimePath, path.join(staged, 'ReShade64.dll'));
+  assert.equal(producer.state.injectorProof.addonModulePath, path.join(staged, 'electron_game_overlay.addon64'));
+  assert.equal(producer.state.injectorProof.injectorStdoutPath, path.join(staged, 'inject.stdout.log'));
   assert.equal(producer.state.selectedTarget.creationTime100ns, '132000000000000001');
   assert.ok(!JSON.stringify(producer.state).includes('RAW-TOKEN-MUST-NOT-BE-RECORDED'));
   await producer.command({ sequence: 1, action: 'close-session' });

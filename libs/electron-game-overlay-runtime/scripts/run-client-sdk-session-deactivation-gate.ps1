@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'process-environment.ps1')
+. (Join-Path $PSScriptRoot 'owned-injector-result.ps1')
 
 # Reuse the controlled host's window, input-oracle, SendInput, and process
 # helpers without running the larger interaction gate.
@@ -255,13 +256,18 @@ try {
     $InjectorProcess.WaitForExit()
     $InjectorProcess.Refresh()
     $InjectorExitCode = $InjectorProcess.ExitCode
-    if (($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) -or
-        -not (Select-String `
-            -LiteralPath $InjectorStdout `
-            -SimpleMatch "Injecting ReShade ... Succeeded!" `
-            -Quiet)) {
+    if ($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) {
         throw "The injector did not report a normal successful injection. Inspect $InjectorStdout and $InjectorStderr."
     }
+    $InjectorResult = Read-OwnedOverlayInjectorResult `
+        -StdoutPath $InjectorStdout `
+        -ExpectedPid $HostProcess.Id `
+        -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+        -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+        -ExpectedBasePath $RunDirectory
+    $InjectorResult | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'injector-result.json') -Encoding UTF8
     Remove-Item -LiteralPath $StartupBarrierPath -Force -ErrorAction Stop
     Remove-Item -LiteralPath $InjectionWaitPath -Force -ErrorAction Stop
 
@@ -420,6 +426,7 @@ try {
         retiredTextures = $RetiredTextures
         runtimeModule = $ExpectedRuntime
         addonModule = $ExpectedAddon
+        injectorResult = $InjectorResult
         baselineTitle = $BaselineTitle
         releasedTitle = $Released.Title
     } |

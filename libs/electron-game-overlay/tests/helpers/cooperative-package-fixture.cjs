@@ -12,6 +12,8 @@ function writeCooperativeDistribution(dist, {
   runtimeGeneration = 15,
   reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
   ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
+  firstHostResultPatch = runtimeGeneration >= 15,
+  injectorFirstHostResultPatchSha256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554',
 } = {}) {
   dist = path.resolve(dist);
   fs.mkdirSync(dist, { recursive: true });
@@ -35,6 +37,9 @@ function writeCooperativeDistribution(dist, {
   write('lib/module.js', '// controlled compiled SDK module\n');
   write('lib/reshade-launcher.js', `const OFFICIAL_ADDON_BUILD_ID = '${addonBuildId}';\n`);
   write('lib/overlay-broker-protocol.js', `exports.OVERLAY_BROKER_RUNTIME_GENERATION = ${runtimeGeneration};\n`);
+  write('lib/overlay-package-manifest.js', firstHostResultPatch
+    ? `const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = '${injectorFirstHostResultPatchSha256}';\n`
+    : '// Controlled retained validator fixture without the later CLI implementation pin\n');
   json('node_modules/tslib/package.json', { name: 'tslib', version: '2.8.1', main: 'tslib.js' });
   write('node_modules/tslib/tslib.js', '// controlled dependency, never executed\n');
   write('node_modules/tslib/LICENSE.txt', 'Controlled immutable dependency license\n');
@@ -67,6 +72,7 @@ function writeCooperativeDistribution(dist, {
         ...(previousReShade ?? {
         schemaVersion: reshadeSchemaVersion, commit: '4a50d1eddace85734871d91792ff214f13f66c01',
         ...(reshadeSchemaVersion === 30 ? { ownedLateD3d11PatchSha256 } : {}),
+        ...(firstHostResultPatch ? { injectorFirstHostResultPatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
         }),

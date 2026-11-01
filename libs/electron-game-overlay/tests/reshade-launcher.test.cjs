@@ -242,6 +242,108 @@ test('private member attachment queries its staged manager before publishing and
   } finally { launcher.dispose(); execution.restore(); }
 });
 
+test('prearmed private path watcher authenticates its first host from staged credentials after a four-field injected result', { timeout: 10_000 }, async (t) => {
+  const net = require('node:net');
+  const { CooperativeOverlayTransport } = require('../dist/lib/cooperative-overlay-transport.js');
+  const { createOverlaySession } = require('../dist/lib/overlay-session.js');
+  const { encodeJsonTransportPacket } = require('../dist/lib/overlay-loopback-transport.js');
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const transport = new CooperativeOverlayTransport({
+    directory: path.join(fixture.root, 'private-participant'),
+    isProcessAlive: () => true,
+  });
+  const session = createOverlaySession(transport);
+  session.electronScreen = new EventEmitter();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const events = [], connected = [], received = [];
+  launcher.onEvent((event) => events.push(event));
+  session.on('targetConnected', (target) => connected.push(target));
+  let targetedAuthorizations = 0, socket;
+  const authorizeTarget = transport.authorizeTarget.bind(transport);
+  transport.authorizeTarget = (...args) => {
+    targetedAuthorizations += 1;
+    return authorizeTarget(...args);
+  };
+  t.after(() => {
+    socket?.destroy();
+    launcher.dispose();
+    session.close();
+    transport.stop();
+    execution.restore();
+  });
+  const pid = 4242, image = 'C:\\Games\\first-host.exe';
+  const creationTime100ns = '9007199254740993';
+  const attachment = launcher.attach(session, { pathContains: '\\Games\\' });
+  // Observe rejection immediately so assertion cleanup cannot leave an unhandled promise.
+  attachment.catch(() => {});
+  await waitFor(() => execution.calls.length === 1);
+  const invocation = execution.calls[0];
+  const discoveryPath = path.join(invocation.options.cwd, 'electron-overlay-transport-v1.json');
+  const stagedCredentialBytes = readFileSync(discoveryPath, 'utf8');
+  const record = JSON.parse(stagedCredentialBytes);
+  const participant = await transport.whenReady();
+  assert.equal(record.port, participant.port);
+  assert.equal(record.token, participant.token);
+  assert.equal(record.targetPid, undefined, 'the private future-target route exists before native selection');
+  assert.deepEqual(invocation.arguments, ['--path-contains', '\\Games\\']);
+  assert.equal(targetedAuthorizations, 0);
+
+  const selection = `EGO_TARGET_SELECTED_V2\t${pid}\t${creationTime100ns}\t${image}\nEGO_TARGET_SELECTED\t${pid}\n`;
+  invocation.emitStdout('ReShade path watcher armed.\n' + selection);
+  assert.deepEqual(events.filter((event) => event.type === 'target-selected').map((event) => ({
+    pid: event.pid, executablePath: event.executablePath, creationTime100ns: event.creationTime100ns,
+  })), [{ pid, executablePath: image, creationTime100ns }]);
+  assert.equal(readFileSync(discoveryPath, 'utf8'), stagedCredentialBytes,
+    'V2 selection evidence must not replace the prearmed global credential with a targeted route');
+  assert.equal(targetedAuthorizations, 0);
+
+  const stdout = selection + pathInjectorSuccessFor(pid, image);
+  const structuredLine = stdout.split('\n').find((line) => line.startsWith('ELECTRON_GAME_OVERLAY_INJECTOR_RESULT '));
+  assert.deepEqual(Object.keys(JSON.parse(structuredLine.slice('ELECTRON_GAME_OVERLAY_INJECTOR_RESULT '.length))).sort(),
+    ['pid', 'runtimeMode', 'schemaVersion', 'targetExecutablePath']);
+  invocation.callback(null, stdout, '');
+  await waitFor(() => events.some((event) => event.type === 'injector-returned'));
+  assert.equal(readFileSync(discoveryPath, 'utf8'), stagedCredentialBytes);
+  transport.addWindow(7, { name: 'first-host-scene', transparent: true,
+    rect: { x: 10, y: 20, width: 2, height: 1 } });
+
+  socket = net.createConnection({ host: '127.0.0.1', port: record.port });
+  let pending = Buffer.alloc(0);
+  socket.on('data', (chunk) => {
+    pending = Buffer.concat([pending, chunk]);
+    while (pending.length >= 5 && pending.length >= 5 + pending.readUInt32LE(0)) {
+      const end = 5 + pending.readUInt32LE(0);
+      assert.equal(pending[4], 1);
+      received.push(JSON.parse(pending.subarray(5, end).toString('utf8')));
+      pending = pending.subarray(end);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  socket.write(encodeJsonTransportPacket({ type: 'game.process', protocolVersion: 1,
+    token: record.token, pid, path: image, creationTime100ns,
+    capabilities: ['process-instance-hello-v1'] }));
+  const result = await attachment;
+  await waitFor(() => received.length > 0);
+  assert.equal(result.runtimeMode, 'injected-runtime');
+  assert.equal(result.injectorTargetPid, pid);
+  assert.equal(result.targetExecutablePath, image);
+  assert.equal(result.selectedPath, image);
+  assert.equal(result.runDirectory, invocation.options.cwd);
+  assert.equal(result.addonModulePath, undefined);
+  assert.deepEqual(connected.map((target) => ({ pid: target.pid,
+    executablePath: target.executablePath, creationTime100ns: target.creationTime100ns })),
+  [{ pid, executablePath: image, creationTime100ns }]);
+  assert.equal(received[0].type, 'overlay.init');
+  assert.equal(received[0].windows[0].name, 'first-host-scene');
+  assert.equal(targetedAuthorizations, 0, 'a first-host injected result must not take the participant join authorizer');
+  assert.equal(events.some((event) => event.type === 'target-rendezvous-authorized'), false);
+  assert.equal(execution.calls.length, 1, 'first-host completion requires no manager query or second native invocation');
+});
+
 test('private member image mismatch rejects before route publication or injector execution', async () => {
   const fixture = createCooperativeRuntime();
   const execution = stubExecFile();

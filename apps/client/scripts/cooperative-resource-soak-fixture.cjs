@@ -245,7 +245,14 @@ addEventListener('wheel',e=>{observed.wheelX+=e.deltaX;observed.wheelY+=e.deltaY
         // not emit the future-target-only target-selected lifecycle event.
         try { state.selectedTarget = collectSelection(result, options, state.injectorBinding); }
         catch (error) { return fail(error); }
-        state.injectorProof = { injectorTargetPid: result.injectorTargetPid, runtimeMode: result.runtimeMode, runDirectory: result.runDirectory };
+        const proof = { injectorTargetPid: result.injectorTargetPid, runtimeMode: result.runtimeMode, runDirectory: result.runDirectory };
+        for (const name of ['targetExecutablePath', 'injectorStdoutPath', 'hostRuntimePath', 'addonModulePath']) {
+          const value = result[name];
+          if (value === undefined) continue;
+          if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0') || value.length > 32768) return fail(new Error(`Injector returned an invalid ${name}.`));
+          proof[name] = value;
+        }
+        state.injectorProof = proof;
         state.injectorReturned = true;
         persist();
       }
