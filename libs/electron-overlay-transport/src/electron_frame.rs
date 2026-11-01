@@ -505,6 +505,8 @@ impl SharedDragState {
 #[derive(Debug)]
 pub struct ElectronFrame {
     pub window_id: u32,
+    /// Registration identity, unchanged by bounds, paint and caption dragging.
+    pub incarnation: u64,
     pub name: String,
     pub rect: ElectronWindowRect,
     pub transparent: bool,
@@ -711,6 +713,13 @@ impl ElectronFrameBridge {
             .cursor_at(crate::electron_input::InputPoint::new(x, y))
     }
 
+    pub fn cursor_for_window(&self, window_id: u32) -> i32 {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .cursor_for_window(window_id)
+    }
+
     pub fn input_state(&self) -> InputRouterState {
         self.input_router
             .lock()
@@ -720,33 +729,66 @@ impl ElectronFrameBridge {
 
     /// Tests one owned window using this implementation's current geometry
     /// and alpha pixels. Cooperation never borrows another module's scene.
-    pub fn hit_test_window(&self, window_id: u32, x: i32, y: i32) -> bool {
+    pub fn window_incarnation(&self, window_id: u32) -> u64 {
         self.input_router
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .hit_test_window(window_id, InputPoint::new(x, y))
+            .window_incarnation(window_id)
+            .unwrap_or(0)
     }
 
-    pub fn cooperative_focus_request(&self) -> (u64, u32, bool) {
+    pub fn hit_test_window(&self, window_id: u32, incarnation: u64, x: i32, y: i32) -> bool {
         self.input_router
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .cooperative_focus_request()
+            .hit_test_window_for_incarnation(window_id, incarnation, InputPoint::new(x, y))
+    }
+
+    pub fn cooperative_focus_request(&self, after_revision: u64) -> (u64, u32, u64, bool) {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .next_cooperative_focus_request(after_revision)
     }
 
     /// Applies the global focus decision without manufacturing a new SDK
     /// focus request or changing target focus/interception policy.
-    pub fn set_cooperative_focus(&self, window_id: Option<u32>) {
+    pub fn set_cooperative_focus(&self, window_id: Option<u32>, incarnation: u64) {
+        self.publish_input_update(|router| {
+            router.set_cooperative_focus_for_incarnation(window_id, incarnation)
+        });
+    }
+
+    pub fn set_cooperative_interception(&self, requested: bool) {
+        self.publish_input_update(|router| router.set_cooperative_interception(requested));
+    }
+
+    /// Retires the participant, including pointer/caption ownership. Keyboard
+    /// handoff alone deliberately does not invoke this stronger cleanup.
+    pub fn release_cooperative_ownership(&self) {
+        self.publish_input_update(|router| {
+            self.pending_raise
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            self.stack_generation.fetch_add(1, Ordering::AcqRel);
+            self.drag.take_pending();
+            router.release_cooperative_ownership()
+        });
+    }
+
+    fn publish_input_update(&self, update: impl FnOnce(&mut InputRouter) -> Vec<OutboundMessage>) {
         let has_messages = {
             let _order = self
                 .input_order
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let messages = self
-                .input_router
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .set_cooperative_focus(window_id);
+            let messages = update(
+                &mut self
+                    .input_router
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
             if messages.is_empty() {
                 false
             } else {
@@ -968,19 +1010,26 @@ impl ElectronFrameBridge {
     pub fn route_owned_window_message(
         &self,
         window_id: u32,
+        incarnation: u64,
         hwnd: HWND,
         msg: u32,
         wparam: WPARAM,
         lparam: LPARAM,
     ) {
         if window_id != 0 {
-            self.route_window_message_with_owner(Some(window_id), hwnd, msg, wparam, lparam);
+            self.route_window_message_with_owner(
+                Some((window_id, incarnation)),
+                hwnd,
+                msg,
+                wparam,
+                lparam,
+            );
         }
     }
 
     fn route_window_message_with_owner(
         &self,
-        window_id: Option<u32>,
+        window_id: Option<(u32, u64)>,
         hwnd: HWND,
         msg: u32,
         wparam: WPARAM,
@@ -1015,8 +1064,9 @@ impl ElectronFrameBridge {
                 }
             };
             messages.extend(match window_id {
-                Some(window_id) => input_router.route_win32_message_for_window(
+                Some((window_id, incarnation)) => input_router.route_win32_message_for_incarnation(
                     window_id,
+                    incarnation,
                     msg,
                     wparam.0 as u32,
                     lparam.0 as u32,
@@ -1937,10 +1987,11 @@ impl BridgeThreadState {
             "window.focus" => serde_json::from_str::<WindowFocusMessage>(json)
                 .map_err(DispatchError::Json)
                 .map(|message| {
-                    if self
+                    if let Some(incarnation) = self
                         .windows
                         .iter()
-                        .any(|window| window.window_id == message.window_id)
+                        .find(|window| window.window_id == message.window_id)
+                        .map(|window| window.incarnation)
                     {
                         if message.focused {
                             let mut ids: Vec<u32> = self
@@ -1953,8 +2004,18 @@ impl BridgeThreadState {
                             self.on_window_order(WindowOrderMessage { window_ids: ids });
                         }
                         self.update_input_router(|router| {
-                            router.request_window_focus(message.window_id, message.focused)
+                            router.request_window_focus_for_incarnation(
+                                message.window_id, incarnation, message.focused,
+                            )
                         });
+                        let focus_overflowed = self.input_router
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .cooperative_focus_overflowed();
+                        if focus_overflowed {
+                            warn!("Disconnecting Electron producer after cooperative focus queue overflow");
+                            self.disconnect();
+                        }
                     }
                 }),
             "window.bounds" => serde_json::from_str::<WindowBoundsMessage>(json)
@@ -2364,6 +2425,7 @@ impl BridgeThreadState {
         self.sequence = self.sequence.wrapping_add(1).max(1);
         let frame = Arc::new(ElectronFrame {
             window_id,
+            incarnation: self.windows[index].incarnation,
             name,
             rect,
             transparent,
@@ -2515,6 +2577,7 @@ struct InputInterceptCommand {
 
 struct RegisteredWindow {
     window_id: u32,
+    incarnation: u64,
     latest: Option<Arc<ElectronFrame>>,
     name: String,
     rect: ElectronWindowRect,
@@ -2528,6 +2591,7 @@ impl RegisteredWindow {
     fn from_metadata(window: WindowMetadata, placement_epoch: u64) -> Self {
         Self {
             window_id: window.window_id,
+            incarnation: placement_epoch,
             latest: None,
             name: window.name,
             rect: window.rect,
@@ -2545,6 +2609,7 @@ impl RegisteredWindow {
     fn input_window(&self) -> InputWindow {
         debug_assert!(self.is_compositable());
         let window = InputWindow::new(self.window_id, self.rect.into())
+            .with_incarnation(self.incarnation)
             .with_caption(self.caption)
             .with_scale_factor_micros(self.scale_factor_micros)
             .with_placement_epoch(self.placement_epoch);
@@ -2642,6 +2707,7 @@ fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -
             }
             let current = window.latest.as_ref().cloned()?;
             let frame = if current.state_revision == state_revision
+                && current.incarnation == window.incarnation
                 && current.name == window.name
                 && current.rect == window.rect
                 && current.transparent == window.transparent
@@ -2650,6 +2716,7 @@ fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -
             } else {
                 Arc::new(ElectronFrame {
                     window_id: window.window_id,
+                    incarnation: window.incarnation,
                     name: window.name.clone(),
                     rect: window.rect,
                     transparent: window.transparent,
@@ -4174,6 +4241,29 @@ mod tests {
     }
 
     #[test]
+    fn cooperative_focus_overflow_disconnects_the_offending_private_producer() {
+        let mut state = test_bridge_state();
+        state
+            .input_router
+            .lock()
+            .unwrap()
+            .set_cooperative_focus(None);
+        state.on_window(window_metadata(7, "private", 0)).unwrap();
+        let focus =
+            serde_json::json!({"type":"window.focus","windowId":7,"focused":true}).to_string();
+        for _ in 0..=4096 {
+            state.dispatch("window.focus", &focus);
+        }
+        assert!(state.windows.is_empty());
+        assert!(state.scene.read().unwrap().windows.is_empty());
+        assert!(state
+            .input_router
+            .lock()
+            .unwrap()
+            .cooperative_focus_overflowed());
+    }
+
+    #[test]
     fn retained_target_surfaces_keep_revision_order_and_removal_tombstones() {
         let mut retained = RetainedTargetSurfaces::default();
         assert!(retained.publish(target_surface(1, 3)));
@@ -5610,6 +5700,7 @@ mod tests {
         assert_eq!(windows.last().unwrap().name, "Middle replacement");
         assert_eq!(windows.last().unwrap().rect.x, 88);
         assert_eq!(windows.last().unwrap().placement_epoch, 99);
+        assert_eq!(windows.last().unwrap().incarnation, 99);
     }
 
     #[test]
@@ -5624,6 +5715,7 @@ mod tests {
             width: 800,
             height: 450,
         };
+        let original_incarnation = windows[0].incarnation;
 
         assert_eq!(
             update_registered_window_bounds(
@@ -5646,6 +5738,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![10, 20]
         );
+        assert_eq!(windows[0].incarnation, original_incarnation);
+        assert_ne!(windows[0].placement_epoch, original_incarnation);
         assert_eq!(windows[0].rect, replacement_rect);
         assert_eq!(windows[0].placement_epoch, 99);
         assert_eq!(windows[1].rect.x, 20);
@@ -5662,6 +5756,7 @@ mod tests {
         });
         let mut windows = normalize_test_windows(vec![back, window_metadata(20, "Front", 20)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5734,6 +5829,7 @@ mod tests {
         assert!(build_input_windows(&windows).is_empty());
 
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5773,6 +5869,7 @@ mod tests {
         });
         let mut windows = normalize_test_windows(vec![back, window_metadata(20, "Front", 20)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5831,6 +5928,7 @@ mod tests {
     fn explicit_raster_unchanged_bounds_update_retains_latest_pixels() {
         let mut windows = normalize_test_windows(vec![window_metadata(10, "Back", 10)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5875,6 +5973,7 @@ mod tests {
         let back_pixels: Arc<[u8]> = vec![10, 20, 30, 255].into();
         let front_pixels: Arc<[u8]> = vec![40, 50, 60, 128].into();
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "stale".to_owned(),
             rect: ElectronWindowRect::default(),
@@ -5887,6 +5986,7 @@ mod tests {
         }));
         let front_rect = windows[2].rect;
         windows[2].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 30,
             name: "Front".to_owned(),
             rect: front_rect,
@@ -5899,6 +5999,7 @@ mod tests {
         }));
         let invalid_rect = windows[3].rect;
         windows[3].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 40,
             name: "Invalid".to_owned(),
             rect: invalid_rect,

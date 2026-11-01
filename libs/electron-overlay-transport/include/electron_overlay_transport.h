@@ -172,6 +172,11 @@ ego_status EGO_CALL ego_scene_snapshot_get_window(
     const ego_scene_snapshot *snapshot,
     uint64_t index,
     ego_window_frame_v1 *inout_frame);
+/* Registration identity paired with this immutable snapshot's window/pixels. */
+ego_status EGO_CALL ego_scene_snapshot_window_incarnation(
+    const ego_scene_snapshot *snapshot,
+    uint64_t index,
+    uint64_t *out_incarnation);
 
 ego_status EGO_CALL ego_transport_cursor_at(const ego_transport *transport, int32_t x, int32_t y, int32_t *out_cursor);
 
@@ -224,24 +229,50 @@ ego_status EGO_CALL ego_transport_route_window_message(
 ego_status EGO_CALL ego_transport_hit_test_window(
     const ego_transport *transport,
     uint32_t window_id,
+    uint64_t incarnation,
     int32_t x,
     int32_t y,
     uint32_t *out_hit);
 
+/* Current owner-local registration identity; zero means not routable. */
+ego_status EGO_CALL ego_transport_window_incarnation(
+    const ego_transport *transport,
+    uint32_t window_id,
+    uint64_t *out_incarnation);
+
 /*
- * Latest explicit SDK focus command. revision==0 means none observed. Reading
- * does not consume it; cooperative grants and routed clicks do not advance it.
+ * Next ordered SDK focus command after the acknowledged revision. revision==0
+ * means none pending. Repeating after_revision repeats the same command; only
+ * acknowledged older entries are removed. Grants/clicks do not add commands.
  */
 ego_status EGO_CALL ego_transport_cooperative_focus_request(
     const ego_transport *transport,
+    uint64_t after_revision,
     uint64_t *out_revision,
     uint32_t *out_window_id,
+    uint64_t *out_incarnation,
     uint32_t *out_focused);
 
 /* Applies global ownership; focused_window_id==0 blurs this participant only. */
 ego_status EGO_CALL ego_transport_set_cooperative_focus(
     ego_transport *transport,
-    uint32_t focused_window_id);
+    uint32_t focused_window_id,
+    uint64_t incarnation);
+
+/* Aggregate OR routing policy; the producer's own requested flag is retained. */
+ego_status EGO_CALL ego_transport_set_cooperative_interception(
+    ego_transport *transport,
+    uint32_t global_requested);
+
+/* Full participant retirement, including capture/drag cleanup and blur. */
+ego_status EGO_CALL ego_transport_release_cooperative_ownership(
+    ego_transport *transport);
+
+/* Cursor belonging to the exact global hit/capture owner, with no fallback. */
+ego_status EGO_CALL ego_transport_cursor_for_window(
+    const ego_transport *transport,
+    uint32_t window_id,
+    int32_t *out_cursor);
 
 /*
  * Routes through this owner's existing input implementation to the selected
@@ -250,6 +281,7 @@ ego_status EGO_CALL ego_transport_set_cooperative_focus(
 ego_status EGO_CALL ego_transport_route_owned_window_message(
     ego_transport *transport,
     uint32_t window_id,
+    uint64_t incarnation,
     uintptr_t target_hwnd,
     uint32_t message,
     uint64_t wparam,

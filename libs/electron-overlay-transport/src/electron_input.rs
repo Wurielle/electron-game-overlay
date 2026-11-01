@@ -49,6 +49,7 @@ const MIDDLE_BUTTON: u8 = 1 << 2;
 const MK_LBUTTON: u32 = 0x0001;
 const MK_RBUTTON: u32 = 0x0002;
 const MK_MBUTTON: u32 = 0x0010;
+const COOPERATIVE_FOCUS_REQUEST_CAPACITY: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InputPoint {
@@ -160,6 +161,7 @@ impl InputCaption {
 pub struct InputWindow {
     pub window_id: u32,
     pub rect: InputRect,
+    incarnation: u64,
     caption: Option<InputCaption>,
     scale_factor_micros: Option<u32>,
     placement_epoch: u64,
@@ -171,6 +173,7 @@ impl InputWindow {
         Self {
             window_id,
             rect,
+            incarnation: 0,
             caption: None,
             scale_factor_micros: None,
             placement_epoch: 0,
@@ -180,6 +183,14 @@ impl InputWindow {
 
     pub fn with_caption(mut self, caption: Option<InputCaption>) -> Self {
         self.caption = caption;
+        self
+    }
+
+    /// Identifies this registration independently of bounds and drag epochs.
+    /// Zero remains the legacy unknown value and is never accepted by the
+    /// incarnation-bound cooperative routing APIs.
+    pub fn with_incarnation(mut self, incarnation: u64) -> Self {
+        self.incarnation = incarnation;
         self
     }
 
@@ -628,6 +639,7 @@ struct DragValidation {
 pub struct InputRouter {
     cursors: HashMap<u32, u32>,
     requested_interception: bool,
+    cooperative_interception: Option<bool>,
     desired_interception: bool,
     effective_interception: bool,
     target_focused: bool,
@@ -641,6 +653,8 @@ pub struct InputRouter {
     focus_request_revision: u64,
     focus_request_window_id: u32,
     focus_request_focused: bool,
+    cooperative_focus_requests: VecDeque<(u64, u32, u64, bool)>,
+    cooperative_focus_overflowed: bool,
     captured_window_id: Option<u32>,
     captured_buttons: u8,
     last_captured_point: Option<InputPoint>,
@@ -663,6 +677,7 @@ impl Default for InputRouter {
         Self {
             cursors: HashMap::new(),
             requested_interception: false,
+            cooperative_interception: None,
             desired_interception: false,
             effective_interception: false,
             // Fail open until the injected backend observes the target as the
@@ -675,6 +690,8 @@ impl Default for InputRouter {
             focus_request_revision: 0,
             focus_request_window_id: 0,
             focus_request_focused: false,
+            cooperative_focus_requests: VecDeque::new(),
+            cooperative_focus_overflowed: false,
             captured_window_id: None,
             captured_buttons: 0,
             last_captured_point: None,
@@ -707,7 +724,7 @@ impl InputRouter {
     // -1 hands cursor ownership back to the game. Query the same hit-test and
     // capture owner used for pointer input, never the keyboard-focused window.
     pub fn cursor_at(&self, point: InputPoint) -> i32 {
-        if !self.effective_interception || !self.requested_interception || !self.target_focused {
+        if !self.effective_interception || !self.routing_requested() || !self.target_focused {
             return -1;
         }
         let target = if self.captured_buttons != 0 {
@@ -720,6 +737,24 @@ impl InputRouter {
         target
             .map(|w| *self.cursors.get(&w.window_id).unwrap_or(&32512) as i32)
             .unwrap_or(-1)
+    }
+
+    /// Looks up the exact cursor selected by cooperative global hit testing or
+    /// capture. No second participant-local hit test may change that owner.
+    pub fn cursor_for_window(&self, window_id: u32) -> i32 {
+        if !self.effective_interception
+            || !self.routing_requested()
+            || !self.target_focused
+            || !contains_window(&self.windows, window_id)
+        {
+            return -1;
+        }
+        *self.cursors.get(&window_id).unwrap_or(&32512) as i32
+    }
+
+    fn routing_requested(&self) -> bool {
+        self.cooperative_interception
+            .unwrap_or(self.requested_interception)
     }
 
     pub fn state(&self) -> InputRouterState {
@@ -778,6 +813,26 @@ impl InputRouter {
             .is_some_and(|window| window.hit_test(point))
     }
 
+    pub fn window_incarnation(&self, window_id: u32) -> Option<u64> {
+        self.windows
+            .iter()
+            .find(|window| window.window_id == window_id)
+            .map(|window| window.incarnation)
+    }
+
+    /// Makes the incarnation comparison and alpha hit test against the same
+    /// retained router state. A reused numeric window ID is not its old owner.
+    pub fn hit_test_window_for_incarnation(
+        &self,
+        window_id: u32,
+        incarnation: u64,
+        point: InputPoint,
+    ) -> bool {
+        incarnation != 0
+            && self.window_incarnation(window_id) == Some(incarnation)
+            && self.hit_test_window(window_id, point)
+    }
+
     /// Returns the latest SDK focus command. Only request_window_focus advances
     /// the revision, so a cooperative grant or pointer click cannot replay an
     /// old explicit request as a new cross-participant focus operation.
@@ -789,6 +844,30 @@ impl InputRouter {
         )
     }
 
+    /// Acknowledges previously consumed commands and returns the first newer
+    /// one. Keeping command order matters: a blur for B must not erase an
+    /// earlier unconsumed focus request for A. Each command retains its exact
+    /// registration, including requests accepted before the first paint.
+    pub fn next_cooperative_focus_request(&mut self, after_revision: u64) -> (u64, u32, u64, bool) {
+        while self
+            .cooperative_focus_requests
+            .front()
+            .is_some_and(|request| request.0 <= after_revision)
+        {
+            self.cooperative_focus_requests.pop_front();
+        }
+        self.cooperative_focus_requests
+            .front()
+            .copied()
+            .unwrap_or((0, 0, 0, false))
+    }
+
+    /// A sticky bounded-control failure. The transport disconnects the
+    /// offending producer rather than silently discarding an accepted command.
+    pub fn cooperative_focus_overflowed(&self) -> bool {
+        self.cooperative_focus_overflowed
+    }
+
     /// Applies global keyboard ownership without changing game focus,
     /// interception requests, pointer capture, or an active caption gesture.
     /// None means another participant owns keyboard focus. Once enabled, only
@@ -797,7 +876,7 @@ impl InputRouter {
     pub fn set_cooperative_focus(&mut self, window_id: Option<u32>) -> Vec<OutboundMessage> {
         self.cooperative_focus_window_id = Some(window_id);
         let eligible = window_id.filter(|id| {
-            self.requested_interception
+            self.routing_requested()
                 && self.effective_interception
                 && self.target_focused
                 && contains_window(&self.windows, *id)
@@ -810,6 +889,21 @@ impl InputRouter {
         outbound
     }
 
+    /// Rejects a stale global keyboard grant under the same router lock used
+    /// for focus mutation. None is an unconditional cooperative blur.
+    pub fn set_cooperative_focus_for_incarnation(
+        &mut self,
+        window_id: Option<u32>,
+        incarnation: u64,
+    ) -> Vec<OutboundMessage> {
+        if let Some(id) = window_id {
+            if id == 0 || incarnation == 0 || self.window_incarnation(id) != Some(incarnation) {
+                return Vec::new();
+            }
+        }
+        self.set_cooperative_focus(window_id)
+    }
+
     /// Retires a participant's input ownership, preserving the producer's
     /// interception request and the observed focus of the game itself.
     pub fn release_cooperative_ownership(&mut self) -> Vec<OutboundMessage> {
@@ -817,6 +911,25 @@ impl InputRouter {
         self.pending_raise_window_id = None;
         let mut outbound = self.cancel_pointer_capture();
         self.clear_electron_focus(&mut outbound);
+        outbound
+    }
+
+    /// Supplies the aggregate interception grant after native code combines
+    /// participants' requests and global window eligibility. The producer's own
+    /// retained request and atomic requested bit stay unchanged so native code
+    /// can recompute that OR without feedback. The backend still owns application
+    /// of the actual game input filter.
+    pub fn set_cooperative_interception(&mut self, requested: bool) -> Vec<OutboundMessage> {
+        let changed = self.cooperative_interception != Some(requested);
+        self.cooperative_interception = Some(requested);
+        let mut outbound = Vec::new();
+        if !requested {
+            self.pending_raise_window_id = None;
+            outbound.extend(self.cancel_pointer_capture());
+            self.clear_electron_focus(&mut outbound);
+        }
+        self.recompute_desired_interception(changed);
+        self.restore_explicit_focus(&mut outbound);
         outbound
     }
 
@@ -883,12 +996,18 @@ impl InputRouter {
         if self
             .cooperative_focus_window_id
             .flatten()
-            .is_some_and(|id| !contains_window(&windows, id))
+            .is_some_and(|id| !registration_continues(&self.windows, &windows, id))
         {
             self.cooperative_focus_window_id = Some(None);
         }
+        if self.explicit_focus_window_id.is_some_and(|id| {
+            contains_window(&self.windows, id)
+                && !registration_continues(&self.windows, &windows, id)
+        }) {
+            self.explicit_focus_window_id = None;
+        }
         self.cursors
-            .retain(|id, _| windows.iter().any(|w| w.window_id == *id));
+            .retain(|id, _| registration_continues(&self.windows, &windows, *id));
         let mut outbound = Vec::new();
 
         let drag_remains_live = self
@@ -907,19 +1026,19 @@ impl InputRouter {
 
         if self
             .captured_window_id
-            .is_some_and(|window_id| !contains_window(&windows, window_id))
+            .is_some_and(|window_id| !registration_continues(&self.windows, &windows, window_id))
         {
             outbound.extend(self.cancel_pointer_capture());
         }
         if self
             .focused_window_id
-            .is_some_and(|window_id| !contains_window(&windows, window_id))
+            .is_some_and(|window_id| !registration_continues(&self.windows, &windows, window_id))
         {
             self.clear_electron_focus(&mut outbound);
         }
         if self
             .pending_raise_window_id
-            .is_some_and(|window_id| !contains_window(&windows, window_id))
+            .is_some_and(|window_id| !registration_continues(&self.windows, &windows, window_id))
         {
             self.pending_raise_window_id = None;
         }
@@ -935,6 +1054,8 @@ impl InputRouter {
     /// capture, or a pending click-to-front intent from the previous session.
     pub fn reset_windows(&mut self, windows: Vec<InputWindow>) -> Vec<OutboundMessage> {
         self.explicit_focus_window_id = None;
+        self.cooperative_focus_requests.clear();
+        self.cooperative_focus_overflowed = false;
         if self.cooperative_focus_window_id.is_some() {
             self.cooperative_focus_window_id = Some(None);
         }
@@ -951,6 +1072,8 @@ impl InputRouter {
     /// before clearing its focus; unrelated focus/capture state is preserved.
     pub fn remove_window(&mut self, window_id: u32) -> Vec<OutboundMessage> {
         self.cursors.remove(&window_id);
+        self.cooperative_focus_requests
+            .retain(|request| request.1 != window_id);
         if self.cooperative_focus_window_id == Some(Some(window_id)) {
             self.cooperative_focus_window_id = Some(None);
         }
@@ -1090,7 +1213,7 @@ impl InputRouter {
             .requested
             .store(requested, Ordering::Release);
 
-        if !requested {
+        if !self.routing_requested() {
             self.pending_raise_window_id = None;
             outbound.extend(self.cancel_pointer_capture());
             self.clear_electron_focus(&mut outbound);
@@ -1208,6 +1331,26 @@ impl InputRouter {
         self.route_win32_message_with_target(Some(window_id), msg, wparam, lparam, screen_to_client)
     }
 
+    /// Applies an incarnation-bound cooperative decision without a lock gap
+    /// between checking ownership and mutating capture/focus/drag state.
+    pub fn route_win32_message_for_incarnation<F>(
+        &mut self,
+        window_id: u32,
+        incarnation: u64,
+        msg: u32,
+        wparam: u32,
+        lparam: u32,
+        screen_to_client: F,
+    ) -> Vec<OutboundMessage>
+    where
+        F: FnOnce(InputPoint) -> Option<InputPoint>,
+    {
+        if incarnation == 0 || self.window_incarnation(window_id) != Some(incarnation) {
+            return Vec::new();
+        }
+        self.route_win32_message_for_window(window_id, msg, wparam, lparam, screen_to_client)
+    }
+
     fn route_win32_message_with_target<F>(
         &mut self,
         window_id: Option<u32>,
@@ -1236,7 +1379,7 @@ impl InputRouter {
 
         let message_kind = classify_message(msg);
         let routing_enabled =
-            self.effective_interception && self.requested_interception && self.target_focused;
+            self.effective_interception && self.routing_requested() && self.target_focused;
         if self.drain_cancelled_caption_pointer(message_kind, routing_enabled) {
             return Vec::new();
         }
@@ -1574,10 +1717,35 @@ impl InputRouter {
     /// window routable later. Blur is conditional so a stale member cannot
     /// clear another application's current keyboard owner.
     pub fn request_window_focus(&mut self, window_id: u32, focused: bool) -> Vec<OutboundMessage> {
-        self.focus_request_revision = self.focus_request_revision.wrapping_add(1).max(1);
+        let incarnation = self.window_incarnation(window_id).unwrap_or(0);
+        self.request_window_focus_for_incarnation(window_id, incarnation, focused)
+    }
+
+    /// The transport validates registered metadata and supplies its incarnation
+    /// even when the first frame has not yet made the window input-routable.
+    pub fn request_window_focus_for_incarnation(
+        &mut self,
+        window_id: u32,
+        incarnation: u64,
+        focused: bool,
+    ) -> Vec<OutboundMessage> {
+        if self.cooperative_focus_overflowed
+            || (self.cooperative_focus_window_id.is_some()
+                && self.cooperative_focus_requests.len() >= COOPERATIVE_FOCUS_REQUEST_CAPACITY)
+        {
+            self.cooperative_focus_overflowed = true;
+            return self.release_cooperative_ownership();
+        }
+        let Some(revision) = self.focus_request_revision.checked_add(1) else {
+            self.cooperative_focus_overflowed = true;
+            return self.release_cooperative_ownership();
+        };
+        self.focus_request_revision = revision;
         self.focus_request_window_id = window_id;
         self.focus_request_focused = focused;
         if self.cooperative_focus_window_id.is_some() {
+            self.cooperative_focus_requests
+                .push_back((revision, window_id, incarnation, focused));
             if focused {
                 self.explicit_focus_window_id = Some(window_id);
             } else if self.explicit_focus_window_id == Some(window_id) {
@@ -1604,7 +1772,7 @@ impl InputRouter {
     }
 
     fn restore_explicit_focus(&mut self, outbound: &mut Vec<OutboundMessage>) {
-        if !self.requested_interception || !self.effective_interception || !self.target_focused {
+        if !self.routing_requested() || !self.effective_interception || !self.target_focused {
             return;
         }
         let requested = self
@@ -1627,8 +1795,13 @@ impl InputRouter {
     }
 
     fn recompute_desired_interception(&mut self, force_acknowledgement: bool) {
-        let desired =
-            self.requested_interception && self.target_focused && !self.windows.is_empty();
+        // A cooperative grant already includes global window eligibility. An
+        // empty participant still observes/acknowledges the same shared game
+        // filter as its peers; only the ordinary local policy uses own windows.
+        let desired = self.target_focused
+            && self
+                .cooperative_interception
+                .unwrap_or(self.requested_interception && !self.windows.is_empty());
         let changed = desired != self.desired_interception;
         self.desired_interception = desired;
         self.atomic_interception
@@ -1640,6 +1813,15 @@ impl InputRouter {
 
 fn contains_window(windows: &[InputWindow], window_id: u32) -> bool {
     windows.iter().any(|window| window.window_id == window_id)
+}
+
+fn registration_continues(previous: &[InputWindow], next: &[InputWindow], window_id: u32) -> bool {
+    let old = previous.iter().find(|window| window.window_id == window_id);
+    let new = next.iter().find(|window| window.window_id == window_id);
+    match (old, new) {
+        (Some(old), Some(new)) => old.incarnation == new.incarnation,
+        _ => false,
+    }
 }
 
 fn contains_window_epoch(windows: &[InputWindow], window_id: u32, placement_epoch: u64) -> bool {
@@ -1759,6 +1941,317 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn cooperative_incarnation_rejects_stale_keyboard_and_capture_decisions_after_id_reuse() {
+        let first = InputWindow::new(1, InputRect::new(0, 0, 50, 50)).with_incarnation(7);
+        let mut router = router_with_windows(vec![first]);
+        router.set_cooperative_focus_for_incarnation(Some(1), 7);
+        let point = encode_signed_lparam_point(InputPoint::new(10, 10));
+        router.route_win32_message_for_incarnation(1, 7, WM_LBUTTONDOWN, 1, point, Some);
+        let replacement = InputWindow::new(1, InputRect::new(0, 0, 50, 50)).with_incarnation(8);
+        assert_eq!(
+            router.replace_windows(vec![replacement]),
+            vec![
+                OutboundMessage::Input {
+                    window_id: 1,
+                    msg: WM_LBUTTONUP,
+                    wparam: 0,
+                    lparam: point,
+                },
+                OutboundMessage::WindowFocused { focus_window_id: 0 },
+            ]
+        );
+        assert_eq!(router.window_incarnation(1), Some(8));
+        assert!(!router.hit_test_window_for_incarnation(1, 7, InputPoint::new(10, 10)));
+        assert!(router.hit_test_window_for_incarnation(1, 8, InputPoint::new(10, 10)));
+        assert!(!router.hit_test_window_for_incarnation(1, 0, InputPoint::new(10, 10)));
+        assert!(router
+            .set_cooperative_focus_for_incarnation(Some(1), 7)
+            .is_empty());
+        assert_eq!(router.state().focused_window_id, None);
+        router.set_cooperative_focus_for_incarnation(Some(1), 8);
+        assert!(router
+            .route_win32_message_for_incarnation(1, 7, WM_CHAR, u32::from('a'), 0, Some)
+            .is_empty());
+        assert_eq!(
+            router.route_win32_message_for_incarnation(1, 8, WM_CHAR, u32::from('b'), 0, Some),
+            vec![OutboundMessage::Input {
+                window_id: 1,
+                msg: WM_CHAR,
+                wparam: u32::from('b'),
+                lparam: 0,
+            }]
+        );
+        router.route_win32_message_for_incarnation(1, 8, WM_LBUTTONDOWN, 1, point, Some);
+        assert!(router
+            .route_win32_message_for_incarnation(1, 7, WM_LBUTTONUP, 0, point, Some)
+            .is_empty());
+        assert_eq!(router.state().captured_window_id, Some(1));
+        router.route_win32_message_for_incarnation(1, 8, WM_LBUTTONUP, 0, point, Some);
+        assert_eq!(router.state().captured_window_id, None);
+    }
+
+    #[test]
+    fn cooperative_bounds_updates_preserve_registration_incarnation_and_capture() {
+        let window = InputWindow::new(1, InputRect::new(10, 20, 50, 50)).with_incarnation(7);
+        let mut router = router_with_windows(vec![window]);
+        let down = encode_signed_lparam_point(InputPoint::new(15, 25));
+        router.route_win32_message_for_incarnation(1, 7, WM_LBUTTONDOWN, 1, down, Some);
+        assert!(router
+            .update_window_rect(1, InputRect::new(100, 200, 50, 50))
+            .is_empty());
+        assert_eq!(router.window_incarnation(1), Some(7));
+        assert!(router
+            .replace_windows(vec![
+                InputWindow::new(1, InputRect::new(100, 200, 50, 50)).with_incarnation(7)
+            ])
+            .is_empty());
+        assert_eq!(router.state().captured_window_id, Some(1));
+        assert_eq!(
+            router.route_win32_message_for_incarnation(
+                1,
+                7,
+                WM_MOUSEMOVE,
+                1,
+                encode_signed_lparam_point(InputPoint::new(90, 180)),
+                Some,
+            ),
+            vec![OutboundMessage::Input {
+                window_id: 1,
+                msg: WM_MOUSEMOVE,
+                wparam: 1,
+                lparam: encode_signed_lparam_point(InputPoint::new(-10, -20)),
+            }]
+        );
+    }
+
+    #[test]
+    fn cooperative_focus_queue_preserves_a_focus_before_an_unrelated_blur() {
+        let mut router = router_with_windows(vec![
+            InputWindow::new(1, InputRect::new(0, 0, 20, 20)).with_incarnation(7),
+            InputWindow::new(2, InputRect::new(40, 0, 20, 20)).with_incarnation(8),
+        ]);
+        router.set_cooperative_focus(None);
+        router.request_window_focus_for_incarnation(1, 7, true);
+        router.request_window_focus_for_incarnation(2, 8, false);
+        assert_eq!(router.cooperative_focus_request(), (2, 2, false));
+        assert_eq!(router.next_cooperative_focus_request(0), (1, 1, 7, true));
+        assert_eq!(router.next_cooperative_focus_request(0), (1, 1, 7, true));
+        router.set_cooperative_focus_for_incarnation(Some(1), 7);
+        assert_eq!(router.next_cooperative_focus_request(1), (2, 2, 8, false));
+        assert_eq!(router.state().focused_window_id, Some(1));
+        assert_eq!(router.next_cooperative_focus_request(2), (0, 0, 0, false));
+    }
+
+    #[test]
+    fn cooperative_focus_queue_retains_unframed_incarnation_and_retires_closed_registration() {
+        let mut router = InputRouter::new();
+        router.set_cooperative_focus(None);
+        router.request_window_focus_for_incarnation(1, 7, true);
+        assert_eq!(router.window_incarnation(1), None);
+        assert_eq!(router.next_cooperative_focus_request(0), (1, 1, 7, true));
+        router.replace_windows(vec![
+            InputWindow::new(2, InputRect::new(0, 0, 20, 20)).with_incarnation(8)
+        ]);
+        assert_eq!(router.next_cooperative_focus_request(0), (1, 1, 7, true));
+        router.remove_window(1);
+        router.replace_windows(vec![
+            InputWindow::new(1, InputRect::new(0, 0, 20, 20)).with_incarnation(9)
+        ]);
+        assert_eq!(router.next_cooperative_focus_request(0), (0, 0, 0, false));
+        assert!(router
+            .set_cooperative_focus_for_incarnation(Some(1), 7)
+            .is_empty());
+        assert_eq!(router.state().focused_window_id, None);
+        router.request_window_focus_for_incarnation(1, 9, true);
+        assert_eq!(router.next_cooperative_focus_request(1), (2, 1, 9, true));
+    }
+
+    #[test]
+    fn cooperative_focus_queue_overflow_rejects_control_until_session_reset() {
+        let mut router = InputRouter::new();
+        router.set_cooperative_focus(None);
+        for _ in 0..COOPERATIVE_FOCUS_REQUEST_CAPACITY {
+            assert!(router
+                .request_window_focus_for_incarnation(1, 7, true)
+                .is_empty());
+        }
+        assert!(!router.cooperative_focus_overflowed());
+        let last = router.cooperative_focus_request();
+        router.request_window_focus_for_incarnation(2, 8, false);
+        assert!(router.cooperative_focus_overflowed());
+        assert_eq!(router.cooperative_focus_request(), last);
+        router.next_cooperative_focus_request(u64::MAX);
+        router.request_window_focus_for_incarnation(2, 8, true);
+        assert_eq!(router.cooperative_focus_request(), last);
+        router.reset_windows(Vec::new());
+        assert!(!router.cooperative_focus_overflowed());
+        assert_eq!(router.next_cooperative_focus_request(0), (0, 0, 0, false));
+        router.request_window_focus_for_incarnation(2, 8, true);
+        assert_eq!(
+            router.next_cooperative_focus_request(0),
+            (COOPERATIVE_FOCUS_REQUEST_CAPACITY as u64 + 1, 2, 8, true)
+        );
+    }
+
+    #[test]
+    fn cooperative_global_interception_routes_to_a_participant_without_its_own_request() {
+        let mut router = InputRouter::new();
+        let atomics = router.atomic_interception_state();
+        router.set_target_focused(true);
+        router.replace_windows(vec![InputWindow::new(1, InputRect::new(0, 0, 50, 50))]);
+        router.set_cooperative_focus(None);
+        assert!(!router.state().requested_interception);
+        assert!(router.set_cooperative_interception(true).is_empty());
+        assert!(!atomics.requested());
+        assert!(atomics.desired());
+        assert_eq!(
+            router.apply_input_filter(true, true),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
+        );
+        router.set_cooperative_focus(Some(1));
+        assert_eq!(
+            router.route_win32_message_for_window(
+                1,
+                WM_LBUTTONDOWN,
+                1,
+                encode_signed_lparam_point(InputPoint::new(10, 10)),
+                Some,
+            ),
+            vec![OutboundMessage::Input {
+                window_id: 1,
+                msg: WM_LBUTTONDOWN,
+                wparam: 1,
+                lparam: encode_signed_lparam_point(InputPoint::new(10, 10)),
+            }]
+        );
+        assert_eq!(router.cursor_for_window(1), 32512);
+        assert_eq!(router.state().captured_window_id, Some(1));
+        assert!(!router.state().requested_interception);
+    }
+
+    #[test]
+    fn cooperative_empty_participant_acknowledges_the_global_interception_grant() {
+        let mut router = InputRouter::new();
+        let atomics = router.atomic_interception_state();
+        router.set_target_focused(true);
+        assert!(router.set_cooperative_interception(true).is_empty());
+        assert!(!atomics.requested());
+        assert!(atomics.desired());
+        assert_eq!(
+            router.apply_input_filter(true, true),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
+        );
+        assert_eq!(router.state().window_count, 0);
+        assert!(router
+            .route_win32_message_for_window(1, WM_CHAR, u32::from('a'), 0, Some)
+            .is_empty());
+        assert_eq!(router.cursor_for_window(1), -1);
+        assert!(router.set_cooperative_interception(false).is_empty());
+        assert!(!atomics.desired());
+        assert_eq!(
+            router.apply_input_filter(false, true),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+    }
+
+    #[test]
+    fn cooperative_own_request_release_preserves_capture_while_another_request_is_live() {
+        let mut router = router_with_interception();
+        let atomics = router.atomic_interception_state();
+        router.set_cooperative_interception(true);
+        route(&mut router, WM_LBUTTONDOWN, InputPoint::new(-10, 40));
+        assert!(router.request_interception(false).is_empty());
+        assert!(!atomics.requested());
+        assert!(atomics.desired());
+        assert!(atomics.effective());
+        assert_eq!(router.state().captured_window_id, Some(WINDOW_ID));
+        assert_eq!(router.state().focused_window_id, Some(WINDOW_ID));
+        assert_eq!(
+            router.apply_input_filter(true, true),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
+        );
+        assert_eq!(
+            router.route_win32_message_for_window(
+                WINDOW_ID,
+                WM_LBUTTONUP,
+                0,
+                encode_signed_lparam_point(InputPoint::new(-100, -100)),
+                Some,
+            ),
+            vec![OutboundMessage::Input {
+                window_id: WINDOW_ID,
+                msg: WM_LBUTTONUP,
+                wparam: 0,
+                lparam: encode_signed_lparam_point(InputPoint::new(-80, -130)),
+            }]
+        );
+        assert!(!router.state().pointer_captured);
+    }
+
+    #[test]
+    fn cooperative_last_request_release_cleans_up_before_filter_disarm_acknowledgement() {
+        let mut router = router_with_interception();
+        let atomics = router.atomic_interception_state();
+        router.set_cooperative_interception(true);
+        route(&mut router, WM_LBUTTONDOWN, InputPoint::new(-10, 40));
+        assert_eq!(
+            router.set_cooperative_interception(false),
+            vec![
+                OutboundMessage::Input {
+                    window_id: WINDOW_ID,
+                    msg: WM_LBUTTONUP,
+                    wparam: 0,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 10)),
+                },
+                OutboundMessage::WindowFocused { focus_window_id: 0 },
+            ]
+        );
+        assert!(atomics.requested());
+        assert!(!atomics.desired());
+        assert!(atomics.effective());
+        assert!(router
+            .route_win32_message_for_window(WINDOW_ID, WM_CHAR, u32::from('a'), 0, Some)
+            .is_empty());
+        assert_eq!(router.cursor_for_window(WINDOW_ID), -1);
+        assert!(router.apply_input_filter(true, true).is_empty());
+        assert_eq!(
+            router.apply_input_filter(false, true),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+        assert!(!atomics.effective());
+        assert!(router.set_cooperative_interception(false).is_empty());
+        assert!(router.apply_input_filter(false, true).is_empty());
+    }
+
+    #[test]
+    fn cooperative_cursor_lookup_keeps_the_selected_window_instead_of_local_topmost() {
+        let mut router = router_with_windows(vec![
+            InputWindow::new(1, InputRect::new(0, 0, 100, 100)),
+            InputWindow::new(2, InputRect::new(0, 0, 100, 100)),
+            InputWindow::new(3, InputRect::new(0, 0, 100, 100)),
+        ]);
+        router.set_window_cursor(1, 32649);
+        router.set_window_cursor(2, 32513);
+        assert_eq!(router.cursor_at(InputPoint::new(20, 20)), 32512);
+        assert_eq!(router.cursor_for_window(1), 32649);
+        assert_eq!(router.cursor_for_window(2), 32513);
+        assert_eq!(router.cursor_for_window(3), 32512);
+        assert_eq!(router.cursor_for_window(0), -1);
+        assert_eq!(router.cursor_for_window(4), -1);
+        router.set_cooperative_interception(false);
+        assert_eq!(router.cursor_for_window(1), -1);
+        router.set_cooperative_interception(true);
+        router.request_interception(false);
+        assert_eq!(router.cursor_for_window(1), 32649);
+        router.set_target_focused(false);
+        assert_eq!(router.cursor_for_window(1), -1);
+    }
 
     #[test]
     fn cooperative_hit_test_checks_the_requested_window_and_its_alpha_pixels() {

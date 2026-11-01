@@ -78,7 +78,6 @@ pub struct EgoTransport {
 /// Opaque immutable scene lease. Every pointer in `views` is retained by
 /// `scene` and remains valid until this object is released.
 pub struct EgoSceneSnapshot {
-    #[allow(dead_code)]
     scene: Arc<ElectronScene>,
     views: Vec<EgoWindowFrameV1>,
 }
@@ -749,6 +748,45 @@ pub unsafe extern "C" fn ego_scene_snapshot_get_window(
 }
 
 /// # Safety
+/// `snapshot` must remain live and `out_incarnation` must be writable. The
+/// registration identity belongs to the same immutable snapshot as its pixels.
+#[no_mangle]
+pub unsafe extern "C" fn ego_scene_snapshot_window_incarnation(
+    snapshot: *const EgoSceneSnapshot,
+    index: u64,
+    out_incarnation: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
+        *out_incarnation = 0;
+        let snapshot = snapshot_ref(snapshot)?;
+        let index = usize::try_from(index).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_OUT_OF_RANGE,
+                "scene window index is out of range",
+            )
+        })?;
+        *out_incarnation = snapshot
+            .scene
+            .windows
+            .get(index)
+            .ok_or_else(|| {
+                FfiError::new(
+                    EGO_STATUS_OUT_OF_RANGE,
+                    "scene window index is out of range",
+                )
+            })?
+            .incarnation;
+        Ok(())
+    })
+}
+
+/// # Safety
 /// Transport must be live and out_cursor must be writable. -1 means game-owned.
 #[no_mangle]
 pub unsafe extern "C" fn ego_transport_cursor_at(
@@ -1009,6 +1047,7 @@ pub unsafe extern "C" fn ego_transport_route_window_message(
 pub unsafe extern "C" fn ego_transport_hit_test_window(
     transport: *const EgoTransport,
     window_id: u32,
+    incarnation: u64,
     x: i32,
     y: i32,
     out_hit: *mut u32,
@@ -1019,7 +1058,34 @@ pub unsafe extern "C" fn ego_transport_hit_test_window(
             .ok_or_else(|| FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_hit pointer is null"))?;
         *out_hit = 0;
         let transport = transport_ref(transport)?;
-        *out_hit = bool_u32(transport.bridge.hit_test_window(window_id, x, y));
+        *out_hit = bool_u32(
+            transport
+                .bridge
+                .hit_test_window(window_id, incarnation, x, y),
+        );
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live and `out_incarnation` must be writable. Zero
+/// means the local ID is not currently routable; bounds changes retain identity.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_window_incarnation(
+    transport: *const EgoTransport,
+    window_id: u32,
+    out_incarnation: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
+        *out_incarnation = 0;
+        let transport = transport_ref(transport)?;
+        *out_incarnation = transport.bridge.window_incarnation(window_id);
         Ok(())
     })
 }
@@ -1030,8 +1096,10 @@ pub unsafe extern "C" fn ego_transport_hit_test_window(
 #[no_mangle]
 pub unsafe extern "C" fn ego_transport_cooperative_focus_request(
     transport: *const EgoTransport,
+    after_revision: u64,
     out_revision: *mut u64,
     out_window_id: *mut u32,
+    out_incarnation: *mut u64,
     out_focused: *mut u32,
 ) -> i32 {
     ffi_call(|| {
@@ -1044,10 +1112,18 @@ pub unsafe extern "C" fn ego_transport_cooperative_focus_request(
         let out_focused = out_focused.as_mut().ok_or_else(|| {
             FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_focused pointer is null")
         })?;
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
         let transport = transport_ref(transport)?;
-        let (revision, window_id, focused) = transport.bridge.cooperative_focus_request();
+        let (revision, window_id, incarnation, focused) =
+            transport.bridge.cooperative_focus_request(after_revision);
         *out_revision = revision;
         *out_window_id = window_id;
+        *out_incarnation = incarnation;
         *out_focused = bool_u32(focused);
         Ok(())
     })
@@ -1060,12 +1136,71 @@ pub unsafe extern "C" fn ego_transport_cooperative_focus_request(
 pub unsafe extern "C" fn ego_transport_set_cooperative_focus(
     transport: *mut EgoTransport,
     focused_window_id: u32,
+    incarnation: u64,
 ) -> i32 {
     ffi_call(|| {
         let transport = transport_ref(transport)?;
+        transport.bridge.set_cooperative_focus(
+            (focused_window_id != 0).then_some(focused_window_id),
+            incarnation,
+        );
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live and `global_requested` must be zero or one.
+/// This controls aggregate routing without changing the producer's own request.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_set_cooperative_interception(
+    transport: *mut EgoTransport,
+    global_requested: u32,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if global_requested > 1 {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "global interception request must be zero or one",
+            ));
+        }
         transport
             .bridge
-            .set_cooperative_focus((focused_window_id != 0).then_some(focused_window_id));
+            .set_cooperative_interception(global_requested != 0);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live. Retirement releases this participant's pointer
+/// capture, caption drag and keyboard focus without altering another member.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_release_cooperative_ownership(
+    transport: *mut EgoTransport,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        transport.bridge.release_cooperative_ownership();
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live and `out_cursor` must be writable. Global
+/// hit testing/capture already selected `window_id`; no local fallback occurs.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_cursor_for_window(
+    transport: *const EgoTransport,
+    window_id: u32,
+    out_cursor: *mut i32,
+) -> i32 {
+    ffi_call(|| {
+        let out_cursor = out_cursor.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_cursor pointer is null")
+        })?;
+        *out_cursor = -1;
+        let transport = transport_ref(transport)?;
+        *out_cursor = transport.bridge.cursor_for_window(window_id);
         Ok(())
     })
 }
@@ -1078,6 +1213,7 @@ pub unsafe extern "C" fn ego_transport_set_cooperative_focus(
 pub unsafe extern "C" fn ego_transport_route_owned_window_message(
     transport: *mut EgoTransport,
     window_id: u32,
+    incarnation: u64,
     target_hwnd: usize,
     message: u32,
     wparam: u64,
@@ -1108,6 +1244,7 @@ pub unsafe extern "C" fn ego_transport_route_owned_window_message(
         })?;
         transport.bridge.route_owned_window_message(
             window_id,
+            incarnation,
             HWND(target_hwnd as *mut c_void),
             message,
             WPARAM(wparam),
@@ -1380,6 +1517,62 @@ mod tests {
         assert_eq!(scene_b.windows[0].name, "member-b");
         assert_eq!(&*scene_a.windows[0].rgba, &[3, 2, 1, 255]);
         assert_eq!(&*scene_b.windows[0].rgba, &[6, 5, 4, 255]);
+
+        let retained_snapshot = make_scene_snapshot(Arc::clone(&scene_a)).unwrap();
+        let mut old_incarnation = 0;
+        assert_eq!(
+            unsafe {
+                ego_scene_snapshot_window_incarnation(&retained_snapshot, 0, &mut old_incarnation)
+            },
+            EGO_STATUS_OK,
+        );
+        assert_ne!(old_incarnation, 0);
+        peer_a
+            .write_all(
+                &crate::electron_wire::encode_json(
+                    &serde_json::json!({"type":"window.close","windowId":7}).to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        send_scene(&mut peer_a, "member-a-recreated", [10, 11, 12, 255]);
+        wait_for(|| unsafe {
+            (*transport_a.0)
+                .bridge
+                .scene()
+                .windows
+                .first()
+                .is_some_and(|window| window.name == "member-a-recreated")
+        });
+        let new_incarnation = unsafe { (*transport_a.0).bridge.window_incarnation(7) };
+        assert_ne!(new_incarnation, old_incarnation);
+        let mut snapshot_incarnation = 0;
+        assert_eq!(
+            unsafe {
+                ego_scene_snapshot_window_incarnation(
+                    &retained_snapshot,
+                    0,
+                    &mut snapshot_incarnation,
+                )
+            },
+            EGO_STATUS_OK,
+        );
+        assert_eq!(snapshot_incarnation, old_incarnation);
+        let mut hit = 1;
+        assert_eq!(
+            unsafe {
+                ego_transport_hit_test_window(transport_a.0, 7, old_incarnation, 4, 5, &mut hit)
+            },
+            EGO_STATUS_OK,
+        );
+        assert_eq!(hit, 0);
+        assert_eq!(
+            unsafe {
+                ego_transport_hit_test_window(transport_a.0, 7, new_incarnation, 4, 5, &mut hit)
+            },
+            EGO_STATUS_OK,
+        );
+        assert_eq!(hit, 1);
 
         drop(listener_a);
         peer_a.shutdown(Shutdown::Both).unwrap();
