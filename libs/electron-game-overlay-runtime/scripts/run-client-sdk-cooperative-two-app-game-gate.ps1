@@ -8,7 +8,10 @@ param(
     [ValidateSet('graceful', 'crash', 'both')][string]$FirstAppExit = 'both',
     [ValidatePattern('^$|^[a-fA-F0-9]{40}$')][string]$SourceRevisionA = '',
     [ValidatePattern('^$|^[a-fA-F0-9]{40}$')][string]$SourceRevisionB = '',
-    [switch]$RequireDifferentImplementations
+    [switch]$RequireDifferentImplementations,
+    [string]$FixturePath,
+    [string]$AppRootA,
+    [string]$AppRootB
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,12 +25,20 @@ if ([IO.Path]::GetFileName($GameExecutable) -ine 'Gun Frog.exe') { throw 'This c
 $ElectronExecutable = (Resolve-Path -LiteralPath $ElectronExecutable).Path
 $SdkDistA = (Resolve-Path -LiteralPath $SdkDistA).Path
 $SdkDistB = (Resolve-Path -LiteralPath $SdkDistB).Path
+if ([bool]$AppRootA -ne [bool]$AppRootB) { throw 'Installed-package acceptance requires both consumer roots.' }
+if ($AppRootA -and -not $FixturePath) { throw 'Installed-package acceptance requires its explicit public-entrypoint fixture.' }
+if ($AppRootA) {
+    $AppRootA = (Resolve-Path -LiteralPath $AppRootA).Path
+    $AppRootB = (Resolve-Path -LiteralPath $AppRootB).Path
+    if ([string]::Equals($AppRootA, $AppRootB, [StringComparison]::OrdinalIgnoreCase)) { throw 'Installed applications must have independent consumer roots.' }
+}
 $Node = (Get-Command node.exe -CommandType Application -All -ErrorAction Stop | Select-Object -First 1).Source
-$Fixture = Join-Path $RepoRoot 'apps\client\scripts\cooperative-two-app-game-fixture.cjs'
+$Fixture = if ($FixturePath) { (Resolve-Path -LiteralPath $FixturePath).Path } else { Join-Path $RepoRoot 'apps\client\scripts\cooperative-two-app-game-fixture.cjs' }
 $EvidenceHelper = Join-Path $RepoRoot 'apps\client\scripts\cooperative-game-evidence.cjs'
 $RunDirectory = Join-Path $RepoRoot ('build\cooperative-two-app-game-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $RunDirectory -ErrorAction Stop | Out-Null
 $Report = [ordered]@{ schemaVersion = 1; status = 'failed'; scope = 'Actual Gun Frog, two genuine Electron/public-SDK processes and independent native add-ons'; inputSource = 'Windows SendInput, not human physical-key evidence'; cases = @(); error = $null }
+if ($AppRootA) { $Report.installedPackageAcceptance = @{ consumerRootA = $AppRootA; consumerRootB = $AppRootB; fixture = $Fixture; releasedPackageCompatibilityClaimed = $false } }
 $script:Sequence = 0
 $script:MouseHeld = $false
 
@@ -127,16 +138,48 @@ function Start-OwnedProcess([Diagnostics.ProcessStartInfo]$StartInfo, [string]$L
     $null = $Process.Handle
     return $Process
 }
+function Assert-InstalledPackageEvidence([object]$SdkEvidence, [string]$ConsumerRoot, [string]$SdkDist) {
+    $Installed = $SdkEvidence.installedPackage
+    if (-not $Installed -or $Installed.schemaVersion -isnot [int] -or $Installed.schemaVersion -ne 1 -or
+        $Installed.releasedPackageCompatibilityClaimed -isnot [bool] -or $Installed.releasedPackageCompatibilityClaimed -ne $false -or
+        $Installed.loadMethod -cne "createRequire(consumer/package.json)('electron-game-overlay')" -or
+        $Installed.packageVersion -cne $SdkEvidence.packageVersion -or
+        $Installed.packageVersion -cnotmatch '^\d+\.\d+\.\d+-development\.[0-9A-Za-z.-]+$') {
+        throw 'The producer did not prove loading its installed development SDK public entrypoint.'
+    }
+    foreach ($Pair in @(
+        @($Installed.consumerRoot, $ConsumerRoot),
+        @($Installed.packageRoot, (Join-Path $ConsumerRoot 'node_modules\electron-game-overlay')),
+        @($Installed.sdkDist, $SdkDist), @($SdkEvidence.sdkDist, $SdkDist),
+        @($Installed.entrypoint, (Join-Path $SdkDist 'index.js')))) {
+        if (-not $Pair[0] -or -not [IO.Path]::IsPathRooted($Pair[0]) -or
+            -not [string]::Equals([IO.Path]::GetFullPath($Pair[0]), [IO.Path]::GetFullPath($Pair[1]), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Installed producer provenance resolved outside its own consumer package.'
+        }
+    }
+    foreach ($Pair in @(@($Installed.installedManifestSha256, 'overlay-manifest.json'), @($Installed.entrySha256, 'index.js'))) {
+        $File = Join-Path $SdkDist $Pair[1]
+        $Info = Get-Item -LiteralPath $File
+        if ($Info.Length -le 0 -or $Info.Length -gt 4MB) { throw 'Installed producer evidence file size is out of bounds.' }
+        $Hasher = [Security.Cryptography.SHA256]::Create()
+        try { $Hash = [BitConverter]::ToString($Hasher.ComputeHash([IO.File]::ReadAllBytes($File))).Replace('-', '').ToLowerInvariant() }
+        finally { $Hasher.Dispose() }
+        if ($Pair[0] -cnotmatch '^[a-f0-9]{64}$' -or $Pair[0] -cne $Hash) { throw 'Installed producer entrypoint or seal changed after package verification.' }
+    }
+    return $Installed
+}
 function Start-App([string]$Member, [string]$Slot, [int]$TargetPid = 0) {
     $StartInfo = [Diagnostics.ProcessStartInfo]::new()
     $StartInfo.FileName = $ElectronExecutable
-    $StartInfo.WorkingDirectory = $RepoRoot
+    $ConsumerRoot = if ($Member -eq 'a') { $AppRootA } else { $AppRootB }
+    $StartInfo.WorkingDirectory = if ($ConsumerRoot) { $ConsumerRoot } else { $RepoRoot }
     $StartInfo.UseShellExecute = $false
     $StartInfo.CreateNoWindow = $true
     $StartInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     $StartInfo.RedirectStandardOutput = $true
     $StartInfo.RedirectStandardError = $true
     $Arguments = @('--force-device-scale-factor=1', $Fixture, "--evidence=$script:CaseDirectory", "--member=$Member", "--slot=$Slot", "--game=$GameExecutable", "--sdk-dist=$(if ($Member -eq 'a') { $SdkDistA } else { $SdkDistB })")
+    if ($ConsumerRoot) { $Arguments += "--app-root=$ConsumerRoot" }
     if ($TargetPid) { $Arguments += "--pid=$TargetPid" }
     # These arguments contain validated local paths and no embedded quotes.
     foreach ($Argument in $Arguments) { if ($Argument.Contains('"')) { throw 'A fixture path contains an unsupported quote.' } }
@@ -146,6 +189,11 @@ function Start-App([string]$Member, [string]$Slot, [int]$TargetPid = 0) {
     $Process = Start-OwnedProcess $StartInfo "app $Member"
     $script:Apps[$Member] = @{ process = $Process; startedAt = $Process.StartTime; children = [Collections.Generic.List[Diagnostics.Process]]::new(); childIds = [Collections.Generic.HashSet[int]]::new(); stdout = $Process.StandardOutput.ReadToEndAsync(); stderr = $Process.StandardError.ReadToEndAsync() }
     Wait-Condition { (Read-State $Member).ready } "app $Member public SDK readiness" 120
+    if ($ConsumerRoot) {
+        $ObservedSdk = Get-Content -LiteralPath (Join-Path $script:CaseDirectory "$Member-sdk.json") -Raw | ConvertFrom-Json
+        $ExpectedDist = if ($Member -eq 'a') { $SdkDistA } else { $SdkDistB }
+        $script:CaseResult.installedPackages[$Member] = Assert-InstalledPackageEvidence $ObservedSdk $ConsumerRoot $ExpectedDist
+    }
 }
 function Start-Game {
     Assert-NoRunningGame
@@ -338,6 +386,7 @@ try {
         $script:FirstMember = if ($Order -eq 'a-first') { 'a' } else { 'b' }
         $script:LateMember = if ($script:FirstMember -eq 'a') { 'b' } else { 'a' }
         $script:CaseResult = [ordered]@{ order = $Order; firstAppExit = $ExitMode; initialAttachment = 'exact-path native prearm before controller launch; authenticated PID and creation identity checked afterward'; lateAttachment = 'exact-PID attachment after first-app rendering'; status = 'failed'; checks = @(); interception = @() }
+        if ($AppRootA) { $script:CaseResult.installedPackages = @{} }
         try {
             Assert-NoRunningGame
             Start-App $script:FirstMember first
