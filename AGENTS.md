@@ -8,7 +8,15 @@
 - Resolve official ReShade paths and enablement from the exact target process and its configuration; never substitute the Electron process environment.
 - Bump the official ReShade add-on build ID whenever its mapped implementation changes; the injector and package manifest must stay exact so stale ABI-compatible add-ons cannot be accepted.
 
-## Non-negotiable broker contract
+## Multi-application implementation contract
+
+- The user authorized a clean rewrite on 2026-11-01: no users require migration from the unreleased broker implementation. Read `doc/cooperative-addons.md` before changing the new architecture. The requirements below in the historical broker contract describe that older implementation; its election, single EGO feature-engine, catalog and frozen-wire migration requirements do not constrain the authorized replacement.
+- Each app/version owns its native feature implementation and private transport. Preserve one ReShade initialization/ownership boundary, per-window cross-app order/input coordination, and surviving applications after another app exits or crashes. Never replace this with an elected EGO implementation that serves all apps' features.
+- Preserve every overlay feature and required real-game E2E behavior. Keep native protocol/socket fixtures distinct from actual game acceptance, and never relabel synthetic input as the physical-key gate.
+- The cooperative ABI must use explicit size/versioned fixed-layout POD and owned callback/handle boundaries; never share private C++ layouts or allocator ownership across SDK versions.
+- Retain possibly consumed ReShade initialization ownership until authoritative target exit. Application shutdown, socket loss, timeouts and registry changes are not target exit or permission to inject another ReShade.
+
+## Historical broker contract
 
 - Read `doc/multi-application-broker.md` before changing broker discovery, election, protocol, routing, recovery, or compatibility tests. Its product contract is mandatory; its explicitly planned features are not claims of current implementation.
 - Independent applications using different EGO versions must coexist on the same exact game process without coordinated application upgrades. Preserve one shared target communication/runtime ownership path, per-application window/input isolation, and continued operation when another app exits or crashes. Never reduce this to same-version-only support.

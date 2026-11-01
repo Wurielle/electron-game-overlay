@@ -1,5 +1,12 @@
 # Same-PID multi-application broker
 
+> Historical implementation contract. On 2026-11-01 the user authorized an
+> unreleased clean rewrite with per-application native engines and no migration
+> requirement. The active replacement contract is
+> [cooperative-addons.md](cooperative-addons.md). This document remains the
+> reference for the retained broker implementation and its tests; historical
+> passing results do not establish acceptance of the replacement.
+
 This is the canonical compatibility and ownership contract for independent
 Electron applications using `electron-game-overlay` (EGO) against one target
 PID. The overlay-consumer API does not expose a broker instance: every application still

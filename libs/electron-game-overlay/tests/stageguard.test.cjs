@@ -1,4 +1,5 @@
-// Portable source/configuration guards, NOT PowerShell or Windows execution.
+// Portable source/configuration guards, plus one Windows-only execution of the
+// extracted manifest guard. The full native/game gate is never executed here.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs');
@@ -74,5 +75,63 @@ test('official coexistence fixture requires the current bound package on both so
   for (const variable of ['PackageBuildStamp', 'ClientBuildStamp']) {
     assert.ok(source.includes(`$${variable}.schemaVersion -ne 4 -or`), variable);
     assert.ok(source.includes(`$${variable}.injectorProcessInstanceBinding -ne 1 -or`), variable);
+  }
+});
+
+test('official coexistence executes its source-current contract guard without starting the game', {
+  skip: process.platform !== 'win32' ? 'PowerShell execution requires Windows' : false,
+}, () => {
+  const { spawnSync } = require('node:child_process');
+  const os = require('node:os');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-coexistence-contract-'));
+  const fixturePath = path.join(directory, 'build.ps1');
+  const runnerPath = path.join(root, 'libs/electron-game-overlay-runtime/scripts/run-client-sdk-gun-frog-official-reshade-coexistence-gate.ps1');
+  const addonId = '0123456789ABCDEF0123456789ABCDEF';
+  const currentGeneration = Number(producer.match(/^\$RuntimeGeneration = ([1-9][0-9]*)\r?$/mu)[1]);
+  const source = (generation) => `$RuntimeGeneration = ${generation}\n$TargetTransportMin = 1\n$TargetTransportMax = 1\n$ExpectedAddonBuildId = "${addonId}"\n`;
+  const stamp = (generation) => ({ runtimeGeneration: generation, targetTransportMin: 1, targetTransportMax: 1, addonBuildId: addonId });
+  const cases = [
+    { name: 'current source generation', source: source(currentGeneration), package: stamp(currentGeneration), client: stamp(currentGeneration), pass: true },
+    { name: 'next source generation without fixture rewrite', source: source(currentGeneration + 1), package: stamp(currentGeneration + 1), client: stamp(currentGeneration + 1), pass: true },
+    { name: 'equally stale source and client distributions', source: source(currentGeneration + 1), package: stamp(currentGeneration), client: stamp(currentGeneration), pass: false },
+    { name: 'stale client generation', source: source(currentGeneration), package: stamp(currentGeneration), client: stamp(currentGeneration - 1), pass: false },
+    { name: 'stale exact add-on ID', source: source(currentGeneration), package: { ...stamp(currentGeneration), addonBuildId: 'F'.repeat(32) }, client: stamp(currentGeneration), pass: false },
+    { name: 'wrong client transport range', source: source(currentGeneration), package: stamp(currentGeneration), client: { ...stamp(currentGeneration), targetTransportMax: 2 }, pass: false },
+    { name: 'missing source generation', source: source(currentGeneration).replace(/^\$RuntimeGeneration[^\n]*\n/u, ''), package: stamp(currentGeneration), client: stamp(currentGeneration), pass: false },
+    { name: 'ambiguous source generation', source: source(currentGeneration) + '$RuntimeGeneration = 999\n', package: stamp(currentGeneration), client: stamp(currentGeneration), pass: false },
+    { name: 'nonliteral duplicate source assignment', source: source(currentGeneration) + '$RuntimeGeneration = 999 + 1\n', package: stamp(currentGeneration), client: stamp(currentGeneration), pass: false },
+    { name: 'zero source generation', source: source(0), package: stamp(0), client: stamp(0), pass: false },
+    { name: 'overflow source generation', source: source('4294967296'), package: stamp(4294967296), client: stamp(4294967296), pass: false },
+    { name: 'reversed source transport range', source: source(currentGeneration).replace('$TargetTransportMin = 1', '$TargetTransportMin = 2'), package: stamp(currentGeneration), client: stamp(currentGeneration), pass: false },
+    { name: 'malformed source add-on ID', source: source(currentGeneration).replace(addonId, 'invalid'), package: stamp(currentGeneration), client: stamp(currentGeneration), pass: false },
+  ];
+  const payloadPath = path.join(directory, 'cases.json');
+  fs.writeFileSync(payloadPath, JSON.stringify({ runnerPath, fixturePath, cases }));
+  const script = `
+$ErrorActionPreference = 'Stop'
+$InputData = Get-Content -LiteralPath '${payloadPath.replaceAll("'", "''")}' -Raw | ConvertFrom-Json
+$Tokens = $null; $ParseErrors = $null
+$Ast = [Management.Automation.Language.Parser]::ParseFile($InputData.runnerPath, [ref]$Tokens, [ref]$ParseErrors)
+if ($ParseErrors) { throw $ParseErrors }
+$Guard = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Assert-CurrentRuntimeSourceContract' }, $true)
+if (-not $Guard) { throw 'Source-current contract guard is missing.' }
+. ([scriptblock]::Create($Guard.Extent.Text))
+foreach ($Case in $InputData.cases) {
+    [IO.File]::WriteAllText($InputData.fixturePath, $Case.source)
+    $Accepted = $true
+    try { Assert-CurrentRuntimeSourceContract -BuildScriptPath $InputData.fixturePath -PackageBuildStamp $Case.package -ClientBuildStamp $Case.client }
+    catch { $Accepted = $false }
+    if ($Accepted -ne $Case.pass) { throw ('Unexpected source-contract result: ' + $Case.name) }
+}
+Write-Output ('Validated ' + $InputData.cases.Count + ' source-current contract cases without launching a game.')
+`;
+  try {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20_000 });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /Validated 13 source-current contract cases without launching a game\./u);
+  } finally {
+    assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });

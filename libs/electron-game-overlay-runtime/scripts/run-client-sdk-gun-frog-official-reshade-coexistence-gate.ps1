@@ -137,6 +137,47 @@ function Get-FileSha256 {
     ).Hash
 }
 
+function Assert-CurrentRuntimeSourceContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$BuildScriptPath,
+        [Parameter(Mandatory = $true)][object]$PackageBuildStamp,
+        [Parameter(Mandatory = $true)][object]$ClientBuildStamp
+    )
+
+    # Read the build's literal contract without running its build/packaging code.
+    # Equal source/client stamps alone could both describe stale staged bytes.
+    $BuildSource = Get-Content -LiteralPath $BuildScriptPath -Raw
+    $Expected = @{}
+    foreach ($Name in @('RuntimeGeneration', 'TargetTransportMin', 'TargetTransportMax')) {
+        $Pattern = '(?m)^\$' + [regex]::Escape($Name) + ' = ([1-9][0-9]*)\r?$'
+        $Declarations = [regex]::Matches($BuildSource, $Pattern)
+        $Assignments = [regex]::Matches($BuildSource, '(?m)^\$' + [regex]::Escape($Name) + '\s*=')
+        [uint32]$Value = 0
+        if ($Assignments.Count -ne 1 -or $Declarations.Count -ne 1 -or
+            -not [uint32]::TryParse($Declarations[0].Groups[1].Value, [ref]$Value)) {
+            throw "The native build source has no unique valid literal $Name contract."
+        }
+        $Expected[$Name] = $Value
+    }
+    $AddonIds = [regex]::Matches(
+        $BuildSource,
+        '(?m)^\$ExpectedAddonBuildId = "([0-9A-F]{32})"\r?$'
+    )
+    if ([regex]::Matches($BuildSource, '(?m)^\$ExpectedAddonBuildId\s*=').Count -ne 1 -or
+        $AddonIds.Count -ne 1 -or
+        $Expected.TargetTransportMin -gt $Expected.TargetTransportMax) {
+        throw 'The native build source has an invalid add-on identity or transport range.'
+    }
+    foreach ($Stamp in @($PackageBuildStamp, $ClientBuildStamp)) {
+        if ($Stamp.runtimeGeneration -ne $Expected.RuntimeGeneration -or
+            $Stamp.targetTransportMin -ne $Expected.TargetTransportMin -or
+            $Stamp.targetTransportMax -ne $Expected.TargetTransportMax -or
+            $Stamp.addonBuildId -cne $AddonIds[0].Groups[1].Value) {
+            throw 'The runtime package and staged client must match the current native build source contract. Rebuild before running this gate.'
+        }
+    }
+}
+
 function Copy-NewSeedFile {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -1114,6 +1155,10 @@ try {
     $ClientBuildStamp =
         Get-Content -LiteralPath $ClientBuildStampPath -Raw |
         ConvertFrom-Json
+    Assert-CurrentRuntimeSourceContract `
+        -BuildScriptPath (Join-Path $PSScriptRoot 'build.ps1') `
+        -PackageBuildStamp $PackageBuildStamp `
+        -ClientBuildStamp $ClientBuildStamp
     $ProductionAddonHash = Get-FileSha256 -Path $ProductionAddonPath
     $ClientAddonHash = Get-FileSha256 -Path $ClientAddonPath
     $AddonManagerHash = Get-FileSha256 -Path $AddonManagerPath
@@ -1121,9 +1166,6 @@ try {
         $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
         $PackageBuildStamp.kind -cne
             "electron-game-overlay-runtime-build" -or
-        $PackageBuildStamp.runtimeGeneration -ne 2 -or
-        $PackageBuildStamp.targetTransportMin -ne 1 -or
-        $PackageBuildStamp.targetTransportMax -ne 1 -or
         ([string]$PackageBuildStamp.addonBuildId) -cnotmatch
             '^[0-9A-F]{32}$' -or
         $PackageBuildStamp.addonSha256 -cne $ProductionAddonHash -or
