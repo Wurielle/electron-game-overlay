@@ -32,6 +32,9 @@ test('whole display wrapper invokes a real sentinel script and saves a report un
   const sentinel = path.join(directory, 'sentinel.ps1');
   const output = path.join(directory, 'sentinel.txt');
   const report = path.join(directory, 'report.json');
+  const masterReport = path.join(directory, 'master.json');
+  const stop = path.join(directory, 'master.stop');
+  const deadlineReport = path.join(directory, 'deadline.json');
   fs.writeFileSync(sentinel, "param([string]$Token,[string]$OutputPath)\nif($Token -cne 'exact sentinel'){throw 'Parameters changed'}\n[IO.File]::WriteAllText($OutputPath,$Token)\n");
   try {
     assert.match(powershell(`
@@ -40,7 +43,8 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 public static class EgoDisplayPowerRead {
- public static object Read(string name,string setting,int timeout){return new Dictionary<string,object>{{"initialNotificationReceived",true},{"state",1},{"stateName","on"}};}
+ public static int State=1,Reads=0; public static string StopFile=null;
+ public static object Read(string name,string setting,int timeout){Reads++;if(Reads==2&&!String.IsNullOrEmpty(StopFile))System.IO.File.WriteAllText(StopFile,"stop");return new Dictionary<string,object>{{"initialNotificationReceived",true},{"state",State},{"stateName",State==1?"on":"off"}};}
  public static object WaitForOn(string name,string setting,int timeout){return Read(name,setting,timeout);}
 }
 public sealed class EgoVisualDisplayLease : IDisposable {
@@ -57,6 +61,14 @@ public sealed class EgoVisualDisplayLease : IDisposable {
 if(-not (Test-Path -LiteralPath '${quote(report)}') -or -not (Test-Path -LiteralPath '${quote(output)}')){throw 'Whole wrapper silently returned without test/report'}
 $Saved=Get-Content -LiteralPath '${quote(report)}' -Raw|ConvertFrom-Json
 if($Saved.status -cne 'passed' -or -not $Saved.testAttempted -or $Saved.during.state -ne 1 -or -not $Saved.clearSucceeded -or -not $Saved.closeSucceeded -or [EgoVisualDisplayLease]::Disposed -ne 1){throw 'Whole wrapper did not execute and release exactly once'}
+[EgoDisplayPowerRead]::State=0;[EgoDisplayPowerRead]::Reads=0;[EgoDisplayPowerRead]::StopFile='${quote(stop)}'
+& '${quote(path.join(scripts, 'run-with-display-lease.ps1'))}' -MasterLease -HoldSeconds 1800 -StopFile '${quote(stop)}' -EvidencePath '${quote(masterReport)}'
+$Master=Get-Content -LiteralPath '${quote(masterReport)}' -Raw|ConvertFrom-Json
+if($Master.status -cne 'completed' -or $Master.mode -cne 'matrix-master' -or $Master.testAttempted -or $Master.master.visualAcceptanceClaimed -or $Master.master.powerOnAtArm -or $Master.during.state -ne 0 -or $Master.master.stopReason -cne 'stop-file' -or -not $Master.clearSucceeded -or -not $Master.closeSucceeded -or [EgoVisualDisplayLease]::Disposed -ne 2){throw 'Master did not arm separately while OFF and release on its owned stop file'}
+[EgoDisplayPowerRead]::Reads=0;[EgoDisplayPowerRead]::StopFile=$null
+& '${quote(path.join(scripts, 'run-with-display-lease.ps1'))}' -MasterLease -HoldSeconds 1 -StopFile '${quote(path.join(directory, 'deadline.stop'))}' -EvidencePath '${quote(deadlineReport)}'
+$Deadline=Get-Content -LiteralPath '${quote(deadlineReport)}' -Raw|ConvertFrom-Json
+if($Deadline.status -cne 'completed' -or $Deadline.master.stopReason -cne 'deadline' -or $Deadline.master.elapsedMs -lt 900 -or $Deadline.testAttempted -or -not $Deadline.clearSucceeded -or -not $Deadline.closeSucceeded -or [EgoVisualDisplayLease]::Disposed -ne 3){throw 'Master did not release at its bounded deadline'}
 Write-Output 'Whole wrapper executed sentinel and saved report without native calls.'
 `, 'pwsh.exe'), /Whole wrapper executed sentinel and saved report without native calls/u);
     assert.equal(fs.readFileSync(output, 'utf8'), 'exact sentinel');
@@ -110,6 +122,9 @@ $Ast=[Management.Automation.Language.Parser]::ParseFile('${quote(path.join(scrip
 if($Errors){throw $Errors}
 $TopTry=@($Ast.EndBlock.Statements|Where-Object{$_ -is [Management.Automation.Language.TryStatementAst]})[-1]
 if(-not $TopTry){throw 'Missing actual lease operation'}
+$SaveFunction=$Ast.Find({param($Node)$Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Save-EgoDisplayLeaseEvidence'},$true)
+if(-not $SaveFunction){throw 'Missing actual lease evidence writer'}
+. ([scriptblock]::Create($SaveFunction.Extent.Text))
 $Operation=[scriptblock]::Create($TopTry.Extent.Text)
 $script:TestCalls=0;$script:FailTest=$false
 function Invoke-ConstantVisualTest {param([string]$Token) if($Token -cne 'exact'){throw 'Parameters changed'};$script:TestCalls++;if($script:FailTest){throw 'original strict pixel failure'}}

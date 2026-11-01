@@ -69,6 +69,16 @@ precondition; it never turns a wrong pixel into a pass. Other controllers can
 use `run-with-display-lease.ps1` explicitly. Human-facing launchers remain in
 their existing test-case paths.
 
+For a sequential matrix, `run-with-display-lease.ps1 -MasterLease` can retain a
+separate request between cases. It requires a fresh stop-file path inside the
+workspace build directory and a hold interval of at most 1,800 seconds. It may
+arm while its initial power observation is OFF/unknown; that is not a visual
+precondition pass. It publishes an armed record immediately, accepts no test
+script, and releases on its stop file, deadline or unwind. Its final status is
+`completed`, separate from test acceptance. Per-case guards still require ON.
+No actor or operation is credited with waking the display merely because this
+master request exists.
+
 The observer reads one bounded power notification per whole pixel observation,
 not per grid sample. It creates no window, sends no input and changes no power
 scheme or override. Microsoft documents an initial current-value callback after

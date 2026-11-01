@@ -3,9 +3,11 @@ param(
     [string]$TestScript,
     [string]$TestParametersJson = '{}',
     [ValidateRange(100,3000)][int]$PowerTimeoutMs = 1000,
-    [ValidateRange(0,30)][int]$HoldSeconds = 0,
+    [ValidateRange(0,1800)][int]$HoldSeconds = 0,
     [string]$EvidencePath,
-    [switch]$DefinitionsOnly
+    [switch]$DefinitionsOnly,
+    [switch]$MasterLease,
+    [string]$StopFile
 )
 $ErrorActionPreference = 'Stop'
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
@@ -17,6 +19,12 @@ $Parameters = @{}
 $Parsed = $TestParametersJson | ConvertFrom-Json
 if ($null -eq $Parsed -or $Parsed -is [array] -or $Parsed -is [string] -or $Parsed -is [ValueType]) { throw 'TestParametersJson must be a JSON object.' }
 foreach ($Property in $Parsed.PSObject.Properties) { $Parameters[$Property.Name] = $Property.Value }
+if ($MasterLease) {
+    if ($TestScript -or $Parameters.Count -ne 0 -or $HoldSeconds -lt 1 -or -not $StopFile) { throw 'Master lease requires a duration and owned stop file; it cannot run a visual test.' }
+    $StopFile = [IO.Path]::GetFullPath($StopFile)
+    if (-not $StopFile.StartsWith($BuildRoot,[StringComparison]::OrdinalIgnoreCase) -or
+        $StopFile.Equals($EvidencePath,[StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $StopFile)) { throw 'Master stop file must be a fresh path within this workspace build directory, separate from evidence.' }
+} elseif ($StopFile -or $HoldSeconds -gt 30) { throw 'Long holds and stop files require explicit MasterLease mode.' }
 if ($TestScript) {
     $TestScript = (Resolve-Path -LiteralPath $TestScript).Path
     if (-not $TestScript.StartsWith($RepoRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or
@@ -65,12 +73,33 @@ public sealed class EgoVisualDisplayLease : IDisposable {
 '@
 }
 if ($DefinitionsOnly) { return }
-$Report = [ordered]@{ schemaVersion=1; startedAt=[DateTime]::UtcNow.ToString('o'); collectorPid=$PID; collectorSession=[Diagnostics.Process]::GetCurrentProcess().SessionId; scope='Temporary PowerRequestDisplayRequired handle only; no persistent settings, override, input or GUI change.'; testScript=$TestScript; testParameters=$Parameters; status='failed'; testAttempted=$false }
+function Save-EgoDisplayLeaseEvidence([object]$Value,[string]$Path) {
+    New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($Path)) -Force | Out-Null
+    $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+$Report = [ordered]@{ schemaVersion=1; startedAt=[DateTime]::UtcNow.ToString('o'); collectorPid=$PID; collectorSession=[Diagnostics.Process]::GetCurrentProcess().SessionId; scope='Temporary PowerRequestDisplayRequired handle only; no persistent settings, override, input or GUI change.'; mode=$(if($MasterLease){'matrix-master'}else{'visual-test'}); testScript=$TestScript; testParameters=$Parameters; status='failed'; testAttempted=$false }
 $Lease = $null
 try {
     $Report.before = [EgoDisplayPowerRead]::Read('session-display-before', '2b84c20e-ad23-4ddf-93db-05ffbd7efca5', $PowerTimeoutMs)
     $Lease = [EgoVisualDisplayLease]::Create()
     $Report.requestCreated = $true
+    if ($MasterLease) {
+        $Report.during = [EgoDisplayPowerRead]::Read('session-display-at-master-arm', '2b84c20e-ad23-4ddf-93db-05ffbd7efca5', $PowerTimeoutMs)
+        $Report.master = [ordered]@{ holdSeconds=$HoldSeconds; stopFile=$StopFile; powerOnAtArm=$(if($Report.during.initialNotificationReceived){$Report.during.state -eq 1}else{$null}); visualAcceptanceClaimed=$false; powerObservationScope='Initial and final observations only; per-case guards must observe ON before visual assertions.' }
+        $Report.status = 'armed'
+        Save-EgoDisplayLeaseEvidence $Report $EvidencePath
+        Write-Host "DISPLAY_LEASE_MASTER_ARMED pid=$PID initialDisplay=$($Report.during.stateName) evidence=$EvidencePath stopFile=$StopFile"
+        $Elapsed = [Diagnostics.Stopwatch]::StartNew()
+        while ($true) {
+            if (Test-Path -LiteralPath $StopFile) { $Report.master.stopReason='stop-file'; break }
+            if ($Elapsed.Elapsed.TotalSeconds -ge $HoldSeconds) { $Report.master.stopReason='deadline'; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $Report.master.elapsedMs = $Elapsed.ElapsedMilliseconds
+        $Report.after = [EgoDisplayPowerRead]::Read('session-display-at-master-release', '2b84c20e-ad23-4ddf-93db-05ffbd7efca5', $PowerTimeoutMs)
+        $Report.status = 'completed'
+        return
+    }
     $Report.during = [EgoDisplayPowerRead]::WaitForOn('session-display-with-request', '2b84c20e-ad23-4ddf-93db-05ffbd7efca5', $PowerTimeoutMs)
     if (-not $Report.during.initialNotificationReceived -or $Report.during.state -ne 1) {
         $Report.status = 'display-precondition-unavailable'
@@ -93,7 +122,6 @@ try {
         $Report.closeSucceeded=$Lease.CloseSucceeded; $Report.closeError=$Lease.CloseError
     }
     $Report.finishedAt=[DateTime]::UtcNow.ToString('o')
-    New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($EvidencePath)) -Force | Out-Null
-    $Report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $EvidencePath -Encoding UTF8
+    Save-EgoDisplayLeaseEvidence $Report $EvidencePath
     Write-Host "Display lease evidence: $EvidencePath"
 }
