@@ -1035,6 +1035,9 @@ function Invoke-ClientSdkAttempt {
                     $RegistrationReadyTitle
                 )
             }
+            # This host intentionally exists before attachment. Bind the SDK to
+            # that exact PID instead of asking a future watcher to rediscover it.
+            $ClientArguments += "--reshade-expected-target-pid=$($HostProcess.Id)"
             Write-Host "  pre-injection registration: $RegistrationReadyTitle"
         }
 

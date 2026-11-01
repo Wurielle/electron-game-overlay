@@ -198,6 +198,30 @@ test('early native selection deduplicates observer creation and handles authenti
   assert.equal(f.watcher.targets[0].status, 'connected');
   assert.equal(f.launches.length, 1);
 });
+
+test('controlled early acceptance rejects only owned-image fallback and tolerates unrelated machine processes', async (t) => {
+  const { createEarlyTargetFallbackGuard } = require('./managed-target-policy.fixture.cjs');
+  const guard = createEarlyTargetFallbackGuard(game.executablePath);
+  assert.throws(() => guard(identity()), /Early discovery must never use exact-PID fallback/);
+  assert.throws(() => guard(identity(43, '9007199254740994', 'c:/GAMES/GAME.exe')), /Early discovery/);
+  assert.equal(guard(identity(99, '9', 'C:\\Windows\\System32\\unrelated.exe')), false);
+  const f = fixture(t, { earlyTargets: [game], acceptBestEffort: guard });
+  await f.start();
+  const launcher = f.launches[0];
+  launcher.emit({ type: 'injector-watcher-ready' });
+  await f.watcher.ready;
+  f.observer.onCreated(identity(99, '9', 'C:\\Windows\\System32\\unrelated.exe'));
+  f.observer.onCreated(identity());
+  returned(launcher);
+  connected(launcher);
+  assert.equal(f.launches.length, 1, 'the owned image uses only its prearmed native attempt');
+  assert.equal(f.watcher.targets[0].mode, 'early');
+  assert.equal(f.events.some(event => event.type === 'error'), false);
+  f.observer.onExited(identity(99, '9', 'C:\\Windows\\System32\\unrelated.exe'));
+  f.observer.onExited(identity());
+  await tick();
+  assert.equal(f.launches.length, 2, 'the early selector rearms after authoritative owned-target exit');
+});
 test('authoritative exit disposes and rearms a fresh launcher; unrelated exits are ignored', async (t) => {
   const f = fixture(t, { earlyTargets: [game] });
   await f.start();

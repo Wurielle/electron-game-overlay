@@ -129,6 +129,52 @@ function Move-OverlayPointer([int]$X, [int]$Y) {
     if ($InputMode -eq 'legacy') { [EgoPointer]::Place($Target.MainWindowHandle,$PhysicalX,$PhysicalY) }
     else { [EgoPointer]::Move($Target.MainWindowHandle,$PhysicalX,$PhysicalY) }
 }
+function Get-NativeCalibrationDiagnostics([object]$TargetProcess, [object]$FixtureState, [double]$RequestedScaleFactor, [double]$RequestedOsrScaleFactor) {
+    # Failure evidence only: these samples never participate in the strict gate.
+    $TargetWindow = [IntPtr]$TargetProcess.MainWindowHandle
+    $ObservedScale = $RequestedScaleFactor
+    if ($FixtureState -and [double]::TryParse([string]$FixtureState.scaleFactor, [ref]$ObservedScale) -and -not [double]::IsNaN($ObservedScale) -and -not [double]::IsInfinity($ObservedScale) -and $ObservedScale -gt 0) {
+        $ScaleSource = 'fixture.scaleFactor'
+    } else { $ObservedScale = $RequestedScaleFactor; $ScaleSource = 'requested scale fallback' }
+    $Diagnostic = [ordered]@{
+        schemaVersion = 1; capturedAt = [DateTime]::UtcNow.ToString('o')
+        coordinateSpace = 'target client physical pixels; diagnostic samples do not alter acceptance'
+        expectedTarget = [ordered]@{ pid = $TargetProcess.Id; hwnd = '0x' + $TargetWindow.ToInt64().ToString('x'); hwndDecimal = $TargetWindow.ToInt64().ToString() }
+        requestedScaleFactor = $RequestedScaleFactor; requestedOsrScaleFactor = $RequestedOsrScaleFactor
+        sampledScaleFactor = $ObservedScale; scaleSource = $ScaleSource; fixture = $FixtureState
+        foregroundTitle = $null; calibrationPoints = @()
+        grid = [ordered]@{ width = 1280; height = 720; columns = 16; rows = 9; samples = @() }
+    }
+    try { $Diagnostic.foregroundTitle = [EgoPointer]::Foreground() } catch { $Diagnostic.foregroundError = $_.Exception.Message }
+    $ReadPixel = {
+        param([int]$ClientX, [int]$ClientY)
+        $Sample = [ordered]@{ clientX = $ClientX; clientY = $ClientY }
+        try {
+            $Color = [uint32][EgoPointer]::Pixel($TargetWindow, $ClientX, $ClientY)
+            $Sample.colorRef = $Color; $Sample.hex = '0x{0:x8}' -f $Color
+            $Sample.red = [int]($Color -band 255); $Sample.green = [int](($Color -shr 8) -band 255); $Sample.blue = [int](($Color -shr 16) -band 255)
+            $Sample.valid = $Color -ne [uint32]::MaxValue
+        } catch { $Sample.error = $_.Exception.Message }
+        return $Sample
+    }
+    foreach ($Calibration in @(@('red', 480, 100, 0x3539e5), @('blue', 540, 100, 0xe5881e))) {
+        foreach ($CoordinateScale in @('unscaled', 'scaled')) {
+            $Multiplier = if ($CoordinateScale -eq 'scaled') { $ObservedScale } else { 1 }
+            $Sample = & $ReadPixel ([int][Math]::Round($Calibration[1] * $Multiplier)) ([int][Math]::Round($Calibration[2] * $Multiplier))
+            $Sample.name = $Calibration[0]; $Sample.coordinates = $CoordinateScale
+            $Sample.expectedColorRef = [uint32]$Calibration[3]; $Sample.expectedHex = '0x{0:x8}' -f [uint32]$Calibration[3]
+            $Diagnostic.calibrationPoints += $Sample
+        }
+    }
+    for ($GridRow = 0; $GridRow -lt 9; $GridRow++) {
+        for ($GridColumn = 0; $GridColumn -lt 16; $GridColumn++) {
+            $ClientX = [int][Math]::Round(($GridColumn + 0.5) * 1280 / 16)
+            $ClientY = [int][Math]::Round(($GridRow + 0.5) * 720 / 9)
+            $Diagnostic.grid.samples += (& $ReadPixel $ClientX $ClientY)
+        }
+    }
+    return $Diagnostic
+}
 function Type-Key([string]$Key, [string]$Member, [string]$Expected) {
     Wait-State $Member { param($s) $s.intercepting -and $s.nativeFocusedWindowId -eq $s.windowId } 'native keyboard owner' | Out-Null
     $HumanKey = $PhysicalKeyboard -or ($PhysicalFirstKeys -and $Key -in @('a','b'))
@@ -319,11 +365,18 @@ try {
     $Report.electron = $Ready.electron
     $Report.paint = $Ready.paint
     $Report.a = Read-State a
-} catch { $Report.error = $_.Exception.Message; try {Command a capture} catch {}; $Report.cursorSnapshot = [EgoPointer]::CursorSnapshot(); $Report.foreground = [EgoPointer]::Foreground();
+} catch { $OriginalFailure = $_; $Report.error = $OriginalFailure.Exception.Message; try {Command a capture} catch {};
+    try { $Report.cursorSnapshot = [EgoPointer]::CursorSnapshot(); $Report.foreground = [EgoPointer]::Foreground() } catch { $Report.nativeDiagnosticError = $_.Exception.Message }
     if ($Target) {
-        $Report.targetHandle = $Target.MainWindowHandle.ToInt64();
-        $Report.nativePixels = @([EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(480*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)),[EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(540*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)))
-    }; throw }
+        try {
+            $Report.targetHandle = $Target.MainWindowHandle.ToInt64()
+            $Report.nativePixels = @([EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(480*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)),[EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(540*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)))
+        } catch { $Report.nativePixelDiagnosticError = $_.Exception.Message }
+        try {
+            $Report.nativeCalibrationDiagnostics = Get-NativeCalibrationDiagnostics $Target (Read-State a) $ScaleFactor $OsrScaleFactor
+            $Report.nativeCalibrationDiagnostics | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $Evidence 'native-calibration-failure.json') -Encoding UTF8
+        } catch { $Report.nativeCalibrationDiagnosticError = $_.Exception.Message }
+    }; throw $OriginalFailure }
 finally {
     if ($Client -and -not $Client.HasExited) {
         try { Command a exit; $Client.WaitForExit(5000) | Out-Null } catch { try { $Client.Refresh(); if (-not $Client.HasExited) { $Client.Kill() } } catch {} }
