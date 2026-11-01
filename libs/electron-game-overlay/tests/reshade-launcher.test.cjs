@@ -452,14 +452,18 @@ test('binding invalid or unsupported expectation refuses before exec', async () 
 });
 
 test('binding native failures require exact proof and never retry (controlled native child)', async () => {
-  for (const [code, winerr] of [['target-process-instance-mismatch', 1306], ['target-process-instance-query-failed', 5], ['target-process-instance-query-failed', 13]]) {
+  for (const [code, winerr] of [
+    ['target-process-instance-mismatch', 1306], ['target-process-instance-query-failed', 5], ['target-process-instance-query-failed', 13],
+    ['target-session-mismatch', 5], ['target-session-query-failed', 5], ['target-session-query-failed', 87],
+  ]) {
     for (const variant of ['valid', 'exit', 'started', 'success', 'missing-marker', 'wrong-code']) {
       const fixture = createBindingRuntime(); const execution = stubExecFile();
       const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
       try {
         const result = launchReShadeOverlay(launcher, { processName: 'game.exe', pid: 4242 }).then(() => null, e => e);
         await waitFor(() => execution.calls.length === 1);
-        execution.calls[0].callback(Object.assign(new Error('binding rejected'), { code: variant === 'exit' ? 87 : winerr }), injectorPreflightDiagnostic({ code, pid: 4242, windowsErrorCode: variant === 'wrong-code' ? 87 : winerr, injectionStarted: variant === 'started' }) + (variant === 'missing-marker' ? '' : 'ReShade injection not started.\n') + (variant === 'success' ? injectorSuccessFor(4242, 'game.exe') : ''), '');
+        const differentError = winerr === 87 ? 5 : 87;
+        execution.calls[0].callback(Object.assign(new Error('binding rejected'), { code: variant === 'exit' ? differentError : winerr }), injectorPreflightDiagnostic({ code, pid: 4242, windowsErrorCode: variant === 'wrong-code' ? differentError : winerr, injectionStarted: variant === 'started' }) + (variant === 'missing-marker' ? '' : 'ReShade injection not started.\n') + (variant === 'success' ? injectorSuccessFor(4242, 'game.exe') : ''), '');
         const error = await result;
         assert.ok(isReShadeOperationError(error));
         assert.equal(error.diagnostic.code, variant === 'valid' ? code : 'injector-result-invalid');

@@ -636,6 +636,8 @@ export type ReShadeDiagnosticCode =
   | 'official-addon-startup-grace-coordinated'
   | 'target-process-instance-mismatch'
   | 'target-process-instance-query-failed'
+  | 'target-session-mismatch'
+  | 'target-session-query-failed'
   | 'target-injection-already-claimed'
   | 'target-injection-claim-failed'
   | 'target-official-addon-wait-expired'
@@ -865,6 +867,8 @@ type InjectorPreflightDiagnostic = Readonly<{
   code:
     | 'target-process-instance-mismatch'
     | 'target-process-instance-query-failed'
+    | 'target-session-mismatch'
+    | 'target-session-query-failed'
     | 'target-injection-already-claimed'
     | 'target-injection-claim-failed'
     | 'target-official-addon-wait-expired'
@@ -3309,6 +3313,10 @@ export class ReShadeOverlayLauncher {
           : ` with Windows error ${diagnostic.windowsErrorCode}`;
       let detail: string;
       switch (diagnostic.code) {
+        case 'target-session-mismatch':
+        case 'target-session-query-failed':
+          detail = `target pid=${diagnostic.pid} Windows session authorization failed${windowsErrorDetail}`;
+          break;
         case 'target-process-instance-mismatch':
         case 'target-process-instance-query-failed':
           detail = `target pid=${diagnostic.pid} process-instance binding failed${windowsErrorDetail}`;
@@ -5534,6 +5542,8 @@ function parseInjectorDiagnostic(
     candidate.stage === 'target-preflight' &&
     (code === 'target-process-instance-mismatch' ||
       code === 'target-process-instance-query-failed' ||
+      code === 'target-session-mismatch' ||
+      code === 'target-session-query-failed' ||
       code === 'target-injection-already-claimed' ||
       code === 'target-injection-claim-failed' ||
       code === 'target-official-addon-wait-expired' ||
@@ -5576,6 +5586,8 @@ function parseInjectorDiagnostic(
   const preflightRequiresWindowsError =
     code === 'target-process-instance-mismatch' ||
     code === 'target-process-instance-query-failed' ||
+    code === 'target-session-mismatch' ||
+    code === 'target-session-query-failed' ||
     code === 'target-injection-already-claimed' ||
     code === 'target-injection-claim-failed' ||
     code === 'target-official-addon-wait-expired' ||
@@ -5623,6 +5635,7 @@ function parseInjectorDiagnostic(
         (preflightRequiresWindowsError && windowsErrorCode === undefined) ||
         (code === 'target-process-instance-mismatch' &&
           windowsErrorCode !== 1306) ||
+        (code === 'target-session-mismatch' && windowsErrorCode !== 5) ||
         (code === 'target-architecture-mismatch' &&
           windowsErrorCode !== WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH) ||
         preflightRequiresEffectiveSettings !== hasAnyEffectiveSetting)) ||
@@ -5803,6 +5816,8 @@ function injectorDiagnosticExitMatches(
       case 'target-official-addon-wait-expired':
       case 'target-process-instance-mismatch':
       case 'target-process-instance-query-failed':
+      case 'target-session-mismatch':
+      case 'target-session-query-failed':
       case 'target-module-inspection-failed':
       case 'target-global-reshade-layer-inspection-failed':
       case 'existing-runtime-addon-load-failed':
