@@ -1,0 +1,281 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "status": "passed",
+  "scope": "Controlled registry metadata/resource fixture only; no native engine, injector, ReShade, GPU, SDK or game acceptance.",
+  "resourceOracle": "Exact quiescent tracked C++ allocations, handles, threads and modules; private bytes diagnostic only.",
+  "limitations": [
+    "Each fixture case ran in its own owned console process.",
+    "Allocation counters cover ordinary C++ new/delete, not all CRT or OS allocation.",
+    "Private bytes are diagnostic only.",
+    "This is not production engine admission, ReShade, SDK, GPU, game, or 500-app capacity acceptance."
+  ],
+  "architectures": [
+    {
+      "architecture": "x64",
+      "sourceSha256": "4462AFCCB7C9D635A549AC4D3D8429A5E97EEBD120FD6262CF96ED112DBB9C2A",
+      "registrySha256": "6F3F8BF8B16032387668BAD06563182E655FB682C982BF33C8B4C1F5769C0B72",
+      "executableSha256": "C42CE37B7DAAD14C918C64071224D6B9681158DACECBEB50E366E391564B3F3B",
+      "results": [
+        {
+          "mode": "stable-participant",
+          "cycles": 8209,
+          "active": 0,
+          "reserved": 1,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 8
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 8
+          },
+          "passed": true,
+          "pointerBits": 64,
+          "mappingBytes": 1565848,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 51,
+          "threads": 4,
+          "modules": 8,
+          "privateBytesDiagnostic": 708608
+        },
+        {
+          "mode": "lifetime-capacity",
+          "admitted": 512,
+          "rejectedAttempts": 1025,
+          "active": 0,
+          "reserved": 512,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 8
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 8
+          },
+          "passed": true,
+          "pointerBits": 64,
+          "mappingBytes": 1565848,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 51,
+          "threads": 4,
+          "modules": 8,
+          "privateBytesDiagnostic": 716800
+        },
+        {
+          "mode": "concurrent-departure",
+          "active": 0,
+          "reserved": 2,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 10
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 10
+          },
+          "passed": true,
+          "pointerBits": 64,
+          "mappingBytes": 1565848,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 51,
+          "threads": 4,
+          "modules": 10,
+          "privateBytesDiagnostic": 798720
+        },
+        {
+          "mode": "admission-transaction",
+          "cancelledPrePin": 1024,
+          "unpublishedTombstones": 509,
+          "active": 0,
+          "reserved": 512,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 10
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 51,
+            "threads": 4,
+            "modules": 10
+          },
+          "passed": true,
+          "pointerBits": 64,
+          "mappingBytes": 1565848,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 51,
+          "threads": 4,
+          "modules": 10,
+          "privateBytesDiagnostic": 802816
+        }
+      ]
+    },
+    {
+      "architecture": "x86",
+      "sourceSha256": "4462AFCCB7C9D635A549AC4D3D8429A5E97EEBD120FD6262CF96ED112DBB9C2A",
+      "registrySha256": "6F3F8BF8B16032387668BAD06563182E655FB682C982BF33C8B4C1F5769C0B72",
+      "executableSha256": "BAFD6AAE4BF6E7625FFBB0B09A728A871003952DDE0AD91BC055D0F1A67DCF22",
+      "results": [
+        {
+          "mode": "stable-participant",
+          "cycles": 8209,
+          "active": 0,
+          "reserved": 1,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 7
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 7
+          },
+          "passed": true,
+          "pointerBits": 32,
+          "mappingBytes": 1549464,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 68,
+          "threads": 4,
+          "modules": 7,
+          "privateBytesDiagnostic": 1044480
+        },
+        {
+          "mode": "lifetime-capacity",
+          "admitted": 512,
+          "rejectedAttempts": 1025,
+          "active": 0,
+          "reserved": 512,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 7
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 7
+          },
+          "passed": true,
+          "pointerBits": 32,
+          "mappingBytes": 1549464,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 68,
+          "threads": 4,
+          "modules": 7,
+          "privateBytesDiagnostic": 1056768
+        },
+        {
+          "mode": "concurrent-departure",
+          "active": 0,
+          "reserved": 2,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 9
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 9
+          },
+          "passed": true,
+          "pointerBits": 32,
+          "mappingBytes": 1549464,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 68,
+          "threads": 4,
+          "modules": 9,
+          "privateBytesDiagnostic": 1138688
+        },
+        {
+          "mode": "admission-transaction",
+          "cancelledPrePin": 1024,
+          "unpublishedTombstones": 509,
+          "active": 0,
+          "reserved": 512,
+          "resourceBaseline": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 9
+          },
+          "resourceAfter": {
+            "trackedCppHeapBlocks": 0,
+            "trackedCppHeapBytes": 0,
+            "handles": 68,
+            "threads": 4,
+            "modules": 9
+          },
+          "passed": true,
+          "pointerBits": 32,
+          "mappingBytes": 1549464,
+          "maxParticipants": 512,
+          "maxWindows": 8192,
+          "trackedCppHeapBlocks": 0,
+          "trackedCppHeapBytes": 0,
+          "handles": 68,
+          "threads": 4,
+          "modules": 9,
+          "privateBytesDiagnostic": 1142784
+        }
+      ]
+    }
+  ]
+}

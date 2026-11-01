@@ -1,0 +1,541 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "status": "passed",
+  "architecture": "x64",
+  "backend": "D3D11",
+  "scope": "Actual owned controlled graphics process, genuine Electron/public-SDK producers and mapped native EGO engines; exact resource/identity checkpoints.",
+  "sourceRun": "build/cooperative-resource-soak/r-af3caa7177b34376",
+  "candidate": {
+    "runtimeGeneration": 14,
+    "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+    "addonSha256": "a5e15a093f4c04287b2220b0850717625261e26eb92c4875f8c68732ac76be8b",
+    "addonBytes": 4139520,
+    "addonAbi": 1,
+    "runtimeSha256": "d3b18c80eab3dc255a2de2fdaeb01926b4695feb5a9dd564a6ec136fe2e94cca",
+    "runtimeManifestSha256": "71faaec3f9a9dcb5ae45bf72471546f89939699d7a2fbd13a06376007bf10bfc",
+    "javascriptGraphSha256": "c0d9d9d8a84549b4e4d43227ce63fd5a7007a0d38fe90c20d8771a6dc6091c26",
+    "packageVersionInformational": "0.1.0-rc.7",
+    "electron": "39.8.10"
+  },
+  "controlledHostSha256": "9589BCABAB07257272D3FB71E9E1D637B63669022E1D888D57163ECD4E9201B2",
+  "fixes": {
+    "nativeEpochRegistrationRetirement": "fed59e6ca3afc8b4b6da511187e9b69c7b4f5051",
+    "freshSessionPrivateNamespace": "82faedb5905c76838892431ab6a6e9a4d3701c61"
+  },
+  "reviewedSourceHashes": [
+    {
+      "path": "apps/client/scripts/cooperative-resource-soak-evidence.cjs",
+      "sha256": "192c72a3d5391e163f076e663e3f14a08f8b2d5ce2ab2fdbf5765f2dfda538f4"
+    },
+    {
+      "path": "apps/client/scripts/cooperative-resource-soak-fixture.cjs",
+      "sha256": "5be895a7f963985eaeaa054b635e47ac14282e5cc2b24ed6725c049229708cb9"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/cooperative-resource-snapshot.ps1",
+      "sha256": "4cfbe90c012b27a7c8143a34af6a04d4445e82e49ef802a329adc32acfa3dde8"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-cooperative-resource-soak-gate.ps1",
+      "sha256": "fa06904907290c59574c746068ce434300362bec2bc5ccefb3d5154bb74390e9"
+    },
+    {
+      "path": "libs/electron-game-overlay/src/lib/electron-game-overlay.ts",
+      "sha256": "495115d07484e267ec9dd033db3b036734fda6674f77d900723ca44bf63ead9a"
+    }
+  ],
+  "target": {
+    "pid": 38808,
+    "creationTime100ns": "134380283377096857"
+  },
+  "observations": {
+    "freshStageCycles": 8,
+    "freshChurnElectronProcesses": 4,
+    "publicSessionRecreations": 4,
+    "sameNativeBytesAcrossStages": true,
+    "firstCheckpointUtc": "2026-11-01T17:39:02.0807124Z",
+    "finalCheckpointUtc": "2026-11-01T17:39:54.9989354Z",
+    "elapsedBetweenCheckpointsMs": 52918,
+    "survivor": {
+      "processId": 23324,
+      "nativeWindowId": 1,
+      "tokenFingerprint": "0697d573b09d61d2ef0bc92cf07ea49bb8550d401cf9a823bff8a231f9a5d5da",
+      "serverPort": 52702,
+      "frameWorker": 29480,
+      "tcpWorker": 33932,
+      "checkpointIdentityAndRouteUnchanged": true,
+      "liveControllerAssertedTcpTupleUnchanged": true,
+      "fpsAdvancedEachCycle": true
+    },
+    "initial": {
+      "modulesParticipantsSlotsAndFrameWorkers": 1,
+      "tcpWorkers": 1,
+      "windows": 1,
+      "ranks": 1,
+      "privateBytesDiagnostic": 77320192,
+      "totalHandlesDiagnostic": 933
+    },
+    "cycles": [
+      {
+        "cycle": 1,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 47492,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 2,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554746002,
+        "privateBytesDiagnostic": 76042240,
+        "totalHandlesDiagnostic": 944
+      },
+      {
+        "cycle": 2,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 47492,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 3,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554753077,
+        "privateBytesDiagnostic": 80314368,
+        "totalHandlesDiagnostic": 954
+      },
+      {
+        "cycle": 3,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 26280,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 4,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554760139,
+        "privateBytesDiagnostic": 84787200,
+        "totalHandlesDiagnostic": 964
+      },
+      {
+        "cycle": 4,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 26280,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 5,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554765221,
+        "privateBytesDiagnostic": 89071616,
+        "totalHandlesDiagnostic": 973
+      },
+      {
+        "cycle": 5,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 39152,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 6,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554772286,
+        "privateBytesDiagnostic": 93310976,
+        "totalHandlesDiagnostic": 981
+      },
+      {
+        "cycle": 6,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 39152,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 7,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554778337,
+        "privateBytesDiagnostic": 97742848,
+        "totalHandlesDiagnostic": 990
+      },
+      {
+        "cycle": 7,
+        "mode": "fresh-electron-restart",
+        "churnProcessId": 47864,
+        "churnSessionCycle": 1,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 8,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554785376,
+        "privateBytesDiagnostic": 102400000,
+        "totalHandlesDiagnostic": 1000
+      },
+      {
+        "cycle": 8,
+        "mode": "same-electron-session-recreate",
+        "churnProcessId": 47864,
+        "churnSessionCycle": 2,
+        "retainedModulesParticipantsSlotsAndFrameWorkers": 9,
+        "active": {
+          "tcpWorkers": 2,
+          "windows": 2,
+          "ranks": 2
+        },
+        "dormant": {
+          "tcpWorkers": 1,
+          "windows": 1,
+          "ranks": 1
+        },
+        "survivorRouteAndIdentityUnchanged": true,
+        "survivorFrameWorker": 29480,
+        "survivorTcpWorker": 33932,
+        "survivorFpsObservedAtMs": 1793554791486,
+        "privateBytesDiagnostic": 106520576,
+        "totalHandlesDiagnostic": 1008
+      }
+    ],
+    "final": {
+      "modulesParticipantsSlotsAndFrameWorkers": 9,
+      "tcpWorkers": 0,
+      "establishedTcpConnections": 0,
+      "windows": 0,
+      "ranks": 0,
+      "focus": 0,
+      "capture": 0,
+      "interceptionRequests": 0,
+      "privateBytesDiagnostic": 105410560,
+      "totalHandlesDiagnostic": 1001
+    },
+    "nativeRuntimeCountAtEveryRecordedActiveCheckpoint": 1
+  },
+  "failureHistory": [
+    {
+      "run": "build/cooperative-resource-soak/r-30687a2972724fb5",
+      "title": "Native stale registration rank",
+      "finding": "Inactive session skipped registration reconciliation; empty compositable frames preserved old rank history intended only for raster gaps.",
+      "fix": "Epoch transition now reconciles empty authoritative registrations and resets the private order cache; survivor/raster-gap regression plus final actual cycles pass.",
+      "runtimeGeneration": 13,
+      "addonBuildId": "4127FD92CC904E0AA75C7784189AE969",
+      "addonSha256": "ff32d5e1ea4ace85ca7a94246b057122a3174a9c86b9a505a617648e0317f2fa",
+      "runtimeSha256": "68fe4c27addaabd842ef0d179756916a535adca7b2223ee9a559a2d748be3baf",
+      "javascriptGraphSha256": "7bd9525fc2a6169ad33b559e4825b755690b8f195c9b874a68c4749a18313484",
+      "completedCycles": 0,
+      "retainedFailureSummary": "First dormant checkpoint: 2 slots/participants/frame workers, 1 TCP worker, 1 painted window, 2 ranks."
+    },
+    {
+      "run": "build/cooperative-resource-soak/r-d764eea4845947ac",
+      "title": "SDK private namespace reused by a new session",
+      "finding": "A closed public session retained its consumed private route claim; reusing the owner backend rejected the next fresh stage as another route.",
+      "fix": "Each new public session gets a fresh private backend/namespace while old consumed claims remain unchanged; real-TCP owner/survivor regression and final actual recreation cycles pass.",
+      "runtimeGeneration": 14,
+      "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+      "addonSha256": "a5e15a093f4c04287b2220b0850717625261e26eb92c4875f8c68732ac76be8b",
+      "runtimeSha256": "d3b18c80eab3dc255a2de2fdaeb01926b4695feb5a9dd564a6ec136fe2e94cca",
+      "javascriptGraphSha256": "7afdd2183b9a8c57a15ba1135df91a79e927853d976512a148af22e2dbe7a3ff",
+      "completedCycles": 1,
+      "retainedFailureSummary": "First dormant checkpoint passed with 1 rank; second session failed target authorization before injection."
+    }
+  ],
+  "limitations": [
+    "Eight short fresh-stage cycles, not a long-duration reliability run.",
+    "Private bytes and total handles grew as pinned engines/frame workers accumulated; no flat-memory or complete reclamation claim.",
+    "Same implementation/native bytes across stages; no mixed-version or released-package interoperability claim.",
+    "No same-module reconnect capacity, pixel correctness, physical input or GPU resource reclamation proof.",
+    "The real SDK run reached 9 lifetime slots, not the 512 lifetime admission bound or 500-app capacity. Controlled registry exhaustion is separate.",
+    "OS/registry snapshots prove recorded checkpoints; the live controller separately asserted its survivor TCP tuple. They are not historical injection-count or native fault-containment proof."
+  ],
+  "artifacts": [
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/evidence.json",
+      "sha256": "c8442df96bcbc55453c05068a184a15a598dc36c9225d21fa7ebe0c81b9f31ae"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/initial-survivor-resources.json",
+      "sha256": "1b71bc4f5ad468ef498730acff95c3fbb4d0b1196b7801a370c040f0a4e54063"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/initial-survivor-state.json",
+      "sha256": "093142fc852bb7d4977f9492d309799378cedca9b26cac5bcf7cb20c4139e350"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/final-all-dormant-resources.json",
+      "sha256": "26d3c847fe3c8147473a4123f72f169dd95d6e8172421f22330b209eaeb4adee"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-008-native-evidence.json",
+      "sha256": "dc5d4806ca9a65321ca08440ec2bf41adc4a5d2e12c0ed2628c0c5934a4f0388"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-001-active-resources.json",
+      "sha256": "184ccf120e3df8273eb4875c1b3881366f68f6396942c5fe899f2f05a7f6e278"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-001-dormant-resources.json",
+      "sha256": "e4652e603dd51a75641137c5f4f687fbb098f67efd256b9886d0a13fbf1fbe9e"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-001-churn-state.json",
+      "sha256": "ae24cd38aaca3e7a9085c45970aa64d721113559992d4d236194ccb8254e18c9"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-001-survivor-state.json",
+      "sha256": "7c0b03076af044fa2c5f08e1eac99146dbedd26250bcfef3fd911bf5bf875d3b"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-001-expected-native.json",
+      "sha256": "39bc85367bcd1510a31671bb0736a97939289b5629870741c5eb5763c9218b4e"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-001-native-evidence.json",
+      "sha256": "5a95c317a80edeeab5c98f95e9719167f6b42c9736b237a4bdbb8389029e672e"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-002-active-resources.json",
+      "sha256": "a3c210d11f84b8ccf2cb0058fd381d1419ec3bd247bf74032c7872c356272cff"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-002-dormant-resources.json",
+      "sha256": "83377c3bf76849d9d3687a9cec3bdc2faaa7990c3050b2c765923913df21b3c9"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-002-churn-state.json",
+      "sha256": "621f1192e5f20870412b61d61921e3ea35f538aa1df6f7643584673b31b3ca27"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-002-survivor-state.json",
+      "sha256": "b8cca7fb999b1ef4082f593ed03e11f33e3c4fc27ee92f28a372e5523861ba62"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-002-expected-native.json",
+      "sha256": "c62fafa8edb1dcc4f3adf5017a2face859fe10760400d56d8c92580c5bafc213"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-002-native-evidence.json",
+      "sha256": "db8f95a266a712977c9ad8a17abb79491e7fc78faea7a8c3a1ed7836436171cb"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-003-active-resources.json",
+      "sha256": "8d2280e1dc3d7644f9549c0b8ecf5205990193191a197bd475bca875dc0d50dc"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-003-dormant-resources.json",
+      "sha256": "90455c47bb6a90c544ffecb2d5395e58e322bbc76e03a7881abd038d9ee2350a"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-003-churn-state.json",
+      "sha256": "f72925853469c437627db3889a249b6f254aa8157801e36dffe588ae6be5a32b"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-003-survivor-state.json",
+      "sha256": "6170860b4ad0cc82faf9f904d97ca0c665dc82f26cf50672d97f79573921c6c7"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-003-expected-native.json",
+      "sha256": "c9a8b1d0e434fb84ebbf5c1d259e86725d24a46fea76cc88c13044340cc51d0d"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-003-native-evidence.json",
+      "sha256": "6613b222acd1dc31601596ee9d328557d9ddf23c1891dce83408722cd9ced2d8"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-004-active-resources.json",
+      "sha256": "207123839b9cbddac1fe43f60bc2b50c49dfb68af7ec6de403f266c1cd32025a"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-004-dormant-resources.json",
+      "sha256": "2a7c3eca4eebd706a68faa6a950dc2b085e2e96585325b47bb323ea7d614604f"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-004-churn-state.json",
+      "sha256": "8956ce53aced472511ff45d550b73f446092c65aae700b50d065d4f270c68b5e"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-004-survivor-state.json",
+      "sha256": "d0cbb1dd3712464dd38c277649294f5ab935a0ec41d78dcead6dbe0174fc6c88"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-004-expected-native.json",
+      "sha256": "d0134302821bd297ba1575ef7e9495a585eac046cab8a1616d93ffac51d0a4f7"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-004-native-evidence.json",
+      "sha256": "c92afb82840413f501abe28248b409fcee6e53069f19efd8f86a0d9aabdbc952"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-005-active-resources.json",
+      "sha256": "140d44914919ef57718911de6ec862146c001fc388edc3a2aebc1b5d2df363e3"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-005-dormant-resources.json",
+      "sha256": "61dd5b7fd725d838dace923bc895de85fdab36c3ce319f2bea6da62272aec0ab"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-005-churn-state.json",
+      "sha256": "7d5e4902217a6834aad51a3a7c9518c1dc846f6187b51d6fb096df7ae72db8d5"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-005-survivor-state.json",
+      "sha256": "bd578ce303e50c7219074f83deed6b1e0548f9d9f540e753e4ceaad846663102"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-005-expected-native.json",
+      "sha256": "2831238e1646e132b5c0b7b3ad905143bed04ea0688a057343b5af2187dd688b"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-005-native-evidence.json",
+      "sha256": "a5fb30fece080fad991def6473af1de396c26e88c9beeabe20b0d3c5cd053ee1"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-006-active-resources.json",
+      "sha256": "5843a708d1c22876c42ec76f4e0b9722610ad1a46bcc5847e3b2d2115fe63557"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-006-dormant-resources.json",
+      "sha256": "656370712f71cbb285a5dbd824175301767f90e572e4dba7668289cb2decf4ae"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-006-churn-state.json",
+      "sha256": "f523d1d32beb82e95c5561ac8597de74fc52d6e380943d9fcf48abd6f942c5a8"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-006-survivor-state.json",
+      "sha256": "10c13ebc1c93e19085ce4f2852340fc3445e5996464400d56d8082c8e637bf19"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-006-expected-native.json",
+      "sha256": "7de96549e304ba05a09b9532a5a25f5006d2cd562279a2e7bd0f843bcbae2114"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-006-native-evidence.json",
+      "sha256": "36b2c12af7ad558477ff76d23ffa2c6ba052f0c61e6752072e6edbdfbb5dbcc2"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-007-active-resources.json",
+      "sha256": "9776f807256ce49cc7974286ffb7273edc23bf009c7710d8ac90bfea1b123b83"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-007-dormant-resources.json",
+      "sha256": "b01235ac8a180297c239352c966c0ba84c2c1a903c6c409782b744b8731584b9"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-007-churn-state.json",
+      "sha256": "51bbfcb20cc9cb4d92c547c14babe5b9426b35b2feae40426aaca00313323e9d"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-007-survivor-state.json",
+      "sha256": "d8bf7bd3eb24d46278799be52796bc3e7870f0b67b67ddc7a4fb7b2570497510"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-007-expected-native.json",
+      "sha256": "8dc1560c7480a923dd494ac96ee88ce533ebc086f823b267b9605f5d78c3dec7"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-007-native-evidence.json",
+      "sha256": "313947159a86c2c18638bdfbb2de2fecc7c5c609c7543763bedcaa1f97037728"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-008-active-resources.json",
+      "sha256": "e147eb2cac991b46b9eb6ce5982245bf9d426e6ac176f1b44c11076e07db6828"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-008-dormant-resources.json",
+      "sha256": "2d1ed21e8bb4922e80ba64638d2ac44326afcdf6dbc72f3e566168e93b16bc05"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-008-churn-state.json",
+      "sha256": "f678852384669b264441523df694eb81dabab0d31913b84c5eb0fe7560d49375"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-008-survivor-state.json",
+      "sha256": "53c26dc9f0d3359e6ba5878331119210b7635240da55895644e28ddbaa1ed329"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-af3caa7177b34376/cycle-008-expected-native.json",
+      "sha256": "2c102f78e05df5356452d87bd12df61739bf20bb05ac8af5137c60260df1d52a"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-30687a2972724fb5/evidence.json",
+      "sha256": "8a6eeb318af4f872af278bd387d599f6537378aba0f2785015ff7c7c0753ddd3"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-30687a2972724fb5/cycle-001-native-evidence.json",
+      "sha256": "af0563fc86283df8a4cf35f672f8bff6cddb93cf3c0c382e1bc603c73b447905"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-d764eea4845947ac/evidence.json",
+      "sha256": "b930c5954c6917962286c56333e7226b29ead94c57cd21203c0f645173f93067"
+    },
+    {
+      "path": "build/cooperative-resource-soak/r-d764eea4845947ac/cycle-001-native-evidence.json",
+      "sha256": "4e3d46324f065f3eba73a0860132a8cd558285f4f56d66213742465498d6078a"
+    }
+  ]
+}
