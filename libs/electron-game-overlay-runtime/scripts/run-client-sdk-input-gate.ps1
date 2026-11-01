@@ -21,11 +21,15 @@ param(
     [ValidateSet("explicit-hwnd", "null-focus")]
     [string]$RawRegistrationTarget = "explicit-hwnd",
     [Parameter(DontShow = $true)]
-    [string]$ElectronExecutable
+    [string]$ElectronExecutable,
+    [string]$DeviceLossMonitorDirectory
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'process-environment.ps1')
+if (-not [string]::IsNullOrWhiteSpace($DeviceLossMonitorDirectory)) {
+    . (Join-Path $PSScriptRoot 'device-loss-monitor.ps1') -FunctionsOnly
+}
 
 if ($RawRegistrationTiming -eq "before-injection" -and $InputMode -eq "legacy") {
     throw "Raw registration timing applies only to wm-input and raw-buffer modes."
@@ -968,6 +972,7 @@ function Invoke-ClientSdkAttempt {
     $TargetDirectoryLog = Join-Path $TargetDirectory "ReShade.log"
     $ClientProcess = $null
     $HostProcess = $null
+    $DeviceLossMonitor = $null
     $ReShadeRunDirectory = $null
     $RegistrationReadyTitle = $null
     $AttemptPassed = $false
@@ -1113,6 +1118,13 @@ function Invoke-ClientSdkAttempt {
 
         $ReShadeRunDirectory = Get-ReShadeRunDirectory -ClientLog $ClientLog
         $ReShadeLog = Join-Path $ReShadeRunDirectory "ReShade.log"
+        if (-not [string]::IsNullOrWhiteSpace($DeviceLossMonitorDirectory)) {
+            $DeviceLossMonitor = Start-EgoDeviceLossMonitor -TargetProcess $HostProcess `
+                -ExpectedExecutablePath $TargetExecutablePath -MonitorRoot $DeviceLossMonitorDirectory `
+                -OwnedRunDirectory $AttemptDirectory -NativeRunDirectory $ReShadeRunDirectory `
+                -OwnedLogPaths @($ClientStdout, $ClientStderr, $ReShadeLog, $TargetDirectoryLog,
+                    (Join-Path $ReShadeRunDirectory 'inject.stdout.log'), (Join-Path $ReShadeRunDirectory 'inject.stderr.log'))
+        }
         $ReShadeRunDirectory |
             Set-Content `
                 -LiteralPath (Join-Path $AttemptDirectory "reshade-run-directory.txt") `
@@ -1577,6 +1589,7 @@ function Invoke-ClientSdkAttempt {
         }
     }
     finally {
+        if ($DeviceLossMonitor) { Stop-EgoDeviceLossMonitor $DeviceLossMonitor }
         Stop-AttemptElectronProcesses -UserData $UserData
 
         $InjectorProcessIds = @(
