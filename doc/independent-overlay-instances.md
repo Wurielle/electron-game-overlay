@@ -80,6 +80,16 @@ See upstream
 [`source/addon_manager.cpp`](https://github.com/crosire/reshade/blob/4a50d1eddace85734871d91792ff214f13f66c01/source/addon_manager.cpp) and
 [`source/addon_manager.hpp`](https://github.com/crosire/reshade/blob/4a50d1eddace85734871d91792ff214f13f66c01/source/addon_manager.hpp).
 
+Removing the singleton guard also leaves fixed graphics-wrapper identities and
+module-local hook bookkeeping over shared native objects. For example, the
+D3D11 device proxy publishes a fixed private UUID that DXGI code subsequently
+uses to find and cast the wrapper. **Inference:** two mixed-version copies need
+explicit cross-copy ownership/layout rules; loading successfully is insufficient.
+See the pinned
+[`D3D11 proxy constructor`](https://github.com/crosire/reshade/blob/4a50d1eddace85734871d91792ff214f13f66c01/source/d3d11/d3d11_device.cpp),
+[`DXGI wrapper lookup`](https://github.com/crosire/reshade/blob/4a50d1eddace85734871d91792ff214f13f66c01/source/dxgi/dxgi.cpp) and
+[`hook manager`](https://github.com/crosire/reshade/blob/4a50d1eddace85734871d91792ff214f13f66c01/source/hook_manager.cpp).
+
 ## Additional constraints in the current EGO add-on
 
 `libs/electron-game-overlay-runtime/src/electron_game_overlay_addon.cpp`:
@@ -102,6 +112,13 @@ Two opaque overlays cannot both independently decide they own the same click.
 Either they coordinate topmost hit testing/focus/capture, or users get duplicate
 typing, click-through, inconsistent cursor behavior or starvation. That
 coordination can be smaller than today's implementation, but it cannot vanish.
+
+This does not mathematically require an out-of-process broker. Cooperative hook
+chains can establish fixed application layers. Their order must match rendering,
+and they still need compatible focus/capture/lifetime rules. Rendering an app's
+whole scene in one callback also cannot represent arbitrary interleaving of
+individual windows from different apps. A shared per-window scheduler can solve
+that; a collection of unchanged independent routers cannot.
 
 Every native add-on still executes inside the game. A fatal native failure can
 terminate the game and every overlay regardless of separate add-on names or
@@ -160,6 +177,61 @@ A fixed native surface API avoids introducing additional native implementations
 and unbounded callback lifetimes into the game. New native primitives on an
 already-running old host need a fallback or a later game launch; a second
 injection is not a compatibility strategy.
+
+The intended difference from today is explicit separation of **platform
+releases** from **SDK releases**, rather than another owner-election mechanism:
+
+1. Multiple SDK releases ship the same validated native host bytes and runtime
+   generation when they only change application-side behavior. Treat that host
+   as a low-change platform; npm version is already not its election priority.
+2. Keep the existing standalone bootstrap, independent cache and v1 coordinator
+   for installation discovery, exact-target ownership and old-client adaptation.
+   An app can still bundle everything it needs; no mandatory machine-wide
+   installer, resident service or advance registration is introduced.
+3. Narrow the evolving boundary to bounded surfaces and owned input events.
+   Application-specific transforms, UI behavior and optional feature adapters
+   stay in each app's implementation or private helper. The shared host still
+   decides global order, alpha hit testing, focus, capture and suppression.
+4. Improve resource admission separately, with negotiated producer budgets and
+   overload behavior that preserve existing v1 semantics. Measure a private
+   frame lane before paying its additional IPC/lifetime complexity.
+
+This can reduce cross-version feature coupling and app-induced resource
+interference. It cannot make shared game/GPU capacity infinite, make buggy
+in-game native code harmless, or deliver a new native primitive through an old
+mapped implementation. If complete independence from any shared native change
+is the requirement, it conflicts with retaining the current in-game feature
+and presentation guarantees.
+
+### Alternative: one bridge with private native engines
+
+If removing the external feature proxy is more valuable than minimizing native
+code inside the game, another credible design is one stock ReShade, one stable
+bridge add-on, and separately installed per-app/version engine modules. Engines
+would be EGO plugins, not additional ReShade runtimes. The bridge would own
+ReShade registration once and invoke plugins through a stable function table.
+That avoids mutating ReShade's callback vectors whenever another app arrives.
+
+The bridge would still need exact-process ownership, a compatible per-member
+control path, global per-window rendering/input arbitration, resource snapshots
+for late plugins, and safe plugin teardown between callbacks and GPU work.
+Keep module boundaries to versioned POD/function tables and explicit owned
+handles; do not share private C++ class layouts or allocator ownership. Private
+modules could use separate app channels behind that one ownership boundary.
+
+This could let native rendering implementations evolve separately without
+electing one app's full renderer for everybody. It also adds plugin loading,
+initialization replay, callback scheduling and lifetime machinery to the game,
+and a broken engine can still crash every app's game. It is not automatically
+simpler than the current routing broker and is weaker for native fault isolation
+than keeping evolving logic in external processes.
+
+An old already-mapped EGO runtime cannot acquire this plugin API through a new
+SDK alone. Migration must retain the existing v1 broker/target adapter and
+fallback, preserve the committed owner, and negotiate plugin support. Removing
+the external broker immediately would strand older applications. No production
+plugin ABI or migration is implemented on this branch; the probe below tests
+only a prerequisite, public add-on coexistence and lifecycle.
 
 Before changing production, prove independently built old/new SDKs in both
 startup orders, a late newer SDK, colliding local IDs, alpha hit testing, focus,
