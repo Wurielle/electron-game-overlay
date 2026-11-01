@@ -273,6 +273,7 @@ try {
         "--hudhook-client-multiwindow-runner",
         "`"--input-control-file=$InputControlFile`"",
         "--hudhook-device-scale-factor=1",
+        "`"--overlay-run-directory=$RunDirectory`"",
         "`"--user-data-dir=$UserData`"",
         "--no-sandbox"
     )

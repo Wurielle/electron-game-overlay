@@ -34,8 +34,8 @@ $Nx = Join-Path $RepoRoot "node_modules\.bin\nx.cmd"
 $SdkDist = Join-Path $RepoRoot "libs\electron-game-overlay\dist\index.js"
 $RunHost = Join-Path $RunDirectory $HostName
 
-# Both controlled hosts use the same fixed transport name. Reject every stale copy
-# rather than only the current backend or the copy in the current stage.
+# Reject stale copies so the interactive observer and cleanup remain scoped to
+# this invocation. Every staged add-on uses its own private transport record.
 $ExistingHosts = @(
     foreach ($ControlledHostName in @(
             "d3d11_overlay_test_host.exe",
@@ -180,6 +180,7 @@ try {
         "`"$ElectronDemo`"",
         "--hudhook-client-multiwindow-manual",
         "--hudhook-device-scale-factor=1",
+        "`"--overlay-run-directory=$RunDirectory`"",
         "`"--user-data-dir=$UserData`"",
         "--no-sandbox"
     )

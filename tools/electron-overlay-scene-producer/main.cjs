@@ -1,7 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { parseSceneRunDirectory, publishSceneRunRoute } = require('./private-route.cjs');
 
 const { app, ipcMain, screen } = require('electron');
+const SCENE_RUN_DIRECTORY = parseSceneRunDirectory(process.argv);
 
 const GUN_FROG_BUTTON_PROOF = process.argv.includes(
   '--hudhook-gun-frog-buttons',
@@ -1314,6 +1316,20 @@ async function createDemo() {
     session.on('inputInterceptionChanged', handleInputInterceptionChanged),
   );
   session.start();
+
+  if (SCENE_RUN_DIRECTORY !== undefined) {
+    const sdkDirectory = path.dirname(require.resolve('electron-game-overlay'));
+    const { authorizeOverlaySessionGlobalTarget } = require(
+      path.join(sdkDirectory, 'lib/overlay-session-authorization.js'),
+    );
+    const releaseRoute = await publishSceneRunRoute(
+      session,
+      SCENE_RUN_DIRECTORY,
+      authorizeOverlaySessionGlobalTarget,
+    );
+    disposeSessionEvents.push(releaseRoute);
+    console.log(`HUDHOOK_CLIENT_PRIVATE_ROUTE_READY directory=${SCENE_RUN_DIRECTORY}`);
+  }
 
   overlayWindow = session.windows.create({
     id: WINDOW_NAME,

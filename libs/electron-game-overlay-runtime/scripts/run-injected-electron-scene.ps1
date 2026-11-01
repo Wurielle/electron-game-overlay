@@ -231,6 +231,7 @@ try {
         "`"$ElectronDemo`"",
         "--hudhook-client-multiwindow-manual",
         "--hudhook-device-scale-factor=1",
+        "`"--overlay-run-directory=$RunDirectory`"",
         "`"--user-data-dir=$UserData`"",
         "--no-sandbox"
     )

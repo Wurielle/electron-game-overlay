@@ -104,5 +104,11 @@ For transport development, the producer can be started without a target:
 ```
 
 Interactive modes require an injected target to connect within their timeout.
-Only one producer/target rendezvous may be active at a time. Stop a producer-only
-launch with Ctrl+C.
+For an already staged add-on, pass `--overlay-run-directory=C:/absolute/stage`
+to publish this producer's credential next to that add-on. The supplied directory
+must be absolute. The production scene runners provide it automatically. The
+record is removed on session close, and the producer does not publish a global
+shared rendezvous or fall back to another application's transport.
+
+Without that argument the command above is producer-only: it renders offscreen
+windows but does not authorize an injected target. Stop it with Ctrl+C.
