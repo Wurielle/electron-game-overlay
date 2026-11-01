@@ -959,6 +959,19 @@ pub unsafe extern "C" fn ego_transport_apply_input_filter(
 }
 
 /// # Safety
+/// The transport must remain live. Call only when the backend authoritatively
+/// retires its actual native input owner. Target focus cleanup, filter release
+/// and the terminal ACK share one router transaction; producer intent survives.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_retire_input_filter(transport: *mut EgoTransport) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        transport.bridge.retire_input_filter();
+        Ok(())
+    })
+}
+
+/// # Safety
 /// `transport` must remain live for the call. `inout_state` must point to a
 /// writable record initialized with its size and ABI version.
 #[no_mangle]
@@ -1831,6 +1844,91 @@ mod tests {
             EGO_STATUS_OK
         );
         assert_eq!(cursor, 32512);
+
+        // A real owner retirement must release even after a newer producer
+        // request invalidates the old Present sample. It must preserve that
+        // request for a promoted owner, and a repeated retirement is silent.
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        let retired_sample = sampled_revision;
+        peer_a
+            .write_all(
+                &crate::electron_wire::encode_json(
+                    r#"{"type":"command.input.intercept","intercept":true}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        wait_for(|| unsafe {
+            (*transport_a.0).bridge.cooperative_input_state().2 != retired_sample
+        });
+        assert_eq!(
+            unsafe { ego_transport_retire_input_filter(transport_a.0) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            hello(&mut peer_a),
+            serde_json::json!({
+                "type":"game.input.intercept", "intercepting":false,
+            })
+        );
+        assert!(unsafe { (*transport_a.0).bridge.input_state().requested_interception });
+        assert_eq!(
+            unsafe { ego_transport_retire_input_filter(transport_a.0) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_set_target_focused(transport_a.0, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(transport_a.0, 1, retired_sample)
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(
+                    transport_a.0,
+                    1,
+                    sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            hello(&mut peer_a),
+            serde_json::json!({
+                "type":"game.input.intercept", "intercepting":true,
+            })
+        );
 
         drop(listener_a);
         peer_a.shutdown(Shutdown::Both).unwrap();

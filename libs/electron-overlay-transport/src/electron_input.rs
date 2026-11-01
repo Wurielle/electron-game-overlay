@@ -1399,6 +1399,26 @@ impl InputRouter {
         routing_enabled: bool,
         acknowledge: bool,
     ) -> Vec<OutboundMessage> {
+        self.apply_input_filter_phase(routing_enabled, acknowledge, false)
+    }
+
+    /// Commits authoritative retirement of the native input-filter owner. The
+    /// producer's request remains retained for a future primary surface. This
+    /// operation runs under the caller's router lock and publishes its terminal
+    /// disabled state even if the last render preparation became stale.
+    /// Ordinary Present phases still require their original snapshot token.
+    pub fn retire_input_filter(&mut self) -> Vec<OutboundMessage> {
+        let mut outbound = self.set_target_focused(false);
+        outbound.extend(self.apply_input_filter_phase(false, true, true));
+        outbound
+    }
+
+    fn apply_input_filter_phase(
+        &mut self,
+        routing_enabled: bool,
+        acknowledge: bool,
+        authoritative_retirement: bool,
+    ) -> Vec<OutboundMessage> {
         // Keep the sampled phase's routing state stable through before_render;
         // a concurrent request must not acknowledge a filter value the backend
         // has not published yet.
@@ -1427,7 +1447,8 @@ impl InputRouter {
                 // not producer requests. A fail-open bootstrap reply must not
                 // race the first real interception command on a new session.
                 self.acknowledgement_pending = false;
-            } else if self.cooperative_interception.is_none()
+            } else if authoritative_retirement
+                || self.cooperative_interception.is_none()
                 || self.cooperative_input_revision == self.cooperative_sampled_input_revision
             {
                 self.acknowledgement_pending = false;
@@ -2131,6 +2152,148 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn filter_retirement_acknowledges_authoritative_loss_after_stale_command_focus_or_eligibility()
+    {
+        for invalidation in 0..3 {
+            let mut router = router_with_interception();
+            router.set_cooperative_interception(true);
+            router.apply_input_filter(true, true);
+            let sampled = router.cooperative_sampled_input_revision;
+            match invalidation {
+                0 => {
+                    router.request_interception(true);
+                }
+                1 => {
+                    router.set_target_focused(false);
+                }
+                _ => {
+                    router.remove_window(WINDOW_ID);
+                }
+            }
+            assert_ne!(sampled, router.cooperative_input_revision());
+            assert_eq!(
+                router.retire_input_filter(),
+                vec![OutboundMessage::InputIntercept {
+                    intercepting: false
+                }]
+            );
+            assert_eq!(router.cooperative_sampled_input_revision, sampled);
+            assert!(router.state().requested_interception);
+            assert!(!router.state().effective_interception);
+            assert!(!router.state().target_focused);
+            assert!(router.retire_input_filter().is_empty());
+        }
+    }
+
+    #[test]
+    fn filter_retirement_releases_capture_and_blurs_before_one_terminal_ack() {
+        let mut router = router_with_interception();
+        router.set_cooperative_interception(true);
+        router.apply_input_filter(true, true);
+        route(&mut router, WM_LBUTTONDOWN, InputPoint::new(-10, 40));
+        route(&mut router, WM_RBUTTONDOWN, InputPoint::new(-10, 40));
+        assert_eq!(
+            router.retire_input_filter(),
+            vec![
+                OutboundMessage::Input {
+                    window_id: WINDOW_ID,
+                    msg: WM_LBUTTONUP,
+                    wparam: MK_RBUTTON,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 10)),
+                },
+                OutboundMessage::Input {
+                    window_id: WINDOW_ID,
+                    msg: WM_RBUTTONUP,
+                    wparam: 0,
+                    lparam: encode_signed_lparam_point(InputPoint::new(10, 10)),
+                },
+                OutboundMessage::WindowFocused { focus_window_id: 0 },
+                OutboundMessage::InputIntercept {
+                    intercepting: false
+                },
+            ]
+        );
+        assert!(!router.state().pointer_captured);
+        assert_eq!(router.state().focused_window_id, None);
+        assert!(router.retire_input_filter().is_empty());
+    }
+
+    #[test]
+    fn filter_retirement_preserves_a_newer_false_command_without_repeating_its_ack() {
+        let mut router = router_with_interception();
+        router.set_cooperative_interception(true);
+        router.apply_input_filter(true, true);
+        let sampled = router.cooperative_sampled_input_revision;
+        router.request_interception(false);
+        assert_eq!(
+            router.retire_input_filter(),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+        assert_eq!(router.cooperative_sampled_input_revision, sampled);
+        assert!(!router.state().requested_interception);
+        assert!(!router.state().effective_interception);
+        assert!(!router.atomic_interception_state().requested());
+        assert!(router.retire_input_filter().is_empty());
+        // A distinct same-value producer command is still entitled to its own
+        // reply at a later authoritative terminal operation.
+        router.request_interception(false);
+        assert_eq!(
+            router.retire_input_filter(),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+        assert!(router.retire_input_filter().is_empty());
+    }
+
+    #[test]
+    fn filter_retirement_preserves_request_for_a_new_primary_without_bypassing_later_samples() {
+        let mut router = router_with_interception();
+        router.set_cooperative_interception(true);
+        router.apply_input_filter(true, true);
+        let old_sample = router.cooperative_sampled_input_revision;
+        router.request_interception(true);
+        assert_eq!(
+            router.retire_input_filter(),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+        assert!(router.state().requested_interception);
+        router.set_target_focused(true);
+        router.set_cooperative_interception_for_revision(true, old_sample);
+        assert!(router.apply_input_filter(true, true).is_empty());
+        assert_eq!(router.cooperative_sampled_input_revision, old_sample);
+        let fresh_sample = router.cooperative_input_revision();
+        router.set_cooperative_interception_for_revision(true, fresh_sample);
+        assert_eq!(
+            router.apply_input_filter(true, true),
+            vec![OutboundMessage::InputIntercept { intercepting: true }]
+        );
+        assert!(router.state().requested_interception);
+    }
+
+    #[test]
+    fn filter_retirement_keeps_virgin_bootstrap_false_silent() {
+        let mut router = InputRouter::new();
+        router.set_target_focused(true);
+        router.set_cooperative_interception(false);
+        router.replace_windows(vec![InputWindow::new(1, InputRect::new(0, 0, 50, 50))]);
+        assert!(router.apply_input_filter(true, false).is_empty());
+        let old_sample = router.cooperative_sampled_input_revision;
+        assert!(router.retire_input_filter().is_empty());
+        assert_eq!(router.cooperative_sampled_input_revision, old_sample);
+        assert!(!router.state().effective_interception);
+        assert!(!router.state().requested_interception);
+        assert!(router.retire_input_filter().is_empty());
+        assert!(!router.acknowledgement_pending);
+        assert!(!router.producer_request_seen);
+        assert!(!router.has_published_ack);
+    }
 
     #[test]
     fn producer_bootstrap_metadata_and_internal_reset_do_not_manufacture_a_false_ack() {

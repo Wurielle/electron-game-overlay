@@ -959,6 +959,12 @@ impl ElectronFrameBridge {
         }
     }
 
+    /// Atomically retires the actual native input owner. This terminal release
+    /// is authoritative rather than an aggregate grant based on an old frame.
+    pub fn retire_input_filter(&self) {
+        self.publish_input_update(InputRouter::retire_input_filter);
+    }
+
     /// Queues the latest geometry and state for one injected render surface.
     /// Stale revisions are ignored. Accepted telemetry is coalesced before it
     /// crosses the loopback transport, while input and control packets remain

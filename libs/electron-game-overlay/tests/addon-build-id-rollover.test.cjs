@@ -15,7 +15,20 @@ const value = name => cmake.match(new RegExp(`set\\(${name}\\s+"([0-9A-F]+)"\\s*
 const newId = value('ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID');
 const fullHash = value('RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256');
 const preHash = value('RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256');
-const oldId = 'A8E9DA12477741B9979D9B1B51994EF3';
+const previousBuilds = [
+  {
+    generation: 8,
+    id: 'A8E9DA12477741B9979D9B1B51994EF3',
+    full: '246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135',
+    pre: '007B4DF39CEB0C7E6777B990A9A24D352DBC399C79DCA8488E9F4E49C58FB166',
+  },
+  {
+    generation: 9,
+    id: '3309FB779CFC4E39BA7681AA4A7F8A6B',
+    full: '88E5980C5737539918CDFD0A4070802780B44FA5FBCA2BB251B79952F180C621',
+    pre: '956A8530DD5C4C9F73C3372CE6C25A13E1AB230746B6A8CC26E7EC349CE50309',
+  },
+];
 const canonical = path.join(root, 'build/electron-game-overlay-runtime/_deps/reshade-src/tools/injector.cpp');
 const baseline = path.join(root, 'build/cooperative-injector-authoring/tools/injector.base.cpp');
 const sha = text => createHash('sha256').update(text.replace(/\r\n?/g, '\n')).digest('hex').toUpperCase();
@@ -42,39 +55,41 @@ function runGuard(t, input, expectedHash = fullHash) {
   return { ...result, output: fs.readFileSync(file, 'utf8') };
 }
 
-test('known full cached source rolls only its exact old identity to the new pinned hash', { skip: !available }, t => {
+for (const previous of previousBuilds) {
+test(`known generation ${previous.generation} full cache rolls only its exact old identity to the new pinned hash`, { skip: !available }, t => {
   assert.ok(guard);
   const current = fs.readFileSync(canonical, 'utf8');
   assert.equal(sha(current), fullHash, 'Test must use the exact new canonical source, not an arbitrary fixture body');
-  const old = current.replace(newId, oldId);
-  assert.equal(sha(old), '246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135');
+  const old = current.replace(newId, previous.id);
+  assert.equal(sha(old), previous.full);
   const result = runGuard(t, old.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n'));
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   assert.equal(sha(result.output), fullHash);
   assert.equal((result.output.match(new RegExp(newId, 'g')) || []).length, 1);
 });
 
-test('known pre-cooperative cache rolls safely before historical patch peeling', { skip: !available || !fs.existsSync(baseline) }, t => {
+test(`known generation ${previous.generation} pre-cooperative cache rolls safely before historical patch peeling`, { skip: !available || !fs.existsSync(baseline) }, t => {
   const source = fs.readFileSync(baseline, 'utf8');
   assert.equal(sha(source), 'E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359');
-  const old = source.replace('12EE788081A34E00B10862242DF38893', oldId);
-  assert.equal(sha(old), '007B4DF39CEB0C7E6777B990A9A24D352DBC399C79DCA8488E9F4E49C58FB166');
+  const old = source.replace('12EE788081A34E00B10862242DF38893', previous.id);
+  assert.equal(sha(old), previous.pre);
   const result = runGuard(t, old);
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   assert.equal(sha(result.output), preHash);
 });
 
-test('unknown edited source is never rewritten just because its old literal matches', { skip: !available }, t => {
-  const source = fs.readFileSync(canonical, 'utf8').replace(newId, oldId) + '\n// unrecognized source change\n';
+test(`unknown generation ${previous.generation} source is never rewritten just because its old literal matches`, { skip: !available }, t => {
+  const source = fs.readFileSync(canonical, 'utf8').replace(newId, previous.id) + '\n// unrecognized source change\n';
   const result = runGuard(t, source);
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   assert.equal(result.output, source);
 });
 
-test('new hash mismatch fails before writing even an otherwise known cache', { skip: !available }, t => {
-  const source = fs.readFileSync(canonical, 'utf8').replace(newId, oldId);
+test(`new hash mismatch fails before writing even a known generation ${previous.generation} cache`, { skip: !available }, t => {
+  const source = fs.readFileSync(canonical, 'utf8').replace(newId, previous.id);
   const result = runGuard(t, source, '0'.repeat(64));
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /does not match the new pinned source hash/);
   assert.equal(result.output, source);
 });
+}

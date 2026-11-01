@@ -208,6 +208,13 @@ ego_status EGO_CALL ego_transport_apply_input_filter(
     ego_transport *transport,
     uint32_t routing_enabled,
     uint32_t acknowledge);
+/*
+ * Atomic authoritative retirement of the actual native input owner. Releases
+ * focus/capture and the effective filter with its terminal ACK, preserving the
+ * producer's interception request. Not a substitute for checked Present grants
+ * or a transient new-session cleanup.
+ */
+ego_status EGO_CALL ego_transport_retire_input_filter(ego_transport *transport);
 ego_status EGO_CALL ego_transport_get_input_state(
     const ego_transport *transport,
     ego_input_state_v1 *inout_state);

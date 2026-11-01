@@ -4078,21 +4078,29 @@ void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknow
 
     discard_dormant_input();
 
-    const ego_status focus_status =
-        ego_transport_set_target_focused(data.transport, 0);
-    if (focus_status != EGO_STATUS_OK && focus_status != data.last_focus_error)
+    if (!acknowledge)
     {
-        data.last_focus_error = focus_status;
-        log_transport_error("dormant input blur", focus_status);
-        publish_input_routing_failure(data.transport, focus_status);
-    }
-    else if (focus_status == EGO_STATUS_OK)
-    {
-        data.last_focus_error = EGO_STATUS_OK;
+        const ego_status focus_status =
+            ego_transport_set_target_focused(data.transport, 0);
+        if (focus_status != EGO_STATUS_OK && focus_status != data.last_focus_error)
+        {
+            data.last_focus_error = focus_status;
+            log_transport_error("dormant input blur", focus_status);
+            publish_input_routing_failure(data.transport, focus_status);
+        }
+        else if (focus_status == EGO_STATUS_OK)
+        {
+            data.last_focus_error = EGO_STATUS_OK;
+        }
     }
 
-    const ego_status status =
-        ego_transport_apply_input_filter(data.transport, 0, acknowledge ? 1U : 0U);
+    // Authoritative retirement commits blur and the disabled filter together.
+    // A separate blur would advance the revision and make the old Present's
+    // sample reject the real release acknowledgement. Active-epoch cleanup
+    // remains transitional and waits for the replacement session's grant.
+    const ego_status status = acknowledge
+        ? ego_transport_retire_input_filter(data.transport)
+        : ego_transport_apply_input_filter(data.transport, 0, 0);
     if (status != EGO_STATUS_OK && status != data.last_filter_error)
     {
         data.last_filter_error = status;
@@ -4102,6 +4110,8 @@ void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknow
     else if (status == EGO_STATUS_OK)
     {
         data.last_filter_error = EGO_STATUS_OK;
+        if (acknowledge)
+            data.last_focus_error = EGO_STATUS_OK;
     }
 
     if (reset_imgui_cursor && g_participant_id == 0)
