@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-01",
+  "scope": "Portable extraction of retained rendering and display-precondition evidence; not a claim of causal attribution.",
+  "sameNativeComparison": {
+    "architecture": "x64",
+    "generation": 12,
+    "sharedSha256": {
+      "runtime": "F91413BD975EEB9FAAB9DBEF1EFBED5053ADDE56BA9DE71871A21C7B3F61932C",
+      "addon": "7330D1D5CE15E56FE8753114C557A6F16ACB22782EC6F308622C53E329562FC7",
+      "host": "C795065CB2CA7564461B386F3F25EB31B629FF0CA5AB5C06C5F65BD6921E5DC6",
+      "recordedHostSource": "3F6A7B4B17A49E950DA259DCACD3B88809D68B65048983AD04637C7F9CF615C8",
+      "sdkEntryOnly": "AC4D59EDFFC5B4667FD6B803366E98242F2F2CE0F8FB84970AB8E2FB78232565"
+    },
+    "earlier": {
+      "evidence": "build/late-d3d11-adoption/overlay-proof-x64-1389097d37cd4d2dba7d616d9b7747c5/evidence.json",
+      "evidenceSha256": "9553EC2746FDB449118B6B0C907A30D30B35CE352B938A19E8243483B525BA89",
+      "status": "failed",
+      "desktopPixelUtc": "2026-11-01T16:50:35.6013661Z",
+      "decodedDesktopRgb": [255, 255, 255],
+      "expectedRgb": [198, 40, 40],
+      "rawColorrefValidityRecorded": false,
+      "gpuSamples": 4,
+      "gpuRgba": [198, 40, 40, 255],
+      "failureTimePowerRecorded": false,
+      "inputAndResizeReached": false
+    },
+    "passing": {
+      "evidence": "build/late-d3d11-adoption/overlay-proof-x64-e0b9f007e06f41e2927eee59f0172636/evidence.json",
+      "evidenceSha256": "470E355319FEC8EA811E08CCC198B8F40D7CE4B20E4E5ACBFD93CE51AE5C04B7",
+      "lease": "build/display-active-late-d3d11-gen12-control-verified.json",
+      "leaseSha256": "BD49F0476911550B6AD0BEC8747006FD0035B3F62F4F1DE4DD8AAA499D41829F",
+      "status": "passed",
+      "beforeLeasePowerOnUtc": "2026-11-01T17:23:33.0789658Z",
+      "duringLeasePowerOnUtc": "2026-11-01T17:23:33.0974815Z",
+      "leaseFinishedUtc": "2026-11-01T17:24:06.7264435Z",
+      "leaseClearSucceeded": true,
+      "leaseCloseSucceeded": true,
+      "desktopBeforeResize": {"utc": "2026-11-01T17:23:36.8360125Z", "rgb": [198, 40, 40]},
+      "desktopAfterResize": {"utc": "2026-11-01T17:23:47.8345353Z", "rgb": [198, 40, 40]},
+      "surfaceBefore": [800, 600],
+      "surfaceAfter": [960, 640],
+      "gpuSamplesBeforeResize": 8,
+      "gpuRgba": [198, 40, 40, 255],
+      "postResizeGpuReadbackClaimed": false,
+      "renderStateChecks": 1797,
+      "renderStateMismatches": 0,
+      "runtimeCreates": 2,
+      "runtimeDestroys": 2,
+      "authenticatedConnections": 1,
+      "transportLosses": 0,
+      "syntheticInputAndReleasePassed": true,
+      "automaticDiscoveryProven": false,
+      "physicalInputProven": false
+    },
+    "historicalProducerControllerSourceHashesRecorded": false,
+    "historicalFullSdkClosureEqualityProven": false,
+    "currentRetainedSdkManifestEntriesValidated": 148
+  },
+  "powerAndPointerObservations": {
+    "laterOffObservation": {
+      "evidence": "build/display-power-precondition-20261101-1711.json",
+      "sha256": "8B054AA5385E49836848CBAAAB72C525B779EAFD9836451744E0E0523EA5D7FE",
+      "sessionOffUtc": "2026-11-01T17:10:44.1521176Z",
+      "consoleOffUtc": "2026-11-01T17:10:44.1782590Z",
+      "earlierToolOnlyOffObservationsRetainedAsFiles": false
+    },
+    "generation12PointerFailure": {
+      "evidence": "build/native-pointer-20261101-180716/report.json",
+      "sha256": "34CE970EBDC84F59D72B5E2F53EA9952062E72ACF93190A65B1D892248E5A01F",
+      "startUtc": "2026-11-01T17:07:18.2831699Z",
+      "failedObservationUtc": "2026-11-01T17:08:27.4323803Z",
+      "all148RawColorrefSamplesWhite": true,
+      "gpuSamplesCorrect": 8,
+      "presentSamplesSok": 63,
+      "presentSamplesInitiallyOccluded": 1,
+      "sampledDeviceRemovalReasonsNonzero": 0,
+      "sameObservationPowerCallbackRecorded": false
+    },
+    "generation13ObservedOnCalibration": {
+      "evidence": "build/native-pointer-20261101-181726/report.json",
+      "sha256": "56D3CF40EC2AACC08F199B9FD555179C8EF6C46F3948B390999202286EB99FFB",
+      "lease": "build/display-active-calibration-20261101-gen13.json",
+      "leaseSha256": "E609E58C903797CCF0CB53EB27B2A825CB962C6268EAE0DC3622FB0CCC2B1F65",
+      "status": "passed",
+      "displayAlreadyOnBeforeLease": true,
+      "startPixelObservationUtc": "2026-11-01T17:17:28.4153973Z",
+      "endPixelObservationUtc": "2026-11-01T17:17:31.1122395Z",
+      "sameObservationPowerCallbacksOn": true,
+      "expectedRedColorref": "0x003539e5",
+      "expectedBlueColorref": "0x00e5881e",
+      "gpuSamplesCorrect": 1,
+      "fullFeatureOrRealGamePassClaimedByThisRecord": false
+    }
+  },
+  "limits": [
+    "No actor or action is credited with waking the display.",
+    "The lease was created after the passing cases already reported ON.",
+    "The older manual white RGB record cannot exclude CLR_INVALID because raw COLORREF validity was not retained.",
+    "The retained OFF query is later than the recorded failed pointer observation, not a contemporaneous per-pixel measurement.",
+    "The same-native pair does not prove complete historical SDK or producer/controller source equality.",
+    "The generation-9 GPU device-loss incident and every older white-pixel failure are not retrospectively explained."
+  ]
+}

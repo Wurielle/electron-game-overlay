@@ -1626,6 +1626,7 @@ function Invoke-ClientSdkAttempt {
 if ($FunctionsOnly) {
     return
 }
+. (Join-Path $PSScriptRoot 'visual-test-display-lease.ps1')
 
 if (-not (Test-Path -LiteralPath $Electron -PathType Leaf)) {
     throw "Electron is unavailable: $Electron"
@@ -1708,7 +1709,10 @@ foreach ($VariableName in $ControlledEnvironmentVariables) {
     Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
+$VisualDisplayReport = [ordered]@{ scope='Visual input gate display precondition'; backend=$Backend; architecture=$Architecture }
+$VisualDisplayLease = $null
 try {
+    $VisualDisplayLease = Enter-VisualTestDisplayLease $VisualDisplayReport
     $Attempts = @()
     for ($Attempt = 1; $Attempt -le $AttemptCount; ++$Attempt) {
         Write-Host "Starting $BackendLabel client/SDK attempt $Attempt of $AttemptCount ..."
@@ -1755,6 +1759,8 @@ try {
     Write-Host "Evidence preserved in: $RunDirectory"
 }
 finally {
+    Exit-VisualTestDisplayLease $VisualDisplayLease $VisualDisplayReport
+    $VisualDisplayReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $RunDirectory 'display-precondition.json') -Encoding UTF8
     foreach ($VariableName in $ControlledEnvironmentVariables) {
         Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }

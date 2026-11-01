@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <cwchar>
@@ -65,6 +66,32 @@ struct host_options
 graphics_state g_graphics;
 input_oracle g_input_oracle;
 
+// Controlled-host evidence only. The default path performs no extra DXGI
+// queries, timing calls or logging around Present.
+struct present_diagnostic_state
+{
+    std::uint64_t calls = 0;
+    unsigned samples = 0;
+    ULONGLONG next_sample_ms = 0;
+    HRESULT previous_result = E_PENDING;
+};
+bool g_present_diagnostic_enabled = false;
+present_diagnostic_state g_primary_present_diagnostic;
+present_diagnostic_state g_secondary_present_diagnostic;
+constexpr unsigned kPresentDiagnosticMaximumSamplesPerSurface = 64;
+constexpr ULONGLONG kPresentDiagnosticIntervalMs = 1'000;
+struct present_diagnostic_log
+{
+    HANDLE file = INVALID_HANDLE_VALUE;
+    ~present_diagnostic_log()
+    {
+        if (file != INVALID_HANDLE_VALUE)
+            CloseHandle(file);
+    }
+} g_present_diagnostic_log;
+
+bool module_sibling_path(const wchar_t *name, std::wstring &path);
+
 void publish_stdout_marker(const char *format, ...)
 {
     char marker[1024] = {};
@@ -94,6 +121,122 @@ void publish_stdout_marker(const char *format, ...)
             nullptr));
     }
     OutputDebugStringA(marker);
+    constexpr char present_prefix[] = "EGO_CONTROLLED_PRESENT_V1 ";
+    if (g_present_diagnostic_log.file != INVALID_HANDLE_VALUE &&
+        std::strncmp(marker, present_prefix, sizeof(present_prefix) - 1) == 0)
+    {
+        DWORD written = 0;
+        if (WriteFile(
+                g_present_diagnostic_log.file,
+                marker,
+                static_cast<DWORD>(marker_length),
+                &written,
+                nullptr) == FALSE || written != marker_length)
+        {
+            CloseHandle(g_present_diagnostic_log.file);
+            g_present_diagnostic_log.file = INVALID_HANDLE_VALUE;
+        }
+    }
+}
+
+void configure_present_diagnostic()
+{
+    wchar_t enabled[2] = {};
+    g_present_diagnostic_enabled =
+        GetEnvironmentVariableW(
+            L"ELECTRON_GAME_OVERLAY_CONTROLLED_PRESENT_DIAGNOSTIC",
+            enabled,
+            static_cast<DWORD>(sizeof(enabled) / sizeof(enabled[0]))) == 1 &&
+        enabled[0] == L'1';
+    if (!g_present_diagnostic_enabled)
+        return;
+
+    // The exact controlled-host image chooses this fixed sibling filename.
+    // CREATE_NEW never replaces an earlier log or follows an existing link.
+    std::wstring log_path;
+    if (module_sibling_path(
+            L"electron-game-overlay-present-v1.log", log_path))
+    {
+        g_present_diagnostic_log.file = CreateFileW(
+            log_path.c_str(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            nullptr,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+    }
+}
+
+void observe_present_result(
+    IDXGISwapChain *swap_chain,
+    HRESULT result,
+    const LARGE_INTEGER &qpc_before,
+    const LARGE_INTEGER &qpc_after)
+{
+    auto &state = swap_chain == g_graphics.secondary_swap_chain.Get()
+        ? g_secondary_present_diagnostic
+        : g_primary_present_diagnostic;
+    ++state.calls;
+    if (state.samples >= kPresentDiagnosticMaximumSamplesPerSurface)
+        return;
+    const ULONGLONG now = GetTickCount64();
+    if (state.samples != 0 && now < state.next_sample_ms &&
+        state.previous_result == result)
+        return;
+    state.previous_result = result;
+    state.next_sample_ms = now + kPresentDiagnosticIntervalMs;
+    ++state.samples;
+
+    DXGI_SWAP_CHAIN_DESC description = {};
+    const HRESULT description_result = swap_chain->GetDesc(&description);
+    UINT last_present_count = 0;
+    const HRESULT count_result =
+        swap_chain->GetLastPresentCount(&last_present_count);
+    const HRESULT removal_reason =
+        g_graphics.device->GetDeviceRemovedReason();
+    FILETIME utc = {};
+    GetSystemTimeAsFileTime(&utc);
+    const std::uint64_t utc_100ns =
+        (static_cast<std::uint64_t>(utc.dwHighDateTime) << 32) |
+        utc.dwLowDateTime;
+    LARGE_INTEGER frequency = {};
+    const bool has_frequency = QueryPerformanceFrequency(&frequency) != FALSE;
+    publish_stdout_marker(
+        "EGO_CONTROLLED_PRESENT_V1 sample=%u/%u pid=%lu tid=%lu "
+        "utc100ns=%llu tickMs=%llu surface=%s chain=0x%llx hwnd=0x%llx "
+        "calls=%llu presentHr=0x%08lx occluded=%s failed=%s "
+        "qpcBefore=%lld qpcAfter=%lld qpcFrequency=%lld "
+        "descHr=0x%08lx windowed=%s swapEffect=%u "
+        "lastPresentCountHr=0x%08lx lastPresentCount=%u "
+        "deviceRemovedReason=0x%08lx foregroundHwnd=0x%llx "
+        "scope=api-return-not-display-proof",
+        state.samples,
+        kPresentDiagnosticMaximumSamplesPerSurface,
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()),
+        static_cast<unsigned long long>(utc_100ns),
+        static_cast<unsigned long long>(now),
+        &state == &g_secondary_present_diagnostic ? "secondary" : "primary",
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(swap_chain)),
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(description.OutputWindow)),
+        static_cast<unsigned long long>(state.calls),
+        static_cast<unsigned long>(result),
+        result == DXGI_STATUS_OCCLUDED ? "true" : "false",
+        FAILED(result) ? "true" : "false",
+        static_cast<long long>(qpc_before.QuadPart),
+        static_cast<long long>(qpc_after.QuadPart),
+        has_frequency ? static_cast<long long>(frequency.QuadPart) : 0LL,
+        static_cast<unsigned long>(description_result),
+        SUCCEEDED(description_result) && description.Windowed ? "true" : "false",
+        static_cast<unsigned>(description.SwapEffect),
+        static_cast<unsigned long>(count_result),
+        last_present_count,
+        static_cast<unsigned long>(removal_reason),
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(GetForegroundWindow())));
 }
 
 bool parse_positive_milliseconds(
@@ -547,7 +690,15 @@ HRESULT render_surface(
 
     g_graphics.context->OMSetRenderTargets(1, &render_target, nullptr);
     g_graphics.context->ClearRenderTargetView(render_target, clear_color);
-    return swap_chain->Present(1, 0);
+    if (!g_present_diagnostic_enabled)
+        return swap_chain->Present(1, 0);
+
+    LARGE_INTEGER qpc_before = {}, qpc_after = {};
+    QueryPerformanceCounter(&qpc_before);
+    const HRESULT result = swap_chain->Present(1, 0);
+    QueryPerformanceCounter(&qpc_after);
+    observe_present_result(swap_chain, result, qpc_before, qpc_after);
+    return result;
 }
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
@@ -630,6 +781,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     }
     if (!enable_per_monitor_v2_awareness())
         return 1;
+    configure_present_diagnostic();
     if (!wait_for_test_startup_barrier())
         return 1;
     if (!wait_for_prearmed_injected_runtime())

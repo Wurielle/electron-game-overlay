@@ -89,6 +89,11 @@ function readPublishedDiagnostics(backend, windowId, cssBounds) {
   }
   return result;
 }
+function buildGpuPixelRequest(scaleFactor) {
+  if (!Number.isFinite(scaleFactor) || !(scaleFactor > 0) || scaleFactor > 2) throw new Error('GPU pixel diagnostic requires display scale above0 and at most2.');
+  const points = [[Math.round(480 * scaleFactor), Math.round(100 * scaleFactor)], [Math.round(540 * scaleFactor), Math.round(100 * scaleFactor)], [1270, 710]];
+  return { filename: 'electron-game-overlay-gpu-pixels-v1.request', points, samples: 8, intervalMs: 10000, scope: 'Three pixels only; first dispatcher own window; diagnostic GPU readback does not change strict desktop pixel acceptance.', control: `EGO_GPU_READBACK_V1 ${points.flat().join(' ')} 8 10000\n` };
+}
 function cleanup() {
   if (done) return;
   done = true;
@@ -151,6 +156,14 @@ app
     });
     launcher = new ReShadeOverlayLauncher(config);
     launcher.onEvent((event) => {
+      if (event.type === 'runtime-staged' && args['gpu-readback'] === 'true') {
+        try {
+          const request = buildGpuPixelRequest(state.scaleFactor);
+          const filename = path.join(event.runDirectory, request.filename);
+          fs.writeFileSync(filename, request.control, { encoding: 'ascii', flag: 'wx' });
+          state.gpuPixelRequest = { ...request, file: filename };
+        } catch (error) { state.gpuPixelRequestError = error.stack || String(error); }
+      }
       state.events.push({ type: event.type, at: Date.now() });
       if (event.type === 'injector-returned' && member === 'a' && !args.game) {
         fs.rmSync(

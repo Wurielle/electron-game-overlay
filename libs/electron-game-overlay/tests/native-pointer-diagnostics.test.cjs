@@ -9,12 +9,26 @@ const ts = require('typescript');
 const { encodeFrameTransportPacket } = require('../dist/lib/overlay-loopback-transport.js');
 const filename = path.join(__dirname, 'native-pointer.acceptance.cjs');
 const source = ts.createSourceFile(filename, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const names = new Set(['describeSourceRaster', 'describeSourceImage', 'readPublishedDiagnostics']);
+const names = new Set(['describeSourceRaster', 'describeSourceImage', 'readPublishedDiagnostics', 'buildGpuPixelRequest']);
 const definitions = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
-assert.equal(definitions.length, 3);
-const diagnostics = vm.runInNewContext(definitions.map(node => node.getText(source)).join('\n') + '\n({describeSourceRaster,describeSourceImage,readPublishedDiagnostics})', {
+assert.equal(definitions.length, 4);
+const diagnostics = vm.runInNewContext(definitions.map(node => node.getText(source)).join('\n') + '\n({describeSourceRaster,describeSourceImage,readPublishedDiagnostics,buildGpuPixelRequest})', {
   Buffer, createHash,
   readNativeImageRaster: image => image.raster,
+});
+
+test('opt-in GPU control requests exactly three calibrated pixels with bounded count and no full-image capture', () => {
+  for (const scale of [1, 1.25, 1.5, 2]) {
+    const request = diagnostics.buildGpuPixelRequest(scale);
+    assert.equal(request.filename, 'electron-game-overlay-gpu-pixels-v1.request');
+    assert.equal(request.samples, 8);
+    assert.equal(request.intervalMs, 10000);
+    assert.deepEqual(JSON.parse(JSON.stringify(request.points)), [[Math.round(480 * scale), Math.round(100 * scale)], [Math.round(540 * scale), Math.round(100 * scale)], [1270, 710]]);
+    assert.equal(request.control, `EGO_GPU_READBACK_V1 ${request.points.flat().join(' ')} 8 10000\n`);
+    assert.ok(request.points.every(([x, y]) => x >= 0 && x < 1280 && y >= 0 && y < 720));
+    assert.ok(request.points[2][0] > 620 * scale, 'Host control must remain outside the overlay image');
+  }
+  for (const scale of [0, -1, 2.01, Infinity, NaN, '1']) assert.throws(() => diagnostics.buildGpuPixelRequest(scale), /GPU pixel diagnostic/u);
 });
 const css = { x: 20, y: 60, width: 600, height: 480 };
 function raster(scale) {
