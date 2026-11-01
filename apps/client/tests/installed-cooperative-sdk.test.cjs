@@ -122,7 +122,8 @@ test('installed game launcher keeps all four default matrix cells and requires d
   assert.match(script, /run-client-sdk-cooperative-two-app-game-gate\.ps1/u);
 });
 
-test('actual controller installed-entrypoint guard rejects foreign roots, hashes and direct-index load claims', { skip: process.platform !== 'win32' }, t => {
+for (const shell of ['powershell.exe', 'pwsh.exe']) {
+test(`actual controller installed-entrypoint guard accepts JSON integers and rejects foreign evidence under ${shell}`, { skip: process.platform !== 'win32' }, t => {
   const directory = sandbox(t);
   const a = consumer(directory, 'a');
   const evidencePath = path.join(directory, 'sdk.json');
@@ -140,10 +141,12 @@ if(-not $Function){throw 'Installed public entrypoint assertion missing'}
 $Good=Get-Content -LiteralPath ${quote(evidencePath)} -Raw|ConvertFrom-Json
 $Consumer=${quote(a.consumerRoot)};$Dist=${quote(a.dist)}
 $null=Assert-InstalledPackageEvidence $Good $Consumer $Dist
-foreach($Mutation in @('consumerRoot','packageRoot','entrypoint','installedManifestSha256','entrySha256','loadMethod','schemaVersion','releasedPackageCompatibilityClaimed')){
+foreach($Mutation in @('consumerRoot','packageRoot','entrypoint','installedManifestSha256','entrySha256','loadMethod','schemaVersion','fractionalSchemaVersion','booleanSchemaVersion','releasedPackageCompatibilityClaimed')){
  $Bad=Get-Content -LiteralPath ${quote(evidencePath)} -Raw|ConvertFrom-Json
  switch($Mutation){
   'schemaVersion' {$Bad.installedPackage.schemaVersion='1'}
+  'fractionalSchemaVersion' {$Bad.installedPackage.schemaVersion=1.5}
+  'booleanSchemaVersion' {$Bad.installedPackage.schemaVersion=$true}
   'releasedPackageCompatibilityClaimed' {$Bad.installedPackage.releasedPackageCompatibilityClaimed=$true}
   'loadMethod' {$Bad.installedPackage.loadMethod='require(absolute index.js)'}
   'installedManifestSha256' {$Bad.installedPackage.installedManifestSha256='0'*64}
@@ -155,8 +158,10 @@ foreach($Mutation in @('consumerRoot','packageRoot','entrypoint','installedManif
 }
 Write-Output 'Installed public-entrypoint evidence accepted only exact private consumer and sealed hashes.'
 `;
-  const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20_000, windowsHide: true });
+  const run = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20_000, windowsHide: true });
+  if (run.error?.code === 'ENOENT') { t.skip(`${shell} is unavailable`); return; }
   assert.equal(run.error, undefined, run.error?.message);
   assert.equal(run.status, 0, run.stdout + '\n' + run.stderr);
   assert.match(run.stdout, /accepted only exact private consumer/u);
 });
+}

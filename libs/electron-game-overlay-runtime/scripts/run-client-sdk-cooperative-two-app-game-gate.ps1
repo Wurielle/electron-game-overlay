@@ -140,7 +140,7 @@ function Start-OwnedProcess([Diagnostics.ProcessStartInfo]$StartInfo, [string]$L
 }
 function Assert-InstalledPackageEvidence([object]$SdkEvidence, [string]$ConsumerRoot, [string]$SdkDist) {
     $Installed = $SdkEvidence.installedPackage
-    if (-not $Installed -or $Installed.schemaVersion -isnot [int] -or $Installed.schemaVersion -ne 1 -or
+    if (-not $Installed -or ($Installed.schemaVersion -isnot [int] -and $Installed.schemaVersion -isnot [long]) -or $Installed.schemaVersion -ne 1 -or
         $Installed.releasedPackageCompatibilityClaimed -isnot [bool] -or $Installed.releasedPackageCompatibilityClaimed -ne $false -or
         $Installed.loadMethod -cne "createRequire(consumer/package.json)('electron-game-overlay')" -or
         $Installed.packageVersion -cne $SdkEvidence.packageVersion -or
