@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "scope": "Controlled Windows x64 D3D11 public add-on callback/lifecycle research; no EGO scene or input acceptance.",
+  "runtimeVersion": "6.7.3.2148",
+  "runtimeSha256": "EC9245D05C11751F2AC0D2256E6921AD8FB36BE9172EF6D587856591EB729A25",
+  "runtimeBytes": 5487616,
+  "runtimeProvenance": {
+    "description": "Runtime matched ReShade64.dll extracted in memory from the cached official full-add-on setup, independently of the probe.",
+    "setupFile": "ReShade_Setup_6.7.3_Addon.exe",
+    "setupSha256": "C78DB69BD127E98054BD496FB422655F4A1CC664E28F8D12CE9835B2647BC571"
+  },
+  "publicApiVersion": 18,
+  "publicHeadersRevision": "4a50d1eddace85734871d91792ff214f13f66c01",
+  "publicHeadersVerification": "reshade.hpp, reshade_events.hpp, reshade_api.hpp and reshade_overlay.hpp matched git show of the exact upstream revision after newline normalization.",
+  "results": [
+    {
+      "order": "a-first",
+      "runtimeCount": 1,
+      "startupFrames": 8,
+      "startupSwapchainInits": 1,
+      "concurrentEarlyFrames": 16,
+      "concurrentLateFrames": 8,
+      "lateSwapchainInits": 0,
+      "survivorFrames": 16,
+      "duplicateNameRegistrationRejected": true,
+      "secondRuntimeWin32Error": 1114
+    },
+    {
+      "order": "b-first",
+      "runtimeCount": 1,
+      "startupFrames": 8,
+      "startupSwapchainInits": 1,
+      "concurrentEarlyFrames": 16,
+      "concurrentLateFrames": 8,
+      "lateSwapchainInits": 0,
+      "survivorFrames": 16,
+      "duplicateNameRegistrationRejected": true,
+      "secondRuntimeWin32Error": 1114
+    }
+  ],
+  "additionalAssertions": [
+    "ReShade logged duplicate-name registration rejection for the separately mapped third module.",
+    "ReShade logged its duplicate-instance guard rejecting the second runtime copy.",
+    "Startup add-on was absent from the module list after explicit unload on the sole rendering thread.",
+    "Source DLL and both staged runtime copies retained their original SHA-256 hashes."
+  ],
+  "unverified": [
+    "EGO scene rendering and pixel correctness",
+    "Input, keyboard focus, capture, cursor and ordering isolation",
+    "Native add-on crashes or arbitrary concurrent hot unload",
+    "Mixed SDK packages and production broker compatibility",
+    "D3D9, D3D10, D3D12, OpenGL and Vulkan"
+  ]
+}

@@ -240,9 +240,48 @@ flooding, broker recovery and zero-member recovery. Verify one native owner and
 one injection throughout. Keep transport fixtures, mixed-package gates and
 actual Windows graphics/input acceptance distinct.
 
-## Experiment status
+## Windows experiment results
 
-An isolated stock-ReShade add-on loading/lifetime probe is being prepared on
-this branch. It does not change the production SDK, broker, injector, runtime
-patch stack or official add-on build ID. Results must distinguish callbacks from
-rendering and input acceptance before they are used to justify implementation.
+The isolated [native probe](../experiments/reshade-addon-isolation/README.md)
+built with MSVC and passed on Windows x64 / D3D11 in both add-on loading orders.
+The root agent independently reran the human-facing launcher successfully:
+
+`libs/electron-game-overlay-runtime/scripts/test-cases/reshade-addon-isolation.ps1`
+
+| Assertion | A first / B late | B first / A late |
+| --- | --- | --- |
+| Startup add-on's initial frame callbacks | 8 | 8 |
+| Startup add-on's swap-chain initialization callbacks | 1 | 1 |
+| Both add-ons' counters advance during concurrent participation | 16 / 8 | 16 / 8 |
+| Late add-on receives historical initialization | 0 | 0 |
+| Late add-on's counter after startup peer unloads | 16 | 16 |
+| Duplicate exported add-on name rejected | yes | yes |
+| Copied second ReShade rejected by explicit duplicate-instance log | yes, Win32 1114 | yes, Win32 1114 |
+| Mapped ReShade modules after peer unload | 1 | 1 |
+
+The supplied full-add-on runtime reports version `6.7.3.2148`. Its SHA-256 is
+`EC9245D05C11751F2AC0D2256E6921AD8FB36BE9172EF6D587856591EB729A25`.
+Read-only ZIP entry hashing corroborated exact equality with `ReShade64.dll`
+embedded in the cached official `ReShade_Setup_6.7.3_Addon.exe` (setup SHA-256
+`C78DB69BD127E98054BD496FB422655F4A1CC664E28F8D12CE9835B2647BC571`).
+This corroborates the cached payload, not independent authentication of the
+original download. Source and staged runtime hashes remained unchanged.
+
+Full root-run evidence is retained locally under
+`build/reshade-addon-isolation/run-20261101-094122-72d58532/evidence.json`;
+provenance observations are in
+`build/reshade-addon-isolation/official-runtime-provenance.json`. Generated
+binaries, logs and full machine-specific evidence are ignored build artifacts.
+
+This proves callback participation and controlled same-thread add-on lifetime,
+not independent ReShade implementations, drawn Electron overlays, keyboard/mouse
+isolation, arbitrary hot loading, native crash containment, actual mixed SDK
+packages or production feature parity. The two probes are separate compilations
+of a small counter implementation, not independently released library versions.
+
+Production SDK, broker, injector, runtime patches and official EGO add-on bytes
+are unchanged. No official add-on build-ID bump is needed for this research-only
+fixture. The next discriminating prototype is the stable bridge plus two
+private engines: prove late initialization replay, per-window overlap/order,
+focus/capture handoff and independent producer disappearance before considering
+a production migration.
