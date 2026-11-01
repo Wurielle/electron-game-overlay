@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Compile-only isolated x64 owned ReShade prototype and generic caller; no hook execution, GUI run or production activation.",
+  "architecture": "x64",
+  "configuration": "Release",
+  "prototypePatchSha256": "50D729D657D555E22EB23703A8229CD6B57BD41CEBA866DD078F1513128DD690",
+  "prototypeHeaderSha256": "B17FFC26401615173733A8FA86F1A9D15E16226B987EC3E9C01DB50C5BD16892",
+  "prototypeImplementationSha256": "DADB079014B48B2813F6D896ACC9BFEC713AC995CDD546B88AB452156570E19A",
+  "prototypeRuntimeSha256": "C5FB6FC74C480DC5EE993038792D3ED4C7D962F2F12BEEF672DB3EAA100D9082",
+  "genericCallerSha256": "4BC6C4E8728B7E0C21F5AE2DC51A5379EF73C44428666DB0E1CCD2114C43F2B8",
+  "initializerExportVerified": true,
+  "statisticsExportVerified": true,
+  "separateSourceCopy": true,
+  "checkedCanonicalFilesUnchanged": true,
+  "productionPinsOrSdkDistChanged": false,
+  "optInMacro": "RESHADE_OWNED_LATE_D3D11_PROTOTYPE=1",
+  "copiedVersionHeaderPreserved": true,
+  "prebuildVersionUpdaterDisabled": true,
+  "warnings": [
+    "Existing Release shader warnings",
+    "C4530 in stock Release sources and prototype translation unit: exception-unwind safety is not established"
+  ],
+  "unverified": [
+    "Native raw-swapchain discovery and notifier support",
+    "Rendering, input, resize and final retirement",
+    "Automatic process observation/injection",
+    "Production concurrency and driver coverage",
+    "Win32 prototype compilation and behavior"
+  ]
+}

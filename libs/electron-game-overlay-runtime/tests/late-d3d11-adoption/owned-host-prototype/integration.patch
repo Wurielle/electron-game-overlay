@@ -1,0 +1,53 @@
+diff --git a/source/addon.cpp b/source/addon.cpp
+index 5b15ae7..f524371 100644
+--- a/source/addon.cpp
++++ b/source/addon.cpp
+@@ -268,4 +268,8 @@ void ReShadeUpdateAndPresentEffectRuntime(reshade::api::effect_runtime *runtime)
+ 	runtime->get_command_queue()->flush_immediate_command_list();
+ }
+ 
++#if defined(RESHADE_OWNED_LATE_D3D11_PROTOTYPE)
++#include "ego_owned_late_d3d11/owned_late_d3d11_prototype.hpp"
++#endif
++
+ #endif
+diff --git a/source/d3d11/d3d11_impl_swapchain.cpp b/source/d3d11/d3d11_impl_swapchain.cpp
+index 397bffa..9abda52 100644
+--- a/source/d3d11/d3d11_impl_swapchain.cpp
++++ b/source/d3d11/d3d11_impl_swapchain.cpp
+@@ -11,6 +11,9 @@ reshade::d3d11::swapchain_impl::swapchain_impl(device_impl *device, IDXGISwapCha
+ 	api_object_impl(swapchain),
+ 	_device_impl(device)
+ {
++	DXGI_SWAP_CHAIN_DESC description = {};
++	if (SUCCEEDED(_orig->GetDesc(&description)))
++		_window = description.OutputWindow;
+ }
+ 
+ reshade::api::device *reshade::d3d11::swapchain_impl::get_device()
+@@ -20,10 +23,7 @@ reshade::api::device *reshade::d3d11::swapchain_impl::get_device()
+ 
+ void *reshade::d3d11::swapchain_impl::get_hwnd() const
+ {
+-	DXGI_SWAP_CHAIN_DESC swap_desc = {};
+-	_orig->GetDesc(&swap_desc);
+-
+-	return swap_desc.OutputWindow;
++	return _window;
+ }
+ 
+ reshade::api::resource reshade::d3d11::swapchain_impl::get_back_buffer(uint32_t index)
+diff --git a/source/d3d11/d3d11_impl_swapchain.hpp b/source/d3d11/d3d11_impl_swapchain.hpp
+index 57002ef..88116f5 100644
+--- a/source/d3d11/d3d11_impl_swapchain.hpp
++++ b/source/d3d11/d3d11_impl_swapchain.hpp
+@@ -29,5 +29,9 @@ namespace reshade::d3d11
+ 
+ 	private:
+ 		device_impl *const _device_impl;
++		// OutputWindow is immutable for a swap chain. Keeping this identity
++		// available allows owned late-runtime teardown without calling into a
++		// chain whose destruction notifier has already begun.
++		HWND _window = nullptr;
+ 	};
+ }

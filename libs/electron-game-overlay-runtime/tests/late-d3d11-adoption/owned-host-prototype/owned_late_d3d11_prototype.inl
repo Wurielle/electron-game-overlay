@@ -1,0 +1,670 @@
+// Implementation is compiled only by the separately patched owned ReShade host.
+// It is deliberately not a portable add-on or an official-host activation path.
+#include "reshade.hpp"
+#include "runtime.hpp"
+#include "addon_manager.hpp"
+#include "hook_manager.hpp"
+#include "ini_file.hpp"
+#include "com_ptr.hpp"
+#include "dxgi/dxgi_swapchain.hpp"
+#include <d3d11_4.h>
+#include <d3dcommon.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstring>
+#include <cwchar>
+#include <filesystem>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+
+extern thread_local bool g_in_dxgi_runtime;
+
+namespace ego_owned_late_d3d11
+{
+    namespace fs = std::filesystem;
+    constexpr std::uint32_t abi_version = 1;
+    constexpr wchar_t marker_name[] = L"ego-owned-late-d3d11-prototype.marker";
+    constexpr char marker_contents[] = "EGO_OWNED_LATE_D3D11_PROTOTYPE_V1\n";
+    constexpr wchar_t config_prefix[] = L"ego-late-d3d11-";
+
+    std::mutex install_mutex;
+    std::mutex registry_mutex;
+    // ReShade GUI state is process-global. Acquire this only after entering an
+    // already-protected native context, and before any per-chain state lock.
+    std::recursive_mutex runtime_operation_mutex;
+    std::atomic<std::uint32_t> status { 0 }, last_error { ERROR_SUCCESS }, last_hresult { S_OK };
+    std::atomic<std::uint64_t> present_calls { 0 }, adoption_attempts { 0 }, adoption_successes { 0 };
+    std::atomic<std::uint64_t> notifier_rejections { 0 }, automatic_skips { 0 };
+    std::atomic<std::uint64_t> resize_calls { 0 }, resize_successes { 0 }, retirements { 0 };
+    std::atomic<std::uint64_t> quarantines { 0 }, render_failures { 0 };
+    thread_local unsigned native_depth = 0;
+    fs::path config_template;
+    std::atomic<std::uint64_t> next_config { 0 };
+
+    struct depth_scope { depth_scope() { ++native_depth; } ~depth_scope() { --native_depth; } };
+    struct dxgi_scope
+    {
+        bool previous = g_in_dxgi_runtime;
+        dxgi_scope() { g_in_dxgi_runtime = true; }
+        ~dxgi_scope() { g_in_dxgi_runtime = previous; }
+    };
+    struct handle
+    {
+        HANDLE value = INVALID_HANDLE_VALUE;
+        ~handle() { if (value != INVALID_HANDLE_VALUE && value != nullptr) CloseHandle(value); }
+    };
+
+    struct context_scope
+    {
+        com_ptr<ID3D11Multithread> multithread;
+        bool entered = false;
+        explicit context_scope(ID3D11DeviceContext *context)
+        {
+            if (context != nullptr && SUCCEEDED(context->QueryInterface(&multithread)) &&
+                multithread->GetMultithreadProtected())
+            {
+                multithread->Enter();
+                entered = true;
+            }
+        }
+        ~context_scope()
+        {
+            if (entered) multithread->Leave();
+        }
+    };
+
+    enum class chain_phase { initializing, waiting_for_surface, ready, reset, rejected, retired, quarantined };
+    struct chain_state
+    {
+        std::recursive_mutex mutex;
+        void *identity = nullptr; // Numeric identity only; deliberately not AddRef'd.
+        std::atomic<bool> dead { false };
+        chain_phase phase = chain_phase::initializing;
+        com_ptr<ID3D11Device> device;
+        com_ptr<ID3D11DeviceContext> context;
+        reshade::api::effect_runtime *runtime = nullptr;
+        std::string owned_config_utf8;
+        HWND window = nullptr;
+        bool swapchain_event_live = false;
+        bool needs_final_removal = false;
+        bool still_drawing = false;
+        UINT notification_id = 0;
+    };
+    std::map<void *, std::shared_ptr<chain_state>> chains;
+
+    std::string utf8(const fs::path &path) { return path.u8string(); }
+
+    DWORD validate_owned_config(const ego_owned_late_d3d11_initialize_v1 &request, fs::path &path)
+    {
+        const auto end = std::find(std::begin(request.owned_config_path), std::end(request.owned_config_path), L'\0');
+        if (end == std::end(request.owned_config_path) || end == std::begin(request.owned_config_path))
+            return ERROR_INVALID_PARAMETER;
+        const fs::path supplied(std::wstring(std::begin(request.owned_config_path), end));
+        if (!supplied.is_absolute() || supplied.extension() != L".ini" ||
+            supplied.filename().wstring().rfind(config_prefix, 0) != 0 ||
+            supplied.filename().wstring().find(L':') != std::wstring::npos)
+            return ERROR_INVALID_PARAMETER;
+        std::error_code ec;
+        const fs::path base = fs::canonical(g_reshade_base_path, ec);
+        if (ec) return ERROR_PATH_NOT_FOUND;
+        const fs::path parent = fs::canonical(supplied.parent_path(), ec);
+        if (ec || _wcsicmp(parent.c_str(), base.c_str()) != 0) return ERROR_ACCESS_DENIED;
+        const fs::path marker = base / marker_name;
+        const DWORD marker_attributes = GetFileAttributesW(marker.c_str());
+        if (marker_attributes == INVALID_FILE_ATTRIBUTES ||
+            (marker_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+            return ERROR_ACCESS_DENIED;
+        handle file;
+        file.value = CreateFileW(marker.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (file.value == INVALID_HANDLE_VALUE) return GetLastError();
+        std::array<char, sizeof(marker_contents)> bytes {};
+        DWORD read = 0;
+        if (!ReadFile(file.value, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) ||
+            read != sizeof(marker_contents) - 1 ||
+            std::memcmp(bytes.data(), marker_contents, sizeof(marker_contents) - 1) != 0)
+            return ERROR_ACCESS_DENIED;
+        path = parent / supplied.filename();
+        return ERROR_SUCCESS;
+    }
+
+    DWORD reserve_config(const fs::path &path)
+    {
+        handle file;
+        file.value = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+            nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        return file.value == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    }
+
+    fs::path next_owned_config()
+    {
+        const auto index = next_config.fetch_add(1);
+        if (index == 0) return config_template;
+        return config_template.parent_path() /
+            (config_template.stem().wstring() + L"-chain-" + std::to_wstring(index + 1) + L".ini");
+    }
+
+    void erase_if_current(const std::shared_ptr<chain_state> &state)
+    {
+        const std::lock_guard<std::mutex> lock(registry_mutex);
+        const auto it = chains.find(state->identity);
+        if (it != chains.end() && it->second.get() == state.get()) chains.erase(it);
+    }
+
+    com_ptr<ID3D11DeviceContext> retain_context(const std::shared_ptr<chain_state> &state)
+    {
+        const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+        return state->context;
+    }
+
+    void initialize_surface_events(chain_state &state, IDXGISwapChain *chain, bool resized)
+    {
+        auto *const surface = static_cast<reshade::runtime *>(state.runtime)->get_swapchain();
+        state.swapchain_event_live = true;
+        state.needs_final_removal = true;
+        reshade::invoke_addon_event<reshade::addon_event::init_swapchain>(surface, resized);
+        BOOL fullscreen = FALSE;
+        HMONITOR monitor = nullptr;
+        com_ptr<IDXGIOutput> output;
+        {
+            dxgi_scope original_scope;
+            chain->GetFullscreenState(&fullscreen, &output);
+            DXGI_OUTPUT_DESC desc = {};
+            if (output != nullptr && SUCCEEDED(output->GetDesc(&desc))) monitor = desc.Monitor;
+        }
+        reshade::invoke_addon_event<reshade::addon_event::set_fullscreen_state>(surface, fullscreen != FALSE, monitor);
+    }
+
+    void reset_surface_events(chain_state &state, bool resized)
+    {
+        if (state.runtime == nullptr) return;
+        auto *const runtime = static_cast<reshade::runtime *>(state.runtime);
+        runtime->on_reset(); // destroy_effect_runtime precedes destroy_swapchain.
+        if (!resized && state.needs_final_removal)
+        {
+            // A resize-only destroy does not release EGO's persistent chain
+            // ownership. Final removal remains mandatory after a failed resize.
+            state.needs_final_removal = false;
+            state.swapchain_event_live = false;
+            reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(runtime->get_swapchain(), false);
+        }
+        else if (resized && state.swapchain_event_live)
+        {
+            state.swapchain_event_live = false;
+            reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(runtime->get_swapchain(), true);
+        }
+    }
+
+    struct release_back_buffer_views
+    {
+        reshade::runtime *runtime;
+        ~release_back_buffer_views()
+        {
+            // The helper releases only native backbuffer RTVs. Runtime identity,
+            // resolved/effect textures, participant resources and input survive.
+            runtime->release_owned_late_d3d11_back_buffer_views();
+        }
+    };
+
+    bool attempt_manual_creation(chain_state &state, IDXGISwapChain *chain)
+    {
+        if (!ReShadeCreateEffectRuntime(reshade::api::device_api::d3d11, state.device.get(),
+                state.context.get(), chain, state.owned_config_utf8.c_str(), &state.runtime))
+        {
+            com_ptr<ID3D11Texture2D> buffer;
+            D3D11_TEXTURE2D_DESC desc = {};
+            const bool got_buffer = SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&buffer))) && buffer != nullptr;
+            if (got_buffer) buffer->GetDesc(&desc);
+            const bool tiny = got_buffer && desc.Width <= 16 && desc.Height <= 16;
+            state.phase = tiny ? chain_phase::waiting_for_surface : chain_phase::rejected;
+            last_error.store(tiny ? ERROR_RETRY : ERROR_FUNCTION_FAILED);
+            return false;
+        }
+        // Public Create already emits init_effect_runtime. Supply the missing
+        // managed-surface event once before the first update. The public API's
+        // first-init order differs from a stock proxy; resize below matches it.
+        const release_back_buffer_views release_views { static_cast<reshade::runtime *>(state.runtime) };
+        initialize_surface_events(state, chain, false);
+        state.phase = chain_phase::ready;
+        ++adoption_successes;
+        return true;
+    }
+
+    // The only callback context is our own same-module C++ allocation. It never
+    // crosses a cooperative SDK boundary and is not interpreted by another DLL.
+    void CALLBACK destroyed(void *opaque) noexcept
+    {
+        std::unique_ptr<std::shared_ptr<chain_state>> cookie(static_cast<std::shared_ptr<chain_state> *>(opaque));
+        const auto state = *cookie;
+        state->dead.store(true, std::memory_order_release);
+        try
+        {
+            const auto context = retain_context(state);
+            context_scope context_lock(context.get());
+            const std::lock_guard<std::recursive_mutex> operation_lock(runtime_operation_mutex);
+            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            if (state->phase == chain_phase::quarantined) return;
+            // Never QI/GetDesc/GetBuffer/Release the destructing raw swapchain.
+            // REQUIRED integration: swapchain_impl::get_hwnd returns cached HWND.
+            // Only our audited staged EGO adapter callbacks may run in this proof.
+            if (state->runtime != nullptr)
+            {
+                reset_surface_events(*state, false);
+                auto *const runtime = state->runtime;
+                state->runtime = nullptr;
+                ReShadeDestroyEffectRuntime(runtime);
+            }
+            state->context.reset();
+            state->device.reset();
+            state->phase = chain_phase::retired;
+            ++retirements;
+            erase_if_current(state);
+        }
+        catch (...)
+        {
+            // Keep the existing registry entry and COM refs until target exit.
+            // Do not retry partially completed teardown or unload active hooks.
+            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            state->phase = chain_phase::quarantined;
+            ++quarantines;
+            last_error.store(ERROR_UNHANDLED_EXCEPTION);
+        }
+    }
+
+    bool automatically_managed(IDXGISwapChain *chain)
+    {
+        DXGISwapChain *proxy = nullptr;
+        UINT bytes = sizeof(proxy);
+        if (SUCCEEDED(chain->GetPrivateData(__uuidof(DXGISwapChain), &bytes, &proxy)) &&
+            bytes == sizeof(proxy) && proxy != nullptr)
+        {
+            ++automatic_skips;
+            return true;
+        }
+        return false;
+    }
+
+    std::shared_ptr<chain_state> find_chain(IDXGISwapChain *chain, bool permit_adoption)
+    {
+        // The shared DXGI implementations also receive D3D10/12 chains. Prove
+        // the actual D3D11 type and threading mode before any registry/cookie.
+        com_ptr<ID3D11Device> candidate_device;
+        if (FAILED(chain->GetDevice(IID_PPV_ARGS(&candidate_device))) || candidate_device == nullptr)
+            return {};
+        if ((candidate_device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED) != 0)
+        {
+            last_error.store(ERROR_NOT_SUPPORTED);
+            return {};
+        }
+        com_ptr<ID3D11DeviceContext> candidate_context;
+        candidate_device->GetImmediateContext(&candidate_context);
+        if (candidate_context == nullptr) return {};
+        DXGI_SWAP_CHAIN_DESC desc = {};
+        if (FAILED(chain->GetDesc(&desc))) return {};
+        com_ptr<IUnknown> identity;
+        if (FAILED(chain->QueryInterface(&identity)) || identity == nullptr) return {};
+        std::shared_ptr<chain_state> state;
+        {
+            const std::lock_guard<std::mutex> lock(registry_mutex);
+            const auto it = chains.find(identity.get());
+            if (it != chains.end()) return it->second;
+            if (!permit_adoption) return {};
+            state = std::make_shared<chain_state>();
+            state->identity = identity.get();
+            state->device = std::move(candidate_device);
+            state->context = std::move(candidate_context);
+            state->window = desc.OutputWindow;
+            chains.emplace(state->identity, state);
+        }
+        context_scope context_lock(state->context.get());
+        const std::lock_guard<std::recursive_mutex> operation_lock(runtime_operation_mutex);
+        const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+        struct creation_guard
+        {
+            std::shared_ptr<chain_state> state;
+            bool registered = false;
+            bool finished = false;
+            ~creation_guard()
+            {
+                if (finished) return;
+                state->phase = chain_phase::quarantined;
+                ++quarantines;
+                if (!registered) erase_if_current(state);
+            }
+        } creation { state };
+        ++adoption_attempts;
+        com_ptr<ID3DDestructionNotifier> notifier;
+        const HRESULT notifier_hr = chain->QueryInterface(&notifier);
+        if (FAILED(notifier_hr) || notifier == nullptr)
+        {
+            ++notifier_rejections;
+            last_hresult.store(static_cast<std::uint32_t>(notifier_hr));
+            state->phase = chain_phase::rejected;
+            erase_if_current(state);
+            creation.finished = true;
+            return {};
+        }
+        auto cookie = std::make_unique<std::shared_ptr<chain_state>>(state);
+        const HRESULT register_hr = notifier->RegisterDestructionCallback(destroyed, cookie.get(), &state->notification_id);
+        if (FAILED(register_hr))
+        {
+            ++notifier_rejections;
+            last_hresult.store(static_cast<std::uint32_t>(register_hr));
+            state->phase = chain_phase::rejected;
+            erase_if_current(state);
+            creation.finished = true;
+            return {};
+        }
+        cookie.release(); // The exactly-once destruction callback owns this cookie.
+        creation.registered = true;
+        notifier.reset(); // Holding this QI reference would keep the chain alive.
+        const fs::path config = next_owned_config();
+        if (config != config_template)
+        {
+            const DWORD error = reserve_config(config);
+            if (error != ERROR_SUCCESS)
+            {
+                state->phase = chain_phase::rejected;
+                last_error.store(error);
+                creation.finished = true;
+                return state;
+            }
+        }
+        state->owned_config_utf8 = utf8(config);
+        attempt_manual_creation(*state, chain);
+        creation.finished = true;
+        return state;
+    }
+
+    template <typename Native>
+    HRESULT present(IDXGISwapChain *chain, UINT flags, Native &&native)
+    {
+        ++present_calls;
+        if (status.load(std::memory_order_acquire) != 2 || g_in_dxgi_runtime || native_depth != 0 ||
+            (flags & DXGI_PRESENT_TEST) != 0 || automatically_managed(chain))
+            return native();
+        depth_scope scope;
+        std::shared_ptr<chain_state> state;
+        try
+        {
+            state = find_chain(chain, true);
+            if (state)
+            {
+                const auto context = retain_context(state);
+                context_scope context_lock(context.get());
+                const std::lock_guard<std::recursive_mutex> operation_lock(runtime_operation_mutex);
+                const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+                if (!state->dead.load(std::memory_order_acquire) && state->phase == chain_phase::ready &&
+                    !((flags & DXGI_PRESENT_DO_NOT_WAIT) != 0 && state->still_drawing))
+                {
+                    auto *const runtime = static_cast<reshade::runtime *>(state->runtime);
+                    // Establish cleanup before acquisition so partial acquire
+                    // failure or an update exception cannot pin the chain idle.
+                    const release_back_buffer_views release_views { runtime };
+                    if (runtime->acquire_owned_late_d3d11_back_buffer_views())
+                        ReShadeUpdateAndPresentEffectRuntime(state->runtime);
+                    else
+                    {
+                        ++render_failures;
+                        last_error.store(ERROR_FUNCTION_FAILED);
+                    }
+                }
+            }
+        }
+        catch (...)
+        {
+            ++render_failures;
+            last_error.store(ERROR_UNHANDLED_EXCEPTION);
+            if (state)
+            {
+                const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+                state->phase = chain_phase::quarantined;
+                ++quarantines;
+            }
+        }
+        HRESULT hr;
+        { dxgi_scope original_scope; hr = native(); }
+        if (state)
+        {
+            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            state->still_drawing = hr == DXGI_ERROR_WAS_STILL_DRAWING;
+            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+                state->phase = chain_phase::rejected;
+        }
+        last_hresult.store(static_cast<std::uint32_t>(hr));
+        return hr;
+    }
+
+    template <typename Native>
+    HRESULT resize(IDXGISwapChain *chain, Native &&native)
+    {
+        if (status.load(std::memory_order_acquire) != 2 || g_in_dxgi_runtime || native_depth != 0 ||
+            automatically_managed(chain))
+            return native();
+        depth_scope scope;
+        auto state = find_chain(chain, false);
+        if (!state) return native();
+        ++resize_calls;
+        const auto context = retain_context(state);
+        bool managed = false;
+        {
+            context_scope context_lock(context.get());
+            const std::lock_guard<std::recursive_mutex> operation_lock(runtime_operation_mutex);
+            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            if (!state->dead.load(std::memory_order_acquire) &&
+                (state->phase == chain_phase::ready || state->phase == chain_phase::reset ||
+                    state->phase == chain_phase::waiting_for_surface))
+            {
+                managed = true;
+                if (state->runtime != nullptr)
+                {
+                    try
+                    {
+                        reset_surface_events(*state, true);
+                        state->phase = chain_phase::reset;
+                    }
+                    catch (...)
+                    {
+                        state->phase = chain_phase::quarantined;
+                        ++quarantines;
+                        last_error.store(ERROR_UNHANDLED_EXCEPTION);
+                    }
+                }
+            }
+        }
+        if (!managed) return native();
+        HRESULT hr;
+        { dxgi_scope original_scope; hr = native(); }
+        {
+            context_scope context_lock(context.get());
+            const std::lock_guard<std::recursive_mutex> operation_lock(runtime_operation_mutex);
+            const std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            if ((state->phase == chain_phase::reset || state->phase == chain_phase::waiting_for_surface) &&
+                (SUCCEEDED(hr) || hr == DXGI_ERROR_INVALID_CALL) && !state->dead.load(std::memory_order_acquire))
+            {
+                try
+                {
+                    if (state->runtime == nullptr)
+                    {
+                        if (attempt_manual_creation(*state, chain) && SUCCEEDED(hr)) ++resize_successes;
+                    }
+                    else
+                    {
+                        auto *const runtime = static_cast<reshade::runtime *>(state->runtime);
+                        const release_back_buffer_views release_views { runtime };
+                        initialize_surface_events(*state, chain, true);
+                        if (runtime->on_init())
+                        {
+                            state->phase = chain_phase::ready;
+                            if (SUCCEEDED(hr)) ++resize_successes;
+                        }
+                        else state->phase = chain_phase::reset;
+                    }
+                }
+                catch (...)
+                {
+                    state->phase = chain_phase::quarantined;
+                    ++quarantines;
+                    last_error.store(ERROR_UNHANDLED_EXCEPTION);
+                }
+            }
+        }
+        last_hresult.store(static_cast<std::uint32_t>(hr));
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE raw_present(IDXGISwapChain *chain, UINT interval, UINT flags)
+    {
+        const auto original = reshade::hooks::call(raw_present);
+        return present(chain, flags, [&] { return original(chain, interval, flags); });
+    }
+    HRESULT STDMETHODCALLTYPE raw_present1(IDXGISwapChain1 *chain, UINT interval, UINT flags, const DXGI_PRESENT_PARAMETERS *parameters)
+    {
+        const auto original = reshade::hooks::call(raw_present1);
+        return present(chain, flags, [&] { return original(chain, interval, flags, parameters); });
+    }
+    HRESULT STDMETHODCALLTYPE raw_resize(IDXGISwapChain *chain, UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags)
+    {
+        const auto original = reshade::hooks::call(raw_resize);
+        return resize(chain, [&] { return original(chain, count, width, height, format, flags); });
+    }
+    HRESULT STDMETHODCALLTYPE raw_resize1(IDXGISwapChain3 *chain, UINT count, UINT width, UINT height,
+        DXGI_FORMAT format, UINT flags, const UINT *masks, IUnknown *const *queues)
+    {
+        const auto original = reshade::hooks::call(raw_resize1);
+        return resize(chain, [&] { return original(chain, count, width, height, format, flags, masks, queues); });
+    }
+
+    DWORD discover_and_install(HMODULE own_module)
+    {
+        // The only scratch window is owned by this initializer and never shown.
+        WNDCLASSW wc = {};
+        wc.hInstance = own_module;
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.lpszClassName = L"EgoOwnedLateD3D11MethodDiscoveryV1";
+        if (RegisterClassW(&wc) == 0) return GetLastError();
+        const HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName,
+            L"Owned D3D11 method discovery", WS_POPUP, 0, 0, 64, 64, nullptr, nullptr, own_module, nullptr);
+        if (window == nullptr) return GetLastError();
+        struct scratch_window { HWND value; ~scratch_window() { DestroyWindow(value); } } cleanup { window };
+
+        wchar_t system_directory[MAX_PATH] = {};
+        const UINT system_length = GetSystemDirectoryW(system_directory, MAX_PATH);
+        if (system_length == 0) return GetLastError();
+        if (system_length >= MAX_PATH) return ERROR_INSUFFICIENT_BUFFER;
+        const fs::path system_d3d11 = fs::path(system_directory) / L"d3d11.dll";
+        HMODULE d3d11 = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, system_d3d11.c_str(), &d3d11)) return GetLastError();
+        using create_fn = decltype(&D3D11CreateDeviceAndSwapChain);
+        auto create = reinterpret_cast<create_fn>(GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain"));
+        if (create == nullptr) return ERROR_PROC_NOT_FOUND;
+        if (reshade::hooks::is_hooked(reinterpret_cast<void *>(create)))
+            create = reshade::hooks::call<create_fn>(nullptr, reinterpret_cast<void *>(create));
+        if (create == nullptr) return ERROR_PROC_NOT_FOUND;
+        DXGI_SWAP_CHAIN_DESC desc = {};
+        desc.BufferDesc.Width = 64;
+        desc.BufferDesc.Height = 64;
+        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount = 2;
+        desc.OutputWindow = window;
+        desc.Windowed = TRUE;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        com_ptr<ID3D11Device> device;
+        com_ptr<ID3D11DeviceContext> context;
+        com_ptr<IDXGISwapChain> chain;
+        HRESULT hr;
+        {
+            dxgi_scope bypass;
+            hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+                &desc, &chain, &device, nullptr, &context);
+        }
+        if (FAILED(hr)) { last_hresult.store(static_cast<std::uint32_t>(hr)); return ERROR_NOT_SUPPORTED; }
+        com_ptr<IDXGISwapChain3> chain3;
+        if (FAILED(chain->QueryInterface(&chain3))) return ERROR_NOT_SUPPORTED;
+        auto *const table = reshade::hooks::vtable_from_instance(chain.get());
+        auto *const table3 = reshade::hooks::vtable_from_instance(chain3.get());
+        const std::array<void *, 4> targets { table[8], table3[22], table[13], table3[39] };
+        for (size_t i = 0; i < targets.size(); ++i)
+        {
+            if (targets[i] == nullptr) return ERROR_PROC_NOT_FOUND;
+            for (size_t j = 0; j < i; ++j)
+                if (targets[i] == targets[j]) return ERROR_NOT_SUPPORTED;
+        }
+        // The host was pinned before this first installation. Queued/partial
+        // hooks may become enabled by another hook-manager action, but wrappers
+        // stay passive unless all four installations and activation succeed.
+        const bool installed =
+            reshade::hooks::install("EGO owned raw D3D11 Present", targets[0], reinterpret_cast<void *>(&raw_present), true) &&
+            reshade::hooks::install("EGO owned raw D3D11 Present1", targets[1], reinterpret_cast<void *>(&raw_present1), true) &&
+            reshade::hooks::install("EGO owned raw D3D11 ResizeBuffers", targets[2], reinterpret_cast<void *>(&raw_resize), true) &&
+            reshade::hooks::install("EGO owned raw D3D11 ResizeBuffers1", targets[3], reinterpret_cast<void *>(&raw_resize1), true);
+        if (!installed || !reshade::hook::apply_queued_actions()) return ERROR_FUNCTION_FAILED;
+        return ERROR_SUCCESS;
+    }
+}
+
+extern "C" __declspec(dllexport) DWORD WINAPI ReShadeInitializeOwnedLateD3D11V1(
+    const ego_owned_late_d3d11_initialize_v1 *request)
+{
+    using namespace ego_owned_late_d3d11;
+    if (request == nullptr || request->struct_size != sizeof(*request) || request->abi_version != abi_version)
+        return ERROR_INVALID_PARAMETER;
+    const std::lock_guard<std::mutex> lock(install_mutex);
+    if (status.load() != 0) return status.load() == 2 ? ERROR_ALREADY_INITIALIZED : ERROR_INVALID_STATE;
+    try
+    {
+        fs::path path;
+        DWORD error = validate_owned_config(*request, path);
+        if (error != ERROR_SUCCESS) return error;
+        error = reserve_config(path);
+        if (error != ERROR_SUCCESS) return error;
+        config_template = std::move(path);
+        HMODULE own_module = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<LPCWSTR>(&ReShadeInitializeOwnedLateD3D11V1), &own_module))
+            return GetLastError();
+        status.store(1, std::memory_order_release);
+        error = discover_and_install(own_module);
+        last_error.store(error);
+        status.store(error == ERROR_SUCCESS ? 2 : 3, std::memory_order_release);
+        return error;
+    }
+    catch (...)
+    {
+        last_error.store(ERROR_UNHANDLED_EXCEPTION);
+        status.store(3, std::memory_order_release);
+        return ERROR_UNHANDLED_EXCEPTION;
+    }
+}
+
+extern "C" __declspec(dllexport) DWORD WINAPI ReShadeQueryOwnedLateD3D11V1(
+    ego_owned_late_d3d11_stats_v1 *result)
+{
+    using namespace ego_owned_late_d3d11;
+    if (result == nullptr || result->struct_size != sizeof(*result) || result->abi_version != abi_version)
+        return ERROR_INVALID_PARAMETER;
+    ego_owned_late_d3d11_stats_v1 snapshot {};
+    snapshot.struct_size = sizeof(snapshot);
+    snapshot.abi_version = abi_version;
+    snapshot.status = status.load();
+    snapshot.last_win32_error = last_error.load();
+    snapshot.last_hresult = last_hresult.load();
+    snapshot.present_calls = present_calls.load();
+    snapshot.adoption_attempts = adoption_attempts.load();
+    snapshot.adoption_successes = adoption_successes.load();
+    snapshot.notifier_rejections = notifier_rejections.load();
+    snapshot.automatic_proxy_skips = automatic_skips.load();
+    snapshot.resize_calls = resize_calls.load();
+    snapshot.resize_successes = resize_successes.load();
+    snapshot.retirements = retirements.load();
+    snapshot.quarantines = quarantines.load();
+    snapshot.render_failures = render_failures.load();
+    *result = snapshot;
+    return ERROR_SUCCESS;
+}
