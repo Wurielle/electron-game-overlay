@@ -102,6 +102,11 @@ for (const arch of ['x64', 'x86'])
       ' native evaluator agrees with the production JS policy; invalid documents reject without injection',
     (t) => {
       if (process.platform !== 'win32') {
+        assert.notEqual(
+          process.env.EGO_REQUIRE_NATIVE_PROCESS_POLICY,
+          '1',
+          'Required native policy evaluation needs Windows',
+        );
         t.skip('Windows native evaluator');
         return;
       }
@@ -113,6 +118,17 @@ for (const arch of ['x64', 'x86'])
           arch === 'x64' ? 'inject.exe' : 'inject32.exe',
         ),
         file = path.join(root, 'policy.txt');
+      if (!fs.existsSync(exe)) {
+        assert.notEqual(
+          process.env.EGO_REQUIRE_NATIVE_PROCESS_POLICY,
+          '1',
+          'Required native policy evaluator is missing: ' + exe,
+        );
+        t.skip(
+          'Native injectors are not built in the SDK-only suite; required in the production native job',
+        );
+        return;
+      }
       fs.writeFileSync(file, serialize(policy(rules)));
       for (const [image, expected] of cases) {
         const r = spawnSync(exe, ['--check-process-policy', file, image], {
@@ -120,7 +136,12 @@ for (const arch of ['x64', 'x86'])
           timeout: 5000,
           windowsHide: true,
         });
-        assert.equal(r.status, 0, r.stderr);
+        assert.ifError(r.error);
+        assert.equal(
+          r.status,
+          0,
+          r.stderr || 'Native evaluator exited unsuccessfully',
+        );
         assert.equal(
           r.stdout.trim(),
           expected ? 'EGO_PROCESS_POLICY_ALLOW' : 'EGO_PROCESS_POLICY_DENY',
@@ -138,6 +159,11 @@ for (const arch of ['x64', 'x86'])
           exe,
           ['--check-process-policy', file, 'C:/steamapps/game.exe'],
           { encoding: 'utf8', timeout: 5000, windowsHide: true },
+        );
+        assert.ifError(r.error);
+        assert.ok(
+          Number.isInteger(r.status),
+          'Native evaluator must exit with a status',
         );
         assert.notEqual(r.status, 0);
         assert.equal(r.stdout.includes('EGO_TARGET_SELECTED'), false);

@@ -290,6 +290,10 @@ jobs:
         run: |
           Get-Command Get-FileHash -ErrorAction Stop | Out-Null
           npm exec --yes=false -- nx run electron-game-overlay:build
+      - name: Check native process policy on both architectures
+        env:
+          EGO_REQUIRE_NATIVE_PROCESS_POLICY: '1'
+        run: node --test --test-reporter=tap libs/electron-game-overlay/tests/process-policy.test.cjs
       - name: Package SDK release candidate
         shell: pwsh
         run: |
