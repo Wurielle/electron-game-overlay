@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Actual native injectors against owned console targets and inert marker DLLs; no real-game overlay acceptance.",
+  "upstreamReShadeRevision": "4a50d1eddace85734871d91792ff214f13f66c01",
+  "normalizedInjectorSourceSha256": "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135",
+  "cooperativeAddonProtocol": 1,
+  "addonBuildId": "A8E9DA12477741B9979D9B1B51994EF3",
+  "supportedSessionScope": "Same Windows token session; cross-session mutation fails closed before Local ownership claims.",
+  "results": [
+    {
+      "schemaVersion": 1,
+      "architecture": "x64",
+      "scope": "Owned console processes and inert marker DLLs; no game rendering/input acceptance.",
+      "injectorSha256": "0FDEFBF986160190436625D2843F282C18E3D44DF3C5E93290B4C577FA731327",
+      "addonBuildId": "A8E9DA12477741B9979D9B1B51994EF3",
+      "injectorSourceSha256": "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135",
+      "sameTokenSessionAccepted": true,
+      "invalidTargetSessionQueryFailedClosed": true,
+      "differentSessionPolicyRejected": true,
+      "hostInstances": 1,
+      "independentMemberModules": 3,
+      "simultaneousFirstStarts": true,
+      "hostClaimSurvivedInjectorExit": true,
+      "claimReleasedOnTargetExit": true,
+      "hostClaimSurvivedCreatorCrash": true,
+      "staleMemberBuildRejected": true,
+      "processInstanceMismatchRejected": true,
+      "uncertainClaimNeverInjected": true,
+      "exactTargetBasePathPreserved": true
+    },
+    {
+      "schemaVersion": 1,
+      "architecture": "Win32",
+      "scope": "Owned console processes and inert marker DLLs; no game rendering/input acceptance.",
+      "injectorSha256": "072D421B251E6E8EEF5C602C28DD6D0642A4D126F3E34A35A6CA0B2F2DDDB278",
+      "addonBuildId": "A8E9DA12477741B9979D9B1B51994EF3",
+      "injectorSourceSha256": "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135",
+      "sameTokenSessionAccepted": true,
+      "invalidTargetSessionQueryFailedClosed": true,
+      "differentSessionPolicyRejected": true,
+      "hostInstances": 1,
+      "independentMemberModules": 3,
+      "simultaneousFirstStarts": true,
+      "hostClaimSurvivedInjectorExit": true,
+      "claimReleasedOnTargetExit": true,
+      "hostClaimSurvivedCreatorCrash": true,
+      "staleMemberBuildRejected": true,
+      "processInstanceMismatchRejected": true,
+      "uncertainClaimNeverInjected": true,
+      "exactTargetBasePathPreserved": true
+    }
+  ],
+  "unverified": [
+    "Actual ReShade registration and dispatch",
+    "Pixels, keyboard, mouse, capture and cursor behavior",
+    "Independently released SDK/engine versions",
+    "Real-game E2E acceptance",
+    "Actual different-Windows-session process rejection (policy branch and invalid-token failure were tested)"
+  ]
+}

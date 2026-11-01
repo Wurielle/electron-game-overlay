@@ -3,10 +3,13 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "12EE788081A34E00B10862242DF38893"
+    "A8E9DA12477741B9979D9B1B51994EF3"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359"
+    "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135"
+)
+set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
+    "007B4DF39CEB0C7E6777B990A9A24D352DBC399C79DCA8488E9F4E49C58FB166"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
     "07A76311F29A7A20E54D305BCA1F384A035C84D620BF201C3CACBAC9681BA7B6"
@@ -112,6 +115,9 @@ set(RESHAPE_INJECTOR_NAME_WATCHER_READY_PATCH
 )
 set(RESHAPE_FUTURE_TARGETS_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-future-targets.patch")
 set(RESHAPE_PROCESS_POLICY_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-policy.patch")
+set(RESHAPE_COOPERATIVE_MEMBERS_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-cooperative-members.patch"
+)
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -163,6 +169,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH}"
     "${RESHAPE_FUTURE_TARGETS_PATCH}"
     "${RESHAPE_PROCESS_POLICY_PATCH}"
+    "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -321,6 +328,20 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
+# Member attachment is the terminal injector seam. Peel it before the existing
+# independently verified historical stack is replayed on repeated configure.
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
+    WORKING_DIRECTORY "${reshade_SOURCE_DIR}"
+    RESULT_VARIABLE EGO_COOPERATIVE_MEMBERS_PRESENT OUTPUT_QUIET ERROR_QUIET
+)
+if(EGO_COOPERATIVE_MEMBERS_PRESENT EQUAL 0)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" apply --reverse "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
+        WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY
+    )
+endif()
+
 # Normalize only an exact prior terminal injector before peeling the stack.
 # The terminal future-target patch also pins the add-on build ID. Historical
 # lower-stack migration cannot recognize it until this terminal seam is peeled.
@@ -333,7 +354,8 @@ string(REGEX REPLACE
     EGO_TERMINAL_NORMALIZED "${EGO_TERMINAL_CONTENT}")
 string(SHA256 EGO_TERMINAL_HASH "${EGO_TERMINAL_NORMALIZED}")
 string(TOUPPER "${EGO_TERMINAL_HASH}" EGO_TERMINAL_HASH)
-if(EGO_TERMINAL_HASH STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 AND
+if((EGO_TERMINAL_HASH STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
+    EGO_TERMINAL_HASH STREQUAL RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256) AND
    NOT EGO_TERMINAL_CONTENT STREQUAL EGO_TERMINAL_NORMALIZED)
     file(WRITE "${EGO_TERMINAL_INJECTOR}" "${EGO_TERMINAL_NORMALIZED}")
 endif()
@@ -1930,6 +1952,7 @@ endif()
 
 execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_FUTURE_TARGETS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_PROCESS_POLICY_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}" WORKING_DIRECTORY "${reshade_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and
@@ -2201,6 +2224,8 @@ if(ELECTRON_GAME_OVERLAY_BUILD_ADDON)
 
     add_library(electron_game_overlay SHARED
         src/electron_game_overlay_addon.cpp
+        src/ego_cooperative_registry.hpp
+        src/ego_cooperative_input.hpp
     )
     target_compile_features(electron_game_overlay PRIVATE cxx_std_20)
     target_compile_definitions(electron_game_overlay PRIVATE

@@ -78,13 +78,25 @@ physical-key gate requires physical input, not a relabeled synthetic event.
 
 Work is in progress on `codex/explore-independent-overlay-instances`.
 
-- Explicit private-directory Rust transport constructor and cooperative input
-  primitives: implemented; 120 Rust tests passed.
-- App-private TypeScript transport: implemented and tested with real socket
-  peers; default SDK/launcher activation is in progress.
-- Per-engine native registry/composition/input integration and safe member
-  attachment: in progress.
-- Candidate native package and all required game/feature E2E: pending.
+- Explicit private-directory Rust transport, registered-window metadata,
+  incarnation-checked routing and logical focus across raster gaps: implemented;
+  150 Rust tests passed on each of x64 and x86, including cooperative
+  interception acknowledgement races.
+- App-private TypeScript transport and default SDK/launcher activation:
+  implemented and tested with real socket peers. The normal sealed SDK package
+  no longer starts or requires a broker executable.
+- Per-engine native registry/composition/input integration and member attachment:
+  implemented and compiled for x64 and x86. Registry protocol, transport ABI and
+  loader/claim fixtures passed on both architectures. These controlled checks do
+  not establish rendering or game acceptance.
+- Candidate native package: built and sealed for both architectures. Both fresh
+  D3D11 SDK input cycles pass after fixing acknowledgement ordering and two test
+  harness issues (environment deletion and waiting for native watcher readiness).
+  Gun Frog's automatic explicit-focus case passes with zero pointer-downs.
+- Surface-lifetime and delayed-source fixes: implemented, reviewed, compiled and
+  covered by registry tests. Actual two-app multi-surface lifecycle acceptance is
+  still required. Remaining game and full feature acceptance are in progress;
+  physical-first-key evidence still requires the agreed human key presses.
 
 This status is not a claim that a complete replacement or game acceptance has
 already been achieved.

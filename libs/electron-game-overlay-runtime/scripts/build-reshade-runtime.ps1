@@ -132,6 +132,10 @@ $InjectorProcessInstanceBindingPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
 $InjectorProcessInstanceBindingPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorProcessInstanceBindingPatch).Hash
+$CooperativeMembersPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-cooperative-members.patch"
+$CooperativeMembersPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $CooperativeMembersPatch).Hash
 $ExpectedPatchedFiles = @(
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -152,7 +156,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/input.cpp" = "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
     "source/input.hpp" = "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
     "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359"
+    "tools/injector.cpp" = "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -198,7 +202,7 @@ function Test-ReShadePatchedSourceState {
         $X86RuntimePatch,
         $X86TargetArchitectureDiagnosticPatch,
         $InjectorExactTargetPathPatch,
-        $ProcessPolicyPatch
+        $CooperativeMembersPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -283,6 +287,8 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorProcessInstanceBindingPatchSha256 -eq $InjectorProcessInstanceBindingPatchHash -and
             $Stamp.injectorFutureTargetsPatchSha256 -eq $FutureTargetsPatchHash -and
             $Stamp.injectorProcessPolicyPatchSha256 -eq $ProcessPolicyPatchHash -and
+            $Stamp.injectorCooperativeMembersPatchSha256 -eq $CooperativeMembersPatchHash -and
+            $Stamp.cooperativeAddonProtocol -eq 1 -and
             $Stamp.injectorProcessInstanceBinding -eq 1 -and
             $Stamp.injectorFutureTargets -eq 2 -and
             $Stamp.configuration -eq "Release" -and
@@ -422,6 +428,8 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorNameWatcherReadyPatchSha256 = $InjectorNameWatcherReadyPatchHash
     injectorFutureTargetsPatchSha256 = $FutureTargetsPatchHash
     injectorProcessPolicyPatchSha256 = $ProcessPolicyPatchHash
+    injectorCooperativeMembersPatchSha256 = $CooperativeMembersPatchHash
+    cooperativeAddonProtocol = 1
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash
     injectorProcessInstanceBinding = 1
     injectorFutureTargets = 2

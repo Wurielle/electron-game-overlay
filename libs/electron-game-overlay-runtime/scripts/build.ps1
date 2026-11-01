@@ -100,9 +100,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "12EE788081A34E00B10862242DF38893"
+$ExpectedAddonBuildId = "A8E9DA12477741B9979D9B1B51994EF3"
 # Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 7
+$RuntimeGeneration = 8
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -160,6 +160,8 @@ $ExpectedPatchProvenance = [ordered]@{
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
     injectorProcessPolicyPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-process-policy.patch"
+    injectorCooperativeMembersPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-cooperative-members.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -249,6 +251,7 @@ catch {
     throw "The pinned ReShade runtime build stamp is invalid: $BuildStampPath"
 }
 if ($BuildStamp.schemaVersion -ne 29 -or
+    $BuildStamp.cooperativeAddonProtocol -ne 1 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.injectorFutureTargets -ne 2 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
@@ -282,6 +285,7 @@ $PackageBuildStamp = [ordered]@{
     platform = $ArchitectureConfig.PackagePlatform
     configuration = "RelWithDebInfo"
     addonBuildId = $ExpectedAddonBuildId
+    cooperativeAddonProtocol = 1
     injectorProcessInstanceBinding = 1
     injectorFutureTargets = 2
     managerProtocolSchemaVersion = 1
