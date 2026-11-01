@@ -52,7 +52,7 @@ test('public owners create independent private backends without starting session
   const { Owner, calls, instances } = ownerHarness();
   new Owner();
   new Owner({ allowPrereleaseBroker: false });
-  assert.deepEqual(calls, [{ requiredInputCapabilities: undefined }, { requiredInputCapabilities: undefined }]);
+  assert.deepEqual(calls, [{ requiredInputCapabilities: [] }, { requiredInputCapabilities: [] }]);
   assert.equal(instances.length, 2);
   assert.notEqual(instances[0], instances[1]);
 });
@@ -61,5 +61,5 @@ test('legacy prerelease flags do not elect a broker or discard the owner input-c
   const { Owner, calls } = ownerHarness();
   new Owner({ allowPrereleaseBroker: true });
   new Owner({ allowPrereleaseBroker: true, requiredInputCapabilities: ['copied-raw-input-buffer'] });
-  assert.deepEqual(calls, [{ requiredInputCapabilities: undefined }, { requiredInputCapabilities: ['copied-raw-input-buffer'] }]);
+  assert.deepEqual(calls, [{ requiredInputCapabilities: [] }, { requiredInputCapabilities: ['copied-raw-input-buffer'] }]);
 });

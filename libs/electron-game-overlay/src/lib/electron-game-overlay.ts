@@ -1,6 +1,7 @@
 import { createNativeOverlay, type NativeOverlay } from './native.js';
 import { createOverlaySession, OverlaySession } from './overlay-session.js';
 import type { OverlayInputCapability } from './types.js';
+import { normalizeRequiredInputCapabilities } from './input-capabilities.js';
 
 /**
  * Application-level overlay options.
@@ -29,7 +30,9 @@ export interface ElectronGameOverlayOptions {
  * no longer needs overlay support.
  */
 export class ElectronGameOverlay {
-  private readonly nativeOverlay: NativeOverlay;
+  private nativeOverlay: NativeOverlay;
+  private readonly backendOptions: Readonly<ElectronGameOverlayOptions>;
+  private hasCreatedSession = false;
   private activeSession: OverlaySession | undefined;
   private disposed = false;
 
@@ -42,10 +45,11 @@ export class ElectronGameOverlay {
    * ```
    */
   constructor(options: ElectronGameOverlayOptions = {}) {
-    this.nativeOverlay = createNativeOverlay(
-      options.allowPrereleaseBroker === true,
-      { requiredInputCapabilities: options.requiredInputCapabilities },
-    );
+    this.backendOptions = Object.freeze({
+      allowPrereleaseBroker: options.allowPrereleaseBroker === true,
+      requiredInputCapabilities: normalizeRequiredInputCapabilities(options.requiredInputCapabilities),
+    });
+    this.nativeOverlay = this.createBackend();
   }
 
   /** Creates a session without starting its transport until it is first used. */
@@ -59,7 +63,11 @@ export class ElectronGameOverlay {
       );
     }
 
+    // A closed session may have published a durable route into a live target.
+    // Preserve that consumed route and give the next session its own namespace.
+    if (this.hasCreatedSession) this.nativeOverlay = this.createBackend();
     const session = createOverlaySession(this.nativeOverlay);
+    this.hasCreatedSession = true;
     this.activeSession = session;
     session.onClose(() => {
       if (this.activeSession === session) {
@@ -67,6 +75,12 @@ export class ElectronGameOverlay {
       }
     });
     return session;
+  }
+
+  private createBackend(): NativeOverlay {
+    return createNativeOverlay(this.backendOptions.allowPrereleaseBroker === true, {
+      requiredInputCapabilities: this.backendOptions.requiredInputCapabilities,
+    });
   }
 
   /**
