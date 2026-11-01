@@ -1,0 +1,510 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Actual root-run x64 controlled owned-ReShade first-import D3D12 overlay proof, independently audited from outer controller evidence; not production or real-game acceptance",
+  "status": "passed",
+  "runRelativePath": "build/early-reshade-bootstrap/overlay-proof-x64-6228ec5a6669442a98626c861f911648",
+  "architecture": "x64",
+  "processId": 46360,
+  "creationTime100ns": "134380295245693982",
+  "windowHandle": "200904",
+  "detoursCommit": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+  "mechanism": {
+    "firstImportDllCount": 2,
+    "firstImportOrder": [
+      "exact packaged owned ReShade64.dll",
+      "minimal early_reshade_restore64.dll"
+    ],
+    "ordinal1Name": "D2D1CreateFactory",
+    "ordinal1Rva": 970272,
+    "ordinal1InvokedAsHelper": false,
+    "restoreOrdinal1Validated": true,
+    "importsRestoredBeforeGraphics": true,
+    "graphicsInitializationPhase": "exe-crt-before-main",
+    "automaticReShadeRuntimeProven": true,
+    "manualRuntimeApiUsed": false,
+    "nativeHostCallsLoadLibrary": false,
+    "reshadeModuleCountBeforeCrt": 1,
+    "reshadeModuleEnumerationCompleteBeforeCrt": true
+  },
+  "runtimeSha256": "D3B18C80EAB3DC255A2DE2FDAEB01926B4695FEB5A9DD564A6EC136FE2E94CCA",
+  "addonSha256": "A5E15A093F4C04287B2220B0850717625261E26EB92C4875F8C68732AC76BE8B",
+  "sdkEntrySha256": "AC4D59EDFFC5B4667FD6B803366E98242F2F2CE0F8FB84970AB8E2FB78232565",
+  "runtimeModificationScope": "Startup mechanism reused the current packaged project-owned runtime and add-on byte-for-byte; it made no new ReShade source/binary modification. This is not a claim that the existing packaged runtime is an unpatched official distribution.",
+  "stagedBinaryIdentities": [
+    {
+      "leaf": "ReShade64.dll",
+      "sha256": "D3B18C80EAB3DC255A2DE2FDAEB01926B4695FEB5A9DD564A6EC136FE2E94CCA",
+      "stagedBytesUnchangedAtAudit": true,
+      "sourceBytesUnchangedAtAudit": true
+    },
+    {
+      "leaf": "electron_game_overlay.addon64",
+      "sha256": "A5E15A093F4C04287B2220B0850717625261E26EB92C4875F8C68732AC76BE8B",
+      "stagedBytesUnchangedAtAudit": true,
+      "sourceBytesUnchangedAtAudit": true
+    },
+    {
+      "leaf": "early_reshade_bootstrap_host.exe",
+      "sha256": "E33D3E6F5559E80961E5D5112ECA4DE10F857FE19BF4E7AA4604CB08DDC0CF00",
+      "stagedBytesUnchangedAtAudit": true,
+      "sourceBytesUnchangedAtAudit": true
+    },
+    {
+      "leaf": "early_reshade_bootstrap_launcher.exe",
+      "sha256": "4E85CD924DF9475FA2159710920EAF6B82B25F5766D4FC2D48525DFAE9F8A323",
+      "stagedBytesUnchangedAtAudit": true,
+      "sourceBytesUnchangedAtAudit": true
+    },
+    {
+      "leaf": "early_original_graphics.dll",
+      "sha256": "5054027586E1D55F28FF0F7E039AFB35F45988FBF78FE24CE233F838322C3C19",
+      "stagedBytesUnchangedAtAudit": true,
+      "sourceBytesUnchangedAtAudit": true
+    },
+    {
+      "leaf": "early_reshade_restore64.dll",
+      "sha256": "953678F777314D97941504EE165C9E78EBA50844EE4924802196846930937C67",
+      "stagedBytesUnchangedAtAudit": true,
+      "sourceBytesUnchangedAtAudit": true
+    }
+  ],
+  "mappedOwnedModules": [
+    {
+      "leaf": "ReShade64.dll",
+      "sha256": "D3B18C80EAB3DC255A2DE2FDAEB01926B4695FEB5A9DD564A6EC136FE2E94CCA",
+      "baseAddress": "140720589963264"
+    },
+    {
+      "leaf": "electron_game_overlay.addon64",
+      "sha256": "A5E15A093F4C04287B2220B0850717625261E26EB92C4875F8C68732AC76BE8B",
+      "baseAddress": "140720583737344"
+    }
+  ],
+  "sourceIdentities": [
+    {
+      "leaf": "CMakeLists.txt",
+      "sha256": "B42DBFBB21A743B57824D58A265C5D198A98E1A8CDB707F30C90A8A7D9D97341"
+    },
+    {
+      "leaf": "host.cpp",
+      "sha256": "2DD2FCCEE5294EFCA963C0CF425DE896FF2CA41981C019A093672F1B16F49AB6"
+    },
+    {
+      "leaf": "launcher.cpp",
+      "sha256": "98E0A3D3FCA13D8F05C385AEAC8BCB8F10378C0D82D78FC7CAE73B24BD86D5D5"
+    },
+    {
+      "leaf": "README.md",
+      "sha256": "7A33152A37B3A617C8D695BA2D3D1417AB2A64F92A5F2290B5A79533854C8D41"
+    },
+    {
+      "leaf": "restore.cpp",
+      "sha256": "27B84B1EE4F1E43D08528F40E2B63604BCA8A565C1FFAD73A861BA3BBBE7AF54"
+    },
+    {
+      "leaf": "restore.h",
+      "sha256": "5DF2542E63DF9C4600D56471F4694715D06CBC3A36771728274365F3CBF0D04C"
+    },
+    {
+      "leaf": "validate-sdk-proof.cjs",
+      "sha256": "BF96B05DA18212EA725822A2E3BC6901EAEFCBCD7DA1F84E1A7254AD9E4CF2E3"
+    },
+    {
+      "leaf": "validate-sdk-proof.test.cjs",
+      "sha256": "7B9147BDA4A3A0E6759065DEC8DAB3808279AD646375DBA06BB6CC4418B25D0A"
+    }
+  ],
+  "sharedProducerSha256": "B278E04C9CD2CAFEFCD911B02199E581265B9D6314E40A650D4F1B8557E1818E",
+  "outerAcceptance": {
+    "renderedOverlayPixelsProven": true,
+    "syntheticForegroundInputProven": true,
+    "inputSource": "Windows SendInput virtual keys and pointer",
+    "pixelBeforeResize": {
+      "source": "foreground desktop GetPixel",
+      "tickMs": 122644171,
+      "expected": "#c62828",
+      "hwnd": 200904,
+      "targetPid": 46360,
+      "utc": "2026-11-01T17:58:45.7169803Z",
+      "clientX": 60,
+      "blue": 40,
+      "red": 198,
+      "green": 40,
+      "rawColorRef": "0x002828C6",
+      "clientY": 80
+    },
+    "pixelAfterResize": {
+      "source": "foreground desktop GetPixel",
+      "tickMs": 122646046,
+      "expected": "#c62828",
+      "hwnd": 200904,
+      "targetPid": 46360,
+      "utc": "2026-11-01T17:58:47.5992122Z",
+      "clientX": 60,
+      "blue": 40,
+      "red": 198,
+      "green": 40,
+      "rawColorRef": "0x002828C6",
+      "clientY": 80
+    },
+    "beforeResize": {
+      "dimensions": {
+        "width": 800,
+        "height": 600
+      },
+      "surfaceId": "0x23244007860",
+      "surfaceRevision": 1,
+      "value": "az",
+      "keyDowns": 2,
+      "keyUps": 2,
+      "pointerDowns": 1,
+      "pointerUps": 1,
+      "intercepting": true,
+      "sourceRaster": {
+        "width": 300,
+        "height": 220,
+        "scaleFactor": 1,
+        "byteLength": 264000,
+        "sha256": "25cbda56ff4e0e7a925da87313cce65c254f17b5902c80b3c2d8610d3ac0240a",
+        "sample": {
+          "x": 20,
+          "y": 20,
+          "byteOrder": "BGRA",
+          "bytes": [
+            40,
+            40,
+            198,
+            255
+          ]
+        }
+      }
+    },
+    "afterResizeBeforeRelease": {
+      "dimensions": {
+        "width": 960,
+        "height": 640
+      },
+      "surfaceId": "0x23244007860",
+      "surfaceRevision": 2,
+      "value": "b",
+      "keyDowns": 3,
+      "keyUps": 3,
+      "intercepting": true,
+      "sourceRaster": {
+        "width": 300,
+        "height": 220,
+        "scaleFactor": 1,
+        "byteLength": 264000,
+        "sha256": "cb88bb1950ed2aeea953363fe97b5f9d4b3918538bd311671c8ad49fef8c30c5",
+        "sample": {
+          "x": 20,
+          "y": 20,
+          "byteOrder": "BGRA",
+          "bytes": [
+            40,
+            40,
+            198,
+            255
+          ]
+        }
+      }
+    },
+    "interceptedNativeCountersUnchanged": true,
+    "nativeSuppressionEvidence": "Controller compared fresh native keyDown/character/pointerDown counters before/after intercepted input. The true comparison result is retained; its raw counter pair was not serialized.",
+    "releasedVirtualKey": "C (0x43), Windows SendInput",
+    "finalNativeKeyDownMessages": 1,
+    "finalNativeCharacterMessages": 1,
+    "finalNativePointerDownMessages": 0,
+    "finalProducerStatus": "stopped",
+    "finalProducerInterception": false,
+    "finalDomValue": "b",
+    "finalDomKeyDowns": 3,
+    "releaseEvidence": "The controller waited for interception release and a native keyDown counter increase. Final native counters are one keyDown/one character while the DOM remained b with three keyDowns. The raw release comparison pair was not serialized."
+  },
+  "privateTransport": {
+    "producerPid": 9024,
+    "targetPid": 46360,
+    "port": 57156,
+    "tokenFingerprint": "3cc4486cec4a1e3860c66b2d312b82e0218841f1567106f5a0c41091f53b46f8",
+    "connectionCountBefore": 1,
+    "connectionCountAfter": 1,
+    "authenticationCountAfter": 1,
+    "transportLostCountAfter": 0,
+    "targetDisconnectedCountAfter": 0
+  },
+  "nativeLifecycle": {
+    "traceEventCount": 16,
+    "nativePresentSuccesses": 164,
+    "preResizePresentCount": 60,
+    "framesAfterResize": 104,
+    "resizeSuccesses": 1,
+    "initializerDeviceHr": "0x00000000",
+    "initializerQueueHr": "0x00000000",
+    "queueDeviceIdentityMatches": true,
+    "adapter": {
+      "description": "NVIDIA GeForce GTX 1080",
+      "vendorId": 4318,
+      "deviceId": 7040,
+      "luidHighPart": 0,
+      "luidLowPart": 64104
+    },
+    "cleanupCompleted": true,
+    "windowDestroyed": true,
+    "closeRequested": true,
+    "stopReason": "close-requested",
+    "childExitCode": 0,
+    "elapsedMs": 2968,
+    "finalClientRectUnavailableAfterWindowDestroyed": true
+  },
+  "nativeValidatorScope": {
+    "passed": true,
+    "renderedOverlayPixelsProven": false,
+    "syntheticForegroundInputProven": false,
+    "explanation": "The native-only validator intentionally certifies no pixels/input. Those claims above come from the distinct outer desktop/DOM/input controller."
+  },
+  "ownershipAndBounds": {
+    "identityVerified": true,
+    "ownedChildJobBound": true,
+    "createProcessCalls": 1,
+    "helperCreationRejected": false,
+    "previousSuspendCount": 1,
+    "timedOut": false,
+    "terminatedOwnedChild": false,
+    "hostLifetimeMs": 180000,
+    "nativeChildWaitMs": 210000,
+    "singleGlobalControllerDeadlineImplemented": false,
+    "controllerWaitPolicy": "Independent bounded phase waits: readiness30s, ordinary assertions/commands10s, native-report refresh5s, resize25s, producer exit10s, target/launcher exit20s each; cleanup waits5s. Do not claim a single225s controller deadline.",
+    "ansiCodePage": 1252,
+    "ansiPathsRoundTripVerified": true
+  },
+  "displayPrecondition": {
+    "status": "on",
+    "actualOnNotification": true,
+    "state": 1,
+    "requestCreated": true,
+    "clearSucceeded": true,
+    "closeSucceeded": true,
+    "globalSettingsChanged": false
+  },
+  "warningLines": [
+    "18:58:47:967 [28968] | WARN  | [Electron Game Overlay Runtime] Electron game overlay runtime final outbound transport drain failed (status -9): overlay transport is not connected"
+  ],
+  "warningInterpretation": "One final outbound transport drain warning status-9 occurred after the SDK producer intentionally exited and the native engine deactivated its session. Native GPU/resource/window cleanup and normal process exit passed. This is not a warning-free log claim.",
+  "filesystemScope": {
+    "targetWasWorkspaceOwnedFixture": true,
+    "targetDirectoryRole": "Fresh project-owned stage containing the copied controlled host and test assets",
+    "existingRealGameTargeted": false,
+    "foreignInstallTargeted": false,
+    "onDiskStagedBinariesChanged": false,
+    "productionExternalStageBesideRealGameTested": false,
+    "claim": "No real game/foreign installation was selected or modified by this experiment. Its project-owned fixture assets/configuration live in workspace-owned test directories; normal OS/driver-managed cache writes were not audited."
+  },
+  "trace": [
+    {
+      "schemaVersion": 1,
+      "event": "restore-attach",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438707908",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "restore-owned-reshade-present",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438716327",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "restore-imports-complete",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438724534",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-dll-attach-entry",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438733892",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-dll-attach-return",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438739126",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-crt-initializer-entry",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438751179",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "actual-reshade-host-verified",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438757687",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "actual-reshade-restore-state-verified",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438762573",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-graphics-initializer-begin",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226438767105",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-device-result",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226440850700",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-queue-result",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226441085013",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-graphics-initializer-end",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226441090446",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-crt-initializer-return",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226441095433",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-entry",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226441100632",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-resize-completed",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226452953746",
+      "statusCode": "0x00000000",
+      "count": 1
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-present-completed",
+      "pid": 46360,
+      "creationTime100ns": "134380295245693982",
+      "threadId": 28968,
+      "qpc": "1226470768049",
+      "statusCode": "0x00000000",
+      "count": 164
+    }
+  ],
+  "artifactHashes": [
+    {
+      "relativePath": "evidence.json",
+      "sha256": "F895A37D66C96BB101B36CC389062DB9BA021E8E9D87541AB73BF10180037034"
+    },
+    {
+      "relativePath": "stage/launcher-result.json",
+      "sha256": "19915C80E3AB1BDBA2B842E222CC663D835955CB448CE67ED0FA32E626B35CC8"
+    },
+    {
+      "relativePath": "stage/host-report.json",
+      "sha256": "6969F5768A98BEBC86DB030BDDF353B0A2F2560571FDA037104739FDBB096617"
+    },
+    {
+      "relativePath": "stage/native-proof-validation.json",
+      "sha256": "571D48345BD6164C84EB092DA6114139AA500D82E69CE1A040400574EC5884AC"
+    },
+    {
+      "relativePath": "stage/trace.ndjson",
+      "sha256": "7DECABB418CEAA7942E3AA4E0A9697857A38EC237BEB25037BDB7BC933CB89CA"
+    },
+    {
+      "relativePath": "stage/ReShade.log",
+      "sha256": "CF3A685CAD0D4AB0FBD6380AC787BADC91C95287AB54BE08CC39D51027ED4F07"
+    },
+    {
+      "relativePath": "producer/scene-state.json",
+      "sha256": "6A51F73C3E5B78E432D0A8AD409E281F4967A13F21B6242844529C04A185E213"
+    }
+  ],
+  "unverified": [
+    "Production launch API or readiness/job handoff",
+    "Generic late attachment",
+    "Steam folder-watcher/relaunch guarantee",
+    "Real-game or foreign-install acceptance",
+    "Win32 or other-backend acceptance",
+    "All overlay features or buffered-raw delivery",
+    "Multiple app/SDK generations or owner-crash survival for this launch path",
+    "General Unicode import-path handling",
+    "Physical keyboard input"
+  ],
+  "productionActivation": false,
+  "automaticDiscoveryProven": false,
+  "lateAttachmentProven": false,
+  "physicalKeyboardProven": false
+}

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Root-coordinated x64 host-assisted public manual-runtime API experiment; not automatic attachment or real-game acceptance.",
+  "runtimeSha256": "5851D903ABFACD7DEBA7DE4AAC580C0EA648AD6F2AE5E6DE85BCFF1AD990769A",
+  "addonSha256": "F807E8E16E3997463A1CA99C29D44E7F8806D07CFDF8878BE7A15E5B982D862E",
+  "hostSha256": "C795065CB2CA7564461B386F3F25EB31B629FF0CA5AB5C06C5F65BD6921E5DC6",
+  "hostSourceSha256": "3F6A7B4B17A49E950DA259DCACD3B88809D68B65048983AD04637C7F9CF615C8",
+  "manualApiLifecycle": {
+    "status": "passed",
+    "architecture": "x64",
+    "usedWarp": false,
+    "framesBeforeLoad": 60,
+    "manualRenderCalls": 599,
+    "stateChecks": 599,
+    "stateMismatches": 0,
+    "resizeSuccesses": 1,
+    "framesAfterResize": 479,
+    "manualCreateSuccesses": 2,
+    "manualDestroyCalls": 2,
+    "manualDestroyedBeforeGraphics": true,
+    "ownedChildBasePathExplicit": true
+  },
+  "privateSceneDesktopProbe": {
+    "status": "failed",
+    "privateConnections": 1,
+    "authentications": 1,
+    "nativeSceneRenderingDiagnosticObserved": true,
+    "clientPoint": [60, 80],
+    "expectedRgb": [198, 40, 40],
+    "observedRgb": [255, 255, 255],
+    "scope": "The first strict foreground scene sample failed. Source-bitmap and GPU readback diagnostics were added afterward and were not available in this run."
+  },
+  "unverified": [
+    "Transported overlay pixels and input through the manual-runtime API",
+    "Generic native swapchain discovery and lifetime",
+    "Fast unbarriered automatic attachment and relaunch",
+    "D3D9, D3D10, D3D12 and x86 manual-runtime behavior",
+    "Real-game acceptance"
+  ]
+}

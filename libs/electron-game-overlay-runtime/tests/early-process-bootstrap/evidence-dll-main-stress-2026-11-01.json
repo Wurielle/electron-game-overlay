@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Retained failed original DLL_PROCESS_ATTACH graphics stress attempt; not successful graphics or launch acceptance",
+  "status": "failed",
+  "architecture": "x64",
+  "runRelativePath": "build/early-process-bootstrap/runs/run-b285144968014b4c9760cab02e0ea0aa",
+  "processId": 44748,
+  "creationTime100ns": "134380262827917948",
+  "detoursCommit": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+  "ownedChildJobBound": true,
+  "createProcessCalls": 1,
+  "helperCreationRejected": false,
+  "timedOut": false,
+  "childExitCode": 1,
+  "firstImportOrderingObserved": true,
+  "d3d12CreateDeviceIntercepted": true,
+  "initializerDeviceHr": "0x887A0004",
+  "initializerQueueHr": "0x8000000A",
+  "framesCompleted": 0,
+  "successfulGraphicsInitializerProven": false,
+  "loadsReShade": false,
+  "productionActivation": false,
+  "automaticAttachmentProven": false,
+  "interpretation": "D3D12CreateDevice returned DXGI_ERROR_UNSUPPORTED during DLL_PROCESS_ATTACH. Microsoft documents DXGI factory errors from DllMain and recommends no Direct3D/DXGI calls there. This attempt remains failed. A separate corrected proof moves successful graphics creation to an EXE CRT initializer after loader initialization and before wmain; its result is not retroactively applied here.",
+  "microsoftReference": "https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/d3d10-graphics-programming-guide-dxgi#dxgi-responses-from-dllmain",
+  "binaries": [
+    {
+      "leaf": "early_process_bootstrap_launcher.exe",
+      "sha256": "24F9F8A9D52AE6B7C649658D6D3CB357A70CC9F0192FA3887CDDA9A8F8FC5D67"
+    },
+    {
+      "leaf": "early_process_bootstrap_host.exe",
+      "sha256": "70AF974E59E2F4A87805D8093E073BA032C7DF6870AA68F54D6D8D59E97952E9"
+    },
+    {
+      "leaf": "early_original_graphics.dll",
+      "sha256": "F4A314C824EFE755E01BDF104F13871F5256D6263F604902F6FCBDC31D269010"
+    },
+    {
+      "leaf": "early_process_bootstrap64.dll",
+      "sha256": "206639316CC37ED6B25EB771AD1BC511118C3A37831533A7011F27DC15C7743A"
+    }
+  ],
+  "sourceAssets": [
+    {
+      "leaf": "bootstrap.cpp",
+      "sha256": "D3877D36394A59919BD76211A29395E12D814D72EB513B9C34C92DA05AA2DEEC"
+    },
+    {
+      "leaf": "CMakeLists.txt",
+      "sha256": "F8F4292E0AABFA6A0C70133C890F3815E108FD0808616DB68D51D49CEAC6474A"
+    },
+    {
+      "leaf": "detours-source-lock.json",
+      "sha256": "27BB2CBF0A633103B56BE36372C3CBE3146A86BEC6E09083FBC341EF6055E3FC"
+    },
+    {
+      "leaf": "host.cpp",
+      "sha256": "3C402E225BD120FD083B50CE373C87A71DAAA00D2F7CE070CABC0FB64B69FDEF"
+    },
+    {
+      "leaf": "launcher.cpp",
+      "sha256": "F4F81DF34D722E578B0FBA5EC4F6BD7E56F76B042CCDAF463D0D96F6F24FC9DF"
+    },
+    {
+      "leaf": "original-graphics.cpp",
+      "sha256": "F46039E4CCB63EC77E27BCE7858AA229C268EBC01039AFEDF0A9A5276603CBF4"
+    },
+    {
+      "leaf": "original-graphics.h",
+      "sha256": "524F06EE0F97114A945BC2A8D5A7370B8D53681BF8A360607FB54A7FF0208D62"
+    },
+    {
+      "leaf": "README.md",
+      "sha256": "C725F72892AF442B75C3AFA03FD76AAAF0917E77BCD299684AAFD7918F5B88AD"
+    },
+    {
+      "leaf": "trace.hpp",
+      "sha256": "CB9A159274A92583D394D4D310F32308E66AF729DF98BF5DCE1D0EC4DD5B41BF"
+    },
+    {
+      "leaf": "validate-evidence.cjs",
+      "sha256": "472447D514E09430AC97FFB883798ECCFCF254A47F1C01D2A95E9108B96628F6"
+    },
+    {
+      "leaf": "validate-evidence.test.cjs",
+      "sha256": "D8E276049CB4F8279270986A970543E01C3A7A22BE162DD79C1FA54371CED476"
+    }
+  ],
+  "artifactHashes": [
+    {
+      "leaf": "launcher-result.json",
+      "sha256": "951D667644D97D9176EAF017688CCD8EF5D5C41FB36A7770E0D1F14799ED4327"
+    },
+    {
+      "leaf": "host-result.json",
+      "sha256": "0CE70C9EE95030ED1E8069D883DB7E96BA14F00A35B98E253654D7A6FD0C5413"
+    },
+    {
+      "leaf": "trace.ndjson",
+      "sha256": "8A2A2A7A3B818FAE2B7C00A4143042C938284179DEB8022B1DF831CD40DBE396"
+    },
+    {
+      "leaf": "evidence.json",
+      "sha256": "85103EE9E121FAA1AD2927AD4B7ECFD6D51335978440668A21AEEEF29E7F6E85"
+    }
+  ],
+  "trace": [
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-attach",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022431259",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-ready",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022440903",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-entry",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022451098",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-graphics-begin",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022459360",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-create-device-enter",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022465686",
+      "statusCode": "0x00000000",
+      "count": 1
+    },
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-create-device-return",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022571332",
+      "statusCode": "0x887A0004",
+      "count": 1
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-device-result",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022576677",
+      "statusCode": "0x887A0004",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-graphics-end",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022581812",
+      "statusCode": "0x887A0004",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-entry",
+      "pid": 44748,
+      "creationTime100ns": "134380262827917948",
+      "threadId": 43080,
+      "qpc": "1194022592541",
+      "statusCode": "0x00000000",
+      "count": 0
+    }
+  ]
+}

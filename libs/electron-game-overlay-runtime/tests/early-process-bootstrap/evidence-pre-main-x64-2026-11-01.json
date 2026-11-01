@@ -1,0 +1,273 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Actual root-run x64 controlled first-import ordering and supported pre-main D3D12 proof; not ReShade/overlay/watcher acceptance",
+  "status": "passed",
+  "architecture": "x64",
+  "runRelativePath": "build/early-process-bootstrap/runs/run-cd4fffe5fa8b40fca85d7c6074f9f074",
+  "detoursCommit": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+  "processId": 8792,
+  "creationTime100ns": "134380266650351343",
+  "firstImportOrderingProven": true,
+  "d3d12InitializerHookProven": true,
+  "graphicsInitializationPhase": "exe-crt-before-main",
+  "traceEventCount": 14,
+  "realPresentCount": 60,
+  "initializerDeviceHr": "0x00000000",
+  "initializerQueueHr": "0x00000000",
+  "queueDeviceIdentityMatches": true,
+  "adapter": {
+    "description": "NVIDIA GeForce GTX 1080",
+    "vendorId": 4318,
+    "deviceId": 7040
+  },
+  "ownedChildJobBound": true,
+  "createProcessCalls": 1,
+  "helperCreationRejected": false,
+  "timedOut": false,
+  "childExitCode": 0,
+  "loadsReShade": false,
+  "productionActivation": false,
+  "automaticAttachmentProven": false,
+  "binaries": [
+    {
+      "leaf": "early_process_bootstrap_launcher.exe",
+      "sha256": "24F9F8A9D52AE6B7C649658D6D3CB357A70CC9F0192FA3887CDDA9A8F8FC5D67"
+    },
+    {
+      "leaf": "early_process_bootstrap_host.exe",
+      "sha256": "8A195F104D59A91D6F1D471A018C64A8B19C9CBF4C8761BEF1214EF8BB07F86A"
+    },
+    {
+      "leaf": "early_original_graphics.dll",
+      "sha256": "3F0458C95E57BDD6805A67AA91FD530E266D50911B3C7526BEDA35641890A8EA"
+    },
+    {
+      "leaf": "early_process_bootstrap64.dll",
+      "sha256": "206639316CC37ED6B25EB771AD1BC511118C3A37831533A7011F27DC15C7743A"
+    }
+  ],
+  "sourceAssets": [
+    {
+      "leaf": "bootstrap.cpp",
+      "sha256": "D3877D36394A59919BD76211A29395E12D814D72EB513B9C34C92DA05AA2DEEC"
+    },
+    {
+      "leaf": "CMakeLists.txt",
+      "sha256": "F8F4292E0AABFA6A0C70133C890F3815E108FD0808616DB68D51D49CEAC6474A"
+    },
+    {
+      "leaf": "detours-source-lock.json",
+      "sha256": "27BB2CBF0A633103B56BE36372C3CBE3146A86BEC6E09083FBC341EF6055E3FC"
+    },
+    {
+      "leaf": "evidence-dll-main-stress-2026-11-01.json",
+      "sha256": "BB8FA42E381AFBF0805802786C6085DC5E0640450F3A9186E358787818BF042D"
+    },
+    {
+      "leaf": "host.cpp",
+      "sha256": "BC0A8A99FB867F8556EAE939E24700C3DB653E63E60FFE250C61777CCC08B979"
+    },
+    {
+      "leaf": "launcher.cpp",
+      "sha256": "F4F81DF34D722E578B0FBA5EC4F6BD7E56F76B042CCDAF463D0D96F6F24FC9DF"
+    },
+    {
+      "leaf": "original-graphics.cpp",
+      "sha256": "965EB3A3C89EE3FA5768EA4617DF842D297B56272790BF07CA4275809F7E8AEB"
+    },
+    {
+      "leaf": "original-graphics.h",
+      "sha256": "B670B217877DAA0D4F0CAE81EDE25FE38152AADD03F02C73D451DE7ED9D3EDFC"
+    },
+    {
+      "leaf": "README.md",
+      "sha256": "07E4486A7E5661AC3476093925297AACB3018D5160ACC66423765F47FC0DBB10"
+    },
+    {
+      "leaf": "trace.hpp",
+      "sha256": "CB9A159274A92583D394D4D310F32308E66AF729DF98BF5DCE1D0EC4DD5B41BF"
+    },
+    {
+      "leaf": "validate-evidence.cjs",
+      "sha256": "86FA2858525F7549EB636D0E42D749669717D5F50E234C771DF31E9CF8DA062F"
+    },
+    {
+      "leaf": "validate-evidence.test.cjs",
+      "sha256": "BFDA0E2D0C80E679091C7FCFDE513F314C42C6B8D06DB3D7D84BE9C7C5D177EB"
+    }
+  ],
+  "artifactHashes": [
+    {
+      "leaf": "launcher-result.json",
+      "sha256": "4C0D15913DAE9EE0EF51381DF10C577BA5E1441F0533D7E5D25BE3326646E0EF"
+    },
+    {
+      "leaf": "host-result.json",
+      "sha256": "E9F57852D381D0D619F2902DF159787B6CC7250B5257753083FBDF1B9C0F54DD"
+    },
+    {
+      "leaf": "trace.ndjson",
+      "sha256": "944ED9B4C12649E965C96280684D499F3EA95F553611CF75385D29AAAF226802"
+    },
+    {
+      "leaf": "validation-result.json",
+      "sha256": "4DB6F8382BCD022A93180199CB9A7A18130FCE3B11ED9E7658B901793F315F9A"
+    },
+    {
+      "leaf": "evidence.json",
+      "sha256": "2C8E0B464467C3C1ECFAF6737070C04A23331E184C55DD90E566FDA9A7D380DC"
+    }
+  ],
+  "trace": [
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-attach",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197844428166",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-ready",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197844437865",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-dll-attach-entry",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197844447238",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-dll-attach-return",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197844454532",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-crt-initializer-entry",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197844476741",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-graphics-initializer-begin",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197844482156",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-create-device-enter",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197844487295",
+      "statusCode": "0x00000000",
+      "count": 1
+    },
+    {
+      "schemaVersion": 1,
+      "event": "bootstrap-create-device-return",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197846212468",
+      "statusCode": "0x00000000",
+      "count": 1
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-device-result",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197846218595",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-initializer-queue-result",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197846477060",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "original-graphics-initializer-end",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197846484325",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-crt-initializer-return",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197846490119",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-entry",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1197846496202",
+      "statusCode": "0x00000000",
+      "count": 0
+    },
+    {
+      "schemaVersion": 1,
+      "event": "host-present-completed",
+      "pid": 8792,
+      "creationTime100ns": "134380266650351343",
+      "threadId": 46136,
+      "qpc": "1198000925402",
+      "statusCode": "0x00000000",
+      "count": 60
+    }
+  ],
+  "unverified": [
+    "Win32 ordering proof",
+    "Real ReShade first-import initialization",
+    "EGO overlay pixels and input",
+    "Production early-launch API/ownership integration",
+    "Generic late D3D12 adoption",
+    "Unbarriered Steam folder watcher/relaunch",
+    "Real-game acceptance"
+  ]
+}
