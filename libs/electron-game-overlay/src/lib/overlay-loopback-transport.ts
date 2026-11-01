@@ -2434,6 +2434,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.emitEvent('game.process', {
       pid: hello.pid,
       path: hello.path,
+      ...(creationTime === undefined ? {} : { creationTime100ns: creationTime }),
     });
     this.publishDiagnostic({
       code: 'target-authenticated',

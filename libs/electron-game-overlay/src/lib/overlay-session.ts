@@ -18,6 +18,7 @@ export {
 import { screen } from 'electron';
 import { readNativeImageRaster, type NativeImageRaster } from './native-image-raster.js';
 import { physicalInputToDip } from './coordinate-space.js';
+import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
 import {
   normalizeOverlayDiagnosticErrorCode,
   parseOverlayDiagnostic,
@@ -1868,7 +1869,12 @@ function parseTargetLifecycleEvent(
   payload: unknown,
   knownExecutablePaths?: ReadonlyMap<number, string>,
 ): OverlaySessionEventMap['targetConnected'] | null {
-  if (!isEventRecord(payload) || !isValidTargetPid(payload.pid)) {
+  if (
+    !isEventRecord(payload) ||
+    !isValidTargetPid(payload.pid) ||
+    ('creationTime100ns' in payload &&
+      !isValidProcessCreationTime100ns(payload.creationTime100ns))
+  ) {
     return null;
   }
   const executablePath =
@@ -1880,7 +1886,13 @@ function parseTargetLifecycleEvent(
   if (!executablePath) {
     return null;
   }
-  return Object.freeze({ pid: payload.pid, executablePath });
+  return Object.freeze({
+    pid: payload.pid,
+    executablePath,
+    ...('creationTime100ns' in payload
+      ? { creationTime100ns: payload.creationTime100ns as string }
+      : {}),
+  });
 }
 
 function parseInputInterceptionEvent(

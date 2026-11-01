@@ -76,6 +76,8 @@ export type OverlaySessionEventMap = {
     pid: number;
     /** Canonical executable path reported for the authenticated process. */
     executablePath: string;
+    /** Exact process creation FILETIME when supplied by an authenticated capable runtime. */
+    creationTime100ns?: string;
   }>;
   /**
    * Transport to a target ended, without yet proving that the process exited.
@@ -85,6 +87,8 @@ export type OverlaySessionEventMap = {
     pid: number;
     /** Last authenticated executable path for the target. */
     executablePath: string;
+    /** Retained exact process creation FILETIME when explicitly supplied. */
+    creationTime100ns?: string;
   }>;
   /** The exact target process was confirmed to have exited. */
   targetDisconnected: Readonly<{
@@ -92,6 +96,8 @@ export type OverlaySessionEventMap = {
     pid: number;
     /** Last authenticated executable path for the target. */
     executablePath: string;
+    /** Retained exact process creation FILETIME when explicitly supplied. */
+    creationTime100ns?: string;
   }>;
   /** A target acknowledged the effective interception state. */
   inputInterceptionChanged: Readonly<{

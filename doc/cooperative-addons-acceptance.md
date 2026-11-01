@@ -33,7 +33,7 @@ their mapped identities recorded.
 
 ## Dedicated real-game launchers
 
-All five existing real-game human-facing launchers are under
+The five pre-existing real-game human-facing launchers are under
 `libs/electron-game-overlay-runtime/scripts/test-cases`.
 
 | Launcher | Required/optional parameters | Required proof and completion evidence |
@@ -43,6 +43,37 @@ All five existing real-game human-facing launchers are under
 | `gun-frog-explicit-keyboard-focus.ps1` | Mandatory `-GameExecutable`; optional `-ElectronExecutable`, `-PhysicalKeyboard`, `-PhysicalFirstKeys` | No-click first show and hide/reopen typing; released key state and zero pointer-downs; blur/interception-off drop input; re-enable types; foreign foreground rejects input; fresh presentation and resumed typing after foreground restore. Default uses Windows SendInput. `build/explicit-focus-*/report.json` must say passed. |
 | `gun-frog-physical-first-key.ps1` | Mandatory `-GameExecutable`; optional `-ElectronExecutable` | Same focus case, with human physical lowercase `a` on initial show and `b` after reopen. Later gates use SendInput. A synthetic key run is not a physical-first-key pass. |
 | `gun-frog-client-sdk-official-reshade-coexistence.ps1` | Optional `-OfficialRuntimePath`, `-SkipBuild`, `-InteractionTimeoutSeconds` (default 600) | Stock host, original API-18 FPS Limiter and enabled witness effect coexist with EGO. Exact target/module/add-on/build-ID/path assertions; exactly one official runtime; four overlay clicks while target stays alive, input release, then real Quit. Protected seed hashes/attributes/timestamps remain unchanged; reserved EGO mutations use the native manager; all test-owned seeds are restored before final JSON/PASS. |
+
+The new `gun-frog-client-sdk-cooperative-two-app.ps1` launcher adds four cells:
+both app startup orders, each with graceful and abrupt first-app exit. It accepts
+`-SdkDistA`, `-SdkDistB`, `-StartupOrder a-first|b-first|both`,
+`-FirstAppExit graceful|crash|both`, optional informational source revisions,
+and `-RequireDifferentImplementations`. Default candidate paths are this
+worktree's SDK `dist`; same bytes are explicitly reported as same implementation,
+not mixed released-version evidence. This newly implemented gate has not yet
+been run against a game during this acceptance inventory.
+
+Its controller owns the game process independently of both Electron apps. The
+first app uses the exact-path native prearm needed for real-game graphics
+timing; the late app uses an exact PID after the first scene renders. Both
+authenticated native hellos must identify the retained game's exact PID,
+executable and creation FILETIME. Distinct app-private ports and token hashes
+are recorded without publishing raw credentials. Actual target pixels prove
+red/blue/green interleaving and alpha cutouts; Windows input proves isolated
+typing, raising, capture, both wheel axes, cursors, caption dragging and retained
+placement during peer focus/publication. The OR interception matrix, focused
+owner disappearance, survivor interaction and a new game launch with the same
+surviving app are required. Module-file/export evidence requires exactly one
+ReShade plus two SDK-matching native modules while both apps participate, and
+exactly one EGO module in the fresh survivor-only game. Retired peer code may
+remain mapped in the original game; the test instead requires its windows to
+disappear. Runtime input/router/queue errors invalidate the pass.
+
+```powershell
+& './libs/electron-game-overlay-runtime/scripts/test-cases/gun-frog-client-sdk-cooperative-two-app.ps1' `
+    -SdkDistA 'C:/candidate-a/dist' -SdkDistB 'C:/candidate-b/dist' `
+    -RequireDifferentImplementations
+```
 
 Example commands, after building the candidate from the repository root:
 
@@ -91,7 +122,7 @@ exercise and close the game.
 
 ## Important gaps and baseline fixture issues
 
-1. The real-game explicit-focus path deliberately skips member B. Its
+1. The pre-existing real-game explicit-focus path deliberately skips member B. Its
    `-GameExecutable` branch does not prove two-app native isolation or survivor
    continuity. Add a real-game cooperative two-app case covering distinct native
    modules, app-local IPC and state, interleaved cross-app window ordering,
