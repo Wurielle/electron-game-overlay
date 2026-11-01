@@ -278,6 +278,15 @@ bool translate_pointer_mouse_message(
 
     if (!is_pointer_mouse_message(message.message))
         return true;
+    if (message.message == WM_POINTERWHEEL || message.message == WM_POINTERHWHEEL)
+    {
+        // Pointer wheel coordinates are already screen-space, just like legacy
+        // wheel. Do not use PRIMARY/FIRSTBUTTON flags: that word holds the delta.
+        message.message = message.message == WM_POINTERWHEEL ? WM_MOUSEWHEEL : WM_MOUSEHWHEEL;
+        message.wparam = (static_cast<std::uint32_t>(message.wparam) & 0xffff0000U) |
+            (queued.pointer_key_states & (MK_CONTROL | MK_SHIFT | MK_LBUTTON | MK_RBUTTON | MK_MBUTTON));
+        return true;
+    }
     const bool is_mouse =
         queued.pointer_type == static_cast<std::uint32_t>(PT_MOUSE);
     const bool is_primary_contact =
@@ -347,7 +356,7 @@ bool translate_pointer_mouse_message(
         return true;
 
     default:
-        // Enter/leave and pointer-wheel records are suppressed for the game but
+        // Enter/leave records are suppressed for the game but
         // are not part of the production Electron route. Non-client pointer
         // activation is deliberately left outside the ReShade patch entirely.
         return false;
@@ -391,6 +400,11 @@ struct official_hook_owner
     std::atomic<input_phase> phase = input_phase::disabled;
     std::atomic<bool> hook_ready = false;
     std::atomic<bool> subclass_ready = false;
+    std::atomic<std::int32_t> cursor_code = -1;
+    // The following cursor bookkeeping is touched only on the window thread.
+    HCURSOR saved_cursor = nullptr;
+    bool cursor_owned = false;
+    int cursor_show_adjustment = 0;
     std::uint32_t references = 0;
     std::uint32_t thread_hook_slot = invalid_official_hook_slot;
     std::atomic<DWORD> install_error = ERROR_SUCCESS;
@@ -796,7 +810,7 @@ LRESULT CALLBACK official_get_message_hook(
     g_official_hook_callbacks.fetch_add(1, std::memory_order_acquire);
     const official_hook_callback_release release_callback;
 
-    if (code < 0 ||
+    if (g_has_private_input_observer || code < 0 ||
         remove_mode != PM_REMOVE ||
         message_pointer == 0 ||
         g_official_hooks_shutting_down.load(std::memory_order_acquire))
@@ -854,6 +868,7 @@ LRESULT CALLBACK official_get_message_hook(
 
 constexpr WPARAM official_subclass_install =
     static_cast<WPARAM>(0x45474F494E535441ULL);
+constexpr WPARAM official_cursor_update = static_cast<WPARAM>(0x45474355U);
 constexpr WPARAM official_subclass_remove =
     static_cast<WPARAM>(0x45474F52454D4F56ULL);
 
@@ -891,6 +906,53 @@ bool official_owner_filters_window(
         foreground_root == root;
 }
 
+bool apply_owner_cursor(official_hook_owner &owner) noexcept
+{
+    const HWND root = reinterpret_cast<HWND>(owner.root_window.load(std::memory_order_acquire));
+    const HWND foreground = GetForegroundWindow();
+    const bool foreground_owned = foreground != nullptr &&
+        (foreground == root || GetAncestor(foreground, GA_ROOT) == root);
+    const std::int32_t code = foreground_owned
+        ? owner.cursor_code.load(std::memory_order_acquire) : -1;
+    if (code < 0)
+    {
+        if (owner.cursor_owned)
+        {
+            SetCursor(owner.saved_cursor);
+            while (owner.cursor_show_adjustment > 0)
+            {
+                ShowCursor(FALSE);
+                --owner.cursor_show_adjustment;
+            }
+            owner.cursor_owned = false;
+        }
+        return false;
+    }
+    if (!owner.cursor_owned)
+    {
+        owner.saved_cursor = GetCursor();
+        owner.cursor_owned = true;
+    }
+    HCURSOR cursor = code == 0 ? nullptr
+        : LoadCursorW(nullptr, MAKEINTRESOURCEW(static_cast<WORD>(code)));
+    SetCursor(cursor);
+    if (code != 0)
+    {
+        CURSORINFO info = { sizeof(CURSORINFO) };
+        if (GetCursorInfo(&info) && (info.flags & CURSOR_SHOWING) == 0)
+        {
+            // Balance only our own increments when returning ownership. A game
+            // may have hidden its cursor before interception started.
+            int count;
+            do {
+                count = ShowCursor(TRUE);
+                ++owner.cursor_show_adjustment;
+            } while (count < 0 && owner.cursor_show_adjustment < 32);
+        }
+    }
+    return true;
+}
+
 LRESULT CALLBACK official_window_subclass(
     HWND window,
     UINT message,
@@ -916,6 +978,8 @@ LRESULT CALLBACK official_window_subclass(
         message == control_message &&
         wparam == official_subclass_remove)
     {
+        owner->cursor_code.store(-1, std::memory_order_release);
+        apply_owner_cursor(*owner);
         owner->hook_ready.store(false, std::memory_order_release);
         owner->subclass_ready.store(false, std::memory_order_release);
         RemoveWindowSubclass(
@@ -931,7 +995,16 @@ LRESULT CALLBACK official_window_subclass(
         return 0;
     }
 
-    if (!owner_valid ||
+    if (owner_valid && message == control_message && wparam == official_cursor_update)
+    {
+        apply_owner_cursor(*owner);
+        return 0;
+    }
+    if (owner_valid && message == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT &&
+        apply_owner_cursor(*owner))
+        return TRUE;
+
+    if (!owner_valid || g_has_private_input_observer ||
         g_official_hooks_shutting_down.load(std::memory_order_acquire) ||
         !is_official_overlay_input_message(message) ||
         !official_owner_filters_window(*owner, window))
@@ -1233,7 +1306,7 @@ bool retain_official_thread_hook(
         HHOOK const hook = SetWindowsHookExW(
             WH_GETMESSAGE,
             official_get_message_hook,
-            g_addon_module,
+            nullptr, // Validated target thread and callback belong to this process.
             thread_id);
         if (hook == nullptr)
         {
@@ -1331,7 +1404,7 @@ bool install_official_window_subclass(
     HHOOK const setup_hook = SetWindowsHookExW(
         WH_CALLWNDPROC,
         official_subclass_setup_hook,
-        g_addon_module,
+        nullptr, // Local-process hook: do not ask USER32 to load the add-on again.
         thread_id);
     if (setup_hook == nullptr)
     {
@@ -1410,11 +1483,10 @@ bool remove_official_window_subclass(
 
 bool retain_official_hook_owner(swapchain_data &data) noexcept
 {
-    if (g_has_private_input_observer ||
-        data.window == nullptr ||
+    if (data.window == nullptr ||
         g_official_hooks_shutting_down.load(std::memory_order_acquire))
     {
-        return g_has_private_input_observer;
+        return false;
     }
 
     HWND const root = official_root_window(data.window);
@@ -3143,8 +3215,7 @@ void on_init_swapchain(swapchain *swapchain, bool resize)
     data->window = static_cast<HWND>(swapchain->get_hwnd());
     data->ownership_token = next_swapchain_ownership_token();
     data->transport = retain_transport();
-    if (!g_has_private_input_observer &&
-        !retain_official_hook_owner(*data))
+    if (!retain_official_hook_owner(*data))
     {
         data->official_hook_failure_reported = true;
         publish_input_routing_failure(
@@ -3574,12 +3645,47 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
         data.last_filter_error = EGO_STATUS_OK;
     }
 
+    std::int32_t cursor_code = -1;
+    if (auto *owner = get_official_hook_owner(data))
+    {
+        std::int32_t &code = cursor_code;
+        // ReShade freezes GetCursorPos for intercepted game polling. CURSORINFO
+        // gives the real screen point, so hover follows the routed OS pointer.
+        CURSORINFO cursor_info = { sizeof(CURSORINFO) };
+        if (routing_enabled && GetCursorInfo(&cursor_info))
+        {
+            POINT point = cursor_info.ptScreenPos;
+            if (ScreenToClient(data.window, &point))
+                static_cast<void>(ego_transport_cursor_at(data.transport, point.x, point.y, &code));
+        }
+        const auto previous = owner->cursor_code.exchange(code, std::memory_order_acq_rel);
+        if (previous != code)
+            PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
+                g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
+    }
     ImGuiIO &io = ImGui::GetIO();
-    CURSORINFO cursor_info = { sizeof(CURSORINFO) };
-    const bool native_cursor_visible =
-        GetCursorInfo(&cursor_info) != FALSE &&
-        (cursor_info.flags & CURSOR_SHOWING) != 0;
-    io.MouseDrawCursor = routing_enabled && !native_cursor_visible;
+    CURSORINFO visible_cursor = { sizeof(CURSORINFO) };
+    const bool native_cursor_visible = GetCursorInfo(&visible_cursor) &&
+        (visible_cursor.flags & CURSOR_SHOWING) != 0;
+    // Some games continually hide the hardware cursor. Retain the existing
+    // in-game fallback, using Chromium's shape rather than a permanent arrow.
+    io.MouseDrawCursor = cursor_code > 0 && !native_cursor_visible;
+    if (io.MouseDrawCursor)
+    {
+        ImGuiMouseCursor shape = ImGuiMouseCursor_Arrow;
+        switch (cursor_code)
+        {
+        case 32513: shape = ImGuiMouseCursor_TextInput; break;
+        case 32649: shape = ImGuiMouseCursor_Hand; break;
+        case 32642: shape = ImGuiMouseCursor_ResizeNWSE; break;
+        case 32643: shape = ImGuiMouseCursor_ResizeNESW; break;
+        case 32644: shape = ImGuiMouseCursor_ResizeEW; break;
+        case 32645: shape = ImGuiMouseCursor_ResizeNS; break;
+        case 32646: shape = ImGuiMouseCursor_ResizeAll; break;
+        case 32648: shape = ImGuiMouseCursor_NotAllowed; break;
+        }
+        ImGui::SetMouseCursor(shape);
+    }
 }
 
 bool transport_session_epoch(
@@ -3613,6 +3719,12 @@ bool producer_session_active(std::uint64_t epoch)
 
 void deactivate_input(swapchain_data &data, bool reset_imgui_cursor)
 {
+    if (auto *owner = get_official_hook_owner(data))
+    {
+        owner->cursor_code.store(-1, std::memory_order_release);
+        PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
+            g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
+    }
     data.phase = input_phase::disabled;
     if (!g_has_private_input_observer)
         publish_official_hook_phase(data, input_phase::disabled);

@@ -307,6 +307,9 @@ interface ClientState {
   receiveBuffer: Buffer;
   authenticated: boolean;
   supportsWindowOrder?: boolean;
+  supportsWindowFocus?: boolean;
+  supportsWindowCursor?: boolean;
+  creationTime100ns?: string;
   pid?: number;
   path?: string;
   targetAuthorization?: TargetAuthorization;
@@ -832,6 +835,8 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     number,
     Promise<TargetAuthorization>
   >();
+  private targetAdmissionPolicy?: (pid:number,path:string,creationTime100ns?:string)=>boolean;
+  private readonly suppressedTargetPids = new Set<number>();
   private readonly clients = new Set<ClientState>();
   private readonly activeClientsByPid = new Map<number, ClientState>();
   private readonly processExitWatchesByPid = new Map<
@@ -1123,8 +1128,16 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     if (reusedAuthorization && authorization.recoveryClaim.creationTime100ns !== undefined && routeContext?.creationTime100ns === undefined) {
       const claim = authorization.recoveryClaim;
       const identity = await this.queryProcessIdentity?.(pid);
-      if (this.targetAuthorizationsByPid.get(pid) !== authorization || authorization.generation !== this.generation || this.activeClientsByPid.get(pid)?.targetAuthorization !== undefined && this.activeClientsByPid.get(pid)?.targetAuthorization !== authorization) {
-        throw new Error('Overlay target authorization changed during identity inspection');
+      if (
+        this.targetAuthorizationsByPid.get(pid) !== authorization ||
+        authorization.generation !== this.generation ||
+        (this.activeClientsByPid.get(pid)?.targetAuthorization !== undefined &&
+          this.activeClientsByPid.get(pid)?.targetAuthorization !==
+            authorization)
+      ) {
+        throw new Error(
+          'Overlay target authorization changed during identity inspection',
+        );
       }
       const currentClaim = readOverlayTargetRecoveryClaim(pid);
       if (!currentClaim || !recoveryClaimsEqual(claim, currentClaim)) throw new Error('Overlay target identity claim changed during inspection');
@@ -1180,6 +1193,8 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.activeClientsByPid.clear();
     this.inputTranslatorsByPid.clear();
     this.windows.clear();
+    this.cursors.clear();
+    this.requestedFocusWindowId = undefined;
     this.latestFrames.clear();
     this.inputIntercept = undefined;
     this.pendingEvents.length = 0;
@@ -1224,6 +1239,36 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
   }
 
+  public setTargetAdmissionPolicy(policy:(pid:number,path:string,creationTime100ns?:string)=>boolean):void {
+    this.targetAdmissionPolicy=policy;
+    for(const client of this.activeClientsByPid.values()) {
+      if(client.pid!==undefined&&!policy(client.pid,client.path??'',client.creationTime100ns))this.setTargetSuppressed(client.pid,true);
+    }
+  }
+
+  /** Denies this PID until the managing observer proves exit. Not a process-exit event. */
+  public setTargetSuppressed(pid:number,suppressed:boolean):void {
+    assertProcessPid(pid);
+    if(!suppressed){this.suppressedTargetPids.delete(pid);return;}
+    this.suppressedTargetPids.add(pid);
+    const client=this.activeClientsByPid.get(pid);
+    if(!client)return;
+    // Stop outgoing/incoming delivery synchronously. Native teardown is ordered
+    // before FIN using frozen-v1 messages; a reconnect is denied at hello.
+    client.writer.clear();
+    client.authenticated=false;
+    client.inputTranslator?.reset();
+    this.activeClientsByPid.delete(pid);
+    this.inputTranslatorsByPid.delete(pid);
+    client.socket.end(Buffer.concat([
+      encodeJsonTransportPacket({type:'command.input.intercept',intercept:false}),
+      encodeJsonTransportPacket({type:'overlay.init',windows:[]}),
+    ]));
+    const watch=this.registerProcessExitWatch(pid,client.path??'');
+    this.emitLifecycleEvent('game.process.transport-lost',{pid,path:client.path??''});
+    this.pollProcessExit(watch);
+  }
+
   public setInputIntercept(intercept: boolean): void {
     this.inputIntercept = intercept;
     if (!intercept) {
@@ -1233,6 +1278,33 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       type: 'command.input.intercept',
       intercept,
     });
+  }
+
+  private readonly cursors = new Map<number, number>();
+  public setWindowCursor(windowId: number, cursor: number): void {
+    if (!this.windows.has(windowId)) return;
+    this.cursors.set(windowId, cursor);
+    const packet = encodeJsonTransportPacket({
+      type: 'window.cursor',
+      windowId,
+      cursor,
+    });
+    for (const client of this.clients) {
+      if (client.authenticated && client.supportsWindowCursor)
+        client.writer.sendControl(packet);
+    }
+  }
+  private requestedFocusWindowId: number | undefined;
+
+  public setWindowFocus(windowId: number, focused: boolean): void {
+    assertPositiveUnsigned32(windowId, 'windowId');
+    if (!this.windows.has(windowId)) return;
+    if (focused) this.requestedFocusWindowId = windowId;
+    else if (this.requestedFocusWindowId === windowId) this.requestedFocusWindowId = undefined;
+    const packet = encodeJsonTransportPacket({ type: 'window.focus', windowId, focused });
+    for (const client of this.clients) {
+      if (client.authenticated && client.supportsWindowFocus) client.writer.sendControl(packet);
+    }
   }
 
   public addWindow(
@@ -1332,6 +1404,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   }
 
   public closeWindow(windowId: number): void {
+    this.cursors.delete(windowId);
+    if (this.requestedFocusWindowId === windowId)
+      this.requestedFocusWindowId = undefined;
     assertPositiveUnsigned32(windowId, 'windowId');
     const packet = encodeJsonTransportPacket({
       type: 'window.close',
@@ -2171,6 +2246,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     ) {
       return false;
     }
+    const supportsInstance=Array.isArray(hello.capabilities)&&hello.capabilities.includes('process-instance-hello-v1');
+    if(supportsInstance&&!isValidProcessCreationTime100ns(hello.creationTime100ns))return false;
+    const creationTime=supportsInstance ? hello.creationTime100ns as string : undefined;
+    if(this.suppressedTargetPids.has(hello.pid)||this.targetAdmissionPolicy&&!this.targetAdmissionPolicy(hello.pid,hello.path,creationTime))return false;
+    client.creationTime100ns=creationTime;
     const targetAuthorization = this.targetAuthorizationsByPid.get(hello.pid);
     const tokenMatches = targetAuthorization
       ? tokensEqual(hello.token, targetAuthorization.record.token)
@@ -2216,6 +2296,12 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     client.supportsWindowOrder =
       Array.isArray(hello.capabilities) &&
       hello.capabilities.includes('window-order-v1');
+    client.supportsWindowCursor =
+      Array.isArray(hello.capabilities) &&
+      hello.capabilities.includes('window-cursor-v1');
+    client.supportsWindowFocus =
+      Array.isArray(hello.capabilities) &&
+      hello.capabilities.includes('window-focus-v1');
     client.pid = hello.pid;
     client.path = hello.path;
     client.targetAuthorization = targetAuthorization;
@@ -2243,6 +2329,29 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     );
     for (const [windowId, frame] of this.latestFrames) {
       client.writer.sendFrame(windowId, frame);
+    }
+    if (client.supportsWindowCursor) {
+      for (const [windowId, cursor] of this.cursors)
+        if (this.windows.has(windowId))
+          client.writer.sendControl(
+            encodeJsonTransportPacket({
+              type: 'window.cursor',
+              windowId,
+              cursor,
+            }),
+          );
+    }
+    if (
+      client.supportsWindowFocus &&
+      this.requestedFocusWindowId !== undefined
+    ) {
+      client.writer.sendControl(
+        encodeJsonTransportPacket({
+          type: 'window.focus',
+          windowId: this.requestedFocusWindowId,
+          focused: true,
+        }),
+      );
     }
     if (this.inputIntercept !== undefined) {
       client.writer.sendControl(
@@ -2420,7 +2529,12 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   }
 
   private isProcessExitWatchCurrent(watch: ProcessExitWatch): boolean {
-    return this.processExitWatchesByPid.get(watch.pid) === watch && watch.generation === this.generation && watch.authorization === this.targetAuthorizationsByPid.get(watch.pid) && !this.activeClientsByPid.has(watch.pid);
+    return (
+      this.processExitWatchesByPid.get(watch.pid) === watch &&
+      watch.generation === this.generation &&
+      watch.authorization === this.targetAuthorizationsByPid.get(watch.pid) &&
+      !this.activeClientsByPid.has(watch.pid)
+    );
   }
 
   private scheduleProcessExitPoll(watch: ProcessExitWatch): void {

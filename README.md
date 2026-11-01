@@ -12,14 +12,14 @@ keyboard input back to the correct Electron window.
 | Area                         | Supported boundary                    |
 | ---------------------------- | ------------------------------------- |
 | Host                         | Windows 10 or newer, x64              |
-| Electron                     | `>=39.1.0 <40`                        |
+| Electron                     | `>=39.1.0 <40` or exactly `46.0.0-alpha.2` |
 | Target architecture          | x64 and x86/PE32                      |
 | Graphics APIs                | Direct3D 9, 10, 11, and 12            |
 | Existing official ReShade    | x64, when its public add-on API works |
 | Multiple apps in one process | Exact-PID attachment                  |
 | Anti-cheat                   | Unsupported                           |
 
-OpenGL, Vulkan, VR, and Electron 40 or newer are not currently supported.
+OpenGL, Vulkan, VR, and other Electron 40+ versions are not currently supported.
 
 ## How it works
 
@@ -55,6 +55,23 @@ scrolling, dragging, and normal DOM events continue to work in the overlay.
 Independent applications attaching to the same exact PID share one injected
 runtime automatically. Their windows and input remain isolated by application;
 applications do not create or manage a broker instance.
+
+## SDK distribution candidate
+
+For a standalone consumer without the workspace build tools, use the local
+`electron-game-overlay-0.1.0-rc.7.tgz` candidate artifact. This is not a public npm
+release. Follow the [package install guide](libs/electron-game-overlay/README.md)
+and copy [`examples/basic-overlay`](examples/basic-overlay) outside this checkout
+before installing the tarball. The example includes a noninjecting Electron/DOM
+smoke mode and an explicitly opted-in Windows name-watcher flow; it does not
+attach to already-running games.
+
+The [SDK API guide](doc/sdk-api.md) covers all three public entry points, managed
+attachment, native allow/deny policy, read-only process observation, packaging and
+optional broker registration. The [managed consumer](examples/managed-overlay)
+is the starting example for applications that update targeting policy at runtime.
+
+The validation app download below is a separate artifact, not the SDK tarball.
 
 ## Try a demo
 
@@ -200,6 +217,25 @@ npx electron path\to\main.js --reshade-overlay
 For a production application, handle the rejected `attach()` promise and
 surface diagnostics as shown below.
 
+## Managed targeting and native policy
+
+Use `createReShadeLaunchConfig()` for programmatic configuration and
+`OverlayTargetWatcher` to own future observation and launcher lifetimes. Native
+`earlyPolicy` supports explicit full-path allow/deny patterns without expanding
+basenames in application code. `observeOverlayProcesses()` is the read-only
+alternative for applications that need to own observation themselves.
+
+A rule change preserves an already-authorized live overlay. If an uncertain
+reservation prevents replacement discovery, `update()` emits `discovery-blocked`
+and keeps the allowed target; it does not claim new readiness. Genuine denial
+still cancels that target synchronously. Read the [current API contract](doc/sdk-api.md#managed-target-watcher)
+before treating a resolved update as permission to launch another game.
+
+`ready`/`armed` means discovery is available, not guaranteed attachment before
+graphics startup. Native future polling remains intermittent for fast hosts.
+The early lane remains exclusive; exact-PID broker attachment supplies the shared
+multi-application route.
+
 ## Attach to a target
 
 There are three attachment forms. Choose the one that matches how your
@@ -279,8 +315,9 @@ const result = await launcher.attach(session, {
 });
 ```
 
-The watcher attempts matching executable launches independently. Processes
-already running when its initial baseline is captured are ignored.
+A low-level launcher consumes one matching new process. Processes already running
+at its initial baseline are ignored. Use `OverlayTargetWatcher` for managed policy
+successors, authoritative exit handling and reconfiguration.
 
 ### Attachment timing
 
@@ -650,19 +687,26 @@ The README documents workflows and behavior. The exported TypeScript
 declarations are the API source of truth and are included in the package build,
 so signatures and option fields stay synchronized with the implementation.
 
-| Runtime export                    | Responsibility                                              |
-| --------------------------------- | ----------------------------------------------------------- |
-| `ElectronGameOverlay`             | Owns the SDK backend and creates one active session         |
-| `OverlaySession`                  | Owns windows, input policy, target snapshots, and events    |
-| `ElectronOverlayWindow`           | Controls one published offscreen Electron surface           |
-| `ReShadeOverlayLauncher`          | Prepares and attaches one target process lifecycle          |
-| `ReShadeOperationError`           | Carries structured attachment failure and retry information |
-| `isReShadeOperationError`         | Narrows an unknown failure to that structured error         |
-| `parseReShadeLaunchConfig`        | Parses and validates explicit startup configuration         |
-| `defaultReShadeRuntimeDirectory`  | Resolves the runtime artifacts staged with the SDK          |
-| `defaultReShadeRunsRootDirectory` | Resolves the default writable per-attachment run directory  |
-| `registerOverlayBrokerInstallation` | Opts an installed standalone distribution into per-user discovery |
-| `unregisterOverlayBrokerInstallation` | Removes only that installation's advance-discovery registration |
+| Export | Entry point | Responsibility |
+| --- | --- | --- |
+| `ElectronGameOverlay` | root | Own the backend and create one active session |
+| `OverlaySession` | root | Windows, input policy, target snapshots and events |
+| `ElectronOverlayWindow` | root | One published offscreen surface |
+| `createReShadeLaunchConfig` | root | Directly validate native configuration without synthetic argv |
+| `parseReShadeLaunchConfig` | root | Parse an explicit CLI opt-in with the same validation |
+| `defaultReShadeRuntimeDirectory`, `defaultReShadeRunsRootDirectory` | root | Resolve packaged native assets and default writable run location |
+| `ReShadeOverlayLauncher` | root | Stage and attach one target lifetime |
+| `ReShadeOperationError`, `isReShadeOperationError` | root | Structured failure, retry classification and evidence |
+| `OverlayTargetWatcher` | root | Managed future discovery, policy updates and target lifetimes |
+| `createOverlayProcessPolicy`, `overlayProcessPolicyAllows` | root | Validate/freeze and evaluate the bounded native policy grammar |
+| `observeOverlayProcesses` | root | Read-only future process creation/exit observation |
+| `createOverlayAfterPack` | `/packaging` | Compose an electron-builder hook preserving the complete SDK |
+| `packageOverlayForElectronBuilder` | `/packaging` | Restore and verify the SDK under explicit Windows build output |
+| `verifyOverlayPackage` | `/packaging` | Verify all sealed files/mirrors without native execution |
+| `registerOverlayBrokerInstallation`, `unregisterOverlayBrokerInstallation` | `/broker` | Optional per-user advance discovery; registration is not required |
+
+See the [complete API guide](doc/sdk-api.md) for options, return values, events,
+cleanup, public type families, packaging examples and internal-only boundaries.
 
 Start from [`src/index.ts`](libs/electron-game-overlay/src/index.ts), the overlay
 export list in [`src/lib/sdk.ts`](libs/electron-game-overlay/src/lib/sdk.ts), or
@@ -674,6 +718,10 @@ entry point. The declaration sites for the main API are:
 - [`ElectronOverlayWindow`](libs/electron-game-overlay/src/lib/electron-overlay-window.ts)
 - [window, telemetry, event, and diagnostic types](libs/electron-game-overlay/src/lib/types.ts)
 - [launcher configuration, results, events, and errors](libs/electron-game-overlay/src/lib/reshade-launcher.ts)
+- [managed target watcher and events](libs/electron-game-overlay/src/lib/overlay-target-watcher.ts)
+- [native allow/deny policy](libs/electron-game-overlay/src/lib/process-policy.ts)
+- [read-only process observer](libs/electron-game-overlay/src/lib/process-observer.ts)
+- [Node-only packaging helpers](libs/electron-game-overlay/src/packaging.ts)
 - [optional broker installation setup and options](libs/electron-game-overlay/src/lib/overlay-broker-installation.ts)
 
 Use editor autocomplete or the emitted `.d.ts` declarations for exact

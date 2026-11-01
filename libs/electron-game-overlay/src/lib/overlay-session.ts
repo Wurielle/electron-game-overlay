@@ -1,5 +1,7 @@
 import {
   targetAuthorizers,
+  targetPolicyGates,
+  targetAdmissionGates,
   globalTargetAuthorizers,
   createSessionTargetAuthorization,
   normalizeSessionTargetAuthorization,
@@ -13,6 +15,7 @@ export {
 } from './overlay-session-authorization.js';
 
 import { screen } from 'electron';
+import { readNativeImageRaster, type NativeImageRaster } from './native-image-raster.js';
 import { physicalInputToDip } from './coordinate-space.js';
 import {
   normalizeOverlayDiagnosticErrorCode,
@@ -139,6 +142,9 @@ export class OverlaySession {
   private readonly windowsById = new Map<string, ElectronOverlayWindow>();
   private readonly electronScreen: OverlayScreen = screen;
   private readonly windowsByNativeId = new Map<number, ElectronOverlayWindow>();
+  private readonly usesFixedOffscreenScale =
+    Number.parseInt(process.versions.electron?.split('.')[0] ?? '0', 10) >= 42;
+  private readonly fixedRasterScales = new Map<number, number>();
   private readonly windowScaleStates = new Map<number, WindowScaleState>();
   private readonly publishedWindowGeometry = new Map<number, WindowGeometry>();
   private readonly targetSurfaces = new Map<string, OverlayTargetSurface>();
@@ -223,6 +229,10 @@ export class OverlaySession {
   };
 
   private readonly windowBridge: OverlayWindowBridge = {
+    setWindowCursor: (window, cursor) =>
+      this.overlay.setWindowCursor?.(window.nativeId, cursor),
+    setWindowFocus: (window, focused) =>
+      this.overlay.setWindowFocus?.(window.nativeId, focused),
     registerWindow: (window) => this.registerWindow(window),
     unregisterWindow: (window) => this.unregisterWindow(window),
     removeWindow: (window) => this.removeWindow(window),
@@ -265,6 +275,8 @@ export class OverlaySession {
         ),
     );
     globalTargetAuthorizers.set(this, () => this.#authorizeGlobalTarget());
+    targetPolicyGates.set(this, (pid,suppressed)=>this.overlay.setTargetSuppressed?.(pid,suppressed));
+    targetAdmissionGates.set(this, policy=>this.overlay.setTargetAdmissionPolicy?.(policy));
   }
 
   /**
@@ -479,6 +491,7 @@ export class OverlaySession {
     this.windowsById.clear();
     this.windowsByNativeId.clear();
     this.windowScaleStates.clear();
+    this.fixedRasterScales.clear();
     this.publishedWindowGeometry.clear();
     this.targetSurfaces.clear();
     this.targetExecutablePaths.clear();
@@ -733,7 +746,7 @@ export class OverlaySession {
       const browserWindow = window.browserWindow;
       const rasterBounds = getWindowContentBounds(browserWindow);
       const display = this.getWindowDisplayScale(rasterBounds);
-      const state = createWindowScaleState(display, rasterBounds);
+      const state = createWindowScaleState(display, rasterBounds, this.windowRasterScale(window, display));
       const geometry = this.getWindowGeometry(window, state);
 
       this.overlay.addWindow(browserWindow.id, {
@@ -751,6 +764,7 @@ export class OverlaySession {
       });
     } catch (error) {
       this.windowScaleStates.delete(window.nativeId);
+    this.fixedRasterScales.delete(window.nativeId);
       this.publishedWindowGeometry.delete(window.nativeId);
       this.unmatchedFrameDiagnostics.delete(window.nativeId);
       this.producerFramePublicationStarted.delete(window.nativeId);
@@ -782,6 +796,7 @@ export class OverlaySession {
     }
     this.cancelAmbiguousCapture(window);
     this.windowScaleStates.delete(window.nativeId);
+    this.fixedRasterScales.delete(window.nativeId);
     this.publishedWindowGeometry.delete(window.nativeId);
     this.unmatchedFrameDiagnostics.delete(window.nativeId);
     this.producerFramePublicationStarted.delete(window.nativeId);
@@ -797,6 +812,7 @@ export class OverlaySession {
     }
     this.windowsByNativeId.delete(window.nativeId);
     this.windowScaleStates.delete(window.nativeId);
+    this.fixedRasterScales.delete(window.nativeId);
     this.publishedWindowGeometry.delete(window.nativeId);
     this.targetFollowOptions.delete(window.nativeId);
     this.targetFollowRestoreBounds.delete(window.nativeId);
@@ -816,11 +832,12 @@ export class OverlaySession {
       const desiredDisplay = this.getWindowDisplayScale(rasterBounds);
       const current =
         this.windowScaleStates.get(window.nativeId) ||
-        createWindowScaleState(desiredDisplay, rasterBounds);
+        createWindowScaleState(desiredDisplay, rasterBounds, this.windowRasterScale(window, desiredDisplay));
       const reconciliation = reconcileWindowScale(
         current,
         desiredDisplay,
         rasterBounds,
+        this.windowRasterScale(window, desiredDisplay),
       );
       if (reconciliation.desiredRasterChanged) {
         this.cancelAmbiguousCapture(window);
@@ -851,6 +868,7 @@ export class OverlaySession {
   private sendFrame(
     window: ElectronOverlayWindow,
     image: Electron.NativeImage,
+    preparedRaster?: NativeImageRaster,
   ) {
     if (this.quitting || !window.visible) {
       return;
@@ -861,15 +879,27 @@ export class OverlaySession {
       return;
     }
 
-    let size: Electron.Size;
+    let raster: NativeImageRaster | null;
     try {
-      size = image.getSize();
+      raster = preparedRaster ?? readNativeImageRaster(image);
     } catch (error) {
       this.reportFramePublicationFailure(window, 'bitmap', error);
       return;
     }
-    if (size.width <= 0 || size.height <= 0) {
-      return;
+    if (!raster) return;
+    const size = { width: raster.width, height: raster.height };
+    if (this.usesFixedOffscreenScale) {
+      const known = this.fixedRasterScales.get(window.nativeId);
+      if (known !== undefined && known !== raster.scaleFactor) {
+        this.reportFramePublicationFailure(window, 'bitmap', new Error('Offscreen representation scale changed within a registered window'));
+        return;
+      }
+      if (known === undefined) {
+        this.fixedRasterScales.set(window.nativeId, raster.scaleFactor);
+        this.syncWindowGeometry(window);
+        current = this.windowScaleStates.get(window.nativeId);
+        if (!current) return;
+      }
     }
     let reconciliation = reconcileWindowFrame(current, size);
     if (!reconciliation.accepted && reconciliation.reason === 'unmatched') {
@@ -891,13 +921,7 @@ export class OverlaySession {
       return;
     }
 
-    let bitmap: Buffer;
-    try {
-      bitmap = image.toBitmap();
-    } catch (error) {
-      this.reportFramePublicationFailure(window, 'bitmap', error);
-      return;
-    }
+    const bitmap = raster.bitmap;
 
     if (
       !this.publishWindowGeometry(
@@ -1307,6 +1331,10 @@ export class OverlaySession {
     }
   }
 
+  private windowRasterScale(window: ElectronOverlayWindow, display: WindowDisplayScale): number {
+    return this.usesFixedOffscreenScale ? this.fixedRasterScales.get(window.nativeId) ?? 1 : display.scaleFactor;
+  }
+
   private getWindowDisplayScale(browserBounds: Rect): WindowDisplayScale {
     const display = this.electronScreen.getDisplayMatching(browserBounds);
     const scaleFactor =
@@ -1334,6 +1362,7 @@ export class OverlaySession {
         captionHeight: window.captionHeight,
       },
       state.activeFrameSize,
+      state.activeRasterScaleFactor,
     );
     if (!this.targetFollowOptions.has(window.nativeId)) {
       return geometry;
@@ -1344,8 +1373,8 @@ export class OverlaySession {
       rect: {
         x: 0,
         y: 0,
-        width: state.activeFrameSize.width,
-        height: state.activeFrameSize.height,
+        width: geometry.rect.width,
+        height: geometry.rect.height,
       },
       caption: { left: 0, right: 0, top: 0, height: 0 },
     };
@@ -1437,7 +1466,9 @@ export class OverlaySession {
         desiredRaster.bounds,
         desiredRaster.scaleFactor,
       );
-      const capturedSize = image.getSize();
+      const capturedRaster = readNativeImageRaster(image);
+      if (!capturedRaster) { this.scheduleAmbiguousCaptureRetry(window, token, desiredRaster); return; }
+      const capturedSize = capturedRaster;
       if (!frameSizeWithinTolerance(capturedSize, expectedSize)) {
         console.warn(
           `Cannot recover ambiguous Electron overlay raster for window ${window.nativeId}: ` +
@@ -1457,7 +1488,7 @@ export class OverlaySession {
         armAmbiguousPaintBarrier(state),
       );
       this.ambiguousCaptureTokens.delete(window.nativeId);
-      this.sendFrame(window, image);
+      this.sendFrame(window, image, capturedRaster);
     } catch (error) {
       if (this.ambiguousCaptureTokens.get(window.nativeId) === token) {
         console.warn(
@@ -1484,7 +1515,7 @@ export class OverlaySession {
         (await window.browserWindow.webContents.executeJavaScript(
           '({ dpr: window.devicePixelRatio, width: window.innerWidth, height: window.innerHeight })',
         )) as RendererRasterSnapshot;
-      if (rendererMatchesDesiredRaster(renderer, desiredRaster)) {
+      if (rendererMatchesDesiredRaster(renderer, desiredRaster, window.browserWindow.webContents.getZoomFactor?.() ?? 1)) {
         return true;
       }
       if (Date.now() >= deadline) {
@@ -1912,8 +1943,8 @@ function getDesiredRasterSnapshot(
   state: WindowScaleState,
 ): DesiredRasterSnapshot {
   return {
-    scaleFactor: state.desiredDisplay.scaleFactor,
-    scaleFactorMicros: scaleFactorToMicros(state.desiredDisplay.scaleFactor),
+    scaleFactor: state.desiredRasterScaleFactor,
+    scaleFactorMicros: scaleFactorToMicros(state.desiredRasterScaleFactor),
     bounds: { ...state.desiredRasterBounds },
   };
 }
@@ -1923,7 +1954,7 @@ function sameDesiredRasterSnapshot(
   snapshot: DesiredRasterSnapshot,
 ) {
   return (
-    scaleFactorToMicros(state.desiredDisplay.scaleFactor) ===
+    scaleFactorToMicros(state.desiredRasterScaleFactor) ===
       snapshot.scaleFactorMicros &&
     state.desiredRasterBounds.width === snapshot.bounds.width &&
     state.desiredRasterBounds.height === snapshot.bounds.height
@@ -1933,14 +1964,15 @@ function sameDesiredRasterSnapshot(
 function rendererMatchesDesiredRaster(
   renderer: RendererRasterSnapshot,
   desired: DesiredRasterSnapshot,
+  zoomFactor = 1,
 ) {
   return (
     Number.isFinite(renderer.dpr) &&
     Number.isFinite(renderer.width) &&
     Number.isFinite(renderer.height) &&
-    scaleFactorToMicros(renderer.dpr) === desired.scaleFactorMicros &&
-    Math.abs(renderer.width - desired.bounds.width) <= 2 &&
-    Math.abs(renderer.height - desired.bounds.height) <= 2
+    scaleFactorToMicros(renderer.dpr / zoomFactor) === desired.scaleFactorMicros &&
+    Math.abs(renderer.width * zoomFactor - desired.bounds.width) <= 2 &&
+    Math.abs(renderer.height * zoomFactor - desired.bounds.height) <= 2
   );
 }
 

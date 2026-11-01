@@ -17,22 +17,24 @@ function requirements(variable) {
 function numericAccepts(variable, stamp) {
   return requirements(variable).every(([key, value]) => stamp[key] === value);
 }
-test('portable source contract: staging mirrors schema28/cap1 native and schema4/cap1 package producer', () => {
-  assert.match(producer, /\$BuildStamp.schemaVersion -ne 28/);
-  assert.match(stage, /\$BuildStamp.schemaVersion -ne 28 -or\s*\$BuildStamp.injectorProcessInstanceBinding -ne 1 -or/);
+test('portable source contract: staging mirrors schema29/binding1/future2 native and schema4/cap1 package producer', () => {
+  assert.match(producer, /\$BuildStamp.schemaVersion -ne 29/);
+  assert.match(stage, /\$BuildStamp.schemaVersion -ne 29 -or\s*\$BuildStamp.injectorProcessInstanceBinding -ne 1 -or/);
   assert.match(stage, /\$PackageBuildStamp.schemaVersion -ne 4 -or\s*\$PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or/);
   const properties = stage.match(/\$ExpectedPackageBuildStampProperties = @\(([\s\S]*?)\) \| Sort-Object/)[1];
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 25);
+  assert.equal(patches(stage).length, 27);
   for (const [, file] of patches(stage)) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches', file))).digest('hex').length, 64);
 });
 test('portable extracted numeric guards reject old stamps and absent/incorrect capabilities', () => {
-  for (const [variable, schemaVersion] of [['BuildStamp', 28], ['PackageBuildStamp', 4]]) {
+  for (const [variable, schemaVersion] of [['BuildStamp', 29], ['PackageBuildStamp', 4]]) {
     const valid = Object.fromEntries(requirements(variable));
     assert.equal(valid.schemaVersion, schemaVersion);
     assert.equal(valid.injectorProcessInstanceBinding, 1);
+    assert.equal(valid.injectorFutureTargets, 2);
+    for(const cap of [undefined,0,1,3,'2'])assert.equal(numericAccepts(variable,{...valid,injectorFutureTargets:cap}),false);
     assert.equal(numericAccepts(variable, valid), true);
     assert.equal(numericAccepts(variable, { ...valid, schemaVersion: schemaVersion - 1 }), false);
     for (const cap of [undefined, 0, 2, '1']) assert.equal(numericAccepts(variable, { ...valid, injectorProcessInstanceBinding: cap }), false);

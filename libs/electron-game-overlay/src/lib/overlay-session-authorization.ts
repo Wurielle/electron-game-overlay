@@ -131,3 +131,16 @@ export function normalizeSessionTargetAuthorization(
     authorization.expectedCreationTime100ns,
   );
 }
+
+
+/** @internal Managed policy gate; never an ownership/exit claim. */
+export const targetPolicyGates = new WeakMap<object,(pid:number,suppressed:boolean)=>void>();
+/** @internal */
+export function setOverlaySessionTargetSuppressed(session:object,pid:number,suppressed:boolean):void {
+  targetPolicyGates.get(session)?.(pid,suppressed);
+}
+
+/** @internal */
+export const targetAdmissionGates = new WeakMap<object,(policy:(pid:number,path:string,creationTime100ns?:string)=>boolean)=>void>();
+/** @internal */
+export function setOverlaySessionTargetAdmission(session:object,policy:(pid:number,path:string,creationTime100ns?:string)=>boolean):void {targetAdmissionGates.get(session)?.(policy);}

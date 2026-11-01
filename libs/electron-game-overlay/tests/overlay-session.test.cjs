@@ -186,6 +186,8 @@ function createOverlayWindowFocusHarness(focusOnReady) {
     },
   };
   const bridge = {
+    setWindowFocus() {},
+    setWindowCursor() {},
     registerWindow() {},
     unregisterWindow() {},
     removeWindow(window) {
@@ -316,7 +318,7 @@ test('attaching a BrowserWindow requires offscreen rendering at construction', (
   assert.equal(startCalls, 0);
   assert.equal(session.started, false);
   assert.equal(session.windows.get('onscreen'), null);
-  assert.equal(harness.webContentsHandlers.size, 1);
+  assert.equal(harness.webContentsHandlers.size, 2);
   assert.equal(harness.windowHandlers.size, 4);
 });
 
@@ -325,7 +327,7 @@ test('show requests a fresh frame and destroy detaches caller-owned window liste
 
   harness.window.show();
   assert.equal(harness.invalidateCalls, 1);
-  assert.equal(harness.webContentsHandlers.size, 1);
+  assert.equal(harness.webContentsHandlers.size, 2);
   assert.equal(harness.windowHandlers.size, 4);
 
   harness.window.destroy();
@@ -336,7 +338,7 @@ test('show requests a fresh frame and destroy detaches caller-owned window liste
     existingWindow: harness.browserWindow,
     id: 'replacement',
   });
-  assert.equal(harness.webContentsHandlers.size, 1);
+  assert.equal(harness.webContentsHandlers.size, 2);
   assert.equal(harness.windowHandlers.size, 4);
   harness.windowHandlers.get('closed')();
   assert.deepEqual(harness.removedWindows, [harness.window, replacement]);
@@ -1498,7 +1500,7 @@ test('target following moves the backing window in DIP but commits local physica
 
   session.sendFrame(window, {
     getSize: () => ({ width: 1920, height: 1080 }),
-    toBitmap: () => Buffer.from([1, 2, 3, 4]),
+    toBitmap: () => Buffer.alloc(1920 * 1080 * 4, 1),
   });
   assert.deepEqual(boundsUpdates.at(-1), {
     id: 7,
@@ -1512,7 +1514,7 @@ test('target following moves the backing window in DIP but commits local physica
   assert.deepEqual(frames, [
     {
       id: 7,
-      bitmap: Buffer.from([1, 2, 3, 4]),
+      bitmap: Buffer.alloc(1920 * 1080 * 4, 1),
       width: 1920,
       height: 1080,
     },
@@ -1537,7 +1539,7 @@ test('target following moves the backing window in DIP but commits local physica
 
   session.sendFrame(window, {
     getSize: () => ({ width: 640, height: 360 }),
-    toBitmap: () => Buffer.from([5, 6, 7, 8]),
+    toBitmap: () => Buffer.alloc(640 * 360 * 4, 5),
   });
   assert.deepEqual(boundsUpdates.at(-1).details.rect, {
     x: 10,
@@ -1563,7 +1565,7 @@ test('publishes asynchronous producer milestones after window and first-frame su
   harness.session.registerWindow(harness.window);
   harness.session.sendFrame(harness.window, {
     getSize: () => ({ width: 640, height: 360 }),
-    toBitmap: () => Buffer.from([1, 2, 3, 4]),
+    toBitmap: () => Buffer.alloc(640 * 360 * 4, 1),
   });
   assert.deepEqual(diagnostics, [], 'producer delivery must not re-enter show');
 
@@ -1584,7 +1586,7 @@ test('publishes asynchronous producer milestones after window and first-frame su
 
   harness.session.sendFrame(harness.window, {
     getSize: () => ({ width: 640, height: 360 }),
-    toBitmap: () => Buffer.from([5, 6, 7, 8]),
+    toBitmap: () => Buffer.alloc(640 * 360 * 4, 5),
   });
   await Promise.resolve();
   assert.equal(
@@ -1649,7 +1651,7 @@ test('frame transport rejection is contained and does not claim publication', as
   assert.doesNotThrow(() => {
     harness.session.sendFrame(harness.window, {
       getSize: () => ({ width: 640, height: 360 }),
-      toBitmap: () => Buffer.from([1, 2, 3, 4]),
+      toBitmap: () => Buffer.alloc(640 * 360 * 4, 1),
     });
   });
   await Promise.resolve();
@@ -1799,4 +1801,46 @@ test('bounds publication failure keeps the last committed scale state', async (t
     ],
   );
   assert.equal(warnings.length, 1);
+});
+
+test('Chromium cursor listener follows wrapper show/hide/reopen and detaches on teardown', () => {
+  const h = createOverlayWindowFocusHarness();
+  const cursors = [];
+  h.bridge.setWindowCursor = (window, cursor) => cursors.push(cursor);
+  const changed = h.webContentsHandlers.get('cursor-changed');
+  changed({}, 'hand');
+  assert.deepEqual(cursors, []);
+  h.window.show();
+  assert.deepEqual(cursors, [32649]);
+  changed({}, 'text');
+  changed({}, 'ew-resize');
+  assert.deepEqual(cursors, [32649, 32513, 32644]);
+  h.window.hide();
+  changed({}, 'pointer');
+  assert.deepEqual(cursors, [32649, 32513, 32644]);
+  h.window.show();
+  assert.equal(cursors.at(-1), 32512);
+  h.window.destroy();
+  assert.equal(h.webContentsHandlers.has('cursor-changed'), false);
+});
+
+test('Electron 46 default OSR output publishes genuine scale-1 pixels at fractional display placement', () => {
+  const h=createProducerPublicationHarness();h.session.usesFixedOffscreenScale=true;
+  h.session.electronScreen.getDisplayMatching=()=>({id:1,scaleFactor:1.25,bounds:{width:1920,height:1080}});
+  h.session.registerWindow(h.window);
+  const pixels=Buffer.alloc(640*360*4);
+  h.session.sendFrame(h.window,{getSize:()=>({width:640,height:360}),getScaleFactors:()=>[1],toBitmap:()=>pixels});
+  const frame=h.calls.find(c=>c.type==='frame');assert.ok(frame);
+  assert.equal(frame.width,640);assert.equal(frame.height,360);assert.strictEqual(frame.bitmap,pixels);
+  assert.equal(h.calls.find(c=>c.type==='add').details.rect.width,800);
+});
+test('explicit fractional image representation keeps bitmap bytes separate from input/display geometry', () => {
+  const h=createProducerPublicationHarness();h.session.usesFixedOffscreenScale=true;
+  h.session.electronScreen.getDisplayMatching=()=>({id:1,scaleFactor:1.25,bounds:{width:1920,height:1080}});
+  h.session.registerWindow(h.window);
+  const pixels=Buffer.alloc(960*540*4);
+  h.session.sendFrame(h.window,{getSize:()=>({width:640,height:360}),getScaleFactors:()=>[1.5],toBitmap:o=>{assert.equal(o.scaleFactor,1.5);return pixels;}});
+  const frame=h.calls.find(c=>c.type==='frame');assert.ok(frame);assert.equal(frame.width,960);assert.equal(frame.height,540);
+  assert.equal(h.calls.filter(c=>c.type==='bounds').at(-1).details.rect.width,800);
+  assert.equal(h.calls.filter(c=>c.type==='bounds').at(-1).details.scaleFactorMicros,1250000);
 });

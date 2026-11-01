@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron';
+import { electronCursorCode } from './cursor.js';
 import type { OverlayWindowBridge } from './overlay-window-bridge.js';
 import type {
   ElectronOverlayWindowFollowTargetOptions,
@@ -58,6 +59,11 @@ export class ElectronOverlayWindow {
   /** Whether transparent pixels allow input to reach a lower overlay window. */
   public readonly transparent: boolean;
 
+  private cursorCode = 32512;
+  private readonly handleCursorChanged = (_event: Electron.Event, type: string) => {
+    this.cursorCode = electronCursorCode(type);
+    if (this.registered) this.bridge.setWindowCursor(this, this.cursorCode);
+  };
   private registered = false;
   private destroyed = false;
   private readonly ownsBrowserWindow: boolean;
@@ -152,6 +158,8 @@ export class ElectronOverlayWindow {
 
     this.bridge.registerWindow(this);
     this.registered = true;
+    this.bridge.setWindowCursor(this, this.cursorCode);
+    if (this.focusOnReady) this.focus();
     if (!this.browserWindow.webContents.isDestroyed()) {
       try {
         this.browserWindow.webContents.invalidate();
@@ -190,13 +198,20 @@ export class ElectronOverlayWindow {
     this.destroy();
   }
 
-  /** Gives the backing offscreen web view overlay-input focus. */
+  /** Selects this visible window for native keyboard input and focuses its web view.
+   * Call after show(), including each reopen. Input still requires interception
+   * and foreground game focus. Older brokers/runtimes may require a pointer click.
+   */
   public focus() {
+    if (this.destroyed) return;
+    if (this.registered) this.bridge.setWindowFocus(this, true);
     this.browserWindow.focusOnWebView();
   }
 
   /** Removes overlay-input focus from the backing offscreen web view. */
   public blur() {
+    if (this.destroyed) return;
+    if (this.registered) this.bridge.setWindowFocus(this, false);
     this.browserWindow.blurWebView();
   }
 
@@ -240,6 +255,7 @@ export class ElectronOverlayWindow {
 
   private bindBrowserWindow() {
     this.browserWindow.webContents.on('paint', this.handlePaint);
+    this.browserWindow.webContents.on('cursor-changed', this.handleCursorChanged);
     this.browserWindow.on('ready-to-show', this.handleReadyToShow);
     this.browserWindow.on('move', this.handleWindowGeometryChanged);
     this.browserWindow.on('resize', this.handleWindowGeometryChanged);
@@ -249,6 +265,7 @@ export class ElectronOverlayWindow {
   private unbindBrowserWindow() {
     this.browserWindow.removeListener('closed', this.handleBrowserWindowClosed);
     this.browserWindow.webContents.removeListener('paint', this.handlePaint);
+    this.browserWindow.webContents.removeListener('cursor-changed', this.handleCursorChanged);
     this.browserWindow.removeListener('ready-to-show', this.handleReadyToShow);
     this.browserWindow.removeListener('move', this.handleWindowGeometryChanged);
     this.browserWindow.removeListener(
@@ -327,10 +344,13 @@ function getBrowserWindowOptions(
   return {
     ...browserWindowOptions,
     ...bounds,
+    thickFrame: browserWindowOptions.thickFrame ?? false,
     show: browserWindowOptions.show || false,
     webPreferences: {
       ...browserWindowOptions.webPreferences,
-      offscreen: true,
+      offscreen: typeof browserWindowOptions.webPreferences?.offscreen === 'object'
+        ? { ...browserWindowOptions.webPreferences.offscreen }
+        : true,
     },
   };
 }

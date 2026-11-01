@@ -667,6 +667,25 @@ pub unsafe extern "C" fn ego_scene_snapshot_get_window(
 }
 
 /// # Safety
+/// Transport must be live and out_cursor must be writable. -1 means game-owned.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_cursor_at(
+    transport: *const EgoTransport,
+    x: i32,
+    y: i32,
+    out_cursor: *mut i32,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        let output = out_cursor
+            .as_mut()
+            .ok_or_else(|| FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "null cursor"))?;
+        *output = transport.bridge.cursor_at(x, y);
+        Ok(())
+    })
+}
+
+/// # Safety
 /// `transport` must remain live for the call and `out_desired` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn ego_transport_desired_interception(

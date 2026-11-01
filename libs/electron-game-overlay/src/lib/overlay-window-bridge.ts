@@ -2,6 +2,8 @@ import type { ElectronOverlayWindow } from './electron-overlay-window.js';
 import type { ElectronOverlayWindowFollowTargetOptions } from './types.js';
 
 export type OverlayWindowBridge = {
+  setWindowCursor: (window: ElectronOverlayWindow, cursor: number) => void;
+  setWindowFocus: (window: ElectronOverlayWindow, focused: boolean) => void;
   registerWindow: (window: ElectronOverlayWindow) => void;
   unregisterWindow: (window: ElectronOverlayWindow) => void;
   removeWindow: (window: ElectronOverlayWindow) => void;

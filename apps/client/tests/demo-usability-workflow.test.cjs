@@ -9,6 +9,10 @@ const steps = workflow.jobs['packaged-broker'].steps;
 const manual = "${{ github.event_name == 'workflow_dispatch' && inputs.build-demo }}";
 const regular = workflow.jobs['sdk-tests'].steps;
 
+test('SDK regression checks apply to development pull requests', () => {
+  assert.ok(workflow.on.pull_request.branches.includes('dev'), 'dev pull requests must run SDK verification');
+});
+
 test('ordinary pull requests run encountered application regressions without manual-demo gating', () => {
   const unit = regular.find(s => s.name === 'Check encountered application regressions');
   assert.ok(unit, 'application regressions must not require a manual demo build');

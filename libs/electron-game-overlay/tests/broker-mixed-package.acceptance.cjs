@@ -499,6 +499,19 @@ if (!process.env.EGO_MIXED_ACCEPTANCE_WORKER) {
               secondId,
               'Same app-local ID maps to distinct target IDs',
             );
+            const focusCommands = [];
+            transport.setWindowFocus = (id, focused) => focusCommands.push({ id, focused });
+            const modern = first.name === 'new' ? first : second;
+            const modernId = first.name === 'new' ? firstId : secondId;
+            modern.client.setInputIntercept(true);
+            modern.client.setWindowFocus(7, true);
+            if (serverName === 'new') {
+              await waitFor(() => focusCommands.some(command => command.id === modernId && command.focused), 'Negotiated optional focus uses target-global ID');
+            } else {
+              await delay(30);
+              assert.deepEqual(focusCommands, [], 'New client must suppress optional focus against the actual older coordinator');
+            }
+            modern.client.setInputIntercept(false);
             assert.deepEqual(
               transport.frames.get(firstId).pixels,
               Buffer.alloc(8, 11),

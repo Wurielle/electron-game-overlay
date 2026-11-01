@@ -305,3 +305,35 @@ test('full geometry includes scale identity and ignores transient raster flags',
     height: 540,
   });
 });
+
+test('fixed OSR output is distinct from display scale and remains valid across monitor changes', () => {
+  const b=bounds(20,60,600,480);
+  const initial=createWindowScaleState(display(1,1.25),b,1);
+  assert.deepEqual(initial.activeFrameSize,{width:600,height:480});
+  assert.deepEqual(getActivePhysicalBounds(initial),bounds(25,75,750,600));
+  const moved=reconcileWindowScale(initial,display(2,1.5),b,1);
+  assert.equal(moved.pending,false);
+  assert.equal(moved.state.activeDisplay.scaleFactor,1.5);
+  assert.deepEqual(getActivePhysicalBounds(moved.state),bounds(30,90,900,720));
+  assert.deepEqual(moved.state.activeFrameSize,{width:600,height:480});
+  assert.equal(reconcileWindowFrame(moved.state,{width:750,height:600}).accepted,false,'display-sized bitmap must not pass a scale-1 output contract');
+  const geometry=getPhysicalWindowGeometry(b,display(2,1.5),{dragBorder:0,captionHeight:0},initial.activeFrameSize,1);
+  assert.deepEqual(geometry.rect,bounds(30,90,900,720));
+  assert.equal(geometry.scaleFactorMicros,1500000);
+});
+test('explicit fractional OSR output commits only its matching genuine bitmap', () => {
+  const b=bounds(20,60,600,480),initial=createWindowScaleState(display(1,1.25),b,1);
+  const pending=reconcileWindowScale(initial,display(1,1.25),b,1.5);
+  assert.equal(pending.pending,true);
+  assert.deepEqual(getActivePhysicalBounds(pending.state),bounds(25,75,750,600));
+  assert.equal(reconcileWindowFrame(pending.state,{width:800,height:640}).accepted,false);
+  const frame=reconcileWindowFrame(pending.state,{width:900,height:720});
+  assert.equal(frame.accepted,true);assert.equal(frame.state.activeRasterScaleFactor,1.5);
+  assert.deepEqual(getActivePhysicalBounds(frame.state),bounds(25,75,750,600));
+});
+
+test('float-valued NativeImage scale uses the same micro-scale coordinate contract as input', () => {
+  const state=createWindowScaleState(display(1,1.25),bounds(20,60,600,480),1.100000023841858);
+  assert.deepEqual(state.activeFrameSize,{width:660,height:528});
+  assert.deepEqual(getActivePhysicalBounds(state),bounds(25,75,750,600));
+});

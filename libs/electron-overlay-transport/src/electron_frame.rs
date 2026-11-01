@@ -20,12 +20,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Storage::FileSystem::{
     MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
-use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor,
     GetForegroundWindow, GetMessageW, GetWindowLongPtrW, KillTimer, PostMessageW, PostQuitMessage,
@@ -679,6 +679,13 @@ impl ElectronFrameBridge {
     }
 
     /// Returns a diagnostic snapshot of the current input routing state.
+    pub fn cursor_at(&self, x: i32, y: i32) -> i32 {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cursor_at(crate::electron_input::InputPoint::new(x, y))
+    }
+
     pub fn input_state(&self) -> InputRouterState {
         self.input_router
             .lock()
@@ -1797,6 +1804,37 @@ impl BridgeThreadState {
             "window.order" => serde_json::from_str::<WindowOrderMessage>(json)
                 .map_err(DispatchError::Json)
                 .map(|message| self.on_window_order(message)),
+            "window.cursor" => serde_json::from_str::<WindowCursorMessage>(json)
+                .map_err(DispatchError::Json)
+                .map(|message| {
+                    self.update_input_router(|router| {
+                        router.set_window_cursor(message.window_id, message.cursor);
+                        Vec::new()
+                    });
+                }),
+            "window.focus" => serde_json::from_str::<WindowFocusMessage>(json)
+                .map_err(DispatchError::Json)
+                .map(|message| {
+                    if self
+                        .windows
+                        .iter()
+                        .any(|window| window.window_id == message.window_id)
+                    {
+                        if message.focused {
+                            let mut ids: Vec<u32> = self
+                                .windows
+                                .iter()
+                                .map(|window| window.window_id)
+                                .filter(|id| *id != message.window_id)
+                                .collect();
+                            ids.push(message.window_id);
+                            self.on_window_order(WindowOrderMessage { window_ids: ids });
+                        }
+                        self.update_input_router(|router| {
+                            router.request_window_focus(message.window_id, message.focused)
+                        });
+                    }
+                }),
             "window.bounds" => serde_json::from_str::<WindowBoundsMessage>(json)
                 .map_err(DispatchError::Json)
                 .and_then(|message| {
@@ -2319,6 +2357,20 @@ struct WindowIdMessage {
 #[serde(rename_all = "camelCase")]
 struct WindowOrderMessage {
     window_ids: Vec<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowCursorMessage {
+    window_id: u32,
+    cursor: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowFocusMessage {
+    window_id: u32,
+    focused: bool,
 }
 
 #[derive(Deserialize)]
@@ -2953,10 +3005,19 @@ fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
         .map_err(NetworkError::CurrentExecutable)?
         .to_string_lossy()
         .into_owned();
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user) }
+        .map_err(|error| NetworkError::CurrentProcessIdentity(io::Error::other(error)))?;
+    let creation_time = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+    if creation_time == 0 { return Err(NetworkError::CurrentProcessIdentity(io::Error::other("zero creation time"))); }
     let json = serde_json::json!({
         "type": "game.process",
         "protocolVersion": TRANSPORT_VERSION,
-        "capabilities": ["window-order-v1"],
+        "creationTime100ns": creation_time.to_string(),
+        "capabilities": ["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"],
         "token": token,
         "pid": unsafe { GetCurrentProcessId() },
         "path": path,
@@ -3210,6 +3271,7 @@ impl fmt::Display for DiscoveryError {
 #[derive(Debug)]
 enum NetworkError {
     CurrentExecutable(io::Error),
+    CurrentProcessIdentity(io::Error),
     Wire(crate::electron_wire::WireError),
 }
 
@@ -3219,6 +3281,7 @@ impl fmt::Display for NetworkError {
             Self::CurrentExecutable(error) => {
                 write!(formatter, "cannot resolve target executable path: {error}")
             }
+            Self::CurrentProcessIdentity(error) => write!(formatter, "cannot query current process incarnation: {error}"),
             Self::Wire(error) => error.fmt(formatter),
         }
     }
@@ -4499,6 +4562,100 @@ mod tests {
     }
 
     #[test]
+    fn explicit_focus_packet_routes_first_key_without_click_and_preserves_gates() {
+        use crate::electron_input::{WM_CHAR, WM_KEYDOWN, WM_KEYUP};
+        let mut state = test_bridge_state();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![window_metadata(7, "A", 0), window_metadata(2, "B", 900)],
+            })
+            .unwrap();
+        // Focus before the first pixels and before interception/foreground.
+        state.dispatch_json(r#"{"type":"window.focus","windowId":7,"focused":true}"#);
+        for id in [7, 2] {
+            state
+                .on_frame(WireFrame {
+                    window_id: id,
+                    width: 1,
+                    height: 1,
+                    bgra: vec![255; 4],
+                })
+                .unwrap();
+        }
+        state.dispatch_json(r#"{"type":"command.input.intercept","intercept":true}"#);
+        {
+            let mut router = state.input_router.lock().unwrap();
+            assert!(router.route_win32_message(WM_CHAR, 97, 1, Some).is_empty());
+            router.set_target_focused(true);
+            router.apply_input_filter(true, true);
+            assert!(
+                router.request_window_focus(7, true).is_empty(),
+                "repeated focus must not blur/reset an already focused page"
+            );
+            for msg in [WM_KEYDOWN, WM_CHAR, WM_KEYUP] {
+                assert!(matches!(
+                    router.route_win32_message(msg, 97, 1, Some).as_slice(),
+                    [OutboundMessage::Input { window_id: 7, .. }]
+                ));
+            }
+            router.request_interception(false);
+            assert!(router.route_win32_message(WM_CHAR, 97, 1, Some).is_empty());
+            router.apply_input_filter(false, true);
+            router.request_interception(true);
+            router.apply_input_filter(true, true);
+            assert_eq!(router.state().focused_window_id, Some(7));
+            router.set_target_focused(false);
+            assert!(router.route_win32_message(WM_CHAR, 97, 1, Some).is_empty());
+            router.apply_input_filter(false, true);
+            router.set_target_focused(true);
+            router.apply_input_filter(true, true);
+            assert_eq!(router.state().focused_window_id, Some(7));
+        }
+        state.dispatch_json(r#"{"type":"window.focus","windowId":2,"focused":true}"#);
+        state.dispatch_json(r#"{"type":"window.focus","windowId":7,"focused":false}"#);
+        assert_eq!(
+            state.input_router.lock().unwrap().state().focused_window_id,
+            Some(2)
+        );
+        state.dispatch_json(r#"{"type":"window.close","windowId":2}"#);
+        assert_eq!(
+            state.input_router.lock().unwrap().state().focused_window_id,
+            None
+        );
+        state.on_window(window_metadata(2, "B", 900)).unwrap();
+        state.dispatch_json(r#"{"type":"window.focus","windowId":2,"focused":true}"#);
+        state
+            .on_frame(WireFrame {
+                window_id: 2,
+                width: 1,
+                height: 1,
+                bgra: vec![255; 4],
+            })
+            .unwrap();
+        assert!(matches!(
+            state
+                .input_router
+                .lock()
+                .unwrap()
+                .route_win32_message(WM_CHAR, 98, 1, Some)
+                .as_slice(),
+            [OutboundMessage::Input { window_id: 2, .. }]
+        ));
+        state.dispatch_json(r#"{"type":"window.focus","windowId":2,"focused":false}"#);
+        assert!(state
+            .input_router
+            .lock()
+            .unwrap()
+            .route_win32_message(WM_CHAR, 98, 1, Some)
+            .is_empty());
+        state.dispatch_json(r#"{"type":"window.focus","windowId":999,"focused":true}"#);
+        assert_eq!(
+            state.input_router.lock().unwrap().state().focused_window_id,
+            None
+        );
+    }
+
+    #[test]
     fn window_order_packet_preserves_dragged_placement_pixels_and_input_capture() {
         let mut state = test_bridge_state();
         state
@@ -4683,9 +4840,10 @@ mod tests {
         };
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(value["protocolVersion"], 1);
+        assert!(value["creationTime100ns"].as_str().unwrap().parse::<u64>().unwrap() > 0);
         assert_eq!(
             value["capabilities"],
-            serde_json::json!(["window-order-v1"])
+            serde_json::json!(["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"])
         );
     }
 

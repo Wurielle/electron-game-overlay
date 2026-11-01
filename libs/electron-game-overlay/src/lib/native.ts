@@ -68,10 +68,16 @@ export interface NativeOverlay {
   ): Promise<Disposable | NativeTargetAuthorization>;
   /** @internal Legacy untargeted rendezvous for pre-creation name/path watchers. */
   authorizeGlobalTarget?(): Promise<Disposable>;
+  /** Application-local policy gate; does not establish process exit or injection permission. */
+  setTargetSuppressed?(pid:number,suppressed:boolean):void;
+  /** Local managed-attachment admission; never changes broker ownership. */
+  setTargetAdmissionPolicy?(policy:(pid:number,path:string,creationTime100ns?:string)=>boolean):void;
   stop(): void;
   setDiagnosticCallback?(callback: (diagnostic: unknown) => void): void;
   setEventCallback(callback: (event: string, ...args: any[]) => void): void;
   setInputIntercept(intercept: boolean): void;
+  setWindowCursor?(windowId: number, cursor: number): void;
+  setWindowFocus?(windowId: number, focused: boolean): void;
   addWindow(windowId: number, details: NativeOverlayWindowDetails): void;
   closeWindow(windowId: number): void;
   sendWindowBounds(
