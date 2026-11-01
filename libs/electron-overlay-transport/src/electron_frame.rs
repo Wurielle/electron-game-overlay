@@ -528,7 +528,16 @@ pub struct ElectronFrame {
 #[derive(Clone, Debug, Default)]
 pub struct ElectronScene {
     pub state_revision: u64,
+    /// All live registrations, including windows waiting for their first or
+    /// replacement raster. Unlike `windows`, this list is lifetime authority.
+    pub registrations: Vec<ElectronWindowRegistration>,
     pub windows: Vec<Arc<ElectronFrame>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ElectronWindowRegistration {
+    pub window_id: u32,
+    pub incarnation: u64,
 }
 
 /// Placement supplied by the Electron overlay host, in game-client pixels.
@@ -713,11 +722,15 @@ impl ElectronFrameBridge {
             .cursor_at(crate::electron_input::InputPoint::new(x, y))
     }
 
-    pub fn cursor_for_window(&self, window_id: u32) -> i32 {
-        self.input_router
+    pub fn cursor_for_window(&self, window_id: u32, incarnation: u64) -> i32 {
+        let router = self
+            .input_router
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .cursor_for_window(window_id)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if incarnation == 0 || router.window_incarnation(window_id) != Some(incarnation) {
+            return -1;
+        }
+        router.cursor_for_window(window_id)
     }
 
     pub fn input_state(&self) -> InputRouterState {
@@ -2346,11 +2359,18 @@ impl BridgeThreadState {
             if invalidates_stack_intents {
                 self.stack_generation.fetch_add(1, Ordering::AcqRel);
             }
-            let messages = update(
-                &mut input_router
+            let messages = {
+                let mut router = input_router
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            );
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                router.set_registered_windows(
+                    self.windows
+                        .iter()
+                        .map(|window| (window.window_id, window.incarnation))
+                        .collect(),
+                );
+                update(&mut router)
+            };
             let has_messages = !messages.is_empty();
             if has_messages {
                 outbound
@@ -2699,6 +2719,13 @@ fn advance_epoch(epoch: &mut u64) -> u64 {
 }
 
 fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -> ElectronScene {
+    let registrations = windows
+        .iter()
+        .map(|window| ElectronWindowRegistration {
+            window_id: window.window_id,
+            incarnation: window.incarnation,
+        })
+        .collect();
     let windows = windows
         .iter_mut()
         .filter_map(|window| {
@@ -2734,6 +2761,7 @@ fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -
 
     ElectronScene {
         state_revision,
+        registrations,
         windows,
     }
 }
@@ -4261,6 +4289,188 @@ mod tests {
             .lock()
             .unwrap()
             .cooperative_focus_overflowed());
+    }
+
+    #[test]
+    fn reannouncing_an_unframed_window_retires_its_queued_focus_incarnation() {
+        let mut state = test_bridge_state();
+        state
+            .input_router
+            .lock()
+            .unwrap()
+            .set_cooperative_focus(None);
+        state
+            .on_window(window_metadata(7, "unframed-old", 0))
+            .unwrap();
+        let old_incarnation = state.windows[0].incarnation;
+        state.dispatch(
+            "window.focus",
+            r#"{"type":"window.focus","windowId":7,"focused":true}"#,
+        );
+        assert_eq!(
+            state
+                .input_router
+                .lock()
+                .unwrap()
+                .next_cooperative_focus_request(0)
+                .2,
+            old_incarnation
+        );
+        state
+            .on_window(window_metadata(7, "unframed-new", 0))
+            .unwrap();
+        assert_ne!(state.windows[0].incarnation, old_incarnation);
+        state.on_window(window_metadata(8, "painted", 1)).unwrap();
+        state
+            .on_frame(WireFrame {
+                window_id: 8,
+                width: 1,
+                height: 1,
+                bgra: vec![1, 2, 3, 255],
+            })
+            .unwrap();
+        state.dispatch(
+            "window.focus",
+            r#"{"type":"window.focus","windowId":8,"focused":true}"#,
+        );
+        let next = state
+            .input_router
+            .lock()
+            .unwrap()
+            .next_cooperative_focus_request(0);
+        assert_eq!(next.1, 8);
+        assert_ne!(next.2, old_incarnation);
+    }
+
+    #[test]
+    fn registered_metadata_distinguishes_raster_replacement_from_closed_windows() {
+        let mut state = test_bridge_state();
+        state.on_window(window_metadata(7, "resizing", 0)).unwrap();
+        state
+            .on_frame(WireFrame {
+                window_id: 7,
+                width: 1,
+                height: 1,
+                bgra: vec![1, 2, 3, 255],
+            })
+            .unwrap();
+        let initial = state.scene.read().unwrap().clone();
+        assert_eq!(initial.windows.len(), 1);
+        assert_eq!(initial.registrations.len(), 1);
+        let registration = initial.registrations[0];
+        state
+            .on_window_bounds(WindowBoundsMessage {
+                window_id: 7,
+                rect: ElectronWindowRect {
+                    x: 10,
+                    y: 20,
+                    width: 2,
+                    height: 2,
+                },
+                caption: None,
+                scale_factor_micros: None,
+                raster_changed: Some(true),
+            })
+            .unwrap();
+        let awaiting_raster = state.scene.read().unwrap().clone();
+        assert!(awaiting_raster.windows.is_empty());
+        assert_eq!(awaiting_raster.registrations, vec![registration]);
+        state
+            .on_frame(WireFrame {
+                window_id: 7,
+                width: 2,
+                height: 2,
+                bgra: vec![255; 16],
+            })
+            .unwrap();
+        let repainted = state.scene.read().unwrap().clone();
+        assert_eq!(repainted.windows.len(), 1);
+        assert_eq!(repainted.registrations, vec![registration]);
+        state.on_window_close(7).unwrap();
+        assert!(state.scene.read().unwrap().registrations.is_empty());
+        assert_eq!(initial.registrations, vec![registration]);
+        assert_eq!(awaiting_raster.registrations, vec![registration]);
+    }
+
+    #[test]
+    fn cooperative_focus_retains_raster_gap_intent_without_stealing_foreign_focus() {
+        for foreign_focus_during_gap in [false, true] {
+            let mut state = test_bridge_state();
+            state.on_window(window_metadata(7, "resizing", 0)).unwrap();
+            state.on_window(window_metadata(8, "other", 100)).unwrap();
+            for id in [7, 8] {
+                state
+                    .on_frame(WireFrame {
+                        window_id: id,
+                        width: 1,
+                        height: 1,
+                        bgra: vec![255; 4],
+                    })
+                    .unwrap();
+            }
+            let incarnation = state
+                .windows
+                .iter()
+                .find(|window| window.window_id == 7)
+                .unwrap()
+                .incarnation;
+            {
+                let mut router = state.input_router.lock().unwrap();
+                router.set_cooperative_focus(None);
+                router.set_target_focused(true);
+                router.set_cooperative_interception(true);
+                router.apply_input_filter(true, true);
+                router.request_window_focus_for_incarnation(7, incarnation, true);
+                router.set_cooperative_focus_for_incarnation(Some(7), incarnation);
+                router.route_win32_message_for_incarnation(
+                    7,
+                    incarnation,
+                    0x0201,
+                    1,
+                    (21 << 16) | 11,
+                    Some,
+                );
+                assert_eq!(router.state().focused_window_id, Some(7));
+                assert!(router.state().pointer_captured);
+            }
+            state
+                .on_window_bounds(WindowBoundsMessage {
+                    window_id: 7,
+                    rect: ElectronWindowRect {
+                        x: 10,
+                        y: 20,
+                        width: 2,
+                        height: 2,
+                    },
+                    caption: None,
+                    scale_factor_micros: None,
+                    raster_changed: Some(true),
+                })
+                .unwrap();
+            {
+                let mut router = state.input_router.lock().unwrap();
+                assert_eq!(router.state().focused_window_id, None);
+                assert!(!router.state().pointer_captured);
+                assert!(router
+                    .route_win32_message_for_incarnation(7, incarnation, 0x0100, 65, 0, Some)
+                    .is_empty());
+                if foreign_focus_during_gap {
+                    router.set_cooperative_focus(None);
+                }
+            }
+            state
+                .on_frame(WireFrame {
+                    window_id: 7,
+                    width: 2,
+                    height: 2,
+                    bgra: vec![255; 16],
+                })
+                .unwrap();
+            assert_eq!(
+                state.input_router.lock().unwrap().state().focused_window_id,
+                (!foreign_focus_during_gap).then_some(7)
+            );
+        }
     }
 
     #[test]

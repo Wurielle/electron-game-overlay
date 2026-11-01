@@ -184,7 +184,10 @@ if (-not (Test-Path -LiteralPath $ProducerRoot -PathType Container)) {
     throw "The controlled Electron producer is unavailable: $ProducerRoot"
 }
 
-New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
+New-Item -ItemType Directory -Path $RunDirectory -ErrorAction Stop | Out-Null
+. (Join-Path $PSScriptRoot 'owned-stage-marker.ps1')
+Write-OwnedOverlayRunMarker -RunDirectory $RunDirectory -BuildRoot $BuildRoot
+New-Item -ItemType Directory -Path $TargetDirectory -ErrorAction Stop | Out-Null
 Copy-Item -LiteralPath $BuiltHost -Destination $TargetExecutablePath
 Copy-Item -LiteralPath $RuntimeSource -Destination (Join-Path $RunDirectory "ReShade64.dll")
 Copy-Item -LiteralPath $InjectorSource -Destination (Join-Path $RunDirectory "inject.exe")

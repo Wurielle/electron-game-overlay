@@ -112,6 +112,8 @@ if (Test-Path -LiteralPath $RunDirectory) {
 }
 
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
+. (Join-Path $PSScriptRoot 'owned-stage-marker.ps1')
+Write-OwnedOverlayRunMarker -RunDirectory $RunDirectory -BuildRoot $BuildRoot
 Copy-Item -LiteralPath $BuiltHost -Destination (Join-Path $RunDirectory $HostName)
 Copy-Item -LiteralPath $Addon -Destination (Join-Path $RunDirectory "electron_game_overlay.addon64")
 Copy-Item -LiteralPath $Runtime -Destination (Join-Path $RunDirectory $ProxyName)

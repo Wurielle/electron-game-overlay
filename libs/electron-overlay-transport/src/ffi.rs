@@ -787,6 +787,67 @@ pub unsafe extern "C" fn ego_scene_snapshot_window_incarnation(
 }
 
 /// # Safety
+/// `snapshot` must remain live and `out_count` must be writable. Registrations
+/// include windows awaiting pixels and are separate from compositable frames.
+#[no_mangle]
+pub unsafe extern "C" fn ego_scene_snapshot_registration_count(
+    snapshot: *const EgoSceneSnapshot,
+    out_count: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_count = out_count.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_count pointer is null")
+        })?;
+        *out_count = 0;
+        let snapshot = snapshot_ref(snapshot)?;
+        *out_count = snapshot.scene.registrations.len() as u64;
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `snapshot` must remain live and both outputs must be writable. Identity is
+/// retained through raster replacement and disappears only when registration
+/// is removed or reset in this immutable producer snapshot.
+#[no_mangle]
+pub unsafe extern "C" fn ego_scene_snapshot_get_registration(
+    snapshot: *const EgoSceneSnapshot,
+    index: u64,
+    out_window_id: *mut u32,
+    out_incarnation: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_window_id = out_window_id.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_window_id pointer is null")
+        })?;
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
+        *out_window_id = 0;
+        *out_incarnation = 0;
+        let snapshot = snapshot_ref(snapshot)?;
+        let index = usize::try_from(index).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_OUT_OF_RANGE,
+                "scene registration index is out of range",
+            )
+        })?;
+        let registration = snapshot.scene.registrations.get(index).ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_OUT_OF_RANGE,
+                "scene registration index is out of range",
+            )
+        })?;
+        *out_window_id = registration.window_id;
+        *out_incarnation = registration.incarnation;
+        Ok(())
+    })
+}
+
+/// # Safety
 /// Transport must be live and out_cursor must be writable. -1 means game-owned.
 #[no_mangle]
 pub unsafe extern "C" fn ego_transport_cursor_at(
@@ -1069,7 +1130,7 @@ pub unsafe extern "C" fn ego_transport_hit_test_window(
 
 /// # Safety
 /// `transport` must remain live and `out_incarnation` must be writable. Zero
-/// means the local ID is not currently routable; bounds changes retain identity.
+/// means the local ID is not registered. Unpainted windows retain identity.
 #[no_mangle]
 pub unsafe extern "C" fn ego_transport_window_incarnation(
     transport: *const EgoTransport,
@@ -1192,6 +1253,7 @@ pub unsafe extern "C" fn ego_transport_release_cooperative_ownership(
 pub unsafe extern "C" fn ego_transport_cursor_for_window(
     transport: *const EgoTransport,
     window_id: u32,
+    incarnation: u64,
     out_cursor: *mut i32,
 ) -> i32 {
     ffi_call(|| {
@@ -1200,7 +1262,7 @@ pub unsafe extern "C" fn ego_transport_cursor_for_window(
         })?;
         *out_cursor = -1;
         let transport = transport_ref(transport)?;
-        *out_cursor = transport.bridge.cursor_for_window(window_id);
+        *out_cursor = transport.bridge.cursor_for_window(window_id, incarnation);
         Ok(())
     })
 }
@@ -1304,6 +1366,43 @@ pub unsafe extern "C" fn ego_get_last_error_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_metadata_is_available_without_compositable_frames() {
+        let snapshot = make_scene_snapshot(Arc::new(ElectronScene {
+            state_revision: 1,
+            registrations: vec![crate::ElectronWindowRegistration {
+                window_id: 7,
+                incarnation: 11,
+            }],
+            windows: Vec::new(),
+        }))
+        .unwrap();
+        let mut frames = 99;
+        let mut registrations = 0;
+        assert_eq!(
+            unsafe { ego_scene_snapshot_window_count(&snapshot, &mut frames) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_scene_snapshot_registration_count(&snapshot, &mut registrations) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(frames, 0);
+        assert_eq!(registrations, 1);
+        let mut id = 0;
+        let mut incarnation = 0;
+        assert_eq!(
+            unsafe { ego_scene_snapshot_get_registration(&snapshot, 0, &mut id, &mut incarnation) },
+            EGO_STATUS_OK
+        );
+        assert_eq!((id, incarnation), (7, 11));
+        assert_eq!(
+            unsafe { ego_scene_snapshot_get_registration(&snapshot, 1, &mut id, &mut incarnation) },
+            EGO_STATUS_OUT_OF_RANGE
+        );
+        assert_eq!((id, incarnation), (0, 0));
+    }
 
     #[test]
     fn private_directory_validation_rejects_ambiguous_encoding_and_nonabsolute_paths() {
@@ -1573,6 +1672,33 @@ mod tests {
             EGO_STATUS_OK,
         );
         assert_eq!(hit, 1);
+        assert_eq!(
+            unsafe { ego_transport_set_target_focused(transport_a.0, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_set_cooperative_interception(transport_a.0, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        let mut cursor = 0;
+        assert_eq!(
+            unsafe {
+                ego_transport_cursor_for_window(transport_a.0, 7, old_incarnation, &mut cursor)
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(cursor, -1);
+        assert_eq!(
+            unsafe {
+                ego_transport_cursor_for_window(transport_a.0, 7, new_incarnation, &mut cursor)
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(cursor, 32512);
 
         drop(listener_a);
         peer_a.shutdown(Shutdown::Both).unwrap();

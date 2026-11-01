@@ -177,6 +177,15 @@ ego_status EGO_CALL ego_scene_snapshot_window_incarnation(
     const ego_scene_snapshot *snapshot,
     uint64_t index,
     uint64_t *out_incarnation);
+/* All live registrations, including those temporarily awaiting frame pixels. */
+ego_status EGO_CALL ego_scene_snapshot_registration_count(
+    const ego_scene_snapshot *snapshot,
+    uint64_t *out_count);
+ego_status EGO_CALL ego_scene_snapshot_get_registration(
+    const ego_scene_snapshot *snapshot,
+    uint64_t index,
+    uint32_t *out_window_id,
+    uint64_t *out_incarnation);
 
 ego_status EGO_CALL ego_transport_cursor_at(const ego_transport *transport, int32_t x, int32_t y, int32_t *out_cursor);
 
@@ -234,7 +243,7 @@ ego_status EGO_CALL ego_transport_hit_test_window(
     int32_t y,
     uint32_t *out_hit);
 
-/* Current owner-local registration identity; zero means not routable. */
+/* Current registration identity, including unpainted windows; zero means absent. */
 ego_status EGO_CALL ego_transport_window_incarnation(
     const ego_transport *transport,
     uint32_t window_id,
@@ -272,6 +281,7 @@ ego_status EGO_CALL ego_transport_release_cooperative_ownership(
 ego_status EGO_CALL ego_transport_cursor_for_window(
     const ego_transport *transport,
     uint32_t window_id,
+    uint64_t incarnation,
     int32_t *out_cursor);
 
 /*
