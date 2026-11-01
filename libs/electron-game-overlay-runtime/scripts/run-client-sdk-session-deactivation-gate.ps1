@@ -238,6 +238,12 @@ try {
         -RedirectStandardOutput $InjectorStdout `
         -RedirectStandardError $InjectorStderr
 
+    . (Join-Path $PSScriptRoot 'watcher-readiness.ps1')
+    Wait-OverlayNativeWatcherReady `
+        -InjectorProcess $InjectorProcess `
+        -StdoutPath $InjectorStdout `
+        -Deadline ([DateTime]::UtcNow.AddSeconds(30))
+
     $HostProcess = Start-Process `
         -FilePath $TargetExecutablePath `
         -WorkingDirectory $TargetDirectory `

@@ -1054,6 +1054,13 @@ function Invoke-ClientSdkAttempt {
             -Deadline $StartupDeadline
 
         if ($RawRegistrationTiming -eq "after-injection") {
+            # The native watcher baselines processes before it announces ready.
+            # Launching after spawn alone can put this fresh host in that baseline.
+            Wait-ForClientMarker `
+                -Path $ClientStdout `
+                -ClientProcess $ClientProcess `
+                -Marker "RESHADE_CLIENT_INJECTOR_WATCHER_READY" `
+                -Deadline $StartupDeadline
             $HostProcess = Start-Process `
                 -FilePath $TargetExecutablePath `
                 -WorkingDirectory $TargetDirectory `

@@ -1311,6 +1311,7 @@ export class ReShadeOverlayLauncher {
   private readonly eventHandlers = new Set<ReShadeLauncherEventHandler>();
   private activeChild: ChildProcess | null = null;
   private policyWatcherRequested = false;
+  private futureWatcherRequested = false;
   private policyWatcherDrain?: {
     child?: ChildProcess;
     stopRequested: boolean;
@@ -1547,6 +1548,7 @@ export class ReShadeOverlayLauncher {
 
     this.policyWatcherRequested =
       isPathTarget(attachmentTarget) && !!attachmentTarget.processPolicy;
+    this.futureWatcherRequested = expectedTargetPid === undefined;
     this.attachmentState = 'attaching';
     this.attachmentTargetLabel = targetLabel;
     this.attachmentExpectedTargetPid = expectedTargetPid;
@@ -1664,6 +1666,7 @@ export class ReShadeOverlayLauncher {
 
     this.policyWatcherRequested =
       isPathTarget(launchTarget) && !!launchTarget.processPolicy;
+    this.futureWatcherRequested = expectedTargetPid === undefined;
     this.policyWatcherDrain = undefined;
     this.attachmentState = 'attaching';
     this.attachmentTargetLabel = targetLabel;
@@ -1736,9 +1739,15 @@ export class ReShadeOverlayLauncher {
    * output errors, selected targets and timeouts retain the reservation.
    */
   public async quiesceUnselectedPolicyWatcher(): Promise<boolean> {
+    if (!this.policyWatcherRequested) return false;
+    return this.quiesceUnselectedFutureWatcher();
+  }
+
+  /** @internal Applies the same drained V2 selection proof to ordinary future selectors. */
+  public async quiesceUnselectedFutureWatcher(): Promise<boolean> {
     if (
       this.config.injectorFutureTargets !== 2 ||
-      !this.policyWatcherRequested ||
+      !this.futureWatcherRequested ||
       this.disposed
     )
       return false;
@@ -2527,8 +2536,6 @@ export class ReShadeOverlayLauncher {
         let resolveDrain: (safe: boolean) => void = () => undefined;
         const policyDrain =
           currentExpectedTargetPid === undefined &&
-          isPathTarget(executionTarget) &&
-          executionTarget.processPolicy &&
           this.config.injectorFutureTargets === 2
             ? {
                 stopRequested: false,

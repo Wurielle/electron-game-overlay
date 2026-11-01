@@ -456,6 +456,11 @@ try {
         -ClientProcess $ClientProcess `
         -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
         -Deadline $StartupDeadline
+    Wait-ForClientMarker `
+        -Path $ClientStdout `
+        -ClientProcess $ClientProcess `
+        -Marker "RESHADE_CLIENT_INJECTOR_WATCHER_READY" `
+        -Deadline $StartupDeadline
     $DevToolsPage = Wait-ForDevToolsPage `
         -Port $DevToolsPort `
         -Process $ClientProcess `

@@ -988,6 +988,11 @@ try {
             -Process $ClientProcess `
             -Pattern '(?m)^STEAM_GAME_AUTO_ATTACH_ARMING(?: .*)?\r?$' `
             -Deadline $StartupDeadline)
+    [void](Wait-ForLogRegex `
+            -Path $ClientStdout `
+            -Process $ClientProcess `
+            -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_WATCHER_READY(?: .*)?\r?$' `
+            -Deadline $StartupDeadline)
     Register-RunOwnedInjectors
     if (-not $ObservedPathWatcherInjector) {
         throw (

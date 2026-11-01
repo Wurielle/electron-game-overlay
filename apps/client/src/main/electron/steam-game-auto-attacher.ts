@@ -20,6 +20,7 @@ export type ProcessInfo = Readonly<{
   pid: number;
   filepath: string;
   user: string;
+  creationTime100ns?: string;
 }>;
 
 export type ProcessWatcherEvent = Readonly<{
@@ -225,6 +226,7 @@ export type ReShadeLauncherForSteamTarget = Readonly<{
     target: ReShadeTarget,
   ): Promise<ReShadeAttachResult>;
   confirmTargetExited?(pid: number): boolean;
+  quiesceUnselectedFutureWatcher?(): Promise<boolean>;
   dispose(): void;
   readonly state: ReShadeAttachmentState;
 }>;
@@ -252,6 +254,7 @@ type TargetEntry = {
   exactAttemptRequested: boolean;
   exactAttemptStarted: boolean;
   ownerLauncher: ReShadeLauncherForSteamTarget | null;
+  creationTime100ns?: string;
   state: SteamGameTargetState;
 };
 
@@ -259,6 +262,7 @@ const PREPARED_LAUNCHER_POOL_SIZE = 4;
 const PREPARED_LAUNCHER_RETRY_BASE_DELAY_MS = 100;
 const PREPARED_LAUNCHER_RETRY_MAX_DELAY_MS = 2_000;
 const PREARMED_LAUNCHER_RETRY_DELAY_MS = 250;
+const PREARMED_SELECTION_WAIT_MS = 100;
 
 export class SteamGameAutoAttacher {
   private readonly launchConfig: ReShadeLaunchConfig;
@@ -280,6 +284,15 @@ export class SteamGameAutoAttacher {
   private watcher: ProcessWatcher | null = null;
   private armedLauncher: ReShadeLauncherForSteamTarget | null = null;
   private armedLauncherTargetPid: number | null = null;
+  private armedSelection: Readonly<{
+    pid: number;
+    executablePath: string;
+    creationTime100ns: string;
+  }> | null = null;
+  private armedSelectionTimer: ReturnType<typeof setTimeout> | null = null;
+  private armedSelectionWaitExpired = false;
+  private armedSelectionTargetExited = false;
+  private armedQuiescence: Promise<boolean> | null = null;
   private rearmTimer: ReturnType<typeof setTimeout> | null = null;
   private prearmedRearmBlocked = false;
   private blockedPrearmedTargetPid: number | null = null;
@@ -434,6 +447,8 @@ export class SteamGameAutoAttacher {
     this.armedLauncher?.dispose();
     this.armedLauncher = null;
     this.armedLauncherTargetPid = null;
+    this.armedSelection = null;
+    this.clearArmedSelectionTimer();
     this.prearmedRearmBlocked = false;
     this.blockedPrearmedTargetPid = null;
     if (this.preparedLauncherRetryTimer) {
@@ -490,7 +505,28 @@ export class SteamGameAutoAttacher {
 
     this.deletedTargetPids.delete(info.pid);
     let entry = this.targetEntries.get(info.pid);
+    if (
+      entry?.creationTime100ns !== undefined &&
+      info.creationTime100ns !== undefined &&
+      entry.creationTime100ns !== info.creationTime100ns
+    ) {
+      this.removeTarget(info.pid);
+      this.deletedTargetPids.delete(info.pid);
+      entry = undefined;
+    }
     if (entry?.exactAttemptRequested) {
+      return;
+    }
+    if (
+      entry?.ownerLauncher && entry.state.phase === 'connected' &&
+      path.win32.normalize(entry.state.filepath).toLowerCase() ===
+        path.win32.normalize(info.filepath).toLowerCase()
+    ) {
+      entry.exactAttemptRequested = true;
+      entry.exactAttemptStarted = true;
+      console.log(
+        `STEAM_GAME_AUTO_ATTACH_EXACT_COORDINATED pid=${info.pid} code=prearmed-target-connected`,
+      );
       return;
     }
     if (!entry) {
@@ -499,6 +535,7 @@ export class SteamGameAutoAttacher {
         exactAttemptRequested: false,
         exactAttemptStarted: false,
         ownerLauncher: null,
+        creationTime100ns: info.creationTime100ns,
         state: Object.freeze({
           pid: info.pid,
           processName,
@@ -517,12 +554,46 @@ export class SteamGameAutoAttacher {
       });
     }
     entry.exactAttemptRequested = true;
+    if (info.creationTime100ns !== undefined) {
+      entry.creationTime100ns = info.creationTime100ns;
+    }
     this.pendingTargetEntries.push(entry);
     console.log(
       `STEAM_GAME_AUTO_ATTACH_DETECTED pid=${info.pid} path=${JSON.stringify(info.filepath)}`,
     );
     this.publishState();
+    this.coordinateSelectedPrearmedTarget(entry);
     this.drainPendingTargets();
+  }
+
+  private coordinateSelectedPrearmedTarget(entry: TargetEntry): boolean {
+    const selected = this.armedSelection;
+    const launcher = this.armedLauncher;
+    if (
+      !launcher || !selected || entry.exactAttemptStarted ||
+      selected.pid !== entry.state.pid ||
+      path.win32.normalize(selected.executablePath).toLowerCase() !==
+        path.win32.normalize(entry.state.filepath).toLowerCase() ||
+      (entry.creationTime100ns !== undefined &&
+        entry.creationTime100ns !== selected.creationTime100ns)
+    ) {
+      return false;
+    }
+    entry.creationTime100ns = selected.creationTime100ns;
+    entry.exactAttemptStarted = true;
+    entry.attempts.add(launcher);
+    this.removePendingTarget(entry);
+    console.log(
+      `STEAM_GAME_AUTO_ATTACH_EXACT_COORDINATED pid=${selected.pid} creationTime100ns=${selected.creationTime100ns} code=prearmed-target-selected`,
+    );
+    return true;
+  }
+
+  private clearArmedSelectionTimer(): void {
+    if (this.armedSelectionTimer) {
+      clearTimeout(this.armedSelectionTimer);
+      this.armedSelectionTimer = null;
+    }
   }
 
   private attachTarget(
@@ -623,6 +694,26 @@ export class SteamGameAutoAttacher {
       return;
     }
     this.armedLauncher = launcher;
+    this.armedSelection = null;
+    this.armedSelectionWaitExpired = false;
+    this.armedSelectionTargetExited = false;
+    launcher.onEvent?.((event) => {
+      if (
+        event.type !== 'target-selected' || this.armedLauncher !== launcher ||
+        this.disposed || this.deletedTargetPids.has(event.pid) ||
+        !isSteamAppsProcessPath(event.executablePath)
+      ) {
+        return;
+      }
+      this.armedLauncherTargetPid = event.pid;
+      this.armedSelection = event;
+      this.clearArmedSelectionTimer();
+      const entry = this.targetEntries.get(event.pid);
+      if (entry) this.coordinateSelectedPrearmedTarget(entry);
+      // Selection is published before native startup grace. A selected helper
+      // must never hold up independent exact attempts for other executables.
+      this.drainPendingTargets();
+    });
     console.log(
       `STEAM_GAME_AUTO_ATTACH_ARMING pathContains=${JSON.stringify(STEAM_APPS_PATH_FRAGMENT)}`,
     );
@@ -638,10 +729,19 @@ export class SteamGameAutoAttacher {
           launcher.dispose();
           return;
         }
+        const selected = this.armedSelection;
+        const selectedTargetExited = this.armedSelectionTargetExited;
         this.armedLauncher = null;
         this.armedLauncherTargetPid = null;
+        this.armedSelection = null;
+        this.clearArmedSelectionTimer();
         const pid = result.pid;
-        if (this.deletedTargetPids.has(pid)) {
+        const existingEntry = this.targetEntries.get(pid);
+        if (
+          selectedTargetExited || this.deletedTargetPids.has(pid) ||
+          (selected && existingEntry?.creationTime100ns !== undefined &&
+            existingEntry.creationTime100ns !== selected.creationTime100ns)
+        ) {
           launcher.dispose();
           this.armNextSteamProcess();
           return;
@@ -657,6 +757,7 @@ export class SteamGameAutoAttacher {
             exactAttemptRequested: false,
             exactAttemptStarted: false,
             ownerLauncher: null,
+            ...(selected ? { creationTime100ns: selected.creationTime100ns } : {}),
             state: Object.freeze({
               pid,
               processName,
@@ -676,12 +777,18 @@ export class SteamGameAutoAttacher {
         this.connectTarget(entry, filepath, processName);
         this.armNextSteamProcess();
       })
-      .catch((error) => {
+      .catch(async (error) => {
+        const quiescence = this.armedQuiescence;
+        if (this.armedLauncher === launcher && quiescence && await quiescence) {
+          return;
+        }
         if (this.armedLauncher !== launcher || this.disposed) {
           launcher.dispose();
           return;
         }
         this.armedLauncher = null;
+        this.armedSelection = null;
+        this.clearArmedSelectionTimer();
         const coordinatedTargetPid = this.armedLauncherTargetPid;
         this.armedLauncherTargetPid = null;
         const retryIsSafe = launcher.state === 'idle';
@@ -700,6 +807,7 @@ export class SteamGameAutoAttacher {
           failedTargetPid === undefined
             ? undefined
             : this.targetEntries.get(failedTargetPid);
+        entry?.attempts.delete(launcher);
         if (
           entry &&
           entry.state.phase !== 'connected' &&
@@ -712,6 +820,7 @@ export class SteamGameAutoAttacher {
             `STEAM_GAME_AUTO_ATTACH_PREARM_COORDINATED${diagnostic?.pid === undefined ? '' : ` pid=${diagnostic.pid}`} code=${diagnostic?.code}`,
           );
           this.armNextSteamProcess();
+          this.drainPendingTargets();
           return;
         }
         console.error(
@@ -721,7 +830,8 @@ export class SteamGameAutoAttacher {
           this.schedulePrearmedLauncherRetry(error);
         } else {
           this.prearmedRearmBlocked = true;
-          this.blockedPrearmedTargetPid = diagnostic?.pid ?? null;
+          this.blockedPrearmedTargetPid =
+            diagnostic?.pid ?? coordinatedTargetPid ?? null;
           console.error(
             `STEAM_GAME_AUTO_ATTACH_REARM_BLOCKED detail=${JSON.stringify(
               this.blockedPrearmedTargetPid === null
@@ -736,6 +846,7 @@ export class SteamGameAutoAttacher {
             this.releaseBlockedPrearmedLane(this.blockedPrearmedTargetPid);
           }
         }
+        this.drainPendingTargets();
       });
   }
 
@@ -764,9 +875,53 @@ export class SteamGameAutoAttacher {
     if (this.disposed || !this.started) {
       return;
     }
+    if (
+      this.pendingTargetEntries.length > 0 && this.armedLauncher?.onEvent &&
+      !this.armedSelection && !this.armedSelectionWaitExpired
+    ) {
+      if (!this.armedSelectionTimer && !this.armedQuiescence) {
+        this.armedSelectionTimer = setTimeout(() => {
+          this.armedSelectionTimer = null;
+          const launcher = this.armedLauncher;
+          if (!launcher) {
+            this.drainPendingTargets();
+            return;
+          }
+          const quiescence = Promise.resolve()
+            .then(() => launcher.quiesceUnselectedFutureWatcher?.() ?? false)
+            .catch(() => false);
+          this.armedQuiescence = quiescence;
+          void quiescence.then(safe => {
+            if (this.armedQuiescence === quiescence) this.armedQuiescence = null;
+            if (this.disposed || this.armedLauncher !== launcher) return;
+            if (safe) {
+              this.armedLauncher = null;
+              this.armedLauncherTargetPid = null;
+              this.armedSelectionWaitExpired = true;
+              this.drainPendingTargets();
+              this.armNextSteamProcess();
+            } else if (this.armedSelection) {
+              this.drainPendingTargets();
+            } else {
+              // A kill request or timeout alone is not proof that the native
+              // watcher did not select a target. Retain the reservation.
+              this.prearmedRearmBlocked = true;
+              const error = new Error('the unselected Steam watcher could not prove safe quiescence; exact injection was not started');
+              for (const entry of this.pendingTargetEntries.splice(0)) {
+                entry.exactAttemptStarted = true;
+                this.failTarget(entry, error);
+              }
+            }
+          });
+        }, PREARMED_SELECTION_WAIT_MS);
+        this.armedSelectionTimer.unref?.();
+      }
+      return;
+    }
     while (this.pendingTargetEntries.length > 0) {
       const entry = this.pendingTargetEntries[0];
       const { pid } = entry.state;
+      if (this.coordinateSelectedPrearmedTarget(entry)) continue;
       if (
         this.targetEntries.get(pid) !== entry ||
         !entry.exactAttemptRequested ||
@@ -999,6 +1154,9 @@ export class SteamGameAutoAttacher {
 
   private removeTarget(pid: number): void {
     this.releaseLaunchersAwaitingTargetExit(pid);
+    if (this.armedSelection?.pid === pid) {
+      this.armedSelectionTargetExited = true;
+    }
     const entry = this.targetEntries.get(pid);
     if (!entry) {
       this.deletedTargetPids.add(pid);
@@ -1141,7 +1299,10 @@ function isProcessWatcherEvent(value: unknown): value is ProcessWatcherEvent {
     typeof payload.process === 'string' &&
     isValidPid(payload.pid) &&
     typeof payload.filepath === 'string' &&
-    typeof payload.user === 'string'
+    typeof payload.user === 'string' &&
+    (payload.creationTime100ns === undefined ||
+      (typeof payload.creationTime100ns === 'string' &&
+        /^[1-9][0-9]{0,19}$/.test(payload.creationTime100ns)))
   );
 }
 

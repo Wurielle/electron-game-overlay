@@ -39,7 +39,7 @@ function Get-ClientLogText {
     if (-not (Test-Path -LiteralPath $ClientStdout -PathType Leaf)) {
         return ""
     }
-    return Get-Content -Raw -LiteralPath $ClientStdout
+    return [string](Get-Content -Raw -LiteralPath $ClientStdout)
 }
 
 function Get-MatchingInjectors {
@@ -169,6 +169,9 @@ try {
     $StartupDeadline = [DateTime]::UtcNow.AddSeconds(90)
     Wait-ForClientMarker `
         -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
+        -Deadline $StartupDeadline
+    Wait-ForClientMarker `
+        -Marker "RESHADE_CLIENT_INJECTOR_WATCHER_READY" `
         -Deadline $StartupDeadline
 
     Start-Process -FilePath $LaunchUri | Out-Null

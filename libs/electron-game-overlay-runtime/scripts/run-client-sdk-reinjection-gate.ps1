@@ -370,6 +370,12 @@ function Start-FrontendInjectionCycle {
         -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_STARTED(?: .*)?\r?$' `
         -AfterIndex $AfterIndex `
         -Deadline $AttachDeadline
+    $WatcherReady = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_WATCHER_READY(?: .*)?\r?$' `
+        -AfterIndex $AfterIndex `
+        -Deadline $AttachDeadline
 
     $script:CurrentHostProcess = Start-Process `
         -FilePath $TargetExecutablePath `
@@ -435,6 +441,7 @@ function Start-FrontendInjectionCycle {
         ReShadeLog = $ReShadeLog
         StartIndex = $AfterIndex
         AttachingIndex = $Attaching.Index
+        WatcherReadyIndex = $WatcherReady.Index
         ConnectedIndex = $Connected.Index
         ConnectedStateIndex = $ConnectedState.Index
         InjectorReturnedIndex = $InjectorReturned.Index
@@ -885,6 +892,10 @@ try {
     Assert-ClientRegexCount `
         -Text $FinalClientLog `
         -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_STARTED(?: .*)?\r?$' `
+        -Expected 2
+    Assert-ClientRegexCount `
+        -Text $FinalClientLog `
+        -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_WATCHER_READY(?: .*)?\r?$' `
         -Expected 2
     Assert-ClientRegexCount `
         -Text $FinalClientLog `

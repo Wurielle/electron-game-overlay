@@ -6599,6 +6599,30 @@ test('an older injector capability cannot claim safe native policy quiescence',a
  try {assert.equal(await launcher.quiesceUnselectedPolicyWatcher(),false);} finally {launcher.dispose();}
 });
 
+for (const target of [{ pathContains: '\\steamapps\\' }, { processName: 'game.exe' }]) {
+  test('ordinary future watcher fallback requires drained no-selection proof: ' + JSON.stringify(target), async () => {
+    const execution = stubExecFile(), harness = createSessionHarness();
+    const launcher = new ReShadeOverlayLauncher(createConfig(policyRuntime()));
+    try {
+      const attachment = launcher.attach(harness.session, target);
+      const settled = attachment.catch(() => {});
+      await waitFor(() => execution.calls.length === 1);
+      const call = execution.calls[0];
+      const stop = launcher.quiesceUnselectedFutureWatcher();
+      let finished = false;
+      stop.then(() => { finished = true; });
+      await flushMicrotasks();
+      assert.equal(finished, false, 'a child kill alone does not authorize an exact fallback');
+      call.child.exitCode = 1;
+      call.child.stdout.readableEnded = true;
+      call.callback(Object.assign(new Error('terminated'), { killed: true, code: 1 }), '', '');
+      assert.equal(await stop, true);
+      await settled;
+      assert.equal(execution.calls.length, 1);
+    } finally { launcher.dispose(); execution.restore(); }
+  });
+}
+
 
 test('quiescence never kills a policy watcher whose selected incarnation is already known',async()=>{
  const execution=stubExecFile(),harness=createSessionHarness(),launcher=new ReShadeOverlayLauncher(createConfig(policyRuntime()));

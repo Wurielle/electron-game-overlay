@@ -239,6 +239,120 @@ test('the prearmed Steam path lane has no exclusions while every observed execut
   await autoAttacher.dispose();
 });
 
+test('early native selection coordinates the same incarnation while other Steam executables attach independently', async (t) => {
+  for (const selectionFirst of [true, false]) {
+    await t.test(selectionFirst ? 'selection before process event' : 'process event before selection', async () => {
+      const watcher = new FakeProcessWatcher();
+      const launchers = [];
+      const autoAttacher = new SteamGameAutoAttacher({
+        session: new FakeOverlaySession(), reshadeConfig: createConfig(),
+        watcherFactory: () => watcher, prearmedPathInjection: true,
+        preparedLauncherPoolSize: 0,
+        launcherFactory: config => {
+          const launcher = new EventLauncher(config);
+          launchers.push(launcher);
+          return launcher;
+        },
+      });
+      const game = { ...processInfo(8804, 'D:\\Steam\\steamapps\\common\\Game\\game.exe'), creationTime100ns: '1234' };
+      const helper = processInfo(8805, 'D:\\Steam\\steamapps\\common\\Game\\UnityCrashHandler64.exe');
+      autoAttacher.start(); watcher.ready();
+      await flushMicrotasks();
+      const early = launchers[0];
+      const select = () => early.emit({ type: 'target-selected', pid: game.pid, executablePath: game.filepath, creationTime100ns: game.creationTime100ns });
+      if (selectionFirst) select();
+      watcher.create(game); watcher.create(helper);
+      await flushMicrotasks();
+      if (!selectionFirst) {
+        assert.equal(launchers.length, 1, 'wait only for the early selection, never its startup grace');
+        select();
+      }
+      await flushMicrotasks();
+      assert.equal(launchers.length, 2);
+      assert.equal(launchers[1].target.pid, helper.pid, 'helper exact attempt is independent of the selected game');
+      assert.equal(early.disposed, false, 'coordinating the exact observation preserves the leader');
+      early.connect(game.pid, game.filepath);
+      await flushMicrotasks();
+      assert.equal(autoAttacher.targets.find(target => target.pid === game.pid).phase, 'connected');
+      assert.equal(early.disposed, false, 'adoption must not dispose the live prearmed route');
+      await autoAttacher.dispose();
+      assert.equal(early.disposed, true);
+    });
+  }
+});
+
+test('a selected helper does not hold another executable behind official startup grace', async () => {
+  const watcher = new FakeProcessWatcher(), launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session: new FakeOverlaySession(), reshadeConfig: createConfig(), watcherFactory: () => watcher,
+    prearmedPathInjection: true, preparedLauncherPoolSize: 0,
+    launcherFactory: config => { const launcher = new EventLauncher(config); launchers.push(launcher); return launcher; },
+  });
+  autoAttacher.start(); watcher.ready(); await flushMicrotasks();
+  const helper = processInfo(8806, 'D:\\Steam\\steamapps\\common\\Game\\UnityCrashHandler64.exe');
+  launchers[0].emit({ type: 'target-selected', pid: helper.pid, executablePath: helper.filepath, creationTime100ns: '1235' });
+  watcher.create(helper);
+  watcher.create(processInfo(8807, 'D:\\Steam\\steamapps\\common\\Game\\game.exe'));
+  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+  assert.equal(launchers[1].target.pid, 8807);
+  assert.equal(launchers[0].state, 'attaching');
+  launchers[0].fail(new Error('selected helper startup failed'));
+  await flushMicrotasks();
+  assert.equal(autoAttacher.targets.find(target => target.pid === helper.pid).phase, 'failed');
+  assert.equal(launchers.length, 2, 'an uncertain selected attempt must not start a fallback injection');
+  await autoAttacher.dispose();
+});
+
+test('selection wait is bounded and stale selected incarnations cannot adopt a reused PID', async () => {
+  const watcher = new FakeProcessWatcher(), launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session: new FakeOverlaySession(), reshadeConfig: createConfig(), watcherFactory: () => watcher,
+    prearmedPathInjection: true, preparedLauncherPoolSize: 0,
+    launcherFactory: config => { const launcher = new EventLauncher(config); launchers.push(launcher); return launcher; },
+  });
+  autoAttacher.start(); watcher.ready(); await flushMicrotasks();
+  const game = { ...processInfo(8808, 'D:\\Steam\\steamapps\\common\\Game\\game.exe'), creationTime100ns: '1236' };
+  watcher.create(game);
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.equal(launchers[0].quiescenceCalls, 1);
+  assert.equal(launchers[0].disposed, true, 'bounded fallback requires completed no-selection quiescence');
+  assert.equal(launchers[1].target.pid, game.pid, 'an unselected broad watcher cannot indefinitely reserve every executable');
+  const selectedLauncher = launchers.at(-1);
+  selectedLauncher.emit({ type: 'target-selected', pid: game.pid, executablePath: game.filepath, creationTime100ns: '1236' });
+  watcher.delete(game);
+  watcher.create({ ...game, creationTime100ns: '1237' });
+  await flushMicrotasks();
+  assert.equal(launchers.at(-1).target.pid, game.pid, 'the new incarnation gets its own exact attempt');
+  assert.notEqual(launchers.at(-1), selectedLauncher);
+  selectedLauncher.connect(game.pid, game.filepath);
+  await flushMicrotasks();
+  assert.equal(autoAttacher.targets.find(target => target.pid === game.pid).phase, 'attaching');
+  assert.equal(selectedLauncher.disposed, true, 'a stale completion cannot replace the new incarnation');
+  await autoAttacher.dispose();
+});
+
+test('an uncertain watcher stop never authorizes an exact fallback', async () => {
+  const watcher = new FakeProcessWatcher(), launchers = [];
+  const autoAttacher = new SteamGameAutoAttacher({
+    session: new FakeOverlaySession(), reshadeConfig: createConfig(), watcherFactory: () => watcher,
+    prearmedPathInjection: true, preparedLauncherPoolSize: 0,
+    launcherFactory: config => {
+      const launcher = new EventLauncher(config);
+      launcher.quiesceUnselectedFutureWatcher = () => Promise.resolve(false);
+      launchers.push(launcher); return launcher;
+    },
+  });
+  autoAttacher.start(); watcher.ready(); await flushMicrotasks();
+  watcher.create(processInfo(8809, 'D:\\Steam\\steamapps\\common\\Game\\game.exe'));
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.equal(launchers.length, 1, 'no new native invocation is allowed without drained no-selection proof');
+  assert.equal(autoAttacher.targets[0].phase, 'failed');
+  assert.match(autoAttacher.targets[0].error, /could not prove safe quiescence/);
+  assert.equal(launchers[0].disposed, false, 'uncertain native ownership remains reserved');
+  await autoAttacher.dispose();
+});
+
 test('an exact-PID winner keeps the target connected when the prearmed attempt loses its native claim', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
@@ -300,7 +414,7 @@ test('an exact-PID winner keeps the target connected when the prearmed attempt l
   await autoAttacher.dispose();
 });
 
-test('a connected path-first target stays connected when its independent runtime-reuse attempt fails', async () => {
+test('a path-first connection owns the later exact observation without a second engine', async () => {
   const watcher = new FakeProcessWatcher();
   const session = new FakeOverlaySession();
   const launchers = [];
@@ -333,24 +447,8 @@ test('a connected path-first target stays connected when its independent runtime
 
   watcher.create(info);
   await flushMicrotasks();
-  assert.equal(launchers.length, 3);
-  assert.deepEqual(launchers[2].target, {
-    processName: 'path-first.exe',
-    pid: info.pid,
-    executablePath: info.filepath,
-  });
-
-  launchers[2].fail(
-    createReShadeOperationError({
-      stage: 'target-preflight',
-      code: 'target-runtime-reuse-too-late',
-      retrySafety: 'definite-safe',
-      message: 'the existing runtime can no longer accept this add-on',
-      targetLabel: 'process:path-first.exe:pid:8821',
-      pid: info.pid,
-    }),
-  );
-  await flushMicrotasks();
+  assert.equal(launchers.length, 2);
+  assert.equal(launchers[0].disposed, false);
   assert.equal(autoAttacher.targets[0].phase, 'connected');
 
   await autoAttacher.dispose();
@@ -1734,6 +1832,18 @@ class FakeLauncher {
     this.removeSessionListener?.();
     this.removeSessionListener = undefined;
     this.order.push('launcher-dispose');
+  }
+}
+
+class EventLauncher extends FakeLauncher {
+  handlers = new Set();
+  quiescenceCalls = 0;
+  onEvent(handler) { this.handlers.add(handler); return () => this.handlers.delete(handler); }
+  emit(event) { for (const handler of this.handlers) handler(event); }
+  quiesceUnselectedFutureWatcher() {
+    this.quiescenceCalls += 1;
+    this.dispose();
+    return Promise.resolve(true);
   }
 }
 
