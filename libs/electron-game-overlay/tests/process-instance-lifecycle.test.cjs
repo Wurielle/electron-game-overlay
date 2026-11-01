@@ -61,13 +61,17 @@ test('authenticated transport only exposes negotiated valid native creation evid
   }
   await connect(62101, { capabilities: ['process-instance-hello-v1'], creationTime100ns: '9007199254740993' });
   await waitFor(() => observed.length === 1);
-  assert.deepEqual(observed[0], { pid: 62101, path: IMAGE, creationTime100ns: '9007199254740993' });
+  assert.deepEqual(observed[0], { pid: 62101, path: IMAGE, creationTime100ns: '9007199254740993',
+    capabilities: ['process-instance-hello-v1'],
+    inputCapabilities: { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' } });
   await connect(62102, {});
   await waitFor(() => observed.length === 2);
   assert.deepEqual(observed[1], { pid: 62102, path: IMAGE });
   await connect(62103, { capabilities: [], creationTime100ns: '9007199254740993' });
   await waitFor(() => observed.length === 3);
-  assert.deepEqual(observed[2], { pid: 62103, path: IMAGE }, 'unnegotiated fields do not acquire authority');
+  assert.deepEqual(observed[2], { pid: 62103, path: IMAGE, capabilities: [],
+    inputCapabilities: { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' } },
+  'unnegotiated creation fields do not acquire authority, and absent input baseline remains unknown');
   const rejected = await connect(62104, { capabilities: ['process-instance-hello-v1'], creationTime100ns: '01' });
   await new Promise(resolve => { if (rejected.destroyed) resolve(); else rejected.once('close', resolve); });
   assert.equal(observed.length, 3);

@@ -20,6 +20,12 @@ import { readNativeImageRaster, type NativeImageRaster } from './native-image-ra
 import { physicalInputToDip } from './coordinate-space.js';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
 import {
+  inputCapabilitiesFromTokens,
+  normalizeRequiredInputCapabilities,
+  parseInputCapabilities,
+  parseTransportCapabilities,
+} from './input-capabilities.js';
+import {
   normalizeOverlayDiagnosticErrorCode,
   parseOverlayDiagnostic,
 } from './diagnostic.js';
@@ -66,6 +72,8 @@ import type {
   OverlaySessionEventMap,
   OverlaySessionEventName,
   OverlayTargetSurface,
+  OverlayTargetInputCapabilities,
+  OverlayTargetInputCapabilityRejection,
   Disposable,
   Rect,
 } from './types.js';
@@ -151,6 +159,8 @@ export class OverlaySession {
   private readonly publishedWindowGeometry = new Map<number, WindowGeometry>();
   private readonly targetSurfaces = new Map<string, OverlayTargetSurface>();
   private readonly targetExecutablePaths = new Map<number, string>();
+  private readonly targetInputCapabilities = new Map<number, OverlayTargetInputCapabilities>();
+  private readonly retainedAuthenticatedTargetPids = new Set<number>();
   private readonly targetFollowOptions = new Map<
     number,
     ElectronOverlayWindowFollowTargetOptions
@@ -223,11 +233,19 @@ export class OverlaySession {
     list(): readonly OverlayTargetSurface[];
     /** Returns one retained surface, or `null` when it is absent. */
     get(pid: number, surfaceId: string): OverlayTargetSurface | null;
+    /**
+     * Returns the last credential-validated target's input support, including a
+     * target refused for unmet requirements. Transport loss retains this record;
+     * authoritative process exit or session close removes it.
+     */
+    inputCapabilities(pid: number): OverlayTargetInputCapabilities | null;
   } = {
     list: (): readonly OverlayTargetSurface[] =>
       Object.freeze(Array.from(this.targetSurfaces.values())),
     get: (pid: number, surfaceId: string): OverlayTargetSurface | null =>
       this.targetSurfaces.get(targetSurfaceKey(pid, surfaceId)) ?? null,
+    inputCapabilities: (pid: number): OverlayTargetInputCapabilities | null =>
+      this.targetInputCapabilities.get(pid) ?? null,
   };
 
   private readonly windowBridge: OverlayWindowBridge = {
@@ -501,6 +519,8 @@ export class OverlaySession {
     this.publishedWindowGeometry.clear();
     this.targetSurfaces.clear();
     this.targetExecutablePaths.clear();
+    this.targetInputCapabilities.clear();
+    this.retainedAuthenticatedTargetPids.clear();
     this.targetFollowOptions.clear();
     this.targetFollowRestoreBounds.clear();
     this.unmatchedFrameDiagnostics.clear();
@@ -1033,7 +1053,21 @@ export class OverlaySession {
       const target = parseTargetLifecycleEvent(payload);
       if (target) {
         this.targetExecutablePaths.set(target.pid, target.executablePath);
+        this.retainedAuthenticatedTargetPids.add(target.pid);
+        this.targetInputCapabilities.set(target.pid,
+          target.inputCapabilities ?? inputCapabilitiesFromTokens(target.capabilities));
         this.emitEvent('targetConnected', target);
+      }
+    } else if (event === 'game.process.input-capabilities-rejected') {
+      const rejection = parseTargetInputCapabilityRejection(payload);
+      if (rejection) {
+        // An incompatible reconnect cannot replace a retained good route's
+        // capability snapshot. The rejection still describes that attempt.
+        if (!this.retainedAuthenticatedTargetPids.has(rejection.pid)) {
+          this.targetExecutablePaths.set(rejection.pid, rejection.executablePath);
+          this.targetInputCapabilities.set(rejection.pid, rejection.inputCapabilities);
+        }
+        this.emitEvent('targetInputCapabilitiesRejected', rejection);
       }
     } else if (event === 'game.input') {
       this.forwardGameInput(payload);
@@ -1060,6 +1094,8 @@ export class OverlaySession {
       this.removeTargetSurfacesForProcess(target.pid);
       this.clearProducerDiagnosticStateForProcess(target.pid);
       this.targetExecutablePaths.delete(target.pid);
+      this.targetInputCapabilities.delete(target.pid);
+      this.retainedAuthenticatedTargetPids.delete(target.pid);
       this.emitEvent('targetDisconnected', target);
     } else if (event === 'game.input.intercept') {
       const state = parseInputInterceptionEvent(payload);
@@ -1886,13 +1922,41 @@ function parseTargetLifecycleEvent(
   if (!executablePath) {
     return null;
   }
+  const capabilities = parseTransportCapabilities(payload.capabilities);
+  const inputCapabilities = parseInputCapabilities(payload.inputCapabilities);
   return Object.freeze({
     pid: payload.pid,
     executablePath,
     ...('creationTime100ns' in payload
       ? { creationTime100ns: payload.creationTime100ns as string }
       : {}),
+    ...(capabilities === undefined ? {} : { capabilities }),
+    ...(inputCapabilities === null ? {} : { inputCapabilities }),
   });
+}
+
+function parseTargetInputCapabilityRejection(
+  payload: unknown,
+): OverlayTargetInputCapabilityRejection | null {
+  const target = parseTargetLifecycleEvent(payload);
+  if (!target || !isEventRecord(payload) || !Array.isArray(payload.requiredInputCapabilities)) {
+    return null;
+  }
+  const inputCapabilities = parseInputCapabilities(payload.inputCapabilities);
+  if (!inputCapabilities) return null;
+  try {
+    const requiredInputCapabilities = normalizeRequiredInputCapabilities(payload.requiredInputCapabilities);
+    if (requiredInputCapabilities.length === 0) return null;
+    return Object.freeze({
+      pid: target.pid,
+      executablePath: target.executablePath,
+      ...(target.creationTime100ns === undefined ? {} : { creationTime100ns: target.creationTime100ns }),
+      inputCapabilities,
+      requiredInputCapabilities,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function parseInputInterceptionEvent(

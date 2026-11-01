@@ -1,4 +1,8 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  inputCapabilitiesFromTokens, inputCapabilitySupport,
+  normalizeRequiredInputCapabilities, parseTransportCapabilities,
+} from './input-capabilities.js';
 import { isValidProcessCreationTime100ns, type OverlayBrokerProcessIdentity } from './overlay-process-identity.js';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
@@ -32,6 +36,7 @@ import type {
   OverlayDiagnostic,
   OverlayDiagnosticCode,
   OverlayDiagnosticContextValue,
+  OverlayInputCapability,
 } from './types.js';
 
 export const OVERLAY_TRANSPORT_PROTOCOL_VERSION = 1;
@@ -114,6 +119,7 @@ export type OverlayTargetAuthorizationPublicationPhase =
   | 'recovery-claim-committed';
 
 export interface OverlayLoopbackTransportOptions {
+  requiredInputCapabilities?: readonly OverlayInputCapability[];
   discoveryPath?: string;
   /**
    * @internal App-private participant routing. These route claims never grant
@@ -834,6 +840,7 @@ function cloneWindowMetadata(message: WindowMessage): JsonObject {
 }
 
 export class OverlayLoopbackTransport implements NativeOverlay {
+  private readonly requiredInputCapabilities: readonly OverlayInputCapability[];
   private readonly discoveryPath: string;
   private readonly privateTargetRouteDirectory: string | undefined;
   private readonly tokenFactory: () => string;
@@ -897,6 +904,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private generation = 0;
 
   constructor(options: OverlayLoopbackTransportOptions = {}) {
+    this.requiredInputCapabilities = normalizeRequiredInputCapabilities(options.requiredInputCapabilities);
     this.discoveryPath = options.discoveryPath ?? defaultOverlayDiscoveryPath();
     if (
       options.privateTargetRouteDirectory !== undefined &&
@@ -2256,6 +2264,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       !parsed.type.startsWith('game.') ||
       parsed.type === 'game.process' ||
       parsed.type === 'game.process.disconnected' ||
+      parsed.type === 'game.process.input-capabilities-rejected' ||
       parsed.type === 'game.process.transport-lost'
     ) {
       return this.rejectAuthenticatedPacket(client, 'reserved-event');
@@ -2356,7 +2365,8 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     ) {
       return false;
     }
-    const supportsInstance=Array.isArray(hello.capabilities)&&hello.capabilities.includes('process-instance-hello-v1');
+    const capabilities = parseTransportCapabilities(hello.capabilities);
+    const supportsInstance=capabilities?.includes('process-instance-hello-v1') === true;
     if(supportsInstance&&!isValidProcessCreationTime100ns(hello.creationTime100ns))return false;
     const creationTime=supportsInstance ? hello.creationTime100ns as string : undefined;
     if(this.suppressedTargetPids.has(hello.pid)||this.targetAdmissionPolicy&&!this.targetAdmissionPolicy(hello.pid,hello.path,creationTime))return false;
@@ -2402,6 +2412,22 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return false;
     }
 
+    const inputCapabilities = inputCapabilitiesFromTokens(capabilities);
+    const unavailable = this.requiredInputCapabilities.find(capability =>
+      inputCapabilitySupport(inputCapabilities, capability) !== 'supported');
+    if (unavailable) {
+      this.publishDiagnostic({
+        code: 'target-input-capability-unsupported', pid: hello.pid,
+        context: { capability: unavailable, support: inputCapabilitySupport(inputCapabilities, unavailable) },
+      });
+      this.emitEvent('game.process.input-capabilities-rejected', {
+        pid: hello.pid, path: hello.path,
+        ...(creationTime === undefined ? {} : { creationTime100ns: creationTime }),
+        inputCapabilities, requiredInputCapabilities: this.requiredInputCapabilities,
+      });
+      return false;
+    }
+
     const existing = this.activeClientsByPid.get(hello.pid);
     if (existing && existing !== client) {
       // A payload can reconnect before the old socket's close callback runs.
@@ -2416,14 +2442,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.cancelProcessExitWatch(hello.pid);
     client.authenticated = true;
     client.supportsWindowOrder =
-      Array.isArray(hello.capabilities) &&
-      hello.capabilities.includes('window-order-v1');
+      capabilities?.includes('window-order-v1') === true;
     client.supportsWindowCursor =
-      Array.isArray(hello.capabilities) &&
-      hello.capabilities.includes('window-cursor-v1');
+      capabilities?.includes('window-cursor-v1') === true;
     client.supportsWindowFocus =
-      Array.isArray(hello.capabilities) &&
-      hello.capabilities.includes('window-focus-v1');
+      capabilities?.includes('window-focus-v1') === true;
     client.pid = hello.pid;
     client.path = hello.path;
     client.targetAuthorization = targetAuthorization;
@@ -2435,6 +2458,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       pid: hello.pid,
       path: hello.path,
       ...(creationTime === undefined ? {} : { creationTime100ns: creationTime }),
+      ...(capabilities === undefined ? {} : { capabilities, inputCapabilities }),
     });
     this.publishDiagnostic({
       code: 'target-authenticated',

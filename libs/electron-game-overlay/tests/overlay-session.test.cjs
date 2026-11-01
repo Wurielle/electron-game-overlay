@@ -797,6 +797,138 @@ test('validates raw lifecycle packets and emits immutable typed events', () => {
   assert.equal(observed.length, 5);
 });
 
+test('target capability reads preserve immutable optional hello metadata and explicit unknown legacy support', () => {
+  const session = createOverlaySession({});
+  const events = [];
+  session.on('targetConnected', (target) => {
+    events.push(target);
+    assert.notEqual(session.targets.inputCapabilities(target.pid), null,
+      'capability reads must be available during the connected callback');
+  });
+  assert.equal(session.targets.inputCapabilities(4321), null);
+  const capabilities = ['input-capabilities-v1', 'copied-wm-input-v1', 'future-optional-token-v9'];
+  const inputCapabilities = { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' };
+  session.handleEvent('game.process', {
+    pid: 4321, path: 'C:\\Games\\example.exe', creationTime100ns: '123456789',
+    capabilities, inputCapabilities,
+  });
+  capabilities.push('copied-raw-input-buffer-v1');
+  inputCapabilities.copiedRawInputBuffer = 'supported';
+  assert.deepEqual(events[0].capabilities,
+    ['input-capabilities-v1', 'copied-wm-input-v1', 'future-optional-token-v9']);
+  assert.deepEqual(events[0].inputCapabilities,
+    { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' });
+  assert.ok(Object.isFrozen(events[0].capabilities));
+  assert.ok(Object.isFrozen(events[0].inputCapabilities));
+  assert.ok(Object.isFrozen(session.targets.inputCapabilities(4321)));
+  assert.equal(session.targets.inputCapabilities(4321), events[0].inputCapabilities);
+
+  session.handleEvent('game.process', { pid: 4322, path: 'C:\\Games\\legacy.exe' });
+  assert.deepEqual(events[1], { pid: 4322, executablePath: 'C:\\Games\\legacy.exe' },
+    'legacy lifecycle event fields remain optional');
+  assert.deepEqual(session.targets.inputCapabilities(4322),
+    { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' });
+  session.handleEvent('game.process', { pid: 4323, path: 'C:\\Games\\partial.exe',
+    capabilities: ['copied-raw-input-buffer-v1'] });
+  assert.deepEqual(session.targets.inputCapabilities(4323),
+    { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' },
+    'a feature token without the optional baseline cannot establish support');
+  session.handleEvent('game.process', { pid: 4324, path: 'C:\\Games\\malformed.exe',
+    capabilities: ['input-capabilities-v1', {}] });
+  assert.deepEqual(session.targets.inputCapabilities(4324),
+    { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' });
+  assert.equal(events[3].capabilities, undefined);
+});
+
+test('refused target capability evidence is readable without connection and survives only transport loss', () => {
+  const session = createOverlaySession({});
+  const rejected = [], connected = [];
+  session.on('targetInputCapabilitiesRejected', (target) => rejected.push(target));
+  session.on('targetConnected', (target) => connected.push(target));
+  session.handleEvent('game.process', { pid: 4321, path: 'C:\\Games\\supported.exe',
+    capabilities: ['input-capabilities-v1', 'copied-wm-input-v1', 'copied-raw-input-buffer-v1'] });
+  const required = ['copied-raw-input-buffer'];
+  const support = { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' };
+  session.handleEvent('game.process.input-capabilities-rejected', {
+    pid: 4322, path: 'C:\\Games\\stock-host.exe', creationTime100ns: '987654321',
+    inputCapabilities: support, requiredInputCapabilities: required,
+  });
+  required.length = 0;
+  support.copiedRawInputBuffer = 'supported';
+  assert.equal(connected.length, 1, 'capability refusal must not synthesize a connection');
+  assert.deepEqual(rejected, [{ pid: 4322, executablePath: 'C:\\Games\\stock-host.exe',
+    creationTime100ns: '987654321',
+    inputCapabilities: { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' },
+    requiredInputCapabilities: ['copied-raw-input-buffer'] }]);
+  assert.ok(Object.isFrozen(rejected[0]));
+  assert.ok(Object.isFrozen(rejected[0].inputCapabilities));
+  assert.ok(Object.isFrozen(rejected[0].requiredInputCapabilities));
+  assert.equal(session.targets.inputCapabilities(4322), rejected[0].inputCapabilities);
+  session.handleEvent('game.process.transport-lost', { pid: 4322 });
+  assert.equal(session.targets.inputCapabilities(4322), rejected[0].inputCapabilities,
+    'socket loss is not a process exit or loss of known support');
+  session.handleEvent('game.process.disconnected', { pid: 4322 });
+  assert.equal(session.targets.inputCapabilities(4322), null);
+  assert.deepEqual(session.targets.inputCapabilities(4321),
+    { copiedWmInput: 'supported', copiedRawInputBuffer: 'supported' },
+    'another target retains its own support');
+  const goodSnapshot = session.targets.inputCapabilities(4321);
+  session.handleEvent('game.process.input-capabilities-rejected', {
+    pid: 4321, path: 'C:\\Games\\supported.exe',
+    inputCapabilities: { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' },
+    requiredInputCapabilities: ['copied-raw-input-buffer'],
+  });
+  assert.equal(session.targets.inputCapabilities(4321), goodSnapshot,
+    'a rejected reconnect cannot replace a retained good route capability snapshot');
+  assert.equal(rejected.length, 2, 'the incompatible attempt still emits its own typed rejection');
+  session.close();
+  assert.equal(session.targets.inputCapabilities(4321), null);
+});
+
+test('rejected capability observations refresh until an authenticated route is retained', () => {
+  const session = createOverlaySession({});
+  const rejected = [];
+  session.on('targetInputCapabilitiesRejected', (target) => rejected.push(target));
+  const target = { pid: 4321, path: 'C:\\Games\\example.exe',
+    requiredInputCapabilities: ['copied-raw-input-buffer'] };
+  session.handleEvent('game.process.input-capabilities-rejected', { ...target,
+    inputCapabilities: { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' } });
+  const unknown = session.targets.inputCapabilities(4321);
+  session.handleEvent('game.process.input-capabilities-rejected', { ...target,
+    inputCapabilities: { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' } });
+  assert.equal(rejected.length, 2);
+  assert.deepEqual(session.targets.inputCapabilities(4321),
+    { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' });
+  assert.notEqual(session.targets.inputCapabilities(4321), unknown,
+    'an earlier rejected observation is not a retained authenticated route');
+  assert.deepEqual(unknown, { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' },
+    'previously returned immutable evidence remains unchanged');
+});
+
+test('malformed capability rejection events cannot create target evidence', () => {
+  const session = createOverlaySession({});
+  const rejected = [];
+  session.on('targetInputCapabilitiesRejected', (target) => rejected.push(target));
+  const valid = { pid: 4321, path: 'C:\\Games\\example.exe',
+    inputCapabilities: { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' },
+    requiredInputCapabilities: ['copied-raw-input-buffer'] };
+  for (const invalid of [
+    { pid: 0 }, { path: '' }, { creationTime100ns: 'not-a-FILETIME' },
+    { inputCapabilities: undefined },
+    { inputCapabilities: { copiedWmInput: true, copiedRawInputBuffer: 'unknown' } },
+    { requiredInputCapabilities: [] }, { requiredInputCapabilities: ['future-unsupported-required'] },
+    { requiredInputCapabilities: 'copied-raw-input-buffer' },
+  ]) {
+    session.handleEvent('game.process.input-capabilities-rejected', { ...valid, ...invalid });
+  }
+  assert.equal(rejected.length, 0);
+  assert.equal(session.targets.inputCapabilities(4321), null);
+  session.handleEvent('game.process.input-capabilities-rejected', valid);
+  assert.equal(rejected.length, 1, 'unknown support is valid refusal evidence when a feature was required');
+  assert.deepEqual(session.targets.inputCapabilities(4321),
+    { copiedWmInput: 'unknown', copiedRawInputBuffer: 'unknown' });
+});
+
 test('consumer event failures cannot corrupt telemetry or interrupt internal updates', (t) => {
   const session = createOverlaySession({});
   const warnings = [];

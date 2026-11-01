@@ -19,6 +19,7 @@ type DiagnosticDefinition = Readonly<{
     | 'error-code'
     | 'ego-error-code'
     | 'auth-scope'
+    | 'input-capability'
     | 'packet-rejection'
     | 'producer-window'
     | 'producer-window-operation'
@@ -78,6 +79,11 @@ const DIAGNOSTIC_DEFINITIONS = {
     message: 'An injected overlay target authenticated successfully.',
     pid: 'required',
     context: 'none',
+  },
+  'target-input-capability-unsupported': {
+    source: 'electron-overlay-transport', severity: 'error',
+    message: 'The target host did not prove an input capability required by this application.',
+    pid: 'required', context: 'input-capability',
   },
   'target-packet-rejected': {
     source: 'electron-overlay-transport',
@@ -391,6 +397,7 @@ function parseDiagnosticContext(
   if (value === undefined) {
     return kind === 'port' ||
       kind === 'auth-scope' ||
+      kind === 'input-capability' ||
       kind === 'packet-rejection' ||
       kind === 'producer-window' ||
       kind === 'producer-window-operation' ||
@@ -445,6 +452,12 @@ function parseDiagnosticContext(
       return null;
     }
     return Object.freeze({ scope: context.scope });
+  }
+  if (kind === 'input-capability') {
+    if (!hasOnlyContextKeys(context, ['capability', 'support']) ||
+        (context.capability !== 'copied-wm-input' && context.capability !== 'copied-raw-input-buffer') ||
+        (context.support !== 'unknown' && context.support !== 'unsupported')) return null;
+    return Object.freeze({ capability: context.capability, support: context.support });
   }
   if (kind === 'producer-window') {
     if (

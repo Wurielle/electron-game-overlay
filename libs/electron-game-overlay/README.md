@@ -121,6 +121,45 @@ runtime, INI, presets, effects and foreign add-ons are not replaced. Only the
 native transaction helper may maintain reserved EGO add-on files; installation
 or update can require a game restart. An incompatible installation fails closed.
 
+## Required input capabilities
+
+An application can require specific copied-input routes before a target receives
+its scene or interception request:
+
+```ts
+const overlay = new ElectronGameOverlay({
+  requiredInputCapabilities: ['copied-raw-input-buffer'],
+});
+const session = overlay.createSession();
+session.on('targetInputCapabilitiesRejected', ({ pid, inputCapabilities }) => {
+  console.error('Required input route unavailable', pid, inputCapabilities);
+});
+session.on('targetConnected', ({ pid }) => {
+  console.log(session.targets.inputCapabilities(pid));
+});
+```
+
+Requirements accept `copied-wm-input` and `copied-raw-input-buffer` and are copied
+and frozen when the owner is constructed. The read API returns an immutable
+`{ copiedWmInput, copiedRawInputBuffer }` snapshot with `supported`, `unsupported`
+or `unknown` values, or `null` before a credential-verified observation.
+`targetConnected` also exposes optional capabilities and input-capability data.
+Missing optional capability metadata means `unknown`; with no requirements,
+legacy targets remain accepted.
+
+Unknown or unsupported required features reject only this application's route
+before authentication, frames or interception are sent. The typed rejection event
+accompanies diagnostic `target-input-capability-unsupported`; a matching attachment
+rejects with that `ReShadeOperationError` code and `indeterminate` retry safety.
+Retain possibly consumed host ownership and do not retry the live PID.
+
+Stock official ReShade supports the copied `WM_INPUT` route but does not support
+copied `GetRawInputBuffer` delivery. The bundled patched host advertises buffered
+support only after its private observer ABI is verified. These capabilities cover
+those copied-input routes, not every possible input pump. Optional wire tokens
+are `input-capabilities-v1`, `copied-wm-input-v1` and
+`copied-raw-input-buffer-v1`; they add no mandatory handshake or version equality.
+
 
 ## Managed attachment and packaging
 

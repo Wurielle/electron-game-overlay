@@ -217,6 +217,40 @@ private:
 class registry
 {
 public:
+    // Admission is invisible to callbacks until publish(). Reserve without
+    // holding the registry mutex across module pinning/loader-lock operations.
+    // Only unpublished storage may be released. Once a caller has pinned its
+    // module, even a failed publication retains its bounded lifetime slot.
+    class participant_reservation
+    {
+    public:
+        participant_reservation() noexcept = default;
+        participant_reservation(const participant_reservation &) = delete;
+        participant_reservation &operator=(const participant_reservation &) = delete;
+        ~participant_reservation()
+        {
+            if (owner_ != nullptr && !irreversible_)
+                owner_->cancel_participant_reservation(slot_);
+        }
+        explicit operator bool() const noexcept { return owner_ != nullptr; }
+        void retain_if_unpublished() noexcept { irreversible_ = true; }
+        std::uint64_t publish(const callbacks_v1 &callbacks, void *context)
+        {
+            if (owner_ == nullptr) return 0;
+            const auto id = owner_->publish_participant_reservation(slot_, id_, callbacks, context);
+            if (id != 0) owner_ = nullptr;
+            return id;
+        }
+    private:
+        friend class registry;
+        participant_reservation(registry *owner, std::uint32_t slot, std::uint64_t id) noexcept :
+            owner_(owner), slot_(slot), id_(id) {}
+        registry *owner_ = nullptr;
+        std::uint32_t slot_ = 0;
+        std::uint64_t id_ = 0;
+        bool irreversible_ = false;
+    };
+
     registry() = default;
     registry(const registry &) = delete;
     registry &operator=(const registry &) = delete;
@@ -411,6 +445,26 @@ public:
             return id;
         }
         return 0;
+    }
+
+    participant_reservation reserve_participant()
+    {
+        if (!available()) return {};
+        detail::lock guard(mutex_);
+        if (!guard || state_->next_participant == (std::numeric_limits<std::uint64_t>::max)()) return {};
+        for (std::uint32_t slot = 0; slot < max_participants; ++slot)
+        {
+            auto &participant = state_->participants[slot];
+            if (participant.id != 0 || participant.reserved != 0) continue;
+            // Keep id untouched while lock-free observers load it. This slot
+            // has never published a nonzero ID, so no observer owns its data.
+            participant.context = nullptr;
+            participant.callbacks = {};
+            participant.interception = 0;
+            participant.reserved = 1;
+            return participant_reservation(this, slot, ++state_->next_participant);
+        }
+        return {};
     }
 
     bool leave(std::uint64_t id)
@@ -857,6 +911,39 @@ public:
     }
 
 private:
+    void cancel_participant_reservation(std::uint32_t slot) noexcept
+    {
+        if (!available() || slot >= max_participants) return;
+        detail::lock guard(mutex_);
+        if (!guard) return;
+        auto &participant = state_->participants[slot];
+        // The owning noncopyable reservation alone may cancel this slot.
+        // Published callback/context storage is never cleared or reused.
+        if (participant.id == 0)
+        {
+            participant.context = nullptr;
+            participant.callbacks = {};
+            participant.interception = 0;
+            participant.reserved = 0;
+        }
+    }
+
+    std::uint64_t publish_participant_reservation(std::uint32_t slot, std::uint64_t id,
+        const callbacks_v1 &callbacks, void *context)
+    {
+        if (!available() || slot >= max_participants || id == 0 ||
+            callbacks.version != abi_version || callbacks.struct_size != sizeof(callbacks_v1)) return 0;
+        detail::lock guard(mutex_);
+        if (!guard) return 0;
+        auto &participant = state_->participants[slot];
+        if (participant.id != 0 || participant.reserved == 0) return 0;
+        participant.context = context;
+        participant.callbacks = callbacks;
+        InterlockedExchange64(reinterpret_cast<volatile LONG64 *>(&participant.id), static_cast<LONG64>(id));
+        ++state_->revision;
+        return id;
+    }
+
     void close() noexcept
     {
         if (state_ != nullptr) UnmapViewOfFile(state_);

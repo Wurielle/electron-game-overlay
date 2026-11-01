@@ -38,6 +38,9 @@ pub const EGO_STATUS_NOT_CONNECTED: i32 = -9;
 
 pub const EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS: u32 = 1_000;
 pub const EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES: u64 = 4 * 32_767;
+pub const EGO_INPUT_CAPABILITY_COPIED_WM_INPUT: u64 = crate::INPUT_CAPABILITY_COPIED_WM_INPUT;
+pub const EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER: u64 =
+    crate::INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER;
 const MAX_DIRECTORY_UTF16_UNITS: usize = 32_767;
 
 pub const EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION: u32 = 1;
@@ -590,6 +593,44 @@ pub unsafe extern "C" fn ego_transport_create_for_directory(
     directory_utf8_len: u64,
     out_transport: *mut *mut EgoTransport,
 ) -> i32 {
+    create_private_transport(
+        abi_version,
+        directory_utf8,
+        directory_utf8_len,
+        None,
+        out_transport,
+    )
+}
+
+/// Starts a private transport with immutable native-host input capabilities.
+/// The first hello and every reconnect advertise these optional capabilities.
+///
+/// # Safety
+/// Directory and output pointers follow [`ego_transport_create_for_directory`].
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_create_for_directory_with_input_capabilities(
+    abi_version: u32,
+    directory_utf8: *const u8,
+    directory_utf8_len: u64,
+    input_capabilities: u64,
+    out_transport: *mut *mut EgoTransport,
+) -> i32 {
+    create_private_transport(
+        abi_version,
+        directory_utf8,
+        directory_utf8_len,
+        Some(input_capabilities),
+        out_transport,
+    )
+}
+
+unsafe fn create_private_transport(
+    abi_version: u32,
+    directory_utf8: *const u8,
+    directory_utf8_len: u64,
+    input_capabilities: Option<u64>,
+    out_transport: *mut *mut EgoTransport,
+) -> i32 {
     ffi_call(|| {
         let out_transport = out_transport.as_mut().ok_or_else(|| {
             FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_transport pointer is null")
@@ -599,6 +640,14 @@ pub unsafe extern "C" fn ego_transport_create_for_directory(
             return Err(FfiError::new(
                 EGO_STATUS_ABI_MISMATCH,
                 format!("requested ABI version {abi_version} does not match {EGO_ABI_VERSION}"),
+            ));
+        }
+        if input_capabilities
+            .is_some_and(|capabilities| !crate::valid_input_capabilities(capabilities))
+        {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "native input capability flags are invalid",
             ));
         }
         if directory_utf8.is_null()
@@ -614,7 +663,14 @@ pub unsafe extern "C" fn ego_transport_create_for_directory(
             directory_utf8,
             directory_utf8_len as usize,
         ))?;
-        let bridge = ElectronFrameBridge::spawn_for_directory(directory).map_err(|error| {
+        let bridge = match input_capabilities {
+            Some(capabilities) => ElectronFrameBridge::spawn_for_directory_with_input_capabilities(
+                directory,
+                capabilities,
+            ),
+            None => ElectronFrameBridge::spawn_for_directory(directory),
+        }
+        .map_err(|error| {
             FfiError::new(
                 EGO_STATUS_INITIALIZATION_FAILED,
                 format!("cannot initialize private Electron overlay transport: {error}"),
@@ -1527,6 +1583,195 @@ mod tests {
             EGO_STATUS_INVALID_ARGUMENT,
         );
         assert!(output.is_null());
+    }
+
+    #[test]
+    fn private_input_capability_constructor_rejects_invalid_flags_and_arguments() {
+        let directory = b"C:\\member";
+        for capabilities in [EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER, 4, u64::MAX] {
+            let mut output = 1usize as *mut EgoTransport;
+            assert_eq!(
+                unsafe {
+                    ego_transport_create_for_directory_with_input_capabilities(
+                        EGO_ABI_VERSION,
+                        directory.as_ptr(),
+                        directory.len() as u64,
+                        capabilities,
+                        &mut output,
+                    )
+                },
+                EGO_STATUS_INVALID_ARGUMENT,
+            );
+            assert!(output.is_null());
+        }
+        for (abi, directory, length, expected) in [
+            (
+                EGO_ABI_VERSION + 1,
+                directory.as_ptr(),
+                directory.len() as u64,
+                EGO_STATUS_ABI_MISMATCH,
+            ),
+            (EGO_ABI_VERSION, ptr::null(), 0, EGO_STATUS_INVALID_ARGUMENT),
+            (
+                EGO_ABI_VERSION,
+                directory.as_ptr(),
+                EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES + 1,
+                EGO_STATUS_INVALID_ARGUMENT,
+            ),
+            (
+                EGO_ABI_VERSION,
+                b"relative".as_ptr(),
+                8,
+                EGO_STATUS_INVALID_ARGUMENT,
+            ),
+        ] {
+            let mut output = 1usize as *mut EgoTransport;
+            assert_eq!(
+                unsafe {
+                    ego_transport_create_for_directory_with_input_capabilities(
+                        abi,
+                        directory,
+                        length,
+                        0,
+                        &mut output,
+                    )
+                },
+                expected,
+            );
+            assert!(output.is_null());
+        }
+        assert_eq!(
+            unsafe {
+                ego_transport_create_for_directory_with_input_capabilities(
+                    EGO_ABI_VERSION,
+                    directory.as_ptr(),
+                    directory.len() as u64,
+                    0,
+                    ptr::null_mut(),
+                )
+            },
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+    }
+
+    #[test]
+    fn private_input_capabilities_are_in_the_first_socket_hello_and_reconnect() {
+        use std::fs;
+        use std::io::Read;
+        use std::net::{Shutdown, TcpListener};
+        use std::time::Instant;
+
+        struct OwnedTransport(*mut EgoTransport);
+        impl Drop for OwnedTransport {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { ego_transport_destroy(self.0) }, EGO_STATUS_OK);
+            }
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ego-input-capabilities-{}-{nonce}",
+            std::process::id(),
+        ));
+        for capabilities in [None, Some(0), Some(1), Some(3)] {
+            let directory = root.join(format!("{capabilities:?}"));
+            fs::create_dir_all(&directory).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let token = "ab".repeat(32);
+            fs::write(
+                directory.join("electron-overlay-transport-v1.targeted"),
+                b"private",
+            )
+            .unwrap();
+            fs::write(
+                directory.join("electron-overlay-transport-v1.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "pid": std::process::id(),
+                    "port": listener.local_addr().unwrap().port(),
+                    "token": token, "targetPid": std::process::id(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let bytes = directory.to_str().unwrap().as_bytes();
+            let mut handle = ptr::null_mut();
+            let status = unsafe {
+                match capabilities {
+                    Some(capabilities) => {
+                        ego_transport_create_for_directory_with_input_capabilities(
+                            EGO_ABI_VERSION,
+                            bytes.as_ptr(),
+                            bytes.len() as u64,
+                            capabilities,
+                            &mut handle,
+                        )
+                    }
+                    None => ego_transport_create_for_directory(
+                        EGO_ABI_VERSION,
+                        bytes.as_ptr(),
+                        bytes.len() as u64,
+                        &mut handle,
+                    ),
+                }
+            };
+            assert_eq!(status, EGO_STATUS_OK);
+            let transport = OwnedTransport(handle);
+            for _ in 0..2 {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut peer = loop {
+                    match listener.accept() {
+                        Ok((peer, _)) => break peer,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "capability transport did not connect"
+                            );
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("capability accept failed: {error}"),
+                    }
+                };
+                peer.set_nonblocking(false).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut header = [0u8; 5];
+                peer.read_exact(&mut header).unwrap();
+                assert_eq!(header[4], crate::electron_wire::JSON_KIND);
+                let length = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+                assert!(length <= 64 * 1024);
+                let mut body = vec![0; length];
+                peer.read_exact(&mut body).unwrap();
+                let hello: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(hello["type"], "game.process");
+                assert_eq!(hello["token"], token);
+                let advertised = hello["capabilities"].as_array().unwrap();
+                for (name, expected) in [
+                    ("input-capabilities-v1", capabilities.is_some()),
+                    (
+                        "copied-wm-input-v1",
+                        capabilities.is_some_and(|flags| flags & 1 != 0),
+                    ),
+                    (
+                        "copied-raw-input-buffer-v1",
+                        capabilities.is_some_and(|flags| flags & 2 != 0),
+                    ),
+                ] {
+                    assert_eq!(
+                        advertised.iter().any(|value| value == name),
+                        expected,
+                        "incorrect {name} for flags {capabilities:?}"
+                    );
+                }
+                // A peer rejected before its SDK snapshot remains dormant;
+                // merely sending the capability hello is not authentication.
+                assert_eq!(unsafe { (*transport.0).bridge.producer_session_epoch() }, 0);
+                peer.shutdown(Shutdown::Both).unwrap();
+            }
+            drop(transport);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

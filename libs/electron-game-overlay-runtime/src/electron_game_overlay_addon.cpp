@@ -6,6 +6,7 @@
 #include <reshade.hpp>
 #include "ego_cooperative_registry.hpp"
 #include "ego_cooperative_input.hpp"
+#include "ego_render_readback_diagnostic.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,7 +48,9 @@ HMODULE g_reshade_host_module = nullptr;
 HMODULE g_addon_module = nullptr;
 bool g_has_private_input_observer = false;
 ego::cooperative::registry g_cooperative;
+ego::render_readback_diagnostic::probe g_render_readback;
 std::atomic<std::uint64_t> g_participant_id = 0;
+std::atomic<bool> g_module_pinned = false;
 std::atomic<std::uint64_t> g_input_source_cutoff = 0;
 std::mutex g_member_initialization_mutex;
 bool g_cooperative_dispatcher = false;
@@ -1937,11 +1940,12 @@ void shutdown_official_message_hooks(bool wait_for_callbacks) noexcept
                   "to avoid executing an unloaded callback.");
     }
     HMODULE pinned_module = nullptr;
-    GetModuleHandleExW(
+    if (GetModuleHandleExW(
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             GET_MODULE_HANDLE_EX_FLAG_PIN,
         reinterpret_cast<LPCWSTR>(&g_addon_module),
-        &pinned_module);
+        &pinned_module))
+        g_module_pinned.store(true, std::memory_order_release);
 }
 
 ego_transport *retain_transport()
@@ -1957,10 +1961,16 @@ ego_transport *retain_transport()
     {
         // A new Rust bridge has a new ordered focus-command stream.
         g_cooperative_focus_revision = 0;
-        const ego_status status = ego_transport_create_for_directory(
+        // Capabilities describe this mapped host's input seam, not the app's
+        // package version. Stock ReShade exposes WM_INPUT through our message
+        // hook, but only the validated private observer copies buffered reads.
+        const std::uint64_t input_capabilities = EGO_INPUT_CAPABILITY_COPIED_WM_INPUT |
+            (g_has_private_input_observer ? EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER : 0);
+        const ego_status status = ego_transport_create_for_directory_with_input_capabilities(
                 EGO_ABI_VERSION,
                 reinterpret_cast<const std::uint8_t *>(g_private_run_directory.data()),
                 g_private_run_directory.size(),
+                input_capabilities,
                 &g_transport);
         if (status != EGO_STATUS_OK)
         {
@@ -4597,6 +4607,20 @@ void cooperative_render_window(void *, void *opaque_runtime, std::uint32_t windo
         [window_id](const auto &value) { return value.window_id == window_id; });
     if (frame == data->cooperative_frames.end())
         return;
+    if (g_cooperative_dispatcher && g_render_readback.enabled())
+    {
+        ego::render_readback_diagnostic::own_window_note note;
+        note.runtime = static_cast<effect_runtime *>(opaque_runtime);
+        note.texture = texture->second.texture.handle; note.srv = texture->second.view.handle;
+        note.window_id = window_id; note.incarnation = incarnation;
+        note.sequence = frame->sequence; note.revision = frame->state_revision;
+        note.x = frame->rect_x; note.y = frame->rect_y; note.width = frame->rect_width; note.height = frame->rect_height;
+        note.raster_width = frame->raster_width; note.raster_height = frame->raster_height;
+        const auto &io = ImGui::GetIO();
+        note.display_width = io.DisplaySize.x; note.display_height = io.DisplaySize.y;
+        note.framebuffer_x = io.DisplayFramebufferScale.x; note.framebuffer_y = io.DisplayFramebufferScale.y;
+        g_render_readback.note_own_window(note);
+    }
     ImGui::GetBackgroundDrawList()->AddImage(texture->second.view.handle,
         ImVec2(static_cast<float>(frame->rect_x), static_cast<float>(frame->rect_y)),
         ImVec2(static_cast<float>(frame->rect_x) + frame->rect_width,
@@ -4739,6 +4763,11 @@ void on_reshade_overlay(effect_runtime *runtime)
     for (const auto &window : g_cooperative.snapshot_windows())
         if (window.callbacks.render_window != nullptr)
             window.callbacks.render_window(window.context, runtime, window.key.window_id, window.key.incarnation);
+}
+
+void on_reshade_present_diagnostic(effect_runtime *runtime)
+{
+    g_render_readback.after_overlay(runtime);
 }
 
 bool register_compatible_addon(HMODULE module)
@@ -4929,6 +4958,7 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
         return ERROR_BAD_PATHNAME;
     const auto route_directory = std::filesystem::path(directory);
     g_private_route_present = explicit_initializer || has_owned_stage_marker(route_directory);
+    g_render_readback.configure(route_directory, g_cooperative_dispatcher && has_owned_stage_marker(route_directory));
     const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
         directory.data(), static_cast<int>(directory.size()), nullptr, 0, nullptr, nullptr);
     if (bytes <= 0)
@@ -4937,14 +4967,6 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
     if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, directory.data(),
         static_cast<int>(directory.size()), g_private_run_directory.data(), bytes, nullptr, nullptr) != bytes)
         return ERROR_NO_UNICODE_TRANSLATION;
-    HMODULE pinned = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-        reinterpret_cast<LPCWSTR>(&g_addon_module), &pinned))
-        return GetLastError();
-    HMODULE pinned_host = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-        reinterpret_cast<LPCWSTR>(g_reshade_host_module), &pinned_host))
-        return GetLastError();
     ego::cooperative::callbacks_v1 callbacks;
     callbacks.prepare_frame = cooperative_prepare_frame;
     callbacks.render_window = cooperative_render_window;
@@ -4954,8 +4976,25 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
     callbacks.cursor_at = cooperative_cursor_at;
     callbacks.destroy_surface = cooperative_destroy_surface;
     callbacks.flush_input = cooperative_flush_input;
+    auto admission = g_cooperative.reserve_participant();
+    if (!admission)
+        return ERROR_TOO_MANY_SESS;
+    // No callback/context is visible and no registry lock is held while
+    // acquiring the loader lock. Rejected admission must not pin this module.
+    HMODULE pinned_host = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(g_reshade_host_module), &pinned_host))
+        return GetLastError();
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(&g_addon_module), &pinned))
+        return GetLastError();
+    g_module_pinned.store(true, std::memory_order_release);
+    // PIN is irreversible. If publication fails, consume the invisible slot
+    // rather than admitting an unbounded number of other pinned modules.
+    admission.retain_if_unpublished();
     g_input_source_cutoff.store(g_cooperative.latest_source_sequence(), std::memory_order_release);
-    const auto participant = g_cooperative.join(callbacks, nullptr);
+    const auto participant = admission.publish(callbacks, nullptr);
     if (participant == 0)
         return ERROR_TOO_MANY_SESS;
     g_participant_id.store(participant, std::memory_order_release);
@@ -4975,6 +5014,7 @@ void register_dispatcher_events()
     reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
     reshade::register_event<reshade::addon_event::destroy_effect_runtime>(on_destroy_effect_runtime);
     reshade::register_event<reshade::addon_event::reshade_overlay>(on_reshade_overlay);
+    reshade::register_event<reshade::addon_event::reshade_present>(on_reshade_present_diagnostic);
     if (g_has_private_input_observer)
         reshade::register_event<reshade::addon_event::input_message>(on_input_message);
 }
@@ -4989,11 +5029,28 @@ extern "C" __declspec(dllexport) volatile LONG ElectronGameOverlayCooperativeRea
 
 #if defined(_M_IX86)
 #pragma comment(linker, "/EXPORT:ElectronGameOverlayInitializeMember=_ElectronGameOverlayInitializeMember@4")
+#pragma comment(linker, "/EXPORT:ElectronGameOverlayCanUnloadFailedMemberV1=_ElectronGameOverlayCanUnloadFailedMemberV1@0")
 #endif
 extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMember(void *request)
 {
     try { return initialize_cooperative_member(request, true); }
     catch (...) { return ERROR_DLL_INIT_FAILED; }
+}
+// The injector asks only after an explicit initializer failure. Absence,
+// timeout or a zero result is never permission to unload mapped callbacks.
+extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayCanUnloadFailedMemberV1()
+{
+    try
+    {
+        const std::scoped_lock initialization_lock(g_member_initialization_mutex);
+        const std::scoped_lock transport_lock(g_transport_mutex);
+        return !g_module_pinned.load(std::memory_order_acquire) &&
+            g_participant_id.load(std::memory_order_acquire) == 0 &&
+            InterlockedCompareExchange(&ElectronGameOverlayCooperativeReadyV1, 0, 0) == 0 &&
+            !g_cooperative_dispatcher && !g_public_registered && g_transport == nullptr &&
+            g_transport_references == 0 ? 1 : 0;
+    }
+    catch (...) { return 0; }
 }
 #ifndef ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
 #error "ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID must be provided by the build."

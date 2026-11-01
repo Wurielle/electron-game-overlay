@@ -74,7 +74,7 @@ const PROCESS_WATCHER_READY_MARKER = 'ReShade process watcher armed.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH = 706;
-const OFFICIAL_ADDON_BUILD_ID = 'E16461475E524DBA83398B19CDD95EBB';
+const OFFICIAL_ADDON_BUILD_ID = 'E975AA8639164AED979E9770674B9546';
 const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 3;
 // Schema 2 shipped before provider metadata. Keep accepting it permanently as
 // generation 1 / target transport 1 so copied runtime-directory overrides do
@@ -662,6 +662,7 @@ export type ReShadeDiagnosticCode =
   | 'injector-failed'
   | 'injector-result-invalid'
   | 'target-rendezvous-authorization-failed'
+  | 'target-input-capability-unsupported'
   | 'runtime-initialization-timeout'
   | 'target-disconnected'
   | 'session-closed'
@@ -2016,6 +2017,22 @@ export class ReShadeOverlayLauncher {
     void connectionLost.catch(() => undefined);
 
     removeSessionEventHandlers.push(
+      session.on('targetInputCapabilitiesRejected', (rejection) => {
+        if (proofSettled || !this.hasRequestedInjection ||
+            (this.attachmentExpectedTargetPid !== undefined && rejection.pid !== this.attachmentExpectedTargetPid) ||
+            !targetPathMatches(rejection.executablePath, target)) return;
+        proofSettled = true;
+        removeListeners();
+        this.blockTargetState(targetLabel);
+        rejectConnectionProof(createReShadeOperationError({
+          message: `The target host did not prove required input capabilities: ${rejection.requiredInputCapabilities.join(', ')}. This application's scene and interception request were withheld.`,
+          code: 'target-input-capability-unsupported', stage: 'runtime-initialization',
+          retrySafety: 'indeterminate', targetLabel, pid: rejection.pid,
+          targetExecutablePath: rejection.executablePath,
+          ...(this.currentRuntime?.targetLabel === targetLabel
+            ? { evidence: diagnosticEvidenceForStagedRuntime(this.currentRuntime.staged) } : {}),
+        }));
+      }),
       session.on('targetConnected', ({ pid, executablePath }) => {
         const connection = Object.freeze({ pid, path: executablePath });
         if (!this.hasRequestedInjection) {

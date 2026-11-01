@@ -1,6 +1,31 @@
 /** A release or unsubscribe callback. Calling it more than once is safe. */
 export type Disposable = () => void;
 
+/** Optional native input behavior that an application may require before publishing its overlay. */
+export type OverlayInputCapability =
+  | 'copied-wm-input'
+  | 'copied-raw-input-buffer';
+
+/** A capable host explicitly reports support; older runtimes leave it unknown. */
+export type OverlayInputCapabilitySupport = 'supported' | 'unsupported' | 'unknown';
+
+/** Immutable host-derived input support for one exact target connection. */
+export type OverlayTargetInputCapabilities = Readonly<{
+  /** Whether copied WM_INPUT records can be delivered to this participant. */
+  copiedWmInput: OverlayInputCapabilitySupport;
+  /** Whether copied GetRawInputBuffer records can be delivered to this participant. */
+  copiedRawInputBuffer: OverlayInputCapabilitySupport;
+}>;
+
+/** A credential-validated target refused before receiving this producer's scene or input policy. */
+export type OverlayTargetInputCapabilityRejection = Readonly<{
+  pid: number;
+  executablePath: string;
+  creationTime100ns?: string;
+  inputCapabilities: OverlayTargetInputCapabilities;
+  requiredInputCapabilities: readonly OverlayInputCapability[];
+}>;
+
 /** Component that produced an {@link OverlayDiagnostic}. */
 export type OverlayDiagnosticSource =
   | 'electron-game-overlay'
@@ -18,6 +43,7 @@ export type OverlayDiagnosticCode =
   | 'target-authorized'
   | 'target-authorization-failed'
   | 'target-authentication-rejected'
+  | 'target-input-capability-unsupported'
   | 'target-authenticated'
   | 'target-packet-rejected'
   | 'target-socket-error'
@@ -78,7 +104,13 @@ export type OverlaySessionEventMap = {
     executablePath: string;
     /** Exact process creation FILETIME when supplied by an authenticated capable runtime. */
     creationTime100ns?: string;
+    /** Optional immutable native hello tokens, including unknown future capabilities. */
+    capabilities?: readonly string[];
+    /** Host-derived input support when reported by the transport. */
+    inputCapabilities?: OverlayTargetInputCapabilities;
   }>;
+  /** This producer's required input behavior was not proven by a target's hello. */
+  targetInputCapabilitiesRejected: OverlayTargetInputCapabilityRejection;
   /**
    * Transport to a target ended, without yet proving that the process exited.
    */

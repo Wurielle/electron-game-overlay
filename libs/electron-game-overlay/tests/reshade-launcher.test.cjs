@@ -128,7 +128,7 @@ const officialAddonSuccessFor = (
     runtimeModulePath,
     addonModulePath,
     addonAbi: 1,
-    addonBuildId: 'E16461475E524DBA83398B19CDD95EBB',
+    addonBuildId: 'E975AA8639164AED979E9770674B9546',
     reshadeBasePath: path.win32.dirname(runtimeModulePath),
     addonDirectoryPath: path.win32.dirname(addonModulePath),
     electronGameOverlayAddonDisabled: false,
@@ -5830,7 +5830,7 @@ function writeRuntimePackageBuildStamp(runtimeDirectory, spec) {
       kind: 'electron-game-overlay-runtime-build',
       platform: spec.platform,
       configuration: 'RelWithDebInfo',
-      addonBuildId: 'E16461475E524DBA83398B19CDD95EBB',
+      addonBuildId: 'E975AA8639164AED979E9770674B9546',
       managerProtocolSchemaVersion: 1,
       runtimeGeneration: 1,
       targetTransportMin: 1,
@@ -6333,6 +6333,7 @@ function createSessionHarness(
             'targetConnected',
             'targetTransportLost',
             'targetDisconnected',
+            'targetInputCapabilitiesRejected',
           ].includes(event),
         );
         let handlers = lifecycleHandlers.get(event);
@@ -6357,12 +6358,14 @@ function createSessionHarness(
         'game.process': 'targetConnected',
         'game.process.transport-lost': 'targetTransportLost',
         'game.process.disconnected': 'targetDisconnected',
+        'game.process.input-capabilities-rejected': 'targetInputCapabilitiesRejected',
       }[event];
       assert.ok(typedEvent, `unexpected lifecycle event ${event}`);
       for (const handler of Array.from(
         lifecycleHandlers.get(typedEvent) ?? [],
       )) {
         handler({
+          ...payload,
           pid: payload.pid,
           executablePath: payload.path ?? 'C:\\Games\\unknown.exe',
         });
@@ -6552,6 +6555,36 @@ function policyRuntime() {
   return fixture;
 }
 const nativePolicyTarget={pathContains:'\\',processPolicy:{allow:['**/steamapps/**']}};
+
+test('a missing required host input capability rejects attachment promptly while retaining possibly consumed ownership', async () => {
+  const fixture = createRuntime(), execution = stubExecFile(), harness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242, executablePath: 'C:\\Games\\game.exe' });
+    const rejected = assert.rejects(attachment, error => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'target-input-capability-unsupported');
+      assert.equal(error.stage, 'runtime-initialization');
+      assert.equal(error.retrySafety, 'indeterminate');
+      assert.equal(error.diagnostic.pid, 4242);
+      return true;
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const rejection = { pid: 4242, path: 'C:\\Games\\game.exe',
+      inputCapabilities: { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' },
+      requiredInputCapabilities: ['copied-raw-input-buffer'] };
+    harness.emitNative('game.process.input-capabilities-rejected', { ...rejection, pid: 4243 });
+    assert.equal(launcher.state, 'attaching', 'another target cannot reject this attachment');
+    harness.emitNative('game.process.input-capabilities-rejected', rejection);
+    await waitFor(() => execution.calls[0].child.killed);
+    execution.calls[0].callback(Object.assign(new Error('terminated'), { killed: true }), '', '');
+    await rejected;
+    assert.equal(launcher.state, 'blocked');
+    assert.equal(harness.targetAuthorizations[0].releaseCount, 0, 'unsupported input is not process-exit or permission to reinject');
+    await assert.rejects(launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 }), /indeterminate/);
+    assert.equal(execution.calls.length, 1);
+  } finally { launcher.dispose(); execution.restore(); }
+});
 
 test('quiescence before any native invocation invalidates delayed attachment without executing a child', async()=>{
   const execution=stubExecFile(),wait=deferred(),harness=createSessionHarness(wait.promise),launcher=new ReShadeOverlayLauncher(createConfig(policyRuntime()));

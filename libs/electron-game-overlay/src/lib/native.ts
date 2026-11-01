@@ -1,6 +1,6 @@
 import { CooperativeOverlayTransport } from './cooperative-overlay-transport.js';
 import type { NativeInputMessage } from './input-translation.js';
-import type { Disposable } from './types.js';
+import type { Disposable, OverlayInputCapability } from './types.js';
 
 export interface NativeRectangle {
   x: number;
@@ -98,6 +98,7 @@ export interface NativeOverlay {
 
 export function createNativeOverlay(
   _allowPrereleaseBroker = false,
+  options: Readonly<{ requiredInputCapabilities?: readonly OverlayInputCapability[] }> = {},
 ): NativeOverlay {
-  return new CooperativeOverlayTransport();
+  return new CooperativeOverlayTransport(options);
 }

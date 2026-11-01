@@ -573,25 +573,60 @@ pub struct ElectronFrameBridge {
     thread: Option<JoinHandle<()>>,
 }
 
+pub(crate) const INPUT_CAPABILITY_COPIED_WM_INPUT: u64 = 1;
+pub(crate) const INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER: u64 = 2;
+
+pub(crate) fn valid_input_capabilities(capabilities: u64) -> bool {
+    capabilities & !(INPUT_CAPABILITY_COPIED_WM_INPUT | INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER)
+        == 0
+        && (capabilities & INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER == 0
+            || capabilities & INPUT_CAPABILITY_COPIED_WM_INPUT != 0)
+}
+
 impl ElectronFrameBridge {
     /// Starts the state and loopback transport worker.
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
-        Self::spawn_with_directory(None)
+        Self::spawn_with_directory(None, None)
     }
 
     /// Starts a participant-private transport. Discovery and startup diagnostics
     /// are confined to this directory; process-wide environment and legacy
     /// discovery records are never consulted.
     pub fn spawn_for_directory(directory: PathBuf) -> Result<Self, ElectronFrameBridgeError> {
+        Self::spawn_private(directory, None)
+    }
+
+    /// Starts a private worker with immutable capabilities supplied by its
+    /// native host before its first connection. Zero means known unsupported;
+    /// older constructors leave host input capabilities unknown.
+    pub fn spawn_for_directory_with_input_capabilities(
+        directory: PathBuf,
+        input_capabilities: u64,
+    ) -> Result<Self, ElectronFrameBridgeError> {
+        if !valid_input_capabilities(input_capabilities) {
+            return Err(ElectronFrameBridgeError::Initialization(
+                "native input capability flags are invalid".to_owned(),
+            ));
+        }
+        Self::spawn_private(directory, Some(input_capabilities))
+    }
+
+    fn spawn_private(
+        directory: PathBuf,
+        input_capabilities: Option<u64>,
+    ) -> Result<Self, ElectronFrameBridgeError> {
         if !directory.is_absolute() || directory.as_os_str().is_empty() {
             return Err(ElectronFrameBridgeError::Initialization(
                 "private transport directory must be an absolute Windows path".to_owned(),
             ));
         }
-        Self::spawn_with_directory(Some(directory))
+        Self::spawn_with_directory(Some(directory), input_capabilities)
     }
 
-    fn spawn_with_directory(directory: Option<PathBuf>) -> Result<Self, ElectronFrameBridgeError> {
+    fn spawn_with_directory(
+        directory: Option<PathBuf>,
+        input_capabilities: Option<u64>,
+    ) -> Result<Self, ElectronFrameBridgeError> {
         let pid = unsafe { GetCurrentProcessId() };
         let startup = match &directory {
             Some(directory) => RuntimeStartupPublisher::for_directory(directory.clone(), pid),
@@ -648,6 +683,7 @@ impl ElectronFrameBridge {
                     ready_tx,
                     worker_startup,
                     directory,
+                    input_capabilities,
                 )
             })
             .map_err(|error| {
@@ -1279,6 +1315,7 @@ fn run_bridge_thread(
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
     startup: RuntimeStartupPublisher,
     directory: Option<PathBuf>,
+    input_capabilities: Option<u64>,
 ) {
     startup.publish(RuntimeStartupCode::BridgeThreadStarted);
     let title = wide_string(&format!("electron-overlay-frame-{}", unsafe {
@@ -1326,6 +1363,7 @@ fn run_bridge_thread(
         drag,
         startup,
         directory,
+        input_capabilities,
     ));
     let state_ptr = Box::into_raw(state);
 
@@ -1517,6 +1555,7 @@ struct BridgeThreadState {
     target_route_path: Option<PathBuf>,
     routed_discovery_pinned: bool,
     private_discovery: bool,
+    input_capabilities: Option<u64>,
     scene: PublishedScene,
     input_router: SharedInputRouter,
     producer_session_epoch: Arc<AtomicU64>,
@@ -1554,6 +1593,7 @@ impl BridgeThreadState {
         drag: SharedDragState,
         startup: RuntimeStartupPublisher,
         directory: Option<PathBuf>,
+        input_capabilities: Option<u64>,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
         let private_discovery = directory.is_some();
@@ -1578,6 +1618,7 @@ impl BridgeThreadState {
             target_route_path,
             routed_discovery_pinned: false,
             private_discovery,
+            input_capabilities,
             scene,
             input_router,
             producer_session_epoch,
@@ -1684,7 +1725,7 @@ impl BridgeThreadState {
             return;
         }
 
-        let hello = match game_process_packet(&discovery.token) {
+        let hello = match game_process_packet(&discovery.token, self.input_capabilities) {
             Ok(packet) => packet,
             Err(error) => {
                 self.startup
@@ -3278,7 +3319,10 @@ fn discovery_target_matches(
     }
 }
 
-fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
+fn game_process_packet(
+    token: &str,
+    input_capabilities: Option<u64>,
+) -> Result<Vec<u8>, NetworkError> {
     let path = std::env::current_exe()
         .map_err(NetworkError::CurrentExecutable)?
         .to_string_lossy()
@@ -3303,11 +3347,26 @@ fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
             "zero creation time",
         )));
     }
+    let mut capabilities = vec![
+        "window-order-v1",
+        "window-focus-v1",
+        "window-cursor-v1",
+        "process-instance-hello-v1",
+    ];
+    if let Some(input_capabilities) = input_capabilities {
+        capabilities.push("input-capabilities-v1");
+        if input_capabilities & INPUT_CAPABILITY_COPIED_WM_INPUT != 0 {
+            capabilities.push("copied-wm-input-v1");
+        }
+        if input_capabilities & INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER != 0 {
+            capabilities.push("copied-raw-input-buffer-v1");
+        }
+    }
     let json = serde_json::json!({
         "type": "game.process",
         "protocolVersion": TRANSPORT_VERSION,
         "creationTime100ns": creation_time.to_string(),
-        "capabilities": ["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"],
+        "capabilities": capabilities,
         "token": token,
         "pid": unsafe { GetCurrentProcessId() },
         "path": path,
@@ -4267,6 +4326,7 @@ mod tests {
             SharedPendingRaise::default(),
             SharedDragState::default(),
             RuntimeStartupPublisher::default(),
+            None,
             None,
         )
     }
@@ -5441,7 +5501,7 @@ mod tests {
 
     #[test]
     fn process_hello_advertises_optional_window_order_without_version_change() {
-        let packet = game_process_packet(&"01".repeat(32)).unwrap();
+        let packet = game_process_packet(&"01".repeat(32), None).unwrap();
         let packets = WireDecoder::default().push(&packet).unwrap();
         let WirePacket::Json(json) = &packets[0] else {
             panic!("expected hello")
@@ -5470,7 +5530,7 @@ mod tests {
     #[test]
     fn process_hello_is_the_first_framed_authenticated_target_identity() {
         let token = "01".repeat(32);
-        let packet = game_process_packet(&token).unwrap();
+        let packet = game_process_packet(&token, None).unwrap();
         let mut decoder = WireDecoder::default();
         let packets = decoder.push(&packet).unwrap();
         let WirePacket::Json(json) = &packets[0] else {

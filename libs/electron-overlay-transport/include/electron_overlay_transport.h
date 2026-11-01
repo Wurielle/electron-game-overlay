@@ -31,6 +31,8 @@ typedef int32_t ego_status;
 
 #define EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS UINT32_C(1000)
 #define EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES UINT64_C(131068)
+#define EGO_INPUT_CAPABILITY_COPIED_WM_INPUT UINT64_C(1)
+#define EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER UINT64_C(2)
 
 #define EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION UINT32_C(1)
 #define EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY UINT32_C(1)
@@ -150,6 +152,18 @@ ego_status EGO_CALL ego_transport_create_for_directory(
     uint32_t abi_version,
     const uint8_t *directory_utf8,
     uint64_t directory_utf8_len,
+    ego_transport **out_transport);
+/*
+ * Immutable native-host input capabilities, advertised in the first hello and
+ * every reconnect. Zero means known unsupported; the older constructors leave
+ * these capabilities unknown. Unknown bits and RAW_INPUT_BUFFER without
+ * COPIED_WM_INPUT are invalid. Directory/output rules match the scoped ctor.
+ */
+ego_status EGO_CALL ego_transport_create_for_directory_with_input_capabilities(
+    uint32_t abi_version,
+    const uint8_t *directory_utf8,
+    uint64_t directory_utf8_len,
+    uint64_t input_capabilities,
     ego_transport **out_transport);
 ego_status EGO_CALL ego_transport_destroy(ego_transport *transport);
 /*

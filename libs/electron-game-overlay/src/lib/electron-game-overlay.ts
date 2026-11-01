@@ -1,5 +1,6 @@
 import { createNativeOverlay, type NativeOverlay } from './native.js';
 import { createOverlaySession, OverlaySession } from './overlay-session.js';
+import type { OverlayInputCapability } from './types.js';
 
 /**
  * Application-level overlay options.
@@ -13,6 +14,11 @@ import { createOverlaySession, OverlaySession } from './overlay-session.js';
 export interface ElectronGameOverlayOptions {
   /** @deprecated Retained as a no-op; each application now supplies its own engine. */
   allowPrereleaseBroker?: boolean;
+  /**
+   * Immutable host input requirements, checked before any target receives this
+   * application's scene or interception request. Unknown support also rejects.
+   */
+  requiredInputCapabilities?: readonly OverlayInputCapability[];
 }
 
 /**
@@ -38,6 +44,7 @@ export class ElectronGameOverlay {
   constructor(options: ElectronGameOverlayOptions = {}) {
     this.nativeOverlay = createNativeOverlay(
       options.allowPrereleaseBroker === true,
+      { requiredInputCapabilities: options.requiredInputCapabilities },
     );
   }
 

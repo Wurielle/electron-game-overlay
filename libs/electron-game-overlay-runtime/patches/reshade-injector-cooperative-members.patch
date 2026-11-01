@@ -1,8 +1,8 @@
 diff --git a/tools/injector.cpp b/tools/injector.cpp
-index cac93be..361c26e 100644
+index b675f3b..ba392a2 100644
 --- a/tools/injector.cpp
 +++ b/tools/injector.cpp
-@@ -4010,8 +4010,441 @@ static bool get_loading_thread_func_size(SIZE_T &size)
+@@ -4010,8 +4010,456 @@ static bool get_loading_thread_func_size(SIZE_T &size)
  }
  #endif
  
@@ -47,10 +47,12 @@ index cac93be..361c26e 100644
 +{
 +	WCHAR load_path[32768] = L"";
 +	char initializer_name[48] = "ElectronGameOverlayInitializeMember";
++	char can_unload_name[48] = "ElectronGameOverlayCanUnloadFailedMemberV1";
 +	char build_id_name[48] = "ElectronGameOverlayReShadeAddonBuildId";
 +	char abi_name[48] = "ElectronGameOverlayReShadeAddonAbi";
 +	char expected_build_id[33] = {};
 +	decltype(&LoadLibraryW) load_library = nullptr;
++	decltype(&FreeLibrary) free_library = nullptr;
 +	decltype(&GetProcAddress) get_proc_address = nullptr;
 +	decltype(&GetLastError) get_last_error = nullptr;
 +	HMODULE loaded_module = nullptr;
@@ -110,6 +112,18 @@ index cac93be..361c26e 100644
 +	// Initialization runs after LoadLibrary/DllMain returned. The member derives
 +	// its private rendezvous from its own module parent, never process-wide env.
 +	data->initialization_error = initialize(nullptr);
++	if (data->initialization_error != ERROR_SUCCESS)
++	{
++		// Only the exact module can prove that failed initialization published
++		// no callbacks and acquired no permanent pin. An initializer error alone
++		// is insufficient, and absence of this optional export remains resident.
++		using can_unload_failed_member = DWORD (WINAPI *)();
++		const auto can_unload = reinterpret_cast<can_unload_failed_member>(
++			data->get_proc_address(data->loaded_module, data->can_unload_name));
++		if (can_unload != nullptr && can_unload() == 1 &&
++			data->free_library(data->loaded_module))
++			data->loaded_module = nullptr;
++	}
 +	return data->initialization_error;
 +}
 +#pragma optimize("", on)
@@ -299,6 +313,7 @@ index cac93be..361c26e 100644
 +	}
 +	memcpy(data.expected_build_id, validated_build_id, sizeof(data.expected_build_id));
 +	data.load_library = LoadLibraryW;
++	data.free_library = FreeLibrary;
 +	data.get_proc_address = GetProcAddress;
 +	data.get_last_error = GetLastError;
 +	const SIZE_T allocation_size = sizeof(data) + code_size;
@@ -444,7 +459,7 @@ index cac93be..361c26e 100644
  	future_observer = argc >= 2 && wcscmp(argv[1], L"--observe-future-path-contains") == 0;
      const bool process_observer_requested = future_observer || (argc >= 2 && wcscmp(argv[1], L"--observe-path-contains") == 0);
  	if (process_observer_requested)
-@@ -4081,6 +4514,11 @@ int wmain(int argc, wchar_t *argv[])
+@@ -4081,6 +4529,11 @@ int wmain(int argc, wchar_t *argv[])
  		parse_exact_pid_tail(argc, argv, expected_creation_time,
  			process_instance_binding_requested, official_addon_wait_requested,
  			official_addon_wait_value_index);
@@ -456,7 +471,7 @@ index cac93be..361c26e 100644
  	// Reject a misplaced binding option before observer/watcher selection.
  	bool misplaced_binding = false;
  	for (int argument = 1; argument < argc; ++argument)
-@@ -4163,10 +4601,10 @@ int wmain(int argc, wchar_t *argv[])
+@@ -4163,10 +4616,10 @@ int wmain(int argc, wchar_t *argv[])
  
  	// Open target application process
  	DWORD desired_process_access =
@@ -469,7 +484,7 @@ index cac93be..361c26e 100644
  	const scoped_handle remote_process =
  		OpenProcess(desired_process_access, FALSE, pid);
  	if (remote_process == nullptr)
-@@ -4257,6 +4695,16 @@ int wmain(int argc, wchar_t *argv[])
+@@ -4257,6 +4710,16 @@ int wmain(int argc, wchar_t *argv[])
  
  if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) return ERROR_WRITE_FAULT;
  
@@ -486,7 +501,7 @@ index cac93be..361c26e 100644
  	// Check process architecture
  	BOOL remote_is_wow64 = FALSE;
  	IsWow64Process(remote_process, &remote_is_wow64);
-@@ -4281,7 +4729,23 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+@@ -4281,7 +4744,23 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
  
  	scoped_injection_claim injection_claim;
  	DWORD claim_error = ERROR_SUCCESS;
@@ -511,7 +526,7 @@ index cac93be..361c26e 100644
  	{
  	case injection_claim_result::already_claimed:
  		if (!write_injector_diagnostic(
-@@ -4307,6 +4771,24 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+@@ -4307,6 +4786,24 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
  		break;
  	}
  
@@ -536,7 +551,7 @@ index cac93be..361c26e 100644
  	reusable_runtime_info reusable_runtime;
  	DWORD preflight_error = ERROR_SUCCESS;
  	bool reuse_existing_runtime = false;
-@@ -4834,6 +5316,32 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+@@ -4834,6 +5331,32 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
  #else
  	const auto loading_thread_func_size = 0;
  #endif

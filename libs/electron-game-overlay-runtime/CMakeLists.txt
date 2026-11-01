@@ -3,13 +3,13 @@ cmake_minimum_required(VERSION 3.24)
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
-    "E16461475E524DBA83398B19CDD95EBB"
+    "E975AA8639164AED979E9770674B9546"
 )
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
-    "5265F91C9308F755CF585EA7C3083E60DF48AED6CDC435C25518B7130A748F5B"
+    "C436078556B22BDAD9DFCD662A745E73339758E227F0178234B41D1392956974"
 )
 set(RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256
-    "1903E98A0462431D4A355A3CCE0E3B69AB8E5C67B7895080DA9F9EF8D75CA410"
+    "0BAE44EE68E401993FA662BAF8BE79F985F6BCB87DC3A0818BFD80FD9574DDEB"
 )
 set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256
     "07A76311F29A7A20E54D305BCA1F384A035C84D620BF201C3CACBAC9681BA7B6"
@@ -118,6 +118,9 @@ set(RESHAPE_PROCESS_POLICY_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-in
 set(RESHAPE_COOPERATIVE_MEMBERS_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-cooperative-members.patch"
 )
+set(RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-cooperative-members-v3.patch"
+)
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -170,6 +173,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_FUTURE_TARGETS_PATCH}"
     "${RESHAPE_PROCESS_POLICY_PATCH}"
     "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}"
+    "${RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -328,44 +332,187 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(reshade imgui)
 verify_reshade_pinned_commit("${reshade_SOURCE_DIR}")
 
-# Change only exact previous terminal sources, never an unknown edited
-# checkout. The post-replacement hash binds the new identity to the same source
-# body before any historical patch is peeled or reapplied.
+# Recognize the complete injector before any live historical patch is peeled.
+# A v3 body must migrate its terminal implementation before its identity can
+# match the current v4 pin. Every transformation stays in private scratch space
+# until the complete new body is verified; unknown edits are never rewritten.
 function(ego_rollover_known_addon_build_id source_path)
-    file(READ "${source_path}" source_text)
+    if(NOT IS_ABSOLUTE "${source_path}" OR NOT EXISTS "${source_path}" OR
+       IS_DIRECTORY "${source_path}" OR IS_SYMLINK "${source_path}")
+        message(FATAL_ERROR "The injector migration requires an existing absolute regular source path.")
+    endif()
+    file(SIZE "${source_path}" source_size)
+    if(source_size LESS 1 OR source_size GREATER 4194304)
+        message(FATAL_ERROR "The injector migration source size is out of bounds.")
+    endif()
+    file(SHA256 "${source_path}" original_file_hash)
+    file(READ "${source_path}" source_prefix LIMIT 3 HEX)
+    string(TOLOWER "${source_prefix}" source_prefix)
+    if(source_prefix STREQUAL "efbbbf")
+        file(READ "${source_path}" source_text OFFSET 3)
+    else()
+        file(READ "${source_path}" source_text)
+    endif()
     string(REPLACE "\r\n" "\n" source_text "${source_text}")
-    string(REPLACE "\r" "\n" source_text "${source_text}")
+    # Source caches use LF or CRLF. CMake text reads can drop a terminal bare
+    # CR, so reject that unsupported format instead of hashing altered bytes.
+    string(FIND "${source_text}" "\r" bare_cr_index)
+    if(NOT bare_cr_index EQUAL -1)
+        message(FATAL_ERROR "Bare-CR injector source caches are unsupported; source was not changed.")
+    endif()
     string(SHA256 source_hash "${source_text}")
     string(TOUPPER "${source_hash}" source_hash)
-    set(previous_full
+
+    # These exact historical lower-stack forms have no cooperative tail. Leave
+    # their fixed meanings to the existing ordered historical migration below.
+    if(source_hash STREQUAL "26CFBBFFD692ACFB24BD19CBD93B3C7F81F24555EA67B75C55FAD14861E38B00" OR
+       source_hash STREQUAL RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256 OR
+       source_hash STREQUAL RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 OR
+       source_hash STREQUAL RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256)
+        return()
+    endif()
+
+    set(previous_v3_full
         "246B4B1DC7259C2EBF4BC4C4278B03B5083507FAE8BDB071B264692F73730135"
         "88E5980C5737539918CDFD0A4070802780B44FA5FBCA2BB251B79952F180C621"
-        "5F4C08D04AB5E720851326EB72DED1D59D9E1924036B866CAC6E56602417C377")
+        "5F4C08D04AB5E720851326EB72DED1D59D9E1924036B866CAC6E56602417C377"
+        "5265F91C9308F755CF585EA7C3083E60DF48AED6CDC435C25518B7130A748F5B")
     set(previous_pre_cooperative
         "007B4DF39CEB0C7E6777B990A9A24D352DBC399C79DCA8488E9F4E49C58FB166"
         "956A8530DD5C4C9F73C3372CE6C25A13E1AB230746B6A8CC26E7EC349CE50309"
-        "816BF5F33495D3B280A2E319D565FA2D310BF10A409FDC580B6ED8B4358B71C8")
-    if(source_hash IN_LIST previous_full OR source_hash IN_LIST previous_pre_cooperative)
-        set(replacement "${source_text}")
-        foreach(previous_id
-            "A8E9DA12477741B9979D9B1B51994EF3"
-            "3309FB779CFC4E39BA7681AA4A7F8A6B"
-            "280C7D267CA94332834D85A075A453AE")
-            string(REPLACE "${previous_id}" "${ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID}" replacement "${replacement}")
-        endforeach()
-        string(SHA256 replacement_hash "${replacement}")
-        string(TOUPPER "${replacement_hash}" replacement_hash)
-        if(source_hash IN_LIST previous_full)
-            set(expected_hash "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
+        "816BF5F33495D3B280A2E319D565FA2D310BF10A409FDC580B6ED8B4358B71C8"
+        "1903E98A0462431D4A355A3CCE0E3B69AB8E5C67B7895080DA9F9EF8D75CA410")
+    list(FIND previous_v3_full "${source_hash}" previous_v3_index)
+    set(replacement "${source_text}")
+    if(NOT previous_v3_index EQUAL -1)
+        list(GET previous_pre_cooperative ${previous_v3_index} expected_previous_pre_hash)
+        set(expected_hash "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
+    elseif(source_hash IN_LIST previous_pre_cooperative OR
+           source_hash STREQUAL "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359")
+        set(expected_hash "${RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}")
+    elseif(source_hash STREQUAL "D0A885F093B5364FF7ED1D84761E758E7544579185E9EEA8517B4058D7C29B94")
+        # Frozen v4 authoring body with the generation-11 identity.
+        set(expected_hash "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
+    else()
+        message(FATAL_ERROR
+            "Unrecognized injector source hash before historical patch peeling; source was not changed.\n"
+            "Actual: ${source_hash}")
+    endif()
+
+    string(RANDOM LENGTH 24 ALPHABET "0123456789abcdef" scratch_suffix)
+    set(scratch "${CMAKE_CURRENT_BINARY_DIR}/ego-injector-rollover-${scratch_suffix}")
+    file(MAKE_DIRECTORY "${scratch}/tools")
+    set(candidate "${scratch}/tools/injector.cpp")
+    file(WRITE "${candidate}" "${replacement}")
+
+    if(NOT previous_v3_index EQUAL -1)
+        if(DEFINED RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH)
+            set(v3_patch "${RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH}")
         else()
-            set(expected_hash "${RESHAPE_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256}")
+            set(v3_patch "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-cooperative-members-v3.patch")
         endif()
-        if(NOT replacement_hash STREQUAL expected_hash)
-            message(FATAL_ERROR "Known add-on build-ID rollover does not match the new pinned source hash.")
+        set(v4_patch "${RESHAPE_COOPERATIVE_MEMBERS_PATCH}")
+        # Hash and use the same normalized bytes. This remains exact under a
+        # CRLF checkout and cannot use a modified migration or current patch.
+        foreach(version IN ITEMS v3 v4)
+            if(version STREQUAL "v3")
+                set(expected_patch_hash "B3A49BAF2B7BC5AC22D3C63A40E64F37C526FEB17ECE9E2C2AF127AF3674FBC4")
+            else()
+                set(expected_patch_hash "D4FC9A85D26C8458B7D22424402018579477205317E10A38DD0B7E472A448E56")
+            endif()
+            file(READ "${${version}_patch}" patch_prefix LIMIT 3 HEX)
+            string(TOLOWER "${patch_prefix}" patch_prefix)
+            if(patch_prefix STREQUAL "efbbbf")
+                file(READ "${${version}_patch}" patch_text OFFSET 3)
+            else()
+                file(READ "${${version}_patch}" patch_text)
+            endif()
+            string(REPLACE "\r\n" "\n" patch_text "${patch_text}")
+            string(REPLACE "\r" "\n" patch_text "${patch_text}")
+            string(SHA256 patch_hash "${patch_text}")
+            string(TOUPPER "${patch_hash}" patch_hash)
+            if(NOT patch_hash STREQUAL expected_patch_hash)
+                message(FATAL_ERROR "The exact ${version} cooperative injector migration patch hash does not match; source was not changed.")
+            endif()
+            file(WRITE "${scratch}/${version}.patch" "${patch_text}")
+        endforeach()
+
+        # Ceiling the scratch tree so Git cannot discover the enclosing SDK
+        # repository and interpret patch paths relative to that working tree.
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
+                "${GIT_EXECUTABLE}" apply --reverse --check "${scratch}/v3.patch"
+            WORKING_DIRECTORY "${scratch}"
+            RESULT_VARIABLE reverse_check OUTPUT_VARIABLE reverse_output ERROR_VARIABLE reverse_error)
+        if(NOT reverse_check EQUAL 0)
+            message(FATAL_ERROR "The exact historical v3 injector tail cannot be peeled in scratch; source was not changed.\n${reverse_output}${reverse_error}")
         endif()
-        if(NOT replacement STREQUAL source_text)
-            file(WRITE "${source_path}" "${replacement}")
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
+                "${GIT_EXECUTABLE}" apply --reverse "${scratch}/v3.patch"
+            WORKING_DIRECTORY "${scratch}"
+            RESULT_VARIABLE reverse_result OUTPUT_VARIABLE reverse_output ERROR_VARIABLE reverse_error)
+        if(NOT reverse_result EQUAL 0)
+            message(FATAL_ERROR "The historical v3 injector tail could not be peeled in scratch; source was not changed.\n${reverse_output}${reverse_error}")
         endif()
+        file(READ "${candidate}" peeled_text)
+        string(SHA256 peeled_hash "${peeled_text}")
+        string(TOUPPER "${peeled_hash}" peeled_hash)
+        if(NOT peeled_hash STREQUAL expected_previous_pre_hash)
+            message(FATAL_ERROR "The peeled historical injector does not match its exact pre-cooperative hash; source was not changed.")
+        endif()
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
+                "${GIT_EXECUTABLE}" apply --check "${scratch}/v4.patch"
+            WORKING_DIRECTORY "${scratch}"
+            RESULT_VARIABLE apply_check OUTPUT_VARIABLE apply_output ERROR_VARIABLE apply_error)
+        if(NOT apply_check EQUAL 0)
+            message(FATAL_ERROR "The exact current v4 injector tail cannot apply in scratch; source was not changed.\n${apply_output}${apply_error}")
+        endif()
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
+                --unset=GIT_INDEX_FILE "GIT_CEILING_DIRECTORIES=${scratch}"
+                "${GIT_EXECUTABLE}" apply "${scratch}/v4.patch"
+            WORKING_DIRECTORY "${scratch}"
+            RESULT_VARIABLE apply_result OUTPUT_VARIABLE apply_output ERROR_VARIABLE apply_error)
+        if(NOT apply_result EQUAL 0)
+            message(FATAL_ERROR "The current v4 injector tail could not apply in scratch; source was not changed.\n${apply_output}${apply_error}")
+        endif()
+        file(READ "${candidate}" replacement)
+    endif()
+
+    string(REGEX MATCHALL
+        "constexpr char expected_addon_build_id\\[\\] =[\t\r\n ]*\"[0-9A-F]+\""
+        build_id_declarations "${replacement}")
+    list(LENGTH build_id_declarations declaration_count)
+    if(NOT declaration_count EQUAL 1)
+        message(FATAL_ERROR "Known injector body has no unique add-on build-ID declaration; source was not changed.")
+    endif()
+    list(GET build_id_declarations 0 declaration)
+    string(REGEX MATCH "\"[0-9A-F]+\"$" previous_id_quoted "${declaration}")
+    string(LENGTH "${previous_id_quoted}" previous_id_length)
+    if(NOT previous_id_length EQUAL 34)
+        message(FATAL_ERROR "Known injector body has an invalid add-on build-ID length; source was not changed.")
+    endif()
+    string(REPLACE "${previous_id_quoted}" "\"${ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID}\""
+        new_declaration "${declaration}")
+    string(REPLACE "${declaration}" "${new_declaration}" replacement "${replacement}")
+    string(SHA256 replacement_hash "${replacement}")
+    string(TOUPPER "${replacement_hash}" replacement_hash)
+    if(NOT replacement_hash STREQUAL expected_hash)
+        message(FATAL_ERROR "Known injector migration does not match the new pinned source hash; source was not changed.")
+    endif()
+    file(WRITE "${candidate}" "${replacement}")
+    file(SHA256 "${source_path}" current_file_hash)
+    if(NOT current_file_hash STREQUAL original_file_hash)
+        message(FATAL_ERROR "The injector source changed during staged migration; the live source was not replaced.")
+    endif()
+    file(RENAME "${candidate}" "${source_path}" RESULT migration_rename_result)
+    if(NOT migration_rename_result STREQUAL "0")
+        message(FATAL_ERROR "Unable to publish the verified injector migration: ${migration_rename_result}")
     endif()
 endfunction()
 ego_rollover_known_addon_build_id("${reshade_SOURCE_DIR}/tools/injector.cpp")
@@ -564,8 +711,8 @@ execute_process(
 # makes neither the new terminal patch nor its lower superseded patches
 # independently reversible in an existing fetched tree. Replace a prior
 # 32-hex build ID only when the resulting normalized file is byte-for-byte
-# the current pinned injector. Arbitrary or locally modified trees continue
-# into the normal fail-closed checks below.
+# the current pinned injector. Only the recognized older lower-stack bodies
+# reach this point; unknown entry hashes were rejected before live peeling.
 if(NOT RESHAPE_TERMINAL_GLOBAL_LAYER_PREFLIGHT_APPLIED EQUAL 0)
     set(RESHAPE_FETCHED_INJECTOR_PATH
         "${reshade_SOURCE_DIR}/tools/injector.cpp")
