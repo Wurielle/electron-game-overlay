@@ -2,7 +2,7 @@ import { createNativeOverlay, type NativeOverlay } from './native.js';
 import { createOverlaySession, OverlaySession } from './overlay-session.js';
 
 /**
- * Application-level broker startup policy. Existing compatible owners always win.
+ * Application-level overlay options.
  * @example
  * ```ts
  * import { ElectronGameOverlay, type ElectronGameOverlayOptions } from 'electron-game-overlay';
@@ -11,7 +11,7 @@ import { createOverlaySession, OverlaySession } from './overlay-session.js';
  * ```
  */
 export interface ElectronGameOverlayOptions {
-  /** Permit prerelease candidates during startup selection; false by default. */
+  /** @deprecated Retained as a no-op; each application now supplies its own engine. */
   allowPrereleaseBroker?: boolean;
 }
 
@@ -29,7 +29,7 @@ export class ElectronGameOverlay {
 
   /**
    * Creates an overlay owner; transport startup remains session-lazy.
-   * @param options - Explicit preview-broker opt-in; omitted for stable selection.
+   * @param options - Application overlay options.
    * @example
    * ```ts
    * const overlay = new ElectronGameOverlay({ allowPrereleaseBroker: true });

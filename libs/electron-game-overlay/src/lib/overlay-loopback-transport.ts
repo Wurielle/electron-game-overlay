@@ -115,6 +115,11 @@ export type OverlayTargetAuthorizationPublicationPhase =
 
 export interface OverlayLoopbackTransportOptions {
   discoveryPath?: string;
+  /**
+   * @internal App-private participant routing. These route claims never grant
+   * permission to initialize or replace the process's shared ReShade host.
+   */
+  privateTargetRouteDirectory?: string;
   tokenFactory?: () => string;
   isProcessAlive?: (pid: number) => boolean;
   queryProcessIdentity?: (pid: number) => Promise<OverlayBrokerProcessIdentity | undefined>;
@@ -371,21 +376,25 @@ export function defaultOverlayDiscoveryPath(): string {
   );
 }
 
-export function defaultOverlayTargetDiscoveryPath(pid: number): string {
+export function defaultOverlayTargetDiscoveryPath(
+  pid: number,
+  privateRouteDirectory?: string,
+): string {
   assertProcessPid(pid);
   return join(
-    tmpdir(),
-    DISCOVERY_DIRECTORY_NAME,
+    privateRouteDirectory ?? join(tmpdir(), DISCOVERY_DIRECTORY_NAME),
     `${OVERLAY_TRANSPORT_TARGET_DISCOVERY_FILE_PREFIX}${pid}.json`,
   );
 }
 
-export function defaultOverlayTargetRecoveryClaimPath(pid: number): string {
+export function defaultOverlayTargetRecoveryClaimPath(
+  pid: number,
+  privateRouteDirectory?: string,
+): string {
   assertProcessPid(pid);
   return join(
-    userInfo().homedir,
-    `.${DISCOVERY_DIRECTORY_NAME}`,
-    'broker-v1',
+    privateRouteDirectory ??
+      join(userInfo().homedir, `.${DISCOVERY_DIRECTORY_NAME}`, 'broker-v1'),
     `${OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_PREFIX}${pid}${OVERLAY_TRANSPORT_TARGET_RECOVERY_CLAIM_FILE_SUFFIX}`,
   );
 }
@@ -396,9 +405,13 @@ export function defaultOverlayTargetRecoveryClaimPath(pid: number): string {
  */
 export function readOverlayTargetRecoveryClaim(
   pid: number,
+  privateRouteDirectory?: string,
 ): OverlayTargetRecoveryClaim | undefined {
   assertProcessPid(pid);
-  const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+  const claimPath = defaultOverlayTargetRecoveryClaimPath(
+    pid,
+    privateRouteDirectory,
+  );
   let contents: string;
   try {
     contents = readFileSync(claimPath, 'utf8');
@@ -448,27 +461,32 @@ export function overlayTargetRecoveryClaimMayHaveBeenConsumed(
 }
 
 /** Removes exact route evidence only after the caller proved target exit. */
-export function clearOverlayTargetRecoveryClaimForExitedPid(pid: number): void {
+export function clearOverlayTargetRecoveryClaimForExitedPid(
+  pid: number,
+  privateRouteDirectory?: string,
+): void {
   assertProcessPid(pid);
   let claim: OverlayTargetRecoveryClaim | undefined;
   try {
-    claim = readOverlayTargetRecoveryClaim(pid);
+    claim = readOverlayTargetRecoveryClaim(pid, privateRouteDirectory);
   } catch {
     // A malformed deterministic claim must not outlive a definitively dead PID.
     try {
-      unlinkSync(defaultOverlayTargetRecoveryClaimPath(pid));
+      unlinkSync(
+        defaultOverlayTargetRecoveryClaimPath(pid, privateRouteDirectory),
+      );
     } catch {
       // The malformed claim may already have disappeared.
     }
     removeAnyTargetBoundDiscoveryForExitedPid(
-      defaultOverlayTargetDiscoveryPath(pid),
+      defaultOverlayTargetDiscoveryPath(pid, privateRouteDirectory),
       pid,
     );
     return;
   }
   if (!claim) {
     removeAnyTargetBoundDiscoveryForExitedPid(
-      defaultOverlayTargetDiscoveryPath(pid),
+      defaultOverlayTargetDiscoveryPath(pid, privateRouteDirectory),
       pid,
     );
     return;
@@ -496,20 +514,24 @@ export function clearOverlayTargetRecoveryClaimForExitedPid(pid: number): void {
     pid,
   );
   removeAnyTargetBoundDiscoveryForExitedPid(claim.staticDiscoveryPath, pid);
-  removeOverlayTargetRecoveryClaimIfOwned(pid, claim);
+  removeOverlayTargetRecoveryClaimIfOwned(pid, claim, privateRouteDirectory);
 }
 
 /** Removes the sidecar only when it still exactly matches the observed claim. */
 export function removeOverlayTargetRecoveryClaimIfOwned(
   pid: number,
   claim: OverlayTargetRecoveryClaim,
+  privateRouteDirectory?: string,
 ): void {
   assertProcessPid(pid);
   if (claim.targetPid !== pid) {
     return;
   }
   try {
-    const claimPath = defaultOverlayTargetRecoveryClaimPath(pid);
+    const claimPath = defaultOverlayTargetRecoveryClaimPath(
+      pid,
+      privateRouteDirectory,
+    );
     const current = parseOverlayTargetRecoveryClaim(
       JSON.parse(readFileSync(claimPath, 'utf8')),
       pid,
@@ -813,6 +835,7 @@ function cloneWindowMetadata(message: WindowMessage): JsonObject {
 
 export class OverlayLoopbackTransport implements NativeOverlay {
   private readonly discoveryPath: string;
+  private readonly privateTargetRouteDirectory: string | undefined;
   private readonly tokenFactory: () => string;
   private readonly isProcessAlive: (pid: number) => boolean;
   private readonly queryProcessIdentity: OverlayLoopbackTransportOptions['queryProcessIdentity'];
@@ -838,6 +861,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private targetAdmissionPolicy?: (pid:number,path:string,creationTime100ns?:string)=>boolean;
   private readonly suppressedTargetPids = new Set<number>();
   private readonly clients = new Set<ClientState>();
+  private readonly globalTargetCopies = new Map<string, {
+    record: OverlayDiscoveryRecord;
+    reservation: DiscoveryEndpointReservation;
+  }>();
   private readonly activeClientsByPid = new Map<number, ClientState>();
   private readonly processExitWatchesByPid = new Map<
     number,
@@ -871,6 +898,19 @@ export class OverlayLoopbackTransport implements NativeOverlay {
 
   constructor(options: OverlayLoopbackTransportOptions = {}) {
     this.discoveryPath = options.discoveryPath ?? defaultOverlayDiscoveryPath();
+    if (
+      options.privateTargetRouteDirectory !== undefined &&
+      (!isAbsolute(options.privateTargetRouteDirectory) ||
+        options.privateTargetRouteDirectory.includes('\0'))
+    ) {
+      throw new TypeError(
+        'Private participant route directory must be absolute without NUL characters',
+      );
+    }
+    this.privateTargetRouteDirectory =
+      options.privateTargetRouteDirectory === undefined
+        ? undefined
+        : resolve(options.privateTargetRouteDirectory);
     this.tokenFactory =
       options.tokenFactory ?? (() => randomBytes(32).toString('hex'));
     this.isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
@@ -994,6 +1034,41 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       );
     }
     return this.readyPromise;
+  }
+
+  /** App-private future-target rendezvous; never authorizes host injection. */
+  public async authorizeGlobalTarget(discoveryPath?: string): Promise<() => void> {
+    const record = await this.whenReady();
+    if (discoveryPath === undefined) return () => undefined;
+    if (!isAbsolute(discoveryPath) || discoveryPath.includes('\0') ||
+        basename(discoveryPath).toLowerCase() !== OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME) {
+      throw new TypeError('Future-target discovery path must be an absolute transport discovery filename');
+    }
+    const resolvedPath = resolve(discoveryPath);
+    const generation = this.generation;
+    const reservation = this.reserveTargetDiscoveryEndpoint(resolvedPath);
+    try {
+      try {
+        await readFile(join(dirname(resolvedPath), OVERLAY_TRANSPORT_TARGET_ROUTE_FILE_NAME));
+        throw new Error('A target-bound rendezvous cannot become an unbound watcher route');
+      } catch (error) {
+        if (!isErrnoException(error, 'ENOENT')) throw error;
+      }
+      await this.publishDiscovery(resolvedPath, record);
+      this.assertTargetAuthorizationActive(generation, record);
+      const copy = { record, reservation };
+      this.globalTargetCopies.set(resolvedPath, copy);
+      return () => {
+        if (this.globalTargetCopies.get(resolvedPath) !== copy) return;
+        this.globalTargetCopies.delete(resolvedPath);
+        this.removeDiscoveryIfOwnedSync(resolvedPath, record);
+        this.releaseDiscoveryEndpoint(reservation);
+      };
+    } catch (error) {
+      this.removeDiscoveryIfOwnedSync(resolvedPath, record);
+      this.releaseDiscoveryEndpoint(reservation);
+      throw error;
+    }
   }
 
   public async authorizeTarget(
@@ -1139,7 +1214,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
           'Overlay target authorization changed during identity inspection',
         );
       }
-      const currentClaim = readOverlayTargetRecoveryClaim(pid);
+      const currentClaim = readOverlayTargetRecoveryClaim(
+        pid,
+        this.privateTargetRouteDirectory,
+      );
       if (!currentClaim || !recoveryClaimsEqual(claim, currentClaim)) throw new Error('Overlay target identity claim changed during inspection');
       if (identity?.pid !== pid || !isValidProcessCreationTime100ns(identity.creationTime100ns)) throw new Error('Overlay target process identity unavailable');
       if (identity.creationTime100ns !== claim.creationTime100ns) throw new Error('Overlay target process creation identity mismatch');
@@ -1182,6 +1260,11 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
 
     this.clearProcessExitWatches();
+    for (const [discoveryPath, copy] of this.globalTargetCopies) {
+      this.removeDiscoveryIfOwnedSync(discoveryPath, copy.record);
+      this.releaseDiscoveryEndpoint(copy.reservation);
+    }
+    this.globalTargetCopies.clear();
 
     for (const client of this.clients) {
       client.authenticated = false;
@@ -1612,7 +1695,22 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         `Overlay target discovery path is already authorized for PID ${pathAuthorization.pid}`,
       );
     }
-    const priorClaim = readOverlayTargetRecoveryClaim(pid);
+    const priorClaim = readOverlayTargetRecoveryClaim(
+      pid,
+      this.privateTargetRouteDirectory,
+    );
+    if (
+      this.privateTargetRouteDirectory !== undefined &&
+      priorClaim !== undefined &&
+      normalizeExecutablePathIdentity(priorClaim.staticDiscoveryPath) !==
+        normalizeExecutablePathIdentity(
+          defaultOverlayTargetDiscoveryPath(pid, this.privateTargetRouteDirectory),
+        )
+    ) {
+      throw new Error(
+        'Private participant claim references another route namespace',
+      );
+    }
     if (priorClaim?.creationTime100ns !== undefined) {
       let observed = routeContext?.creationTime100ns;
       if (observed === undefined) {
@@ -1621,7 +1719,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         if (identity?.pid === pid && isValidProcessCreationTime100ns(identity.creationTime100ns)) {
           observed = identity.creationTime100ns;
         }
-        const currentClaim = readOverlayTargetRecoveryClaim(pid);
+        const currentClaim = readOverlayTargetRecoveryClaim(
+          pid,
+          this.privateTargetRouteDirectory,
+        );
         if (!currentClaim || !recoveryClaimsEqual(priorClaim, currentClaim)) {
           throw new Error('Overlay target identity claim changed during inspection');
         }
@@ -1630,7 +1731,8 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       if (observed !== priorClaim.creationTime100ns) throw new Error('Overlay target process creation identity mismatch');
     }
     const staticDiscoveryPath =
-      priorClaim?.staticDiscoveryPath ?? defaultOverlayTargetDiscoveryPath(pid);
+      priorClaim?.staticDiscoveryPath ??
+      defaultOverlayTargetDiscoveryPath(pid, this.privateTargetRouteDirectory);
     const staticDiscoveryEndpointReservation =
       this.reserveTargetDiscoveryEndpoint(staticDiscoveryPath);
     let authorization: TargetAuthorization | undefined;
@@ -1829,10 +1931,15 @@ export class OverlayLoopbackTransport implements NativeOverlay {
         removeOverlayTargetRecoveryClaimIfOwned(
           pid,
           rollbackPublishedIntentClaim,
+          this.privateTargetRouteDirectory,
         );
       }
       if (rollbackPriorIntentClaim) {
-        removeOverlayTargetRecoveryClaimIfOwned(pid, rollbackPriorIntentClaim);
+        removeOverlayTargetRecoveryClaimIfOwned(
+          pid,
+          rollbackPriorIntentClaim,
+          this.privateTargetRouteDirectory,
+        );
       }
       if (generation === this.generation) {
         this.publishDiagnostic({
@@ -1964,7 +2071,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     claim: OverlayTargetRecoveryClaim,
   ): Promise<void> {
     await this.targetRecoveryClaimWriteHook?.(claim);
-    const claimPath = defaultOverlayTargetRecoveryClaimPath(claim.targetPid);
+    const claimPath = defaultOverlayTargetRecoveryClaimPath(
+      claim.targetPid,
+      this.privateTargetRouteDirectory,
+    );
     await mkdir(dirname(claimPath), { recursive: true });
     const temporaryPath = `${claimPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
     try {
@@ -2252,6 +2362,18 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     if(this.suppressedTargetPids.has(hello.pid)||this.targetAdmissionPolicy&&!this.targetAdmissionPolicy(hello.pid,hello.path,creationTime))return false;
     client.creationTime100ns=creationTime;
     const targetAuthorization = this.targetAuthorizationsByPid.get(hello.pid);
+    if (
+      this.privateTargetRouteDirectory !== undefined &&
+      targetAuthorization?.recoveryClaim.creationTime100ns !== undefined &&
+      creationTime !== targetAuthorization.recoveryClaim.creationTime100ns
+    ) {
+      this.publishDiagnostic({
+        code: 'target-authentication-rejected',
+        pid: targetAuthorization.pid,
+        context: { scope: 'targeted' },
+      });
+      return false;
+    }
     const tokenMatches = targetAuthorization
       ? tokensEqual(hello.token, targetAuthorization.record.token)
       : this.token !== undefined && tokensEqual(hello.token, this.token);
@@ -2493,7 +2615,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
     if (!alive) {
       this.processExitWatchesByPid.delete(watch.pid);
-      clearOverlayTargetRecoveryClaimForExitedPid(watch.pid);
+      clearOverlayTargetRecoveryClaimForExitedPid(
+        watch.pid,
+        this.privateTargetRouteDirectory,
+      );
       this.emitLifecycleEvent('game.process.disconnected', {
         pid: watch.pid,
         path: watch.path,
@@ -2514,7 +2639,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     try {
       const identity = await this.queryProcessIdentity!(watch.pid);
       if (!this.isProcessExitWatchCurrent(watch)) return;
-      const currentClaim = readOverlayTargetRecoveryClaim(watch.pid);
+      const currentClaim = readOverlayTargetRecoveryClaim(
+        watch.pid,
+        this.privateTargetRouteDirectory,
+      );
       if (!currentClaim || !recoveryClaimsEqual(claim, currentClaim)) return;
       if (identity?.pid === watch.pid && isValidProcessCreationTime100ns(identity.creationTime100ns) && identity.creationTime100ns !== claim.creationTime100ns && !watch.identityMismatchDiagnosed) {
         watch.identityMismatchDiagnosed = true;

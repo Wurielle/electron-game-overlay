@@ -1,5 +1,6 @@
 import { StringDecoder } from 'node:string_decoder';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
+import { resolveOverlayNativeProcessIdentity } from './overlay-native-process-query.js';
 import {
   createOverlayProcessPolicy,
   overlayProcessPolicyAllows,
@@ -34,6 +35,7 @@ import { OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME } from './overlay-loopback-transp
 import {
   authorizeOverlaySessionGlobalTarget,
   authorizeOverlaySessionTarget,
+  overlaySessionRequiresTargetIdentity,
   type OverlaySessionTargetAuthorization,
   type ReShadeAttachmentSession,
 } from './overlay-session-authorization.js';
@@ -65,13 +67,14 @@ const INJECTOR_STDERR_FILE_NAME = 'inject.stderr.log';
 const RESHADE_LOG_FILE_NAME = 'ReShade.log';
 const RUNTIME_STARTUP_FILE_NAME = '.electron-game-overlay-runtime-startup.json';
 const INJECTOR_SUCCESS_MARKER = 'Injecting ReShade ... Succeeded!';
+const PARTICIPANT_SUCCESS_MARKER = 'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!';
 const INJECTOR_NOT_STARTED_MARKER = 'ReShade injection not started.';
 const PATH_WATCHER_READY_MARKER = 'ReShade path watcher armed.';
 const PROCESS_WATCHER_READY_MARKER = 'ReShade process watcher armed.';
 const INJECTOR_DIAGNOSTIC_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC ';
 const INJECTOR_RESULT_PREFIX = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT ';
 const WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH = 706;
-const OFFICIAL_ADDON_BUILD_ID = '12EE788081A34E00B10862242DF38893';
+const OFFICIAL_ADDON_BUILD_ID = 'A8E9DA12477741B9979D9B1B51994EF3';
 const RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION = 3;
 // Schema 2 shipped before provider metadata. Keep accepting it permanently as
 // generation 1 / target transport 1 so copied runtime-directory overrides do
@@ -206,6 +209,7 @@ type RuntimePackageBuildStamp =
         schemaVersion: 3 | 4;
         injectorProcessInstanceBinding?: 1;
         injectorFutureTargets?: 1 | 2;
+        cooperativeAddonProtocol?: 1;
         runtimeGeneration: number;
         targetTransportMin: number;
         targetTransportMax: number;
@@ -332,6 +336,8 @@ type ExactReShadeProcessTarget = ReShadeProcessTarget &
 
 /** Validated runtime paths and optional startup hints used by a launcher. */
 export type ReShadeLaunchConfig = Readonly<{
+  /** Validated native host ownership and independent-member support. */
+  cooperativeAddonProtocol?: 1;
   /** Binding support derived from both validated native package stamps. */
   injectorProcessInstanceBinding?: 1;
   injectorFutureTargets?: 1 | 2;
@@ -401,6 +407,8 @@ export type ReShadeRuntimeMode =
   | 'existing-runtime'
   /** A compatible official ReShade installation loaded the public add-on. */
   | 'official-addon'
+  /** This application's private add-on joined the shared ReShade host. */
+  | 'participant-addon'
   /** An already-running broker-owned target joined without another injection. */
   | 'shared-runtime';
 
@@ -450,6 +458,7 @@ export type ReShadeAttachResult = ReShadeLaunchResult &
   }>;
 
 type StagedRuntime = Readonly<{
+  cooperativeAddonProtocol?: 1;
   expectedCreationTime100ns?: string;
   injectorProcessInstanceBinding?: 1;
   injectorFutureTargets?: 1 | 2;
@@ -919,6 +928,17 @@ type InjectorResult =
       reshadeBasePath: string;
       addonDirectoryPath: string;
       electronGameOverlayAddonDisabled: boolean;
+    }>
+  | Readonly<{
+      schemaVersion: 1;
+      pid: number;
+      targetExecutablePath: string;
+      runtimeMode: 'participant-addon';
+      runtimeModulePath: string;
+      reshadeBasePath: string;
+      addonModulePath: string;
+      addonAbi: 1;
+      memberProtocolVersion: 1;
     }>;
 
 type ReShadeTargetConnection = Readonly<{
@@ -933,6 +953,7 @@ type TargetRendezvousAuthorizer = (
   runtimeProvider: NativeRuntimeProviderMetadata,
   signal: AbortSignal,
 ) => Promise<OverlaySessionTargetAuthorization>;
+type GlobalRendezvousPublisher = (runDirectory: string) => Promise<() => void>;
 
 type ConnectedTarget = ReShadeTargetConnection &
   Readonly<{
@@ -1141,6 +1162,9 @@ export function createReShadeLaunchConfig(
     ...(runtimeProvider.injectorFutureTargets === undefined
       ? {}
       : { injectorFutureTargets: runtimeProvider.injectorFutureTargets }),
+    ...(runtimeProvider.cooperativeAddonProtocol === undefined
+      ? {}
+      : { cooperativeAddonProtocol: runtimeProvider.cooperativeAddonProtocol }),
     runsRootDirectory: path.resolve(requestedRunsRoot),
     injectorPath,
     x86InjectorPath,
@@ -1567,6 +1591,8 @@ export class ReShadeOverlayLauncher {
     target: ReShadeTarget,
     authorizeTarget?: TargetRendezvousAuthorizer,
     attachmentOwner = false,
+    publishGlobalTarget?: GlobalRendezvousPublisher,
+    requiresCooperativeAddon = false,
   ): Promise<ReShadeLaunchResult> {
     if (this.disposed) {
       return Promise.reject(new Error('the ReShade launcher is disposed'));
@@ -1656,6 +1682,8 @@ export class ReShadeOverlayLauncher {
       launchGeneration,
       launchAbortController.signal,
       authorizeTarget,
+      publishGlobalTarget,
+      requiresCooperativeAddon,
     )
       .then((result) => {
         if (
@@ -2148,25 +2176,46 @@ export class ReShadeOverlayLauncher {
         this.releaseGlobalTargetAuthorization = releaseGlobalTarget;
       }
 
-      const targetRendezvousAuthorizer: TargetRendezvousAuthorizer = (
+      const targetRendezvousAuthorizer: TargetRendezvousAuthorizer = async (
         runDirectory,
         pid,
         expectedExecutablePath,
         runtimeProvider,
         signal,
-      ) =>
-        authorizeOverlaySessionTarget(
+      ) => {
+        let expectedCreationTime100ns: string | undefined;
+        if (overlaySessionRequiresTargetIdentity(session)) {
+          const identity = await resolveOverlayNativeProcessIdentity(
+            pid,
+            path.join(runDirectory, ADDON_MANAGER_FILE_NAME),
+          );
+          signal.throwIfAborted();
+          if (!isValidProcessCreationTime100ns(identity.creationTime100ns) ||
+              !targetPathMatches(identity.executablePath, target)) {
+            throw new Error('The selected target OS identity does not match the private participant request');
+          }
+          expectedCreationTime100ns = identity.creationTime100ns;
+          expectedExecutablePath = identity.executablePath;
+        }
+        return authorizeOverlaySessionTarget(
           session,
           pid,
           path.join(runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME),
           expectedExecutablePath,
           runtimeProvider,
           signal,
+          expectedCreationTime100ns,
         );
+      };
       launch = this.#requestLaunch(
         target,
         targetRendezvousAuthorizer,
         true,
+        (runDirectory) => authorizeOverlaySessionGlobalTarget(
+          session,
+          path.join(runDirectory, OVERLAY_TRANSPORT_DISCOVERY_FILE_NAME),
+        ),
+        overlaySessionRequiresTargetIdentity(session),
       ).then((result) => {
         launchResultForProof = result;
         injectorTargetPid = result.injectorTargetPid;
@@ -2217,6 +2266,8 @@ export class ReShadeOverlayLauncher {
     launchGeneration: number,
     authorizationSignal: AbortSignal,
     authorizeTarget?: TargetRendezvousAuthorizer,
+    publishGlobalTarget?: GlobalRendezvousPublisher,
+    requiresCooperativeAddon = false,
   ): Promise<ReShadeLaunchResult> {
     await waitForExistingReShadeMaintenance(target);
     this.assertLaunchCanSpawn(targetLabel, launchGeneration);
@@ -2229,6 +2280,27 @@ export class ReShadeOverlayLauncher {
     let expectedCreationTime100ns: string | undefined;
     try {
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+      if (requiresCooperativeAddon && staged.cooperativeAddonProtocol !== 1) {
+        throw this.createInjectorFailure({
+          message: 'The staged runtime does not support independent cooperative add-on attachment and persistent shared-host ownership',
+          code: 'runtime-staging-failed',
+          stage: 'runtime-staging',
+          retrySafety: 'definite-safe',
+          targetLabel,
+        });
+      }
+      if (expectedTargetPid === undefined && publishGlobalTarget) {
+        const release = await publishGlobalTarget(staged.runDirectory);
+        try {
+          this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+        } catch (error) {
+          release();
+          throw error;
+        }
+        const previousRelease = this.releaseGlobalTargetAuthorization;
+        this.releaseGlobalTargetAuthorization = release;
+        previousRelease?.();
+      }
       if (
         expectedTargetPid === undefined &&
         !isPathTarget(target) &&
@@ -2375,7 +2447,7 @@ export class ReShadeOverlayLauncher {
           .then(async (result) => {
             if (
               isPathTarget(target) &&
-              result.runtimeMode === 'official-addon' &&
+              (result.runtimeMode === 'official-addon' || result.runtimeMode === 'participant-addon') &&
               authorizeTarget
             ) {
               let selectedTargetAuthorization: (() => void) | undefined;
@@ -2882,6 +2954,9 @@ export class ReShadeOverlayLauncher {
         ...(runtimeProvider.injectorFutureTargets === undefined
           ? {}
           : { injectorFutureTargets: runtimeProvider.injectorFutureTargets }),
+        ...(runtimeProvider.cooperativeAddonProtocol === undefined
+          ? {}
+          : { cooperativeAddonProtocol: runtimeProvider.cooperativeAddonProtocol }),
         injectorPath: path.join(createdRunDirectory, INJECTOR_FILE_NAME),
         addonManagerPath: path.join(
           createdRunDirectory,
@@ -2936,7 +3011,7 @@ export class ReShadeOverlayLauncher {
   ): Promise<ReShadeLaunchResult> {
     const retrySafeBeforeMutation =
       isPathTarget(target) || target.pid !== undefined;
-    const hasSuccessMarker = stdout.includes(INJECTOR_SUCCESS_MARKER);
+    const hasSuccessMarker = stdout.includes(INJECTOR_SUCCESS_MARKER) || stdout.includes(PARTICIPANT_SUCCESS_MARKER);
     const parsedResult = parseInjectorResult(stdout);
     const hasResultRecord = parsedResult.kind !== 'none';
     const hasNotStartedProof =
@@ -3467,6 +3542,21 @@ export class ReShadeOverlayLauncher {
         ),
       });
     }
+    if (injectorResult.runtimeMode === 'participant-addon') {
+      const expectedAddonPath = path.join(
+        staged.runDirectory,
+        isX86Fallback ? X86_ADDON_FILE_NAME : ADDON_FILE_NAME,
+      );
+      if (normalizeExecutablePathIdentity(injectorResult.addonModulePath) !==
+          normalizeExecutablePathIdentity(expectedAddonPath)) {
+        throw this.createInjectorFailure({
+          message: 'The native participant result identified another application\'s add-on instead of this staged engine',
+          code: 'injector-result-invalid', stage: 'runtime-initialization',
+          retrySafety: 'indeterminate', targetLabel, pid: injectorTargetPid,
+          addonPath: injectorResult.addonModulePath, evidence,
+        });
+      }
+    }
     const selectedPath = isPathTarget(target)
       ? selectedTargetExecutablePath
       : undefined;
@@ -3598,6 +3688,29 @@ export class ReShadeOverlayLauncher {
       }
     }
 
+    if (injectorResult.runtimeMode === 'official-addon' && staged.cooperativeAddonProtocol === 1) {
+      const completion = await this.attachMemberAfterOfficialStartup(
+        selectedTargetExecutablePath,
+        injectorTargetPid,
+        targetLabel,
+        launchGeneration,
+        staged,
+      );
+      const memberResult = parseInjectorResult(completion.stdout);
+      if (memberResult.kind === 'valid' && memberResult.result.runtimeMode !== 'participant-addon') {
+        throw this.createInjectorFailure({
+          message: 'The member-only attachment did not prove this application\'s private add-on was loaded',
+          code: 'injector-result-invalid', stage: 'runtime-initialization',
+          retrySafety: 'indeterminate', targetLabel, pid: injectorTargetPid, evidence,
+        });
+      }
+      return this.finishInjector(
+        target, targetLabel, launchGeneration, injectorTargetPid, staged,
+        completion.error, completion.stdout, completion.stderr, completion.didSpawn,
+        false, priorEvidence, isX86Fallback, x86FallbackTarget,
+      );
+    }
+
     const result: ReShadeLaunchResult = Object.freeze({
       processName,
       targetExecutablePath: selectedTargetExecutablePath,
@@ -3608,14 +3721,16 @@ export class ReShadeOverlayLauncher {
       ...(injectorResult.runtimeMode !== 'injected-runtime'
         ? { hostRuntimePath: injectorResult.runtimeModulePath }
         : {}),
-      ...(injectorResult.runtimeMode === 'official-addon'
+      ...(injectorResult.runtimeMode === 'official-addon' || injectorResult.runtimeMode === 'participant-addon'
         ? { addonModulePath: injectorResult.addonModulePath }
         : {}),
       runDirectory: staged.runDirectory,
       injectorStdoutPath: staged.injectorStdoutPath,
       injectorStderrPath: staged.injectorStderrPath,
       reshadeLogPath:
-        injectorResult.runtimeMode !== 'injected-runtime'
+        injectorResult.runtimeMode === 'participant-addon'
+          ? path.win32.join(injectorResult.reshadeBasePath, RESHADE_LOG_FILE_NAME)
+          : injectorResult.runtimeMode !== 'injected-runtime'
           ? hostRuntimeLogPath(injectorResult.runtimeModulePath)
           : staged.reshadeLogPath,
       ...(injectorResult.runtimeMode === 'official-addon'
@@ -3735,6 +3850,37 @@ export class ReShadeOverlayLauncher {
       rejectCompletion(error);
     }
     return completion;
+  }
+
+  private attachMemberAfterOfficialStartup(
+    executablePath: string,
+    pid: number,
+    targetLabel: string,
+    launchGeneration: number,
+    staged: StagedRuntime,
+  ): Promise<InjectorCompletion> {
+    this.assertLaunchCanSpawn(targetLabel, launchGeneration);
+    const invocation = buildReShadeInvocation({
+      processName: path.win32.basename(executablePath), executablePath, pid,
+    }, staged.runDirectory, { expectedCreationTime100ns: staged.expectedCreationTime100ns });
+    const memberInvocation = Object.freeze({ ...invocation,
+      arguments: Object.freeze([...invocation.arguments, '--addon-only']),
+    });
+    return new Promise((resolve) => {
+      let didSpawn = false;
+      const child = execFile(memberInvocation.executable, [...memberInvocation.arguments], {
+        cwd: memberInvocation.workingDirectory, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES,
+        shell: false, timeout: REQUEST_TIMEOUT_MS, windowsHide: true,
+      }, (error, stdout, stderr) => {
+        if (this.activeChild === child) this.activeChild = null;
+        resolve(Object.freeze({ error, stdout, stderr, didSpawn }));
+      });
+      child.once('spawn', () => {
+        didSpawn = true;
+        this.emitEvent(Object.freeze({ type: 'injector-started', invocation: memberInvocation }));
+      });
+      this.activeChild = child;
+    });
   }
 
   private queuePendingExistingReShadeMaintenance(
@@ -4339,6 +4485,7 @@ function providerMetadataOnly(
 
 type ValidatedRuntimeProvider = NativeRuntimeProviderMetadata &
   Readonly<{
+    cooperativeAddonProtocol?: 1;
     injectorProcessInstanceBinding?: 1;
     injectorFutureTargets?: 1 | 2;
   }>;
@@ -4420,6 +4567,9 @@ function runtimeProviderForBuildStamp(
         manifest.injectorFutureTargets === 2
           ? { injectorFutureTargets: manifest.injectorFutureTargets }
           : {}),
+        ...(manifest.cooperativeAddonProtocol === 1
+          ? { cooperativeAddonProtocol: 1 as const }
+          : {}),
       });
 }
 
@@ -4438,7 +4588,8 @@ function commonRuntimeProviderMetadata(
         provider.targetTransportMax !== first.targetTransportMax ||
         provider.injectorProcessInstanceBinding !==
           first.injectorProcessInstanceBinding ||
-        provider.injectorFutureTargets !== first.injectorFutureTargets,
+        provider.injectorFutureTargets !== first.injectorFutureTargets ||
+        provider.cooperativeAddonProtocol !== first.cooperativeAddonProtocol,
     )
   ) {
     throw new Error(
@@ -4499,6 +4650,9 @@ function parseRuntimePackageBuildStamp(
               ...(candidate.injectorFutureTargets === undefined
                 ? []
                 : ['injectorFutureTargets']),
+              ...(candidate.cooperativeAddonProtocol === undefined
+                ? []
+                : ['cooperativeAddonProtocol']),
             ]
           : undefined;
   if (
@@ -4529,6 +4683,7 @@ function parseRuntimePackageBuildStamp(
     (candidate.injectorFutureTargets !== undefined &&
       candidate.injectorFutureTargets !== 1 &&
       candidate.injectorFutureTargets !== 2) ||
+    (candidate.cooperativeAddonProtocol !== undefined && candidate.cooperativeAddonProtocol !== 1) ||
     ((candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION ||
       candidate.schemaVersion === 4) &&
       (!isPositiveUint32(candidate.runtimeGeneration) ||
@@ -5183,7 +5338,8 @@ function parseInjectorResult(
     candidate.targetExecutablePath.includes('\0') ||
     (candidate.runtimeMode !== 'injected-runtime' &&
       candidate.runtimeMode !== 'existing-runtime' &&
-      candidate.runtimeMode !== 'official-addon')
+      candidate.runtimeMode !== 'official-addon' &&
+      candidate.runtimeMode !== 'participant-addon')
   ) {
     return Object.freeze({
       kind: 'invalid',
@@ -5269,6 +5425,31 @@ function parseInjectorResult(
         addonDirectoryPath: candidate.addonDirectoryPath,
         electronGameOverlayAddonDisabled:
           candidate.electronGameOverlayAddonDisabled,
+      }),
+    });
+  }
+
+  if (candidate.runtimeMode === 'participant-addon') {
+    if (!hasExactObjectKeys(candidate, [
+      'schemaVersion', 'pid', 'targetExecutablePath', 'runtimeMode',
+      'runtimeModulePath', 'reshadeBasePath', 'addonModulePath', 'addonAbi', 'memberProtocolVersion',
+    ]) || typeof candidate.runtimeModulePath !== 'string' ||
+      !path.win32.isAbsolute(candidate.runtimeModulePath) || candidate.runtimeModulePath.includes('\0') ||
+      typeof candidate.reshadeBasePath !== 'string' ||
+      !path.win32.isAbsolute(candidate.reshadeBasePath) || candidate.reshadeBasePath.includes('\0') ||
+      typeof candidate.addonModulePath !== 'string' ||
+      !path.win32.isAbsolute(candidate.addonModulePath) || candidate.addonModulePath.includes('\0') ||
+      candidate.addonAbi !== 1 || candidate.memberProtocolVersion !== 1) {
+      return Object.freeze({ kind: 'invalid', detail: 'participant-addon result requires absolute host and member paths and cooperative member ABI 1' });
+    }
+    return Object.freeze({
+      kind: 'valid',
+      result: Object.freeze({
+        schemaVersion: 1, pid: candidate.pid,
+        targetExecutablePath: candidate.targetExecutablePath,
+        runtimeMode: 'participant-addon', runtimeModulePath: candidate.runtimeModulePath,
+        reshadeBasePath: candidate.reshadeBasePath,
+        addonModulePath: candidate.addonModulePath, addonAbi: 1, memberProtocolVersion: 1,
       }),
     });
   }

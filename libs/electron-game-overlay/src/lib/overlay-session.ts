@@ -1,5 +1,6 @@
 import {
   targetAuthorizers,
+  targetIdentityRequirements,
   targetPolicyGates,
   targetAdmissionGates,
   globalTargetAuthorizers,
@@ -265,16 +266,18 @@ export class OverlaySession {
     }
     targetAuthorizers.set(
       this,
-      (pid, discoveryPath, expectedExecutablePath, runtimeProvider, signal) =>
+      (pid, discoveryPath, expectedExecutablePath, runtimeProvider, signal, expectedCreationTime100ns) =>
         this.#authorizeTarget(
           pid,
           discoveryPath,
           expectedExecutablePath,
           runtimeProvider,
           signal,
+          expectedCreationTime100ns,
         ),
     );
-    globalTargetAuthorizers.set(this, () => this.#authorizeGlobalTarget());
+    targetIdentityRequirements.set(this, overlay.requiresProcessInstanceIdentity === true);
+    globalTargetAuthorizers.set(this, (discoveryPath) => this.#authorizeGlobalTarget(discoveryPath));
     targetPolicyGates.set(this, (pid,suppressed)=>this.overlay.setTargetSuppressed?.(pid,suppressed));
     targetAdmissionGates.set(this, policy=>this.overlay.setTargetAdmissionPolicy?.(policy));
   }
@@ -351,6 +354,7 @@ export class OverlaySession {
     expectedExecutablePath?: string,
     runtimeProvider?: NativeRuntimeProviderMetadata,
     signal?: AbortSignal,
+    expectedCreationTime100ns?: string,
   ): Promise<OverlaySessionTargetAuthorization> {
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) {
       throw new RangeError(
@@ -390,6 +394,7 @@ export class OverlaySession {
       expectedExecutablePath,
       runtimeProvider,
       signal,
+      expectedCreationTime100ns,
     );
     if (!backendAuthorization) {
       if (this.closed) {
@@ -429,7 +434,7 @@ export class OverlaySession {
     );
   }
 
-  async #authorizeGlobalTarget(): Promise<Disposable> {
+  async #authorizeGlobalTarget(discoveryPath?: string): Promise<Disposable> {
     if (this.closed) {
       throw new Error('the overlay session is closed');
     }
@@ -438,7 +443,7 @@ export class OverlaySession {
     if (this.closed) {
       throw new Error('the overlay session is closed');
     }
-    const backendRelease = await this.overlay.authorizeGlobalTarget?.();
+    const backendRelease = await this.overlay.authorizeGlobalTarget?.(discoveryPath);
     if (!backendRelease) {
       return () => undefined;
     }

@@ -31,6 +31,7 @@ const {
   createReShadeLaunchConfig,
 } = require('../dist/lib/reshade-launcher.js');
 const existingReShadeInstallation = require('../dist/lib/existing-reshade-installation.js');
+const { targetIdentityRequirements } = require('../dist/lib/overlay-session-authorization.js');
 
 const artifacts = [
   'inject.exe',
@@ -127,7 +128,7 @@ const officialAddonSuccessFor = (
     runtimeModulePath,
     addonModulePath,
     addonAbi: 1,
-    addonBuildId: '12EE788081A34E00B10862242DF38893',
+    addonBuildId: 'A8E9DA12477741B9979D9B1B51994EF3',
     reshadeBasePath: path.win32.dirname(runtimeModulePath),
     addonDirectoryPath: path.win32.dirname(addonModulePath),
     electronGameOverlayAddonDisabled: false,
@@ -197,6 +198,139 @@ const runtimeStartupRecord = (pid, code, additionalFields = {}) =>
     ...additionalFields,
   });
 const temporaryDirectories = new Set();
+
+test('private member attachment queries its staged manager before publishing and always loads its own engine', async () => {
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  targetIdentityRequirements.set(harness.session, true);
+  const expected = '9007199254740993';
+  let published = false;
+  harness.session.authorizeTarget = async (_pid, _path, image, _provider, _signal, creationTime) => {
+    published = true;
+    assert.equal(image, 'C:\\games\\game.exe');
+    assert.equal(creationTime, expected);
+    return Object.assign(() => {}, { disposition: 'participant', expectedCreationTime100ns: creationTime });
+  };
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 });
+    await waitFor(() => execution.calls.length === 1);
+    assert.equal(published, false);
+    assert.equal(path.basename(execution.calls[0].executable), 'electron_game_overlay_reshade_manager.exe');
+    assert.deepEqual(execution.calls[0].arguments, ['--query-process-image', '4242']);
+    execution.calls[0].callback(null, JSON.stringify({
+      schemaVersion: 1, kind: 'electron-game-overlay-process-image', pid: 4242,
+      executablePath: 'C:\\games\\game.exe', creationTime100ns: expected,
+    }) + '\n', '');
+    await waitFor(() => execution.calls.length === 2);
+    assert.equal(published, true);
+    assert.deepEqual(execution.calls[1].arguments,
+      ['game.exe', '--pid', '4242', '--expected-creation-time-100ns', expected]);
+    const addonModulePath = path.join(execution.calls[1].options.cwd, 'electron_game_overlay.addon64');
+    execution.calls[1].callback(null,
+      'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n' +
+      injectorResult({ pid: 4242, runtimeMode: 'participant-addon',
+        runtimeModulePath: 'C:\\host\\ReShade64.dll', reshadeBasePath: 'D:\\configured-host', addonModulePath,
+        addonAbi: 1, memberProtocolVersion: 1 }), '');
+    harness.emitNative('game.process', { pid: 4242, path: 'C:\\games\\game.exe' });
+    const result = await attachment;
+    assert.equal(result.runtimeMode, 'participant-addon');
+    assert.equal(result.addonModulePath, addonModulePath);
+    assert.equal(result.hostRuntimePath, 'C:\\host\\ReShade64.dll');
+    assert.equal(result.reshadeLogPath, 'D:\\configured-host\\ReShade.log');
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
+test('private member image mismatch rejects before route publication or injector execution', async () => {
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  targetIdentityRequirements.set(harness.session, true);
+  let published = false;
+  harness.session.authorizeTarget = async () => { published = true; return () => {}; };
+  try {
+    const attachment = launcher.attach(harness.session, {
+      processName: 'game.exe', pid: 4242,
+    });
+    const rejected = assert.rejects(attachment, /OS identity does not match/);
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, JSON.stringify({
+      schemaVersion: 1, kind: 'electron-game-overlay-process-image', pid: 4242,
+      executablePath: 'C:\\games\\other.exe', creationTime100ns: '100',
+    }), '');
+    await rejected;
+    assert.equal(published, false);
+    assert.equal(execution.calls.length, 1);
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
+test('private member attachment refuses artifacts without proven cooperative host ownership support', async () => {
+  const fixture = createBindingRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  targetIdentityRequirements.set(harness.session, true);
+  try {
+    await assert.rejects(launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 }),
+      /does not support independent cooperative add-on attachment/);
+    assert.equal(execution.calls.length, 0);
+    assert.equal(harness.targetAuthorizations.length, 0);
+  } finally { launcher.dispose(); execution.restore(); }
+
+  const cooperative = createCooperativeRuntime();
+  assert.equal(createConfig(cooperative).cooperativeAddonProtocol, 1);
+  rewriteRuntimePackageBuildStamp(cooperative.runtimeDirectory, 'electron_game_overlay_runtime32.build.json', (manifest) => {
+    delete manifest.cooperativeAddonProtocol;
+  });
+  assert.throws(() => createConfig(cooperative), /different runtime provider metadata/);
+});
+
+test('private member official startup proof is followed by instance-bound member-only attachment', async () => {
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  const expected = '9007199254740993';
+  const image = 'D:\\Games\\Official\\game.exe';
+  const runtime = 'D:\\Games\\Official\\dxgi.dll';
+  harness.session.authorizeTarget = async () => Object.assign(() => {}, {
+    disposition: 'participant', expectedCreationTime100ns: expected,
+  });
+  const preparation = stubExistingReShadePreparation(async () => officialPreparedAddonResult({
+    status: 'already-current', targetExecutablePath: image, reshadeModulePath: runtime,
+  }));
+  const inspection = stubLoadedOfficialReShadeInspection(async (options) => officialLoadedAddonInspectionResult({
+    targetExecutablePath: options.targetExecutablePath, reshadeModulePath: options.reshadeModulePath,
+    loadedAddonModulePath: options.loadedAddonModulePath,
+  }));
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242, executablePath: image });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(Object.assign(new Error('existing'), { code: 183 }),
+      injectorPreflightDiagnostic({ code: 'target-existing-reshade-installation', pid: 4242,
+        targetExecutablePath: image, modulePath: runtime, windowsErrorCode: 183 }) +
+      'ReShade injection not started.\n', '');
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, officialAddonSuccessFor(4242, runtime,
+      'D:\\Games\\Official\\electron_game_overlay.addon64', 'game.exe'), '');
+    await waitFor(() => execution.calls.length === 3);
+    assert.deepEqual(execution.calls[2].arguments,
+      [image, '--pid', '4242', '--expected-creation-time-100ns', expected, '--addon-only']);
+    const addon = path.join(execution.calls[2].options.cwd, 'electron_game_overlay.addon64');
+    execution.calls[2].callback(null,
+      'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n' +
+      injectorResult({ pid: 4242, targetExecutablePath: image, runtimeMode: 'participant-addon',
+        runtimeModulePath: runtime, reshadeBasePath: 'D:\\host-config', addonModulePath: addon,
+        addonAbi: 1, memberProtocolVersion: 1 }), '');
+    harness.emitNative('game.process', { pid: 4242, path: image });
+    const result = await attachment;
+    assert.equal(result.runtimeMode, 'participant-addon');
+    assert.equal(result.addonModulePath, addon);
+    assert.equal(result.reshadeLogPath, 'D:\\host-config\\ReShade.log');
+  } finally { launcher.dispose(); preparation.restore(); inspection.restore(); execution.restore(); }
+});
 
 test.afterEach(() => {
   for (const directory of temporaryDirectories) {
@@ -281,6 +415,16 @@ function createBindingRuntime() {
   const fixture = createRuntime();
   for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
     rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, m => { m.schemaVersion = 4; m.injectorProcessInstanceBinding = 1; });
+  }
+  return fixture;
+}
+
+function createCooperativeRuntime() {
+  const fixture = createBindingRuntime();
+  for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, (manifest) => {
+      manifest.cooperativeAddonProtocol = 1;
+    });
   }
   return fixture;
 }
@@ -5682,7 +5826,7 @@ function writeRuntimePackageBuildStamp(runtimeDirectory, spec) {
       kind: 'electron-game-overlay-runtime-build',
       platform: spec.platform,
       configuration: 'RelWithDebInfo',
-      addonBuildId: '12EE788081A34E00B10862242DF38893',
+      addonBuildId: 'A8E9DA12477741B9979D9B1B51994EF3',
       managerProtocolSchemaVersion: 1,
       runtimeGeneration: 1,
       targetTransportMin: 1,
