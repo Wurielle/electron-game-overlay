@@ -30,6 +30,7 @@ typedef int32_t ego_status;
 #define EGO_STATUS_NOT_CONNECTED (-INT32_C(9))
 
 #define EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS UINT32_C(1000)
+#define EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES UINT64_C(131068)
 
 #define EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION UINT32_C(1)
 #define EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY UINT32_C(1)
@@ -138,6 +139,18 @@ uint32_t EGO_CALL ego_abi_version(void);
 ego_status EGO_CALL ego_transport_create(
     uint32_t abi_version,
     ego_transport **out_transport);
+/*
+ * Participant-private discovery, independent of the target process environment.
+ * directory_utf8 is an absolute Windows directory without a trailing NUL; its
+ * bytes are copied synchronously. Length is in [1,
+ * EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES] and the decoded path is at most 32767
+ * UTF-16 code units. No system/global discovery fallback is permitted.
+ */
+ego_status EGO_CALL ego_transport_create_for_directory(
+    uint32_t abi_version,
+    const uint8_t *directory_utf8,
+    uint64_t directory_utf8_len,
+    ego_transport **out_transport);
 ego_status EGO_CALL ego_transport_destroy(ego_transport *transport);
 /*
  * Waits until packets published before this call are written to the current
@@ -202,6 +215,41 @@ ego_status EGO_CALL ego_transport_publish_diagnostic(
 /* Observes/routes a copied message. The status is not an input-block decision. */
 ego_status EGO_CALL ego_transport_route_window_message(
     ego_transport *transport,
+    uintptr_t target_hwnd,
+    uint32_t message,
+    uint64_t wparam,
+    int64_t lparam);
+
+/* Owner-local geometry/alpha hit testing in physical game-client pixels. */
+ego_status EGO_CALL ego_transport_hit_test_window(
+    const ego_transport *transport,
+    uint32_t window_id,
+    int32_t x,
+    int32_t y,
+    uint32_t *out_hit);
+
+/*
+ * Latest explicit SDK focus command. revision==0 means none observed. Reading
+ * does not consume it; cooperative grants and routed clicks do not advance it.
+ */
+ego_status EGO_CALL ego_transport_cooperative_focus_request(
+    const ego_transport *transport,
+    uint64_t *out_revision,
+    uint32_t *out_window_id,
+    uint32_t *out_focused);
+
+/* Applies global ownership; focused_window_id==0 blurs this participant only. */
+ego_status EGO_CALL ego_transport_set_cooperative_focus(
+    ego_transport *transport,
+    uint32_t focused_window_id);
+
+/*
+ * Routes through this owner's existing input implementation to the selected
+ * local window only. window_id==0 drops without any local-stack fallback.
+ */
+ego_status EGO_CALL ego_transport_route_owned_window_message(
+    ego_transport *transport,
+    uint32_t window_id,
     uintptr_t target_hwnd,
     uint32_t message,
     uint64_t wparam,

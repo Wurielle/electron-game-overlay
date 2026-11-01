@@ -565,10 +565,34 @@ pub struct ElectronFrameBridge {
 impl ElectronFrameBridge {
     /// Starts the state and loopback transport worker.
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
-        let startup = RuntimeStartupPublisher::from_environment(unsafe { GetCurrentProcessId() });
+        Self::spawn_with_directory(None)
+    }
+
+    /// Starts a participant-private transport. Discovery and startup diagnostics
+    /// are confined to this directory; process-wide environment and legacy
+    /// discovery records are never consulted.
+    pub fn spawn_for_directory(directory: PathBuf) -> Result<Self, ElectronFrameBridgeError> {
+        if !directory.is_absolute() || directory.as_os_str().is_empty() {
+            return Err(ElectronFrameBridgeError::Initialization(
+                "private transport directory must be an absolute Windows path".to_owned(),
+            ));
+        }
+        Self::spawn_with_directory(Some(directory))
+    }
+
+    fn spawn_with_directory(directory: Option<PathBuf>) -> Result<Self, ElectronFrameBridgeError> {
+        let pid = unsafe { GetCurrentProcessId() };
+        let startup = match &directory {
+            Some(directory) => RuntimeStartupPublisher::for_directory(directory.clone(), pid),
+            None => RuntimeStartupPublisher::from_environment(pid),
+        };
         let scene = Arc::new(RwLock::new(Arc::new(ElectronScene::default())));
         let worker_scene = Arc::clone(&scene);
-        let input_router = Arc::new(Mutex::new(InputRouter::new()));
+        let mut router = InputRouter::new();
+        if directory.is_some() {
+            router.set_cooperative_focus(None);
+        }
+        let input_router = Arc::new(Mutex::new(router));
         let interception = input_router
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -612,6 +636,7 @@ impl ElectronFrameBridge {
                     worker_drag,
                     ready_tx,
                     worker_startup,
+                    directory,
                 )
             })
             .map_err(|error| {
@@ -691,6 +716,50 @@ impl ElectronFrameBridge {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .state()
+    }
+
+    /// Tests one owned window using this implementation's current geometry
+    /// and alpha pixels. Cooperation never borrows another module's scene.
+    pub fn hit_test_window(&self, window_id: u32, x: i32, y: i32) -> bool {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .hit_test_window(window_id, InputPoint::new(x, y))
+    }
+
+    pub fn cooperative_focus_request(&self) -> (u64, u32, bool) {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .cooperative_focus_request()
+    }
+
+    /// Applies the global focus decision without manufacturing a new SDK
+    /// focus request or changing target focus/interception policy.
+    pub fn set_cooperative_focus(&self, window_id: Option<u32>) {
+        let has_messages = {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let messages = self
+                .input_router
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_cooperative_focus(window_id);
+            if messages.is_empty() {
+                false
+            } else {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(messages);
+                true
+            }
+        };
+        if has_messages {
+            self.wake_outbound_worker();
+        }
     }
 
     /// Desired interception derived from the public request, target focus, and
@@ -891,6 +960,32 @@ impl ElectronFrameBridge {
     /// transport worker for any resulting Electron packets. No synchronous
     /// cross-process send happens on the render/present thread.
     pub fn route_window_message(&self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
+        self.route_window_message_with_owner(None, hwnd, msg, wparam, lparam);
+    }
+
+    /// Routes only to a window already selected by the cooperative registry.
+    /// Zero is an explicit drop and never invokes local topmost fallback.
+    pub fn route_owned_window_message(
+        &self,
+        window_id: u32,
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) {
+        if window_id != 0 {
+            self.route_window_message_with_owner(Some(window_id), hwnd, msg, wparam, lparam);
+        }
+    }
+
+    fn route_window_message_with_owner(
+        &self,
+        window_id: Option<u32>,
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) {
         let (has_messages, raised_window, drag_wake_error) = {
             // State mutation and queue publication share this lock with transport
             // commands/lifecycle updates, giving their outbound packets one
@@ -908,22 +1003,32 @@ impl ElectronFrameBridge {
             let target_focused = !foreground.0.is_null()
                 && (foreground == hwnd || (!target_root.0.is_null() && foreground == target_root));
             let mut messages = input_router.set_target_focused(target_focused);
-            messages.extend(input_router.route_win32_message(
-                msg,
-                wparam.0 as u32,
-                lparam.0 as u32,
-                |screen_point| {
-                    let mut client_point = POINT {
-                        x: screen_point.x,
-                        y: screen_point.y,
-                    };
-                    if unsafe { ScreenToClient(hwnd, &raw mut client_point) }.as_bool() {
-                        Some(InputPoint::new(client_point.x, client_point.y))
-                    } else {
-                        None
-                    }
-                },
-            ));
+            let screen_to_client = |screen_point: InputPoint| {
+                let mut client_point = POINT {
+                    x: screen_point.x,
+                    y: screen_point.y,
+                };
+                if unsafe { ScreenToClient(hwnd, &raw mut client_point) }.as_bool() {
+                    Some(InputPoint::new(client_point.x, client_point.y))
+                } else {
+                    None
+                }
+            };
+            messages.extend(match window_id {
+                Some(window_id) => input_router.route_win32_message_for_window(
+                    window_id,
+                    msg,
+                    wparam.0 as u32,
+                    lparam.0 as u32,
+                    screen_to_client,
+                ),
+                None => input_router.route_win32_message(
+                    msg,
+                    wparam.0 as u32,
+                    lparam.0 as u32,
+                    screen_to_client,
+                ),
+            });
             let raised_window = input_router.take_pending_raise().map(|window_id| {
                 let generation = self
                     .stack_generation
@@ -1084,6 +1189,7 @@ fn run_bridge_thread(
     drag: SharedDragState,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
     startup: RuntimeStartupPublisher,
+    directory: Option<PathBuf>,
 ) {
     startup.publish(RuntimeStartupCode::BridgeThreadStarted);
     let title = wide_string(&format!("electron-overlay-frame-{}", unsafe {
@@ -1130,6 +1236,7 @@ fn run_bridge_thread(
         pending_raise,
         drag,
         startup,
+        directory,
     ));
     let state_ptr = Box::into_raw(state);
 
@@ -1320,6 +1427,7 @@ struct BridgeThreadState {
     legacy_discovery_requires_target_binding: bool,
     target_route_path: Option<PathBuf>,
     routed_discovery_pinned: bool,
+    private_discovery: bool,
     scene: PublishedScene,
     input_router: SharedInputRouter,
     producer_session_epoch: Arc<AtomicU64>,
@@ -1356,14 +1464,19 @@ impl BridgeThreadState {
         pending_raise: SharedPendingRaise,
         drag: SharedDragState,
         startup: RuntimeStartupPublisher,
+        directory: Option<PathBuf>,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
+        let private_discovery = directory.is_some();
         let (
             discovery_path,
             legacy_discovery_path,
             legacy_discovery_requires_target_binding,
             target_route_path,
-        ) = discovery_paths();
+        ) = match directory {
+            Some(directory) => private_discovery_paths(directory),
+            None => discovery_paths(),
+        };
         Self {
             hwnd,
             transport: None,
@@ -1375,6 +1488,7 @@ impl BridgeThreadState {
             legacy_discovery_requires_target_binding,
             target_route_path,
             routed_discovery_pinned: false,
+            private_discovery,
             scene,
             input_router,
             producer_session_epoch,
@@ -1402,21 +1516,29 @@ impl BridgeThreadState {
             return;
         }
 
-        let (discovery, selected_discovery_path, requires_target_binding) =
-            match select_discovery_document(
+        let selected = if self.private_discovery {
+            select_private_discovery_document(
+                &self.discovery_path,
+                self.target_route_path.as_deref(),
+                &mut self.routed_discovery_pinned,
+            )
+        } else {
+            select_discovery_document(
                 &self.discovery_path,
                 self.legacy_discovery_path.as_deref(),
                 self.legacy_discovery_requires_target_binding,
                 self.target_route_path.as_deref(),
                 &mut self.routed_discovery_pinned,
-            ) {
-                Ok(selection) => selection,
-                Err(error) => {
-                    self.startup.publish(discovery_failure_startup_code(&error));
-                    debug!(%error, "Electron overlay transport discovery is not ready");
-                    return;
-                }
-            };
+            )
+        };
+        let (discovery, selected_discovery_path, requires_target_binding) = match selected {
+            Ok(selection) => selection,
+            Err(error) => {
+                self.startup.publish(discovery_failure_startup_code(&error));
+                debug!(%error, "Electron overlay transport discovery is not ready");
+                return;
+            }
+        };
         let current_pid = GetCurrentProcessId();
         if discovery.version != TRANSPORT_VERSION {
             self.startup
@@ -2882,6 +3004,37 @@ fn discovery_paths() -> (PathBuf, Option<PathBuf>, bool, Option<PathBuf>) {
     )
 }
 
+fn private_discovery_paths(
+    directory: PathBuf,
+) -> (PathBuf, Option<PathBuf>, bool, Option<PathBuf>) {
+    (
+        directory.join(DISCOVERY_FILE),
+        None,
+        false,
+        Some(directory.join(TARGET_ROUTE_FILE)),
+    )
+}
+
+fn select_private_discovery_document(
+    preferred_path: &Path,
+    target_route_path: Option<&Path>,
+    routed_discovery_pinned: &mut bool,
+) -> Result<(DiscoveryDocument, PathBuf, bool), DiscoveryError> {
+    let (discovery, selected_path, _) = select_discovery_document(
+        preferred_path,
+        None,
+        false,
+        target_route_path,
+        routed_discovery_pinned,
+    )?;
+    // A future-target watcher may initially publish an unbound credential in
+    // its own private directory. Once the exact-target marker or a bound
+    // credential is observed, that route remains target-bound on reconnect.
+    let requires_target_binding = *routed_discovery_pinned || discovery.target_pid.is_some();
+    *routed_discovery_pinned |= requires_target_binding;
+    Ok((discovery, selected_path, requires_target_binding))
+}
+
 fn target_discovery_path(temp_directory: &Path, target_pid: u32) -> PathBuf {
     temp_directory.join(DISCOVERY_DIRECTORY).join(format!(
         "{TARGET_DISCOVERY_FILE_PREFIX}{target_pid}{TARGET_DISCOVERY_FILE_SUFFIX}"
@@ -3009,10 +3162,22 @@ fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
     let mut exited = FILETIME::default();
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
-    unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user) }
-        .map_err(|error| NetworkError::CurrentProcessIdentity(io::Error::other(error)))?;
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .map_err(|error| NetworkError::CurrentProcessIdentity(io::Error::other(error)))?;
     let creation_time = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
-    if creation_time == 0 { return Err(NetworkError::CurrentProcessIdentity(io::Error::other("zero creation time"))); }
+    if creation_time == 0 {
+        return Err(NetworkError::CurrentProcessIdentity(io::Error::other(
+            "zero creation time",
+        )));
+    }
     let json = serde_json::json!({
         "type": "game.process",
         "protocolVersion": TRANSPORT_VERSION,
@@ -3281,7 +3446,10 @@ impl fmt::Display for NetworkError {
             Self::CurrentExecutable(error) => {
                 write!(formatter, "cannot resolve target executable path: {error}")
             }
-            Self::CurrentProcessIdentity(error) => write!(formatter, "cannot query current process incarnation: {error}"),
+            Self::CurrentProcessIdentity(error) => write!(
+                formatter,
+                "cannot query current process incarnation: {error}"
+            ),
             Self::Wire(error) => error.fmt(formatter),
         }
     }
@@ -3538,6 +3706,84 @@ mod tests {
             "targetPid": target_pid,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn private_discovery_never_falls_back_to_another_member_or_global_record() {
+        let root = unique_discovery_test_directory("private-members");
+        let member_a = root.join("a");
+        let member_b = root.join("b");
+        let global = root.join(DISCOVERY_DIRECTORY).join(DISCOVERY_FILE);
+        for directory in [&member_a, &member_b, global.parent().unwrap()] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        fs::write(&global, discovery_test_document(1, None)).unwrap();
+        fs::write(
+            member_b.join(DISCOVERY_FILE),
+            discovery_test_document(1, Some(789)),
+        )
+        .unwrap();
+
+        let (a_path, fallback, _, a_marker) = private_discovery_paths(member_a.clone());
+        assert!(fallback.is_none());
+        let mut a_pinned = false;
+        assert!(
+            select_private_discovery_document(&a_path, a_marker.as_deref(), &mut a_pinned,)
+                .as_ref()
+                .is_err_and(DiscoveryError::is_not_found)
+        );
+
+        let (b_path, fallback, _, b_marker) = private_discovery_paths(member_b.clone());
+        assert!(fallback.is_none());
+        let mut b_pinned = false;
+        let (document, selected, bound) =
+            select_private_discovery_document(&b_path, b_marker.as_deref(), &mut b_pinned).unwrap();
+        assert_eq!(selected, b_path);
+        assert!(bound && b_pinned);
+        assert_eq!(document.target_pid, Some(789));
+
+        fs::write(&a_path, discovery_test_document(1, None)).unwrap();
+        let (_, selected, bound) =
+            select_private_discovery_document(&a_path, a_marker.as_deref(), &mut a_pinned).unwrap();
+        assert_eq!(selected, a_path);
+        assert!(!bound && !a_pinned);
+        fs::remove_file(&a_path).unwrap();
+        assert!(
+            select_private_discovery_document(&a_path, a_marker.as_deref(), &mut a_pinned,)
+                .as_ref()
+                .is_err_and(DiscoveryError::is_not_found)
+        );
+        assert!(
+            select_private_discovery_document(&b_path, b_marker.as_deref(), &mut b_pinned,).is_ok()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn private_target_marker_requires_binding_and_remains_pinned_on_reconnect() {
+        let root = unique_discovery_test_directory("private-marker");
+        fs::create_dir_all(&root).unwrap();
+        let (path, _, _, marker) = private_discovery_paths(root.clone());
+        fs::write(&path, discovery_test_document(1, None)).unwrap();
+        fs::write(marker.as_ref().unwrap(), b"target route required").unwrap();
+        let mut pinned = false;
+        let (document, _, bound) =
+            select_private_discovery_document(&path, marker.as_deref(), &mut pinned).unwrap();
+        assert!(bound && pinned);
+        assert!(!discovery_target_matches(document.target_pid, 789, bound));
+        fs::remove_file(marker.as_ref().unwrap()).unwrap();
+        let (_, _, bound) =
+            select_private_discovery_document(&path, marker.as_deref(), &mut pinned).unwrap();
+        assert!(bound);
+        fs::write(&path, b"{").unwrap();
+        assert!(select_private_discovery_document(&path, marker.as_deref(), &mut pinned).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(
+            select_private_discovery_document(&path, marker.as_deref(), &mut pinned)
+                .as_ref()
+                .is_err_and(DiscoveryError::is_not_found)
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3896,6 +4142,7 @@ mod tests {
             SharedPendingRaise::default(),
             SharedDragState::default(),
             RuntimeStartupPublisher::default(),
+            None,
         )
     }
 
@@ -4840,10 +5087,22 @@ mod tests {
         };
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(value["protocolVersion"], 1);
-        assert!(value["creationTime100ns"].as_str().unwrap().parse::<u64>().unwrap() > 0);
+        assert!(
+            value["creationTime100ns"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
         assert_eq!(
             value["capabilities"],
-            serde_json::json!(["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"])
+            serde_json::json!([
+                "window-order-v1",
+                "window-focus-v1",
+                "window-cursor-v1",
+                "process-instance-hello-v1"
+            ])
         );
     }
 

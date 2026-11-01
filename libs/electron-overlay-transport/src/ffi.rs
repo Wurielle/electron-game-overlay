@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +37,8 @@ pub const EGO_STATUS_TIMED_OUT: i32 = -8;
 pub const EGO_STATUS_NOT_CONNECTED: i32 = -9;
 
 pub const EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS: u32 = 1_000;
+pub const EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES: u64 = 4 * 32_767;
+const MAX_DIRECTORY_UTF16_UNITS: usize = 32_767;
 
 pub const EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION: u32 = 1;
 pub const EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY: u32 = 1;
@@ -237,6 +240,35 @@ fn bool_u32(value: bool) -> u32 {
 
 fn optional_id(value: Option<u32>) -> (u32, u32) {
     value.map_or((0, 0), |id| (1, id))
+}
+
+fn private_directory_from_utf8(bytes: &[u8]) -> FfiResult<PathBuf> {
+    if bytes.is_empty() || bytes.len() > EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES as usize {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory length is invalid",
+        ));
+    }
+    let value = std::str::from_utf8(bytes).map_err(|_| {
+        FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory is not valid UTF-8",
+        )
+    })?;
+    if value.contains('\0') || value.encode_utf16().count() > MAX_DIRECTORY_UTF16_UNITS {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory contains NUL or exceeds the Windows path limit",
+        ));
+    }
+    let directory = PathBuf::from(value);
+    if !directory.is_absolute() {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory must be an absolute Windows path",
+        ));
+    }
+    Ok(directory)
 }
 
 fn make_scene_snapshot(scene: Arc<ElectronScene>) -> FfiResult<EgoSceneSnapshot> {
@@ -510,6 +542,56 @@ pub unsafe extern "C" fn ego_transport_create(
             FfiError::new(
                 EGO_STATUS_INITIALIZATION_FAILED,
                 format!("cannot initialize Electron overlay transport: {error}"),
+            )
+        })?;
+        *out_transport = Box::into_raw(Box::new(EgoTransport { bridge }));
+        Ok(())
+    })
+}
+
+/// Starts a participant-private transport without consulting process-wide
+/// environment variables or legacy discovery records.
+///
+/// # Safety
+/// `directory_utf8` must be readable for `directory_utf8_len` bytes and contain
+/// an absolute Windows directory encoded as UTF-8 without a trailing NUL. Its
+/// bytes are copied synchronously. `out_transport` must be writable, and a
+/// successful handle must be destroyed exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_create_for_directory(
+    abi_version: u32,
+    directory_utf8: *const u8,
+    directory_utf8_len: u64,
+    out_transport: *mut *mut EgoTransport,
+) -> i32 {
+    ffi_call(|| {
+        let out_transport = out_transport.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_transport pointer is null")
+        })?;
+        *out_transport = ptr::null_mut();
+        if abi_version != EGO_ABI_VERSION {
+            return Err(FfiError::new(
+                EGO_STATUS_ABI_MISMATCH,
+                format!("requested ABI version {abi_version} does not match {EGO_ABI_VERSION}"),
+            ));
+        }
+        if directory_utf8.is_null()
+            || directory_utf8_len == 0
+            || directory_utf8_len > EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES
+        {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "private transport directory pointer or length is invalid",
+            ));
+        }
+        let directory = private_directory_from_utf8(std::slice::from_raw_parts(
+            directory_utf8,
+            directory_utf8_len as usize,
+        ))?;
+        let bridge = ElectronFrameBridge::spawn_for_directory(directory).map_err(|error| {
+            FfiError::new(
+                EGO_STATUS_INITIALIZATION_FAILED,
+                format!("cannot initialize private Electron overlay transport: {error}"),
             )
         })?;
         *out_transport = Box::into_raw(Box::new(EgoTransport { bridge }));
@@ -921,6 +1003,121 @@ pub unsafe extern "C" fn ego_transport_route_window_message(
 }
 
 /// # Safety
+/// `transport` must remain live and `out_hit` must be writable. Coordinates
+/// are physical client pixels, interpreted by the window owner's router.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_hit_test_window(
+    transport: *const EgoTransport,
+    window_id: u32,
+    x: i32,
+    y: i32,
+    out_hit: *mut u32,
+) -> i32 {
+    ffi_call(|| {
+        let out_hit = out_hit
+            .as_mut()
+            .ok_or_else(|| FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_hit pointer is null"))?;
+        *out_hit = 0;
+        let transport = transport_ref(transport)?;
+        *out_hit = bool_u32(transport.bridge.hit_test_window(window_id, x, y));
+        Ok(())
+    })
+}
+
+/// # Safety
+/// All outputs must be writable and `transport` must remain live. Revision
+/// zero means no explicit SDK window-focus request has been observed.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_cooperative_focus_request(
+    transport: *const EgoTransport,
+    out_revision: *mut u64,
+    out_window_id: *mut u32,
+    out_focused: *mut u32,
+) -> i32 {
+    ffi_call(|| {
+        let out_revision = out_revision.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_revision pointer is null")
+        })?;
+        let out_window_id = out_window_id.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_window_id pointer is null")
+        })?;
+        let out_focused = out_focused.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_focused pointer is null")
+        })?;
+        let transport = transport_ref(transport)?;
+        let (revision, window_id, focused) = transport.bridge.cooperative_focus_request();
+        *out_revision = revision;
+        *out_window_id = window_id;
+        *out_focused = bool_u32(focused);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live. A zero ID clears this participant's focus;
+/// this does not change actual target focus or interception requests.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_set_cooperative_focus(
+    transport: *mut EgoTransport,
+    focused_window_id: u32,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        transport
+            .bridge
+            .set_cooperative_focus((focused_window_id != 0).then_some(focused_window_id));
+        Ok(())
+    })
+}
+
+/// # Safety
+/// The handle must remain live and nonzero HWNDs must belong to the target.
+/// The window ID has already been selected by the cooperative registry. Zero
+/// drops the event without falling back to this participant's local stack.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_route_owned_window_message(
+    transport: *mut EgoTransport,
+    window_id: u32,
+    target_hwnd: usize,
+    message: u32,
+    wparam: u64,
+    lparam: i64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if window_id == 0 {
+            return Ok(());
+        }
+        if target_hwnd == 0 {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "target HWND is null",
+            ));
+        }
+        let wparam = usize::try_from(wparam).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "wparam does not fit this target",
+            )
+        })?;
+        let lparam = isize::try_from(lparam).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "lparam does not fit this target",
+            )
+        })?;
+        transport.bridge.route_owned_window_message(
+            window_id,
+            HWND(target_hwnd as *mut c_void),
+            message,
+            WPARAM(wparam),
+            LPARAM(lparam),
+        );
+        Ok(())
+    })
+}
+
+/// # Safety
 /// When non-null, `buffer` must be writable for `buffer_size` bytes and
 /// `required_size` must be writable. A null buffer is valid only with size 0.
 #[no_mangle]
@@ -970,6 +1167,240 @@ pub unsafe extern "C" fn ego_get_last_error_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_directory_validation_rejects_ambiguous_encoding_and_nonabsolute_paths() {
+        for invalid in [
+            &b""[..],
+            &b"relative\\member"[..],
+            &b"C:drive-relative"[..],
+            &b"\\root-relative"[..],
+            &b"C:\\member\0foreign"[..],
+            &[0xff, 0xfe][..],
+        ] {
+            assert_eq!(
+                private_directory_from_utf8(invalid).unwrap_err().status,
+                EGO_STATUS_INVALID_ARGUMENT,
+            );
+        }
+        assert_eq!(
+            private_directory_from_utf8(format!("C:\\{}", "x".repeat(32_767)).as_bytes())
+                .unwrap_err()
+                .status,
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+        for valid in [
+            r"C:\members\app-a",
+            r"\\server\share\app-b",
+            "C:\\メンバー\\🦀",
+        ] {
+            assert_eq!(
+                private_directory_from_utf8(valid.as_bytes()).unwrap(),
+                PathBuf::from(valid),
+            );
+        }
+
+        let mut output = 1usize as *mut EgoTransport;
+        assert_eq!(
+            unsafe {
+                ego_transport_create_for_directory(EGO_ABI_VERSION, ptr::null(), 0, &mut output)
+            },
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+        assert!(output.is_null());
+        assert_eq!(
+            unsafe {
+                ego_transport_create_for_directory(
+                    EGO_ABI_VERSION,
+                    b"C:\\member".as_ptr(),
+                    EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES + 1,
+                    &mut output,
+                )
+            },
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+        assert!(output.is_null());
+    }
+
+    #[test]
+    fn private_directory_transports_keep_tokens_scenes_and_disconnects_isolated() {
+        use std::fs;
+        use std::io::{Read, Write};
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        use std::time::Instant;
+
+        const CHILD_FLAG: &str = "EGO_TEST_PRIVATE_TRANSPORT_CHILD";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            // Run with a conflicting process-wide route in a separate process;
+            // other unit tests never observe temporary global environment state.
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ffi::tests::private_directory_transports_keep_tokens_scenes_and_disconnects_isolated",
+                    "--nocapture",
+                ])
+                .env(CHILD_FLAG, "1")
+                .env(
+                    "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
+                    r"C:\foreign-process-wide-route-not-used-by-private-members",
+                )
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "private-route child failed:\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
+            );
+            return;
+        }
+
+        struct OwnedTransport(*mut EgoTransport);
+        impl Drop for OwnedTransport {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { ego_transport_destroy(self.0) }, EGO_STATUS_OK);
+            }
+        }
+        fn accept(listener: &TcpListener) -> TcpStream {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        return stream;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "private member did not connect");
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("private member accept failed: {error}"),
+                }
+            }
+        }
+        fn hello(stream: &mut TcpStream) -> serde_json::Value {
+            let mut header = [0u8; 5];
+            stream.read_exact(&mut header).unwrap();
+            assert_eq!(header[4], crate::electron_wire::JSON_KIND);
+            let length = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+            assert!(length <= 64 * 1024);
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            serde_json::from_slice(&body).unwrap()
+        }
+        fn send_scene(stream: &mut TcpStream, name: &str, bgra: [u8; 4]) {
+            let init = serde_json::json!({
+                "type": "overlay.init",
+                "windows": [{"windowId": 7, "name": name, "transparent": false,
+                    "rect": {"x": 4, "y": 5, "width": 1, "height": 1}}],
+            });
+            stream
+                .write_all(&crate::electron_wire::encode_json(&init.to_string()).unwrap())
+                .unwrap();
+            let mut packet = Vec::from(16u32.to_le_bytes());
+            packet.push(crate::electron_wire::FRAME_KIND);
+            packet.extend_from_slice(&7u32.to_le_bytes());
+            packet.extend_from_slice(&1u32.to_le_bytes());
+            packet.extend_from_slice(&1u32.to_le_bytes());
+            packet.extend_from_slice(&bgra);
+            stream.write_all(&packet).unwrap();
+        }
+        fn wait_for(mut condition: impl FnMut() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !condition() {
+                assert!(Instant::now() < deadline, "private scene did not settle");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("ego-private-native-{}-{nonce}", std::process::id(),));
+        let a = root.join("a");
+        let b = root.join("b");
+        let listener_a = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener_b = TcpListener::bind("127.0.0.1:0").unwrap();
+        for (directory, listener, token) in [(&a, &listener_a, "a"), (&b, &listener_b, "b")] {
+            fs::create_dir_all(directory).unwrap();
+            fs::write(
+                directory.join("electron-overlay-transport-v1.targeted"),
+                b"private",
+            )
+            .unwrap();
+            fs::write(
+                directory.join("electron-overlay-transport-v1.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "pid": std::process::id(),
+                    "port": listener.local_addr().unwrap().port(),
+                    "token": token.repeat(64), "targetPid": std::process::id(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let create = |directory: &std::path::Path| {
+            let mut bytes = directory.to_str().unwrap().as_bytes().to_vec();
+            let mut transport = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    ego_transport_create_for_directory(
+                        EGO_ABI_VERSION,
+                        bytes.as_ptr(),
+                        bytes.len() as u64,
+                        &mut transport,
+                    )
+                },
+                EGO_STATUS_OK,
+            );
+            bytes.fill(b'?');
+            OwnedTransport(transport)
+        };
+        let transport_a = create(&a);
+        let transport_b = create(&b);
+        let mut peer_a = accept(&listener_a);
+        let mut peer_b = accept(&listener_b);
+        assert_eq!(hello(&mut peer_a)["token"], "a".repeat(64));
+        assert_eq!(hello(&mut peer_b)["token"], "b".repeat(64));
+        send_scene(&mut peer_a, "member-a", [1, 2, 3, 255]);
+        send_scene(&mut peer_b, "member-b", [4, 5, 6, 255]);
+        wait_for(|| unsafe {
+            (*transport_a.0).bridge.scene().windows.len() == 1
+                && (*transport_b.0).bridge.scene().windows.len() == 1
+        });
+        let scene_a = unsafe { (*transport_a.0).bridge.scene() };
+        let scene_b = unsafe { (*transport_b.0).bridge.scene() };
+        assert_eq!(scene_a.windows[0].window_id, 7);
+        assert_eq!(scene_b.windows[0].window_id, 7);
+        assert_eq!(scene_a.windows[0].name, "member-a");
+        assert_eq!(scene_b.windows[0].name, "member-b");
+        assert_eq!(&*scene_a.windows[0].rgba, &[3, 2, 1, 255]);
+        assert_eq!(&*scene_b.windows[0].rgba, &[6, 5, 4, 255]);
+
+        drop(listener_a);
+        peer_a.shutdown(Shutdown::Both).unwrap();
+        wait_for(|| unsafe { (*transport_a.0).bridge.scene().windows.is_empty() });
+        send_scene(&mut peer_b, "member-b-surviving", [7, 8, 9, 255]);
+        wait_for(|| unsafe {
+            (*transport_b.0)
+                .bridge
+                .scene()
+                .windows
+                .first()
+                .is_some_and(|window| window.name == "member-b-surviving")
+        });
+        assert_eq!(
+            unsafe { (*transport_b.0).bridge.input_state().window_count },
+            1
+        );
+        drop(transport_a);
+        drop(transport_b);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn valid_target_surface() -> EgoTargetSurfaceV1 {
         EgoTargetSurfaceV1 {
