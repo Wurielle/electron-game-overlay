@@ -34,6 +34,15 @@ foreign-host loading predicate admits the completed adapter. No initializer is
 called. The reparse-file case requires an actual symbolic link; it fails rather
 than silently skipping if the test account lacks symlink capability.
 
+The first-host selector cases use dummy native bytes in an exclusively created
+local stage. They cover the exact owned markers and JSON grammar, effective
+base/runtime/AddonPath binding, full candidate hash, required regular files,
+held file/directory guards, a real ancestor junction and a real reparse leaf.
+The selector inherits PE/BID/ABI identity from equality with an independently
+validated staged DLL; these dummy-byte tests establish the selector boundary,
+not that separate production PE validation. No fixture invokes the new
+first-host disk-load branch or grants it on an existing host.
+
 These cases do not establish remote activation, dormant scanner behavior,
 mixed-version transport isolation, hook recovery, rendering, input, or existing
 installation preservation. Those need their separate controlled integration
@@ -47,3 +56,11 @@ dormant. The current SDK enables preloading only for the latest project-owned
 hosts; their existing gate/adapter-readiness path supports older SDK joins.
 This fixture does not turn dormant preloading into authenticated readiness or
 claim universal older-injector support on manually configured stock hosts.
+
+The [first-host console evidence](evidence.first-host.windows-console-20261102.json)
+records nine cases and 716 assertions passing on each architecture against the
+exact `FA53B7BC…` injector source, including real junction/symlink rejection and
+the strict owned-run marker grammar. The initial 269-character fixture file
+setup failure is retained there and is separate from production behavior. The
+earlier [preload-only milestone](evidence.windows-console-20261101.json) retains
+its original seven-case `EDFF9D0B…` source and binary hashes.

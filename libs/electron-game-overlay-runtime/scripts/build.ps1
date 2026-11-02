@@ -100,9 +100,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "17E16E01C9A243E18EE19D814420E519"
+$ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 18
+$RuntimeGeneration = 19
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -168,6 +168,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-injector-first-host-result.patch"
     injectorAddonPreloadPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-addon.patch"
+    injectorPreloadedFirstHostPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-first-host.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -184,6 +186,10 @@ Assert-Sha256Equal `
     -Expected "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D" `
     -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorAddonPreloadPatchSha256).Hash `
     -Label "frozen injector add-on preload patch"
+Assert-Sha256Equal `
+    -Expected "A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorPreloadedFirstHostPatchSha256).Hash `
+    -Label "frozen injector preloaded first-host patch"
 
 $CMake = Resolve-Executable "cmake.exe"
 if ($ForceReShade) {

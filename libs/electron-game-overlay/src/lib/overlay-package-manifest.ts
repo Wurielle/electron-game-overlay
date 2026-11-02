@@ -18,6 +18,8 @@ const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 =
   'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
 const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 =
   'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';
+const INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256 =
+  'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -171,6 +173,22 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (requiresAddonPreloadPatch && expectedGeneration < 17)) {
     throw new Error('Compiled SDK add-on preload patch pin does not match its generation');
   }
+  // Generation 17/18 packages retain the original preload implementation.
+  // Bind the later fresh-owner ordering correction to its sealed code marker,
+  // rather than letting mutable source-stamp metadata claim or remove it.
+  const preloadedFirstHostDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256\b/g)];
+  const preloadedFirstHostPins = [...validator.matchAll(/\bconst\s+INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (preloadedFirstHostDeclarations.length !== preloadedFirstHostPins.length || preloadedFirstHostDeclarations.length > 1) {
+    throw new Error('Compiled SDK preloaded first-host patch pin is malformed or ambiguous');
+  }
+  const requiresPreloadedFirstHostPatch = preloadedFirstHostPins.length === 1;
+  if (requiresPreloadedFirstHostPatch && preloadedFirstHostPins[0][1].toUpperCase() !== INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK preloaded first-host patch pin');
+  }
+  if ((!requiresPreloadedFirstHostPatch && expectedGeneration > 18) ||
+      (requiresPreloadedFirstHostPatch && expectedGeneration < 19)) {
+    throw new Error('Compiled SDK preloaded first-host patch pin does not match its generation');
+  }
   const native = path.join(dist, 'runtime/win32-x64/reshade');
   let paired: Record<string, unknown> | undefined;
   for (const bits of [64, 32]) {
@@ -244,6 +262,15 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.injectorAddonPreloadPatchSha256 !== undefined) {
       throw new Error('Injector add-on preload patch provenance requires the sealed SDK implementation pin: ' + bits);
+    }
+    if (requiresPreloadedFirstHostPatch) {
+      if (typeof reshade.injectorPreloadedFirstHostPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.injectorPreloadedFirstHostPatchSha256) ||
+          reshade.injectorPreloadedFirstHostPatchSha256.toUpperCase() !== INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256) {
+        throw new Error('Pinned injector preloaded first-host patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorPreloadedFirstHostPatchSha256 !== undefined) {
+      throw new Error('Injector preloaded first-host patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);

@@ -2,6 +2,7 @@ libs/electron-game-overlay-runtime/patches/*.patch whitespace=-trailing-space,-s
 libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-injector-first-host-result.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-addon.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-first-host.patch text eol=lf
 libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/owned-host-prototype/* text eol=lf
 libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/owned-host-prototype/*.patch whitespace=-trailing-space,-space-before-tab
 # Stock ReShade ends the final INI section with an empty CRLF separator.

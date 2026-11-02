@@ -47,24 +47,36 @@ const GEN17 = Object.freeze({
   PRE_PRELOADED: '05045D6F8824A0105B9B6E02EFF8652075E9700DFD8E656FE7EBBA34B6F13D13',
   FINAL: 'B80C6E3BCF0C5EC499559BEDB9D829B08F664FBAD94E38BEC31C41DB5CC40849',
 });
-const ID = '17E16E01C9A243E18EE19D814420E519';
-const PRE = '75FF6A30283E8147A47982C61C5ADC7F080DEED7C28345D420907753DC218C25';
-const V4 = 'FB85D69E1D6B97D9DC4E4A82C591425A588A99601F897B0F6316D1E5A81E0683';
-const HOST = 'EC57285380625B70964F33106857C3EAAA55BFCB5A31D66C1177500D360853F4';
-const PRE_PRELOADED = '0AD06624529D7683EF58637F0955FF565275C2FDD6FF751A37B693DA6D39390B';
-const FINAL = '53945B0E76711393929460608B63377F43549E59B57FE02237904CDBC3E98F9B';
-const CURRENT = Object.freeze({ ID, PRE, V4, HOST, PRE_PRELOADED, FINAL });
-const generationLane = generation => ({ 15: GEN15, 16: GEN16, 17: GEN17, 18: CURRENT })[generation];
-const terminalShapes = generation => generation >= 17 ? ['host', 'pre-preloaded', 'final'] : ['host', 'final'];
+const GEN18 = Object.freeze({
+  ID: '17E16E01C9A243E18EE19D814420E519',
+  PRE: '75FF6A30283E8147A47982C61C5ADC7F080DEED7C28345D420907753DC218C25',
+  V4: 'FB85D69E1D6B97D9DC4E4A82C591425A588A99601F897B0F6316D1E5A81E0683',
+  HOST: 'EC57285380625B70964F33106857C3EAAA55BFCB5A31D66C1177500D360853F4',
+  PRE_PRELOADED: '0AD06624529D7683EF58637F0955FF565275C2FDD6FF751A37B693DA6D39390B',
+  FINAL: '53945B0E76711393929460608B63377F43549E59B57FE02237904CDBC3E98F9B',
+});
+const ID = 'CCE20935ADD44EF6A5A7973014B2E07F';
+const PRE = '62816AD762635E8EAD5667EAC0C862854DFB91BE57E11C165B1F28020ABF44D7';
+const V4 = 'F2007061AADE201DADFA5412E85FC78BD9EE4065D84B1ECD6E9858F9B99D12BA';
+const HOST = 'AB207E80D364430D700375AA47FEADC4F871CF8B4767943472E9196415D79202';
+const PRE_PRELOADED = 'A0778FA5C2717181B6F554EBAEA81B07CF8551035A0D5FA4651373598DED3E1A';
+const PRE_FIRST_HOST_PRELOADED = 'B8E59D50F1D5D9EF54281B6B77FC034B780044C706F04C4F63B947EDE5E45191';
+const FINAL = 'A8ECF5046DD3BEDB748B77202504B234E39444FD96A9EAFC35A5877FEBC683E6';
+const CURRENT = Object.freeze({ ID, PRE, V4, HOST, PRE_PRELOADED, PRE_FIRST_HOST_PRELOADED, FINAL });
+const generationLane = generation => ({ 15: GEN15, 16: GEN16, 17: GEN17, 18: GEN18, 19: CURRENT })[generation];
+const terminalShapes = generation => generation === 19 ? ['host', 'pre-preloaded', 'pre-first-host', 'final'] :
+  generation >= 17 ? ['host', 'pre-preloaded', 'final'] : ['host', 'final'];
 const patch = name => path.join(runtime, 'patches', name);
 const v3Patch = patch('reshade-injector-cooperative-members-v3.patch');
 const v4Patch = patch('reshade-injector-cooperative-members.patch');
 const hostPatch = patch('reshade-owned-late-d3d11.patch');
 const resultPatch = patch('reshade-injector-first-host-result.patch');
 const preloadedPatch = patch('reshade-injector-preloaded-addon.patch');
+const preloadedFirstHostPatch = patch('reshade-injector-preloaded-first-host.patch');
 const HOST_PATCH_SHA = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
 const RESULT_PATCH_SHA = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
 const PRELOADED_PATCH_SHA = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';
+const PRELOADED_FIRST_HOST_PATCH_SHA = 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309';
 const unavailable = spawnSync('cmake', ['--version'], { windowsHide: true }).status !== 0 ? 'CMake is unavailable' :
   spawnSync('git', ['--version'], { windowsHide: true }).status !== 0 ? 'Git is unavailable' : false;
 const options = { skip: unavailable, timeout: 30000 };
@@ -97,7 +109,7 @@ function apply(f, patchPath) {
   git(f.source, ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'apply', '--whitespace=nowarn', normalized]);
 }
 function injectorHash(f) { return normalizedSha(fs.readFileSync(f.injector, 'utf8')); }
-function fixture(t, shape = 'host', generation = 18) {
+function fixture(t, shape = 'host', generation = 19) {
   const lane = generationLane(generation); assert.ok(lane, `Known fixture generation ${generation}`);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-first-host-cache-'));
   t.after(() => {
@@ -128,10 +140,15 @@ function fixture(t, shape = 'host', generation = 18) {
   assert.equal(injectorHash(f), lane.PRE);
   apply(f, v4Patch); assert.equal(injectorHash(f), lane.V4);
   if (shape !== 'base') { apply(f, hostPatch); assert.equal(injectorHash(f), lane.HOST); }
-  if (shape === 'final' || shape === 'pre-preloaded') {
+  if (shape === 'final' || shape === 'pre-preloaded' || shape === 'pre-first-host') {
     apply(f, resultPatch); assert.equal(injectorHash(f), lane.PRE_PRELOADED || lane.FINAL);
   }
-  if (shape === 'final' && lane.PRE_PRELOADED) { apply(f, preloadedPatch); assert.equal(injectorHash(f), lane.FINAL); }
+  if ((shape === 'final' || shape === 'pre-first-host') && lane.PRE_PRELOADED) {
+    apply(f, preloadedPatch); assert.equal(injectorHash(f), lane.PRE_FIRST_HOST_PRELOADED || lane.FINAL);
+  }
+  if (shape === 'final' && lane.PRE_FIRST_HOST_PRELOADED) {
+    apply(f, preloadedFirstHostPatch); assert.equal(injectorHash(f), lane.FINAL);
+  }
   return f;
 }
 function snapshot(source) {
@@ -157,6 +174,7 @@ function run(f, action = 'prepare', overrides = {}) {
   const globals = [
     `set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID "${ID}")`,
     `set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256 "${overrides.finalHash || FINAL}")`,
+    `set(RESHAPE_PRE_FIRST_HOST_PRELOADED_INJECTOR_CONTENT_SHA256 "${overrides.preFirstHostHash || PRE_FIRST_HOST_PRELOADED}")`,
     `set(RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256 "${overrides.preloadedHash || PRE_PRELOADED}")`,
     `set(RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256 "${overrides.hostHash || HOST}")`,
     `set(RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 "${V4}")`,
@@ -174,6 +192,11 @@ function run(f, action = 'prepare', overrides = {}) {
     `set(RESHAPE_GEN17_PRE_RESULT_INJECTOR_CONTENT_SHA256 "${GEN17.HOST}")`,
     `set(RESHAPE_GEN17_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 "${GEN17.V4}")`,
     `set(RESHAPE_GEN17_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256 "${GEN17.PRE}")`,
+    `set(RESHAPE_GEN18_CURRENT_INJECTOR_CONTENT_SHA256 "${GEN18.FINAL}")`,
+    `set(RESHAPE_GEN18_PRE_PRELOADED_INJECTOR_CONTENT_SHA256 "${GEN18.PRE_PRELOADED}")`,
+    `set(RESHAPE_GEN18_PRE_RESULT_INJECTOR_CONTENT_SHA256 "${GEN18.HOST}")`,
+    `set(RESHAPE_GEN18_PRE_LATE_V4_INJECTOR_CONTENT_SHA256 "${GEN18.V4}")`,
+    `set(RESHAPE_GEN18_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256 "${GEN18.PRE}")`,
     `set(RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256 "${pin('RESHAPE_PRE_X86_INJECTOR_CONTENT_SHA256')}")`,
     `set(RESHAPE_PINNED_COMMIT "${f.commit}")`,
     `set(RESHAPE_OWNED_LATE_D3D11_PATCH ${q(overrides.hostPatch || hostPatch)})`,
@@ -182,6 +205,8 @@ function run(f, action = 'prepare', overrides = {}) {
     `set(RESHAPE_FIRST_HOST_RESULT_PATCH_SHA256 "${overrides.resultPatchHash || RESULT_PATCH_SHA}")`,
     `set(RESHAPE_PRELOADED_ADDON_PATCH ${q(overrides.preloadedPatch || preloadedPatch)})`,
     `set(RESHAPE_PRELOADED_ADDON_PATCH_SHA256 "${overrides.preloadedPatchHash || PRELOADED_PATCH_SHA}")`,
+    `set(RESHAPE_PRELOADED_FIRST_HOST_PATCH ${q(overrides.preloadedFirstHostPatch || preloadedFirstHostPatch)})`,
+    `set(RESHAPE_PRELOADED_FIRST_HOST_PATCH_SHA256 "${overrides.preloadedFirstHostPatchHash || PRELOADED_FIRST_HOST_PATCH_SHA}")`,
     `set(RESHAPE_COOPERATIVE_MEMBERS_PATCH ${q(v4Patch)})`,
     `set(RESHAPE_COOPERATIVE_MEMBERS_V3_PATCH ${q(v3Patch)})`,
   ];
@@ -190,9 +215,10 @@ function run(f, action = 'prepare', overrides = {}) {
     recover: [`ego_recover_owned_late_source_cache(${q(f.source)} ${q(f.journalPath || path.join(f.directory, 'missing-journal.json'))})`],
     tiny: [`ego_apply_first_host_result_source_tail(${q(f.source)})`],
     preload: [`ego_apply_preloaded_addon_source_tail(${q(f.source)})`],
+    firstHostPreload: [`ego_apply_preloaded_first_host_source_tail(${q(f.source)})`],
     forward: [`ego_prepare_owned_late_source_cache(${q(f.source)})`, `ego_rollover_known_addon_build_id(${q(f.injector)})`,
       `ego_apply_owned_late_source_tail(${q(f.source)})`, `ego_apply_first_host_result_source_tail(${q(f.source)})`,
-      `ego_apply_preloaded_addon_source_tail(${q(f.source)})`],
+      `ego_apply_preloaded_addon_source_tail(${q(f.source)})`, `ego_apply_preloaded_first_host_source_tail(${q(f.source)})`],
   };
   assert.ok(calls[action]);
   write(script, ['cmake_minimum_required(VERSION 3.24)', 'set(GIT_EXECUTABLE "git")',
@@ -226,7 +252,7 @@ function alteredPatch(f, input) {
 function normalizedVector(f) {
   return manifest.entries.map(entry => [entry.path, normalizedSha(fs.readFileSync(path.join(f.source, entry.path), 'utf8'))]);
 }
-function recoveryFixture(t, { schema = 2, generation = 15, shape = 'final', postGeneration = schema === 1 ? 15 : 18 } = {}) {
+function recoveryFixture(t, { schema = 2, generation = 15, shape = 'final', postGeneration = schema === 1 ? 15 : 19 } = {}) {
   const f = fixture(t, shape, generation);
   const beforeInjectorHash = injectorHash(f);
   f.completeBefore = snapshot(f.source);
@@ -275,6 +301,7 @@ test('terminal source fixtures and all reconstruction stages retain exact frozen
   assert.equal(manifest.entries.length, 19);
   assert.equal(pin('ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID'), ID);
   assert.equal(pin('RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256'), FINAL);
+  assert.equal(pin('RESHAPE_PRE_FIRST_HOST_PRELOADED_INJECTOR_CONTENT_SHA256'), PRE_FIRST_HOST_PRELOADED);
   assert.equal(pin('RESHAPE_PRE_PRELOADED_INJECTOR_CONTENT_SHA256'), PRE_PRELOADED);
   assert.equal(pin('RESHAPE_PRE_RESULT_INJECTOR_CONTENT_SHA256'), HOST);
   assert.equal(pin('RESHAPE_PRE_LATE_V4_INJECTOR_CONTENT_SHA256'), V4);
@@ -293,20 +320,26 @@ test('terminal source fixtures and all reconstruction stages retain exact frozen
     RESHAPE_GEN17_PRE_RESULT_INJECTOR_CONTENT_SHA256: GEN17.HOST,
     RESHAPE_GEN17_PRE_LATE_V4_INJECTOR_CONTENT_SHA256: GEN17.V4,
     RESHAPE_GEN17_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256: GEN17.PRE,
+    RESHAPE_GEN18_CURRENT_INJECTOR_CONTENT_SHA256: GEN18.FINAL,
+    RESHAPE_GEN18_PRE_PRELOADED_INJECTOR_CONTENT_SHA256: GEN18.PRE_PRELOADED,
+    RESHAPE_GEN18_PRE_RESULT_INJECTOR_CONTENT_SHA256: GEN18.HOST,
+    RESHAPE_GEN18_PRE_LATE_V4_INJECTOR_CONTENT_SHA256: GEN18.V4,
+    RESHAPE_GEN18_PRE_COOPERATIVE_INJECTOR_CONTENT_SHA256: GEN18.PRE,
   })) assert.equal(pin(name), expected, name);
   assert.equal(normalizedSha(fs.readFileSync(v4Patch, 'utf8')), 'D4FC9A85D26C8458B7D22424402018579477205317E10A38DD0B7E472A448E56');
   assert.equal(normalizedSha(fs.readFileSync(hostPatch, 'utf8')), HOST_PATCH_SHA);
   assert.equal(normalizedSha(fs.readFileSync(resultPatch, 'utf8')), RESULT_PATCH_SHA);
   assert.equal(normalizedSha(fs.readFileSync(preloadedPatch, 'utf8')), PRELOADED_PATCH_SHA);
+  assert.equal(normalizedSha(fs.readFileSync(preloadedFirstHostPatch, 'utf8')), PRELOADED_FIRST_HOST_PATCH_SHA);
   for (const entry of manifest.entries) for (const shape of ['pristine', 'base']) body(entry, shape);
 });
-for (const shape of ['host', 'pre-preloaded', 'final']) test(`${shape} complete19 cache peels to the exact pre-late vector`, options, t => {
+for (const shape of terminalShapes(19)) test(`${shape} complete19 cache peels to the exact pre-late vector`, options, t => {
   const f = fixture(t, shape); accepted(run(f)); assertBase(f);
 });
-for (const generation of [15, 16, 17]) for (const shape of terminalShapes(generation)) test(`generation${generation} ${shape} complete19 cache migrates to exact generation18 pre-late vector`, options, t => {
+for (const generation of [15, 16, 17, 18]) for (const shape of terminalShapes(generation)) test(`generation${generation} ${shape} complete19 cache migrates to exact generation19 pre-late vector`, options, t => {
   const f = fixture(t, shape, generation); accepted(run(f)); assertBase(f);
 });
-for (const generation of [15, 16, 17]) for (const shape of terminalShapes(generation)) test(`generation${generation} ${shape} complete19 cache forwards to exact generation18 terminal vector`, options, t => {
+for (const generation of [15, 16, 17, 18]) for (const shape of terminalShapes(generation)) test(`generation${generation} ${shape} complete19 cache forwards to exact generation19 terminal vector`, options, t => {
   const f = fixture(t, shape, generation), expected = fixture(t, 'final');
   accepted(run(f, 'forward')); assert.deepEqual(normalizedVector(f), normalizedVector(expected));
 });
@@ -343,7 +376,7 @@ test('a partial first-host result tail is rejected before any live change', opti
   const f = fixture(t), text = normalize(fs.readFileSync(resultPatch, 'utf8'));
   const second = text.indexOf('\n@@', text.indexOf('\n@@') + 1);
   assert.ok(second > 0); const partial = path.join(f.directory, 'partial.patch'); write(partial, text.slice(0, second) + '\n');
-  apply(f, partial); assert.notEqual(injectorHash(f), HOST); assert.notEqual(injectorHash(f), FINAL); rejected(f);
+  apply(f, partial); assert.notEqual(injectorHash(f), HOST); assert.notEqual(injectorHash(f), PRE_PRELOADED); assert.notEqual(injectorHash(f), FINAL); rejected(f);
 });
 for (const action of ['tiny', 'prepare']) test(`changed terminal patch fails ${action} without live mutation`, options, t => {
   const f = fixture(t, action === 'prepare' ? 'final' : 'host'); rejected(f, action, { resultPatch: alteredPatch(f, resultPatch) });
@@ -362,12 +395,12 @@ test('wrong first-host result pin blocks staged publication unchanged', options,
 });
 test('preloaded add-on tail publishes exactly one verified injector while preserving other18 raw bodies', options, t => {
   const f = fixture(t, 'pre-preloaded'), before = snapshot(f.source);
-  accepted(run(f, 'preload')); assert.equal(injectorHash(f), FINAL);
+  accepted(run(f, 'preload')); assert.equal(injectorHash(f), PRE_FIRST_HOST_PRELOADED);
   const hosts = files => files.filter(file => file.path !== 'tools/injector.cpp');
   assert.deepEqual(hosts(snapshot(f.source)), hosts(before));
 });
 test('preloaded add-on tail is idempotent only after complete19 validation', options, t => {
-  const f = fixture(t, 'final'), before = snapshot(f.source); accepted(run(f, 'preload')); assert.deepEqual(snapshot(f.source), before);
+  const f = fixture(t, 'pre-first-host'), before = snapshot(f.source); accepted(run(f, 'preload')); assert.deepEqual(snapshot(f.source), before);
 });
 for (const action of ['preload', 'prepare']) test(`modified preloaded patch blocks ${action} without changing source`, options, t => {
   const f = fixture(t, action === 'prepare' ? 'final' : 'pre-preloaded');
@@ -376,22 +409,56 @@ for (const action of ['preload', 'prepare']) test(`modified preloaded patch bloc
 test('wrong preloaded patch hash blocks staged publication unchanged', options, t => {
   const f = fixture(t, 'pre-preloaded'); rejected(f, 'preload', { preloadedPatchHash: '0'.repeat(64) });
 });
-test('wrong final preload pin blocks staged publication unchanged', options, t => {
-  const f = fixture(t, 'pre-preloaded'); rejected(f, 'preload', { finalHash: '0'.repeat(64) });
+test('wrong first-host preloaded stage pin blocks staged preload publication unchanged', options, t => {
+  const f = fixture(t, 'pre-preloaded'); rejected(f, 'preload', { preFirstHostHash: '0'.repeat(64) });
 });
 test('partial preloaded tail is rejected by prepare and atomic replay without changing source', options, t => {
   const f = fixture(t, 'pre-preloaded'), text = normalize(fs.readFileSync(preloadedPatch, 'utf8'));
   const second = text.indexOf('\n@@', text.indexOf('\n@@') + 1); assert.ok(second > 0);
   const partial = path.join(f.directory, 'partial-preloaded.patch'); write(partial, text.slice(0, second) + '\n');
-  apply(f, partial); assert.notEqual(injectorHash(f), PRE_PRELOADED); assert.notEqual(injectorHash(f), FINAL);
+  apply(f, partial); assert.notEqual(injectorHash(f), PRE_PRELOADED); assert.notEqual(injectorHash(f), PRE_FIRST_HOST_PRELOADED); assert.notEqual(injectorHash(f), FINAL);
   rejected(f); rejected(f, 'preload');
 });
-test('preloaded replay rejects unknown other18 bytes even when injector is already final', options, t => {
-  const f = fixture(t, 'final'), file = path.join(f.source, 'source/input.cpp');
+test('preloaded replay rejects unknown other18 bytes even when its tail is already applied', options, t => {
+  const f = fixture(t, 'pre-first-host'), file = path.join(f.source, 'source/input.cpp');
   write(file, fs.readFileSync(file, 'utf8') + '\n// foreign preloaded host edit\n'); rejected(f, 'preload');
 });
+test('preloaded first-host tail publishes exactly one verified injector and preserves other18 raw bodies', options, t => {
+  const f = fixture(t, 'pre-first-host'), before = snapshot(f.source);
+  accepted(run(f, 'firstHostPreload')); assert.equal(injectorHash(f), FINAL);
+  const hosts = files => files.filter(file => file.path !== 'tools/injector.cpp');
+  assert.deepEqual(hosts(snapshot(f.source)), hosts(before));
+});
+test('preloaded first-host tail is idempotent after complete19 validation', options, t => {
+  const f = fixture(t, 'final'), before = snapshot(f.source);
+  accepted(run(f, 'firstHostPreload')); assert.deepEqual(snapshot(f.source), before);
+});
+for (const action of ['firstHostPreload', 'prepare']) test(`modified preloaded first-host patch blocks ${action} without changing source`, options, t => {
+  const f = fixture(t, action === 'prepare' ? 'final' : 'pre-first-host');
+  rejected(f, action, { preloadedFirstHostPatch: alteredPatch(f, preloadedFirstHostPatch) });
+});
+test('wrong preloaded first-host patch hash blocks staged publication unchanged', options, t => {
+  const f = fixture(t, 'pre-first-host'); rejected(f, 'firstHostPreload', { preloadedFirstHostPatchHash: '0'.repeat(64) });
+});
+test('wrong preloaded first-host preimage pin blocks staged publication unchanged', options, t => {
+  const f = fixture(t, 'pre-first-host'); rejected(f, 'firstHostPreload', { preFirstHostHash: '0'.repeat(64) });
+});
+test('wrong preloaded first-host final pin blocks staged publication unchanged', options, t => {
+  const f = fixture(t, 'pre-first-host'); rejected(f, 'firstHostPreload', { finalHash: '0'.repeat(64) });
+});
+test('partial preloaded first-host tail is rejected by prepare and atomic replay unchanged', options, t => {
+  const f = fixture(t, 'pre-first-host'), text = normalize(fs.readFileSync(preloadedFirstHostPatch, 'utf8'));
+  const second = text.indexOf('\n@@', text.indexOf('\n@@') + 1); assert.ok(second > 0);
+  const partial = path.join(f.directory, 'partial-preloaded-first-host.patch'); write(partial, text.slice(0, second) + '\n');
+  apply(f, partial); assert.notEqual(injectorHash(f), PRE_FIRST_HOST_PRELOADED); assert.notEqual(injectorHash(f), FINAL);
+  rejected(f); rejected(f, 'firstHostPreload');
+});
+test('preloaded first-host replay rejects unknown other18 bodies even when its injector is final', options, t => {
+  const f = fixture(t, 'final'), file = path.join(f.source, 'source/input.cpp');
+  write(file, fs.readFileSync(file, 'utf8') + '\n// foreign first-host body\n'); rejected(f, 'firstHostPreload');
+});
 
-for (const shape of ['host', 'final']) test(`legacy schema1 generation15 ${shape} recovery restores exact originals then migrates to18`, options, t => {
+for (const shape of ['host', 'final']) test(`legacy schema1 generation15 ${shape} recovery restores exact originals then migrates to19`, options, t => {
   const f = recoveryFixture(t, { schema: 1, generation: 15, shape });
   accepted(run(f, 'recover')); assert.deepEqual(snapshot(f.source), f.completeBefore); assert.equal(fs.existsSync(f.journalPath), false);
   accepted(run(f)); assertBase(f);
@@ -411,6 +478,13 @@ for (const generation of [15, 16, 17]) for (const shape of terminalShapes(genera
 for (const generation of [15, 16, 17, 18]) for (const shape of terminalShapes(generation)) {
   test(`schema2 generation${generation} ${shape} recovery restores exact originals from generation18 postimages`, options, t => {
     const f = recoveryFixture(t, { schema: 2, generation, shape, postGeneration: 18 });
+    accepted(run(f, 'recover')); assert.deepEqual(snapshot(f.source), f.completeBefore); assert.equal(fs.existsSync(f.journalPath), false);
+    accepted(run(f)); assertBase(f);
+  });
+}
+for (const generation of [15, 16, 17, 18, 19]) for (const shape of terminalShapes(generation)) {
+  test(`schema2 generation${generation} ${shape} recovery restores exact originals from generation19 postimages`, options, t => {
+    const f = recoveryFixture(t, { schema: 2, generation, shape, postGeneration: 19 });
     accepted(run(f, 'recover')); assert.deepEqual(snapshot(f.source), f.completeBefore); assert.equal(fs.existsSync(f.journalPath), false);
     accepted(run(f)); assertBase(f);
   });
@@ -435,6 +509,11 @@ for (const postGeneration of [16, 17]) for (const shape of terminalShapes(18)) {
     const f = recoveryFixture(t, { schema: 2, generation: 18, shape, postGeneration }); rejectedRecovery(f);
   });
 }
+for (const postGeneration of [16, 17, 18]) for (const shape of terminalShapes(19)) {
+  test(`schema2 generation19 ${shape} cannot cross into historical generation${postGeneration} postimages`, options, t => {
+    const f = recoveryFixture(t, { schema: 2, generation: 19, shape, postGeneration }); rejectedRecovery(f);
+  });
+}
 test('schema2 mixed generation15 injector postimage is rejected despite a forged matching raw after hash', options, t => {
   const f = recoveryFixture(t), oldBase = fixture(t, 'base', 15);
   write(f.injector, fs.readFileSync(oldBase.injector));
@@ -443,6 +522,12 @@ test('schema2 mixed generation15 injector postimage is rejected despite a forged
 });
 test('schema2 generation18 postimages reject a forged matching raw hash for a generation17 injector body', options, t => {
   const f = recoveryFixture(t, { generation: 18, postGeneration: 18 }), oldBase = fixture(t, 'base', 17);
+  write(f.injector, fs.readFileSync(oldBase.injector));
+  const index = manifest.entries.findIndex(entry => entry.path === 'tools/injector.cpp');
+  f.journal.after[index] = sha(fs.readFileSync(f.injector)).toLowerCase(); writeJournal(f); rejectedRecovery(f);
+});
+test('schema2 generation19 postimages reject a forged matching raw hash for a generation18 injector body', options, t => {
+  const f = recoveryFixture(t, { generation: 19, postGeneration: 19 }), oldBase = fixture(t, 'base', 18);
   write(f.injector, fs.readFileSync(oldBase.injector));
   const index = manifest.entries.findIndex(entry => entry.path === 'tools/injector.cpp');
   f.journal.after[index] = sha(fs.readFileSync(f.injector)).toLowerCase(); writeJournal(f); rejectedRecovery(f);

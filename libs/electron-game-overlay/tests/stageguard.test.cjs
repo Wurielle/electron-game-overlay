@@ -12,6 +12,7 @@ const reshadeProducer = fs.readFileSync(path.join(root, 'libs/electron-game-over
 const ownedLatePatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
 const firstHostResultPatchSha256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
 const addonPreloadPatchSha256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';
+const preloadedFirstHostPatchSha256 = 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309';
 function patches(source) {
   return [...source.matchAll(/(\w+PatchSha256)\s*=\s*Join-Path \$\w+ "patches\\([^"]+)"/g)].map(([, key, file]) => [key, file]);
 }
@@ -30,10 +31,11 @@ test('portable source contract: staging mirrors bound cooperative native and pac
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 31);
+  assert.equal(patches(stage).length, 32);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorFirstHostResultPatchSha256'), [['injectorFirstHostResultPatchSha256', 'reshade-injector-first-host-result.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorAddonPreloadPatchSha256'), [['injectorAddonPreloadPatchSha256', 'reshade-injector-preloaded-addon.patch']]);
+  assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorPreloadedFirstHostPatchSha256'), [['injectorPreloadedFirstHostPatchSha256', 'reshade-injector-preloaded-first-host.patch']]);
   for (const [, file] of patches(stage)) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches', file))).digest('hex').length, 64);
 });
 test('portable extracted numeric guards reject old stamps and absent/incorrect capabilities', () => {
@@ -110,15 +112,23 @@ test('current source cache binds the complete nineteen-file stack and frozen ter
   assert.deepEqual(preloadChanged, ['tools/injector.cpp']);
   assert.match(reshadeProducer, /\$Stamp.injectorAddonPreloadPatchSha256 -eq \$InjectorAddonPreloadPatchHash -and/);
   assert.match(reshadeProducer, /injectorAddonPreloadPatchSha256 = \$InjectorAddonPreloadPatchHash/);
+  const firstHostPreloadPatch = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-first-host.patch'));
+  assert.equal(crypto.createHash('sha256').update(firstHostPreloadPatch).digest('hex').toUpperCase(), preloadedFirstHostPatchSha256);
+  const firstHostPreloadChanged = [...firstHostPreloadPatch.toString('utf8').matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)].map(match => match[2]);
+  assert.deepEqual(firstHostPreloadChanged, ['tools/injector.cpp']);
+  assert.match(reshadeProducer, /\$Stamp.injectorPreloadedFirstHostPatchSha256 -eq \$InjectorPreloadedFirstHostPatchHash -and/);
+  assert.match(reshadeProducer, /injectorPreloadedFirstHostPatchSha256 = \$InjectorPreloadedFirstHostPatchHash/);
   assert.match(reshadeProducer, /\(\$Stamp.addonPreloadProtocol -is \[int\] -or \$Stamp.addonPreloadProtocol -is \[long\]\) -and\s*\$Stamp.addonPreloadProtocol -eq 1 -and/);
   assert.match(reshadeProducer, /addonPreloadProtocol = 1/);
   assert.match(producer, /addonPreloadProtocol = 1/);
   const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
-  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g), ['$InjectorAddonPreloadPatch']);
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g), ['$InjectorPreloadedFirstHostPatch']);
+  assert.ok(reshadeProducer.indexOf('foreach ($Patch in @(') > reshadeProducer.indexOf('foreach ($Entry in $ExpectedPatchedContentSha256.GetEnumerator())'), 'Terminal patch reversal check follows the complete source inventory/hash proof');
   for (const source of [reshadeProducer, producer, stage]) {
     assert.ok(source.includes(ownedLatePatchSha256), 'Frozen owned-late production patch is pinned before packaging/cache acceptance');
     assert.ok(source.includes(firstHostResultPatchSha256), 'Frozen first-host result patch is pinned before packaging/cache acceptance');
     assert.ok(source.includes(addonPreloadPatchSha256), 'Frozen preload patch is pinned before packaging/cache acceptance');
+    assert.ok(source.includes(preloadedFirstHostPatchSha256), 'Frozen preloaded first-host patch is pinned before packaging/cache acceptance');
   }
 });
 
@@ -137,6 +147,7 @@ for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted curre
       { key: 'ownedLateD3d11PatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'), sha256: ownedLatePatchSha256 },
       { key: 'injectorFirstHostResultPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-first-host-result.patch'), sha256: firstHostResultPatchSha256 },
       { key: 'injectorAddonPreloadPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-addon.patch'), sha256: addonPreloadPatchSha256 },
+      { key: 'injectorPreloadedFirstHostPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-first-host.patch'), sha256: preloadedFirstHostPatchSha256 },
     ],
     expectedAddonId: producer.match(/^\$ExpectedAddonBuildId = "([0-9A-F]{32})"\r?$/m)[1],
     expectedGeneration: Number(producer.match(/^\$RuntimeGeneration = ([1-9][0-9]*)\r?$/m)[1]),

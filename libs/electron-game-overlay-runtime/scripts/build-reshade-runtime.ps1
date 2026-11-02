@@ -160,6 +160,14 @@ if ($InjectorAddonPreloadPatchHash -cne
     "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D") {
     throw "The injector add-on preload patch does not match its frozen source."
 }
+$InjectorPreloadedFirstHostPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-first-host.patch"
+$InjectorPreloadedFirstHostPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorPreloadedFirstHostPatch).Hash
+if ($InjectorPreloadedFirstHostPatchHash -cne
+    "A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309") {
+    throw "The injector preloaded first-host patch does not match its frozen source."
+}
 $ExpectedPatchedFiles = @(
     "ReShade.vcxproj"
     "include/reshade.hpp"
@@ -200,7 +208,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
     "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
     "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
-    "tools/injector.cpp" = "53945B0E76711393929460608B63377F43549E59B57FE02237904CDBC3E98F9B"
+    "tools/injector.cpp" = "A8ECF5046DD3BEDB748B77202504B234E39444FD96A9EAFC35A5877FEBC683E6"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -236,16 +244,6 @@ function Test-ReShadePatchedSourceState {
         return $false
     }
 
-    # The preload tail overlaps the owned late-runtime and historical injector
-    # patches, so lower seams cannot reverse independently in the final tree.
-    # Its exact reversal and all nineteen content hashes prove the ordered stack.
-    foreach ($Patch in @(
-        $InjectorAddonPreloadPatch
-    )) {
-        if (-not (Test-GitPatchApplied $Patch)) {
-            return $false
-        }
-    }
     $SourceChanges = @(
         & git.exe -C $ReShadeSource status --porcelain --untracked-files=all --ignore-submodules=none 2>$null
     )
@@ -269,6 +267,15 @@ function Test-ReShadePatchedSourceState {
         $PatchedFile = Join-Path $ReShadeSource $Entry.Key
         if (-not (Test-Path -LiteralPath $PatchedFile -PathType Leaf) -or
             (Get-NormalizedTextSha256 $PatchedFile) -ne $Entry.Value) {
+            return $false
+        }
+    }
+    # Check the newest overlapping tail only after the exact nineteen-file
+    # inventory and content proof. Earlier seams do not reverse independently.
+    foreach ($Patch in @(
+        $InjectorPreloadedFirstHostPatch
+    )) {
+        if (-not (Test-GitPatchApplied $Patch)) {
             return $false
         }
     }
@@ -329,6 +336,7 @@ function Test-RuntimeBuildCache {
             $Stamp.ownedLateD3d11PatchSha256 -eq $OwnedLateD3d11PatchHash -and
             $Stamp.injectorFirstHostResultPatchSha256 -eq $InjectorFirstHostResultPatchHash -and
             $Stamp.injectorAddonPreloadPatchSha256 -eq $InjectorAddonPreloadPatchHash -and
+            $Stamp.injectorPreloadedFirstHostPatchSha256 -eq $InjectorPreloadedFirstHostPatchHash -and
             ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
             $Stamp.addonPreloadProtocol -eq 1 -and
             $Stamp.cooperativeAddonProtocol -eq 1 -and
@@ -475,6 +483,7 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     ownedLateD3d11PatchSha256 = $OwnedLateD3d11PatchHash
     injectorFirstHostResultPatchSha256 = $InjectorFirstHostResultPatchHash
     injectorAddonPreloadPatchSha256 = $InjectorAddonPreloadPatchHash
+    injectorPreloadedFirstHostPatchSha256 = $InjectorPreloadedFirstHostPatchHash
     addonPreloadProtocol = 1
     cooperativeAddonProtocol = 1
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash

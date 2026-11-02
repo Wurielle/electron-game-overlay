@@ -219,3 +219,31 @@ test('current preload capability cannot disappear from one architecture before E
   await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /preload|manifests disagree/i);
   await assert.rejects(fs.stat(f.destination), /ENOENT/);
 });
+
+test('public verification and afterPack preserve retained generation-18 preload packages without the later ordering provenance', async t => {
+  const f = await fixture(t, { runtimeGeneration: 18, addonBuildId: '17E16E01C9A243E18EE19D814420E519' });
+  const original = await fs.readFile(path.join(f.leaf, 'overlay-manifest.json'));
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.addonPreloadProtocol, 1);
+    assert.equal(stamp.injectorAddonPreloadPatchSha256, 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D');
+    assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, undefined);
+  }
+});
+
+test('fully rebound current ordering provenance removal fails before replacing a valid Electron package', async t => {
+  const f = await fixture(t);
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  const original = await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json'));
+  const relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(await fs.readFile(path.join(f.leaf, relative)));
+  delete stamp.injectorPreloadedFirstHostPatchSha256;
+  f.payload.write(relative, JSON.stringify(stamp)); f.payload.bindNativeHashes(); f.payload.seal();
+  await assert.rejects(verifyOverlayPackage(f.sdk), /preloaded first-host patch provenance mismatch.*32/i);
+  await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /preloaded first-host patch provenance mismatch.*32/i);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+});

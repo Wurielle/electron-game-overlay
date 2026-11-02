@@ -8,14 +8,16 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
-  addonBuildId = '17E16E01C9A243E18EE19D814420E519',
-  runtimeGeneration = 18,
+  addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
+  runtimeGeneration = 19,
   addonPreloadProtocol = runtimeGeneration >= 17 ? 1 : undefined,
   reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
   ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
   firstHostResultPatch = runtimeGeneration >= 15,
   injectorFirstHostResultPatchSha256 = 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554',
   injectorAddonPreloadPatchSha256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D',
+  preloadedFirstHostPatch = runtimeGeneration >= 19,
+  injectorPreloadedFirstHostPatchSha256 = 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309',
 } = {}) {
   dist = path.resolve(dist);
   fs.mkdirSync(dist, { recursive: true });
@@ -44,6 +46,9 @@ function writeCooperativeDistribution(dist, {
     : '// Controlled retained validator fixture without the later CLI implementation pin\n') +
     (addonPreloadProtocol === 1
       ? `const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 = '${injectorAddonPreloadPatchSha256}';\n`
+      : '') +
+    (preloadedFirstHostPatch
+      ? `const INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256 = '${injectorPreloadedFirstHostPatchSha256}';\n`
       : ''));
   json('node_modules/tslib/package.json', { name: 'tslib', version: '2.8.1', main: 'tslib.js' });
   write('node_modules/tslib/tslib.js', '// controlled dependency, never executed\n');
@@ -80,6 +85,7 @@ function writeCooperativeDistribution(dist, {
         ...(firstHostResultPatch ? { injectorFirstHostResultPatchSha256 } : {}),
         ...(addonPreloadProtocol === undefined ? {} : { addonPreloadProtocol }),
         ...(addonPreloadProtocol === 1 ? { injectorAddonPreloadPatchSha256 } : {}),
+        ...(preloadedFirstHostPatch ? { injectorPreloadedFirstHostPatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
         }),
