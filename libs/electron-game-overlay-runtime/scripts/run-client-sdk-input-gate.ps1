@@ -22,6 +22,8 @@ param(
     [string]$RawRegistrationTarget = "explicit-hwnd",
     [Parameter(DontShow = $true)]
     [string]$ElectronExecutable,
+    [Parameter(DontShow = $true)]
+    [string]$ClientReadyMarker,
     [string]$DeviceLossMonitorDirectory
 )
 
@@ -128,9 +130,22 @@ else {
 }
 $AttemptCount = $AttemptCountOverride
 
+function Get-ControlledElectronProcesses {
+    $DefaultElectron = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
+    @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                [string]::Equals($_.ExecutablePath, $Electron,
+                    [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals($_.ExecutablePath, $DefaultElectron,
+                    [StringComparison]::OrdinalIgnoreCase)
+            }
+    )
+}
+
 function Get-MatchingClientProcesses {
     @(
-        Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
+        Get-ControlledElectronProcesses |
             Where-Object {
                 $_.CommandLine -like "*$RepoRoot*" -and
                 ($_.CommandLine -like "*--reshade-overlay*" -or
@@ -422,8 +437,11 @@ function Stop-AttemptElectronProcesses {
     param([Parameter(Mandatory = $true)][string]$UserData)
 
     $ProcessIds = @(
-        Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -like "*$UserData*" } |
+        Get-ControlledElectronProcesses |
+            Where-Object {
+                $_.CommandLine -and $_.CommandLine.IndexOf(
+                    $UserData, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            } |
             ForEach-Object { $_.ProcessId }
     )
     foreach ($ProcessId in $ProcessIds) {
@@ -1060,6 +1078,17 @@ function Invoke-ClientSdkAttempt {
             -ClientProcess $ClientProcess `
             -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
             -Deadline $StartupDeadline
+
+        # A packaged demo can finish showing its control window after the
+        # injector is armed. Let its test bootstrap confirm that startup is
+        # complete before the controlled host takes foreground ownership.
+        if (-not [string]::IsNullOrWhiteSpace($ClientReadyMarker)) {
+            Wait-ForClientMarker `
+                -Path $ClientStdout `
+                -ClientProcess $ClientProcess `
+                -Marker $ClientReadyMarker `
+                -Deadline $StartupDeadline
+        }
 
         if ($RawRegistrationTiming -eq "after-injection") {
             # The native watcher baselines processes before it announces ready.
@@ -1728,8 +1757,11 @@ try {
 
         Start-Sleep -Milliseconds 500
         $RemainingAttemptElectronProcesses = @(
-            Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
-                Where-Object { $_.CommandLine -like "*$($AttemptResult.UserData)*" }
+            Get-ControlledElectronProcesses |
+                Where-Object {
+                    $_.CommandLine -and $_.CommandLine.IndexOf(
+                        $AttemptResult.UserData, [StringComparison]::OrdinalIgnoreCase) -ge 0
+                }
         )
         $RemainingHosts = Get-MatchingHosts
         $RemainingClients = Get-MatchingClientProcesses

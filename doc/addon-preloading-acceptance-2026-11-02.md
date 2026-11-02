@@ -193,3 +193,40 @@ installation was altered to test them.
 
 This diagnosed gen17 CPU stack overflow does not diagnose or retrospectively
 close the earlier historical D3D11 GPU hang.
+
+## Portable application follow-up
+
+The [packaged acceptance record](evidence/addon-preloading-packaged-2026-11-02.json)
+and [full local audit](../build/pp/a5828fe6/final-audit.json) cover the actual
+`ElectronGameOverlayDemo.exe` portable package on Electron 39.8.10. The package
+uses `resources/app`. A test-only bootstrap supplies the public parser's preload
+options and isolated paths; the production Application, UI, packaged SDK and
+native assets remain in use. One compiled parser call is instrumented, with
+original bytes and hashes retained. This is not ASAR acceptance.
+
+The bundled Node runtime registered two applications through the packaged
+`electron-game-overlay/preload` API with `packageRoot` omitted. Eight final fresh
+client/host cycles passed: two normal DX11 cycles, two preload-enabled DX11
+cycles, two preload-enabled DX12 cycles, and two normal DX12 cycles after both
+registrations were removed. Only copied repository demo executables were used.
+The existing input, text, Escape, caption-drag, focus, game-input isolation,
+release and exact-event-count assertions were retained.
+
+Four passive snapshots bind the authenticated target PID and creation time to
+the exact demo path. Each has one ReShade module, both registered add-ons loaded
+from the owned snapshot, one active participant with two windows, one frame
+worker and one TCP worker. The active participant belongs to the selected app;
+the offline app has no participant. All 154 sealed payloads and the complete
+156-file packaged SDK inventory remained unchanged. Test processes,
+registrations and temporary display requests were cleaned up; cached payloads
+are retained by the unregister API's design.
+
+Earlier failed attempts remain recorded. The controller originally recognized
+only `electron.exe` and missed the renamed executable during cleanup. It now
+uses exact selected/default executable paths and literal per-attempt profile
+matching, verified in PowerShell 5.1 and 7. An optional startup marker wait
+precedes target launch in the final runs after an earlier foreground-loss
+timeout. One initial DX12 run missed its first status-window click; its cause
+was not determined. The two fresh enabled retry cycles and two subsequent
+normal DX12 cycles passed unchanged strict assertions. No SDK or native runtime
+change was made during this follow-up.
