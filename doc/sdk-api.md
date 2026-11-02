@@ -207,7 +207,7 @@ controller-lifetime options, not update fields.
 
 | Member | Contract |
 | --- | --- |
-| `ready: Promise<void>` | Initial session/observer baseline, requested staging and early watchers are ready; no game authentication/render guarantee |
+| `ready: Promise<void>` | Initial session/observer baseline, requested staging and early watchers are ready; follows policy revisions received during startup; no game authentication/render guarantee |
 | `targets` | Immutable `OverlayManagedTarget` attempt snapshots: PID, path, optional exact identity, mode, status and cancellation state |
 | `onEvent(handler)` | Add an observer; return an unsubscribe function |
 | `update(policy): Promise<void>` | Apply active authorization synchronously; settle serialized future discovery changes |
@@ -223,6 +223,19 @@ An allowed live target keeps its launcher, scene, focus and input when discovery
 rules change. For example, adding then removing `**/game.exe` while retaining an
 authorizing folder rule does not cancel that target. A genuine deny cancels it
 synchronously and stops its delivery. Deny always wins over callbacks.
+
+Updates received while initial discovery is preparing supersede that work.
+`ready` waits for the current policy's discovery, rather than rejecting because
+an older slot was intentionally retired. Obsolete completions cannot emit a
+controller `ready` or a discovery failure for the replacement. Genuine current
+startup failures still reject readiness. Uncertain discovery remains blocked
+without cancelling otherwise authorized active targets.
+
+After initial readiness has settled, a later policy update has its own discovery
+lifetime. A previously recorded `armed` or `ready` event does not establish that
+the replacement is ready. Await the current update and observe its current
+readiness/blockage events before launching a target; do not add delays or retry
+an indeterminate injection.
 
 An unused native watcher is replaced only after checked owned-child exit and
 complete output-drain proof that it selected no target. Uncertain/selected attempts

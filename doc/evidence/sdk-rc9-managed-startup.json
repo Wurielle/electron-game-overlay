@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-managed-startup-fix",
+  "recordedAtUtc": "2026-11-02T20:33:57.7981592Z",
+  "status": "sdk-startup-fix-verified-consumer-graphics-retest-pending",
+  "candidateVersion": "0.1.0-rc.9",
+  "sourceBaseCommit": "3f2fa650d8d89d85ed0158c4a60f3f94ec584d95",
+  "workingTreeDirty": true,
+  "nativeGeneration": 19,
+  "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+  "nativePayloadsUnchanged": true,
+  "changedSealedPayloads": [
+    {
+      "path": "lib/overlay-target-watcher.d.ts",
+      "size": 5095,
+      "sha256": "2be8da4ab857596db0d7d9fc896f14952b01c31ea48a36790c4768875ecd9a9c"
+    },
+    {
+      "path": "lib/overlay-target-watcher.d.ts.map",
+      "size": 3415,
+      "sha256": "58ee58f286cca06aa8827eca98c3189dca56eb872b7240f12590c4bb3bfc2a92"
+    },
+    {
+      "path": "lib/overlay-target-watcher.js",
+      "size": 34678,
+      "sha256": "c5d10258d215a6e84102018a763f196bd34d94560e9099f0b8a99fbde88156ef"
+    },
+    {
+      "path": "tsconfig.lib.tsbuildinfo",
+      "size": 42345,
+      "sha256": "ee77f4338caa372d4fbbae9031b0e18e41c5f86c81bff25494ca344c057ecd3d"
+    }
+  ],
+  "sourceSdkManifestSha256": "b60d5ed8cf7399acc63cad44f222fc3c434b4bf5ab4912d422179c9065162f01",
+  "fixedSdk": {
+    "watcherSource": {
+      "path": "libs/electron-game-overlay/src/lib/overlay-target-watcher.ts",
+      "sha256": "d452da122c0ca3b6009138cab58ea6c34926cdda46103be464e1073189fb9a9d"
+    },
+    "watcherJavascriptSha256": "c5d10258d215a6e84102018a763f196bd34d94560e9099f0b8a99fbde88156ef"
+  },
+  "sdkSuite": {
+    "tests": 1250,
+    "pass": 1240,
+    "fail": 0,
+    "skipped": 10,
+    "concurrency": 4,
+    "node": "26.12.1",
+    "durationMs": 207186.7768,
+    "log": {
+      "path": "build/sdk-rc9-startup-full-final.log",
+      "sha256": "679e6a4520947181e0acf81029d73b01e7898720131c01a14c34c1732296bd76"
+    }
+  },
+  "clientCjsSuite": {
+    "tests": 258,
+    "pass": 254,
+    "fail": 0,
+    "skipped": 4,
+    "concurrency": 4,
+    "durationMs": 26464.3616,
+    "log": {
+      "path": "build/client-rc9-startup-final.log",
+      "sha256": "7d445b9f736c976fe0b95860a469c639abe7776dd4e77df905686c5e0c4916a1"
+    }
+  },
+  "types": {
+    "sdkBuild": "passed",
+    "repositoryClientNoEmit": "passed",
+    "publicApiArgumentsChanged": false
+  },
+  "focusedWatcherTests": {
+    "tests": 32,
+    "pass": 32,
+    "newRegressions": 10,
+    "firstEightFailAgainstRc8": true,
+    "rc8JavascriptSha256": "e559839f7e0ec94c0929bd8a740d1e665c174171dfaa0c8a644a4e15146f96e0",
+    "initialFiveRedLog": {
+      "path": "build/watcher-startup-revision-old-rc8.log",
+      "sha256": "8fdbe2ea6f2cb63045b4f7ff270598723a7afdfb5cb7f3a68ccb87223d0fc21f"
+    },
+    "additionalThreeRedLog": {
+      "path": "build/watcher-startup-revision-additional.log",
+      "sha256": "c6ca394b9915f6a5d7bbf1704924b2dd1a0c93ce3ac00c9c2394e4fab6054194"
+    },
+    "extraTwoFixedLog": {
+      "path": "build/watcher-startup-revision-before-baseline-active.log",
+      "sha256": "4338bb2a9b944fbad65cb2bf53af3a2e7cfeb1deb16312504d44f6a8d28a841f"
+    }
+  },
+  "nativeDiscovery": {
+    "scope": "Actual SDK observer/native policy readiness with held initial preparation and safe replacement; simulated Node session seam; no Electron, target, injection or graphics",
+    "fixed": {
+      "path": "build/msp-rc9/report.json",
+      "sha256": "4963e29d807d872ea3aa021d38ef9c4d0fd45eb4ef3063297702b82e2d9983b5"
+    },
+    "fixedStatus": "passed",
+    "ownedFixedChildren": 3,
+    "fixedChildrenAllClosed": true,
+    "oldRc8": {
+      "path": "build/msp-rc8-old/report.json",
+      "sha256": "a6a6ae3c91d6525d59b9fc31a7dc72d17192c9033d8580c0f2f2e0d3e4279c9c"
+    },
+    "oldRc8Status": "failed",
+    "oldRc8ExpectedFailure": true,
+    "oldRc8ChildrenAllClosed": true,
+    "targetCreated": false,
+    "injectionExecuted": false
+  },
+  "earlierLocalRuns": [
+    {
+      "log": {
+        "path": "build/sdk-rc9-startup-full.log",
+        "sha256": "c2e68ccb31cc4f25cc1c110f45201483d72f33130098c10539f471e42e2816c9"
+      },
+      "reason": "Required EGO_NATIVE_MANAGER_PATH fixture was omitted for one read-only self-process image query; final full suite reran with the required fixture and passed all non-skipped cases."
+    },
+    {
+      "log": {
+        "path": "build/client-rc9-startup.log",
+        "sha256": "13786323049daf3dff55e3c2500dd730511529b0e876f348604218518c2bd74f"
+      },
+      "reason": "Default-concurrency run hit an existing legacy child-start deadline under concurrent test load; final concurrency-four run retained assertions and passed all non-skipped cases."
+    }
+  ],
+  "consumerBoundary": {
+    "rc8ReportedNativeMatrix": "1/9; scaling, rearming and negative-focus control not accepted",
+    "rc9IzabelaInstalled": false,
+    "rc9IzabelaTested": false,
+    "currentD3D10GapFixed": false,
+    "d3d10Finding": "Strong timing inference: launch marker 19:54:10.8790618 UTC preceded replacement baseline 19:54:11.2477741 UTC; old harness waited for any historical armed event. Exact target creation FILETIME was not retained. Current replacement readiness remains required.",
+    "nativeGraphicsClaims": "None added",
+    "userGoRequiredBeforeConsumerRetest": true
+  },
+  "retainedKnownIssues": [
+    "Unexplained initial packaged DX12 status-window click timeout",
+    "Historical unattributed D3D11 GPU hang"
+  ],
+  "izabelaFilesModified": false,
+  "userAppsOrGamesStopped": false,
+  "defenderSettingsChanged": false,
+  "committed": false,
+  "pushed": false
+}
