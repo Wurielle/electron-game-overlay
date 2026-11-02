@@ -78,7 +78,25 @@ physical-key gate requires physical input, not a relabeled synthetic event.
 
 ## Implementation status
 
-The current sealed candidate is generation 16, build
+### Optional installed preloading — generation 19
+
+Generation 19, build `CCE20935ADD44EF6A5A7973014B2E07F`, adds optional installed
+add-on registration and dormant preloading through a new owned host's external
+`AddonPath`. All six core x64 repository D3D11/D3D12 cells passed: registered
+self-load/injection and true older-unregistered-gen16 compatibility on each
+backend. An offline registered baseline can forward events while each app
+activates its own exact module and private transport. Restart and future-only
+unregister semantics passed. All nine additional default-path demo regressions
+also passed; see the [feature acceptance record](addon-preloading-acceptance-2026-11-02.md).
+
+Only repository demos were used for this feature. No user game was launched;
+the generation-16 game evidence below is historical, not a generation-19 rerun.
+Two registered current apps share the same build in these tests; the separate
+current/old16 dynamic-join cells establish mixed-native-version behavior.
+
+### Prior full acceptance — generation 16
+
+The previous full acceptance candidate is generation 16, build
 `E8FE3783F29E4FB297D8B006D0087725`. All four original Gun Frog cases and all
 four independently installed gen11/gen16 startup-order × graceful/crash cells
 passed. The mixed run retained one ReShade, both apps' exact private engines,

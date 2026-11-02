@@ -1,0 +1,3446 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-optional-addon-preloading-acceptance",
+  "recordedLocalDate": "2026-11-02",
+  "timezone": "Europe/Paris",
+  "recordedAtUtc": "2026-11-02T00:32:06Z",
+  "status": "accepted-within-recorded-demo-scope",
+  "coreFeatureAcceptancePassed": true,
+  "allFinalRegressionWorkComplete": true,
+  "scope": "Actual controlled x64 D3D11/D3D12 repository demos only. No user game was launched for this feature. Windows SendInput is not physical-key evidence; OS module path/base and file hashes are not remote-memory attestation or a historical injection-count proof.",
+  "candidate": {
+    "runtimeGeneration": 19,
+    "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+    "addonPreloadProtocol": 1,
+    "packageVersionInformational": "0.1.0-rc.7",
+    "sdkSealSha256": "43e069e4c76651443d0734517754b22b713601387123dd4654e18c21013f48bf",
+    "sdkJavascriptGraphSha256": "e501e622e0fa543e00854598a199bc5076efc8ae391058b32f565ee7b7a63c56",
+    "sealedPayloads": 154,
+    "sealedPayloadBytes": 20779905,
+    "injectorNormalizedSourceSha256": "a8ecf5046dd3bedb748b77202504b234e39444fd96a9eafc35a5877febc683e6",
+    "sourcePatchHashes": {
+      "host": "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE",
+      "result": "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554",
+      "preload": "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D",
+      "firstHost": "A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309"
+    },
+    "native": [
+      {
+        "architecture": "x64",
+        "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+        "runtimeGeneration": 19,
+        "addonPreloadProtocol": 1,
+        "packageStampSha256": "d5f2d6b4bfb45403009c0f5022de79ed579b70973c7c9514cf7fed2564b2f9ca",
+        "reshadeStampSha256": "d936795cbc09cb07a5320703614c2bfebe02d1ebfbe4064d108138353a6f50bb",
+        "assets": [
+          {
+            "name": "ReShade64.dll",
+            "bytes": 5530112,
+            "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+          },
+          {
+            "name": "inject.exe",
+            "bytes": 193024,
+            "sha256": "347c96f56e4dd53aabea6a272b422a9001146f504b74cfd1466009bda63db1f6"
+          },
+          {
+            "name": "electron_game_overlay_reshade_manager.exe",
+            "bytes": 528896,
+            "sha256": "8f361594cf3014e50a7fae0222bd801a1523b5cf3589e5bd8eed0f9b9fc26c4d"
+          },
+          {
+            "name": "electron_game_overlay.addon64",
+            "bytes": 4391936,
+            "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+          },
+          {
+            "name": "ReShade.ini",
+            "bytes": 209,
+            "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+          },
+          {
+            "name": "ReShade64.build.json",
+            "bytes": 4072,
+            "sha256": "d936795cbc09cb07a5320703614c2bfebe02d1ebfbe4064d108138353a6f50bb"
+          },
+          {
+            "name": "electron_game_overlay_runtime.build.json",
+            "bytes": 1163,
+            "sha256": "d5f2d6b4bfb45403009c0f5022de79ed579b70973c7c9514cf7fed2564b2f9ca"
+          }
+        ]
+      },
+      {
+        "architecture": "x86",
+        "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+        "runtimeGeneration": 19,
+        "addonPreloadProtocol": 1,
+        "packageStampSha256": "1099a65f4eb5887df0d5f332cdf0e0d2d5ca929fca0897172310a348097b44fa",
+        "reshadeStampSha256": "3b1fde09195d4b836c260a6cd7d5f58d534a42cbdeac995c6e2622ff9c9f9275",
+        "assets": [
+          {
+            "name": "ReShade32.dll",
+            "bytes": 4405248,
+            "sha256": "20224a415866ac6d3692dd3078b8602515e28f3d3dbd3ee844ff4b5f09809d75"
+          },
+          {
+            "name": "inject32.exe",
+            "bytes": 156160,
+            "sha256": "4b2e9172ac6824ba2fa11903843239b819a6382cbed145a6f185b834aa048635"
+          },
+          {
+            "name": "electron_game_overlay_reshade_manager32.exe",
+            "bytes": 467968,
+            "sha256": "8d23c2cec5ba49c2f434305d2bee7edc7bd14a6881e09879d88f2a118f8dcad6"
+          },
+          {
+            "name": "electron_game_overlay.addon32",
+            "bytes": 3955200,
+            "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+          },
+          {
+            "name": "ReShade.ini",
+            "bytes": 209,
+            "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+          },
+          {
+            "name": "ReShade32.build.json",
+            "bytes": 4072,
+            "sha256": "3b1fde09195d4b836c260a6cd7d5f58d534a42cbdeac995c6e2622ff9c9f9275"
+          },
+          {
+            "name": "electron_game_overlay_runtime32.build.json",
+            "bytes": 1164,
+            "sha256": "1099a65f4eb5887df0d5f332cdf0e0d2d5ca929fca0897172310a348097b44fa"
+          }
+        ]
+      }
+    ],
+    "identityMeaning": "Exact built sealed candidate; package labels and source milestones alone do not establish byte identity.",
+    "sourceMilestones": {
+      "installer": "864554b",
+      "smallStackFix": "a4f9701",
+      "finalRuntimeFix": "3af9c64",
+      "passingDemoAndTestSources": "bb42f57"
+    }
+  },
+  "acceptanceMatrix": {
+    "registeredCells": 4,
+    "registeredRecordedChecks": 62,
+    "unregisteredMixedVersionCells": 2,
+    "unregisteredRecordedChecks": 18,
+    "totalCoreCells": 6,
+    "totalRecordedControllerChecks": 80,
+    "allCoreCellsPassed": true,
+    "architecturesWithGraphicsAcceptance": [
+      "x64"
+    ],
+    "backends": [
+      "D3D11",
+      "D3D12"
+    ],
+    "initializationBoundary": "All demo cells use a controlled pre-device barrier. Self-load and production SDK injection establish separate ownership/startup boundaries.",
+    "defaultRegressionBatch": {
+      "status": "passed",
+      "cases": 9,
+      "uniquePassedCases": 9,
+      "scope": "Repository demos only; default unregistered attachment. Separate from the six preload/compatibility cells.",
+      "sourceReports": [
+        {
+          "path": "build/preload-gen19-default-regressions.json",
+          "status": "failed",
+          "error": "Default regression failed: session-close",
+          "cases": [
+            {
+              "name": "d3d11-sdk",
+              "status": "passed",
+              "log": "build/preload-gen19-default-d3d11-sdk.log",
+              "display": "build/preload-gen19-default-d3d11-sdk.display.json"
+            },
+            {
+              "name": "d3d11-multi",
+              "status": "passed",
+              "log": "build/preload-gen19-default-d3d11-multi.log",
+              "display": "build/preload-gen19-default-d3d11-multi.display.json"
+            },
+            {
+              "name": "d3d12-multi",
+              "status": "passed",
+              "log": "build/preload-gen19-default-d3d12-multi.log",
+              "display": "build/preload-gen19-default-d3d12-multi.display.json"
+            },
+            {
+              "name": "session-close",
+              "status": "failed",
+              "log": "build/preload-gen19-default-session-close.log",
+              "display": "build/preload-gen19-default-session-close.display.json"
+            }
+          ]
+        },
+        {
+          "path": "build/preload-gen19-default-regressions-remaining.json",
+          "status": "failed",
+          "error": "Default regression failed: d3d9-x86",
+          "cases": [
+            {
+              "name": "session-close",
+              "status": "passed",
+              "log": "build/preload-gen19-default-a2-session-close.log",
+              "display": "build/preload-gen19-default-a2-session-close.display.json"
+            },
+            {
+              "name": "surface-drain",
+              "status": "passed",
+              "log": "build/preload-gen19-default-a2-surface-drain.log",
+              "display": "build/preload-gen19-default-a2-surface-drain.display.json"
+            },
+            {
+              "name": "raw-buffer",
+              "status": "passed",
+              "log": "build/preload-gen19-default-a2-raw-buffer.log",
+              "display": "build/preload-gen19-default-a2-raw-buffer.display.json"
+            },
+            {
+              "name": "dpi125-osr150-attached",
+              "status": "passed",
+              "log": "build/preload-gen19-default-a2-dpi125-osr150-attached.log",
+              "display": "build/preload-gen19-default-a2-dpi125-osr150-attached.display.json"
+            },
+            {
+              "name": "d3d9-x86",
+              "status": "failed",
+              "log": "build/preload-gen19-default-a2-d3d9-x86.log",
+              "display": "build/preload-gen19-default-a2-d3d9-x86.display.json"
+            }
+          ]
+        },
+        {
+          "path": "build/preload-gen19-default-regressions-x86-final.json",
+          "status": "passed",
+          "error": null,
+          "cases": [
+            {
+              "name": "d3d9-x86",
+              "status": "passed",
+              "log": "build/preload-gen19-default-a3-d3d9-x86.log",
+              "display": "build/preload-gen19-default-a3-d3d9-x86.display.json"
+            },
+            {
+              "name": "d3d10-x86",
+              "status": "passed",
+              "log": "build/preload-gen19-default-a3-d3d10-x86.log",
+              "display": "build/preload-gen19-default-a3-d3d10-x86.display.json"
+            }
+          ]
+        }
+      ],
+      "passedCases": [
+        {
+          "name": "d3d11-sdk",
+          "report": "build/preload-gen19-default-regressions.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-input-gate.ps1",
+          "parameters": {
+            "Backend": "d3d11",
+            "Architecture": "x64",
+            "SkipBuild": true
+          },
+          "log": "build/preload-gen19-default-d3d11-sdk.log",
+          "display": "build/preload-gen19-default-d3d11-sdk.display.json",
+          "logSha256": "99aff4a46dc85215297cea13f47c1834b5d77bbc82de51f68b2529b81ffb279c",
+          "displaySha256": "d5eeae52f23d2f3cb9ba7ac6029c7aaa1e494f67571ae646c903cdd7cd6d2974"
+        },
+        {
+          "name": "d3d11-multi",
+          "report": "build/preload-gen19-default-regressions.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-client-sdk-multi-swapchain.ps1",
+          "parameters": {
+            "SkipBuild": true
+          },
+          "log": "build/preload-gen19-default-d3d11-multi.log",
+          "display": "build/preload-gen19-default-d3d11-multi.display.json",
+          "logSha256": "2d0e56715227481dbd8936877fd4f95ff014ab633c924153263433b355fa3129",
+          "displaySha256": "a604edd559e1df698e126d3b08f73563ca6f45725202d8bfdd35701448bbdd1a"
+        },
+        {
+          "name": "d3d12-multi",
+          "report": "build/preload-gen19-default-regressions.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d12-client-sdk-multi-swapchain.ps1",
+          "parameters": {
+            "SkipBuild": true
+          },
+          "log": "build/preload-gen19-default-d3d12-multi.log",
+          "display": "build/preload-gen19-default-d3d12-multi.display.json",
+          "logSha256": "5e917b97b4cea56167caf1a6b1198a0ff9f272cca2c8d43175b8c4e48b9082da",
+          "displaySha256": "56899f5ade636ff3e35afa4c3e7e9c7e10b3cb9117b72d07ca394bd5e47e2af8"
+        },
+        {
+          "name": "session-close",
+          "report": "build/preload-gen19-default-regressions-remaining.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-client-sdk-session-deactivation.ps1",
+          "parameters": {
+            "SkipBuild": true
+          },
+          "log": "build/preload-gen19-default-a2-session-close.log",
+          "display": "build/preload-gen19-default-a2-session-close.display.json",
+          "logSha256": "39ba5a3089dcfde9ad58339e14efb1f87757df363fc4a20ae012c7f598955984",
+          "displaySha256": "fd94b7179811e829f9cd998fc7cca229fabe9d1ec75aac195a9aba6c40d62d76"
+        },
+        {
+          "name": "surface-drain",
+          "report": "build/preload-gen19-default-regressions-remaining.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d12-client-sdk-target-surface-drain.ps1",
+          "parameters": {
+            "SkipBuild": true
+          },
+          "log": "build/preload-gen19-default-a2-surface-drain.log",
+          "display": "build/preload-gen19-default-a2-surface-drain.display.json",
+          "logSha256": "164466d6eb6c685117a24894d7027c02b5206912f5bf4b4021c0057946169e74",
+          "displaySha256": "7068b63d4a70b13cab885c566efc55555d68bb2d9bb4cc66e0380f78d95cc9db"
+        },
+        {
+          "name": "raw-buffer",
+          "report": "build/preload-gen19-default-regressions-remaining.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-x64-wheel-cursor-raw-buffer.ps1",
+          "parameters": {},
+          "log": "build/preload-gen19-default-a2-raw-buffer.log",
+          "display": "build/preload-gen19-default-a2-raw-buffer.display.json",
+          "logSha256": "dfc4eb90afa01822a0c230695874d726a545599250e1b26a4579d1789dce746c",
+          "displaySha256": "353bbe1ca4da90ec58c0b4d44c4a9e33ac950bceb51e984f513bfec682cdf634"
+        },
+        {
+          "name": "dpi125-osr150-attached",
+          "report": "build/preload-gen19-default-regressions-remaining.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-x64-wheel-cursor-dpi125-osr150-attached.ps1",
+          "parameters": {},
+          "log": "build/preload-gen19-default-a2-dpi125-osr150-attached.log",
+          "display": "build/preload-gen19-default-a2-dpi125-osr150-attached.display.json",
+          "logSha256": "d54696a31128d6e5a5e909f5de368110f3d035ffd9f3cc0f57546b989ae40209",
+          "displaySha256": "4885c3e58835c2a523384bcc26498ef764a624ed5bc9486ce9b983393be49300"
+        },
+        {
+          "name": "d3d9-x86",
+          "report": "build/preload-gen19-default-regressions-x86-final.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-input-gate.ps1",
+          "parameters": {
+            "Backend": "d3d9",
+            "Architecture": "x86",
+            "SkipBuild": true
+          },
+          "log": "build/preload-gen19-default-a3-d3d9-x86.log",
+          "display": "build/preload-gen19-default-a3-d3d9-x86.display.json",
+          "logSha256": "f9c53a48d8e47a8430882cdd5bba8ca13845b9897e4c28ecb92a73aa4b0297ea",
+          "displaySha256": "17ccdfcc08201fdd316e1dd791888f0b5cc234ae3dc56b82a6c84429e5d3fbc4"
+        },
+        {
+          "name": "d3d10-x86",
+          "report": "build/preload-gen19-default-regressions-x86-final.json",
+          "script": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-input-gate.ps1",
+          "parameters": {
+            "Backend": "d3d10",
+            "Architecture": "x86",
+            "SkipBuild": true
+          },
+          "log": "build/preload-gen19-default-a3-d3d10-x86.log",
+          "display": "build/preload-gen19-default-a3-d3d10-x86.display.json",
+          "logSha256": "f689f9a38dc8b0d00c890e15c1bca441528f233ddc95b9564845ce09c6aef7ba",
+          "displaySha256": "0116dd423fa71f9373fe2dd084349d22832915879e1398afdb015efba1577206"
+        }
+      ],
+      "x86FreshCyclesPerBackend": 2,
+      "history": [
+        {
+          "report": "build/preload-gen19-default-regressions.json",
+          "originalStatus": "failed",
+          "passedCases": 3,
+          "failure": "The per-process display observer's eight-observation limit stopped before the fourth test was attempted; session deactivation itself was not executed in that attempt.",
+          "testAttempted": false
+        },
+        {
+          "report": "build/preload-gen19-default-regressions-remaining.json",
+          "originalStatus": "failed",
+          "passedCases": 4,
+          "failure": "The earlier D3D9 x86 controller captured the valid Ctrl+I release shortcut before freezing the typed-action log, contaminating exact action counts. The corrected controller freezes the action phase before the shortcut; strict missing-release/duplicate checks remain.",
+          "runtimeOrSdkChangedByCorrection": false
+        }
+      ]
+    },
+    "totalCoreAndDefaultCells": 15
+  },
+  "registeredCases": [
+    {
+      "report": "build/pl/r-aaaf378c453f/report.json",
+      "caseDirectory": "build\\pl\\r-aaaf378c453f\\i",
+      "backend": "d3d11",
+      "name": "production-injection",
+      "status": "passed",
+      "recordedChecks": 15,
+      "checks": [
+        "Production SDK injected one external ReShade host before devices and its immutable AddonPath scanned the offline peer",
+        "first app red surface",
+        "second app blue surface",
+        "Distinct authenticated routes isolate colliding local window IDs and keyboard input",
+        "interleaved peer above first main",
+        "interleaved extra above peer",
+        "alpha cutout reveals peer pixels",
+        "one local window raises independently across apps",
+        "extra raises independently",
+        "caption drag updates native placement",
+        "Alpha hit testing, window order, three cursor shapes, wheel, caption drag and OR interception pass across apps",
+        "survivor remains composited after peer crash",
+        "Crash removes the retired app surface/input; survivor route and input persist; restarted app safely uses one fresh engine",
+        "Unregister changes future snapshots while mapped modules and the current target remain intact",
+        "Final no-app state has no windows/ranks/private TCP/focus/capture and the target directory has no installed ReShade files"
+      ],
+      "distinctNativeBuilds": false,
+      "target": {
+        "pid": 27748,
+        "creationTime100ns": "134380510344879105",
+        "executablePath": "build/pl/r-aaaf378c453f/i/t/p.exe",
+        "sha256": "C7882D4F31AF55BFC8A34E62B03B812F7E82129E58DD8FAE4D0804180576EF12"
+      },
+      "registrations": [
+        {
+          "member": "a",
+          "applicationId": "com.electron-game-overlay.preload-demo.a",
+          "registrationId": "ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-aaaf378c453f/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-975fd3bf-6a80-457a-972b-e6a885b41f67/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-aaaf378c453f/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-975fd3bf-6a80-457a-972b-e6a885b41f67/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        },
+        {
+          "member": "b",
+          "applicationId": "com.electron-game-overlay.preload-demo.b",
+          "registrationId": "2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-aaaf378c453f/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-b1ddf594-c1f2-4599-b317-3849bda28d1f/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-aaaf378c453f/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-b1ddf594-c1f2-4599-b317-3849bda28d1f/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        }
+      ],
+      "offlineDispatcher": null,
+      "firstActiveMember": null,
+      "preDeviceResultFields": 4,
+      "initialResultFields": 4,
+      "initial": {
+        "path": "build/pl/r-aaaf378c453f/i/initial-scan-resources.json",
+        "processId": 27748,
+        "creationTime100ns": "134380510344879105",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 1,
+        "lifetimeSlots": 1,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 1,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "firstActive": null,
+      "bothActive": {
+        "path": "build/pl/r-aaaf378c453f/i/both-apps-active-resources.json",
+        "processId": 27748,
+        "creationTime100ns": "134380510344879105",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 2,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "survivor": {
+        "path": "build/pl/r-aaaf378c453f/i/survivor-after-peer-crash-resources.json",
+        "processId": 27748,
+        "creationTime100ns": "134380510344879105",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 2,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "restarted": {
+        "path": "build/pl/r-aaaf378c453f/i/restarted-app-fresh-member-resources.json",
+        "processId": 27748,
+        "creationTime100ns": "134380510344879105",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "afterUnregister": {
+        "path": "build/pl/r-aaaf378c453f/i/unregister-keeps-current-target-resources.json",
+        "processId": 27748,
+        "creationTime100ns": "134380510344879105",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "final": {
+        "path": "build/pl/r-aaaf378c453f/i/all-apps-offline-resources.json",
+        "processId": 27748,
+        "creationTime100ns": "134380510344879105",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 3,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "cleanupErrors": [],
+      "targetExitCode": 0,
+      "targetForcedTermination": false
+    },
+    {
+      "report": "build/pl/r-b0fa03869c0b/report.json",
+      "caseDirectory": "build\\pl\\r-b0fa03869c0b\\s",
+      "backend": "d3d11",
+      "name": "self-load",
+      "status": "passed",
+      "recordedChecks": 16,
+      "checks": [
+        "Real scanner mapped both registered DLLs with zero participants/windows/ranks/private TCP or frame workers while both apps were offline",
+        "A private implementation activates at its existing module base while the supplying app of the first dispatcher remains offline",
+        "first app red surface",
+        "second app blue surface",
+        "Distinct authenticated routes isolate colliding local window IDs and keyboard input",
+        "interleaved peer above first main",
+        "interleaved extra above peer",
+        "alpha cutout reveals peer pixels",
+        "one local window raises independently across apps",
+        "extra raises independently",
+        "caption drag updates native placement",
+        "Alpha hit testing, window order, three cursor shapes, wheel, caption drag and OR interception pass across apps",
+        "survivor remains composited after peer crash",
+        "Crash removes the retired app surface/input; survivor route and input persist; restarted app safely uses one fresh engine",
+        "Unregister changes future snapshots while mapped modules and the current target remain intact",
+        "Final no-app state has no windows/ranks/private TCP/focus/capture and the target directory has no installed ReShade files"
+      ],
+      "distinctNativeBuilds": false,
+      "target": {
+        "pid": 46188,
+        "creationTime100ns": "134380512078946326",
+        "executablePath": "build/pl/r-b0fa03869c0b/s/t/p.exe",
+        "sha256": "C7882D4F31AF55BFC8A34E62B03B812F7E82129E58DD8FAE4D0804180576EF12"
+      },
+      "registrations": [
+        {
+          "member": "a",
+          "applicationId": "com.electron-game-overlay.preload-demo.a",
+          "registrationId": "ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-b0fa03869c0b/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-abf0a9ac-0a38-4c8c-8959-8f3566de10bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-b0fa03869c0b/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-abf0a9ac-0a38-4c8c-8959-8f3566de10bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        },
+        {
+          "member": "b",
+          "applicationId": "com.electron-game-overlay.preload-demo.b",
+          "registrationId": "2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-b0fa03869c0b/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-26eb83f5-3df2-48ba-b417-94bc05fd5ae6/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-b0fa03869c0b/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-26eb83f5-3df2-48ba-b417-94bc05fd5ae6/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        }
+      ],
+      "offlineDispatcher": "b",
+      "firstActiveMember": "a",
+      "preDeviceResultFields": null,
+      "initialResultFields": null,
+      "initial": {
+        "path": "build/pl/r-b0fa03869c0b/s/initial-scan-resources.json",
+        "processId": 46188,
+        "creationTime100ns": "134380512078946326",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 0,
+        "lifetimeSlots": 0,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 0,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "firstActive": {
+        "path": "build/pl/r-b0fa03869c0b/s/first-app-active-dispatcher-offline-resources.json",
+        "processId": 46188,
+        "creationTime100ns": "134380512078946326",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 1,
+        "lifetimeSlots": 1,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 1,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "bothActive": {
+        "path": "build/pl/r-b0fa03869c0b/s/both-apps-active-resources.json",
+        "processId": 46188,
+        "creationTime100ns": "134380512078946326",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 2,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "survivor": {
+        "path": "build/pl/r-b0fa03869c0b/s/survivor-after-peer-crash-resources.json",
+        "processId": 46188,
+        "creationTime100ns": "134380512078946326",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 2,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "restarted": {
+        "path": "build/pl/r-b0fa03869c0b/s/restarted-app-fresh-member-resources.json",
+        "processId": 46188,
+        "creationTime100ns": "134380512078946326",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "afterUnregister": {
+        "path": "build/pl/r-b0fa03869c0b/s/unregister-keeps-current-target-resources.json",
+        "processId": 46188,
+        "creationTime100ns": "134380512078946326",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "final": {
+        "path": "build/pl/r-b0fa03869c0b/s/all-apps-offline-resources.json",
+        "processId": 46188,
+        "creationTime100ns": "134380512078946326",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 3,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "cleanupErrors": [],
+      "targetExitCode": 0,
+      "targetForcedTermination": false
+    },
+    {
+      "report": "build/pl/r-9a0ad5d1c091/report.json",
+      "caseDirectory": "build\\pl\\r-9a0ad5d1c091\\s",
+      "backend": "d3d12",
+      "name": "self-load",
+      "status": "passed",
+      "recordedChecks": 16,
+      "checks": [
+        "Real scanner mapped both registered DLLs with zero participants/windows/ranks/private TCP or frame workers while both apps were offline",
+        "A private implementation activates at its existing module base while the supplying app of the first dispatcher remains offline",
+        "first app red surface",
+        "second app blue surface",
+        "Distinct authenticated routes isolate colliding local window IDs and keyboard input",
+        "interleaved peer above first main",
+        "interleaved extra above peer",
+        "alpha cutout reveals peer pixels",
+        "one local window raises independently across apps",
+        "extra raises independently",
+        "caption drag updates native placement",
+        "Alpha hit testing, window order, three cursor shapes, wheel, caption drag and OR interception pass across apps",
+        "survivor remains composited after peer crash",
+        "Crash removes the retired app surface/input; survivor route and input persist; restarted app safely uses one fresh engine",
+        "Unregister changes future snapshots while mapped modules and the current target remain intact",
+        "Final no-app state has no windows/ranks/private TCP/focus/capture and the target directory has no installed ReShade files"
+      ],
+      "distinctNativeBuilds": false,
+      "target": {
+        "pid": 19048,
+        "creationTime100ns": "134380511218794270",
+        "executablePath": "build/pl/r-9a0ad5d1c091/s/t/p.exe",
+        "sha256": "1A210807298E2588BBA6635B1FAA56474732E0D2F4F137FEDFE554270B1ABB5A"
+      },
+      "registrations": [
+        {
+          "member": "a",
+          "applicationId": "com.electron-game-overlay.preload-demo.a",
+          "registrationId": "ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-9a0ad5d1c091/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-511dfc06-5c0b-4495-8303-af48d6e2b52b/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-9a0ad5d1c091/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-511dfc06-5c0b-4495-8303-af48d6e2b52b/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        },
+        {
+          "member": "b",
+          "applicationId": "com.electron-game-overlay.preload-demo.b",
+          "registrationId": "2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-9a0ad5d1c091/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-27751e80-de03-489b-8dd8-2e3fb32455fc/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-9a0ad5d1c091/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-27751e80-de03-489b-8dd8-2e3fb32455fc/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        }
+      ],
+      "offlineDispatcher": "b",
+      "firstActiveMember": "a",
+      "preDeviceResultFields": null,
+      "initialResultFields": null,
+      "initial": {
+        "path": "build/pl/r-9a0ad5d1c091/s/initial-scan-resources.json",
+        "processId": 19048,
+        "creationTime100ns": "134380511218794270",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 0,
+        "lifetimeSlots": 0,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 0,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "firstActive": {
+        "path": "build/pl/r-9a0ad5d1c091/s/first-app-active-dispatcher-offline-resources.json",
+        "processId": 19048,
+        "creationTime100ns": "134380511218794270",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 1,
+        "lifetimeSlots": 1,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 1,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "bothActive": {
+        "path": "build/pl/r-9a0ad5d1c091/s/both-apps-active-resources.json",
+        "processId": 19048,
+        "creationTime100ns": "134380511218794270",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 2,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "survivor": {
+        "path": "build/pl/r-9a0ad5d1c091/s/survivor-after-peer-crash-resources.json",
+        "processId": 19048,
+        "creationTime100ns": "134380511218794270",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 2,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "restarted": {
+        "path": "build/pl/r-9a0ad5d1c091/s/restarted-app-fresh-member-resources.json",
+        "processId": 19048,
+        "creationTime100ns": "134380511218794270",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "afterUnregister": {
+        "path": "build/pl/r-9a0ad5d1c091/s/unregister-keeps-current-target-resources.json",
+        "processId": 19048,
+        "creationTime100ns": "134380511218794270",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "final": {
+        "path": "build/pl/r-9a0ad5d1c091/s/all-apps-offline-resources.json",
+        "processId": 19048,
+        "creationTime100ns": "134380511218794270",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 3,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "cleanupErrors": [],
+      "targetExitCode": 0,
+      "targetForcedTermination": false
+    },
+    {
+      "report": "build/pl/r-9a0ad5d1c091/report.json",
+      "caseDirectory": "build\\pl\\r-9a0ad5d1c091\\i",
+      "backend": "d3d12",
+      "name": "production-injection",
+      "status": "passed",
+      "recordedChecks": 15,
+      "checks": [
+        "Production SDK injected one external ReShade host before devices and its immutable AddonPath scanned the offline peer",
+        "first app red surface",
+        "second app blue surface",
+        "Distinct authenticated routes isolate colliding local window IDs and keyboard input",
+        "interleaved peer above first main",
+        "interleaved extra above peer",
+        "alpha cutout reveals peer pixels",
+        "one local window raises independently across apps",
+        "extra raises independently",
+        "caption drag updates native placement",
+        "Alpha hit testing, window order, three cursor shapes, wheel, caption drag and OR interception pass across apps",
+        "survivor remains composited after peer crash",
+        "Crash removes the retired app surface/input; survivor route and input persist; restarted app safely uses one fresh engine",
+        "Unregister changes future snapshots while mapped modules and the current target remain intact",
+        "Final no-app state has no windows/ranks/private TCP/focus/capture and the target directory has no installed ReShade files"
+      ],
+      "distinctNativeBuilds": false,
+      "target": {
+        "pid": 44704,
+        "creationTime100ns": "134380511367281451",
+        "executablePath": "build/pl/r-9a0ad5d1c091/i/t/p.exe",
+        "sha256": "1A210807298E2588BBA6635B1FAA56474732E0D2F4F137FEDFE554270B1ABB5A"
+      },
+      "registrations": [
+        {
+          "member": "a",
+          "applicationId": "com.electron-game-overlay.preload-demo.a",
+          "registrationId": "ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-9a0ad5d1c091/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-6d71487e-bfd0-4712-8413-237f6fd106bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-9a0ad5d1c091/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-6d71487e-bfd0-4712-8413-237f6fd106bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        },
+        {
+          "member": "b",
+          "applicationId": "com.electron-game-overlay.preload-demo.b",
+          "registrationId": "2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695",
+          "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+          "x64Payload": "build/pl/r-9a0ad5d1c091/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-dde5d4d8-2757-4ee8-89e9-6741484a568a/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "x86Payload": "build/pl/r-9a0ad5d1c091/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-dde5d4d8-2757-4ee8-89e9-6741484a568a/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32"
+        }
+      ],
+      "offlineDispatcher": null,
+      "firstActiveMember": null,
+      "preDeviceResultFields": 4,
+      "initialResultFields": 4,
+      "initial": {
+        "path": "build/pl/r-9a0ad5d1c091/i/initial-scan-resources.json",
+        "processId": 44704,
+        "creationTime100ns": "134380511367281451",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 1,
+        "lifetimeSlots": 1,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 1,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "firstActive": null,
+      "bothActive": {
+        "path": "build/pl/r-9a0ad5d1c091/i/both-apps-active-resources.json",
+        "processId": 44704,
+        "creationTime100ns": "134380511367281451",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 2,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "survivor": {
+        "path": "build/pl/r-9a0ad5d1c091/i/survivor-after-peer-crash-resources.json",
+        "processId": 44704,
+        "creationTime100ns": "134380511367281451",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 2,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "restarted": {
+        "path": "build/pl/r-9a0ad5d1c091/i/restarted-app-fresh-member-resources.json",
+        "processId": 44704,
+        "creationTime100ns": "134380511367281451",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "afterUnregister": {
+        "path": "build/pl/r-9a0ad5d1c091/i/unregister-keeps-current-target-resources.json",
+        "processId": 44704,
+        "creationTime100ns": "134380511367281451",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 3,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 2
+      },
+      "final": {
+        "path": "build/pl/r-9a0ad5d1c091/i/all-apps-offline-resources.json",
+        "processId": 44704,
+        "creationTime100ns": "134380511367281451",
+        "moduleCount": 3,
+        "retainedParticipantRecords": 3,
+        "lifetimeSlots": 3,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 3,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "cleanupErrors": [],
+      "targetExitCode": 0,
+      "targetForcedTermination": false
+    }
+  ],
+  "mixedUnregisteredCases": [
+    {
+      "report": "build/pl/c-f63b05aec63c/report.json",
+      "caseDirectory": "build\\pl\\c-f63b05aec63c",
+      "backend": "d3d11",
+      "status": "passed",
+      "registeredBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "unregisteredBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "checks": [
+        "Current registered implementation supplies the only dormant dispatcher with no application or private engine workers running",
+        "unregistered gen16 red surface while current dispatcher app is offline",
+        "Unregistered generation-16 SDK dynamically joins the dormant current baseline, authenticates and renders/routes keyboard while the registered app is offline",
+        "current version surface interleaves above old main",
+        "old version extra interleaves above current surface",
+        "old alpha cutout reveals current surface",
+        "Current activation reuses its mapped base; both native builds isolate private input/window IDs and preserve interleaved alpha surfaces and OR interception",
+        "old SDK survives the supplying dispatcher application crash",
+        "Older unregistered SDK survives the current dispatcher application crash with the same private route and working rendering/input"
+      ],
+      "recordedChecks": 9,
+      "target": {
+        "pid": 26856,
+        "creationTime100ns": "134380513172042739",
+        "executablePath": "build/pl/c-f63b05aec63c/t/p.exe",
+        "sha256": "C7882D4F31AF55BFC8A34E62B03B812F7E82129E58DD8FAE4D0804180576EF12"
+      },
+      "oldResultFields": 9,
+      "currentResultFields": 9,
+      "dormant": {
+        "path": "build/pl/c-f63b05aec63c/dormant-current-app-offline-resources.json",
+        "processId": 26856,
+        "creationTime100ns": "134380513172042739",
+        "moduleCount": 1,
+        "retainedParticipantRecords": 0,
+        "lifetimeSlots": 0,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 0,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "oldActive": {
+        "path": "build/pl/c-f63b05aec63c/old-unregistered-active-current-offline-resources.json",
+        "processId": 26856,
+        "creationTime100ns": "134380513172042739",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 1,
+        "lifetimeSlots": 1,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 1,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "bothActive": {
+        "path": "build/pl/c-f63b05aec63c/both-versions-active-resources.json",
+        "processId": 26856,
+        "creationTime100ns": "134380513172042739",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "survivor": {
+        "path": "build/pl/c-f63b05aec63c/old-survives-current-dispatcher-app-crash-resources.json",
+        "processId": 26856,
+        "creationTime100ns": "134380513172042739",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "final": {
+        "path": "build/pl/c-f63b05aec63c/both-versions-offline-resources.json",
+        "processId": 26856,
+        "creationTime100ns": "134380513172042739",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 2,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "cleanupErrors": [],
+      "targetExitCode": 0,
+      "targetForcedTermination": false
+    },
+    {
+      "report": "build/pl/c-816d31b47fc6/report.json",
+      "caseDirectory": "build\\pl\\c-816d31b47fc6",
+      "backend": "d3d12",
+      "status": "passed",
+      "registeredBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "unregisteredBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "checks": [
+        "Current registered implementation supplies the only dormant dispatcher with no application or private engine workers running",
+        "unregistered gen16 red surface while current dispatcher app is offline",
+        "Unregistered generation-16 SDK dynamically joins the dormant current baseline, authenticates and renders/routes keyboard while the registered app is offline",
+        "current version surface interleaves above old main",
+        "old version extra interleaves above current surface",
+        "old alpha cutout reveals current surface",
+        "Current activation reuses its mapped base; both native builds isolate private input/window IDs and preserve interleaved alpha surfaces and OR interception",
+        "old SDK survives the supplying dispatcher application crash",
+        "Older unregistered SDK survives the current dispatcher application crash with the same private route and working rendering/input"
+      ],
+      "recordedChecks": 9,
+      "target": {
+        "pid": 21008,
+        "creationTime100ns": "134380514526405130",
+        "executablePath": "build/pl/c-816d31b47fc6/t/p.exe",
+        "sha256": "1A210807298E2588BBA6635B1FAA56474732E0D2F4F137FEDFE554270B1ABB5A"
+      },
+      "oldResultFields": 9,
+      "currentResultFields": 9,
+      "dormant": {
+        "path": "build/pl/c-816d31b47fc6/dormant-current-app-offline-resources.json",
+        "processId": 21008,
+        "creationTime100ns": "134380514526405130",
+        "moduleCount": 1,
+        "retainedParticipantRecords": 0,
+        "lifetimeSlots": 0,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 0,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "oldActive": {
+        "path": "build/pl/c-816d31b47fc6/old-unregistered-active-current-offline-resources.json",
+        "processId": 21008,
+        "creationTime100ns": "134380514526405130",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 1,
+        "lifetimeSlots": 1,
+        "windows": 1,
+        "ranks": 1,
+        "frameWorkers": 1,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "bothActive": {
+        "path": "build/pl/c-816d31b47fc6/both-versions-active-resources.json",
+        "processId": 21008,
+        "creationTime100ns": "134380514526405130",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 2,
+        "focus": 1,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "survivor": {
+        "path": "build/pl/c-816d31b47fc6/old-survives-current-dispatcher-app-crash-resources.json",
+        "processId": 21008,
+        "creationTime100ns": "134380514526405130",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 2,
+        "ranks": 2,
+        "frameWorkers": 2,
+        "tcpWorkers": 1,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 1
+      },
+      "final": {
+        "path": "build/pl/c-816d31b47fc6/both-versions-offline-resources.json",
+        "processId": 21008,
+        "creationTime100ns": "134380514526405130",
+        "moduleCount": 2,
+        "retainedParticipantRecords": 2,
+        "lifetimeSlots": 2,
+        "windows": 0,
+        "ranks": 0,
+        "frameWorkers": 2,
+        "tcpWorkers": 0,
+        "focus": 0,
+        "capture": 0,
+        "interceptionRequests": 0
+      },
+      "cleanupErrors": [],
+      "targetExitCode": 0,
+      "targetForcedTermination": false
+    }
+  ],
+  "establishedBehavior": {
+    "registration": "The real Node installer API creates separate application/build registrations and immutable cached native payloads. The four registered graphics cells use different application identities but the same generation19 native/JavaScript bytes; distinctNativeBuilds=false is retained.",
+    "selfLoad": "Real ReShade AddonPath scanning maps both registered add-ons with both applications offline; initial private participant/slot/window/rank/TCP/frame-worker counts are zero. The supplying application of the first dispatcher stays offline when the other app activates at its existing mapped base.",
+    "productionInjection": "The initiating public SDK creates one owned host before devices, returns the strict four-field first-host result, and activates the exact scanned selected application. Its peer stays dormant; this lane does not claim both apps were offline initially.",
+    "isolation": "Controller assertions cover isolated alpha/bravo delivery and colliding local IDs, interleaved alpha surfaces, individual raising, caption dragging, three cursor shapes, wheel behavior and requested/effective interception OR acknowledgements.",
+    "interceptionScope": "The preload controllers assert requested/effective ACK state; these four registered cells do not separately measure native game-input counter freezing.",
+    "lifetime": "Crashing one application removes its surfaces/input while the survivor keeps its private identity, route and interaction. Restarting the consumed application maps exactly one fresh ordinary engine; unregister changes future snapshots without changing the live target.",
+    "finalRegisteredState": "After all apps exit, each registered case retains three mapped engines, participant slots and frame workers until target exit; TCP/windows/ranks/focus/capture/interception requests are zero. This is not zero native-thread or zero retained-participant state.",
+    "gen16Compatibility": "The retained installed unregistered generation16 SDK joins dynamically while the registered current dispatcher application is offline, then survives that application's crash. It is not claimed to support preload registration. Final mixed cases retain two engines/slots/frame workers with zero active TCP/window/input ownership.",
+    "configuration": "External snapshots and owned staged INIs are intentionally created; the packaged 209-byte template remains sealed. No ReShade DLL/add-on/INI is installed in the copied target directory. This is not a claim that test markers or the copied demo EXE are absent.",
+    "logs": "The audited D3D11 logs contain shutdown warnings for a bounded outbound drain on an already disconnected transport after app exit. They are not described as warning-free."
+  },
+  "publicEntrypointAudit": {
+    "path": "build/gen19-final-sdk-entrypoint-retained-audit.json",
+    "status": "passed",
+    "specifier": "electron-game-overlay/preload",
+    "modes": [
+      "CommonJS public self-reference require",
+      "ESM public self-reference import"
+    ],
+    "electronLoaded": false,
+    "mainEntrypointLoaded": false,
+    "registrationInvoked": false,
+    "mutationOrProcessNetworkNativeAttempts": 0,
+    "scope": "Import-only guarded console audit; actual registration and activation are covered separately by tests and demo cells.",
+    "retainedGen16": {
+      "version": "0.1.0-development.candidate.gen16.e8fe3783.async",
+      "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "sealedPayloads": 148,
+      "sourceSealSha256": "8cc9cc84091ddbcc5c03bd5ef136c02ae4f1fdfeb02a6151f85322bdde691b50",
+      "installedSealSha256": "31dc67d055c7b2933f6b9b021b75bf0dedc4474078231358a8551930edf08ce1",
+      "optionalPreloadFieldsAbsent": true
+    }
+  },
+  "pureAndConsoleChecks": {
+    "sdk": {
+      "audit": "build/sdk-unit-gen19-final-audit.json",
+      "tests": 1240,
+      "passed": 1230,
+      "failed": 0,
+      "skipped": 10,
+      "node": "v26.12.1",
+      "concurrency": 4,
+      "durationMs": 161574.2237,
+      "distInventoryUnchanged": true,
+      "sealedFiles": 154,
+      "sealValid": true,
+      "scope": "Unit/fixture acceptance, separate from native loading and graphics."
+    },
+    "native": {
+      "audit": "build/native-gen19-final/evidence.json",
+      "requiredCTests": {
+        "abiRegistryTests": 4,
+        "abiRegistryPassed": 4,
+        "preloadFixtureTests": 4,
+        "preloadFixturePassed": 4,
+        "failed": 0,
+        "skipped": 0,
+        "reruns": 0
+      },
+      "classicLoaderSuites": {
+        "suites": 2,
+        "passed": 2,
+        "unloadSafeRejectedStagesPerArchitecture": 8,
+        "independentMembersPerArchitecture": 3,
+        "claimsCreationBuildSessionRetentionPassed": true
+      },
+      "ownedLateLoaderSuites": {
+        "suites": 2,
+        "passed": 2,
+        "cases": 16,
+        "casesPassed": 16,
+        "casesPerArchitecture": 8,
+        "firstHostResultFieldCount": 4,
+        "privateJoinResultFieldCount": 9,
+        "failedBootstrapSuccessRecords": 0
+      },
+      "currentBidPreloadFixtures": {
+        "finalCTestTargets": 4,
+        "passed": 4,
+        "namedCases": 32,
+        "assertions": 2662,
+        "policyCasesPerArchitecture": 9,
+        "policyAssertionsPerArchitecture": 716,
+        "raceCasesPerArchitecture": 7,
+        "raceAssertionsPerArchitecture": 615,
+        "firstHostSnapshotCasesIncluded": true,
+        "failures": 0,
+        "reruns": 0,
+        "setupFailures": 0,
+        "pathPolicy": "Fresh short owned build directories from outset"
+      },
+      "productionArtifactsUnchanged": true,
+      "scope": "Console-only native validation: existing ABI/registry tests and packaged injectors against owned inert loader targets, plus current-source policy/copied-thunk fixtures. No graphics/input or real-game acceptance; paired small-stack proof is separate and was not repeated."
+    },
+    "client": {
+      "audit": "build/preload-client-gen19-action-boundary-final-audit.json",
+      "tests": 374,
+      "passed": 370,
+      "failed": 0,
+      "skipped": 4,
+      "node": "v26.12.1",
+      "concurrency": 4,
+      "durationMs": 31861.5521,
+      "regressionDatasetsPerShell": 18,
+      "regressionShells": [
+        "Windows PowerShell 5",
+        "PowerShell 7"
+      ],
+      "totalRegressionDatasets": 36,
+      "sdkInventoryUnchanged": true,
+      "sdkFiles": 155,
+      "controllerSha256": "db501d27645a3f2723fb92aee54abdb63183c2308791c7c31a867d75f77b0b77",
+      "scope": "Client unit/data/temporary-package/read-only-observer checks; fake input interop only; no GUI/input/game/native build."
+    }
+  },
+  "pairedSmallStackRegression": {
+    "scope": "Actual candidate DLL thread attach/detach under the same inert console API shim. No ReShade runtime, graphics, private transport or input acceptance.",
+    "negativeGeneration": 17,
+    "negativeBuildId": "883D0F4D994A4582BC0F3EA846C2F270",
+    "negativeReport": "build/pl/n-012ba2a70b/evidence.json",
+    "positiveGeneration": 19,
+    "positiveBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+    "positiveReport": "build/pl/p-8fe4c30a91/evidence.json",
+    "cases": [
+      {
+        "architecture": "x64",
+        "negativeDll": {
+          "path": "build/pl/n-012ba2a70b/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-883D0F4D994A4582BC0F3EA846C2F270-2e61e48504f6a83a.addon64",
+          "sha256": "2e61e48504f6a83ac8678f3f8136c46d0cc4c91eff0f9b62c4e0a8c10449dd8f"
+        },
+        "negativeActualExitCode": -1073741571,
+        "negativeExpectedExitCode": -1073741571,
+        "negativeExitCodeHex": "0xC00000FD",
+        "originalNegativeExpectationPassed": true,
+        "negativeProductAcceptancePassed": false,
+        "positiveDll": {
+          "path": "build/pl/p-8fe4c30a91/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+        },
+        "fixture": {
+          "path": "build/preloaded-addon-small-stack-console-review/x64/Release/preloaded_addon_small_stack_fixture.exe",
+          "sha256": "cdaf053f42d427115294de942cb65314040219498b5957d8d927f5044eb0b20c"
+        },
+        "identicalFixtureAcrossNegativeAndPositive": true,
+        "positiveActualEvidence": "build/ss/r-x64-61acca6c0490/evidence.json",
+        "positiveExitCode": 0,
+        "requestedWorkerStackBytes": [
+          16384,
+          32768,
+          65536
+        ],
+        "workerEntryAcks": 3,
+        "completedThreads": 3,
+        "participantReady": 0,
+        "registeredEvents": 5
+      },
+      {
+        "architecture": "Win32",
+        "negativeDll": {
+          "path": "build/pl/n-012ba2a70b/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-883D0F4D994A4582BC0F3EA846C2F270-b3458cd7e9dd7741.addon32",
+          "sha256": "b3458cd7e9dd774193f72986b7abcd1e1036c82041de003a98719f72d3dc8557"
+        },
+        "negativeActualExitCode": -1073741571,
+        "negativeExpectedExitCode": -1073741571,
+        "negativeExitCodeHex": "0xC00000FD",
+        "originalNegativeExpectationPassed": true,
+        "negativeProductAcceptancePassed": false,
+        "positiveDll": {
+          "path": "build/pl/p-8fe4c30a91/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+          "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+        },
+        "fixture": {
+          "path": "build/preloaded-addon-small-stack-console-review/Win32/Release/preloaded_addon_small_stack_fixture.exe",
+          "sha256": "fadb24eadf05df43075f399e8232b4487f2ef3c6e30f9de1de744130255ae4b2"
+        },
+        "identicalFixtureAcrossNegativeAndPositive": true,
+        "positiveActualEvidence": "build/ss/r-Win32-2bd2bea64f9d/evidence.json",
+        "positiveExitCode": 0,
+        "requestedWorkerStackBytes": [
+          16384,
+          32768,
+          65536
+        ],
+        "workerEntryAcks": 3,
+        "completedThreads": 3,
+        "participantReady": 0,
+        "registeredEvents": 5
+      }
+    ],
+    "stackReservationLimit": "The values are requested stack sizes; Windows rounds reservations. Passing them does not prove actual16KiB/32KiB reservations.",
+    "oldX64Disassembly": {
+      "path": "build/preload-small-stack-gen17-negative-656890e4e98f4a798d0259ed103975ec/old17-dllmain-prologue-x64.txt",
+      "dllMainRva": "0x187130",
+      "reservationInstructionRva": "0x187138",
+      "reservedBytes": 65888,
+      "hexReservation": "0x10160",
+      "stackProbeCallRva": "0x18713d",
+      "subRspRva": "0x187142",
+      "notificationReasonChecksAfterwards": [
+        "0x18715a",
+        "0x187162"
+      ],
+      "meaning": "The old x64 DLL reserves the large frame before checking notification reason. Both architecture negatives overflow; only this exact x64 frame size is claimed."
+    },
+    "correction": "Filename classification now runs in a non-inlined process-attach helper using bounded heap storage, keeping the notification entry frame small. The final actual DLLs complete all three worker entry/detach sequences."
+  },
+  "failureHistory": {
+    "reports": [
+      {
+        "path": "build/pl/r-01880b5672e1/report.json",
+        "status": "failed",
+        "backend": "d3d11",
+        "cases": [
+          {
+            "name": "self-load",
+            "status": "failed"
+          }
+        ],
+        "error": "Cannot overwrite variable Host because it is read-only or constant."
+      },
+      {
+        "path": "build/pl/r-20fb93af0e88/report.json",
+        "status": "failed",
+        "backend": "d3d11",
+        "cases": [
+          {
+            "name": "self-load",
+            "status": "failed"
+          }
+        ],
+        "error": "The controller-owned DirectX demo exited."
+      },
+      {
+        "path": "build/pl/r-d552a294514f/report.json",
+        "status": "failed",
+        "backend": "d3d11",
+        "cases": [
+          {
+            "name": "self-load",
+            "status": "failed"
+          }
+        ],
+        "error": "The controller-owned DirectX demo exited (exitCode=-1073741571, 0xC00000FD)."
+      },
+      {
+        "path": "build/pl/r-df9c286ebe23/report.json",
+        "status": "failed",
+        "backend": "d3d11",
+        "cases": [
+          {
+            "name": "self-load",
+            "status": "passed"
+          },
+          {
+            "name": "production-injection",
+            "status": "failed"
+          }
+        ],
+        "error": "Owned module proof requires one exact native watcher selection."
+      },
+      {
+        "path": "build/pl/r-3d165278d07e/report.json",
+        "status": "failed",
+        "backend": "d3d11",
+        "cases": [
+          {
+            "name": "self-load",
+            "status": "passed"
+          },
+          {
+            "name": "production-injection",
+            "status": "failed"
+          }
+        ],
+        "error": "First-host injection did not activate its scanned selected implementation exactly once."
+      }
+    ],
+    "classification": {
+      "build/pl/r-01880b5672e1/report.json": "Retained harness failure: attempted overwrite of read-only PowerShell Host variable.",
+      "build/pl/r-20fb93af0e88/report.json": "Generation17 actual graphics failure before first Present; not a positive feature cell.",
+      "build/pl/r-d552a294514f/report.json": "Retained generation17 diagnostic repeat records StackOverflow0xC00000FD.",
+      "build/pl/r-df9c286ebe23/report.json": "Retained harness exact-watcher-selection proof failure; not counted as passed.",
+      "build/pl/r-3d165278d07e/report.json": "Generation18 self-load passed but production first-host cell failed: three add-ons mapped and the ordinary private module activated instead of exactly one selected scanned module. Overall report remains failed."
+    },
+    "rawGen17GraphicsControls": [
+      {
+        "path": "build/pl/d-f2c368ba43/control.json",
+        "preloadedDlls": 0,
+        "presentAcknowledged": true,
+        "aliveBeforeCleanup": true
+      },
+      {
+        "path": "build/pl/d-b5e0fdf1a7/control.json",
+        "preloadedDlls": 1,
+        "presentAcknowledged": false,
+        "exitCodeHex": "0xC00000FD"
+      },
+      {
+        "path": "build/pl/d-dd606166e2/control.json",
+        "preloadedDlls": 2,
+        "presentAcknowledged": false,
+        "exitCodeHex": "0xC00000FD"
+      }
+    ],
+    "debuggerLog": "build/pl/d-b5e0fdf1a7/debug-stack/debug-events.log",
+    "dump": "build/pl/d-b5e0fdf1a7/debug-stack/stack-overflow.dmp",
+    "correctionOfFirstHostOrdering": "Generation19 validates and waits for the owned first-host preload snapshot and selected scanned module rather than creating an ordinary extra engine while the scan is pending. Final production cells have exactly two initial registered engine modules.",
+    "causalLimit": "The diagnosed generation17 CPU stack overflow does not explain the earlier historical generation9 D3D11 GPU device-hang incident. No complete historical SDK/graphics-harness byte equivalence is claimed for all diagnostic iterations."
+  },
+  "historicalGameEvidence": {
+    "path": "doc/readiness-acceptance-2026-11-01.md",
+    "json": "doc/evidence/readiness-2026-11-01.json",
+    "runtimeGeneration": 16,
+    "modifiedForThisFeature": false,
+    "rerunForGeneration19": false
+  },
+  "limits": [
+    "No user game was used for this feature, and historical generation16 game results are not generation19 reruns.",
+    "Preload/compatibility graphics acceptance is x64 on controlled D3D11/D3D12 demos. The additional D3D9/D3D10 x86 default-path passes do not establish x86 preloading graphics support.",
+    "Both registered app identities use the same generation19 bytes; only the separate current19/old16 dynamic-join lanes establish mixed-native-version behavior.",
+    "Pre-device D3D12 barriers do not establish generic late-D3D12 queue recovery.",
+    "Preloading is opt-in for a new owned host; it does not make an existing host rescan, replace its host, or change a foreign installation's configuration.",
+    "Older member-readiness-only injectors can time out on manually configured stock-only dormant hosts. Current feature scope is latest owned hosts; ReadyV1 meaning is not changed into dormant readiness.",
+    "Registration/cache import checks, console policy validation, actual DLL notifications and graphics feature cells establish different scopes.",
+    "Native modules, participant slots and frame workers intentionally remain resident after consumed sessions. Shared address space is not native fault containment, and500-app/version capacity or flat memory usage is not measured.",
+    "The strict disablement/elevation policies are covered by native console/source checks, not by modifying a user-managed stock game installation.",
+    "DPI/OSR labels identify the requested attached-surface regression configuration; they do not independently prove that a requested raster/display mismatch was observed."
+  ],
+  "criticalRecords": [
+    {
+      "path": "apps/client/scripts/cooperative-preload-registration.cjs",
+      "bytes": 2196,
+      "sha256": "6ee78c154fd247dda1489f090f9d6cb01646f612129a4b3a4936297914cf576c"
+    },
+    {
+      "path": "apps/client/scripts/cooperative-two-app-game-fixture.cjs",
+      "bytes": 14043,
+      "sha256": "6c5a64346e730627659a642ddc55ee2b65e0c299d9d57bd0bff398cf658d7372"
+    },
+    {
+      "path": "apps/client/tests/cooperative-input-action-boundary.test.cjs",
+      "bytes": 9688,
+      "sha256": "edd089295860b07e71397f67600c89ad320ec3b385daa7891903a5e81ddab05d"
+    },
+    {
+      "path": "build/cooperative-addon-loader/run-Win32-112e5520ca734c5e943ac79e25c3c872/evidence.json",
+      "bytes": 1114,
+      "sha256": "0bc6fd8455ab0322fbc80a8d7dcba0f3c032c7b50a68b2e9f2151c30a28b0133"
+    },
+    {
+      "path": "build/cooperative-addon-loader/run-x64-db1bd16c4fec498b9fea7d6401200bdf/evidence.json",
+      "bytes": 1112,
+      "sha256": "c1c246142ba34b8e43b31e6030239eb34cb1e5b24329cc5d590b99a53d16f933"
+    },
+    {
+      "path": "build/gen17-final-sdk-seal-audit.json",
+      "bytes": 3285,
+      "sha256": "be8101407974b6a0dd63d911ceccc6be20d543e1d5e0e30798fa39c10118509f"
+    },
+    {
+      "path": "build/gen18-final-sdk-seal-audit.json",
+      "bytes": 4654,
+      "sha256": "242771d32aca6ba9b79bcbe5ac9065e1217d616c9a629d783be11196c5e2a4d4"
+    },
+    {
+      "path": "build/gen19-final-sdk-entrypoint-retained-audit.json",
+      "bytes": 4622,
+      "sha256": "3a97e97ba33f810ed579e09c2a65fd637e56c58c1c4e278a56680a95d4ef36e1"
+    },
+    {
+      "path": "build/gen19-final-sdk-seal-audit.json",
+      "bytes": 4739,
+      "sha256": "f98aa99d7ce60bd51c209f12a6147e09ae78c4347a06a645e3ae78b22dfa8242"
+    },
+    {
+      "path": "build/native-gen19-final-abi-registry-20261101-235642-d09126f4/evidence.json",
+      "bytes": 7773,
+      "sha256": "cf41c85a3fd3d3ceade5e758a7e5f95751c98afecd9d897efea279452ca751fc"
+    },
+    {
+      "path": "build/native-gen19-final/evidence.json",
+      "bytes": 6099,
+      "sha256": "e56db2b972166422296a2b6840a643e9ecc221919f0adb5f3421aad671e50bdd"
+    },
+    {
+      "path": "build/native-gen19-owned-loader-final/evidence.json",
+      "bytes": 7867,
+      "sha256": "cfc4d52fc5c35c2158b5335fe98819b698b1977eb59b8dc0547e856eb356fab9"
+    },
+    {
+      "path": "build/native-gen19-preload-fixtures-final/evidence.json",
+      "bytes": 8014,
+      "sha256": "bd58ca5d88f61bc67a0f6e469413f3290e85714cd75f42e809505d316d9220b2"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/a-registration.json",
+      "bytes": 881,
+      "sha256": "721b1fa93f7effe549ada8069b22bc05cd256c42bcd2b0557004c82cf985a715"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/b1/p.exe-0AaWmG/electron_game_overlay.addon64",
+      "bytes": 4166144,
+      "sha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/both-versions-active-resources.json",
+      "bytes": 17628,
+      "sha256": "152c234e6a90f6e77b84d76f0202f20584bdcfe5e29c89b2a3065c003128d215"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/both-versions-offline-resources.json",
+      "bytes": 17442,
+      "sha256": "03385616e72d8a0ea7fa0ae15e66b262a0920d183a0ad10f63b1e535f1430e79"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/dormant-current-app-offline-resources.json",
+      "bytes": 16136,
+      "sha256": "eb7d9434843cdfd2ab31dfc20b48dd14a6d253cd806500587a86174a2826a842"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/h/addons/ego-preload-fec05c0f9d3e68ce210bf051d1c75987-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/h/ReShade.ini",
+      "bytes": 1900,
+      "sha256": "36d845f285686744bcbd8fcc6fc5c2a23d4651eddbf1e5dda4525e5170f6b9f9"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/h/ReShade.log",
+      "bytes": 12113,
+      "sha256": "cfa3a43370aee6b58215695df8749e1327e94be46cd5e978cdd417a0f9379e7a"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/h/ReShade64.dll",
+      "bytes": 5530112,
+      "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/host-snapshot.json",
+      "bytes": 3416,
+      "sha256": "2ec2e0558ed8a6e616d0a89910cd0e6cfef5ca837a07b3e4a5be8e2b266fe961"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/old-survives-current-dispatcher-app-crash-resources.json",
+      "bytes": 17537,
+      "sha256": "c13aad3eaa45d5617cdcf33ad7ff446f58f4d5bc84239dbf7af8d15b2224a7f6"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/old-unregistered-active-current-offline-resources.json",
+      "bytes": 17006,
+      "sha256": "12d4cb59631e02448f7e121b57e678e023ab14f159a2cfe3cd2a83f71b8869cd"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/a1/a-command.json",
+      "bytes": 67,
+      "sha256": "3fb841b2912188fc60bf57bfe13b7bd3aa2deb783dd5e13e759f215875430b74"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/a1/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/a1/a-state.json",
+      "bytes": 9683,
+      "sha256": "d2d315c0356471ccf50b8e238e0a3f66473c26fb4d139beaad5b0485aad61d51"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/a1/process-launch.json",
+      "bytes": 1124,
+      "sha256": "2c36ef91e3324b34fc66498d00a895be2243cb201dee8607b730771884a2314b"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/a1/stderr.log",
+      "bytes": 163,
+      "sha256": "42dbd136b8d76451aeb949ded3aa47a3832d7a9b3f31b79bb46d347772304fdb"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/a1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/b1/b-command.json",
+      "bytes": 66,
+      "sha256": "80954fc6c2528570c50d84735757d9e8bc55d18ad005aabd3b4cf08ea46e6764"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/b1/b-sdk.json",
+      "bytes": 10235,
+      "sha256": "ffe1200fb9d9c9d51c509c7e0977ee5300b02e422f063f6d0aeedcd1c3637437"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/b1/b-state.json",
+      "bytes": 11259,
+      "sha256": "e095b464c31d516f949ada8c5fe8694c8c0ff258c4ff4dee93159708feafdab6"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/b1/process-launch.json",
+      "bytes": 1186,
+      "sha256": "16a1a0cc251d42f249794c4f19d439ce6dd184172d026e56d58a9d141f91b3de"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/b1/stderr.log",
+      "bytes": 163,
+      "sha256": "43200b33929f3ea804e0daa7c7b2ded6ec37aac6b79305528ca08ee7cc233f0c"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/p/b1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/r/payloads/8888fe6e157739346a957c2a64fc018926f12eecde36300fbb19a7d77c87d318-370dd974-6ce5-43ff-b00c-f5af7b9eb81e/ego-preload-fec05c0f9d3e68ce210bf051d1c75987-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/r/payloads/8888fe6e157739346a957c2a64fc018926f12eecde36300fbb19a7d77c87d318-370dd974-6ce5-43ff-b00c-f5af7b9eb81e/ego-preload-fec05c0f9d3e68ce210bf051d1c75987-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/report.json",
+      "bytes": 8660,
+      "sha256": "07e3a277de8791ed5e4e8c6a74d941e40acc1ec9833099caf90d184e5be8c473"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/t/electron-game-overlay-demo-graphics.log",
+      "bytes": 91,
+      "sha256": "67e185ba718ce40cf150ed3ba59ad7541370e1bcfd468c27bc1f55c3d40a7e3c"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/t/electron-game-overlay-demo-present.ready",
+      "bytes": 205,
+      "sha256": "1da7701277b996cf8d3749bd247ec64e97c2a92e977b8be3f038053ed5edac45"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/t/electron-game-overlay-preload-runtime.log",
+      "bytes": 150,
+      "sha256": "39703c6d14e637795f768beb461399bcd65dabb39a2213e5ba39e212cac10064"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/t/p.exe",
+      "bytes": 348672,
+      "sha256": "1a210807298e2588bba6635b1faa56474732e0d2f4f137fedfe554270b1abb5a"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/t/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/t/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/c-816d31b47fc6/target-cleanup.json",
+      "bytes": 417,
+      "sha256": "584fd1d94105e6700982d66beab89c5781cba3a4c58d6cbc27afa947cd34e986"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/a-registration.json",
+      "bytes": 881,
+      "sha256": "3b312f3e8f7a6d40335b2391e686d67cdbef670930d17d2fa02e501685533c82"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/b1/p.exe-tVm3uG/electron_game_overlay.addon64",
+      "bytes": 4166144,
+      "sha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/both-versions-active-resources.json",
+      "bytes": 20893,
+      "sha256": "a783e94b6e56235cdc439bafba54914f6ece4c961e7e30aa4569163f04b1a930"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/both-versions-offline-resources.json",
+      "bytes": 20706,
+      "sha256": "c204ab96a83cdf9398b43fc95ae90fb714cf53cd4774af144b4dd310b566fc9c"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/dormant-current-app-offline-resources.json",
+      "bytes": 17962,
+      "sha256": "1a5058a7502035542b54f79128c082baeecfeec2aedbcb50d5639379c87001f5"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/h/addons/ego-preload-fec05c0f9d3e68ce210bf051d1c75987-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/h/ReShade.ini",
+      "bytes": 1900,
+      "sha256": "7d3dc02de81b82b27675a82de9f0681e3588414c13559a76b3943c230a4df8ef"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/h/ReShade.log",
+      "bytes": 10669,
+      "sha256": "2332b0cbe638403ca1398d625b981709f5e0464b2ddbc0a55f7bcda6d978f3e1"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/h/ReShade64.dll",
+      "bytes": 5530112,
+      "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/host-snapshot.json",
+      "bytes": 3416,
+      "sha256": "57b9cd411b8fe3a717cb4d680ff3ae030bb82c46ca0d7d75a679bba75ad1979a"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/old-survives-current-dispatcher-app-crash-resources.json",
+      "bytes": 20801,
+      "sha256": "0354a2987f916141a638c71de4d98fb32c0cb8c4f321f81f7361f588e6f9920d"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/old-unregistered-active-current-offline-resources.json",
+      "bytes": 20271,
+      "sha256": "32b93e5102dd60e6a9d519ac9814f1331f03aab39f8c65df3a8d682989b694ad"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/a1/a-command.json",
+      "bytes": 67,
+      "sha256": "ca6ff7c0dc52a018ef3db72dce53d5c65712e2bd7f0c6249fefab7042bba5418"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/a1/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/a1/a-state.json",
+      "bytes": 9678,
+      "sha256": "0d83720ed0115855d103cd160f83501e38654ce1d0e0c3d3caf7c40ba9addb37"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/a1/process-launch.json",
+      "bytes": 1124,
+      "sha256": "33195c148031c98f2c493da7514f69bf7bf4101e5496ce9aff77a9ec23d573c1"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/a1/stderr.log",
+      "bytes": 163,
+      "sha256": "c654f2e817562491743443cc930c941be0dd9b2c5d64d1e2f20d295e38b3c93a"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/a1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/b1/b-command.json",
+      "bytes": 66,
+      "sha256": "8879e796a154fe418cb0ceef83a0bed04bd122a378ffa7775f60d9cb9544b731"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/b1/b-sdk.json",
+      "bytes": 10235,
+      "sha256": "ffe1200fb9d9c9d51c509c7e0977ee5300b02e422f063f6d0aeedcd1c3637437"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/b1/b-state.json",
+      "bytes": 11255,
+      "sha256": "80001542e0a0490b367fd8a930bc1c62db401ecbb468f261988c0951fafea3c4"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/b1/process-launch.json",
+      "bytes": 1186,
+      "sha256": "ec4d77fba8fb2096126cbfbf6db53d9be7d35aaf61ab7d9fd19b39f7d61f03fd"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/b1/stderr.log",
+      "bytes": 163,
+      "sha256": "9fc5dd58fb1b1b84a461a47817174531e484de2fb1c450f8a58746df51ae0c94"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/p/b1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/r/payloads/8888fe6e157739346a957c2a64fc018926f12eecde36300fbb19a7d77c87d318-b6702130-6227-4a81-8ef9-b5dbabdf7539/ego-preload-fec05c0f9d3e68ce210bf051d1c75987-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/r/payloads/8888fe6e157739346a957c2a64fc018926f12eecde36300fbb19a7d77c87d318-b6702130-6227-4a81-8ef9-b5dbabdf7539/ego-preload-fec05c0f9d3e68ce210bf051d1c75987-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/report.json",
+      "bytes": 8718,
+      "sha256": "db968ff672217df9e2ad984a84895ad35857fb097fe767a7889b18609d8eb837"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/t/electron-game-overlay-demo-graphics.log",
+      "bytes": 146,
+      "sha256": "851e7f3cd4530ac24e0727674c2ec0784cd1db4e7f9ffef86ecd249b11b3e4b5"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/t/electron-game-overlay-demo-present.ready",
+      "bytes": 205,
+      "sha256": "369de6b23045cf3ceb8778a65742d44565b59ec9a0f9c1904b73b97b870e8594"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/t/electron-game-overlay-preload-runtime.log",
+      "bytes": 150,
+      "sha256": "9ff4b01f6ae436b659ec76962f3ff5a1c581d767cdb124870bd3339bdd56cf25"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/t/p.exe",
+      "bytes": 344576,
+      "sha256": "c7882d4f31af55bfc8a34e62b03b812f7e82129e58dd8fae4d0804180576ef12"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/t/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/t/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/c-f63b05aec63c/target-cleanup.json",
+      "bytes": 417,
+      "sha256": "0f4b0bc2f5004a3c3dfa36e426ec73b3d833f6ec47445b46e35096812d9fe680"
+    },
+    {
+      "path": "build/pl/d-b5e0fdf1a7/control.json",
+      "bytes": 269,
+      "sha256": "e6c0122d32fed8ba1dda37773d1fe3168273654563c66b5fe4d5cb9f0d236a14"
+    },
+    {
+      "path": "build/pl/d-b5e0fdf1a7/debug-stack/debug-events.log",
+      "bytes": 6555,
+      "sha256": "f8f424827929f4bcf90bab8d88615afa7f1ae62675a116b21a1a0fb181f81d50"
+    },
+    {
+      "path": "build/pl/d-b5e0fdf1a7/debug-stack/stack-overflow.dmp",
+      "bytes": 207717540,
+      "sha256": "ac1cf006260f7a625aab461bea13651b9767ba1f9ed330055a6e2f2c774ab81b"
+    },
+    {
+      "path": "build/pl/d-dd606166e2/control.json",
+      "bytes": 268,
+      "sha256": "ec3a23187fb8ff826b4f2902e2a524f6af3d75040f7f90ae3c16e1975f43aeb8"
+    },
+    {
+      "path": "build/pl/d-f2c368ba43/control.json",
+      "bytes": 262,
+      "sha256": "49a4e0bba903fbebece6089122c1dc848d1de201935ff4a22bd1404941bbf1ff"
+    },
+    {
+      "path": "build/pl/n-012ba2a70b/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-883D0F4D994A4582BC0F3EA846C2F270-2e61e48504f6a83a.addon64",
+      "bytes": 4390912,
+      "sha256": "2e61e48504f6a83ac8678f3f8136c46d0cc4c91eff0f9b62c4e0a8c10449dd8f"
+    },
+    {
+      "path": "build/pl/n-012ba2a70b/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-883D0F4D994A4582BC0F3EA846C2F270-b3458cd7e9dd7741.addon32",
+      "bytes": 3954176,
+      "sha256": "b3458cd7e9dd774193f72986b7abcd1e1036c82041de003a98719f72d3dc8557"
+    },
+    {
+      "path": "build/pl/n-012ba2a70b/evidence.json",
+      "bytes": 1441,
+      "sha256": "704d4f104d35718e55cae98db64a287d0e88083b39c2487c240f1c84e3330e71"
+    },
+    {
+      "path": "build/pl/n-012ba2a70b/Win32.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/n-012ba2a70b/x64.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/p-8fe4c30a91/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/p-8fe4c30a91/ego-preload-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/p-8fe4c30a91/evidence.json",
+      "bytes": 1545,
+      "sha256": "ae845f68a1dc53c9928885bd9eee2d84a75ed890e0e3a220b4e4a478fe07884f"
+    },
+    {
+      "path": "build/pl/p-8fe4c30a91/Win32.log",
+      "bytes": 124,
+      "sha256": "eeef654a14ca7650dc048fcd1c336c576646b4c175312481db4a140884e31e18"
+    },
+    {
+      "path": "build/pl/p-8fe4c30a91/x64.log",
+      "bytes": 122,
+      "sha256": "b1f02bdfb9990a211c084cf44f2b088af06e353ef3f144a81d22eaeafc5b6819"
+    },
+    {
+      "path": "build/pl/r-01880b5672e1/report.json",
+      "bytes": 5351,
+      "sha256": "98f1e9203245afdc16b00a1583eaf93665a746ff1bec49da3f2f2bb0cf44afac"
+    },
+    {
+      "path": "build/pl/r-20fb93af0e88/report.json",
+      "bytes": 3176,
+      "sha256": "f340b0c58273b9a2548586785a477f147f2c799f124ba60ae486e73dd802ae51"
+    },
+    {
+      "path": "build/pl/r-3d165278d07e/i/initial-scan-resources.json",
+      "bytes": 20405,
+      "sha256": "46706498b207007bdcf8eea5297b46eaf38d67aeaa20ee0ec14f41cc4bec407b"
+    },
+    {
+      "path": "build/pl/r-3d165278d07e/report.json",
+      "bytes": 17618,
+      "sha256": "fd9264bdeb1aab01564c248f3906f04f74fa8b036126139955cdec48921b7b37"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a-registration.json",
+      "bytes": 879,
+      "sha256": "fa4a8646a4696c4683c40651248e5c534093a4703267a54c0a12630235470d1d"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/.electron-game-overlay-runtime-startup.json",
+      "bytes": 105,
+      "sha256": "03cc27e68dd175f47819cc4a8515e7333dfc319ad68a564e49f1e315a63d1efc"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/inject.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/inject.stdout.log",
+      "bytes": 337,
+      "sha256": "3644a99b7c74e5f446c947f99b32037c230f0b413c4362e0bf6594422f79cca7"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/preloaded-addons/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/preloaded-addons/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/ReShade.ini",
+      "bytes": 1918,
+      "sha256": "a70a82a5552f0becec90fa6d66a89cc8b455503fe359294fcd4eb9d05bcf8c08"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/ReShade.log",
+      "bytes": 14853,
+      "sha256": "88446901ebe9a503915bd4bc9f7908de81b845d5c74c6eea926db8aee5b0b540"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a1/p.exe-7bQ6UN/ReShade64.dll",
+      "bytes": 5530112,
+      "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/a2/p.exe-nNx3sP/electron_game_overlay.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/all-apps-offline-resources.json",
+      "bytes": 18157,
+      "sha256": "171333cfb53ca824cbd8d1d2fea5bc85fa52ebe41d3e51d3131f77de74c89ae2"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/b-registration.json",
+      "bytes": 879,
+      "sha256": "b1a6c50a4b4540ab1900256a28c8c8f77927e7269e1d01cfcf994b94f0db6b14"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/both-apps-active-resources.json",
+      "bytes": 17632,
+      "sha256": "9c47f520666916dc3af624b83e531e0c53a5b0f4b32965612200eefd7ac5ebe6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/future-host-snapshot.json",
+      "bytes": 3451,
+      "sha256": "7b3d0813fc879a3655eb4a497dadfe96707444dbdabb6084f8c5916421dbb7a5"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/initial-scan-resources.json",
+      "bytes": 16982,
+      "sha256": "03c56d777f2d465147d138c2482d7b869c298cac5d80878200d13b6c5097f9ca"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a1/a-command.json",
+      "bytes": 68,
+      "sha256": "4172ae9447a19089080e98f314ec46a8e3714f2b7f2d7bf26b844d4253a452f2"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a1/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a1/a-state.json",
+      "bytes": 10261,
+      "sha256": "22f450fb0cf7159a9d3b67be63e3c0518c7cba337b2350a9876eb94d45049616"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a1/process-launch.json",
+      "bytes": 1129,
+      "sha256": "0abc3d094ab97710373ce856aad328906216d2c8b034043bae0d2f21adff9d18"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a1/stderr.log",
+      "bytes": 163,
+      "sha256": "b15ec6e8ceac8e4efc5c2825992a4817ab84fe240011f4b298af7c303a1552e1"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a2/a-command.json",
+      "bytes": 66,
+      "sha256": "41b64d84ee54d3b7976980f3e64ef2c7ebe4ccef8293a43ce4f346436b16909e"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a2/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a2/a-state.json",
+      "bytes": 9625,
+      "sha256": "8d1b7a4df77aef041fd1d7b495f0d455b7b4fd5f72b4b4995b36643a7e103c62"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a2/process-launch.json",
+      "bytes": 1129,
+      "sha256": "85fa026de4777938889c746074dfcfea900475ab06198b9579ad759d84130d91"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a2/stderr.log",
+      "bytes": 163,
+      "sha256": "8671a9377ec5b723fa032fb2e62a0358b9745de68ac652969ba6df631b8ad037"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/a2/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/b1/b-command.json",
+      "bytes": 66,
+      "sha256": "ad5be4a485bea042e0518f6cf028a7b7f0e6b108d3b31a00682a9735afc2af4e"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/b1/b-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/b1/b-state.json",
+      "bytes": 9865,
+      "sha256": "3671293bf9ac4824952df2a0f8f535455b8ada30880bca61da11ca9caa55fbfd"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/b1/process-launch.json",
+      "bytes": 1128,
+      "sha256": "12f37618dce9f6d69fb3e7df5a14d79878642db7dc25396b9f5bd2bd1358f0f1"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/b1/stderr.log",
+      "bytes": 163,
+      "sha256": "8ece1a78ca24a435917fc74c0931cbfe96e7db1a0362229277573ae62250d694"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/p/b1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-dde5d4d8-2757-4ee8-89e9-6741484a568a/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-dde5d4d8-2757-4ee8-89e9-6741484a568a/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-6d71487e-bfd0-4712-8413-237f6fd106bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-6d71487e-bfd0-4712-8413-237f6fd106bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/restarted-app-fresh-member-resources.json",
+      "bytes": 18344,
+      "sha256": "a4e1cb7a145ee328c0fd20b329bebb5f68ba649b5ea8ebfbab746ed39ddf2bde"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/result.json",
+      "bytes": 10992,
+      "sha256": "9b11d716e1820e6e72981a58188e1061f649e434ff0976874ff0852c80f1fa1c"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/survivor-after-peer-crash-resources.json",
+      "bytes": 17541,
+      "sha256": "032d1e3a0623b05a91d93ee5eb51feb2453752b5c7c1df6b82deff1c371ba1c0"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/t/electron-game-overlay-demo-graphics.log",
+      "bytes": 91,
+      "sha256": "67e185ba718ce40cf150ed3ba59ad7541370e1bcfd468c27bc1f55c3d40a7e3c"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/t/electron-game-overlay-demo-present.ready",
+      "bytes": 221,
+      "sha256": "825296fc02b069ad7992f6d86006a4cc53a960b9d3b55542c0af378f87e8ef40"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/t/p.exe",
+      "bytes": 348672,
+      "sha256": "1a210807298e2588bba6635b1faa56474732e0d2f4f137fedfe554270b1abb5a"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/t/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/t/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/target-cleanup.json",
+      "bytes": 417,
+      "sha256": "0a006af7eb2dd440946d9d77989a13864a56ab1579cee7e9b2756f229a38812c"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/unregister-keeps-current-target-resources.json",
+      "bytes": 18344,
+      "sha256": "4fc6279de26b66eabf070f2e249d6b7d1cedb6a9f758b0f0112ecf41cecec3ff"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/i/unregister-retired-app.json",
+      "bytes": 209,
+      "sha256": "65a69597cd9439c56f8b57cb0a10efc6a0135521f5e39f1415ef7f26f24a03b8"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/report.json",
+      "bytes": 18960,
+      "sha256": "137224691716a84204eafb8c8a51e221fb32d93e3c01c710c249f0e4e798e8b4"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/a-registration.json",
+      "bytes": 879,
+      "sha256": "a6f9d1f4efc8ca165d7bc20cdb45a1531b9a5289f3dab878e58e84017d748286"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/a2/p.exe-mOCZFh/electron_game_overlay.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/all-apps-offline-resources.json",
+      "bytes": 18302,
+      "sha256": "2d60a16cbeaf750e316ae84c78f331bab58fd1beaba7a62be9d67e874413d1c8"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/b-registration.json",
+      "bytes": 879,
+      "sha256": "43f6d6d7c25b4fd3e4c6a229d3c304e8f7806ec14648bb83f36424b1f30cceeb"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/both-apps-active-resources.json",
+      "bytes": 17777,
+      "sha256": "67c2cac7372488098706a4161d2b008f9f44e8bb8ea58db7a4df0fdddf14ae70"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/first-app-active-dispatcher-offline-resources.json",
+      "bytes": 17152,
+      "sha256": "1e5805fffa062b390c06984d35f15e4bcae616c83cd359be29279ee1817cd849"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/future-host-snapshot.json",
+      "bytes": 3451,
+      "sha256": "c04944e10e098054bc53d4bd1357c0187e1451f94c90bbc6d67db1c3ac111e88"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/h/addons/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/h/addons/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/h/ReShade.ini",
+      "bytes": 1902,
+      "sha256": "63efef423fe5e99896a6aeb430c2221bc3d4adb887d21a5195f114b0a6e7e4bd"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/h/ReShade.log",
+      "bytes": 14784,
+      "sha256": "9e4463c08f7dfd13b210aa8cf9ea49325c3f927bcd49ebdcf34da993eefecdcf"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/h/ReShade64.dll",
+      "bytes": 5530112,
+      "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/host-snapshot.json",
+      "bytes": 4612,
+      "sha256": "3bacdb2da83f60e2789bec2264c0eb000bbb5d6481b64799ab4d01fd74d4282b"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/initial-scan-resources.json",
+      "bytes": 16456,
+      "sha256": "c394e56844ee25257517ad8144f1ca39b51b4351b59a48b2ec783234f0932f2d"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a1/a-command.json",
+      "bytes": 68,
+      "sha256": "4172ae9447a19089080e98f314ec46a8e3714f2b7f2d7bf26b844d4253a452f2"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a1/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a1/a-state.json",
+      "bytes": 10988,
+      "sha256": "8b4141adc88c67980f757667e32bab8bdba907f18fe1aea50840c4cd78610d44"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a1/process-launch.json",
+      "bytes": 1129,
+      "sha256": "f170f72214baf246088b404d712319b2c968ab0fff7485ce36290922764283f0"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a1/stderr.log",
+      "bytes": 163,
+      "sha256": "10e2dfe3d7d11b66893e481879f9e5d5400e6f4e4bf08f2090149ada4ee9c190"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a2/a-command.json",
+      "bytes": 66,
+      "sha256": "41b64d84ee54d3b7976980f3e64ef2c7ebe4ccef8293a43ce4f346436b16909e"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a2/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a2/a-state.json",
+      "bytes": 9566,
+      "sha256": "e4b6ffefb047b4c27de810f543a4fb4104208d4c66b0ebd8a2e905e40d3113b9"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a2/process-launch.json",
+      "bytes": 1129,
+      "sha256": "4fc640e2c5450ddb74ce0b5706f2ea419c6f927e3ad524d8dd557a5bbf30c922"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a2/stderr.log",
+      "bytes": 163,
+      "sha256": "4f159d6c07cae6d0356b6704185d58f9137c952fb1767a8a9ea7cfb6ca686af7"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/a2/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/b1/b-command.json",
+      "bytes": 66,
+      "sha256": "ad5be4a485bea042e0518f6cf028a7b7f0e6b108d3b31a00682a9735afc2af4e"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/b1/b-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/b1/b-state.json",
+      "bytes": 9757,
+      "sha256": "18d339460164684bf65112db3d729ef67460b519fc66ae3c2866e5861949f2a6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/b1/process-launch.json",
+      "bytes": 1128,
+      "sha256": "5e6a97b02f9493991f1a2e07ae6b5ae7e37cd025c2452455a1ce77fa993decba"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/b1/stderr.log",
+      "bytes": 163,
+      "sha256": "cea5742af160787479fec78d4c26a26ecb1d10c2df12b7c1e2ebe211a7e2db88"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/p/b1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-27751e80-de03-489b-8dd8-2e3fb32455fc/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-27751e80-de03-489b-8dd8-2e3fb32455fc/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-511dfc06-5c0b-4495-8303-af48d6e2b52b/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-511dfc06-5c0b-4495-8303-af48d6e2b52b/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/restarted-app-fresh-member-resources.json",
+      "bytes": 18489,
+      "sha256": "1d6492e8505e72b03915d8e04b04d5123033012a0e2a8832e0c1de38f6806b4d"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/result.json",
+      "bytes": 6412,
+      "sha256": "db2b18d0d806736f1d1ff78718cc6fd8db72688aee519a18538ce4422f850638"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/survivor-after-peer-crash-resources.json",
+      "bytes": 17686,
+      "sha256": "c94f8ed531697ac2376be9300261f4abca2edded400be6f87a972afdcd4e63db"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/t/electron-game-overlay-demo-graphics.log",
+      "bytes": 91,
+      "sha256": "67e185ba718ce40cf150ed3ba59ad7541370e1bcfd468c27bc1f55c3d40a7e3c"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/t/electron-game-overlay-demo-present.ready",
+      "bytes": 207,
+      "sha256": "739a21f58c541c5dcdf46d405c6647cf3b658c8e2a2930894cfc55755d535fbc"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/t/electron-game-overlay-preload-runtime.log",
+      "bytes": 152,
+      "sha256": "1909ffeed7d909d1043616508c636317aae2b013eaacaee4b1ff96aa5bdda04d"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/t/p.exe",
+      "bytes": 348672,
+      "sha256": "1a210807298e2588bba6635b1faa56474732e0d2f4f137fedfe554270b1abb5a"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/t/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/t/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/target-cleanup.json",
+      "bytes": 417,
+      "sha256": "728590e5f181b3f720f1f2a65cfcdbba8ee852decd52120a25406c9b1a22e134"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/unregister-keeps-current-target-resources.json",
+      "bytes": 18489,
+      "sha256": "d13aac641242235320119c7a6a045394e7b1ca1f262f352613eff1085e9e6a4c"
+    },
+    {
+      "path": "build/pl/r-9a0ad5d1c091/s/unregister-retired-app.json",
+      "bytes": 209,
+      "sha256": "a802bc249023bc934e8f6f5802eaf1c6f5d453e3ce82afdd589f6d16ba76c7ea"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a-registration.json",
+      "bytes": 879,
+      "sha256": "ccbbe78980e2cc8c115c422673fa73da18734b8e537b09140d959a25f1e87fb7"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/.electron-game-overlay-runtime-startup.json",
+      "bytes": 105,
+      "sha256": "b7d844874860299646a90a5fe4afc13b7f68a4428ae613ccb4831ba46399fe72"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/inject.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/inject.stdout.log",
+      "bytes": 337,
+      "sha256": "6a34ac3cf231e544cab9412e6b6f2d1e2a568d63c9e857991fc3e6a457c98f40"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/preloaded-addons/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/preloaded-addons/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/ReShade.ini",
+      "bytes": 1918,
+      "sha256": "57463a018ee7cf8515ccfa3db5b8bd889414f9dd169cee2833db3d2092200469"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/ReShade.log",
+      "bytes": 13221,
+      "sha256": "0ff859a8b49ce115b37c9173e35d7b75920402eb232590f2bd4e7ddd150027a8"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a1/p.exe-4uEBXr/ReShade64.dll",
+      "bytes": 5530112,
+      "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/a2/p.exe-2eFibN/electron_game_overlay.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/all-apps-offline-resources.json",
+      "bytes": 21684,
+      "sha256": "db68f712c5afe243a439071f195fb83bf6b496c66c90c1195653f873e875f687"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/b-registration.json",
+      "bytes": 879,
+      "sha256": "bcab3be4e092413d5e4c26a1964144cec3ff8746ec4ec595bf74259f1ff922c2"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/both-apps-active-resources.json",
+      "bytes": 21161,
+      "sha256": "08ea7fd84f305bbd00d7c4e9925b29cbf0df6c93fca62c9ee524e6cd6a84b627"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/future-host-snapshot.json",
+      "bytes": 3451,
+      "sha256": "7a5938fd66ddde3bc328c40b2f2e432cc22a52b6204bb451a11fa0e770b2580e"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/initial-scan-resources.json",
+      "bytes": 20511,
+      "sha256": "a0b053e055da61d5d1f5056e1a4ab4bde1397b174112408501e28f7a23967cb3"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a1/a-command.json",
+      "bytes": 68,
+      "sha256": "d76d29f6782b26165b17927f0223b5a1f7b37c8d7a9464e3ac99434c8e6edf75"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a1/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a1/a-state.json",
+      "bytes": 10261,
+      "sha256": "37a6e69ad54398219510d524a2e9354002486b1ddf4c73ba5a918dae7a1028b1"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a1/process-launch.json",
+      "bytes": 1129,
+      "sha256": "254bedbc35996f964977d9bfdff314944993291ce3728985c75ddd815ef9e470"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a1/stderr.log",
+      "bytes": 163,
+      "sha256": "810060c2b3e3176d0a79eda6eb4523199f3dcf43007bf16952d85d202fcba15d"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a2/a-command.json",
+      "bytes": 66,
+      "sha256": "73c10ba106529a1e601626b31d5fb36b3e3efc15e42ffbbeb1e5990e7cb5ab42"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a2/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a2/a-state.json",
+      "bytes": 9625,
+      "sha256": "bfe780122128f196568cabfcf3b345254a0d2cd7c6aff41bdb3f3ae2d3c6ed04"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a2/process-launch.json",
+      "bytes": 1129,
+      "sha256": "e5ac8c93c9b49cf4e2cdd3a4707b8870db4eb6a0d65060d14f866203b39917ec"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a2/stderr.log",
+      "bytes": 163,
+      "sha256": "b588bf994fa899995c989e51bccb3f11624f8e2128ec9a16f0736cea1c4f16dd"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/a2/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/b1/b-command.json",
+      "bytes": 66,
+      "sha256": "e205f7c2554c08aefdb853a29bfacddc577035b6f405ebf0d1ec75a2f5182ca0"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/b1/b-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/b1/b-state.json",
+      "bytes": 9865,
+      "sha256": "37f8f58c2b1e01f5de4be2d4d96ca0299d2178c7cadca5ba0e9815697911dad3"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/b1/process-launch.json",
+      "bytes": 1128,
+      "sha256": "1d90c6fd72ccd1504fd94a4643613c820c4fa4edb5485de60ba8110865790a68"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/b1/stderr.log",
+      "bytes": 163,
+      "sha256": "6b306626f21d2f06165e282e081578fab687acf34c810495b59f083649f4a81e"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/p/b1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-b1ddf594-c1f2-4599-b317-3849bda28d1f/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-b1ddf594-c1f2-4599-b317-3849bda28d1f/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-975fd3bf-6a80-457a-972b-e6a885b41f67/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-975fd3bf-6a80-457a-972b-e6a885b41f67/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/restarted-app-fresh-member-resources.json",
+      "bytes": 21871,
+      "sha256": "6179d787c50b2176ce667158ed59ef7d2fa13da1e26829840c63e934861c8d1f"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/result.json",
+      "bytes": 11050,
+      "sha256": "2d3d4da65d958c782e123effb237cef3e69450760e3bf5b2e9723b83b65ab514"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/survivor-after-peer-crash-resources.json",
+      "bytes": 21070,
+      "sha256": "b83f9cff2bcf8ececab18db1a62f6e39dc6d85bbf6487e87f0f2bcecbcc4bc1c"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/t/electron-game-overlay-demo-graphics.log",
+      "bytes": 146,
+      "sha256": "851e7f3cd4530ac24e0727674c2ec0784cd1db4e7f9ffef86ecd249b11b3e4b5"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/t/electron-game-overlay-demo-present.ready",
+      "bytes": 221,
+      "sha256": "f5edc04fbac2fc476dd37c4acf5f01dd99c2b7afc415d74229b778d60913dc70"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/t/p.exe",
+      "bytes": 344576,
+      "sha256": "c7882d4f31af55bfc8a34e62b03b812f7e82129e58dd8fae4d0804180576ef12"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/t/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/t/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/target-cleanup.json",
+      "bytes": 417,
+      "sha256": "091c47906136d10d11f4ee1bf842409a8440d9ea0cdd915443ba66c9affda254"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/unregister-keeps-current-target-resources.json",
+      "bytes": 21871,
+      "sha256": "7deeed8b26e4d1587651f93381bf93937ac27fc27929ccd662919ace965b11f0"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/i/unregister-retired-app.json",
+      "bytes": 209,
+      "sha256": "49062bf429f2b0f5892da93c594118a0f2fd19c013a0aa2ed2e6eb3a3e6a2149"
+    },
+    {
+      "path": "build/pl/r-aaaf378c453f/report.json",
+      "bytes": 12201,
+      "sha256": "1c9a951b839d009ff7c6b4b7b145db50b680be09d4be665feff0a2b79780b43c"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/report.json",
+      "bytes": 7365,
+      "sha256": "39858d27e2f3f8089e3785d5398b23cd5c978ab5ded14ea982f443d8150abdea"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/a-registration.json",
+      "bytes": 879,
+      "sha256": "5c6a4b0a46c9802b057786892f549424d27a0558d0327681b2ea51c934f2fbba"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/a2/p.exe-4onYhn/electron_game_overlay.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/all-apps-offline-resources.json",
+      "bytes": 21568,
+      "sha256": "3c59b753f0c15f94a98ed68b19eac52c189f74241b5f765fb5dc3b1b59c94494"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/b-registration.json",
+      "bytes": 879,
+      "sha256": "f7b6f113065ae5c70d71fcd6ef89a534db38a2babc80b69a139702b5f959bbe7"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/both-apps-active-resources.json",
+      "bytes": 21044,
+      "sha256": "dd8808063426c79e27c6db080317dcc0fe7ed53546357881810ae37f85f42055"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/first-app-active-dispatcher-offline-resources.json",
+      "bytes": 20421,
+      "sha256": "dd024e7f63121a8061f88d8811c0e9aec1981a1b60e89c7ab348323cb92f091f"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/future-host-snapshot.json",
+      "bytes": 3451,
+      "sha256": "e9ea4dbd3f15895862eb3a2f5e5725d1abfb4cdbffd9ab34e7d70ed6cdf6b886"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/h/addons/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/h/addons/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/h/ReShade.ini",
+      "bytes": 1902,
+      "sha256": "aef3f8a0457027da46733c3d604cbfb649a517005a055e72be88a62021d89adc"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/h/ReShade.log",
+      "bytes": 13152,
+      "sha256": "ac2169833c0b7021cc13a732161673e5c335137b192f77f6ebfc1afb418a585e"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/h/ReShade64.dll",
+      "bytes": 5530112,
+      "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/host-snapshot.json",
+      "bytes": 4612,
+      "sha256": "305459707e012d819b494fd1b25aa4bd974a06a9a48e176cdf55d4acb500782c"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/initial-scan-resources.json",
+      "bytes": 18286,
+      "sha256": "734bbf525827a1ca03df904ff274d82607ccd2eb06c9a234755b307a931cd3b0"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a1/a-command.json",
+      "bytes": 68,
+      "sha256": "1b7b5f892efc012fed8783c0273d23a5ae28b7dbeea8b3b4fb9652ede7da5fd3"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a1/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a1/a-state.json",
+      "bytes": 10988,
+      "sha256": "ce4c5bfcb94b7e82ba01697ce13f2924ff1876e4297160f58f6b5505188f4c9b"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a1/process-launch.json",
+      "bytes": 1129,
+      "sha256": "9acdfbd9b8186fc578e9b8f1ccd724321fd313c81b7abea58a2f4e981cac3484"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a1/stderr.log",
+      "bytes": 163,
+      "sha256": "1981246fe3b6e629cc3248fe05cd6031ce0d3fb43e299b55209db91b860cff88"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a2/a-command.json",
+      "bytes": 66,
+      "sha256": "88b09bcf84e53cd786962d674028fe13b063078d3b80f27d3ccc5358e73caab1"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a2/a-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a2/a-state.json",
+      "bytes": 9566,
+      "sha256": "1fb97f1b7194f0bc69b2857ecfce2f40c773b35f3f9fd6544246f35d0e772563"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a2/process-launch.json",
+      "bytes": 1129,
+      "sha256": "a778202b9814a706878f4269290cd366158b86f2b5434ec172fcfebb545f2df1"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a2/stderr.log",
+      "bytes": 163,
+      "sha256": "060e9574d520d5694ee9e13a3600db66189f34fd227b0b72fee27152eb386620"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/a2/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/b1/b-command.json",
+      "bytes": 66,
+      "sha256": "976496a6440df5439b33be84953c37dff10a0b6df9e136336fce712fa9d4a4a8"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/b1/b-sdk.json",
+      "bytes": 8603,
+      "sha256": "8d9526af83450ca767affd586fd30dd89c5f3a24955e2ad43c0f33041ddda1c5"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/b1/b-state.json",
+      "bytes": 9756,
+      "sha256": "60fc4165d3c89a0e9fb2585603673bdb5c5eee20063557b43232be364b25dc42"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/b1/process-launch.json",
+      "bytes": 1128,
+      "sha256": "318017c9db2a65a9f814564e8a31aa0ad5e39ead831685b45a0c9bb48183eaf5"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/b1/stderr.log",
+      "bytes": 163,
+      "sha256": "57703dae176892db8edd26719dd4fed50b9c01eadcc4d85503b8cf872d6e95ec"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/p/b1/stdout.log",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-26eb83f5-3df2-48ba-b417-94bc05fd5ae6/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/r/payloads/2f94e37383023a1927c8813f81e0cba42a3581436445c6d332eaa9a3f90e4695-26eb83f5-3df2-48ba-b417-94bc05fd5ae6/ego-preload-a43ea971bc1ff83085f7603dc4ec119c-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-abf0a9ac-0a38-4c8c-8959-8f3566de10bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/r/payloads/ad0049ad50114826910ec102ac4630fcf8862a7e2eef5febe7eba01d8f7cc76d-abf0a9ac-0a38-4c8c-8959-8f3566de10bb/ego-preload-b2329b093b1d7de95ca3949319d97b61-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/restarted-app-fresh-member-resources.json",
+      "bytes": 21755,
+      "sha256": "cb45da5605c307c6d199732b409a84ede476a113068ef540d2c67aa295ebc612"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/result.json",
+      "bytes": 6470,
+      "sha256": "9a0169a22d6928f9df42b69ad6a9f9e0016851078e881799cbb408e07f967922"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/survivor-after-peer-crash-resources.json",
+      "bytes": 20952,
+      "sha256": "2a3849c24dc5903be8a805df75e1ee22932acc4c704e1c44123c36e9a9d7472f"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/t/electron-game-overlay-demo-graphics.log",
+      "bytes": 146,
+      "sha256": "851e7f3cd4530ac24e0727674c2ec0784cd1db4e7f9ffef86ecd249b11b3e4b5"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/t/electron-game-overlay-demo-present.ready",
+      "bytes": 207,
+      "sha256": "092403ed929494b370808ed884a0f7c893c5642c2474f1b8adc786ff1bb5f611"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/t/electron-game-overlay-preload-runtime.log",
+      "bytes": 152,
+      "sha256": "4dea524141196ebf1cbf2390eb66eacd5f1b3f55322b571dc3f9b696504d2a4c"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/t/p.exe",
+      "bytes": 344576,
+      "sha256": "c7882d4f31af55bfc8a34e62b03b812f7e82129e58dd8fae4d0804180576ef12"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/t/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/t/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/target-cleanup.json",
+      "bytes": 417,
+      "sha256": "018027fb3ca6cf36644d369ea7d5ea4ccae31f6639a443590916b3fb7c55da54"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/unregister-keeps-current-target-resources.json",
+      "bytes": 21755,
+      "sha256": "3b6bf97dacf84dc33a559b4c1418cdf594ca7e619238a6cb63e2696bbbdad073"
+    },
+    {
+      "path": "build/pl/r-b0fa03869c0b/s/unregister-retired-app.json",
+      "bytes": 209,
+      "sha256": "3dccd16383482e8ca78eb0a0421f42ced7a5329911e9a476b8e5b469ad055414"
+    },
+    {
+      "path": "build/pl/r-d552a294514f/report.json",
+      "bytes": 4190,
+      "sha256": "f4fc06c1b65afac86d553922f5112bc9301c221f23c465de7d84e84aab28a9e4"
+    },
+    {
+      "path": "build/pl/r-df9c286ebe23/report.json",
+      "bytes": 10922,
+      "sha256": "ad8aee76f43822f0e5a6afa8d19dc7c981a42c6252e95eece9e6d7313a1c1fb0"
+    },
+    {
+      "path": "build/preload-client-action-boundary-focused.log",
+      "bytes": 392,
+      "sha256": "19ec79a014328509570613977f5e561af655111218b55df1c5d7707be454dc85"
+    },
+    {
+      "path": "build/preload-client-all-gen19-unit-action-boundary-final.log",
+      "bytes": 55306,
+      "sha256": "63f941856a97e27d3926afc8aa9695c3535d9f705b2720b2ae7ed01c7c6b81bc"
+    },
+    {
+      "path": "build/preload-client-gen19-action-boundary-final-audit.json",
+      "bytes": 1231,
+      "sha256": "e8d6bd154d96b84f1c4939ed78eeef8fd13eadf52a1a5131d3f3e0977c3e19ff"
+    },
+    {
+      "path": "build/preload-gen19-d3d11-production.display.json",
+      "bytes": 1919,
+      "sha256": "e8d3c0906028938df612d59c5fb5202c9f6b62f326ffdb6a2b345369f01cd1e7"
+    },
+    {
+      "path": "build/preload-gen19-d3d11-selfload.display.json",
+      "bytes": 1908,
+      "sha256": "4e4ecf9a6664dc85a0072d37898117bd4ccd2dc79672dff93294f85e6bdacdbb"
+    },
+    {
+      "path": "build/preload-gen19-d3d11-unregistered.display.json",
+      "bytes": 1881,
+      "sha256": "9b6b4279b53255588783a366d1bd54e973f00e850b488f12c8c35a030f531880"
+    },
+    {
+      "path": "build/preload-gen19-d3d12-all.display.json",
+      "bytes": 1865,
+      "sha256": "7f2aac2274259e7bbaa2804cdd3a7c0944cef3ad52ae9bb26ded2977e3a70856"
+    },
+    {
+      "path": "build/preload-gen19-d3d12-unregistered.display.json",
+      "bytes": 1881,
+      "sha256": "d325d7b7251db93731bb295b5febd48f6047663587b65c0dd60a90f4e5d26d60"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-d3d9-x86.display.json",
+      "bytes": 2031,
+      "sha256": "fef4beaa327170b0511400265b268e74b99ea50c8b99d164610b6058a9c83084"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-d3d9-x86.log",
+      "bytes": 1579,
+      "sha256": "879e7421fac72a87e06ea514e670ff3977748d843571df83fba0e6c3dd9e56cf"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-dpi125-osr150-attached.display.json",
+      "bytes": 1850,
+      "sha256": "4885c3e58835c2a523384bcc26498ef764a624ed5bc9486ce9b983393be49300"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-dpi125-osr150-attached.log",
+      "bytes": 268,
+      "sha256": "d54696a31128d6e5a5e909f5de368110f3d035ffd9f3cc0f57546b989ae40209"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-raw-buffer.display.json",
+      "bytes": 1838,
+      "sha256": "353bbe1ca4da90ec58c0b4d44c4a9e33ac950bceb51e984f513bfec682cdf634"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-raw-buffer.log",
+      "bytes": 256,
+      "sha256": "dfc4eb90afa01822a0c230695874d726a545599250e1b26a4579d1789dce746c"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-session-close.display.json",
+      "bytes": 1869,
+      "sha256": "fd94b7179811e829f9cd998fc7cca229fabe9d1ec75aac195a9aba6c40d62d76"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-session-close.log",
+      "bytes": 785,
+      "sha256": "39ba5a3089dcfde9ad58339e14efb1f87757df363fc4a20ae012c7f598955984"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-surface-drain.display.json",
+      "bytes": 1869,
+      "sha256": "7068b63d4a70b13cab885c566efc55555d68bb2d9bb4cc66e0380f78d95cc9db"
+    },
+    {
+      "path": "build/preload-gen19-default-a2-surface-drain.log",
+      "bytes": 888,
+      "sha256": "164466d6eb6c685117a24894d7027c02b5206912f5bf4b4021c0057946169e74"
+    },
+    {
+      "path": "build/preload-gen19-default-a3-d3d10-x86.display.json",
+      "bytes": 1898,
+      "sha256": "0116dd423fa71f9373fe2dd084349d22832915879e1398afdb015efba1577206"
+    },
+    {
+      "path": "build/preload-gen19-default-a3-d3d10-x86.log",
+      "bytes": 1976,
+      "sha256": "f689f9a38dc8b0d00c890e15c1bca441528f233ddc95b9564845ce09c6aef7ba"
+    },
+    {
+      "path": "build/preload-gen19-default-a3-d3d9-x86.display.json",
+      "bytes": 1897,
+      "sha256": "17ccdfcc08201fdd316e1dd791888f0b5cc234ae3dc56b82a6c84429e5d3fbc4"
+    },
+    {
+      "path": "build/preload-gen19-default-a3-d3d9-x86.log",
+      "bytes": 1962,
+      "sha256": "f9c53a48d8e47a8430882cdd5bba8ca13845b9897e4c28ecb92a73aa4b0297ea"
+    },
+    {
+      "path": "build/preload-gen19-default-d3d11-multi.display.json",
+      "bytes": 1864,
+      "sha256": "a604edd559e1df698e126d3b08f73563ca6f45725202d8bfdd35701448bbdd1a"
+    },
+    {
+      "path": "build/preload-gen19-default-d3d11-multi.log",
+      "bytes": 1119,
+      "sha256": "2d0e56715227481dbd8936877fd4f95ff014ab633c924153263433b355fa3129"
+    },
+    {
+      "path": "build/preload-gen19-default-d3d11-sdk.display.json",
+      "bytes": 1898,
+      "sha256": "d5eeae52f23d2f3cb9ba7ac6029c7aaa1e494f67571ae646c903cdd7cd6d2974"
+    },
+    {
+      "path": "build/preload-gen19-default-d3d11-sdk.log",
+      "bytes": 1953,
+      "sha256": "99aff4a46dc85215297cea13f47c1834b5d77bbc82de51f68b2529b81ffb279c"
+    },
+    {
+      "path": "build/preload-gen19-default-d3d12-multi.display.json",
+      "bytes": 1864,
+      "sha256": "56899f5ade636ff3e35afa4c3e7e9c7e10b3cb9117b72d07ca394bd5e47e2af8"
+    },
+    {
+      "path": "build/preload-gen19-default-d3d12-multi.log",
+      "bytes": 1119,
+      "sha256": "5e917b97b4cea56167caf1a6b1198a0ff9f272cca2c8d43175b8c4e48b9082da"
+    },
+    {
+      "path": "build/preload-gen19-default-regressions-remaining.json",
+      "bytes": 4510,
+      "sha256": "8e022fb74cb4b8a80da02dc880f7a63e3520d7ee74c4c8dfc50a799c748ee290"
+    },
+    {
+      "path": "build/preload-gen19-default-regressions-x86-final.json",
+      "bytes": 2089,
+      "sha256": "d04db1ff97a1c22457a4f8ef7e47ab908a24b9bed02378a53ddd7c697ade9c10"
+    },
+    {
+      "path": "build/preload-gen19-default-regressions.json",
+      "bytes": 3610,
+      "sha256": "26b169ebb2c1bc1c6f815f6f5e7d609a35a86f4e426c1cca2479659c87a9043f"
+    },
+    {
+      "path": "build/preload-gen19-default-regressions.ps1",
+      "bytes": 3831,
+      "sha256": "2846a97585b27050321c9603caad3174a22bed269e33d04d5b507bd775bdf8c2"
+    },
+    {
+      "path": "build/preload-gen19-default-session-close.display.json",
+      "bytes": 764,
+      "sha256": "37f1493c0f1cf1172eed06aaed64c0c24baeca34ff10b94f9e9562b743570b9a"
+    },
+    {
+      "path": "build/preload-gen19-default-session-close.log",
+      "bytes": 605,
+      "sha256": "38645b2b5c9a4e5345d5c364408237e5ed583440afa97d4b13233b417422415e"
+    },
+    {
+      "path": "build/preload-gen19-full-build.log",
+      "bytes": 14712,
+      "sha256": "d8e04811d264795f88bb024725174dfc5ec7f88b15753537bc5a3407f47c684b"
+    },
+    {
+      "path": "build/preload-small-stack-gen17-negative-656890e4e98f4a798d0259ed103975ec/old17-dllmain-prologue-x64.txt",
+      "bytes": 2394,
+      "sha256": "2b40cbeb566f23a8637716d55af293b9177eb7de5db3c28a74a2e1d20c1314a7"
+    },
+    {
+      "path": "build/preload-small-stack-gen17-negative-656890e4e98f4a798d0259ed103975ec/retained-negative-control.json",
+      "bytes": 2402,
+      "sha256": "c0d1a07e05953f86473a745f0210f4b93bb0c6f955811deba0a52637eab73c7d"
+    },
+    {
+      "path": "build/preloaded-addon-small-stack-console-review/Win32/Release/preloaded_addon_small_stack_fixture.exe",
+      "bytes": 31744,
+      "sha256": "fadb24eadf05df43075f399e8232b4487f2ef3c6e30f9de1de744130255ae4b2"
+    },
+    {
+      "path": "build/preloaded-addon-small-stack-console-review/x64/Release/preloaded_addon_small_stack_fixture.exe",
+      "bytes": 36352,
+      "sha256": "cdaf053f42d427115294de942cb65314040219498b5957d8d927f5044eb0b20c"
+    },
+    {
+      "path": "build/sdk-unit-gen19-concurrency4-invocation.json",
+      "bytes": 523,
+      "sha256": "f8317806edc5e3692608e5798171585758b7719a01bfdafd9a618b5eade5cd2d"
+    },
+    {
+      "path": "build/sdk-unit-gen19-dist-after.json",
+      "bytes": 24945,
+      "sha256": "19ee7967c465c418f35961ba902763baa089629cf8dc62944dd59ef8cd8268ff"
+    },
+    {
+      "path": "build/sdk-unit-gen19-dist-before.json",
+      "bytes": 24945,
+      "sha256": "19ee7967c465c418f35961ba902763baa089629cf8dc62944dd59ef8cd8268ff"
+    },
+    {
+      "path": "build/sdk-unit-gen19-final-audit.json",
+      "bytes": 879,
+      "sha256": "d8389c5d3c5a208b46d1461c33fe65dbb3aa92216d12341f80ccc924d06b6d57"
+    },
+    {
+      "path": "build/sdk-unit-gen19-node26-final-concurrency4.log",
+      "bytes": 114713,
+      "sha256": "4d55108acef0b5e5ca739e978358736afcf5226ba0989137c9ac74ecaf976569"
+    },
+    {
+      "path": "build/ss/r-Win32-2bd2bea64f9d/evidence.json",
+      "bytes": 2813,
+      "sha256": "00ac6c67554bbbdb4a026dbbee4431825b7bb450e7c4f2e196163430c7ee8008"
+    },
+    {
+      "path": "build/ss/r-Win32-2bd2bea64f9d/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/ss/r-Win32-2bd2bea64f9d/stdout.log",
+      "bytes": 488,
+      "sha256": "62c1fe626db5e068ca803dab0ae173acfe349e2d17fbec0c47a451bb7d6d6de3"
+    },
+    {
+      "path": "build/ss/r-x64-61acca6c0490/evidence.json",
+      "bytes": 2829,
+      "sha256": "a7e2e25c6c4c93400269e859a7317222aabd52659c941204e556270d51837887"
+    },
+    {
+      "path": "build/ss/r-x64-61acca6c0490/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build/ss/r-x64-61acca6c0490/stdout.log",
+      "bytes": 512,
+      "sha256": "1c1f85a1f5dff0d34d47caf3bc12e776648fafeb15934ddb7074951a34d98836"
+    },
+    {
+      "path": "doc/evidence/readiness-2026-11-01.json",
+      "bytes": 71964,
+      "sha256": "6c088dea6dd02e915d28539425d796774c65301d4b756b6712b8c5e1ef793bef"
+    },
+    {
+      "path": "doc/readiness-acceptance-2026-11-01.md",
+      "bytes": 19953,
+      "sha256": "30581a1fc3d2893d26587c4f4b5d880e7373081d2c4b08f69cd78bf189cc4c90"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-ia32/electron_game_overlay_reshade_manager.exe",
+      "bytes": 467968,
+      "sha256": "8d23c2cec5ba49c2f434305d2bee7edc7bd14a6881e09879d88f2a118f8dcad6"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-ia32/electron_game_overlay_runtime.build.json",
+      "bytes": 1164,
+      "sha256": "1099a65f4eb5887df0d5f332cdf0e0d2d5ca929fca0897172310a348097b44fa"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-ia32/electron_game_overlay.addon32",
+      "bytes": 3955200,
+      "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-ia32/inject.exe",
+      "bytes": 156160,
+      "sha256": "4b2e9172ac6824ba2fa11903843239b819a6382cbed145a6f185b834aa048635"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-ia32/ReShade.ini",
+      "bytes": 209,
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-ia32/ReShade32.dll",
+      "bytes": 4405248,
+      "sha256": "20224a415866ac6d3692dd3078b8602515e28f3d3dbd3ee844ff4b5f09809d75"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-x64/electron_game_overlay_reshade_manager.exe",
+      "bytes": 528896,
+      "sha256": "8f361594cf3014e50a7fae0222bd801a1523b5cf3589e5bd8eed0f9b9fc26c4d"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-x64/electron_game_overlay_runtime.build.json",
+      "bytes": 1163,
+      "sha256": "d5f2d6b4bfb45403009c0f5022de79ed579b70973c7c9514cf7fed2564b2f9ca"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-x64/electron_game_overlay.addon64",
+      "bytes": 4391936,
+      "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-x64/inject.exe",
+      "bytes": 193024,
+      "sha256": "347c96f56e4dd53aabea6a272b422a9001146f504b74cfd1466009bda63db1f6"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-x64/ReShade.ini",
+      "bytes": 209,
+      "sha256": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/dist/win32-x64/ReShade64.dll",
+      "bytes": 5530112,
+      "sha256": "963cbb4a1d0b64c4434aae2b9cfc23f8720a65986de63ff5c67953149318330e"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-first-host-result.patch",
+      "bytes": 1883,
+      "sha256": "b68368696902cf556a0540328e76fffe81a0c7348504f9aa678b9dce91b1b554"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-addon.patch",
+      "bytes": 28558,
+      "sha256": "e23fb34118ea5f39d1b2ad19ecad3049099407d00f125892c6ff455ec7155f5d"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-first-host.patch",
+      "bytes": 19924,
+      "sha256": "a8c494ef02e08e5084d7edc27abcb73639c18d23469f244f99f090a27db46309"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch",
+      "bytes": 97409,
+      "sha256": "51e1fa4abe6cc35158dc9b347e1ff3fb29cd838fe6040a48ee108c48ad8693ce"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/owned-injector-result.ps1",
+      "bytes": 19227,
+      "sha256": "e062323e586ef9518ca73a7a673e604b6e8c37f833b03dbf7b17742c0cfa7a05"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/read-display-power-state.ps1",
+      "bytes": 4926,
+      "sha256": "d1527ec0bfc84731840ddcd8304d8eeacaad07b4304d478fa5d87a86e934f4d0"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-input-gate.ps1",
+      "bytes": 72119,
+      "sha256": "db501d27645a3f2723fb92aee54abdb63183c2308791c7c31a867d75f77b0b77"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-preloaded-addons-gate.ps1",
+      "bytes": 52399,
+      "sha256": "24de47dd4d3aaf8d02b5e3bbf11405236fd2289e1cf26ac8679c8e3fcf6b7c2d"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/run-client-sdk-unregistered-addon-compatibility-gate.ps1",
+      "bytes": 15638,
+      "sha256": "c817c8c418e63070da9ca3c1f8369fbd94cd23ef4f9ccfffa12936748087e749"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/run-with-display-lease.ps1",
+      "bytes": 8264,
+      "sha256": "2729c54fe5de819508809140f7c8bca75c3b315c06a7f90c96717c8876a2a892"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-client-sdk-multi-swapchain.ps1",
+      "bytes": 208,
+      "sha256": "4064451e77c21c06a6c290fcab90d3771b2d2ac658f3041b7a525b50d4748347"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-client-sdk-session-deactivation.ps1",
+      "bytes": 340,
+      "sha256": "8d28129dec078d3191b750edfe7ff6b1391ac0e02a11382b33e56818d105e395"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-x64-wheel-cursor-dpi125-osr150-attached.ps1",
+      "bytes": 250,
+      "sha256": "146aeef25ad9ef0ef0855723b6d48115041a0e9f2d4c8aac0b6401b54b73020f"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-x64-wheel-cursor-raw-buffer.ps1",
+      "bytes": 226,
+      "sha256": "f62c8da7fe0bd54322b14f10659cd569ff7701545117bdb5d728dc7b52e05636"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d12-client-sdk-multi-swapchain.ps1",
+      "bytes": 208,
+      "sha256": "87c562054a59e46219f3cd91e14fab319647e33497fbefada9f1831f62c7f815"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/scripts/test-cases/d3d12-client-sdk-target-surface-drain.ps1",
+      "bytes": 213,
+      "sha256": "4078a6dc9cf6916feb7a68a5bc2ea57d291f8821e108476dbb7fefab42ec95fb"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/tests/preloaded-addon-small-stack/CMakeLists.txt",
+      "bytes": 804,
+      "sha256": "c4cb2bc558fda23e9aefcbfccd383566dfdf2e3b763ca413d028248ee164e079"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/tests/preloaded-addon-small-stack/host.cpp",
+      "bytes": 7947,
+      "sha256": "cda8a8ffccfe972d63f8c1443fc3408d7da2346a0eac3e65db267333c802bcc6"
+    }
+  ],
+  "postAllGuiPublicVerification": {
+    "status": "passed",
+    "sealedPayloads": 154,
+    "sealSha256": "43e069e4c76651443d0734517754b22b713601387123dd4654e18c21013f48bf",
+    "sdkUnchanged": true,
+    "scope": "Confirmed by the active controller after all GUI cases; read-only public verifyOverlayPackage, no package writes."
+  },
+  "ownedCleanup": {
+    "repositoryDemoAndFixtureElectronProcessesClosed": true,
+    "masterDisplayLeasesClearedAndClosed": true,
+    "noUserGameLaunchedForThisFeature": true,
+    "scope": "Final CIM/process and lease cleanup confirmed by the active controller. PC sleep is handled only by the root after all work."
+  }
+}
