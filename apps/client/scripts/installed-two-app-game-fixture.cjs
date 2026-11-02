@@ -9,6 +9,7 @@ const { createHash } = require('node:crypto');
 const { app } = require('electron');
 const { collectSdkEvidence } = require('./cooperative-game-evidence.cjs');
 const { publishJsonSnapshot } = require('./cooperative-atomic-state.cjs');
+const { collectExactPidBinding } = require('./cooperative-exact-pid-binding.cjs');
 const { loadInstalledCooperativeSdk } = require('./installed-cooperative-sdk.cjs');
 const args = Object.fromEntries(process.argv.slice(2).filter(value => value.startsWith('--') && value.includes('=')).map(value => {
   const separator = value.indexOf('=');
@@ -16,6 +17,9 @@ const args = Object.fromEntries(process.argv.slice(2).filter(value => value.star
 }));
 if (!['a', 'b'].includes(args.member) || !['first', 'late'].includes(args.slot) || !args.evidence || !args['app-root'] || !args['sdk-dist'] || !args.game) {
   throw new Error('Expected member a|b, slot first|late, evidence, installed app-root, sdk-dist and exact game path.');
+}
+if (args['preload-storage-root'] && !args['preload-app-id']) {
+  throw new Error('preload-storage-root requires preload-app-id.');
 }
 const evidenceRoot = path.resolve(args.evidence);
 const member = args.member;
@@ -26,13 +30,20 @@ const installed = loadInstalledCooperativeSdk(path.resolve(args['app-root']));
 if (fs.realpathSync(path.resolve(args['sdk-dist'])) !== installed.evidence.sdkDist) throw new Error('Controller SDK evidence path differs from the installed package entrypoint.');
 const sdkEvidence = { ...collectSdkEvidence(installed.evidence.sdkDist), installedPackage: installed.evidence };
 fs.writeFileSync(path.join(evidenceRoot, `${member}-sdk.json`), JSON.stringify(sdkEvidence, null, 2));
-const { ElectronGameOverlay, ReShadeOverlayLauncher, parseReShadeLaunchConfig } = installed.sdk;
+const { ElectronGameOverlay, ReShadeOverlayLauncher, parseReShadeLaunchConfig, createReShadeLaunchConfig } = installed.sdk;
+const addonPreload = args['preload-app-id'] ? {
+  applicationId: args['preload-app-id'],
+  ...(args['preload-storage-root'] ? { storageRoot: path.resolve(args['preload-storage-root']) } : {}),
+} : undefined;
 let overlay, session, launcher, timer, done = false, reading = false, attempt = 0, commandSequence = 0;
 const windows = new Map();
 const state = {
   schemaVersion: 1, member, slot: args.slot, processId: process.pid,
   electron: process.versions.electron,
-  sdk: { sdkDist: sdkEvidence.sdkDist, packageVersion: sdkEvidence.packageVersion, javascriptGraphSha256: sdkEvidence.javascriptGraphSha256, addon: sdkEvidence.addon },
+  sdk: { sdkDist: sdkEvidence.sdkDist, packageVersion: sdkEvidence.packageVersion, javascriptGraphSha256: sdkEvidence.javascriptGraphSha256, addon: sdkEvidence.addon,
+    ...(installed ? { installedPackage: installed.evidence } : {}) },
+  ...(addonPreload ? { addonPreload } : {}),
+  ...(args['runs-root'] ? { runsRootDirectory: path.resolve(args['runs-root']) } : {}),
   ready: false, watcherReady: false, attached: false, rendering: false,
   requestedInterception: false, intercepting: false, events: [], windows: {},
 };
@@ -116,13 +127,37 @@ function attach(pid) {
   state.attached = false;
   state.rendering = false;
   state.watcherReady = false;
+  state.injectorReturned = false;
+  delete state.injectorProof;
+  delete state.selectedTarget;
+  delete state.injectorBinding;
   state.attachmentAttempt = generation;
-  const config = parseReShadeLaunchConfig(['--reshade-overlay'], { runsRootDirectory: path.join(evidenceRoot, `runs-${member}`, String(generation)) });
+  const configOptions = {
+    runsRootDirectory: args['runs-root']
+      ? path.resolve(args['runs-root'])
+      : path.join(evidenceRoot, `runs-${member}`, String(generation)),
+  };
+  const config = addonPreload
+    ? createReShadeLaunchConfig({ ...configOptions, addonPreload })
+    : parseReShadeLaunchConfig(['--reshade-overlay'], configOptions);
   launcher = new ReShadeOverlayLauncher(config);
   launcher.onEvent(value => {
-    if (generation !== attempt) return;
+    if (generation !== attempt || done) return;
     event({ type: value.type, ...(value.runDirectory ? { runDirectory: value.runDirectory } : {}) });
     if (value.type === 'injector-watcher-ready') state.watcherReady = true;
+    if (value.type === 'injector-started' && pid && args['exact-pid-proof'] === '1') {
+      state.injectorBinding = collectExactPidBinding(value.invocation, { pid, executablePath: path.resolve(args.game) });
+      persist();
+    }
+    if (value.type === 'target-selected') {
+      state.selectedTarget = { pid: value.pid, executablePath: value.executablePath, creationTime100ns: value.creationTime100ns };
+      persist();
+    }
+    if (value.type === 'injector-returned') {
+      state.injectorReturned = true;
+      state.injectorProof = value.result;
+      persist();
+    }
   });
   void launcher.attach(session, {
     processName: path.basename(args.game), executablePath: path.resolve(args.game),

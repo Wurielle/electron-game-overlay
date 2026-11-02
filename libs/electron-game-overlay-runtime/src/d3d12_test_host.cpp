@@ -31,6 +31,10 @@ constexpr wchar_t kSecondaryWindowTitle[] =
 constexpr wchar_t kInjectedRuntimeWaitMarker[] = L"reshade-injection-wait.enabled";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
+// Opt-in controlled-demo instrumentation only; no production attach path.
+HMODULE g_test_external_runtime = nullptr;
+bool g_test_present_ack_enabled = false;
+unsigned g_test_successful_presents = 0;
 constexpr wchar_t kDestroyFinalSurfaceRequestMarker[] =
     L"electron-game-overlay-destroy-final-surface.request";
 constexpr wchar_t kDestroyPrimarySurfaceRequestMarker[] =
@@ -231,6 +235,206 @@ bool module_sibling_path(const wchar_t *name, std::wstring &path)
     return true;
 }
 
+bool write_preload_test_file(
+    const wchar_t *name,
+    const std::string &contents,
+    DWORD creation_disposition)
+{
+    std::wstring path;
+    if (!module_sibling_path(name, path))
+        return false;
+    const HANDLE file = CreateFileW(
+        path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        creation_disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    DWORD written = 0;
+    const bool succeeded = WriteFile(
+        file, contents.data(), static_cast<DWORD>(contents.size()),
+        &written, nullptr) != FALSE && written == contents.size() &&
+        FlushFileBuffers(file) != FALSE;
+    const DWORD error = succeeded ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(file);
+    SetLastError(error);
+    return succeeded;
+}
+
+bool report_preload_test_failure(const char *phase, DWORD error)
+{
+    char message[256] = {};
+    std::snprintf(
+        message, sizeof(message),
+        "EGO_TEST_EXTERNAL_SELF_LOAD_V1 failed phase=%s win32Error=%lu\n",
+        phase, static_cast<unsigned long>(error));
+    std::fputs(message, stderr);
+    OutputDebugStringA(message);
+    write_preload_test_file(
+        L"electron-game-overlay-preload-runtime.log", message, CREATE_ALWAYS);
+    return false;
+}
+
+std::string preload_test_utf8(const std::wstring &value)
+{
+    if (value.empty())
+        return {};
+    const int length = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (length == 0)
+        return {};
+    std::string result(static_cast<std::size_t>(length), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+            static_cast<int>(value.size()), result.data(), length,
+            nullptr, nullptr) != length)
+        return {};
+    return result;
+}
+
+// This explicit test-only marker models an external ReShade installation. It
+// is not an injector path and never writes a proxy or configuration into the
+// demo directory. Its LoadLibrary reference intentionally lasts to exit.
+bool load_test_external_runtime()
+{
+    std::wstring marker;
+    if (!module_sibling_path(
+            L"electron-game-overlay-demo-present.enabled", marker))
+        return report_preload_test_failure("present-marker-path", ERROR_BAD_PATHNAME);
+    g_test_present_ack_enabled =
+        GetFileAttributesW(marker.c_str()) != INVALID_FILE_ATTRIBUTES;
+
+    if (!module_sibling_path(
+            L"electron-game-overlay-preload-runtime.path", marker))
+        return report_preload_test_failure("runtime-marker-path", ERROR_BAD_PATHNAME);
+    const HANDLE file = CreateFileW(
+        marker.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+            ? true : report_preload_test_failure("open-marker", error);
+    }
+    BY_HANDLE_FILE_INFORMATION information = {};
+    LARGE_INTEGER size = {};
+    bool valid = GetFileInformationByHandle(file, &information) != FALSE &&
+        (information.dwFileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0 &&
+        GetFileSizeEx(file, &size) != FALSE &&
+        size.QuadPart > 0 && size.QuadPart <= 131'072;
+    std::string bytes;
+    if (valid)
+    {
+        bytes.resize(static_cast<std::size_t>(size.QuadPart));
+        DWORD read = 0;
+        valid = ReadFile(
+            file, bytes.data(), static_cast<DWORD>(bytes.size()), &read,
+            nullptr) != FALSE && read == bytes.size();
+    }
+    CloseHandle(file);
+    if (!valid)
+        return report_preload_test_failure("read-marker", ERROR_INVALID_DATA);
+    if (bytes.size() >= 3 &&
+        static_cast<unsigned char>(bytes[0]) == 0xef &&
+        static_cast<unsigned char>(bytes[1]) == 0xbb &&
+        static_cast<unsigned char>(bytes[2]) == 0xbf)
+        bytes.erase(0, 3);
+    if (!bytes.empty() && bytes.back() == '\n')
+    {
+        bytes.pop_back();
+        if (!bytes.empty() && bytes.back() == '\r')
+            bytes.pop_back();
+    }
+    if (bytes.empty() || bytes.find_first_of("\r\n") != std::string::npos ||
+        bytes.find('\0') != std::string::npos)
+        return report_preload_test_failure("single-line-marker", ERROR_INVALID_DATA);
+    const int length = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+        static_cast<int>(bytes.size()), nullptr, 0);
+    if (length <= 0 || length >= 32'768)
+        return report_preload_test_failure("utf8-marker", ERROR_INVALID_DATA);
+    std::wstring path(static_cast<std::size_t>(length), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+            static_cast<int>(bytes.size()), path.data(), length) != length)
+        return report_preload_test_failure("decode-marker", ERROR_INVALID_DATA);
+    const bool drive_path = path.size() > 3 &&
+        ((path[0] >= L'A' && path[0] <= L'Z') ||
+         (path[0] >= L'a' && path[0] <= L'z')) &&
+        path[1] == L':' && path[2] == L'\\';
+    const bool unc_path = path.size() > 4 && path[0] == L'\\' &&
+        path[1] == L'\\' && path[2] != L'?' && path[2] != L'.';
+    std::wstring full_path(32'768, L'\0');
+    const DWORD full_length = GetFullPathNameW(
+        path.c_str(), static_cast<DWORD>(full_path.size()),
+        full_path.data(), nullptr);
+    if ((!drive_path && !unc_path) || full_length == 0 ||
+        full_length >= full_path.size())
+        return report_preload_test_failure("absolute-runtime-path", ERROR_BAD_PATHNAME);
+    full_path.resize(full_length);
+    const std::size_t separator = full_path.find_last_of(L"\\/");
+    if (_wcsicmp(full_path.c_str(), path.c_str()) != 0 ||
+        separator == std::wstring::npos ||
+        _wcsicmp(full_path.c_str() + separator + 1, L"ReShade64.dll") != 0)
+        return report_preload_test_failure("canonical-runtime-path", ERROR_BAD_PATHNAME);
+    const DWORD attributes = GetFileAttributesW(full_path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+        return report_preload_test_failure("runtime-file", ERROR_INVALID_DATA);
+    if (GetModuleHandleW(L"ReShade64.dll") != nullptr)
+        return report_preload_test_failure("already-loaded-runtime", ERROR_ALREADY_EXISTS);
+    const std::wstring base_path = full_path.substr(0, separator + 1);
+    if (!SetEnvironmentVariableW(L"RESHADE_BASE_PATH_OVERRIDE", base_path.c_str()))
+        return report_preload_test_failure("target-base-path", GetLastError());
+    g_test_external_runtime = LoadLibraryExW(
+        full_path.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (g_test_external_runtime == nullptr)
+        return report_preload_test_failure("load-runtime", GetLastError());
+    g_test_present_ack_enabled = true;
+    // Match the controlled host's pre-armed injection wait: the hook worker
+    // must finish before this deliberately fast demo creates its device.
+    Sleep(750);
+    const std::string message =
+        "EGO_TEST_EXTERNAL_SELF_LOAD_V1 loaded\nruntimePath=" +
+        preload_test_utf8(full_path) + "\n";
+    if (!write_preload_test_file(
+            L"electron-game-overlay-preload-runtime.log", message, CREATE_ALWAYS))
+        return report_preload_test_failure("runtime-log", GetLastError());
+    return true;
+}
+
+bool observe_test_preload_present(HRESULT result)
+{
+    if (!g_test_present_ack_enabled || result != S_OK ||
+        g_test_successful_presents >= 8)
+        return true;
+    if (++g_test_successful_presents != 8)
+        return true;
+    FILETIME creation = {}, exit = {}, kernel = {}, user = {};
+    if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user))
+        return report_preload_test_failure("present-process-identity", GetLastError());
+    ULARGE_INTEGER creation_value = {};
+    creation_value.LowPart = creation.dwLowDateTime;
+    creation_value.HighPart = creation.dwHighDateTime;
+    std::wstring runtime_path(32'768, L'\0');
+    const HMODULE runtime = GetModuleHandleW(L"ReShade64.dll");
+    const DWORD length = runtime == nullptr ? 0 : GetModuleFileNameW(
+        runtime, runtime_path.data(), static_cast<DWORD>(runtime_path.size()));
+    if (length == 0 || length >= runtime_path.size())
+        return report_preload_test_failure("present-runtime-path", ERROR_MOD_NOT_FOUND);
+    runtime_path.resize(length);
+    const std::string message =
+        "EGO_CONTROLLED_PRESENT_V1\npid=" + std::to_string(GetCurrentProcessId()) +
+        "\ncreationFileTime=" + std::to_string(creation_value.QuadPart) +
+        "\nsuccessfulPresents=" + std::to_string(g_test_successful_presents) +
+        "\nruntimePath=" + preload_test_utf8(runtime_path) + "\n";
+    if (!write_preload_test_file(
+            L"electron-game-overlay-demo-present.ready", message, CREATE_NEW))
+        return report_preload_test_failure("present-ready-file", GetLastError());
+    return true;
+}
+
 bool marker_present(const wchar_t *name)
 {
     std::wstring path;
@@ -373,6 +577,12 @@ bool wait_for_prearmed_injected_runtime()
 
 void report_graphics_failure(const wchar_t *message)
 {
+    if (g_test_present_ack_enabled)
+        write_preload_test_file(
+            L"electron-game-overlay-demo-failure.log",
+            "EGO_CONTROLLED_GRAPHICS_FAILURE_V1\nmessage=" +
+                preload_test_utf8(message) + "\n",
+            CREATE_ALWAYS);
     OutputDebugStringW(message);
     MessageBoxW(g_graphics.window, message, kWindowTitle, MB_OK | MB_ICONERROR);
     PostQuitMessage(1);
@@ -803,6 +1013,8 @@ HRESULT render_surface(
     result = swap_chain->Present(1, 0);
     if (FAILED(result))
         return result;
+    if (!observe_test_preload_present(result))
+        return E_FAIL;
 
     const std::uint64_t fence_value = g_graphics.next_fence_value++;
     result = g_graphics.command_queue->Signal(g_graphics.fence.Get(), fence_value);
@@ -978,6 +1190,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 
     if (!enable_per_monitor_v2_awareness())
         return 1;
+    if (!load_test_external_runtime())
+        return 1;
     if (!wait_for_test_startup_barrier())
         return 1;
     if (!wait_for_prearmed_injected_runtime())
@@ -1093,6 +1307,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     const HRESULT graphics_result = create_graphics_device(
         static_cast<UINT>(client_rect.right - client_rect.left),
         static_cast<UINT>(client_rect.bottom - client_rect.top));
+    if (g_test_present_ack_enabled)
+    {
+        char diagnostic[256] = {};
+        sprintf_s(
+            diagnostic,
+            "EGO_CONTROLLED_GRAPHICS_RESULT_V1\nbackend=d3d12\n"
+            "initialDeviceAndSwapChainResult=0x%08lx\n",
+            static_cast<unsigned long>(graphics_result));
+        write_preload_test_file(
+            L"electron-game-overlay-demo-graphics.log", diagnostic, CREATE_ALWAYS);
+    }
     if (FAILED(graphics_result))
     {
         report_graphics_failure(

@@ -1365,6 +1365,9 @@ function Invoke-ClientSdkAttempt {
             throw "The game input oracle changed during overlay interaction.`nBefore: $BaselineTitle`nAfter:  $InterceptedTitle"
         }
 
+        # Freeze feature input before the release shortcut can send its own
+        # modifier events to the currently focused overlay field.
+        $ActionLogSnapshot = [string](Get-ClientLogText -Path $ClientStdout)
         [ReShadeClientSdkGate.NativeInputMethods]::SendControlI()
         Wait-ForClientMarker `
             -Path $ClientStdout `
@@ -1382,32 +1385,36 @@ function Invoke-ClientSdkAttempt {
         if ($EnabledIndex -lt 0 -or $DisabledIndex -le $EnabledIndex) {
             throw "The interception acknowledgement markers are out of order."
         }
+        if (-not $ClientLog.StartsWith($ActionLogSnapshot, [StringComparison]::Ordinal)) {
+            throw "The client log changed its captured feature-input prefix."
+        }
+        $ActionEnabledIndex = $ActionLogSnapshot.IndexOf($EnabledMarker, [StringComparison]::Ordinal)
         $ActionEndMarker =
             "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC keyup " +
             "target=hudhook-status-input-target"
-        $ActionEndIndex = $ClientLog.LastIndexOf(
+        $ActionEndIndex = $ActionLogSnapshot.LastIndexOf(
             $ActionEndMarker,
-            $DisabledIndex,
-            $DisabledIndex - $EnabledIndex,
             [StringComparison]::Ordinal
         )
-        if ($ActionEndIndex -lt $EnabledIndex) {
+        if ($ActionEnabledIndex -lt 0 -or $ActionEndIndex -lt $ActionEnabledIndex) {
             throw "The final scripted status-field key release was not observed."
         }
         $ActionStartMarker =
             "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC mousedown " +
             "target=hudhook-status-input-target"
-        $ActionStartIndex = $ClientLog.IndexOf(
+        $ActionStartIndex = $ActionLogSnapshot.IndexOf(
             $ActionStartMarker,
-            $EnabledIndex,
+            $ActionEnabledIndex,
             [StringComparison]::Ordinal
         )
-        if ($ActionStartIndex -lt $EnabledIndex -or
+        if ($ActionStartIndex -lt $ActionEnabledIndex -or
             $ActionStartIndex -ge $ActionEndIndex) {
             throw "The first scripted status-field mouse press was not observed."
         }
-        $ActionEndExclusive = $ActionEndIndex + $ActionEndMarker.Length
-        $InterceptedLog = $ClientLog.Substring(
+        # Include the complete settled capture, including any invalid trailing
+        # duplicate event after the final expected key release.
+        $ActionEndExclusive = $ActionLogSnapshot.Length
+        $InterceptedLog = $ActionLogSnapshot.Substring(
             $ActionStartIndex,
             $ActionEndExclusive - $ActionStartIndex
         )
