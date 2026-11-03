@@ -143,6 +143,15 @@ and missing x86 injector negative controls fail before SDK code execution.
 The separate generic consumer and historical controlled broker fixtures remain
 unchanged. These fixes do not change mapped runtime code or the tested SDK bytes.
 
+The native process-binding fixture now stages the exact companion EGO DLL beside
+each copied injector for mandatory local export validation with
+`DONT_RESOLVE_DLL_REFERENCES`. Its remote payload remains the inert owned test
+DLL. The complete x64/x86 gate passed locally, and passive observations through
+the retained target handle verified that the real EGO member was absent from
+all six successful target-module snapshots. Exact process/time rejection and
+future-process selection checks remain enabled. No production injector or
+feature-engine changes were required.
+
 ## Limits
 
 ReShade scans only top-level architecture-compatible add-on files. Already

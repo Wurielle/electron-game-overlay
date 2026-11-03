@@ -141,6 +141,8 @@ async function main() {
   native = {
     open: kernel.func('void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)'),
     times: kernel.func('int __stdcall GetProcessTimes(void *process, void *created, void *exited, void *kernel, void *user)'),
+    modules: kernel.func('int __stdcall K32EnumProcessModulesEx(void *process, void *modules, uint32_t bytes, void *needed, uint32_t filter)'),
+    modulePath: kernel.func('uint32_t __stdcall K32GetModuleFileNameExW(void *process, uintptr_t module, void *name, uint32_t length)'),
     close: kernel.func('int __stdcall CloseHandle(void *handle)'),
     last: kernel.func('uint32_t __stdcall GetLastError()'),
   };
@@ -149,6 +151,22 @@ async function main() {
   const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   for (const key of ['--injector64', '--injector32', '--vcvarsall']) assert.ok(fs.statSync(options[key]).isFile());
   report.injectorHashes = { x64: hash(options['--injector64']), x86: hash(options['--injector32']) };
+  const companions = {};
+  report.stagedParticipantPreflight = {};
+  for (const arch of ['x64', 'x86']) {
+    const input = options[arch === 'x64' ? '--injector64' : '--injector32'];
+    const name = `electron_game_overlay.addon${arch === 'x64' ? '64' : '32'}`;
+    const file = path.join(path.dirname(input), name), bytes = fs.readFileSync(file);
+    assert.equal(bytes.readUInt16LE(0), 0x5a4d, 'companion-DOS-signature');
+    const pe = bytes.readUInt32LE(0x3c);
+    assert.ok(pe >= 0x40 && pe + 6 <= bytes.length, 'companion-PE-offset');
+    assert.equal(bytes.readUInt32LE(pe), 0x4550, 'companion-PE-signature');
+    assert.equal(bytes.readUInt16LE(pe + 4), arch === 'x64' ? 0x8664 : 0x14c, 'companion-architecture');
+    companions[arch] = { file, name, sha256: hash(file) };
+    report.stagedParticipantPreflight[arch] = { ...companions[arch],
+      scope: 'Exact input injector companion, locally mapped without DLL initialization using DONT_RESOLVE_DLL_REFERENCES for export inspection. Target module observations require that no production EGO participant is mapped.' };
+  }
+  report.targetModuleObservations = [];
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego binding owned 日本語 '));
   // The producer uses MAX_PATH for its payload location.
   assert.ok(root.length < 150, 'private-root-too-long');
@@ -235,11 +253,19 @@ async function main() {
     const match = await deadline(ready, 5000, 'target-ready');
     requireActive();
     assert.equal(Number(match[1]), child.pid);
-    const handle = native.open(0x1000, 0, child.pid);
+    // Keep one reference handle for creation-time checks and read-only module
+    // observations; no target mutation is performed through this handle.
+    const handle = native.open(0x0410, 0, child.pid);
     const error = handle ? 0 : native.last();
     assert.ok(handle, `owned-OpenProcess:${error}`); handles.add(handle);
     const actual = time(handle); assert.equal(actual, match[2], 'child-and-parent-actual-FILETIME');
     return { child, handle, actual, marker, executable: fixture.target };
+  }
+  function stageCompanion(arch, directory) {
+    const companion = companions[arch], destination = path.join(directory, companion.name);
+    fs.copyFileSync(companion.file, destination);
+    assert.equal(hash(destination), companion.sha256, 'staged-companion-must-match-input');
+    return destination;
   }
   async function invoke(arch, fixture, owned, label, extra, omitPid = false) {
     stage(label);
@@ -252,6 +278,10 @@ async function main() {
     const payload = path.join(dir, arch === 'x64' ? 'ReShade64.dll' : 'ReShade32.dll');
     fs.copyFileSync(fixture.payload, payload);
     const before = hash(payload);
+    // The current injector validates its companion before publishing any
+    // remote loader. The inert runtime has no ReShade/owned-host exports, so
+    // this lane performs data-only local validation and loads only our marker.
+    const companion = stageCompanion(arch, dir);
     const base = omitPid ? [owned.executable] : [owned.executable, '--pid', String(owned.child.pid)];
     const args = [...base, ...(extra ?? [])];
     const call = await run(injector, args, {}, true);
@@ -259,8 +289,10 @@ async function main() {
     report.nativeExecuted = true;
     report.invocations.push({ label, arch, code: call.code,
       expectedCreationTime100ns: extra?.[1] ?? null,
-      actualCreationTime100ns: owned.actual, markerPresent: fs.existsSync(owned.marker) });
+      actualCreationTime100ns: owned.actual, markerPresent: fs.existsSync(owned.marker),
+      stdout: call.stdout, stderr: call.stderr });
     assert.equal(hash(payload), before, 'owned-payload-content-unchanged');
+    assert.equal(hash(companion), companions[arch].sha256, 'staged-companion-content-unchanged');
     persist(); return call;
   }
   function loaded(call, owned) {
@@ -272,6 +304,31 @@ async function main() {
       targetExecutablePath: owned.executable, runtimeMode: 'injected-runtime' });
     const marker = fs.readFileSync(owned.marker);
     assert.equal(marker.length, 4); assert.equal(marker.readUInt32LE(), owned.child.pid);
+    assert.equal(time(owned.handle), owned.actual, 'same-retained-handle-after-load');
+    const pointerBytes = koffi.sizeof('void *');
+    const modules = Buffer.alloc(1024 * pointerBytes), needed = Buffer.alloc(4);
+    assert.ok(native.modules(owned.handle, modules, modules.length, needed, 3), `read-only-module-observation:${native.last()}`);
+    const bytes = needed.readUInt32LE();
+    assert.ok(bytes > 0 && bytes <= modules.length && bytes % pointerBytes === 0, 'bounded-module-observation');
+    const paths = [];
+    for (let offset = 0; offset < bytes; offset += pointerBytes) {
+      const module = pointerBytes === 8 ? modules.readBigUInt64LE(offset) : modules.readUInt32LE(offset);
+      const buffer = Buffer.alloc(32768 * 2);
+      const count = native.modulePath(owned.handle, module, buffer, buffer.length / 2);
+      assert.ok(count > 0 && count < buffer.length / 2, 'complete-module-path');
+      paths.push(buffer.subarray(0, count * 2).toString('utf16le'));
+    }
+    const memberPaths = paths.filter(file => /^electron_game_overlay\.addon(?:32|64)$/i.test(path.win32.basename(file)));
+    assert.deepEqual(memberPaths, [], 'production-EGO-participant-must-not-load-in-controlled-target');
+    const payloads = paths.filter(file => /^ReShade(?:32|64)\.dll$/i.test(path.win32.basename(file)));
+    assert.equal(payloads.length, 1, 'exactly-one-inert-owned-runtime-loaded');
+    assert.equal(hash(payloads[0]), hash(path.join(root,
+      path.win32.basename(payloads[0]) === 'ReShade64.dll' ? 'compiled-x64' : 'compiled-x86', 'owned-payload.dll')),
+    'mapped-marker-path-matches-owned-stub-bytes');
+    assert.equal(time(owned.handle), owned.actual, 'same-retained-handle-after-module-observation');
+    report.targetModuleObservations.push({ pid: owned.child.pid, creationTime100ns: owned.actual,
+      markerPayload: payloads[0], markerPayloadSha256: hash(payloads[0]),
+      productionParticipantPresent: false, observedModuleCount: paths.length });
   }
   async function check(name, action) {
     try { await action(); report.checks.push({ name, passed: true }); }
@@ -297,6 +354,7 @@ async function main() {
       const injector = path.join(directory, 'inject.exe');
       fs.copyFileSync(options[arch === 'x64' ? '--injector64' : '--injector32'], injector);
       fs.copyFileSync(fixture.payload, path.join(directory, arch === 'x64' ? 'ReShade64.dll' : 'ReShade32.dll'));
+      const companion = stageCompanion(arch, directory);
       const watcher = spawn(injector, [fixture.target]);
       let stdout = '', stderr = '';
       watcher.stdout.on('data', chunk => { stdout += chunk; });
@@ -318,6 +376,7 @@ async function main() {
       const selected = await target(fixture, `${arch}-future-selected`);
       await deadline(exited(watcher), budget, 'future-selected-injection');
       loaded({ code: watcher.exitCode, stdout, stderr }, selected);
+      assert.equal(hash(companion), companions[arch].sha256, 'future-companion-content-unchanged');
       assert.equal(fs.existsSync(baseline.marker), false);
       assert.equal(fs.existsSync(wrong.marker), false);
       report.nativeExecuted = true;
