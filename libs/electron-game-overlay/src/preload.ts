@@ -1,4 +1,5 @@
 export {
+  defaultReShadeAddonDirectory,
   defaultOverlayAddonStorageRoot,
   registerOverlayAddonInstallation,
   unregisterOverlayAddonInstallation,

@@ -201,9 +201,12 @@ A resolved watcher update applies current authorization; `discovery-blocked`
 reports unavailable future discovery without cancelling an allowed active target.
 
 Optional [installed add-on preloading](../../doc/addon-preloading.md) lets a new
-owned ReShade host load registered applications' dormant add-ons through an
-external folder. Each app activates its own private engine when it connects.
-Registration and removal affect future host snapshots; existing ReShade
+owned ReShade host scan a stable shared folder, normally
+`%LOCALAPPDATA%\ReShade\Addons`. Apps register their dormant add-ons once and
+activate their own private engines when they connect. Other libraries can place
+ordinary ReShade add-ons in that same folder. Use `addonDirectory` in installer
+and launcher options to select another location. Registration and removal affect
+future host scans; existing ReShade
 installations retain their own configuration.
 Wait for `ready`/`armed` before a future launch. These events do not guarantee
 pre-graphics injection. The [managed example](https://github.com/Wurielle/electron-game-overlay/tree/dev/examples/managed-overlay)

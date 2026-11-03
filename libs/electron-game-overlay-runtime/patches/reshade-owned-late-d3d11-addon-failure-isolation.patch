@@ -1,0 +1,22 @@
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+index 9360edf..6e5702e 100644
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -862,12 +862,12 @@ extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeOwned
+         // another automatic device is performing first initialization.
+         reshade::load_addons();
+         retained_addon_reference = true; // Kept until authoritative target exit.
++        // Independent add-ons may fail without invalidating the EGO adapter
++        // whose callback readiness was checked above. Keep stock diagnostics,
++        // then report only this owned host's adoption/hook result to its caller.
+         if (!reshade::addon_all_loaded)
+-        {
+-            last_error.store(ERROR_DLL_INIT_FAILED);
+-            status.store(3, std::memory_order_release);
+-            return ERROR_DLL_INIT_FAILED;
+-        }
++            reshade::log::message(reshade::log::level::warning,
++                "One or more external add-ons failed to load; retaining the ready EGO adapter.");
+         error = install_native_methods(targets);
+         last_error.store(error);
+         status.store(error == ERROR_SUCCESS ? 2 : 3, std::memory_order_release);

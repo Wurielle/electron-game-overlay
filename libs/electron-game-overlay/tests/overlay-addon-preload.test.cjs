@@ -69,9 +69,41 @@ test('preload installer entrypoint uses no Electron runtime and exports installe
   };
   try {
     const exported = loadSource('preload');
+    assert.equal(exported.defaultReShadeAddonDirectory, api.defaultReShadeAddonDirectory);
     assert.equal(exported.registerOverlayAddonInstallation, api.registerOverlayAddonInstallation);
     assert.equal(exported.unregisterOverlayAddonInstallation, api.unregisterOverlayAddonInstallation);
   } finally { Module._load = original; }
+});
+
+test('default shared directory belongs to the current account and ignores application environment overrides', () => {
+  const previous = process.env.LOCALAPPDATA;
+  try {
+    process.env.LOCALAPPDATA = path.join(os.tmpdir(), 'untrusted-electron-environment');
+    const expected = path.join(os.userInfo().homedir, 'AppData', 'Local', 'ReShade', 'Addons');
+    assert.equal(api.defaultReShadeAddonDirectory(), expected);
+    assert.equal(api.defaultOverlayAddonStorageRoot(), expected);
+  } finally {
+    if (previous === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previous;
+  }
+});
+
+test('addonDirectory and its storageRoot alias select one catalog and cannot be combined', async t => {
+  const f = fixture(t);
+  const a = await api.registerOverlayAddonInstallation({ applicationId: 'com.example.a', packageRoot: f.packageRoot, addonDirectory: f.storageRoot });
+  assert.equal(a.addonDirectory, fs.realpathSync(f.storageRoot));
+  assert.deepEqual(await f.register('com.example.a'), a);
+  assert.equal(api.resolveAddonPreloadSelection({ applicationId: 'com.example.a', addonDirectory: f.storageRoot }, a).directory, a.addonDirectory);
+  await assert.rejects(api.registerOverlayAddonInstallation({ applicationId: 'com.example.a', packageRoot: f.packageRoot,
+    addonDirectory: f.storageRoot, storageRoot: f.storageRoot }), /not both/);
+  await assert.rejects(api.unregisterOverlayAddonInstallation({ applicationId: 'com.example.a', addonDirectory: f.storageRoot,
+    storageRoot: f.storageRoot }), /not both/);
+  assert.throws(() => api.resolveAddonPreloadSelection({ applicationId: 'com.example.a', addonDirectory: f.storageRoot,
+    storageRoot: f.storageRoot }, a), /not both/);
+  for (const invalid of ['relative', path.join(f.directory, 'bad\npath')]) {
+    await assert.rejects(api.registerOverlayAddonInstallation({ applicationId: 'com.example.a', packageRoot: f.packageRoot,
+      addonDirectory: invalid }), /absolute INI-safe/);
+  }
 });
 
 test('default registration from ASAR uses the complete SDK restored by the existing afterPack hook', async t => {
@@ -105,7 +137,7 @@ test('stripped public declarations expose the preload descriptor without impleme
     `declare const config: ReShadeLaunchConfig;\n` +
     `const options: OverlayAddonPreloadOptions = { applicationId: 'com.example.consumer' };\n` +
     `if (config.addonPreload) {\n const app: string = config.addonPreload.applicationId;\n` +
-    ` const storage: string | undefined = config.addonPreload.storageRoot;\n void app; void storage;\n}\nvoid options;\n`);
+    ` const storage: string | undefined = config.addonPreload.storageRoot;\n const directory: string | undefined = config.addonPreload.addonDirectory;\n void app; void storage; void directory;\n}\nvoid options;\n`);
   const consumerConfig = path.join(temporary, 'tsconfig.consumer.json');
   fs.writeFileSync(consumerConfig, JSON.stringify({ compilerOptions: { noEmit: true, strict: true,
     skipLibCheck: false, target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', types: ['node'] }, files: ['consumer.ts'] }));
@@ -127,7 +159,11 @@ test('registration is idempotent per application/native content and separate app
   assert.match(path.basename(a.addonPath), /^ego-preload-[0-9a-f]{32}-[0-9A-F]{32}-[0-9a-f]{16}\.addon64$/);
   assert.match(path.basename(a.x86AddonPath), /\.addon32$/);
   assert.ok(Object.isFrozen(a));
-  assert.equal(fs.readdirSync(path.join(f.storageRoot, 'payloads')).length, 2);
+  assert.equal(path.dirname(a.addonPath), a.addonDirectory);
+  assert.equal(path.dirname(b.addonPath), a.addonDirectory);
+  assert.equal(fs.readdirSync(f.storageRoot).filter(name => /\.addon(?:32|64)$/.test(name)).length, 4);
+  assert.equal(fs.readdirSync(f.storageRoot).some(name => name.startsWith('.ego-preload-')), false);
+  assert.equal(fs.existsSync(path.join(f.storageRoot, 'payloads')), false);
 });
 
 test('concurrent installers publish every independent registration without lost updates', async t => {
@@ -138,23 +174,78 @@ test('concurrent installers publish every independent registration without lost 
   assert.equal(new Set(registrations.map(item => item.registrationId)).size, 8);
 });
 
-test('snapshot freezes both architectures and offline apps; unregister only affects future hosts', async t => {
+test('stable shared files cover both architectures and offline apps; unregister disables future owned hosts', async t => {
   const f = fixture(t);
   const a = await f.register('com.example.a');
   const b = await f.register('com.example.b');
   const selected = f.select('com.example.a', a);
   assert.ok(Object.isFrozen(selected));
-  assert.equal(selected.storageRoot, fs.realpathSync(f.storageRoot));
+  assert.equal(selected.directory, fs.realpathSync(f.storageRoot));
   assert.ok(Object.isFrozen(selected.payloads));
+  assert.equal(selected.addonPath, a.addonPath);
+  assert.equal(selected.x86AddonPath, a.x86AddonPath);
+  assert.deepEqual(selected.inactiveFileNames, []);
+  const before = new Map([a.addonPath, a.x86AddonPath, b.addonPath, b.x86AddonPath].map(file => [file, {
+    bytes: fs.readFileSync(file), stat: fs.statSync(file),
+  }]));
   await api.unregisterOverlayAddonInstallation({ applicationId: 'com.example.b', registrationId: b.registrationId, storageRoot: f.storageRoot });
-  const snapshot = await api.createOverlayAddonPreloadSnapshot(path.join(f.directory, 'host-addons'), selected);
-  assert.equal(fs.readdirSync(snapshot.directory).length, 4);
-  assert.equal(f.select('com.example.a', a).payloads.length, 2);
-  assert.deepEqual(fs.readFileSync(snapshot.addonPath), fs.readFileSync(a.addonPath));
-  assert.deepEqual(fs.readFileSync(snapshot.x86AddonPath), fs.readFileSync(a.x86AddonPath));
-  assert.ok(fs.existsSync(b.addonPath));
+  const next = f.select('com.example.a', a);
+  assert.equal(next.directory, selected.directory);
+  assert.equal(next.payloads.length, 2);
+  assert.deepEqual(next.inactiveFileNames, [path.basename(b.addonPath), path.basename(b.x86AddonPath)].sort());
+  assert.ok(Object.isFrozen(next.inactiveFileNames));
+  assert.deepEqual(selected.inactiveFileNames, [], 'earlier host configuration selection remains unchanged');
+  for (const [file, original] of before) {
+    assert.deepEqual(fs.readFileSync(file), original.bytes);
+    const now = fs.statSync(file);
+    assert.equal(now.ino, original.stat.ino);
+    assert.equal(now.mtimeMs, original.stat.mtimeMs);
+  }
   assert.throws(() => f.select('com.example.b', b), /not registered/);
-  await assert.rejects(api.createOverlayAddonPreloadSnapshot(snapshot.directory, selected), /already exists/);
+  assert.deepEqual(await f.register('com.example.b'), b, 'reinstall reuses retained immutable files');
+  assert.deepEqual(f.select('com.example.a', a).inactiveFileNames, []);
+});
+
+test('ordinary foreign add-ons and their data coexist without registration or mutation', async t => {
+  const f = fixture(t);
+  fs.mkdirSync(f.storageRoot);
+  const names = ['another-library.addon64', 'another-library.addon32', 'portable.addon', 'readme.txt'];
+  for (const name of names) fs.writeFileSync(path.join(f.storageRoot, name), 'foreign:' + name);
+  fs.mkdirSync(path.join(f.storageRoot, 'other-library-data'));
+  const before = new Map(names.map(name => [name, fs.readFileSync(path.join(f.storageRoot, name))]));
+  const a = await f.register('com.example.a');
+  const selection = f.select('com.example.a', a);
+  assert.equal(selection.directory, fs.realpathSync(f.storageRoot));
+  assert.equal(selection.payloads.length, 2, 'only EGO-owned registrations enter the verified inventory');
+  assert.deepEqual(selection.inactiveFileNames, [], 'ordinary foreign add-ons retain normal ReShade loading');
+  await api.unregisterOverlayAddonInstallation({ applicationId: 'com.example.a', addonDirectory: f.storageRoot });
+  for (const [name, bytes] of before) assert.deepEqual(fs.readFileSync(path.join(f.storageRoot, name)), bytes);
+  assert.ok(fs.statSync(path.join(f.storageRoot, 'other-library-data')).isDirectory());
+});
+
+test('orphaned reserved filenames are disabled without deleting them or ordinary foreign add-ons', async t => {
+  const f = fixture(t);
+  const a = await f.register('com.example.a');
+  const orphan = `ego-preload-${'b'.repeat(32)}-${'F'.repeat(32)}-${'a'.repeat(16)}.addon64`;
+  fs.writeFileSync(path.join(f.storageRoot, orphan), 'incomplete registration retained on disk');
+  fs.writeFileSync(path.join(f.storageRoot, 'foreign.addon64'), 'ordinary library');
+  assert.deepEqual(f.select('com.example.a', a).inactiveFileNames, [orphan]);
+  assert.equal(fs.readFileSync(path.join(f.storageRoot, orphan), 'utf8'), 'incomplete registration retained on disk');
+});
+
+test('registration never overwrites a pre-existing conflicting filename', async t => {
+  const f = fixture(t);
+  const a = await f.register('com.example.a');
+  const otherDirectory = path.join(f.directory, 'other-shared-directory');
+  fs.mkdirSync(otherDirectory);
+  const occupied = path.join(otherDirectory, path.basename(a.addonPath));
+  fs.writeFileSync(occupied, 'pre-existing conflicting bytes');
+  const before = fs.statSync(occupied);
+  await assert.rejects(api.registerOverlayAddonInstallation({ applicationId: 'com.example.a', packageRoot: f.packageRoot,
+    addonDirectory: otherDirectory }), /hash\/size/);
+  assert.equal(fs.readFileSync(occupied, 'utf8'), 'pre-existing conflicting bytes');
+  assert.equal(fs.statSync(occupied).ino, before.ino);
+  assert.equal(fs.readdirSync(otherDirectory).some(name => name.startsWith('.ego-preload-')), false);
 });
 
 test('unregister scopes an explicit registration identity to its owning application', async t => {
@@ -222,23 +313,20 @@ test('selection compares full native payload hashes even when build identity is 
   assert.throws(() => f.select('com.example.a', { ...a, addonPath: changed }), /not registered/);
 });
 
-test('cache tampering fails closed for idempotent install, selection and a frozen snapshot', async t => {
+test('shared EGO payload tampering fails closed for idempotent install and future selection', async t => {
   const f = fixture(t);
   const a = await f.register('com.example.a');
-  const selected = f.select('com.example.a', a);
   fs.chmodSync(a.addonPath, 0o644);
   fs.appendFileSync(a.addonPath, 'tampered');
   await assert.rejects(f.register('com.example.a'), /hash|size/i);
   assert.throws(() => f.select('com.example.a', a), /not registered|hash|size/i);
-  await assert.rejects(api.createOverlayAddonPreloadSnapshot(path.join(f.directory, 'failed-host'), selected), /hash|size/i);
-  assert.equal(fs.existsSync(path.join(f.directory, 'failed-host')), false);
-  assert.equal(fs.readdirSync(f.directory).some(name => name.startsWith('.ego-preload-')), false);
+  assert.equal(fs.readdirSync(f.storageRoot).some(name => name.startsWith('.ego-preload-')), false);
 });
 
 test('registry refuses unknown schema fields and never repairs or overwrites its immutable payloads', async t => {
   const f = fixture(t);
   const a = await f.register('com.example.a');
-  const file = path.join(f.storageRoot, 'registrations.json');
+  const file = path.join(f.storageRoot, '.electron-game-overlay', 'registrations.json');
   const registry = JSON.parse(fs.readFileSync(file, 'utf8'));
   registry.unknown = true;
   fs.writeFileSync(file, JSON.stringify(registry));
@@ -247,7 +335,7 @@ test('registry refuses unknown schema fields and never repairs or overwrites its
   assert.ok(fs.existsSync(a.addonPath));
 });
 
-test('directory junctions or symlinks cannot redirect the registry or host snapshot', async t => {
+test('directory junctions or symlinks cannot redirect the shared directory or metadata', async t => {
   const f = fixture(t);
   const target = path.join(f.directory, 'foreign');
   fs.mkdirSync(target);
@@ -256,6 +344,11 @@ test('directory junctions or symlinks cannot redirect the registry or host snaps
   catch (error) { if (error.code === 'EPERM' || error.code === 'EACCES') { t.skip('Directory links unavailable'); return; } throw error; }
   await assert.rejects(api.registerOverlayAddonInstallation({ applicationId: 'com.example.a', packageRoot: f.packageRoot, storageRoot: redirected }), /reparse|non-directory/);
   const a = await f.register('com.example.a');
-  await assert.rejects(api.createOverlayAddonPreloadSnapshot(path.join(redirected, 'host'), f.select('com.example.a', a)), /reparse|non-directory/);
+  assert.throws(() => api.resolveAddonPreloadSelection({ applicationId: 'com.example.a', addonDirectory: redirected }, a), /reparse|non-directory/);
+  const second = path.join(f.directory, 'second');
+  fs.mkdirSync(second);
+  fs.symlinkSync(target, path.join(second, '.electron-game-overlay'), 'junction');
+  await assert.rejects(api.registerOverlayAddonInstallation({ applicationId: 'com.example.a', packageRoot: f.packageRoot,
+    addonDirectory: second }), /reparse|non-directory/);
   assert.deepEqual(fs.readdirSync(target), []);
 });

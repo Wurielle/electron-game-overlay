@@ -78,6 +78,24 @@ physical-key gate requires physical input, not a relabeled synthetic event.
 
 ## Implementation status
 
+### Stable shared add-on directory — generation 23
+
+The optional preload path uses a stable flat directory, normally
+`%LOCALAPPDATA%\ReShade\Addons`, with one catalog under its
+`.electron-game-overlay` subdirectory. Registration publishes distinct immutable
+per-app/build files once. Hosts scan that same directory; no per-host add-on
+snapshot is copied. Ordinary add-ons from other libraries are also scanned.
+Retired EGO files remain mapped safely and are disabled in future private host
+configurations. Selected EGO bytes and actual cooperative callback readiness
+remain mandatory even if an unrelated add-on fails initialization. This changes
+the injector and bundled owned host; it leaves the mapped EGO feature engine and
+its build ID unchanged. See [shared preloading](addon-preloading.md) for the API
+and initialization limits. All six repository DX API/architecture cells,
+late D3D11 attachment, four full-feature D3D11/D3D12 cells and two retained
+generation-16 mixed-implementation cases passed; see the
+[shared-directory acceptance record](shared-addon-directory-acceptance-2026-11-03.md).
+These results are separate from the earlier release candidates below.
+
 ### Transient initial inspection recovery — generation 22
 
 After committing and pushing accepted RC.11 as `b89eeb6`, the user resumed the

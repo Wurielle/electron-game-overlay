@@ -14,11 +14,17 @@ set(RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256
 set(RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256
     "58ED5A9C5F0B0806D7D4AE65D060271AD8D62676A62332F0BE6FEAD88B6D8BFA"
 )
+set(RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256
+    "B6647995D40C7EF13DD998AF9CFEAD5E5D0A1174E81EEE1121E8AA12C21CB9D1"
+)
 set(RESHAPE_PRE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256
     "AEA939BCC391BC5C2F63683558B78A88222BD5E9C4B81EFB5069CAA346F724BE"
 )
 set(RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256
     "36753053450815B934A6117B1C072A2100AA86032DF30D937F9A127CA0F7A5F0"
+)
+set(RESHAPE_FOREIGN_ADDON_ISOLATION_INL_CONTENT_SHA256
+    "8265E994A31EEFBE806EA7775E165F1EFB556967DAA5AC5ABF428307F26A9F71"
 )
 set(RESHAPE_PRE_FIRST_HOST_PRELOADED_INJECTOR_CONTENT_SHA256
     "B8E59D50F1D5D9EF54281B6B77FC034B780044C706F04C4F63B947EDE5E45191"
@@ -241,6 +247,18 @@ set(RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH
 set(RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256
     "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7"
 )
+set(RESHAPE_SHARED_ADDON_DIRECTORY_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-shared-addon-directory.patch"
+)
+set(RESHAPE_SHARED_ADDON_DIRECTORY_PATCH_SHA256
+    "54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125"
+)
+set(RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-owned-late-d3d11-addon-failure-isolation.patch"
+)
+set(RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH_SHA256
+    "2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99"
+)
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -359,6 +377,17 @@ string(REPLACE "tools/injector.cpp=${RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_
     "tools/injector.cpp=${RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256}"
     RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCHED_CONTENT_SHA256
     "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256}")
+# Generation 23 publishes two independently atomic terminal files. The complete
+# intermediate vector is intentional: an interrupted configure can safely resume
+# after the injector publication without accepting a mixed host implementation.
+string(REPLACE "tools/injector.cpp=${RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_SHARED_ADDON_DIRECTORY_PATCHED_CONTENT_SHA256
+    "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCHED_CONTENT_SHA256}")
+string(REPLACE "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_FOREIGN_ADDON_ISOLATION_INL_CONTENT_SHA256}"
+    RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256
+    "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCHED_CONTENT_SHA256}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
@@ -394,6 +423,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_PRELOAD_LONG_PATH_PATCH}"
     "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}"
     "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH}"
+    "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH}"
+    "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -952,6 +983,39 @@ function(ego_prepare_owned_late_source_cache source_dir)
             message(FATAL_ERROR "The initial-inspection recovery patch hash is not the frozen implementation.")
         endif()
     endif()
+    if(DEFINED RESHAPE_SHARED_ADDON_DIRECTORY_PATCH)
+        get_filename_component(shared_patch_dir "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH}" DIRECTORY)
+        get_filename_component(shared_patch_name "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH}" NAME)
+        ego_read_source_cache_file("${shared_patch_dir}" "${shared_patch_name}" shared_patch_hash ignored_text)
+        if(NOT shared_patch_hash STREQUAL RESHAPE_SHARED_ADDON_DIRECTORY_PATCH_SHA256)
+            message(FATAL_ERROR "The shared add-on directory patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    if(DEFINED RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH)
+        get_filename_component(isolation_patch_dir "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH}" DIRECTORY)
+        get_filename_component(isolation_patch_name "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH}" NAME)
+        ego_read_source_cache_file("${isolation_patch_dir}" "${isolation_patch_name}" isolation_patch_hash ignored_text)
+        if(NOT isolation_patch_hash STREQUAL RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH_SHA256)
+            message(FATAL_ERROR "The foreign add-on isolation patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    # Restore generation 22 in reverse publication order. Each helper proves
+    # every source file and Git entry before its one atomic rename. All supplied
+    # patch hashes above are checked before the first publication.
+    if(DEFINED RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH)
+        set(isolation_source_relative_path "source/ego_owned_late_d3d11/owned_late_d3d11.inl")
+        if(EXISTS "${source_root}/${isolation_source_relative_path}" OR
+           IS_SYMLINK "${source_root}/${isolation_source_relative_path}")
+            ego_read_source_cache_file("${source_root}" "${isolation_source_relative_path}" isolation_source_hash ignored_text)
+            if(isolation_source_hash STREQUAL RESHAPE_FOREIGN_ADDON_ISOLATION_INL_CONTENT_SHA256)
+                ego_apply_foreign_addon_isolation_source_tail("${source_root}" REVERSE)
+            endif()
+        endif()
+    endif()
+    if(injector_hash STREQUAL RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256)
+        ego_apply_shared_addon_directory_source_tail("${source_root}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
     # Generation 22 must restore the complete generation-21 vector before
     # either older terminal file is peeled. Every supplied patch pin above is
     # checked before this first atomic publication.
@@ -1474,6 +1538,49 @@ function(ego_apply_initial_inspection_recovery_source_tail source_dir)
     endif()
     ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
         "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH}" "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_shared_addon_directory_source_tail source_dir)
+    set(before_hash "${RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown shared-directory patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH}" "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_foreign_addon_isolation_source_tail source_dir)
+    set(before_hash "${RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_FOREIGN_ADDON_ISOLATION_INL_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown foreign-addon isolation patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_FOREIGN_ADDON_ISOLATION_INL_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}"
+        "source/ego_owned_late_d3d11/owned_late_d3d11.inl"
+        "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH}" "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH_SHA256}"
         "${before_hash}" "${after_hash}" ${apply_direction})
 endfunction()
 
@@ -3318,6 +3425,12 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
 ego_apply_initial_inspection_recovery_source_tail("${reshade_SOURCE_DIR}")
 set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCHED_CONTENT_SHA256}")
+ego_apply_shared_addon_directory_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCHED_CONTENT_SHA256}")
+ego_apply_foreign_addon_isolation_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256}")
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and

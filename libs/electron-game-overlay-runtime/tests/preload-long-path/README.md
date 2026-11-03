@@ -93,8 +93,9 @@ transfer calls. It loads no DLL or runtime and starts no external process.
 It creates a fresh direct child of the SDK repository's canonical `build`
 directory and retains only its owned evidence tree. For candidate file lengths
 233, 259, 260, 289 and 320, it admits ordinary and exact extended `AddonPath`
-spellings of the canonical owned `stage\preloaded-addons` directory. It rejects
-external directories and relative, dot, dot-dot, trailing-separator, slash and
+spellings of the canonical owned `stage\preloaded-addons` directory. Generation
+23 additionally admits an independent canonical shared directory containing the
+same exact selected payload. It rejects relative, dot, dot-dot, trailing-separator, slash and
 malformed-prefix aliases. Both admitted forms repeat the marker, missing-file,
 full SHA-256, altered-payload and denied-write/delete guard controls. Leaf,
 stage-ancestor and snapshot-directory symlink rejection runs only if standard

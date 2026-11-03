@@ -5,6 +5,8 @@ param(
     [string]$SdkDistA,
     [string]$SdkDistB,
     [string]$ElectronExecutable,
+    [string]$SentinelPath,
+    [string]$RejectedAddonPath,
     [ValidateSet('all', 'self-load', 'production-injection')][string]$Scope = 'all',
     [switch]$SkipBuild,
     [Parameter(DontShow)][switch]$FunctionsOnly
@@ -13,7 +15,7 @@ param(
 # Scope is deliberately limited to the repository's copied DirectX demo. The
 # self-load cell proves ordinary ReShade AddonPath scanning with no apps alive;
 # the production-injection cell separately proves the public SDK's first-host
-# snapshot wiring before device creation. SendInput is not physical-key evidence.
+# stable-directory wiring before device creation. SendInput is not physical-key evidence.
 $ErrorActionPreference = 'Stop'
 $RequestedElectron = $ElectronExecutable
 $RequestedFunctionsOnly = $FunctionsOnly
@@ -29,7 +31,12 @@ $ProducerFixture = Join-Path $RepoRoot 'apps\client\scripts\cooperative-two-app-
 $RegistrationFixture = Join-Path $RepoRoot 'apps\client\scripts\cooperative-preload-registration.cjs'
 
 function Save-PreloadJson($Value, [string]$Path) { $Value | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $Path -Encoding utf8 }
-function Test-PreloadPath([string]$Left, [string]$Right) { return [string]::Equals($Left, $Right, [StringComparison]::OrdinalIgnoreCase) }
+function ConvertTo-PreloadOrdinaryPath([string]$Value) {
+    if ($Value.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { return '\\' + $Value.Substring(8) }
+    if ($Value.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) { return $Value.Substring(4) }
+    return $Value
+}
+function Test-PreloadPath([string]$Left, [string]$Right) { return [string]::Equals((ConvertTo-PreloadOrdinaryPath $Left), (ConvertTo-PreloadOrdinaryPath $Right), [StringComparison]::OrdinalIgnoreCase) }
 function ConvertTo-PreloadArgument([AllowEmptyString()][string]$Argument) {
     if ($Argument.Contains([char]0)) { throw 'NUL in controlled process argument.' }
     $Text = [Text.StringBuilder]::new(); $null = $Text.Append('"'); $Slashes = 0
@@ -114,7 +121,7 @@ function Wait-Preload([scriptblock]$Predicate, [string]$Label, [int]$Seconds = 3
     throw "Timed out waiting for $Label. Last snapshot: $script:SnapshotError. Evidence: $CaseDirectory"
 }
 function Invoke-PreloadRegistration([string]$Member, [string]$Action, [string]$Output, [string]$Destination = '') {
-    $Arguments = @($RegistrationFixture, "--action=$Action", "--sdk-dist=$($Sdks[$Member])", "--application-id=$($ApplicationIds[$Member])", "--storage-root=$StorageRoot", "--output=$Output")
+    $Arguments = @($RegistrationFixture, "--action=$Action", "--sdk-dist=$($Sdks[$Member])", "--application-id=$($ApplicationIds[$Member])", "--addon-directory=$StorageRoot", "--output=$Output")
     if ($Destination) { $Arguments += "--destination=$Destination" }
     $Entry = Start-PreloadProcess (New-PreloadProcessInfo $NodeExecutable $Arguments)
     if (-not $Entry.process.WaitForExit(20000)) { $Entry.process.Kill(); throw 'Pure Node registration fixture timed out.' }
@@ -149,11 +156,10 @@ function Retain-PreloadChildren($Entry) {
 function Start-PreloadApp([string]$Member, [string]$Slot, [int]$Generation = 1, [bool]$WaitForRendering = $true, [bool]$UsePreload = $true) {
     $Directory = Join-Path $CaseDirectory "p\$Member$Generation"; New-Item -ItemType Directory -Path $Directory | Out-Null
     $RunsRoot = Join-Path $CaseDirectory "$Member$Generation"
-    $LongestLeaf = if ($UsePreload) { [IO.Path]::GetFileName($Registrations[$Member].addonPath) } else { 'electron_game_overlay_runtime.build.json' }
-    $Projected = Join-Path (Join-Path (Join-Path $RunsRoot 'p.exe-XXXXXX') 'preloaded-addons') $LongestLeaf
-    if ($Projected.Length -gt 240) { throw "The controlled native snapshot path exceeds its explicit Windows path budget: $Projected" }
+    $Projected = Join-Path $RunsRoot 'p.exe-XXXXXX\electron_game_overlay_runtime.build.json'
+    if ($Projected.Length -gt 240) { throw "The controlled native runtime stage exceeds its explicit Windows path budget: $Projected" }
     $Arguments = @($ProducerFixture, "--member=$Member", "--slot=$Slot", "--evidence=$Directory", "--sdk-dist=$($Sdks[$Member])", "--game=$TargetPath", "--pid=$($Target.process.Id)", "--runs-root=$RunsRoot", '--exact-pid-proof=1')
-    if ($UsePreload) { $Arguments += @("--preload-app-id=$($ApplicationIds[$Member])", "--preload-storage-root=$StorageRoot") }
+    if ($UsePreload) { $Arguments += @("--preload-app-id=$($ApplicationIds[$Member])", "--preload-addon-directory=$StorageRoot") }
     if ($SdkConsumers -and $SdkConsumers[$Member]) { $Arguments += "--sdk-consumer-root=$($SdkConsumers[$Member])" }
     $Entry = Start-PreloadProcess (New-PreloadProcessInfo $ElectronExecutable $Arguments)
     $Entry.member = $Member; $Entry.directory = $Directory; $Entry.runsRoot = $RunsRoot; $Entry.generation = $Generation; $Apps[$Member] = $Entry; $AllApps.Add($Entry)
@@ -166,7 +172,7 @@ function Start-PreloadApp([string]$Member, [string]$Slot, [int]$Generation = 1, 
         # below validates the persisted native PID/creation/image selection.
         if ($Proof.runtimeMode -cne 'injected-runtime' -or $Proof.injectorTargetPid -ne $Target.process.Id -or -not (Test-PreloadPath $Proof.targetExecutablePath $TargetPath)) { throw 'Pre-device native return did not identify the fresh exact target.' }
         $CaseResult.preDeviceNativeResult = Read-PreloadInitialResult $Proof.injectorStdoutPath
-        $MappedAddon = if ($UsePreload) { Join-Path (Join-Path $Proof.runDirectory 'preloaded-addons') ([IO.Path]::GetFileName($Registrations[$Member].addonPath)) } else { Join-Path $Proof.runDirectory 'electron_game_overlay.addon64' }
+        $MappedAddon = if ($UsePreload) { $Registrations[$Member].addonPath } else { Join-Path $Proof.runDirectory 'electron_game_overlay.addon64' }
         $SourceAddon = if ($UsePreload) { $Registrations[$Member].addonPath } else { Join-Path $Sdks[$Member] 'runtime\win32-x64\reshade\electron_game_overlay.addon64' }
         $CaseResult.preDeviceMappedProof = Get-PreloadExactPidMappedEvidence $Entry $State (Join-Path $Proof.runDirectory 'ReShade64.dll') $MappedAddon (Get-FileHash -LiteralPath (Join-Path $Sdks[$Member] 'runtime\win32-x64\reshade\ReShade64.dll') -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $SourceAddon -Algorithm SHA256).Hash
     }
@@ -328,7 +334,16 @@ function Set-PreloadInterception([string]$First, [string]$Late, [bool]$FirstEnab
     Send-PreloadCommand $Late $(if ($LateEnabled) { 'intercept' } else { 'release' })
     Wait-Preload { (Read-PreloadState $First).requestedInterception -eq $FirstEnabled -and (Read-PreloadState $Late).requestedInterception -eq $LateEnabled -and (Read-PreloadState $First).intercepting -eq ($FirstEnabled -or $LateEnabled) -and (Read-PreloadState $Late).intercepting -eq ($FirstEnabled -or $LateEnabled) } 'cross-app OR interception'
 }
-function Assert-PreloadPixel([int]$X, [int]$Y, [uint32]$Expected, [string]$Label) { Wait-Preload { [EgoPreloadDemoPixels]::Pixel($Hwnd, $X, $Y) -eq $Expected } $Label 12; $CaseResult.checks.Add($Label) }
+function Assert-PreloadPixel([int]$X, [int]$Y, [uint32]$Expected, [string]$Label) {
+    $script:PreloadObservedPixel = $null
+    try {
+        Wait-Preload { $script:PreloadObservedPixel = [EgoPreloadDemoPixels]::Pixel($Hwnd, $X, $Y); $script:PreloadObservedPixel -eq $Expected } $Label 12
+        $CaseResult.checks.Add($Label)
+    } finally {
+        if (-not $CaseResult.Contains('pixelProbes')) { $CaseResult.pixelProbes = [Collections.Generic.List[object]]::new() }
+        $CaseResult.pixelProbes.Add(@{ label = $Label; x = $X; y = $Y; expected = ('0x{0:X6}' -f $Expected); observed = $(if ($null -eq $script:PreloadObservedPixel) { $null } else { '0x{0:X6}' -f $script:PreloadObservedPixel }); window = $Hwnd.ToInt64().ToString(); geometry = [EgoPreloadDemoPixels]::Geometry($Hwnd) })
+    }
+}
 
 if (-not [Environment]::Is64BitProcess) { throw 'Run the DirectX preload demo gates in 64-bit PowerShell.' }
 if (-not ('EgoPreloadDemoPixels' -as [type])) {
@@ -337,12 +352,16 @@ using System;
 using System.Runtime.InteropServices;
 public static class EgoPreloadDemoPixels {
  [StructLayout(LayoutKind.Sequential)] struct POINT { public int x,y; }
+ [StructLayout(LayoutKind.Sequential)] struct RECT { public int left,top,right,bottom; }
  [StructLayout(LayoutKind.Sequential)] struct MOUSE { public int x,y; public uint data,flags,time; public UIntPtr extra; }
  [StructLayout(LayoutKind.Sequential)] struct KEY { public ushort vk,scan; public uint flags,time; public UIntPtr extra; }
  [StructLayout(LayoutKind.Explicit,Size=32)] struct UNION { [FieldOffset(0)] public MOUSE mouse; [FieldOffset(0)] public KEY key; }
  [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public UNION data; }
  [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public uint size,flags; public IntPtr cursor; public POINT point; }
  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h,ref POINT p);
+ [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
  [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h,IntPtr dc);
  [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr dc,int x,int y);
@@ -350,6 +369,7 @@ public static class EgoPreloadDemoPixels {
  [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr module,IntPtr id);
  [DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint count,INPUT[] input,int size);
  public static uint Pixel(IntPtr h,int x,int y) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p))throw new Exception("ClientToScreen failed");var dc=GetDC(IntPtr.Zero);try{return GetPixel(dc,p.x,p.y);}finally{ReleaseDC(IntPtr.Zero,dc);} }
+ public static string Geometry(IntPtr h) { RECT c,w; var p=new POINT{x=0,y=0}; if(!GetClientRect(h,out c)||!GetWindowRect(h,out w)||!ClientToScreen(h,ref p))throw new Exception("Window geometry observation failed");return "client="+c.left+","+c.top+","+c.right+","+c.bottom+";window="+w.left+","+w.top+","+w.right+","+w.bottom+";clientOrigin="+p.x+","+p.y+";foreground="+GetForegroundWindow().ToInt64(); }
  public static bool CursorIs(int id) { var c=new CURSORINFO{size=(uint)Marshal.SizeOf(typeof(CURSORINFO))};return GetCursorInfo(ref c)&&c.flags==1&&c.cursor==LoadCursor(IntPtr.Zero,new IntPtr(id)); }
  static void Send(INPUT input) { if(SendInput(1,new[]{input},Marshal.SizeOf(typeof(INPUT)))!=1)throw new Exception("SendInput failed"); }
  public static void Letter(ushort vk) { Send(new INPUT{type=1,data=new UNION{key=new KEY{vk=vk}}});Send(new INPUT{type=1,data=new UNION{key=new KEY{vk=vk,flags=2}}}); }
@@ -370,6 +390,11 @@ if (-not $RequestedSkipBuild) {
 $ElectronExecutable = (Resolve-Path -LiteralPath $ElectronExecutable).Path
 $NodeExecutable = (Get-Command node.exe -ErrorAction Stop).Source
 $Sdks = @{ a = (Resolve-Path -LiteralPath $SdkDistA).Path; b = (Resolve-Path -LiteralPath $SdkDistB).Path }
+if ([bool]$SentinelPath -ne [bool]$RejectedAddonPath) { throw 'Supply both ordinary add-on fixture paths, or neither.' }
+if ($SentinelPath) {
+    $SentinelPath = (Resolve-Path -LiteralPath $SentinelPath).Path
+    $RejectedAddonPath = (Resolve-Path -LiteralPath $RejectedAddonPath).Path
+}
 $SdkConsumers = @{}
 foreach ($File in @($BuiltHost, $ProducerFixture, $RegistrationFixture, (Join-Path $Sdks.a 'preload.js'), (Join-Path $Sdks.b 'preload.js'))) { if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { throw "Required built artifact missing: $File" } }
 . (Join-Path $PSScriptRoot 'visual-test-display-lease.ps1')
@@ -391,6 +416,18 @@ try {
         $ApplicationIds = @{ a = 'com.electron-game-overlay.preload-demo.a'; b = 'com.electron-game-overlay.preload-demo.b' }
         $Registrations = @{}
         foreach ($Member in @('a', 'b')) { $Registrations[$Member] = Invoke-PreloadRegistration $Member register (Join-Path $CaseDirectory "$Member-registration.json") }
+        $StableFiles = @{}
+        foreach ($Member in @('a', 'b')) {
+            if (-not (Test-PreloadPath $Registrations[$Member].addonDirectory $StorageRoot)) { throw 'Registration did not use the requested stable shared directory.' }
+            foreach ($Path in @($Registrations[$Member].addonPath, $Registrations[$Member].x86AddonPath)) {
+                $Item = Get-Item -LiteralPath $Path
+                $StableFiles[$Path] = @{ sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash; createdUtc = $Item.CreationTimeUtc.ToString('o') }
+            }
+        }
+        if ($SentinelPath) {
+            Copy-Item -LiteralPath $SentinelPath -Destination (Join-Path $StorageRoot 'ordinary-sentinel.addon')
+            Copy-Item -LiteralPath $RejectedAddonPath -Destination (Join-Path $StorageRoot 'ordinary-rejected.addon')
+        }
         $CaseResult = [ordered]@{ name = $Cell; status = 'running'; checks = [Collections.Generic.List[string]]::new(); registrations = $Registrations; distinctNativeBuilds = $Registrations.a.addonBuildId -cne $Registrations.b.addonBuildId; target = $null; cleanupErrors = [Collections.Generic.List[string]]::new() }
         $Report.cases.Add($CaseResult)
         $Apps = @{}; $AllApps = [Collections.Generic.List[object]]::new(); $Target = $null; $script:Sequence = 0; $MouseHeld = $false
@@ -402,7 +439,7 @@ try {
                 [IO.File]::WriteAllText((Join-Path $Stage 'ReShade.ini'), "[INSTALL]`nBasePath=.`n[ADDON]`nAddonPath=$($SnapshotDescription.snapshot.directory)`n", [Text.UTF8Encoding]::new($false))
                 Write-OwnedOverlayRunMarker -RunDirectory $Stage -BuildRoot $PreloadBuildRoot
                 [IO.File]::WriteAllText((Join-Path $TargetDirectory 'electron-game-overlay-preload-runtime.path'), (Join-Path $Stage 'ReShade64.dll'), [Text.UTF8Encoding]::new($false))
-                $CaseResult.initialization = 'Test-owned target self-LoadLibrary before devices; real ReShade scans an external immutable AddonPath; no producer is running.'
+                $CaseResult.initialization = 'Test-owned target self-LoadLibrary before devices; real ReShade scans the stable external AddonPath; no producer is running.'
             } else { $CaseResult.initialization = 'Genuine public SDK first-host injection before devices; initiating app active, second registered app dormant.' }
             $Target = Start-PreloadProcess (New-PreloadProcessInfo $TargetPath @() $true)
             $TargetCreation = $Target.process.StartTime.ToFileTimeUtc().ToString()
@@ -422,11 +459,23 @@ try {
             $ExpectedHostSource = Join-Path $Sdks.a 'runtime\win32-x64\reshade\ReShade64.dll'
             if ((Get-FileHash -LiteralPath $ReShadeHostModule.path -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $ExpectedHostSource -Algorithm SHA256).Hash) { throw 'The sole mapped ReShade host differs from the selected SDK runtime.' }
             $CaseResult.host = @{ path = $ReShadeHostModule.path; baseAddress = $ReShadeHostModule.baseAddress; sha256 = (Get-FileHash -LiteralPath $ReShadeHostModule.path -Algorithm SHA256).Hash }
+            if (Test-Path -LiteralPath (Join-Path $HostDirectory 'preloaded-addons')) { throw 'A per-run add-on snapshot was created.' }
+            if ($SentinelPath) {
+                foreach ($Prefix in @('sentinel', 'rejected')) {
+                    $Receipt = Join-Path $StorageRoot "$Prefix-$($Target.process.Id).ready"
+                    $ExpectedReceipt = "EGO_ORDINARY_ADDON_RECEIPT_V1`npid=$($Target.process.Id)`ncreationFileTime=$TargetCreation`n"
+                    if (-not (Test-Path -LiteralPath $Receipt -PathType Leaf) -or [IO.File]::ReadAllText($Receipt) -cne $ExpectedReceipt) { throw 'An ordinary add-on initializer did not record the exact retained target.' }
+                }
+                $Ordinary = @($Initial.modules | Where-Object { Test-PreloadPath $_.path (Join-Path $StorageRoot 'ordinary-sentinel.addon') })
+                if ($Ordinary.Count -ne 1) { throw 'The shared ordinary non-EGO add-on was not mapped exactly once.' }
+                if ((Get-FileHash -LiteralPath $Ordinary[0].path -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $SentinelPath -Algorithm SHA256).Hash) { throw 'The ordinary add-on differs from its fixture bytes.' }
+                $CaseResult.checks.Add('Stock ReShade loads an ordinary non-EGO add-on from the same stable folder, and an unrelated rejected AddonInit does not block EGO')
+            }
             $Preloaded = @{}
             foreach ($Member in @('a', 'b')) {
                 $Leaf = [IO.Path]::GetFileName($Registrations[$Member].addonPath)
                 $Mapped = @($Initial.modules | Where-Object { [IO.Path]::GetFileName($_.path) -ceq $Leaf })
-                if ($Mapped.Count -ne 1 -or (Get-FileHash -LiteralPath $Mapped[0].path -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $Registrations[$Member].addonPath -Algorithm SHA256).Hash) { throw "Real ReShade did not scan the registered $Member payload exactly once." }
+                if ($Mapped.Count -ne 1 -or -not (Test-PreloadPath $Mapped[0].path $Registrations[$Member].addonPath) -or (Get-FileHash -LiteralPath $Mapped[0].path -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $Registrations[$Member].addonPath -Algorithm SHA256).Hash) { throw "Real ReShade did not scan the registered $Member payload exactly once at its stable path." }
                 $Preloaded[$Member] = $Mapped[0].path
             }
             if ($Cell -eq 'self-load') {
@@ -450,7 +499,7 @@ try {
                 if ($InitialAttachment.runtimeMode -cne 'injected-runtime' -or $CaseResult.initialNativeResult.runtimeMode -cne 'injected-runtime') { throw 'A fresh-target production injection did not retain initial injected-runtime provenance.' }
                 $CaseResult.initialMappedProof = Get-PreloadExactPidMappedEvidence $Apps[$First] (Read-PreloadState $First) $ReShadeHostModule.path $Preloaded[$First] $CaseResult.host.sha256 (Get-FileHash -LiteralPath $Registrations[$First].addonPath -Algorithm SHA256).Hash
                 if (@($Initial.registry.participants | Where-Object { Test-PreloadPath $_.modulePath $Preloaded[$First] }).Count -ne 1 -or @($Initial.modules | Where-Object { [IO.Path]::GetExtension($_.path) -ieq '.addon64' }).Count -ne 2) { throw 'First-host injection did not activate its scanned selected implementation exactly once.' }
-                $CaseResult.checks.Add('Production SDK injected one external ReShade host before devices and its immutable AddonPath scanned the offline peer')
+                $CaseResult.checks.Add('Production SDK injected one external ReShade host before devices and its stable shared AddonPath scanned the offline peer')
             }
             $null = Start-PreloadApp $Late late
             $Both = Get-PreloadSnapshot 'both-apps-active' 2 2 2
@@ -516,10 +565,17 @@ try {
             $CaseResult.checks.Add('Crash removes the retired app surface/input; survivor route and input persist; restarted app safely uses one fresh engine')
             $null = Invoke-PreloadRegistration $First unregister (Join-Path $CaseDirectory 'unregister-retired-app.json')
             $Future = Invoke-PreloadRegistration $Late snapshot (Join-Path $CaseDirectory 'future-host-snapshot.json') (Join-Path $CaseDirectory 'future-host-addons')
-            if (@($Future.selection.payloads | Where-Object { $_.fileName -ceq [IO.Path]::GetFileName($Preloaded[$First]) }).Count -ne 0 -or -not (Test-Path -LiteralPath $Preloaded[$First])) { throw 'Unregister mutated an existing snapshot or remained in a future snapshot.' }
+            if (@($Future.selection.payloads | Where-Object { $_.fileName -ceq [IO.Path]::GetFileName($Preloaded[$First]) }).Count -ne 0 -or
+                [IO.Path]::GetFileName($Preloaded[$First]) -cnotin @($Future.selection.inactiveFileNames) -or
+                -not (Test-Path -LiteralPath $Preloaded[$First]) -or -not (Test-PreloadPath $Future.snapshot.directory $StorageRoot)) { throw 'Unregister moved a mapped file or did not exclude it from future scans of the same stable folder.' }
             $AfterUnregister = Get-PreloadSnapshot 'unregister-keeps-current-target' 2 2 3
             if (@($AfterUnregister.modules | Where-Object { Test-PreloadPath $_.path $Preloaded[$First] }).Count -ne 1) { throw 'Unregister unloaded a consumed module.' }
-            $CaseResult.checks.Add('Unregister changes future snapshots while mapped modules and the current target remain intact')
+            foreach ($Path in $StableFiles.Keys) {
+                if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -cne $StableFiles[$Path].sha256 -or
+                    (Get-Item -LiteralPath $Path).CreationTimeUtc.ToString('o') -cne $StableFiles[$Path].createdUtc) { throw 'A run or removal replaced an immutable registered file.' }
+            }
+            $CaseResult.stableFiles = $StableFiles
+            $CaseResult.checks.Add('Unregister excludes retired filenames from future scans while all stable file paths, bytes and creation times remain intact')
             foreach ($Member in @($First, $Late)) { Send-PreloadCommand $Member release; Stop-PreloadApp $Apps[$Member] }
             $Final = Get-PreloadSnapshot 'all-apps-offline' 0 0 3
             if ($Final.registry.focus.participant -ne 0 -or $Final.registry.capture.participant -ne 0 -or $Final.registry.captureButtons -ne 0) { throw 'No-app state retained focus or capture.' }

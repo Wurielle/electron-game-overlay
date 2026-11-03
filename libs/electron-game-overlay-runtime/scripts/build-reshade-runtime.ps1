@@ -192,6 +192,22 @@ if ($InjectorInitialInspectionRecoveryPatchHash -cne
     "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7") {
     throw "The injector initial-inspection recovery patch does not match its frozen source."
 }
+$InjectorSharedAddonDirectoryPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-shared-addon-directory.patch"
+$InjectorSharedAddonDirectoryPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorSharedAddonDirectoryPatch).Hash
+if ($InjectorSharedAddonDirectoryPatchHash -cne
+    "54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125") {
+    throw "The injector shared add-on directory patch does not match its frozen source."
+}
+$OwnedLateD3d11ForeignAddonIsolationPatch =
+    Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11-addon-failure-isolation.patch"
+$OwnedLateD3d11ForeignAddonIsolationPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedLateD3d11ForeignAddonIsolationPatch).Hash
+if ($OwnedLateD3d11ForeignAddonIsolationPatchHash -cne
+    "2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99") {
+    throw "The owned late D3D11 foreign add-on isolation patch does not match its frozen source."
+}
 $ExpectedPatchedFiles = @(
     "ReShade.vcxproj"
     "include/reshade.hpp"
@@ -225,14 +241,14 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/d3d11/d3d11_impl_swapchain.hpp" = "60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
     "source/ego_owned_late_d3d11/owned_config_file.hpp" = "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
     "source/ego_owned_late_d3d11/owned_late_d3d11.hpp" = "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
-    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "36753053450815B934A6117B1C072A2100AA86032DF30D937F9A127CA0F7A5F0"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "8265E994A31EEFBE806EA7775E165F1EFB556967DAA5AC5ABF428307F26A9F71"
     "source/input_frame_consumer.hpp" = "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
     "source/input.cpp" = "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
     "source/input.hpp" = "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
     "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
     "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
     "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
-    "tools/injector.cpp" = "58ED5A9C5F0B0806D7D4AE65D060271AD8D62676A62332F0BE6FEAD88B6D8BFA"
+    "tools/injector.cpp" = "B6647995D40C7EF13DD998AF9CFEAD5E5D0A1174E81EEE1121E8AA12C21CB9D1"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -294,12 +310,14 @@ function Test-ReShadePatchedSourceState {
             return $false
         }
     }
-    # Check all three independent terminal patches after the exact nineteen-file
-    # inventory and content proof. Earlier overlapping seams do not reverse independently.
+    # Check the four independent terminal seams after the exact nineteen-file
+    # inventory and content proof. The shared-directory tail supersedes the old
+    # long-path injector seam, which no longer reverses independently.
     foreach ($Patch in @(
-        $InjectorPreloadLongPathPatch
         $OwnedLateD3d11AdapterReadyLongPathPatch
         $InjectorInitialInspectionRecoveryPatch
+        $InjectorSharedAddonDirectoryPatch
+        $OwnedLateD3d11ForeignAddonIsolationPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -366,6 +384,8 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorPreloadLongPathPatchSha256 -eq $InjectorPreloadLongPathPatchHash -and
             $Stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256 -eq $OwnedLateD3d11AdapterReadyLongPathPatchHash -and
             $Stamp.injectorInitialInspectionRecoveryPatchSha256 -eq $InjectorInitialInspectionRecoveryPatchHash -and
+            $Stamp.injectorSharedAddonDirectoryPatchSha256 -eq $InjectorSharedAddonDirectoryPatchHash -and
+            $Stamp.ownedLateD3d11ForeignAddonIsolationPatchSha256 -eq $OwnedLateD3d11ForeignAddonIsolationPatchHash -and
             ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
             $Stamp.addonPreloadProtocol -eq 1 -and
             $Stamp.cooperativeAddonProtocol -eq 1 -and
@@ -516,6 +536,8 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorPreloadLongPathPatchSha256 = $InjectorPreloadLongPathPatchHash
     ownedLateD3d11AdapterReadyLongPathPatchSha256 = $OwnedLateD3d11AdapterReadyLongPathPatchHash
     injectorInitialInspectionRecoveryPatchSha256 = $InjectorInitialInspectionRecoveryPatchHash
+    injectorSharedAddonDirectoryPatchSha256 = $InjectorSharedAddonDirectoryPatchHash
+    ownedLateD3d11ForeignAddonIsolationPatchSha256 = $OwnedLateD3d11ForeignAddonIsolationPatchHash
     addonPreloadProtocol = 1
     cooperativeAddonProtocol = 1
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash

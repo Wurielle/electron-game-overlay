@@ -207,7 +207,10 @@ void test_snapshot(const owned_tree &owned, const std::wstring &target,
         policy_require((error == ERROR_SUCCESS) == accept,
             tag + name + " unexpected selector result " + std::to_string(error));
         if (!accept) return;
-        policy_require(_wcsicmp(selected.c_str(), selected_file.c_str()) == 0,
+        const auto expected = settings.addon_directory_path == other ||
+            settings.addon_directory_path == make_extended_length_path(other)
+            ? other + L"\\" + addon_leaf : selected_file;
+        policy_require(_wcsicmp(selected.c_str(), expected.c_str()) == 0,
             "Selector changed the exact ordinary selected-file representation");
         if (!guards) return;
         for (const auto &path : {stage, snapshot}) {
@@ -253,7 +256,9 @@ void test_snapshot(const owned_tree &owned, const std::wstring &target,
         wrong.reshade_base_path = other;
         check(false, "foreign-base", wrong);
         const std::wstring external = prefix ? make_extended_length_path(other) : other;
-        reject_both_forms(external, "external-addon-directory");
+        wrong = settings;
+        wrong.addon_directory_path = external;
+        check(true, "external-shared-addon-directory", wrong);
         reject_both_forms(L"preloaded-addons", "relative-addon-directory");
         reject_both_forms(L".\\preloaded-addons", "relative-dot-addon-directory");
         const std::wstring dot = stage + L"\\.\\preloaded-addons";

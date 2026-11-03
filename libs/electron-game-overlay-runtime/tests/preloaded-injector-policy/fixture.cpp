@@ -381,13 +381,17 @@ void test_first_host_snapshot_selector()
     require(CreateDirectoryW(make_extended_length_path(owned.root).c_str(), nullptr) != FALSE,
         "cannot exclusively create selector-owned root");
     const std::wstring stage = owned.directory(owned.root, L"stage");
-    const std::wstring snapshot = owned.directory(stage, L"preloaded-addons");
+    // Registered add-ons remain in one stable directory outside every private
+    // session stage. Unrelated ordinary ReShade add-ons are not EGO inventory.
+    const std::wstring snapshot = owned.directory(owned.root, L"shared-addons");
     const std::wstring game = owned.directory(owned.root, L"game");
     const std::wstring other = owned.directory(owned.root, L"other");
     const std::wstring target = owned.file(game, L"game.exe", "fixture target bytes");
     const std::wstring runtime = owned.file(stage, target_reshade_runtime_file, "fixture runtime bytes");
     const std::wstring selected_leaf = valid_leaf();
     const std::wstring selected_file = owned.file(snapshot, selected_leaf.c_str(), "abc");
+    owned.file(snapshot, L"independent-library.addon", "unrelated third-party bytes");
+    owned.file(snapshot, L"broken-foreign.addon64", "not a PE image");
     const std::wstring source_file = owned.file(stage, L"regular-copy.dll", "abc");
     const std::string ascii = "ELECTRON_GAME_OVERLAY_OWNED_RUNTIME_STAGE_V1\n";
     const std::wstring ascii_marker = owned.file(stage,
@@ -412,7 +416,7 @@ void test_first_host_snapshot_selector()
         owned_preload_snapshot_guard guard;
         require(validate_first_host_preload_snapshot(stage, target, runtime,
             settings, selected_leaf, abc_sha256, selected, guard) == ERROR_SUCCESS,
-            "exact first-host snapshot rejected");
+            "stable shared first-host directory rejected");
         require(_wcsicmp(selected.c_str(), selected_file.c_str()) == 0,
             "selector returned a different candidate file");
         for (const auto &directory : {stage, snapshot})
@@ -428,6 +432,23 @@ void test_first_host_snapshot_selector()
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         require(writer == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION,
             "selector file guard allowed content mutation");
+        // A second installer may register independently while this request pins
+        // its own selected payload; directory replacement is still forbidden.
+        scoped_handle publisher(CreateFileW(make_extended_length_path(snapshot).c_str(), FILE_ADD_FILE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+        require(publisher != INVALID_HANDLE_VALUE, "shared directory guard blocked independent publication");
+        owned.file(snapshot, L"published-concurrently.addon", "another independent library");
+    }
+    {
+        auto extended = settings;
+        extended.addon_directory_path = make_extended_length_path(snapshot);
+        std::wstring selected;
+        owned_preload_snapshot_guard guard;
+        require(validate_first_host_preload_snapshot(stage, target, runtime,
+            extended, selected_leaf, abc_sha256, selected, guard) == ERROR_SUCCESS,
+            "exact extended shared directory alias rejected");
+        require(selected == selected_file, "extended alias changed canonical selected path");
     }
     for (const auto &directory : {stage, snapshot})
     {
@@ -441,7 +462,18 @@ void test_first_host_snapshot_selector()
     expect_rejected(stage, target, runtime, wrong, "foreign effective base accepted");
     wrong = settings;
     wrong.addon_directory_path = other;
-    expect_rejected(stage, target, runtime, wrong, "foreign effective AddonPath accepted");
+    expect_rejected(stage, target, runtime, wrong, "shared folder missing selected payload accepted");
+    wrong.addon_directory_path = L"shared-addons";
+    expect_rejected(stage, target, runtime, wrong, "relative shared AddonPath accepted");
+    wrong.addon_directory_path = snapshot + L"\\..\\shared-addons";
+    expect_rejected(stage, target, runtime, wrong, "noncanonical shared AddonPath accepted");
+    wrong.addon_directory_path = make_extended_length_path(snapshot + L"\\..\\shared-addons");
+    expect_rejected(stage, target, runtime, wrong, "noncanonical extended shared AddonPath accepted");
+    wrong.addon_directory_path = L"\\\\.\\" + snapshot;
+    expect_rejected(stage, target, runtime, wrong, "device alias shared AddonPath accepted");
+    owned.file(game, selected_leaf.c_str(), "abc");
+    wrong.addon_directory_path = game;
+    expect_rejected(stage, target, runtime, wrong, "shared directory in target game folder accepted");
     expect_rejected(stage, target, source_file, settings, "wrong runtime leaf accepted");
     expect_rejected(stage, target, other + L"\\" + target_reshade_runtime_file,
         settings, "runtime outside stage accepted");
@@ -483,6 +515,18 @@ void test_first_host_snapshot_selector()
     wrong.addon_directory_path = junction + L"\\preloaded-addons";
     expect_rejected(junction, target, junction + L"\\" + target_reshade_runtime_file,
         wrong, "reparse ancestor junction accepted");
+    const std::wstring shared_junction = owned.directory(owned.root, L"shared-junction");
+    make_owned_junction(shared_junction, snapshot);
+    wrong = settings;
+    wrong.addon_directory_path = shared_junction;
+    expect_rejected(stage, target, runtime, wrong, "shared directory junction accepted");
+    const std::wstring shared_parent = owned.directory(owned.root, L"shared-parent");
+    const std::wstring shared_child = owned.directory(shared_parent, L"addons");
+    owned.file(shared_child, selected_leaf.c_str(), "abc");
+    const std::wstring parent_junction = owned.directory(owned.root, L"parent-junction");
+    make_owned_junction(parent_junction, shared_parent);
+    wrong.addon_directory_path = parent_junction + L"\\addons";
+    expect_rejected(stage, target, runtime, wrong, "shared directory ancestor junction accepted");
     // Successful admission remains possible after all failure cases; no helper
     // may quarantine, rewrite, or delete our valid stage on read-only rejection.
     {

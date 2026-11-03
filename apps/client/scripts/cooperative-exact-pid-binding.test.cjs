@@ -20,6 +20,17 @@ test('preloaded and unregistered addon-only invocations preserve their scopes', 
   assert.equal(collectExactPidBinding({ ...invocation, arguments: [...invocation.arguments, '--preloaded-addon-name', leaf] }, target).preloadedAddonName, leaf);
   assert.equal(collectExactPidBinding({ ...invocation, arguments: [...invocation.arguments, '--addon-only'] }, target).preloadedAddonName, undefined);
 });
+
+test('x86 handoff preserves the exact creation binding and selects the x86 registered implementation', () => {
+  const x86 = { ...invocation, executable: path.join(stage, 'inject32.exe'),
+    arguments: [...invocation.arguments, '--preloaded-addon-name', leaf.replace('.addon64', '.addon32')] };
+  const result = collectExactPidBinding(x86, target);
+  assert.equal(result.creationTime100ns, '134380000000000001');
+  assert.equal(path.basename(result.injectorExecutable), 'inject32.exe');
+  assert.equal(result.preloadedAddonName, leaf.replace('.addon64', '.addon32'));
+  assert.deepEqual(result.arguments, x86.arguments);
+  assert.equal(collectExactPidBinding({ ...x86, arguments: [...invocation.arguments, '--addon-only'] }, target).preloadedAddonName, undefined);
+});
 for (const [name, update] of [
   ['PID changed', { arguments: [image, '--pid', '12346', '--expected-creation-time-100ns', '134380000000000001'] }],
   ['creation omitted', { arguments: [image, '--pid', '12345'] }],
@@ -32,6 +43,8 @@ for (const [name, update] of [
   ['selector value omitted', { arguments: [...invocation.arguments, '--preloaded-addon-name'] }],
   ['injector outside stage', { executable: path.resolve('other-stage', 'inject.exe') }],
   ['injector wrong executable', { executable: path.join(stage, 'other.exe') }],
+  ['x86 selector with x64 injector', { arguments: [...invocation.arguments, '--preloaded-addon-name', leaf.replace('.addon64', '.addon32')] }],
+  ['x64 selector with x86 injector', { executable: path.join(stage, 'inject32.exe'), arguments: [...invocation.arguments, '--preloaded-addon-name', leaf] }],
 ]) {
   test(name, () => assert.throws(() => collectExactPidBinding({ ...invocation, ...update }, target)));
 }

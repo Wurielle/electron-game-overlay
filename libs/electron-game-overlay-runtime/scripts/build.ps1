@@ -102,7 +102,7 @@ $DistributionDirectory = Join-Path `
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Bump when the runtime provider or injector implementation changes, never for package semver.
-$RuntimeGeneration = 22
+$RuntimeGeneration = 23
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -176,6 +176,10 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11-adapter-ready-long-path.patch"
     injectorInitialInspectionRecoveryPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-initial-inspection-recovery.patch"
+    injectorSharedAddonDirectoryPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-shared-addon-directory.patch"
+    ownedLateD3d11ForeignAddonIsolationPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11-addon-failure-isolation.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -208,6 +212,14 @@ Assert-Sha256Equal `
     -Expected "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7" `
     -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorInitialInspectionRecoveryPatchSha256).Hash `
     -Label "frozen injector initial-inspection recovery patch"
+Assert-Sha256Equal `
+    -Expected "54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorSharedAddonDirectoryPatchSha256).Hash `
+    -Label "frozen injector shared add-on directory patch"
+Assert-Sha256Equal `
+    -Expected "2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11ForeignAddonIsolationPatchSha256).Hash `
+    -Label "frozen owned late D3D11 foreign add-on isolation patch"
 
 $CMake = Resolve-Executable "cmake.exe"
 if ($ForceReShade) {

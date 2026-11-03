@@ -26,6 +26,10 @@ const OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256 =
   'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6';
 const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 =
   '5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7';
+const INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256 =
+  '54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125';
+const OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256 =
+  '2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -242,6 +246,35 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (requiresInitialInspectionRecoveryPatch && expectedGeneration < 22)) {
     throw new Error('Compiled SDK initial inspection recovery patch pin does not match its generation');
   }
+  // The stable external AddonPath and foreign add-on failure isolation change
+  // separate native binaries. Each requires its own sealed implementation pin;
+  // retained generation-22 packages must not acquire these claims via metadata.
+  const sharedAddonDirectoryDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256\b/g)];
+  const sharedAddonDirectoryPins = [...validator.matchAll(/\bconst\s+INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (sharedAddonDirectoryDeclarations.length !== sharedAddonDirectoryPins.length || sharedAddonDirectoryDeclarations.length > 1) {
+    throw new Error('Compiled SDK shared add-on directory patch pin is malformed or ambiguous');
+  }
+  const requiresSharedAddonDirectoryPatch = sharedAddonDirectoryPins.length === 1;
+  if (requiresSharedAddonDirectoryPatch && sharedAddonDirectoryPins[0][1].toUpperCase() !== INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK shared add-on directory patch pin');
+  }
+  if ((!requiresSharedAddonDirectoryPatch && expectedGeneration > 22) ||
+      (requiresSharedAddonDirectoryPatch && expectedGeneration < 23)) {
+    throw new Error('Compiled SDK shared add-on directory patch pin does not match its generation');
+  }
+  const foreignAddonIsolationDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256\b/g)];
+  const foreignAddonIsolationPins = [...validator.matchAll(/\bconst\s+OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (foreignAddonIsolationDeclarations.length !== foreignAddonIsolationPins.length || foreignAddonIsolationDeclarations.length > 1) {
+    throw new Error('Compiled SDK foreign add-on isolation patch pin is malformed or ambiguous');
+  }
+  const requiresForeignAddonIsolationPatch = foreignAddonIsolationPins.length === 1;
+  if (requiresForeignAddonIsolationPatch && foreignAddonIsolationPins[0][1].toUpperCase() !== OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK foreign add-on isolation patch pin');
+  }
+  if ((!requiresForeignAddonIsolationPatch && expectedGeneration > 22) ||
+      (requiresForeignAddonIsolationPatch && expectedGeneration < 23)) {
+    throw new Error('Compiled SDK foreign add-on isolation patch pin does not match its generation');
+  }
   const native = path.join(dist, 'runtime/win32-x64/reshade');
   let paired: Record<string, unknown> | undefined;
   for (const bits of [64, 32]) {
@@ -351,6 +384,24 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.injectorInitialInspectionRecoveryPatchSha256 !== undefined) {
       throw new Error('Injector initial inspection recovery patch provenance requires the sealed SDK implementation pin: ' + bits);
+    }
+    if (requiresSharedAddonDirectoryPatch) {
+      if (typeof reshade.injectorSharedAddonDirectoryPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.injectorSharedAddonDirectoryPatchSha256) ||
+          reshade.injectorSharedAddonDirectoryPatchSha256.toUpperCase() !== INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256) {
+        throw new Error('Pinned injector shared add-on directory patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorSharedAddonDirectoryPatchSha256 !== undefined) {
+      throw new Error('Injector shared add-on directory patch provenance requires the sealed SDK implementation pin: ' + bits);
+    }
+    if (requiresForeignAddonIsolationPatch) {
+      if (typeof reshade.ownedLateD3d11ForeignAddonIsolationPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.ownedLateD3d11ForeignAddonIsolationPatchSha256) ||
+          reshade.ownedLateD3d11ForeignAddonIsolationPatchSha256.toUpperCase() !== OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256) {
+        throw new Error('Pinned owned late D3D11 foreign add-on isolation patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedLateD3d11ForeignAddonIsolationPatchSha256 !== undefined) {
+      throw new Error('Owned late D3D11 foreign add-on isolation patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);

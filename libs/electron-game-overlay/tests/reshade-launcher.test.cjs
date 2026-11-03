@@ -6806,8 +6806,15 @@ test('preload configuration requires the current registered engine and remains o
   assert.equal(ordinary.addonPreload, undefined);
   const config = createAddonPreloadConfig(fixture);
   assert.equal(config.addonPreload.applicationId, fixture.applicationId);
-  assert.equal(config.addonPreload.storageRoot, require('node:fs').realpathSync(fixture.storageRoot));
+  assert.equal(config.addonPreload.addonDirectory, require('node:fs').realpathSync(fixture.addonDirectory));
+  assert.equal(config.addonPreload.storageRoot, undefined, 'legacy alias normalizes to the shared add-on directory');
   assert.equal(Object.isFrozen(config.addonPreload), true);
+  const aliasConfig = createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory: fixture.runsRootDirectory,
+    addonPreload: { applicationId: fixture.applicationId, storageRoot: fixture.addonDirectory },
+  });
+  assert.deepEqual(aliasConfig.addonPreload, config.addonPreload);
   assert.throws(() => createAddonPreloadConfig(fixture, { applicationId: 'com.example.unregistered' }),
     /not registered/i);
   const addon = path.join(fixture.runtimeDirectory, 'electron_game_overlay.addon64');
@@ -6832,17 +6839,40 @@ test('preload configuration requires matching explicit support on both architect
   assert.throws(() => createAddonPreloadConfig(fixture), /schema|preload|support|provenance/i);
 });
 
-test('preload staging refreshes registrations for each private host and preserves earlier snapshots', async () => {
+test('shared add-on preloading requires a current host while earlier runtimes remain usable normally', async () => {
+  const fixture = await createAddonPreloadRuntime({ runtimeGeneration: 22 });
+  const ordinary = createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory: fixture.runsRootDirectory,
+  });
+  assert.equal(ordinary.runtimeProvider.runtimeGeneration, 22);
+  assert.equal(ordinary.addonPreload, undefined);
+  assert.throws(() => createAddonPreloadConfig(fixture), /shared.*add.on|generation.*23|preload.*support/i);
+});
+
+test('preload staging uses one stable shared folder and refreshes future host disablement without copying DLLs', async () => {
   const fixture = await createAddonPreloadRuntime();
   const sourceIni = readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini'));
   const preloadApi = require('../dist/lib/overlay-addon-preload.js');
   await preloadApi.unregisterOverlayAddonInstallation({
-    applicationId: fixture.otherApplicationId, storageRoot: fixture.storageRoot,
+    applicationId: fixture.otherApplicationId, addonDirectory: fixture.addonDirectory,
   });
   const config = createAddonPreloadConfig(fixture);
   const laterInstallation = await preloadApi.registerOverlayAddonInstallation({
-    applicationId: fixture.otherApplicationId, storageRoot: fixture.storageRoot, packageRoot: fixture.packageRoot,
+    applicationId: fixture.otherApplicationId, addonDirectory: fixture.addonDirectory, packageRoot: fixture.packageRoot,
   });
+  const newestApplicationId = 'com.example.preload-c';
+  const newestInstallation = await preloadApi.registerOverlayAddonInstallation({
+    applicationId: newestApplicationId, addonDirectory: fixture.addonDirectory, packageRoot: fixture.packageRoot,
+  });
+  const foreign = path.join(fixture.addonDirectory, 'other-library.addon64');
+  const nested = path.join(fixture.addonDirectory, 'another-library');
+  mkdirSync(nested);
+  writeFileSync(foreign, 'ordinary third-party add-on; inert fixture bytes');
+  writeFileSync(path.join(nested, 'nested.addon64'), 'stock ReShade does not scan nested folders');
+  const firstFiles = new Map([fixture.installation, laterInstallation, newestInstallation].flatMap(registered =>
+    [registered.addonPath, registered.x86AddonPath].map(file =>
+      [file, { bytes: readFileSync(file), ino: statSync(file).ino, mtimeMs: statSync(file).mtimeMs }])));
   const execution = stubExecFile();
   const launcher = new ReShadeOverlayLauncher(config);
   const nextLauncher = new ReShadeOverlayLauncher(config);
@@ -6857,38 +6887,45 @@ test('preload staging refreshes registrations for each private host and preserve
   try {
     await launcher.prepare();
     assert.equal(execution.calls.length, 0);
-    const snapshot = path.join(runDirectory, 'preloaded-addons');
-    assert.deepEqual(readdirSync(snapshot).sort(), [
+    const directory = fixture.addonDirectory;
+    assert.equal(existsSync(path.join(runDirectory, 'preloaded-addons')), false);
+    assert.deepEqual(readdirSync(directory).filter(name => name.startsWith('ego-preload-')).sort(), [
       path.basename(fixture.installation.addonPath), path.basename(fixture.installation.x86AddonPath),
       path.basename(fixture.otherInstallation.addonPath), path.basename(fixture.otherInstallation.x86AddonPath),
+      path.basename(newestInstallation.addonPath), path.basename(newestInstallation.x86AddonPath),
     ].sort(), 'an application installed after config creation participates in the next host');
-    const firstSnapshotBytes = new Map(readdirSync(snapshot).map(name => [name, readFileSync(path.join(snapshot, name))]));
     const stagedIni = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8');
-    assert.equal(stagedIni, sourceIni.toString('utf8').replace('AddonPath=.', `AddonPath=${path.toNamespacedPath(snapshot)}`));
+    assert.equal(stagedIni, sourceIni.toString('utf8').replace('AddonPath=.', `AddonPath=${path.toNamespacedPath(directory)}`));
     assert.equal(stagedIni.replace(/\r\n/g, '').includes('\n'), false, 'CRLF is preserved');
     assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), sourceIni);
     for (const artifact of artifacts.filter(name => name !== 'ReShade.ini')) {
       assert.deepEqual(readFileSync(path.join(runDirectory, artifact)),
         readFileSync(path.join(fixture.runtimeDirectory, artifact)));
     }
-    for (const registered of [fixture.installation, laterInstallation]) {
-      for (const source of [registered.addonPath, registered.x86AddonPath]) {
-        const copied = path.join(snapshot, path.basename(source));
-        assert.deepEqual(readFileSync(copied), readFileSync(source));
-        assert.notEqual(statSync(copied).ino, statSync(source).ino, 'snapshot is not a mutable cache hardlink');
-      }
-    }
     await preloadApi.unregisterOverlayAddonInstallation({
-      applicationId: fixture.otherApplicationId, storageRoot: fixture.storageRoot,
+      applicationId: fixture.otherApplicationId, addonDirectory: fixture.addonDirectory,
+    });
+    await preloadApi.unregisterOverlayAddonInstallation({
+      applicationId: newestApplicationId, addonDirectory: fixture.addonDirectory,
     });
     await nextLauncher.prepare();
-    const nextSnapshot = path.join(nextRunDirectory, 'preloaded-addons');
-    assert.notEqual(nextSnapshot, snapshot);
-    assert.deepEqual(readdirSync(nextSnapshot).sort(), [
-      path.basename(fixture.installation.addonPath), path.basename(fixture.installation.x86AddonPath),
-    ].sort(), 'the same long-lived config observes unregistration before its next host');
-    assert.deepEqual(readdirSync(snapshot).sort(), [...firstSnapshotBytes.keys()].sort());
-    for (const [name, bytes] of firstSnapshotBytes) assert.deepEqual(readFileSync(path.join(snapshot, name)), bytes);
+    assert.notEqual(nextRunDirectory, runDirectory, 'session-specific configuration remains private');
+    assert.equal(existsSync(path.join(nextRunDirectory, 'preloaded-addons')), false);
+    const nextIni = readFileSync(path.join(nextRunDirectory, 'ReShade.ini'), 'utf8');
+    const retired = [laterInstallation.addonPath, laterInstallation.x86AddonPath,
+      newestInstallation.addonPath, newestInstallation.x86AddonPath]
+      .map(file => `@${path.basename(file)}`).sort();
+    assert.equal(nextIni, stagedIni.replace('DisabledAddons=@user-disabled.addon64',
+      `DisabledAddons=@user-disabled.addon64,${retired.join(',')}`),
+    'the same long-lived config excludes removed EGO add-ons from the next host scan');
+    for (const [file, before] of firstFiles) {
+      assert.deepEqual(readFileSync(file), before.bytes);
+      assert.equal(statSync(file).ino, before.ino, 'registered DLLs keep the same file identity across hosts');
+      assert.equal(statSync(file).mtimeMs, before.mtimeMs, 'preparation and removal do not rewrite registered DLLs');
+    }
+    assert.equal(readFileSync(foreign, 'utf8'), 'ordinary third-party add-on; inert fixture bytes');
+    assert.equal(readFileSync(path.join(nested, 'nested.addon64'), 'utf8'), 'stock ReShade does not scan nested folders');
+    assert.equal(nextIni.includes('@other-library.addon64'), false, 'ordinary foreign add-ons follow stock scanning');
     assert.equal(readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8'), stagedIni,
       'future registry changes do not rewrite an already prepared host');
     assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), sourceIni);
@@ -6917,14 +6954,9 @@ test('preload staging refuses a changed sealed INI before publishing its folder 
   } finally { launcher.dispose(); execution.restore(); }
 });
 
-test('preload staging preserves long registered filenames in the owned external scan directory', async () => {
-  const fixture = await createAddonPreloadRuntime();
+test('preload staging preserves long registered filenames in the stable external scan directory', async () => {
+  const fixture = await createAddonPreloadRuntime({ addonSubdirectory: path.join(...Array(11).fill('long-profile-segment')) });
   const registeredName = path.basename(fixture.installation.addonPath);
-  let runsRootDirectory = path.join(fixture.root, 'nested-profile');
-  while (path.join(runsRootDirectory, 'prepared-xxxxxx', 'preloaded-addons', registeredName).length < 300) {
-    runsRootDirectory = path.join(runsRootDirectory, 'long-profile-segment');
-  }
-  fixture.runsRootDirectory = runsRootDirectory;
   const sourceIni = readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini'));
   const execution = stubExecFile();
   const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
@@ -6934,12 +6966,11 @@ test('preload staging preserves long registered filenames in the owned external 
   });
   try {
     await launcher.prepare();
-    const snapshot = path.join(runDirectory, 'preloaded-addons');
-    const registeredPath = path.join(snapshot, registeredName);
+    const registeredPath = fixture.installation.addonPath;
     assert.ok(registeredPath.length >= 300, 'exercise the complete registered DLL path beyond MAX_PATH');
     assert.ok(path.join(runDirectory, 'ReShade64.dll').length < 260,
       'this regression concerns registered filenames, independently of runtime base-path limits');
-    const scanDirectory = path.toNamespacedPath(snapshot);
+    const scanDirectory = path.toNamespacedPath(fixture.addonDirectory);
     const configured = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8')
       .split(/\r?\n/).find(line => line.startsWith('AddonPath='));
     assert.equal(configured, `AddonPath=${scanDirectory}`);
@@ -6952,8 +6983,7 @@ test('preload staging preserves long registered filenames in the owned external 
 });
 
 test('preload staging escapes commas using the stock ReShade INI value convention', async () => {
-  const fixture = await createAddonPreloadRuntime();
-  fixture.runsRootDirectory = path.join(fixture.root, 'Company, Inc', 'runs');
+  const fixture = await createAddonPreloadRuntime({ addonSubdirectory: path.join('Company, Inc', 'Addons') });
   const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
   let runDirectory;
   const unsubscribe = launcher.onEvent(event => {
@@ -6963,9 +6993,9 @@ test('preload staging escapes commas using the stock ReShade INI value conventio
     await launcher.prepare();
     const configured = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8')
       .split(/\r?\n/).find(line => line.startsWith('AddonPath='));
-    assert.equal(configured, `AddonPath=${path.toNamespacedPath(path.join(runDirectory, 'preloaded-addons')).replaceAll(',', ',,')}`);
+    assert.equal(configured, `AddonPath=${path.toNamespacedPath(fixture.addonDirectory).replaceAll(',', ',,')}`);
     assert.equal(configured.slice('AddonPath='.length).replaceAll(',,', ','),
-      path.toNamespacedPath(path.join(runDirectory, 'preloaded-addons')));
+      path.toNamespacedPath(fixture.addonDirectory));
   } finally { unsubscribe(); launcher.dispose(); }
 });
 
@@ -7046,8 +7076,8 @@ test('preload engine choice survives the official startup wait and member-only r
   } finally { launcher.dispose(); preparation.restore(); inspection.restore(); execution.restore(); }
 });
 
-test('preload participant proof accepts exact cached bytes and safe private-stage fallback only', async () => {
-  for (const variant of ['selected', 'selected-prefixed', 'private-fallback', 'other-app', 'changed-selected']) {
+test('preload participant proof accepts exact registered bytes, retained snapshots and safe private-stage fallback only', async () => {
+  for (const variant of ['selected', 'selected-prefixed', 'retained-snapshot', 'private-fallback', 'other-app', 'changed-selected']) {
     const fixture = await createAddonPreloadRuntime();
     const execution = stubExecFile();
     const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
@@ -7061,17 +7091,17 @@ test('preload participant proof accepts exact cached bytes and safe private-stag
       const outcome = attachment.then(result => ({ result }), error => ({ error }));
       await waitFor(() => execution.calls.length === 1);
       const call = execution.calls[0];
-      const previousHost = path.join(fixture.root, 'existing-host', 'preloaded-addons');
-      mkdirSync(previousHost, { recursive: true });
-      const selected = path.join(previousHost, path.basename(fixture.installation.addonPath));
-      writeFileSync(selected, readFileSync(fixture.installation.addonPath));
+      const selected = fixture.installation.addonPath;
       let addonModulePath = selected;
       if (variant === 'selected-prefixed') addonModulePath = path.toNamespacedPath(selected);
-      if (variant === 'private-fallback') addonModulePath = path.join(call.options.cwd, 'electron_game_overlay.addon64');
-      if (variant === 'other-app') {
-        addonModulePath = path.join(previousHost, path.basename(fixture.otherInstallation.addonPath));
-        writeFileSync(addonModulePath, readFileSync(fixture.otherInstallation.addonPath));
+      if (variant === 'retained-snapshot') {
+        const previousHost = path.join(fixture.root, 'existing-host', 'preloaded-addons');
+        mkdirSync(previousHost, { recursive: true });
+        addonModulePath = path.join(previousHost, path.basename(selected));
+        writeFileSync(addonModulePath, readFileSync(selected));
       }
+      if (variant === 'private-fallback') addonModulePath = path.join(call.options.cwd, 'electron_game_overlay.addon64');
+      if (variant === 'other-app') addonModulePath = fixture.otherInstallation.addonPath;
       if (variant === 'changed-selected') writeFileSync(selected, Buffer.concat([readFileSync(selected), Buffer.from('altered')]));
       call.callback(null, 'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n' +
         injectorResult({ pid: 4242, targetExecutablePath: image, runtimeMode: 'participant-addon',
@@ -7079,7 +7109,7 @@ test('preload participant proof accepts exact cached bytes and safe private-stag
           addonModulePath, addonAbi: 1, memberProtocolVersion: 1 }), '');
       harness.emitNative('game.process', { pid: 4242, path: image });
       const settled = await outcome;
-      if (variant === 'selected' || variant === 'selected-prefixed' || variant === 'private-fallback') {
+      if (variant === 'selected' || variant === 'selected-prefixed' || variant === 'retained-snapshot' || variant === 'private-fallback') {
         assert.equal(settled.result.runtimeMode, 'participant-addon');
         assert.equal(settled.result.addonModulePath, addonModulePath);
       } else {
@@ -7091,7 +7121,7 @@ test('preload participant proof accepts exact cached bytes and safe private-stag
   }
 });
 
-async function createAddonPreloadRuntime() {
+async function createAddonPreloadRuntime({ runtimeGeneration = 23, addonSubdirectory = 'shared-reshade-addons' } = {}) {
   const fixture = createCooperativeRuntime();
   const addonBuildId = JSON.parse(readFileSync(path.join(fixture.runtimeDirectory,
     'electron_game_overlay_runtime.build.json'), 'utf8')).addonBuildId;
@@ -7101,10 +7131,10 @@ async function createAddonPreloadRuntime() {
     name: 'electron-game-overlay', version: '0.1.0-rc.7',
   }));
   const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
-  const distribution = writeCooperativeDistribution(path.join(packageRoot, 'dist'), { addonBuildId });
+  const distribution = writeCooperativeDistribution(path.join(packageRoot, 'dist'), { addonBuildId, runtimeGeneration });
   const runtimeDirectory = path.join(packageRoot, 'dist', 'runtime', 'win32-x64', 'reshade');
   distribution.write('runtime/win32-x64/reshade/ReShade.ini',
-    '[GENERAL]\r\nPerformanceMode=1\r\n\r\n[ADDON]\r\nAddonPath=.\r\n\r\n[INPUT]\r\nKeyOverlay=0,0,0,0\r\n\r\n');
+    '[GENERAL]\r\nPerformanceMode=1\r\n\r\n[ADDON]\r\nAddonPath=.\r\nDisabledAddons=@user-disabled.addon64\r\n\r\n[INPUT]\r\nKeyOverlay=0,0,0,0\r\n\r\n');
   distribution.bindNativeHashes();
   for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
     rewriteRuntimePackageBuildStamp(runtimeDirectory, name, stamp => {
@@ -7115,20 +7145,20 @@ async function createAddonPreloadRuntime() {
   }
   distribution.seal();
   const preloadApi = require('../dist/lib/overlay-addon-preload.js');
-  const storageRoot = path.join(fixture.root, 'addon-registrations');
+  const addonDirectory = path.join(fixture.root, addonSubdirectory);
   const applicationId = 'com.example.preload-a';
   const otherApplicationId = 'com.example.preload-b';
-  const installation = await preloadApi.registerOverlayAddonInstallation({ applicationId, storageRoot, packageRoot });
+  const installation = await preloadApi.registerOverlayAddonInstallation({ applicationId, addonDirectory, packageRoot });
   const otherInstallation = await preloadApi.registerOverlayAddonInstallation({
-    applicationId: otherApplicationId, storageRoot, packageRoot,
+    applicationId: otherApplicationId, addonDirectory, packageRoot,
   });
-  return { ...fixture, runtimeDirectory, packageRoot, storageRoot, applicationId, otherApplicationId,
+  return { ...fixture, runtimeDirectory, packageRoot, addonDirectory, applicationId, otherApplicationId,
     installation, otherInstallation };
 }
 
 function createAddonPreloadConfig(fixture, addonPreload = {}) {
   return createReShadeLaunchConfig({
     bundledRuntimeDirectory: fixture.runtimeDirectory, runsRootDirectory: fixture.runsRootDirectory,
-    addonPreload: { applicationId: fixture.applicationId, storageRoot: fixture.storageRoot, ...addonPreload },
+    addonPreload: { applicationId: fixture.applicationId, addonDirectory: fixture.addonDirectory, ...addonPreload },
   });
 }

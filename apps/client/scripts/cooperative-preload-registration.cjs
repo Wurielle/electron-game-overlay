@@ -1,7 +1,7 @@
 'use strict';
 
 // Pure Node installer/controller fixture. It never imports Electron or starts an
-// application. Only the self-load test uses the internal snapshot builder;
+// application. Selection reads the stable directory without copying any files;
 // production attachment is exercised separately through the public launcher.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -12,12 +12,16 @@ const args = Object.fromEntries(process.argv.slice(2).map(value => {
 }));
 
 async function main() {
-  for (const name of ['sdk-dist', 'application-id', 'storage-root', 'action', 'output']) {
+  for (const name of ['sdk-dist', 'application-id', 'action', 'output']) {
     if (!args[name]) throw new Error(`Missing ${name}`);
   }
+  if (Boolean(args['storage-root']) === Boolean(args['addon-directory']))
+    throw new Error('Specify exactly one isolated storage-root or addon-directory');
   const dist = fs.realpathSync(args['sdk-dist']);
   const output = path.resolve(args.output);
-  const options = { applicationId: args['application-id'], storageRoot: path.resolve(args['storage-root']) };
+  const options = { applicationId: args['application-id'],
+    ...(args['addon-directory'] ? { addonDirectory: path.resolve(args['addon-directory']) }
+      : { storageRoot: path.resolve(args['storage-root']) }) };
   const api = require(path.join(dist, 'preload.js'));
   let result;
   if (args.action === 'register') {
@@ -25,13 +29,14 @@ async function main() {
   } else if (args.action === 'unregister') {
     await api.unregisterOverlayAddonInstallation(options);
     result = { ...options, unregistered: true };
-  } else if (args.action === 'snapshot') {
-    if (!args.destination) throw new Error('Missing snapshot destination');
+  } else if (args.action === 'select' || args.action === 'snapshot') {
     const installation = await api.registerOverlayAddonInstallation({ ...options, packageRoot: path.dirname(dist) });
     const internal = require(path.join(dist, 'lib', 'overlay-addon-preload.js'));
     const selection = internal.resolveAddonPreloadSelection(options, installation);
-    const snapshot = await internal.createOverlayAddonPreloadSnapshot(path.resolve(args.destination), selection);
-    result = { installation, selection, snapshot, scope: 'Test-only snapshot assembly; not a public installer API claim.' };
+    const snapshot = { directory: installation.addonDirectory,
+      addonPath: installation.addonPath, x86AddonPath: installation.x86AddonPath };
+    result = { installation, selection, snapshot,
+      scope: 'Test-only selection of the registered stable directory. No snapshot, copy or move is performed.' };
   } else {
     throw new Error('Unknown action');
   }

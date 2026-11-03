@@ -32,13 +32,17 @@ function collectExactPidBinding(invocation, target) {
     throw new Error('Injector invocation omitted or changed its creation-bound PID.');
   }
   const selectedLeaf = flags.get('--preloaded-addon-name');
-  if (selectedLeaf !== undefined && !/^ego-preload-[a-f0-9]{32}-[A-Fa-f0-9]{32}-[a-f0-9]{16}\.addon64$/u.test(selectedLeaf)) {
+  if (selectedLeaf !== undefined && !/^ego-preload-[a-f0-9]{32}-[A-Fa-f0-9]{32}-[a-f0-9]{16}\.addon(?:64|32)$/u.test(selectedLeaf)) {
     throw new Error('Injector invocation has an invalid preloaded add-on selector.');
   }
   const runDirectory = path.resolve(invocation.workingDirectory);
   const injectorExecutable = path.resolve(invocation.executable);
-  if (path.dirname(injectorExecutable).toLowerCase() !== runDirectory.toLowerCase() || path.basename(injectorExecutable).toLowerCase() !== 'inject.exe') {
+  const injectorName = path.basename(injectorExecutable).toLowerCase();
+  if (path.dirname(injectorExecutable).toLowerCase() !== runDirectory.toLowerCase() || !['inject.exe', 'inject32.exe'].includes(injectorName)) {
     throw new Error('Injector invocation escaped its owned stage.');
+  }
+  if (selectedLeaf !== undefined && !selectedLeaf.endsWith(injectorName === 'inject32.exe' ? '.addon32' : '.addon64')) {
+    throw new Error('Injector invocation selected the wrong native add-on architecture.');
   }
   return {
     pid: Number(targetPid), creationTime100ns: created, executablePath: path.resolve(args[0]),

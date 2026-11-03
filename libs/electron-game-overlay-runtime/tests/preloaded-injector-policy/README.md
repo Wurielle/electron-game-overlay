@@ -35,9 +35,12 @@ called. The reparse-file case requires an actual symbolic link; it fails rather
 than silently skipping if the test account lacks symlink capability.
 
 The first-host selector cases use dummy native bytes in an exclusively created
-local stage. They cover the exact owned markers and JSON grammar, effective
-base/runtime/AddonPath binding, full candidate hash, required regular files,
-held file/directory guards, a real ancestor junction and a real reparse leaf.
+local stage and a stable shared add-on directory outside that stage. They cover
+the exact owned markers and JSON grammar, effective base/runtime binding,
+canonical ordinary/extended AddonPath spelling, full candidate hash, required
+regular files, held file/directory guards, concurrent independent publication,
+unrelated add-on files, target-game directory rejection, real shared/stage
+ancestor junctions and a real reparse leaf.
 The selector inherits PE/BID/ABI identity from equality with an independently
 validated staged DLL; these dummy-byte tests establish the selector boundary,
 not that separate production PE validation. No fixture invokes the new

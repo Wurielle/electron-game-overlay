@@ -10,7 +10,9 @@ import { validateOverlayDistributionSync } from './overlay-package-manifest.js';
 export interface OverlayAddonPreloadOptions {
   /** Stable application identity, shared by its installer and runtime. */
   applicationId: string;
-  /** Absolute registry directory. Normally omitted to use the current account. */
+  /** Absolute shared ReShade add-on directory. Normally omitted to use the current account. */
+  addonDirectory?: string;
+  /** @deprecated Alias for addonDirectory. Do not supply both options. */
   storageRoot?: string;
 }
 
@@ -25,11 +27,12 @@ export interface OverlayAddonUninstallationOptions extends OverlayAddonPreloadOp
   registrationId?: string;
 }
 
-/** Immutable installed native payload identity. Existing games retain their snapshots. */
+/** Immutable installed native payload identity. Existing games retain their mapped modules. */
 export interface OverlayAddonInstallation {
   readonly applicationId: string;
   readonly registrationId: string;
   readonly addonBuildId: string;
+  readonly addonDirectory: string;
   readonly addonPath: string;
   readonly x86AddonPath: string;
 }
@@ -44,12 +47,11 @@ interface Registration {
   applicationId: string;
   registrationId: string;
   addonBuildId: string;
-  cacheDirectory: string;
   addon: Payload;
   x86Addon: Payload;
 }
 interface Registry {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: 'electron-game-overlay-addon-preload-registry';
   registrations: Registration[];
 }
@@ -61,43 +63,46 @@ export interface OverlayAddonPreloadCurrentRuntime {
   x86AddonPath: string;
 }
 
-/** @internal Frozen, validated inventory for one future owned host. */
+/** @internal Validated registered inventory and shared directory for one future owned host. */
 export interface OverlayAddonPreloadSelection {
   readonly applicationId: string;
-  readonly storageRoot: string;
+  readonly directory: string;
   readonly registrationId: string;
   readonly addonBuildId: string;
   readonly addonFileName: string;
   readonly x86AddonFileName: string;
+  readonly addonPath: string;
+  readonly x86AddonPath: string;
+  readonly inactiveFileNames: readonly string[];
   readonly payloads: readonly Readonly<Payload & { sourcePath: string }>[];
 }
 
-/** @internal Paths selected from a newly published host snapshot. */
-export interface OverlayAddonPreloadSnapshot {
-  readonly directory: string;
-  readonly addonPath: string;
-  readonly x86AddonPath: string;
-}
-
 const REGISTRY_NAME = 'registrations.json';
+const METADATA_DIRECTORY = '.electron-game-overlay';
 const REGISTRY_KIND = 'electron-game-overlay-addon-preload-registry' as const;
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_ADDON_BYTES = 512 * 1024 * 1024;
 const MAX_REGISTRATIONS = 4096;
 const DIGEST = /^[0-9a-f]{64}$/;
 const BUILD_ID = /^[0-9A-F]{32}$/;
-const CACHE_LEAF = /^[0-9a-f]{64}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const RESERVED_ADDON_FILE_NAME = /^ego-preload-[0-9a-f]{32}-[0-9A-F]{32}-[0-9a-f]{16}\.addon(?:64|32)$/i;
 const APPLICATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const NATIVE_DIRECTORY = 'runtime/win32-x64/reshade';
 
 /** Account-token home is authoritative; Electron environment variables are not used. */
-export function defaultOverlayAddonStorageRoot(): string {
-  return path.join(userInfo({ encoding: 'utf8' }).homedir, '.electron-game-overlay', 'addon-preload-v1');
+export function defaultReShadeAddonDirectory(): string {
+  return path.join(userInfo({ encoding: 'utf8' }).homedir, 'AppData', 'Local', 'ReShade', 'Addons');
 }
 
 /**
+ * Returns the default shared ReShade add-on directory.
+ * @deprecated Alias for defaultReShadeAddonDirectory().
+ */
+export function defaultOverlayAddonStorageRoot(): string { return defaultReShadeAddonDirectory(); }
+
+/**
  * Registers both architectures from a directly sealed SDK in the per-user
- * immutable cache. Repeating the same application/build is idempotent. Different
+ * shared ReShade directory. Repeating the same application/build is idempotent. Different
  * builds coexist; unregister an obsolete build after installing its replacement.
  * @example
  * ```ts
@@ -143,7 +148,7 @@ export async function registerOverlayAddonInstallation(
   };
   const addon = payload(64), x86Addon = payload(32);
   const registrationId = registrationIdentity(options.applicationId, addonBuildId, addon.sha256, x86Addon.sha256);
-  const root = await prepareStorageRoot(options.storageRoot);
+  const root = await prepareAddonDirectory(options);
   const release = await acquireRegistryLock(root);
   try {
     const registry = readRegistry(root);
@@ -153,35 +158,22 @@ export async function registerOverlayAddonInstallation(
       return installation(root, existing);
     }
     if (registry.registrations.length >= MAX_REGISTRATIONS) throw new Error('Add-on registration limit exceeded');
-    const cache = path.join(root, 'payloads');
-    await fsp.mkdir(cache, { recursive: true });
-    assertDirectoryChain(cache);
-    const cacheDirectory = `${registrationId}-${randomUUID()}`;
-    const temporary = await fsp.mkdtemp(path.join(cache, '.pending-'));
-    const published = path.join(cache, cacheDirectory);
-    let renamed = false;
-    try {
-      await copyPayload(addon.sourcePath, path.join(temporary, addon.fileName), addon);
-      await copyPayload(x86Addon.sourcePath, path.join(temporary, x86Addon.fileName), x86Addon);
-      await fsp.rename(temporary, published);
-      renamed = true;
-      const entry: Registration = { addonPreloadProtocol: 1, applicationId: options.applicationId, registrationId, addonBuildId, cacheDirectory,
-        addon: payloadMetadata(addon), x86Addon: payloadMetadata(x86Addon) };
-      verifyRegistration(root, entry);
-      registry.registrations.push(entry);
-      registry.registrations.sort((a, b) => a.registrationId.localeCompare(b.registrationId));
-      await writeRegistry(root, registry);
-      return installation(root, entry);
-    } finally {
-      // Published immutable payloads are retained even if metadata publication fails.
-      if (!renamed) await removeUnpublishedDirectory(temporary, cache);
-    }
+    await publishPayload(addon.sourcePath, path.join(root, addon.fileName), addon);
+    await publishPayload(x86Addon.sourcePath, path.join(root, x86Addon.fileName), x86Addon);
+    const entry: Registration = { addonPreloadProtocol: 1, applicationId: options.applicationId, registrationId, addonBuildId,
+      addon: payloadMetadata(addon), x86Addon: payloadMetadata(x86Addon) };
+    verifyRegistration(root, entry);
+    registry.registrations.push(entry);
+    registry.registrations.sort((a, b) => a.registrationId.localeCompare(b.registrationId));
+    await writeRegistry(root, registry);
+    return installation(root, entry);
   } finally { await release(); }
 }
 
 /**
- * Removes this application's registration from future host snapshots. Native
- * payload caches and already running games remain intact. Other apps are untouched.
+ * Removes this application's registration from future owned hosts. Native
+ * files remain in place because games may still have them mapped. Future owned
+ * hosts disable these retired EGO filenames; other libraries' add-ons are untouched.
  */
 export async function unregisterOverlayAddonInstallation(
   options: OverlayAddonUninstallationOptions,
@@ -189,7 +181,7 @@ export async function unregisterOverlayAddonInstallation(
   validateApplicationId(options.applicationId);
   if (options.registrationId !== undefined && !DIGEST.test(options.registrationId))
     throw new TypeError('Invalid add-on registration identity');
-  const root = await prepareStorageRoot(options.storageRoot);
+  const root = await prepareAddonDirectory(options);
   const release = await acquireRegistryLock(root);
   try {
     const registry = readRegistry(root);
@@ -207,7 +199,7 @@ export function resolveAddonPreloadSelection(
 ): OverlayAddonPreloadSelection {
   validateApplicationId(options.applicationId);
   if (!BUILD_ID.test(current.addonBuildId)) throw new TypeError('Invalid current native add-on build identity');
-  const requestedRoot = storageRoot(options.storageRoot);
+  const requestedRoot = addonDirectory(options);
   assertDirectoryChain(requestedRoot);
   const root = fs.realpathSync(requestedRoot);
   const registry = readRegistry(root);
@@ -226,58 +218,41 @@ export function resolveAddonPreloadSelection(
       if (previous && (previous.sha256 !== payload.sha256 || previous.size !== payload.size))
         throw new Error('Registered add-on filenames collide');
       payloads.set(payload.fileName, Object.freeze({ ...payload,
-        sourcePath: path.join(root, 'payloads', entry.cacheDirectory, payload.fileName) }));
+        sourcePath: path.join(root, payload.fileName) }));
     }
   }
-  return Object.freeze({ applicationId: options.applicationId, storageRoot: root, registrationId, addonBuildId: selected.addonBuildId,
+  const activeNames = new Set([...payloads.keys()].map(name => name.toLowerCase()));
+  const inactiveFileNames = fs.readdirSync(root).filter(name =>
+    RESERVED_ADDON_FILE_NAME.test(name) && !activeNames.has(name.toLowerCase())).sort();
+  return Object.freeze({ applicationId: options.applicationId, directory: root, registrationId, addonBuildId: selected.addonBuildId,
     addonFileName: selected.addon.fileName, x86AddonFileName: selected.x86Addon.fileName,
+    addonPath: path.join(root, selected.addon.fileName), x86AddonPath: path.join(root, selected.x86Addon.fileName),
+    inactiveFileNames: Object.freeze(inactiveFileNames),
     payloads: Object.freeze([...payloads.values()].sort((a, b) => a.fileName.localeCompare(b.fileName))) });
-}
-
-/** @internal Publishes a new flat, immutable AddonPath directory for an owned host. */
-export async function createOverlayAddonPreloadSnapshot(
-  destination: string,
-  selection: OverlayAddonPreloadSelection,
-): Promise<OverlayAddonPreloadSnapshot> {
-  if (!path.isAbsolute(destination)) throw new TypeError('Add-on snapshot directory must be absolute');
-  const parent = path.dirname(destination);
-  assertDirectoryChain(parent);
-  try { await fsp.lstat(destination); throw new Error('Add-on snapshot destination already exists'); }
-  catch (error) { if (!isMissing(error)) throw error; }
-  const temporary = await fsp.mkdtemp(path.join(parent, '.ego-preload-'));
-  let published = false;
-  try {
-    const names = new Set<string>();
-    for (const payload of selection.payloads) {
-      if (!/^ego-preload-[0-9a-f]{32}-[0-9A-F]{32}-[0-9a-f]{16}\.addon(?:64|32)$/.test(payload.fileName) ||
-          names.has(payload.fileName.toLowerCase())) throw new Error('Invalid add-on snapshot inventory');
-      names.add(payload.fileName.toLowerCase());
-      await copyPayload(payload.sourcePath, path.join(temporary, payload.fileName), payload);
-    }
-    if (!names.has(selection.addonFileName.toLowerCase()) || !names.has(selection.x86AddonFileName.toLowerCase()))
-      throw new Error('Selected application add-ons are missing from the snapshot');
-    assertDirectoryChain(parent);
-    await fsp.rename(temporary, destination);
-    published = true;
-    return Object.freeze({ directory: destination, addonPath: path.join(destination, selection.addonFileName),
-      x86AddonPath: path.join(destination, selection.x86AddonFileName) });
-  } finally { if (!published) await removeUnpublishedDirectory(temporary, parent); }
 }
 
 function bundledPackageRoot(): string {
   return path.resolve(__dirname, '..', '..').replace(/([\\/])([^\\/]+\.asar)(?=[\\/]|$)/i, '$1$2.unpacked');
 }
-function storageRoot(value?: string): string {
-  const root = value ?? defaultOverlayAddonStorageRoot();
-  if (!path.isAbsolute(root)) throw new TypeError('Add-on storage root must be absolute');
+function addonDirectory(options: Pick<OverlayAddonPreloadOptions, 'addonDirectory' | 'storageRoot'>): string {
+  if (options.addonDirectory !== undefined && options.storageRoot !== undefined)
+    throw new TypeError('Use addonDirectory or its deprecated storageRoot alias, not both');
+  const root = options.addonDirectory ?? options.storageRoot ?? defaultReShadeAddonDirectory();
+  if (!path.isAbsolute(root) || /[\r\n\0]/.test(root)) throw new TypeError('Add-on directory must be an absolute INI-safe path');
   return path.resolve(root);
 }
-async function prepareStorageRoot(value?: string): Promise<string> {
-  const root = storageRoot(value);
+function metadataDirectory(root: string): string { return path.join(root, METADATA_DIRECTORY); }
+async function prepareAddonDirectory(options: OverlayAddonPreloadOptions): Promise<string> {
+  const root = addonDirectory(options);
   assertDirectoryChain(root, true);
   await fsp.mkdir(root, { recursive: true });
   assertDirectoryChain(root);
-  return fs.realpathSync(root);
+  const canonical = fs.realpathSync(root);
+  const metadata = metadataDirectory(canonical);
+  assertDirectoryChain(metadata, true);
+  await fsp.mkdir(metadata, { recursive: true });
+  assertDirectoryChain(metadata);
+  return canonical;
 }
 function validateApplicationId(value: string): void {
   if (typeof value !== 'string' || !APPLICATION_ID.test(value))
@@ -295,8 +270,8 @@ function payloadMetadata(payload: Payload): Payload {
 }
 function installation(root: string, entry: Registration): OverlayAddonInstallation {
   return Object.freeze({ applicationId: entry.applicationId, registrationId: entry.registrationId, addonBuildId: entry.addonBuildId,
-    addonPath: path.join(root, 'payloads', entry.cacheDirectory, entry.addon.fileName),
-    x86AddonPath: path.join(root, 'payloads', entry.cacheDirectory, entry.x86Addon.fileName) });
+    addonDirectory: root, addonPath: path.join(root, entry.addon.fileName),
+    x86AddonPath: path.join(root, entry.x86Addon.fileName) });
 }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -314,21 +289,20 @@ function parseObject(bytes: Buffer): Record<string, unknown> {
 function readRegistry(root: string): Registry {
   assertDirectoryChain(root);
   let bytes: Buffer;
-  try { bytes = readRegular(path.join(root, REGISTRY_NAME), MAX_JSON_BYTES); }
-  catch (error) { if (isMissing(error)) return { schemaVersion: 1, kind: REGISTRY_KIND, registrations: [] }; throw error; }
+  assertDirectoryChain(metadataDirectory(root));
+  try { bytes = readRegular(path.join(metadataDirectory(root), REGISTRY_NAME), MAX_JSON_BYTES); }
+  catch (error) { if (isMissing(error)) return { schemaVersion: 2, kind: REGISTRY_KIND, registrations: [] }; throw error; }
   const value = parseObject(bytes);
-  if (!exactKeys(value, ['schemaVersion', 'kind', 'registrations']) || value.schemaVersion !== 1 || value.kind !== REGISTRY_KIND ||
+  if (!exactKeys(value, ['schemaVersion', 'kind', 'registrations']) || value.schemaVersion !== 2 || value.kind !== REGISTRY_KIND ||
       !Array.isArray(value.registrations) || value.registrations.length > MAX_REGISTRATIONS)
     throw new Error('Invalid add-on registration registry');
   const ids = new Set<string>();
   for (const entry of value.registrations) {
-    if (!object(entry) || !exactKeys(entry, ['addonPreloadProtocol', 'applicationId', 'registrationId', 'addonBuildId', 'cacheDirectory', 'addon', 'x86Addon']) ||
+    if (!object(entry) || !exactKeys(entry, ['addonPreloadProtocol', 'applicationId', 'registrationId', 'addonBuildId', 'addon', 'x86Addon']) ||
         entry.addonPreloadProtocol !== 1 ||
         typeof entry.applicationId !== 'string' || !APPLICATION_ID.test(entry.applicationId) ||
         typeof entry.registrationId !== 'string' || !DIGEST.test(entry.registrationId) || ids.has(entry.registrationId) ||
-        typeof entry.addonBuildId !== 'string' || !BUILD_ID.test(entry.addonBuildId) ||
-        typeof entry.cacheDirectory !== 'string' || !CACHE_LEAF.test(entry.cacheDirectory) ||
-        !entry.cacheDirectory.startsWith(entry.registrationId + '-')) throw new Error('Invalid add-on registration entry');
+        typeof entry.addonBuildId !== 'string' || !BUILD_ID.test(entry.addonBuildId)) throw new Error('Invalid add-on registration entry');
     for (const [key, bits] of [['addon', 64], ['x86Addon', 32]] as const) {
       const payload = entry[key];
       if (!object(payload) || !exactKeys(payload, ['fileName', 'size', 'sha256']) ||
@@ -345,28 +319,36 @@ function readRegistry(root: string): Registry {
   return value as unknown as Registry;
 }
 function verifyRegistration(root: string, entry: Registration): void {
-  const directory = path.join(root, 'payloads', entry.cacheDirectory);
-  assertDirectoryChain(directory);
-  const names = fs.readdirSync(directory).sort();
-  const expected = [entry.addon.fileName, entry.x86Addon.fileName].sort();
-  if (names.length !== expected.length || names.some((name, i) => name !== expected[i]))
-    throw new Error('Registered add-on cache inventory mismatch');
-  verifyPayload(path.join(directory, entry.addon.fileName), entry.addon);
-  verifyPayload(path.join(directory, entry.x86Addon.fileName), entry.x86Addon);
+  assertDirectoryChain(root);
+  verifyPayload(path.join(root, entry.addon.fileName), entry.addon);
+  verifyPayload(path.join(root, entry.x86Addon.fileName), entry.x86Addon);
 }
 function verifyPayload(file: string, payload: Pick<Payload, 'size' | 'sha256'>): Buffer {
   const bytes = readRegular(file);
   if (bytes.length !== payload.size || digest(bytes) !== payload.sha256) throw new Error('Registered add-on payload hash/size mismatch');
   return bytes;
 }
-async function copyPayload(source: string, destination: string, payload: Payload): Promise<void> {
+async function publishPayload(source: string, destination: string, payload: Payload): Promise<void> {
   assertDirectoryChain(path.dirname(source));
   assertDirectoryChain(path.dirname(destination));
   const bytes = verifyPayload(source, payload);
-  const file = await fsp.open(destination, 'wx', 0o444);
-  try { await file.writeFile(bytes); await file.sync(); }
-  finally { await file.close(); }
-  verifyPayload(destination, payload);
+  try { verifyPayload(destination, payload); return; }
+  catch (error) { if (!isMissing(error)) throw error; }
+  // A temporary non-add-on filename prevents a concurrent ReShade scan from
+  // loading a partial write. Linking publishes complete bytes atomically and
+  // fails if a foreign/existing file already occupies the immutable final name.
+  const temporary = path.join(path.dirname(destination), `.ego-preload-${randomUUID()}.tmp`);
+  const file = await fsp.open(temporary, 'wx', 0o600);
+  try {
+    await file.writeFile(bytes); await file.sync(); await file.close();
+    assertDirectoryChain(path.dirname(destination));
+    try { await fsp.link(temporary, destination); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    verifyPayload(destination, payload);
+  } finally {
+    await file.close();
+    await fsp.unlink(temporary).catch(error => { if (!isMissing(error)) throw error; });
+  }
 }
 function readRegular(file: string, maximum = MAX_ADDON_BYTES): Buffer {
   const before = fs.lstatSync(file);
@@ -396,22 +378,16 @@ function assertDirectoryChain(directory: string, allowMissing = false): void {
   }
 }
 async function writeRegistry(root: string, registry: Registry): Promise<void> {
-  assertDirectoryChain(root);
+  const metadata = metadataDirectory(root);
+  assertDirectoryChain(metadata);
   const bytes = JSON.stringify(registry) + '\n';
   if (Buffer.byteLength(bytes) > MAX_JSON_BYTES) throw new Error('Add-on registry exceeds its metadata byte limit');
-  const temporary = path.join(root, `.registrations-${randomUUID()}.tmp`);
+  const temporary = path.join(metadata, `.registrations-${randomUUID()}.tmp`);
   const file = await fsp.open(temporary, 'wx', 0o600);
   try { await file.writeFile(bytes, 'utf8'); await file.sync(); }
   finally { await file.close(); }
-  try { await fsp.rename(temporary, path.join(root, REGISTRY_NAME)); }
+  try { await fsp.rename(temporary, path.join(metadata, REGISTRY_NAME)); }
   finally { await fsp.unlink(temporary).catch(error => { if (!isMissing(error)) throw error; }); }
-}
-async function removeUnpublishedDirectory(directory: string, parent: string): Promise<void> {
-  // Only fresh mkdtemp directories are passed here; never a registered cache or host snapshot.
-  assertDirectoryChain(directory);
-  if (path.dirname(fs.realpathSync(directory)) !== fs.realpathSync(parent))
-    throw new Error('Unpublished add-on directory escaped its intended parent');
-  await fsp.rm(directory, { recursive: true, force: true });
 }
 function isMissing(error: unknown): boolean { return (error as NodeJS.ErrnoException)?.code === 'ENOENT'; }
 async function acquireRegistryLock(root: string): Promise<() => Promise<void>> {

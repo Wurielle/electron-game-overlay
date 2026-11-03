@@ -16,8 +16,8 @@ const args = Object.fromEntries(process.argv.slice(2).filter(value => value.star
 if (!['a', 'b'].includes(args.member) || !['first', 'late'].includes(args.slot) || !args.evidence || !args['sdk-dist'] || !args.game) {
   throw new Error('Expected member a|b, slot first|late, evidence, sdk-dist and exact game path.');
 }
-if (args['preload-storage-root'] && !args['preload-app-id']) {
-  throw new Error('preload-storage-root requires preload-app-id.');
+if ((args['preload-storage-root'] || args['preload-addon-directory']) && !args['preload-app-id']) {
+  throw new Error('A preload directory requires preload-app-id.');
 }
 const evidenceRoot = path.resolve(args.evidence);
 const member = args.member;
@@ -39,6 +39,7 @@ const { ElectronGameOverlay, ReShadeOverlayLauncher, parseReShadeLaunchConfig, c
 const addonPreload = args['preload-app-id'] ? {
   applicationId: args['preload-app-id'],
   ...(args['preload-storage-root'] ? { storageRoot: path.resolve(args['preload-storage-root']) } : {}),
+  ...(args['preload-addon-directory'] ? { addonDirectory: path.resolve(args['preload-addon-directory']) } : {}),
 } : undefined;
 let overlay, session, launcher, timer, done = false, reading = false, attempt = 0, commandSequence = 0;
 const windows = new Map();

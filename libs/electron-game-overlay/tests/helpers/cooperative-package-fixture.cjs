@@ -9,7 +9,7 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
   addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
-  runtimeGeneration = 22,
+  runtimeGeneration = 23,
   addonPreloadProtocol = runtimeGeneration >= 17 ? 1 : undefined,
   reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
   ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
@@ -24,6 +24,10 @@ function writeCooperativeDistribution(dist, {
   ownedLateD3d11AdapterReadyLongPathPatchSha256 = 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6',
   initialInspectionRecoveryPatch = runtimeGeneration >= 22,
   injectorInitialInspectionRecoveryPatchSha256 = '5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7',
+  sharedAddonDirectoryPatch = runtimeGeneration >= 23,
+  injectorSharedAddonDirectoryPatchSha256 = '54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125',
+  foreignAddonIsolationPatch = runtimeGeneration >= 23,
+  ownedLateD3d11ForeignAddonIsolationPatchSha256 = '2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99',
 } = {}) {
   dist = path.resolve(dist);
   fs.mkdirSync(dist, { recursive: true });
@@ -64,6 +68,12 @@ function writeCooperativeDistribution(dist, {
       : '') +
     (initialInspectionRecoveryPatch
       ? `const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = '${injectorInitialInspectionRecoveryPatchSha256}';\n`
+      : '') +
+    (sharedAddonDirectoryPatch
+      ? `const INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256 = '${injectorSharedAddonDirectoryPatchSha256}';\n`
+      : '') +
+    (foreignAddonIsolationPatch
+      ? `const OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256 = '${ownedLateD3d11ForeignAddonIsolationPatchSha256}';\n`
       : ''));
   json('node_modules/tslib/package.json', { name: 'tslib', version: '2.8.1', main: 'tslib.js' });
   write('node_modules/tslib/tslib.js', '// controlled dependency, never executed\n');
@@ -104,6 +114,8 @@ function writeCooperativeDistribution(dist, {
         ...(preloadLongPathPatch ? { injectorPreloadLongPathPatchSha256 } : {}),
         ...(adapterReadyLongPathPatch ? { ownedLateD3d11AdapterReadyLongPathPatchSha256 } : {}),
         ...(initialInspectionRecoveryPatch ? { injectorInitialInspectionRecoveryPatchSha256 } : {}),
+        ...(sharedAddonDirectoryPatch ? { injectorSharedAddonDirectoryPatchSha256 } : {}),
+        ...(foreignAddonIsolationPatch ? { ownedLateD3d11ForeignAddonIsolationPatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
         }),

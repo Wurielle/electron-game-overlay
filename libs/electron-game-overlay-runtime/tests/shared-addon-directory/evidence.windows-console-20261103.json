@@ -1,0 +1,1620 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-03T20:58:13.716Z",
+  "status": "passed",
+  "nativeGeneration": 23,
+  "scope": "inert console selector and exact owned host initializer controls; no production DLL, game, graphics or other-process mutation",
+  "sources": {
+    "injector": {
+      "path": "build/electron-game-overlay-runtime/_deps/reshade-src/tools/injector.cpp",
+      "rawSha256": "b6647995d40c7ef13dd998af9cfead5e5d0a1174e81eee1121e8aa12c21cb9d1",
+      "normalizedSha256": "b6647995d40c7ef13dd998af9cfead5e5d0a1174e81eee1121e8aa12c21cb9d1"
+    },
+    "host": {
+      "path": "build/electron-game-overlay-runtime/_deps/reshade-src/source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+      "rawSha256": "8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71",
+      "normalizedSha256": "8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71"
+    }
+  },
+  "patches": {
+    "reshade-injector-shared-addon-directory.patch": "54ae1f9abce02cbb66481c7c2ab30e4d3e7925cd83f27f31d8551d76def85125",
+    "reshade-owned-late-d3d11-addon-failure-isolation.patch": "2a1ff13d7f76258ecf9d5cfb565d68c2522bee772053a5373a3645823d310f99"
+  },
+  "tests": [
+    {
+      "label": "exact-host-initializer-x64",
+      "executable": "build/shared-addon-host-isolation-x64/Release/shared_addon_host_isolation_fixture.exe",
+      "executableSha256": "cbf73684b767cd72049f82ec55c714a522c388b2c36c75c9b976915b08b6f9f0",
+      "arguments": [],
+      "workingDirectory": ".",
+      "exitCode": 0,
+      "stdout": "{\"status\":\"passed\",\"cases\":18,\"assertions\":54,\"pointerBytes\":8,\"sourceRawSha256\":\"8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71\",\"sourceNormalizedSha256\":\"8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71\",\"explicitRemoteMutationCalls\":0,\"scope\":\"exact owned host initializer with inert scanner and graphics seams\"}",
+      "stderr": "",
+      "result": {
+        "status": "passed",
+        "cases": 18,
+        "assertions": 54,
+        "pointerBytes": 8,
+        "sourceRawSha256": "8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71",
+        "sourceNormalizedSha256": "8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71",
+        "explicitRemoteMutationCalls": 0,
+        "scope": "exact owned host initializer with inert scanner and graphics seams"
+      }
+    },
+    {
+      "label": "exact-injector-policy-x64",
+      "executable": "build/shared-addon-policy-x64/Release/preloaded_injector_policy_fixture.exe",
+      "executableSha256": "a5f893fb37fff4d8de6c1a55a000230a2b284152407ad21e32a08b54a67007b5",
+      "arguments": [],
+      "workingDirectory": "build/shared-addon-policy-x64",
+      "exitCode": 0,
+      "stdout": "{\"schemaVersion\":1,\"status\":\"passed\",\"cases\":9,\"assertions\":744,\"memberThunkBytes\":2121,\"runtimeThunkBytes\":482}",
+      "stderr": "",
+      "result": {
+        "schemaVersion": 1,
+        "status": "passed",
+        "cases": 9,
+        "assertions": 744,
+        "memberThunkBytes": 2121,
+        "runtimeThunkBytes": 482
+      }
+    },
+    {
+      "label": "exact-host-initializer-x86",
+      "executable": "build/shared-addon-host-isolation-x86/Release/shared_addon_host_isolation_fixture.exe",
+      "executableSha256": "0b7214512b7657bfdb903074a1d8fdda136296794589a0f6f3b373d4b07e5662",
+      "arguments": [],
+      "workingDirectory": ".",
+      "exitCode": 0,
+      "stdout": "{\"status\":\"passed\",\"cases\":18,\"assertions\":54,\"pointerBytes\":4,\"sourceRawSha256\":\"8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71\",\"sourceNormalizedSha256\":\"8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71\",\"explicitRemoteMutationCalls\":0,\"scope\":\"exact owned host initializer with inert scanner and graphics seams\"}",
+      "stderr": "",
+      "result": {
+        "status": "passed",
+        "cases": 18,
+        "assertions": 54,
+        "pointerBytes": 4,
+        "sourceRawSha256": "8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71",
+        "sourceNormalizedSha256": "8265e994a31eefbe806ea7775e165f1efb556967daa5ac5abf428307f26a9f71",
+        "explicitRemoteMutationCalls": 0,
+        "scope": "exact owned host initializer with inert scanner and graphics seams"
+      }
+    },
+    {
+      "label": "exact-injector-policy-x86",
+      "executable": "build/shared-addon-policy-x86/Release/preloaded_injector_policy_fixture.exe",
+      "executableSha256": "17643686f88c1bc20f458e7622436593a136dbbc1b0e934dcef301440e32af98",
+      "arguments": [],
+      "workingDirectory": "build/shared-addon-policy-x86",
+      "exitCode": 0,
+      "stdout": "{\"schemaVersion\":1,\"status\":\"passed\",\"cases\":9,\"assertions\":744,\"memberThunkBytes\":1392,\"runtimeThunkBytes\":368}",
+      "stderr": "",
+      "result": {
+        "schemaVersion": 1,
+        "status": "passed",
+        "cases": 9,
+        "assertions": 744,
+        "memberThunkBytes": 1392,
+        "runtimeThunkBytes": 368
+      }
+    },
+    {
+      "label": "exact-injector-long-path-policy-x64",
+      "executable": "build/shared-addon-long-path-policy-x64/Release/preload_long_path_policy_fixture.exe",
+      "executableSha256": "9a406c7399fa21f9bf12089a6e57a62f0cc437f272ac7dda977064ae1826743b",
+      "arguments": [
+        "--root",
+        "build/sd-lp-e9d8b66f",
+        "--report",
+        "build/sd-lp-e9d8b66f/report.json"
+      ],
+      "workingDirectory": ".",
+      "exitCode": 0,
+      "stdout": "{\"schemaVersion\":1,\"status\":\"passed\",\"scope\":\"Owned local snapshot selector policy; no production entry, remote mutation, ReShade or graphics\",\"root\":\"C:\\\\Users\\\\Wuriko\\\\.codex\\\\worktrees\\\\4325\\\\electron-game-overlay\\\\build\\\\sd-lp-e9d8b66f\",\"assertions\":1843,\"cases\":[{\"name\":\"233/ordinary/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"233/ordinary/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/ordinary/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"233/ordinary/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"233/ordinary/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"233/ordinary/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/ordinary/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/ordinary/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/ordinary/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/ordinary/forward-slash-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/ordinary/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/ordinary/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/ordinary/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/ordinary/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/ordinary/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/ordinary/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"233/ordinary/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/ordinary/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/ordinary/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/ordinary/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/ordinary/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/ordinary/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"233/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"233/ordinary/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"233/ordinary/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"233/ordinary/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"233/ordinary/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"233/ordinary/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"233/extended/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"233/extended/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/extended/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"233/extended/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"233/extended/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"233/extended/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/extended/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/extended/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/extended/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"233/extended/forward-slash-alias\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"233/extended/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/extended/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/extended/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/extended/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/extended/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"233/extended/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"233/extended/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/extended/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/extended/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/extended/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/extended/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/extended/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"233/extended/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"233/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"233/extended/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"233/extended/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"233/extended/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"233/extended/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"233/extended/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"259/ordinary/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"259/ordinary/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/ordinary/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"259/ordinary/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"259/ordinary/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"259/ordinary/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/ordinary/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/ordinary/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/ordinary/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/ordinary/forward-slash-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/ordinary/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/ordinary/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/ordinary/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/ordinary/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/ordinary/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/ordinary/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"259/ordinary/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/ordinary/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/ordinary/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/ordinary/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/ordinary/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/ordinary/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"259/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"259/ordinary/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"259/ordinary/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"259/ordinary/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"259/ordinary/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"259/ordinary/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"259/extended/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"259/extended/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/extended/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"259/extended/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"259/extended/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"259/extended/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/extended/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/extended/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/extended/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"259/extended/forward-slash-alias\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"259/extended/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/extended/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/extended/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/extended/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/extended/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"259/extended/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"259/extended/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/extended/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/extended/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/extended/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/extended/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/extended/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"259/extended/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"259/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"259/extended/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"259/extended/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"259/extended/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"259/extended/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"259/extended/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"260/ordinary/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"260/ordinary/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/ordinary/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"260/ordinary/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"260/ordinary/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"260/ordinary/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/ordinary/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/ordinary/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/ordinary/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/ordinary/forward-slash-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/ordinary/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/ordinary/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/ordinary/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/ordinary/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/ordinary/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/ordinary/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"260/ordinary/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/ordinary/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/ordinary/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/ordinary/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/ordinary/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/ordinary/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"260/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"260/ordinary/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"260/ordinary/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"260/ordinary/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"260/ordinary/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"260/ordinary/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"260/extended/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"260/extended/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/extended/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"260/extended/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"260/extended/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"260/extended/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/extended/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/extended/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/extended/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"260/extended/forward-slash-alias\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"260/extended/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/extended/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/extended/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/extended/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/extended/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"260/extended/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"260/extended/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/extended/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/extended/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/extended/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/extended/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/extended/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"260/extended/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"260/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"260/extended/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"260/extended/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"260/extended/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"260/extended/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"260/extended/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"289/ordinary/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"289/ordinary/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/ordinary/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"289/ordinary/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"289/ordinary/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"289/ordinary/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/ordinary/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/ordinary/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/ordinary/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/ordinary/forward-slash-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/ordinary/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/ordinary/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/ordinary/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/ordinary/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/ordinary/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/ordinary/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"289/ordinary/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/ordinary/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/ordinary/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/ordinary/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/ordinary/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/ordinary/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"289/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"289/ordinary/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"289/ordinary/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"289/ordinary/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"289/ordinary/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"289/ordinary/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"289/extended/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"289/extended/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/extended/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"289/extended/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"289/extended/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"289/extended/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/extended/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/extended/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/extended/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"289/extended/forward-slash-alias\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"289/extended/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/extended/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/extended/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/extended/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/extended/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"289/extended/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"289/extended/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/extended/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/extended/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/extended/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/extended/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/extended/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"289/extended/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"289/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"289/extended/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"289/extended/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"289/extended/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"289/extended/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"289/extended/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"320/ordinary/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"320/ordinary/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/ordinary/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"320/ordinary/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"320/ordinary/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"320/ordinary/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/ordinary/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/ordinary/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/ordinary/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/ordinary/forward-slash-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/ordinary/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/ordinary/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/ordinary/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/ordinary/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/ordinary/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/ordinary/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"320/ordinary/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/ordinary/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/ordinary/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/ordinary/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/ordinary/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/ordinary/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"320/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"320/ordinary/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"320/ordinary/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"320/ordinary/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"320/ordinary/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"320/ordinary/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"320/extended/canonical\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"320/extended/foreign-base\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/extended/external-shared-addon-directory\",\"error\":0,\"expectedAccepted\":true},{\"name\":\"320/extended/relative-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"320/extended/relative-dot-addon-directory\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"320/extended/dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/extended/dot-dot-alias\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/extended/trailing-separator\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/extended/trailing-dot\",\"error\":161,\"expectedAccepted\":false},{\"name\":\"320/extended/forward-slash-alias\",\"error\":123,\"expectedAccepted\":false},{\"name\":\"320/extended/double-extended-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/extended/device-prefix\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/extended/wrong-runtime-leaf\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/extended/runtime-outside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/extended/target-inside-stage\",\"error\":5,\"expectedAccepted\":false},{\"name\":\"320/extended/different-final-hash-byte\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"320/extended/nonexact-ascii-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/extended/wrong-json-directory\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/extended/unknown-json-field\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/extended/bom-json-marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/extended/missing-electron-game-overlay-owned-runtime-v1.marker\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/extended/missing-.electron-game-overlay-run.json\",\"error\":13,\"expectedAccepted\":false},{\"name\":\"320/extended/missing-ReShade.ini\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"320/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64\",\"error\":2,\"expectedAccepted\":false},{\"name\":\"320/extended/altered-payload\",\"error\":1306,\"expectedAccepted\":false},{\"name\":\"320/extended/reparse-leaf\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"320/extended/reparse-stage\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"320/extended/reparse-snapshot\",\"error\":1920,\"expectedAccepted\":false},{\"name\":\"320/extended/valid-after-rejections\",\"error\":0,\"expectedAccepted\":true}],\"skipped\":[],\"explicitRemoteMutationCalls\":0}",
+      "stderr": "",
+      "result": {
+        "schemaVersion": 1,
+        "status": "passed",
+        "scope": "Owned local snapshot selector policy; no production entry, remote mutation, ReShade or graphics",
+        "root": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\sd-lp-e9d8b66f",
+        "assertions": 1843,
+        "cases": [
+          {
+            "name": "233/ordinary/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "233/ordinary/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "233/ordinary/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/forward-slash-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/ordinary/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "233/extended/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "233/extended/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "233/extended/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/forward-slash-alias",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "233/extended/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "259/ordinary/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "259/ordinary/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "259/ordinary/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/forward-slash-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/ordinary/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "259/extended/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "259/extended/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "259/extended/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/forward-slash-alias",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "259/extended/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "260/ordinary/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "260/ordinary/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "260/ordinary/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/forward-slash-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/ordinary/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "260/extended/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "260/extended/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "260/extended/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/forward-slash-alias",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "260/extended/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "289/ordinary/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "289/ordinary/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "289/ordinary/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/forward-slash-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/ordinary/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "289/extended/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "289/extended/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "289/extended/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/forward-slash-alias",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "289/extended/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "320/ordinary/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "320/ordinary/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "320/ordinary/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/forward-slash-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/ordinary/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "320/extended/canonical",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "320/extended/foreign-base",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/external-shared-addon-directory",
+            "error": 0,
+            "expectedAccepted": true
+          },
+          {
+            "name": "320/extended/relative-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/relative-dot-addon-directory",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/dot-dot-alias",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/trailing-separator",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/trailing-dot",
+            "error": 161,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/forward-slash-alias",
+            "error": 123,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/double-extended-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/device-prefix",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/wrong-runtime-leaf",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/runtime-outside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/target-inside-stage",
+            "error": 5,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/different-final-hash-byte",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/nonexact-ascii-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/wrong-json-directory",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/unknown-json-field",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/bom-json-marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/missing-electron-game-overlay-owned-runtime-v1.marker",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/missing-.electron-game-overlay-run.json",
+            "error": 13,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/missing-ReShade.ini",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/missing-ego-preload-0123456789abcdef0123456789abcdef-ABCDEF0123456789ABCDEF0123456789-ba7816bf8f01cfea.addon64",
+            "error": 2,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/altered-payload",
+            "error": 1306,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/reparse-leaf",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/reparse-stage",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/reparse-snapshot",
+            "error": 1920,
+            "expectedAccepted": false
+          },
+          {
+            "name": "320/extended/valid-after-rejections",
+            "error": 0,
+            "expectedAccepted": true
+          }
+        ],
+        "skipped": [],
+        "explicitRemoteMutationCalls": 0
+      },
+      "reportPath": "build/sd-lp-e9d8b66f/report.json",
+      "reportSha256": "e36f5e63c1b49d731fdb2127ca13772b611c3fd147cb32e1a2ae2f60b927b87d"
+    }
+  ],
+  "baselineControls": [
+    {
+      "label": "gen22-host-reproduces-foreign-addon-blocking",
+      "executable": "build/shared-addon-host-isolation-baseline-x64/Release/shared_addon_host_isolation_fixture.exe",
+      "executableSha256": "4b3bb08438b6a035a34c5aa5136203eadca948132b8dda2a5bb5cbbbde41a15b",
+      "arguments": [],
+      "workingDirectory": ".",
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "inert shared add-on host fixture failed: ready EGO host was blocked by a foreign add-on failure"
+    },
+    {
+      "label": "gen22-injector-reproduces-stable-shared-path-rejection",
+      "executable": "build/shared-addon-policy-baseline-x64/Release/preloaded_injector_policy_fixture.exe",
+      "executableSha256": "b6cba57b825af8b394c877a3f569d40e6c5c5ce142296ed1e0e81a8da447e50e",
+      "arguments": [],
+      "workingDirectory": "build/shared-addon-policy-baseline-x64",
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "preloaded injector policy failed: stable shared first-host directory rejected"
+    }
+  ],
+  "explicitRemoteMutationCalls": 0,
+  "baselineSources": {
+    "injector": {
+      "path": "build/shared-addon-native-source-base/tools_injector.cpp.before",
+      "rawSha256": "58ed5a9c5f0b0806d7d4ae65d060271ad8d62676a62332f0be6fead88b6d8bfa",
+      "normalizedSha256": "58ed5a9c5f0b0806d7d4ae65d060271ad8d62676a62332f0be6fead88b6d8bfa"
+    },
+    "host": {
+      "path": "build/shared-addon-native-source-base/source_ego_owned_late_d3d11_owned_late_d3d11.inl.before",
+      "rawSha256": "36753053450815b934a6117b1c072a2100aa86032df30d937f9a127ca0f7a5f0",
+      "normalizedSha256": "36753053450815b934a6117b1c072a2100aa86032df30d937f9a127ca0f7a5f0"
+    }
+  },
+  "fixtureSources": {
+    "tests/preloaded-injector-policy/fixture.cpp": "4826bf1741eb55cb3409d18619d16bfb537cce1d79d3306b77a57f94faf054b4",
+    "tests/preload-long-path/policy_fixture.cpp": "6e0c7e8d238ef644859b943b73cc1c1f2afb45dad0bdfd8b2eef6db37b3a4005",
+    "tests/shared-addon-directory/host_fixture.cpp": "3aecf2c532d4cd29b08834e6b813bab244bf185c573f37a54402d368e5ceb8d4",
+    "tests/shared-addon-directory/CMakeLists.txt": "a6f84ecc2cc3ebf6a8294d27bc222646da34a19b866c81ac7635098b77c0c13f"
+  }
+}

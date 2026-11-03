@@ -1,7 +1,6 @@
 import { StringDecoder } from 'node:string_decoder';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
 import {
-  createOverlayAddonPreloadSnapshot,
   resolveAddonPreloadSelection,
   type OverlayAddonPreloadOptions,
 } from './overlay-addon-preload.js';
@@ -1171,8 +1170,9 @@ export function createReShadeLaunchConfig(
       [CONFIG_FILE_NAME, configPath],
     ]),
   );
-  if (options.addonPreload !== undefined && runtimeProvider.addonPreloadProtocol !== 1) {
-    throw new Error('the selected native runtime does not support registered add-on preloading');
+  if (options.addonPreload !== undefined &&
+      (runtimeProvider.addonPreloadProtocol !== 1 || runtimeProvider.runtimeGeneration < 23)) {
+    throw new Error('the selected native runtime does not support shared-directory add-on preloading');
   }
   const addonPreload = options.addonPreload === undefined
     ? undefined
@@ -1188,7 +1188,7 @@ export function createReShadeLaunchConfig(
       ? {}
       : { addonPreload: Object.freeze({
           applicationId: addonPreload.applicationId,
-          storageRoot: addonPreload.storageRoot,
+          addonDirectory: addonPreload.directory,
         }) }),
     runtimeProvider: providerMetadataOnly(runtimeProvider),
     ...(runtimeProvider.injectorProcessInstanceBinding === undefined
@@ -1285,7 +1285,11 @@ export function buildReShadeInvocation(
   });
 }
 
-function ownedAddonPreloadConfiguration(template: string, directory: string): string {
+function ownedAddonPreloadConfiguration(
+  template: string,
+  directory: string,
+  inactiveFileNames: readonly string[],
+): string {
   if (!path.isAbsolute(directory) || /[\r\n\0]/.test(directory)) {
     throw new Error('the owned add-on preload directory must be an absolute INI-safe path');
   }
@@ -1297,7 +1301,12 @@ function ownedAddonPreloadConfiguration(template: string, directory: string): st
   const lines = template.split(/\r?\n/);
   let inAddon = false;
   let replacements = 0;
+  let disabledLists = 0;
   let sections = 0;
+  if (inactiveFileNames.some(name =>
+    !/^ego-preload-[0-9a-f]{32}-[0-9A-F]{32}-[0-9a-f]{16}\.addon(?:64|32)$/i.test(name))) {
+    throw new Error('invalid retired EGO add-on filename');
+  }
   for (let index = 0; index < lines.length; index++) {
     const section = /^\s*\[([^\]]+)\]\s*$/.exec(lines[index]);
     if (section !== null) {
@@ -1310,10 +1319,16 @@ function ownedAddonPreloadConfiguration(template: string, directory: string): st
       // ReShade's INI reader treats a single comma as a list separator.
       lines[index] = `AddonPath=${scanDirectory.replace(/,/g, ',,')}`;
       replacements++;
+    } else if (inAddon && /^\s*DisabledAddons\s*=/.test(lines[index])) {
+      disabledLists++;
+      if (inactiveFileNames.length !== 0) {
+        const existing = lines[index].slice(lines[index].indexOf('=') + 1);
+        lines[index] += `${existing.trim() === '' ? '' : ','}${inactiveFileNames.map(name => `@${name}`).join(',')}`;
+      }
     }
   }
-  if (sections !== 1 || replacements !== 1) {
-    throw new Error('the sealed owned ReShade template must contain exactly one add-on path');
+  if (sections !== 1 || replacements !== 1 || disabledLists !== 1) {
+    throw new Error('the sealed owned ReShade template must contain exactly one add-on path and disabled list');
   }
   return lines.join(newline);
 }
@@ -3040,22 +3055,24 @@ export class ReShadeOverlayLauncher {
         ),
       );
 
-      // The copied sealed template is verified above before deriving this
-      // private host configuration. Registered files never enter a game folder.
-      const preloadSnapshot = this.config.addonPreload === undefined
+      // Registered add-ons stay at their installed paths across host launches.
+      // Only this host's configuration and disabled inventory are staged.
+      const preloadSelection = this.config.addonPreload === undefined
         ? undefined
-        : await createOverlayAddonPreloadSnapshot(
-            path.join(createdRunDirectory, 'preloaded-addons'),
-            resolveAddonPreloadSelection(this.config.addonPreload, {
-              addonBuildId: OFFICIAL_ADDON_BUILD_ID,
-              addonPath: path.join(createdRunDirectory, ADDON_FILE_NAME),
-              x86AddonPath: path.join(createdRunDirectory, X86_ADDON_FILE_NAME),
-            }),
-          );
-      if (preloadSnapshot !== undefined) {
+        : resolveAddonPreloadSelection(this.config.addonPreload, {
+            addonBuildId: OFFICIAL_ADDON_BUILD_ID,
+            addonPath: path.join(createdRunDirectory, ADDON_FILE_NAME),
+            x86AddonPath: path.join(createdRunDirectory, X86_ADDON_FILE_NAME),
+          });
+      if (preloadSelection !== undefined) {
+        if (runtimeProvider.addonPreloadProtocol !== 1 || runtimeProvider.runtimeGeneration < 23) {
+          throw new Error('the selected native runtime does not support shared-directory add-on preloading');
+        }
         const configPath = path.join(createdRunDirectory, CONFIG_FILE_NAME);
         const template = await readFile(configPath, 'utf8');
-        await writeFile(configPath, ownedAddonPreloadConfiguration(template, preloadSnapshot.directory), 'utf8');
+        await writeFile(configPath, ownedAddonPreloadConfiguration(
+          template, preloadSelection.directory, preloadSelection.inactiveFileNames,
+        ), 'utf8');
       }
 
       // This stage-only marker is created exclusively in the fresh SDK-owned
@@ -3076,9 +3093,9 @@ export class ReShadeOverlayLauncher {
         }),
       );
       return Object.freeze({
-        ...(preloadSnapshot === undefined ? {} : {
-          preloadedAddonName: path.basename(preloadSnapshot.addonPath),
-          x86PreloadedAddonName: path.basename(preloadSnapshot.x86AddonPath),
+        ...(preloadSelection === undefined ? {} : {
+          preloadedAddonName: preloadSelection.addonFileName,
+          x86PreloadedAddonName: preloadSelection.x86AddonFileName,
         }),
         runId,
         runsRootDirectory,

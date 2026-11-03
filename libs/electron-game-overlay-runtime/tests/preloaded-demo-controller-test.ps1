@@ -9,6 +9,16 @@ $Target = @{ process = @{ Id = 12345 } }; $TargetPath = 'C:\controlled\p.exe'
 $Prefix = 'ELECTRON_GAME_OVERLAY_INJECTOR_RESULT '
 $Valid = @{ schemaVersion = 1; pid = 12345; runtimeMode = 'injected-runtime'; targetExecutablePath = $TargetPath }
 $Checks = [Collections.Generic.List[object]]::new()
+foreach ($Paths in @(
+    @('C:\controlled\addons', '\\?\C:\controlled\addons', $true),
+    @('\\server\share\addons', '\\?\UNC\server\share\addons', $true),
+    @('C:\controlled\addons', '\\?\C:\other\addons', $false),
+    @('C:\controlled\addons', '\\?\C:\controlled\addons\..\foreign', $false)
+)) {
+    $Matched = Test-PreloadPath $Paths[0] $Paths[1]
+    if ($Matched -ne $Paths[2]) { throw 'Only exact ordinary/extended path aliases may compare equal.' }
+}
+$Checks.Add(@{ name = 'exact-extended-path-alias-comparison'; passed = $true; cases = 4 })
 function Test-InitialRecord([string]$Name, [string]$Text, [bool]$Accepted) {
     $Path = Join-Path $Directory "$Name.stdout.log"
     [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
@@ -51,10 +61,18 @@ foreach ($Name in @('HOME', 'CODEX_HOME')) { $null = $Reserved.Add($Name) }
 $ControllerFiles = @(
     'scripts\run-client-sdk-preloaded-addons-gate.ps1',
     'scripts\run-client-sdk-unregistered-addon-compatibility-gate.ps1',
+    'scripts\run-client-sdk-shared-addon-directory-gate.ps1',
     'scripts\test-cases\d3d11-client-sdk-preloaded-addons.ps1',
     'scripts\test-cases\d3d12-client-sdk-preloaded-addons.ps1',
     'scripts\test-cases\d3d11-client-sdk-unregistered-addon-compatibility.ps1',
     'scripts\test-cases\d3d12-client-sdk-unregistered-addon-compatibility.ps1',
+    'scripts\test-cases\d3d9-x64-client-sdk-shared-addon-directory.ps1',
+    'scripts\test-cases\d3d10-x64-client-sdk-shared-addon-directory.ps1',
+    'scripts\test-cases\d3d11-x64-client-sdk-shared-addon-directory.ps1',
+    'scripts\test-cases\d3d11-x64-client-sdk-shared-addon-directory-late.ps1',
+    'scripts\test-cases\d3d12-x64-client-sdk-shared-addon-directory.ps1',
+    'scripts\test-cases\d3d9-x86-client-sdk-shared-addon-directory.ps1',
+    'scripts\test-cases\d3d10-x86-client-sdk-shared-addon-directory.ps1',
     'tests\preloaded-demo-controller-test.ps1'
 )
 foreach ($ControllerFile in $ControllerFiles) {
