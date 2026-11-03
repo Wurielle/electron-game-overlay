@@ -20,6 +20,10 @@ const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 =
   'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';
 const INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256 =
   'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309';
+const INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256 =
+  'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B';
+const OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256 =
+  'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -189,6 +193,38 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (requiresPreloadedFirstHostPatch && expectedGeneration < 19)) {
     throw new Error('Compiled SDK preloaded first-host patch pin does not match its generation');
   }
+  // Long registered DLL paths require both the private INI and injector load
+  // spelling correction. Keep generation-19 payloads valid without advertising
+  // the new tool implementation through mutable metadata alone.
+  const preloadLongPathDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256\b/g)];
+  const preloadLongPathPins = [...validator.matchAll(/\bconst\s+INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (preloadLongPathDeclarations.length !== preloadLongPathPins.length || preloadLongPathDeclarations.length > 1) {
+    throw new Error('Compiled SDK preload long-path patch pin is malformed or ambiguous');
+  }
+  const requiresPreloadLongPathPatch = preloadLongPathPins.length === 1;
+  if (requiresPreloadLongPathPatch && preloadLongPathPins[0][1].toUpperCase() !== INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK preload long-path patch pin');
+  }
+  if ((!requiresPreloadLongPathPatch && expectedGeneration > 19) ||
+      (requiresPreloadLongPathPatch && expectedGeneration < 20)) {
+    throw new Error('Compiled SDK preload long-path patch pin does not match its generation');
+  }
+  // The owned host's adapter-ready enumeration is separate from the injector's
+  // long-path loader correction. Retained generation-20 packages keep the
+  // injector pin while omitting this later host implementation marker.
+  const adapterReadyLongPathDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256\b/g)];
+  const adapterReadyLongPathPins = [...validator.matchAll(/\bconst\s+OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (adapterReadyLongPathDeclarations.length !== adapterReadyLongPathPins.length || adapterReadyLongPathDeclarations.length > 1) {
+    throw new Error('Compiled SDK adapter-ready long-path patch pin is malformed or ambiguous');
+  }
+  const requiresAdapterReadyLongPathPatch = adapterReadyLongPathPins.length === 1;
+  if (requiresAdapterReadyLongPathPatch && adapterReadyLongPathPins[0][1].toUpperCase() !== OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK adapter-ready long-path patch pin');
+  }
+  if ((!requiresAdapterReadyLongPathPatch && expectedGeneration > 20) ||
+      (requiresAdapterReadyLongPathPatch && expectedGeneration < 21)) {
+    throw new Error('Compiled SDK adapter-ready long-path patch pin does not match its generation');
+  }
   const native = path.join(dist, 'runtime/win32-x64/reshade');
   let paired: Record<string, unknown> | undefined;
   for (const bits of [64, 32]) {
@@ -271,6 +307,24 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.injectorPreloadedFirstHostPatchSha256 !== undefined) {
       throw new Error('Injector preloaded first-host patch provenance requires the sealed SDK implementation pin: ' + bits);
+    }
+    if (requiresPreloadLongPathPatch) {
+      if (typeof reshade.injectorPreloadLongPathPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.injectorPreloadLongPathPatchSha256) ||
+          reshade.injectorPreloadLongPathPatchSha256.toUpperCase() !== INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256) {
+        throw new Error('Pinned injector preload long-path patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorPreloadLongPathPatchSha256 !== undefined) {
+      throw new Error('Injector preload long-path patch provenance requires the sealed SDK implementation pin: ' + bits);
+    }
+    if (requiresAdapterReadyLongPathPatch) {
+      if (typeof reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256) ||
+          reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256.toUpperCase() !== OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256) {
+        throw new Error('Pinned owned late D3D11 adapter-ready long-path patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256 !== undefined) {
+      throw new Error('Owned late D3D11 adapter-ready long-path patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);

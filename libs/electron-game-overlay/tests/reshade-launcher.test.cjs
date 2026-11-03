@@ -6864,7 +6864,7 @@ test('preload staging refreshes registrations for each private host and preserve
     ].sort(), 'an application installed after config creation participates in the next host');
     const firstSnapshotBytes = new Map(readdirSync(snapshot).map(name => [name, readFileSync(path.join(snapshot, name))]));
     const stagedIni = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8');
-    assert.equal(stagedIni, sourceIni.toString('utf8').replace('AddonPath=.', `AddonPath=${snapshot}`));
+    assert.equal(stagedIni, sourceIni.toString('utf8').replace('AddonPath=.', `AddonPath=${path.toNamespacedPath(snapshot)}`));
     assert.equal(stagedIni.replace(/\r\n/g, '').includes('\n'), false, 'CRLF is preserved');
     assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), sourceIni);
     for (const artifact of artifacts.filter(name => name !== 'ReShade.ini')) {
@@ -6917,6 +6917,40 @@ test('preload staging refuses a changed sealed INI before publishing its folder 
   } finally { launcher.dispose(); execution.restore(); }
 });
 
+test('preload staging preserves long registered filenames in the owned external scan directory', async () => {
+  const fixture = await createAddonPreloadRuntime();
+  const registeredName = path.basename(fixture.installation.addonPath);
+  let runsRootDirectory = path.join(fixture.root, 'nested-profile');
+  while (path.join(runsRootDirectory, 'prepared-xxxxxx', 'preloaded-addons', registeredName).length < 300) {
+    runsRootDirectory = path.join(runsRootDirectory, 'long-profile-segment');
+  }
+  fixture.runsRootDirectory = runsRootDirectory;
+  const sourceIni = readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini'));
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
+  let runDirectory;
+  const unsubscribe = launcher.onEvent(event => {
+    if (event.type === 'runtime-staged') runDirectory = event.runDirectory;
+  });
+  try {
+    await launcher.prepare();
+    const snapshot = path.join(runDirectory, 'preloaded-addons');
+    const registeredPath = path.join(snapshot, registeredName);
+    assert.ok(registeredPath.length >= 300, 'exercise the complete registered DLL path beyond MAX_PATH');
+    assert.ok(path.join(runDirectory, 'ReShade64.dll').length < 260,
+      'this regression concerns registered filenames, independently of runtime base-path limits');
+    const scanDirectory = path.toNamespacedPath(snapshot);
+    const configured = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8')
+      .split(/\r?\n/).find(line => line.startsWith('AddonPath='));
+    assert.equal(configured, `AddonPath=${scanDirectory}`);
+    if (process.platform === 'win32') assert.ok(scanDirectory.startsWith('\\\\?\\'));
+    assert.deepEqual(readFileSync(path.join(scanDirectory, registeredName)),
+      readFileSync(fixture.installation.addonPath));
+    assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), sourceIni);
+    assert.equal(execution.calls.length, 0, 'preparation does not execute an injector');
+  } finally { unsubscribe(); launcher.dispose(); execution.restore(); }
+});
+
 test('preload staging escapes commas using the stock ReShade INI value convention', async () => {
   const fixture = await createAddonPreloadRuntime();
   fixture.runsRootDirectory = path.join(fixture.root, 'Company, Inc', 'runs');
@@ -6929,9 +6963,9 @@ test('preload staging escapes commas using the stock ReShade INI value conventio
     await launcher.prepare();
     const configured = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8')
       .split(/\r?\n/).find(line => line.startsWith('AddonPath='));
-    assert.equal(configured, `AddonPath=${path.join(runDirectory, 'preloaded-addons').replaceAll(',', ',,')}`);
+    assert.equal(configured, `AddonPath=${path.toNamespacedPath(path.join(runDirectory, 'preloaded-addons')).replaceAll(',', ',,')}`);
     assert.equal(configured.slice('AddonPath='.length).replaceAll(',,', ','),
-      path.join(runDirectory, 'preloaded-addons'));
+      path.toNamespacedPath(path.join(runDirectory, 'preloaded-addons')));
   } finally { unsubscribe(); launcher.dispose(); }
 });
 
@@ -7013,7 +7047,7 @@ test('preload engine choice survives the official startup wait and member-only r
 });
 
 test('preload participant proof accepts exact cached bytes and safe private-stage fallback only', async () => {
-  for (const variant of ['selected', 'private-fallback', 'other-app', 'changed-selected']) {
+  for (const variant of ['selected', 'selected-prefixed', 'private-fallback', 'other-app', 'changed-selected']) {
     const fixture = await createAddonPreloadRuntime();
     const execution = stubExecFile();
     const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
@@ -7032,6 +7066,7 @@ test('preload participant proof accepts exact cached bytes and safe private-stag
       const selected = path.join(previousHost, path.basename(fixture.installation.addonPath));
       writeFileSync(selected, readFileSync(fixture.installation.addonPath));
       let addonModulePath = selected;
+      if (variant === 'selected-prefixed') addonModulePath = path.toNamespacedPath(selected);
       if (variant === 'private-fallback') addonModulePath = path.join(call.options.cwd, 'electron_game_overlay.addon64');
       if (variant === 'other-app') {
         addonModulePath = path.join(previousHost, path.basename(fixture.otherInstallation.addonPath));
@@ -7044,7 +7079,7 @@ test('preload participant proof accepts exact cached bytes and safe private-stag
           addonModulePath, addonAbi: 1, memberProtocolVersion: 1 }), '');
       harness.emitNative('game.process', { pid: 4242, path: image });
       const settled = await outcome;
-      if (variant === 'selected' || variant === 'private-fallback') {
+      if (variant === 'selected' || variant === 'selected-prefixed' || variant === 'private-fallback') {
         assert.equal(settled.result.runtimeMode, 'participant-addon');
         assert.equal(settled.result.addonModulePath, addonModulePath);
       } else {

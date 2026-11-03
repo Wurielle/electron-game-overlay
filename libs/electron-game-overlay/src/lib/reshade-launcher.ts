@@ -1289,6 +1289,10 @@ function ownedAddonPreloadConfiguration(template: string, directory: string): st
   if (!path.isAbsolute(directory) || /[\r\n\0]/.test(directory)) {
     throw new Error('the owned add-on preload directory must be an absolute INI-safe path');
   }
+  // Stock ReShade passes each scanned filename to LoadLibraryExW. Use the
+  // extended Windows spelling before scanning, so long registered filenames
+  // work without relying on the target application's long-path opt-in.
+  const scanDirectory = path.toNamespacedPath(directory);
   const newline = template.includes('\r\n') ? '\r\n' : '\n';
   const lines = template.split(/\r?\n/);
   let inAddon = false;
@@ -1304,7 +1308,7 @@ function ownedAddonPreloadConfiguration(template: string, directory: string): st
         throw new Error('the sealed owned ReShade template has an unexpected add-on path');
       }
       // ReShade's INI reader treats a single comma as a list separator.
-      lines[index] = `AddonPath=${directory.replace(/,/g, ',,')}`;
+      lines[index] = `AddonPath=${scanDirectory.replace(/,/g, ',,')}`;
       replacements++;
     }
   }

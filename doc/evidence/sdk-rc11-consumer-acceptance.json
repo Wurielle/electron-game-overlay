@@ -1,0 +1,453 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-rc11-consumer-acceptance",
+  "recordedAtUtc": "2026-11-03T17:36:00.982Z",
+  "status": "long-path-fix-and-standard-matrix-accepted-fast-start-diagnostic-retained",
+  "candidateVersion": "0.1.0-rc.11",
+  "nativeGeneration": 21,
+  "sourceBaseCommit": "f51777621927ff090d0281ad069b720ed553d589",
+  "sourceWorkingTreeDirty": true,
+  "package": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\artifacts\\rc11-preload-activation\\electron-game-overlay-0.1.0-rc.11.tgz",
+    "sha256": "ddc09fe1b2851469ad057601374320d299fe6cac915731e1859f7db27c5efca6"
+  },
+  "sourceSnapshot": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\artifacts\\rc11-preload-activation\\electron-game-overlay-0.1.0-rc.11-source.zip",
+    "sha256": "66044d29b286390d05bf061e137c360e0a6aa0263960eb7adf2847e05147ab8d"
+  },
+  "sourceManifest": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\artifacts\\rc11-preload-activation\\electron-game-overlay-0.1.0-rc.11-source-manifest.json",
+    "sha256": "d62a162cacac2c77e247f9013a7e1de6292fdd0f88876cf070285f9e49c2294e"
+  },
+  "implementationFilesVerifiedUnchangedSincePackaging": 742,
+  "postPackagingAcceptanceDocumentation": true,
+  "originalSdkEvidence": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\doc\\evidence\\sdk-rc11-preload-activation.json",
+    "sha256": "96dc907708886f819bd46ea9b159b756f1fe39575f14003e40bea1d0873686cd"
+  },
+  "consumerEvidence": {
+    "root": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela",
+    "validation": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\rc11-validation.json",
+      "sha256": "0e2b5eb10f39783cc71a8cbb61670d1ad7c2b6d6b60e926822d478dd2ff0c4a9"
+    },
+    "focusedSummary": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-26-03.635Z\\summary.json",
+      "sha256": "10128bc13edefa0c3a927de9b4c36aa7a277907e9679b0c205a6d273c5fad8c4"
+    },
+    "matrixSummary": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\summary.json",
+      "sha256": "0abd8e45becfefab65b938bfc254d9ca083fdd4d1d911fce91b4573c6d4acf76"
+    },
+    "cleanup": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\rc11-cleanup.json",
+      "sha256": "446b755a9dedc698e04f86da0561edef144defb477b2d83274aa5e5daffe3d93"
+    }
+  },
+  "focusedOriginalLongProfile": {
+    "passed": 2,
+    "failed": 0,
+    "separateFreshNegativeControl": true,
+    "modulePathLength": 293
+  },
+  "standardMatrix": {
+    "passed": 10,
+    "failed": 0,
+    "targetLifecyclesInspected": 11,
+    "minLoadedModulePathLength": 292,
+    "maxLoadedModulePathLength": 310,
+    "loadedModulePathLengths": [
+      292,
+      293,
+      293,
+      293,
+      292,
+      293,
+      304,
+      303,
+      299,
+      299,
+      310
+    ],
+    "cases": [
+      {
+        "case": "d3d9-x64",
+        "scaleFactor": 1,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 42956,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d9-x64\\profile\\experimental-game-overlay\\runs\\prepared-r1Pzwn\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 292,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d10-x64",
+        "scaleFactor": 1,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 20944,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d10-x64\\profile\\experimental-game-overlay\\runs\\prepared-gCTN3v\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 293,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d11-x64",
+        "scaleFactor": 1,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "policy-removal: messenger pixels visible in owned graphics window",
+          "redundant basename allow removal retains real native typing and rendered overlay",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "in-app Defender dialog stays visible; Cancel leaves security settings untouched",
+          "genuine deny revokes actual overlay pixels and input; game receives native key",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 50692,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d11-x64\\profile\\experimental-game-overlay\\runs\\prepared-AW5GXb\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 293,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d12-x64",
+        "scaleFactor": 1,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 52028,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d12-x64\\profile\\experimental-game-overlay\\runs\\prepared-PybWyS\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 293,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d9-x86",
+        "scaleFactor": 1,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 44716,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d9-x86\\profile\\experimental-game-overlay\\runs\\prepared-a8YLXU\\ReShade32.dll",
+            "queryError": 0,
+            "maxModulePathLength": 292,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d10-x86",
+        "scaleFactor": 1,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 34696,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d10-x86\\profile\\experimental-game-overlay\\runs\\prepared-T7lgmv\\ReShade32.dll",
+            "queryError": 0,
+            "maxModulePathLength": 293,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d11-x64",
+        "scaleFactor": 1.25,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 11660,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d11-x64-scale-1.25\\profile\\experimental-game-overlay\\runs\\prepared-Tcc4AV\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 304,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d11-x64",
+        "scaleFactor": 1.5,
+        "targetMode": "folder",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 13540,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d11-x64-scale-1.5\\profile\\experimental-game-overlay\\runs\\prepared-Kcgv87\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 303,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d11-x64",
+        "scaleFactor": 1,
+        "targetMode": "early",
+        "negativeControl": false,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "first-show: first OS key registered without a pointer-down",
+          "first-show: messenger pixels visible in owned graphics window",
+          "managed early attachment: two fresh game launches, authoritative exit, rearm and no best-effort fallback",
+          "reopen: first OS key registered without a pointer-down",
+          "reopen: messenger pixels visible in owned graphics window",
+          "hover: real text cursor over actual messenger control",
+          "hover: real pointer cursor over actual messenger control",
+          "native pointer click opens settings; trusted wheel scrolls actual panel in both directions",
+          "hiding restores the game cursor after overlay pointer use",
+          "intercepted wheel is isolated; hiding returns wheel input to the game",
+          "hidden overlay releases input to the game; intercepted typing does not leak",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 56160,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d11-x64-early\\profile\\experimental-game-overlay\\runs\\prepared-oE2RLI\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 299,
+            "inspector": "K32EnumProcessModulesEx"
+          },
+          {
+            "pid": 12580,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d11-x64-early\\profile\\experimental-game-overlay\\runs\\prepared-xaQDZc\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 299,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      },
+      {
+        "case": "d3d11-x64",
+        "scaleFactor": 1,
+        "targetMode": "folder",
+        "negativeControl": true,
+        "status": "passed",
+        "exitCode": 0,
+        "nativeInjectionExecuted": true,
+        "checks": [
+          "negative control: rc.1-style webview-only focus drops first key",
+          "installed add-on setup and existing launcher share the stable identity and isolated registry"
+        ],
+        "targetModuleInspections": [
+          {
+            "pid": 55964,
+            "module": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-27-21.732Z\\d3d11-x64-negative-control\\profile\\experimental-game-overlay\\runs\\prepared-mkYIu2\\ReShade64.dll",
+            "queryError": 0,
+            "maxModulePathLength": 310,
+            "inspector": "K32EnumProcessModulesEx"
+          }
+        ]
+      }
+    ]
+  },
+  "consumerChecks": {
+    "passed": 217,
+    "failed": 0,
+    "strictHelperTypecheck": "passed",
+    "electron": "46.0.0-alpha.2",
+    "sealedPayloads": 154,
+    "packagedFiles": 159,
+    "inputSource": "Windows SendInput virtual-key down/up pairs",
+    "physicalKeyboardAcceptanceClaimed": false,
+    "registrationId": "9f2fa5924cc4e0acb38b77ce489a7ccaa0692e1a9a3c69cb14857769fa3dcad5"
+  },
+  "consumerHarnessCorrection": {
+    "description": "Read-only owned-process module enumeration uses bounded K32EnumProcessModulesEx plus growing K32GetModuleFileNameExW buffers. Toolhelp fixed-size records failed once the preload DLL was loaded, so the initial harness could not release its graphics barrier despite injector success. SDK/production code and paths unchanged.",
+    "source": {
+      "path": "tests/experimental-overlay-e2e/native/input.cpp",
+      "sha256": "210bd2ae808e68d631aa1dbf544793186b05d49cd84be2e16f9ee540191d7a62",
+      "absolutePath": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\tests\\experimental-overlay-e2e\\native\\input.cpp"
+    },
+    "runtime": {
+      "path": "tests/experimental-overlay-e2e/runtime.cjs",
+      "sha256": "58cce212f8d972a558068260857c8de14c92f9d3572dab3fb38f39eb10e867aa",
+      "absolutePath": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\tests\\experimental-overlay-e2e\\runtime.cjs"
+    },
+    "originalFailureSummary": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-24-03.439Z\\summary.json",
+      "sha256": "6aefc797dc1172b7365f8d0c689136abd5f4fe361c3efb2ff8698a4d0fe114a9"
+    },
+    "originalFailurePreserved": true,
+    "actualStructuredInjectorSuccessObserved": true,
+    "sdkPatched": false,
+    "productionPathsChanged": false,
+    "acceptanceAssertionsWeakened": false
+  },
+  "separateFastStartDiagnostic": {
+    "summary": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T17-28-35.932Z\\summary.json",
+      "sha256": "3b15f7033a45cf70bdc5c1c4539961b1ee701c6ea7299834265d4b90251c7972"
+    },
+    "status": "failed",
+    "category": "retained fast-folder Windows 299 diagnostic",
+    "includedInAcceptedMatrix": false,
+    "reportedNativeInjectionExecuted": true,
+    "injectionBoundary": "Not inferred from the observer flag in this acceptance record",
+    "investigation": "paused",
+    "indeterminateTargetRetried": false
+  },
+  "cleanup": {
+    "ownedNativeProcessesRemaining": 0,
+    "backendPortOccupied": false,
+    "uiDevPortOccupied": false,
+    "evidence": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\rc11-cleanup.json",
+      "sha256": "446b755a9dedc698e04f86da0561edef144defb477b2d83274aa5e5daffe3d93"
+    }
+  },
+  "changesByThisRecording": {
+    "sdkImplementationChanged": false,
+    "consumerWorkspaceModified": false,
+    "testsExecuted": false,
+    "applicationsStopped": false,
+    "securitySettingsChanged": false,
+    "committed": false,
+    "pushed": false
+  },
+  "artifactPreservation": "RC.11 tarball, source archive/manifest, original pending-at-build evidence and earlier candidates remain unchanged; this later acceptance is a separate sidecar"
+}

@@ -78,6 +78,32 @@ physical-key gate requires physical input, not a relabeled synthetic event.
 
 ## Implementation status
 
+### Long-path activation readiness — generation 21
+
+The original long-profile consumer retest of generation 20 loaded and
+registered its DLL, then failed owned-host activation with `ERROR_NOT_READY`.
+Generation 21 corrects a second path limit in the owned host's module
+enumeration while retaining the ABI, actual callback-ready check and unchanged
+EGO add-on implementation. This changes the bundled ReShade host's mapped code;
+it does not replace an already mapped or user-managed host. See the
+[RC.11 record](sdk-rc11-preload-activation.md) for isolated and consumer evidence.
+The original long-profile positive/negative pair passed 2/2; the standard native
+consumer matrix passed 10/10 on 2026-11-03, including x64/x86, fractional scale
+and two-launch rearming. Loaded module paths reached 292–310 characters.
+The consumer corrected its test module inspector without patching the SDK or
+changing production paths. A separate fast-folder Windows 299 failure is
+retained outside that accepted matrix; its investigation remains paused.
+
+### Registered DLL long paths — generation 20
+
+Generation 20 corrects the private `AddonPath` and injector load spelling for
+long registered DLL filenames. It retains the generation-19 mapped add-on
+implementation, build ID and cooperative ABI. Console loader and ownership
+fixtures validated the path correction, but the original generation-20 consumer
+case still failed activation. Generation 21 resolves that second failure and
+passes the recorded consumer matrix above. See the
+[RC.10 record](sdk-rc10-preload-long-path.md) for the retained earlier boundary.
+
 ### Optional installed preloading — generation 19
 
 Generation 19, build `CCE20935ADD44EF6A5A7973014B2E07F`, adds optional installed

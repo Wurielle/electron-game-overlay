@@ -156,6 +156,8 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   for (const bits of [64, 32]) {
     const stamp = JSON.parse(fs.readFileSync(path.join(stage, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
     assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309');
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B');
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6');
   }
 });
 
@@ -206,6 +208,90 @@ test('real npm packaging preserves generation-18 preload packages without claimi
     assert.equal(stamp.injectorAddonPreloadPatchSha256, 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D');
     assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, undefined);
   }
+});
+
+test('real npm packaging preserves retained generation-19 packages without claiming the later preload long-path patch', t => {
+  const f = fixture(t, { runtimeGeneration: 19 });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309');
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, undefined);
+  }
+});
+
+test('real npm packaging preserves retained generation-20 packages without claiming the later adapter-ready long-path patch', t => {
+  const f = fixture(t, { runtimeGeneration: 20 });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B');
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, undefined);
+  }
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 adapter-ready long-path provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {
+  const f = fixture(t), relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+  if (value === undefined) delete stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256;
+  else stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256 = value;
+  f.write(path.join(f.dist, relative), JSON.stringify(stamp)); f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /adapter-ready long-path patch provenance mismatch.*32/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+test('npm packaging rejects removal of both current adapter-ready long-path implementation marker and metadata', t => {
+  const f = fixture(t), validator = path.join(f.dist, 'lib/overlay-package-manifest.js');
+  f.write(validator, fs.readFileSync(validator, 'utf8').replace(/^const OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256[^\n]*\n/m, ''));
+  for (const bits of [64, 32]) {
+    const relative = 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json';
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+    delete stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256;
+    f.write(path.join(f.dist, relative), JSON.stringify(stamp));
+  }
+  f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /adapter-ready long-path patch pin.*generation/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 preload long-path provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {
+  const f = fixture(t), relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+  if (value === undefined) delete stamp.injectorPreloadLongPathPatchSha256;
+  else stamp.injectorPreloadLongPathPatchSha256 = value;
+  f.write(path.join(f.dist, relative), JSON.stringify(stamp)); f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /preload long-path patch provenance mismatch.*32/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+test('npm packaging rejects removal of both current preload long-path implementation marker and metadata', t => {
+  const f = fixture(t), validator = path.join(f.dist, 'lib/overlay-package-manifest.js');
+  f.write(validator, fs.readFileSync(validator, 'utf8').replace(/^const INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256[^\n]*\n/m, ''));
+  for (const bits of [64, 32]) {
+    const relative = 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json';
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+    delete stamp.injectorPreloadLongPathPatchSha256;
+    f.write(path.join(f.dist, relative), JSON.stringify(stamp));
+  }
+  f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /preload long-path patch pin.*generation/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
 });
 
 for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 fresh-owner ordering provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {

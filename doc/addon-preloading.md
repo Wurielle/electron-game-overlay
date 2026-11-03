@@ -68,6 +68,20 @@ including installations or removals made while the supplying app was running.
 Each private staging directory gets its own flat snapshot and an absolute
 `AddonPath` in its own copied INI. Packaged templates remain unchanged.
 
+Generation 20 uses the extended Windows path spelling for that private scan
+directory and for an owned snapshot DLL loaded by the injector. This lets long
+registered filenames load without requiring the target to opt into long paths.
+The native selector accepts only the exact ordinary or extended spelling of the
+verified owned snapshot; its ownership, hash and reparse checks still apply.
+This correction concerns registered DLL paths, not unrestricted runtime staging
+paths. See the [RC.10 validation boundary](sdk-rc10-preload-long-path.md).
+
+Generation 21 also corrects the owned host's callback-readiness enumeration.
+Toolhelp can fail when a loaded module has a long path, despite the DLL loading
+successfully. The host now enumerates module handles, then retains and checks
+each candidate's ABI and actual callback-ready word. See the
+[RC.11 validation boundary](sdk-rc11-preload-activation.md).
+
 The first app creating an owned host supplies that host's snapshot. Later apps
 reuse the existing ReShade runtime; they cannot change its startup scan or
 replace its host. An existing user-managed ReShade installation keeps its

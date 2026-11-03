@@ -1,0 +1,71 @@
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+index 40ed86d..9360edf 100644
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -9,7 +9,7 @@
+ #include "dxgi/dxgi_swapchain.hpp"
+ #include <d3d11_4.h>
+ #include <d3dcommon.h>
+-#include <tlhelp32.h>
++#include <psapi.h>
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
+@@ -21,6 +21,7 @@
+ #include <memory>
+ #include <mutex>
+ #include <string>
++#include <vector>
+ 
+ extern thread_local bool g_in_dxgi_runtime;
+ extern "C" const unsigned int ElectronGameOverlayReShadeHostAbi;
+@@ -228,17 +229,33 @@ namespace ego_owned_late_d3d11
+ 
+     bool cooperative_adapter_ready()
+     {
+-        handle snapshot;
+-        snapshot.value = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+-        if (snapshot.value == INVALID_HANDLE_VALUE) return false;
+-        MODULEENTRY32W entry = {};
+-        entry.dwSize = sizeof(entry);
+-        if (!Module32FirstW(snapshot.value, &entry)) return false;
+-        do
++        // Toolhelp's fixed path fields can make Module32FirstW fail with
++        // ERROR_MORE_DATA when an otherwise valid add-on has a long filename.
++        // Enumerate handles without materializing paths, and never accept a
++        // truncated list or unbounded growth while modules are changing.
++        constexpr std::size_t maximum_module_count = 65536;
++        std::vector<HMODULE> modules(128);
++        bool complete = false;
++        for (unsigned attempt = 0; attempt != 8; ++attempt)
++        {
++            DWORD needed = 0;
++            const DWORD capacity = static_cast<DWORD>(modules.size() * sizeof(HMODULE));
++            if (!K32EnumProcessModules(GetCurrentProcess(), modules.data(), capacity, &needed)) return false;
++            if (needed == 0 || needed % sizeof(HMODULE) != 0 || needed / sizeof(HMODULE) > maximum_module_count)
++                return false;
++            modules.resize(needed / sizeof(HMODULE));
++            if (needed <= capacity)
++            {
++                complete = true;
++                break;
++            }
++        }
++        if (!complete) return false;
++        for (const HMODULE address : modules)
+         {
+             HMODULE module = nullptr;
+             if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+-                    reinterpret_cast<LPCWSTR>(entry.modBaseAddr), &module)) continue;
++                    reinterpret_cast<LPCWSTR>(address), &module)) continue;
+             struct module_reference { HMODULE value; ~module_reference() { FreeLibrary(value); } } reference { module };
+             const auto *const addon_abi = reinterpret_cast<const unsigned int *>(
+                 GetProcAddress(module, "ElectronGameOverlayReShadeAddonAbi"));
+@@ -247,7 +264,6 @@ namespace ego_owned_late_d3d11
+             if (has_adapter_word ? ready_word(module, "ElectronGameOverlayCooperativeAdapterReadyV1") :
+                 ready_word(module, "ElectronGameOverlayCooperativeReadyV1")) return true;
+         }
+-        while (Module32NextW(snapshot.value, &entry));
+         return false;
+     }
+ 

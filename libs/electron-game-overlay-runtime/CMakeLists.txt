@@ -8,6 +8,15 @@ set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
 set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
     "A8ECF5046DD3BEDB748B77202504B234E39444FD96A9EAFC35A5877FEBC683E6"
 )
+set(RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256
+    "91D82243D81D2CDC082DA1AF9BFF55A13315BF59F1FE5F9ACA1DFAE8442C8A10"
+)
+set(RESHAPE_PRE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256
+    "AEA939BCC391BC5C2F63683558B78A88222BD5E9C4B81EFB5069CAA346F724BE"
+)
+set(RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256
+    "36753053450815B934A6117B1C072A2100AA86032DF30D937F9A127CA0F7A5F0"
+)
 set(RESHAPE_PRE_FIRST_HOST_PRELOADED_INJECTOR_CONTENT_SHA256
     "B8E59D50F1D5D9EF54281B6B77FC034B780044C706F04C4F63B947EDE5E45191"
 )
@@ -211,6 +220,18 @@ set(RESHAPE_PRELOADED_FIRST_HOST_PATCH
 set(RESHAPE_PRELOADED_FIRST_HOST_PATCH_SHA256
     "A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309"
 )
+set(RESHAPE_PRELOAD_LONG_PATH_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-preload-long-path.patch"
+)
+set(RESHAPE_PRELOAD_LONG_PATH_PATCH_SHA256
+    "FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B"
+)
+set(RESHAPE_ADAPTER_READY_LONG_PATH_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-owned-late-d3d11-adapter-ready-long-path.patch"
+)
+set(RESHAPE_ADAPTER_READY_LONG_PATH_PATCH_SHA256
+    "BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6"
+)
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -311,6 +332,18 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
 )
 # END EGO_SOURCE_CACHE_MIGRATION_TABLES
+# Preserve the frozen generation-19 migration vector above. Generation 20 owns
+# only a terminal injector correction; every mapped implementation stays pinned.
+string(REPLACE "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_PRELOAD_LONG_PATH_PATCHED_CONTENT_SHA256
+    "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+# Generation 21 changes only the host's adapter discovery. Retain the exact
+# generation-20 injector and derive a separate complete terminal vector.
+string(REPLACE "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_PRE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}"
+    RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256
+    "${RESHAPE_PRELOAD_LONG_PATH_PATCHED_CONTENT_SHA256}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
@@ -343,6 +376,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_FIRST_HOST_RESULT_PATCH}"
     "${RESHAPE_PRELOADED_ADDON_PATCH}"
     "${RESHAPE_PRELOADED_FIRST_HOST_PATCH}"
+    "${RESHAPE_PRELOAD_LONG_PATH_PATCH}"
+    "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -877,6 +912,43 @@ function(ego_prepare_owned_late_source_cache source_dir)
     if(NOT first_host_patch_hash STREQUAL RESHAPE_PRELOADED_FIRST_HOST_PATCH_SHA256)
         message(FATAL_ERROR "The preloaded first-host patch hash is not the frozen implementation.")
     endif()
+    if(DEFINED RESHAPE_PRELOAD_LONG_PATH_PATCH)
+        get_filename_component(long_path_patch_dir "${RESHAPE_PRELOAD_LONG_PATH_PATCH}" DIRECTORY)
+        get_filename_component(long_path_patch_name "${RESHAPE_PRELOAD_LONG_PATH_PATCH}" NAME)
+        ego_read_source_cache_file("${long_path_patch_dir}" "${long_path_patch_name}" long_path_patch_hash ignored_text)
+        if(NOT long_path_patch_hash STREQUAL RESHAPE_PRELOAD_LONG_PATH_PATCH_SHA256)
+            message(FATAL_ERROR "The preload long-path patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    if(DEFINED RESHAPE_ADAPTER_READY_LONG_PATH_PATCH)
+        get_filename_component(adapter_patch_dir "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}" DIRECTORY)
+        get_filename_component(adapter_patch_name "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}" NAME)
+        ego_read_source_cache_file("${adapter_patch_dir}" "${adapter_patch_name}" adapter_patch_hash ignored_text)
+        if(NOT adapter_patch_hash STREQUAL RESHAPE_ADAPTER_READY_LONG_PATH_PATCH_SHA256)
+            message(FATAL_ERROR "The adapter-ready long-path patch hash is not the frozen implementation.")
+        endif()
+        set(adapter_source_relative_path "source/ego_owned_late_d3d11/owned_late_d3d11.inl")
+        if(EXISTS "${source_root}/${adapter_source_relative_path}" OR
+           IS_SYMLINK "${source_root}/${adapter_source_relative_path}")
+            ego_read_source_cache_file("${source_root}" "${adapter_source_relative_path}" adapter_source_hash ignored_text)
+            if(adapter_source_hash STREQUAL RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256)
+                # Restore the exact generation-20 vector before its injector
+                # tail is peeled. Mixed generation-21/older bodies fail the
+                # complete-vector proof before either source file is changed.
+                ego_apply_adapter_ready_long_path_source_tail("${source_root}" REVERSE)
+            endif()
+        endif()
+    endif()
+    # Peel only the exact generation-20 terminal body under the existing cache
+    # lock, after every supplied terminal patch has passed its frozen pin. The
+    # shared helper validates the complete vector and stages one atomic rename.
+    if(injector_hash STREQUAL RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256)
+        ego_apply_terminal_injector_source_tail("${source_root}"
+            "${RESHAPE_PRELOAD_LONG_PATH_PATCH}" "${RESHAPE_PRELOAD_LONG_PATH_PATCH_SHA256}"
+            "${RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256}"
+            "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
 
     if(injector_hash STREQUAL "26CFBBFFD692ACFB24BD19CBD93B3C7F81F24555EA67B75C55FAD14861E38B00")
         ego_assert_source_cache_vector("${source_root}" ${RESHAPE_PRISTINE_CONTENT_SHA256})
@@ -1218,27 +1290,39 @@ function(ego_apply_owned_late_source_tail source_dir)
     ego_assert_source_cache_vector("${source_dir}" ${host_vector})
 endfunction()
 
-function(ego_apply_terminal_injector_source_tail source_dir patch_path expected_patch_hash expected_before_hash expected_after_hash)
+function(ego_apply_terminal_source_file_tail source_dir source_relative_path patch_path expected_patch_hash expected_before_hash expected_after_hash)
+    set(apply_direction)
+    if(ARGC GREATER 6)
+        if(NOT ARGC EQUAL 7 OR NOT ARGV6 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown terminal source patch direction; no source files were changed.")
+        endif()
+        set(apply_direction "--reverse")
+    endif()
     get_filename_component(patch_directory "${patch_path}" DIRECTORY)
     get_filename_component(patch_name "${patch_path}" NAME)
     ego_read_source_cache_file("${patch_directory}" "${patch_name}" patch_hash patch_text)
     if(NOT patch_hash STREQUAL expected_patch_hash)
-        message(FATAL_ERROR "The terminal injector patch changed before replay.")
+        message(FATAL_ERROR "The terminal source patch changed before replay.")
     endif()
-    ego_read_source_cache_file("${source_dir}" "tools/injector.cpp" injector_hash injector_text)
-    if(NOT injector_hash STREQUAL expected_before_hash AND
-       NOT injector_hash STREQUAL expected_after_hash)
-        message(FATAL_ERROR "Unknown terminal injector preimage; no source files were changed.")
+    ego_read_source_cache_file("${source_dir}" "${source_relative_path}" source_hash source_text)
+    if(NOT source_hash STREQUAL expected_before_hash AND
+       NOT source_hash STREQUAL expected_after_hash)
+        message(FATAL_ERROR "Unknown terminal source preimage; no source files were changed.")
     endif()
-    string(REPLACE "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
-        "tools/injector.cpp=${expected_after_hash}" final_vector
+    list(FIND RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${source_relative_path}=${expected_before_hash}" before_entry_index)
+    if(before_entry_index EQUAL -1)
+        message(FATAL_ERROR "The terminal source preimage is absent from its pinned vector; no source files were changed.")
+    endif()
+    string(REPLACE "${source_relative_path}=${expected_before_hash}"
+        "${source_relative_path}=${expected_after_hash}" final_vector
         "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
-    string(REPLACE "tools/injector.cpp=${expected_after_hash}"
-        "tools/injector.cpp=${injector_hash}" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    string(REPLACE "${source_relative_path}=${expected_after_hash}"
+        "${source_relative_path}=${source_hash}" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
         "${final_vector}")
     ego_assert_source_cache_vector("${source_dir}" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
     verify_reshade_patched_source("${source_dir}")
-    if(injector_hash STREQUAL expected_after_hash)
+    if(source_hash STREQUAL expected_after_hash)
         return()
     endif()
 
@@ -1247,40 +1331,50 @@ function(ego_apply_terminal_injector_source_tail source_dir patch_path expected_
     # stopped configure therefore leaves either recognized terminal state.
     string(RANDOM LENGTH 12 ALPHABET "0123456789abcdef" result_suffix)
     set(scratch "${CMAKE_CURRENT_BINARY_DIR}/ego-terminal-${result_suffix}")
-    file(MAKE_DIRECTORY "${scratch}/candidate/tools")
-    ego_write_lf_source_cache_file("${scratch}/candidate/tools/injector.cpp" "${injector_text}")
+    get_filename_component(candidate_directory "${scratch}/candidate/${source_relative_path}" DIRECTORY)
+    file(MAKE_DIRECTORY "${candidate_directory}")
+    ego_write_lf_source_cache_file("${scratch}/candidate/${source_relative_path}" "${source_text}")
     ego_write_lf_source_cache_file("${scratch}/result.patch" "${patch_text}")
-    ego_source_cache_path("${source_dir}" "tools/injector.cpp" target)
+    ego_source_cache_path("${source_dir}" "${source_relative_path}" target)
     file(SHA256 "${target}" original_raw_hash)
     foreach(apply_argument IN ITEMS "--check" "--apply")
         execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=GIT_DIR
             --unset=GIT_WORK_TREE --unset=GIT_INDEX_FILE
             "GIT_CEILING_DIRECTORIES=${scratch}"
             "${GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf apply --whitespace=nowarn
-            "${apply_argument}" "${scratch}/result.patch"
+            ${apply_direction} "${apply_argument}" "${scratch}/result.patch"
             WORKING_DIRECTORY "${scratch}/candidate"
             RESULT_VARIABLE result_apply OUTPUT_VARIABLE result_output ERROR_VARIABLE result_error)
         if(NOT result_apply EQUAL 0)
-            message(FATAL_ERROR "Unable to stage the frozen terminal injector tail; live source was not changed.\n${result_output}${result_error}")
+            message(FATAL_ERROR "Unable to stage the frozen terminal source tail; live source was not changed.\n${result_output}${result_error}")
         endif()
     endforeach()
-    ego_read_source_cache_file("${scratch}/candidate" "tools/injector.cpp" candidate_hash ignored_text)
+    ego_read_source_cache_file("${scratch}/candidate" "${source_relative_path}" candidate_hash ignored_text)
     if(NOT candidate_hash STREQUAL expected_after_hash)
-        message(FATAL_ERROR "The staged terminal injector body has an unexpected hash; live source was not changed.")
+        message(FATAL_ERROR "The staged terminal source body has an unexpected hash; live source was not changed.")
     endif()
     ego_assert_source_cache_vector("${source_dir}" ${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256})
     verify_reshade_patched_source("${source_dir}")
     file(SHA256 "${target}" current_raw_hash)
     if(NOT current_raw_hash STREQUAL original_raw_hash)
-        message(FATAL_ERROR "The injector changed before terminal publication; unknown edits were preserved.")
+        message(FATAL_ERROR "The source changed before terminal publication; unknown edits were preserved.")
     endif()
-    file(RENAME "${scratch}/candidate/tools/injector.cpp" "${target}" RESULT publish_result)
+    file(RENAME "${scratch}/candidate/${source_relative_path}" "${target}" RESULT publish_result)
     if(NOT publish_result STREQUAL "0")
-        message(FATAL_ERROR "Unable to publish the verified terminal injector body: ${publish_result}")
+        message(FATAL_ERROR "Unable to publish the verified terminal source body: ${publish_result}")
     endif()
     ego_assert_source_cache_vector("${source_dir}" ${final_vector})
     set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${final_vector}")
     verify_reshade_patched_source("${source_dir}")
+endfunction()
+
+function(ego_apply_terminal_injector_source_tail source_dir patch_path expected_patch_hash expected_before_hash expected_after_hash)
+    # Preserve the frozen injector-tail API and its generation-19 base vector.
+    string(REPLACE "tools/injector.cpp=${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}"
+        "tools/injector.cpp=${expected_before_hash}" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${patch_path}" "${expected_patch_hash}" "${expected_before_hash}" "${expected_after_hash}" ${ARGN})
 endfunction()
 
 function(ego_apply_first_host_result_source_tail source_dir)
@@ -1299,6 +1393,34 @@ function(ego_apply_preloaded_first_host_source_tail source_dir)
     ego_apply_terminal_injector_source_tail("${source_dir}"
         "${RESHAPE_PRELOADED_FIRST_HOST_PATCH}" "${RESHAPE_PRELOADED_FIRST_HOST_PATCH_SHA256}"
         "${RESHAPE_PRE_FIRST_HOST_PRELOADED_INJECTOR_CONTENT_SHA256}" "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}")
+endfunction()
+
+function(ego_apply_preload_long_path_source_tail source_dir)
+    ego_apply_terminal_injector_source_tail("${source_dir}"
+        "${RESHAPE_PRELOAD_LONG_PATH_PATCH}" "${RESHAPE_PRELOAD_LONG_PATH_PATCH_SHA256}"
+        "${RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256}" "${RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256}")
+endfunction()
+
+function(ego_apply_adapter_ready_long_path_source_tail source_dir)
+    set(before_hash "${RESHAPE_PRE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_PRELOAD_LONG_PATH_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown adapter-ready patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_PRE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}"
+        "source/ego_owned_late_d3d11/owned_late_d3d11.inl"
+        "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}" "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
 endfunction()
 
 # Recognize the complete injector before any live historical patch is peeled.
@@ -3133,6 +3255,12 @@ ego_apply_owned_late_source_tail("${reshade_SOURCE_DIR}")
 ego_apply_first_host_result_source_tail("${reshade_SOURCE_DIR}")
 ego_apply_preloaded_addon_source_tail("${reshade_SOURCE_DIR}")
 ego_apply_preloaded_first_host_source_tail("${reshade_SOURCE_DIR}")
+ego_apply_preload_long_path_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_PRELOAD_LONG_PATH_PATCHED_CONTENT_SHA256}")
+ego_apply_adapter_ready_long_path_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256}")
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and

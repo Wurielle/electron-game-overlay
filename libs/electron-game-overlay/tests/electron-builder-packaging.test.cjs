@@ -247,3 +247,59 @@ test('fully rebound current ordering provenance removal fails before replacing a
   assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
   assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
 });
+
+test('public verification and afterPack preserve retained generation-19 packages without long-path provenance', async t => {
+  const f = await fixture(t, { runtimeGeneration: 19 });
+  const original = await fs.readFile(path.join(f.leaf, 'overlay-manifest.json'));
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309');
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, undefined);
+  }
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('fully rebound current long-path provenance ' + (value === undefined ? 'removal' : 'substitution') + ' fails before replacing a valid Electron package', async t => {
+  const f = await fixture(t);
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  const original = await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json'));
+  const relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(await fs.readFile(path.join(f.leaf, relative)));
+  if (value === undefined) delete stamp.injectorPreloadLongPathPatchSha256;
+  else stamp.injectorPreloadLongPathPatchSha256 = value;
+  f.payload.write(relative, JSON.stringify(stamp)); f.payload.bindNativeHashes(); f.payload.seal();
+  await assert.rejects(verifyOverlayPackage(f.sdk), /preload long-path patch provenance mismatch.*32/i);
+  await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /preload long-path patch provenance mismatch.*32/i);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+});
+
+test('public verification and afterPack preserve retained generation-20 packages without adapter-ready long-path provenance', async t => {
+  const f = await fixture(t, { runtimeGeneration: 20 });
+  const original = await fs.readFile(path.join(f.leaf, 'overlay-manifest.json'));
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B');
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, undefined);
+  }
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('fully rebound current adapter-ready long-path provenance ' + (value === undefined ? 'removal' : 'substitution') + ' fails before replacing a valid Electron package', async t => {
+  const f = await fixture(t);
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  const original = await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json'));
+  const relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(await fs.readFile(path.join(f.leaf, relative)));
+  if (value === undefined) delete stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256;
+  else stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256 = value;
+  f.payload.write(relative, JSON.stringify(stamp)); f.payload.bindNativeHashes(); f.payload.seal();
+  await assert.rejects(verifyOverlayPackage(f.sdk), /adapter-ready long-path patch provenance mismatch.*32/i);
+  await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /adapter-ready long-path patch provenance mismatch.*32/i);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+});

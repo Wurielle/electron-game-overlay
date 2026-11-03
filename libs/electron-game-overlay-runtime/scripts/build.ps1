@@ -101,8 +101,8 @@ $DistributionDirectory = Join-Path `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
-# Bump only when the mapped runtime provider changes, never for package semver.
-$RuntimeGeneration = 19
+# Bump when the runtime provider or injector implementation changes, never for package semver.
+$RuntimeGeneration = 21
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -170,6 +170,10 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-addon.patch"
     injectorPreloadedFirstHostPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-first-host.patch"
+    injectorPreloadLongPathPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-preload-long-path.patch"
+    ownedLateD3d11AdapterReadyLongPathPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11-adapter-ready-long-path.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -190,6 +194,14 @@ Assert-Sha256Equal `
     -Expected "A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309" `
     -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorPreloadedFirstHostPatchSha256).Hash `
     -Label "frozen injector preloaded first-host patch"
+Assert-Sha256Equal `
+    -Expected "FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorPreloadLongPathPatchSha256).Hash `
+    -Label "frozen injector preload long-path patch"
+Assert-Sha256Equal `
+    -Expected "BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11AdapterReadyLongPathPatchSha256).Hash `
+    -Label "frozen owned late D3D11 adapter-ready long-path patch"
 
 $CMake = Resolve-Executable "cmake.exe"
 if ($ForceReShade) {

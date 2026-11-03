@@ -1,0 +1,54 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index d173902..2d40c49 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -4357,9 +4357,14 @@ static DWORD validate_first_host_preload_snapshot(const std::wstring &stage,
+ 	if (_wcsicmp(stage.c_str(), full_stage.c_str()) != 0) return ERROR_BAD_PATHNAME;
+ 	const std::wstring snapshot = stage + L"\\preloaded-addons";
+ 	const std::wstring expected_runtime = stage + L"\\" + target_reshade_runtime_file;
++	// The SDK may supply the extended spelling so stock ReShade's scanner can
++	// load long snapshot leaves. Admit only this exact owned directory alias;
++	// every canonical stage, reparse, ownership and payload check still follows.
++	const std::wstring extended_snapshot = make_extended_length_path(snapshot);
+ 	if (_wcsicmp(runtime_path.c_str(), expected_runtime.c_str()) != 0 ||
+ 		_wcsicmp(settings.reshade_base_path.c_str(), stage.c_str()) != 0 ||
+-		_wcsicmp(settings.addon_directory_path.c_str(), snapshot.c_str()) != 0)
++		(_wcsicmp(settings.addon_directory_path.c_str(), snapshot.c_str()) != 0 &&
++		 _wcsicmp(settings.addon_directory_path.c_str(), extended_snapshot.c_str()) != 0))
+ 		return ERROR_ACCESS_DENIED;
+ 	error = pin_owned_preload_directory(stage, guard.stage_directory);
+ 	if (error != ERROR_SUCCESS) return error;
+@@ -4889,8 +4894,14 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return ERROR_BAD_EXE_FORMAT;
+ 		}
++		// Module path queries retain the spelling used at load. Prefix only an
++		// owned disk snapshot; already-scanned copies retain their observed form.
++		// Keep the expected identity local rather than trusting remote arguments
++		// after the target thread has returned them.
++		const std::wstring expected_load_path = load_owned_snapshot
++			? make_extended_length_path(selected_path) : selected_path;
+ 		participant_loading_data data;
+-		if (wcscpy_s(data.load_path, selected_path.c_str()) != 0)
++		if (wcscpy_s(data.load_path, expected_load_path.c_str()) != 0)
+ 		{
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return ERROR_FILENAME_EXCED_RANGE;
+@@ -4979,7 +4990,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		{
+ 			std::wstring assigned_path;
+ 			if (!remote_module_path(process, data.loaded_module, assigned_path, error)) return error;
+-			if (_wcsicmp(assigned_path.c_str(), selected_path.c_str()) != 0) return ERROR_INVALID_NAME;
++			if (_wcsicmp(assigned_path.c_str(), expected_load_path.c_str()) != 0) return ERROR_INVALID_NAME;
+ 			// This exact native export alone proves a prior private route owns
+ 			// the preloaded copy. An absent module or this explicit result permits
+ 			// the normal staged member; every other failure remains fail-closed.
+@@ -4992,7 +5003,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		if (!remote_module_path(process, data.loaded_module, loaded_path, error) ||
+ 			!remote_module_path(process, runtime, runtime_path, error))
+ 			return error;
+-		if (_wcsicmp(loaded_path.c_str(), selected_path.c_str()) != 0)
++		if (_wcsicmp(loaded_path.c_str(), expected_load_path.c_str()) != 0)
+ 			return ERROR_INVALID_NAME;
+ 		if (report_first_injected_runtime)
+ 		{

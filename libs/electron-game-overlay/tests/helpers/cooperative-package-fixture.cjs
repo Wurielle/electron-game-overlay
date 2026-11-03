@@ -9,7 +9,7 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
   addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
-  runtimeGeneration = 19,
+  runtimeGeneration = 21,
   addonPreloadProtocol = runtimeGeneration >= 17 ? 1 : undefined,
   reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
   ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
@@ -18,6 +18,10 @@ function writeCooperativeDistribution(dist, {
   injectorAddonPreloadPatchSha256 = 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D',
   preloadedFirstHostPatch = runtimeGeneration >= 19,
   injectorPreloadedFirstHostPatchSha256 = 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309',
+  preloadLongPathPatch = runtimeGeneration >= 20,
+  injectorPreloadLongPathPatchSha256 = 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B',
+  adapterReadyLongPathPatch = runtimeGeneration >= 21,
+  ownedLateD3d11AdapterReadyLongPathPatchSha256 = 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6',
 } = {}) {
   dist = path.resolve(dist);
   fs.mkdirSync(dist, { recursive: true });
@@ -49,6 +53,12 @@ function writeCooperativeDistribution(dist, {
       : '') +
     (preloadedFirstHostPatch
       ? `const INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256 = '${injectorPreloadedFirstHostPatchSha256}';\n`
+      : '') +
+    (preloadLongPathPatch
+      ? `const INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256 = '${injectorPreloadLongPathPatchSha256}';\n`
+      : '') +
+    (adapterReadyLongPathPatch
+      ? `const OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256 = '${ownedLateD3d11AdapterReadyLongPathPatchSha256}';\n`
       : ''));
   json('node_modules/tslib/package.json', { name: 'tslib', version: '2.8.1', main: 'tslib.js' });
   write('node_modules/tslib/tslib.js', '// controlled dependency, never executed\n');
@@ -86,6 +96,8 @@ function writeCooperativeDistribution(dist, {
         ...(addonPreloadProtocol === undefined ? {} : { addonPreloadProtocol }),
         ...(addonPreloadProtocol === 1 ? { injectorAddonPreloadPatchSha256 } : {}),
         ...(preloadedFirstHostPatch ? { injectorPreloadedFirstHostPatchSha256 } : {}),
+        ...(preloadLongPathPatch ? { injectorPreloadLongPathPatchSha256 } : {}),
+        ...(adapterReadyLongPathPatch ? { ownedLateD3d11AdapterReadyLongPathPatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
         }),
