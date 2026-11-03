@@ -89,6 +89,7 @@ const prerequisiteReason = spawnSync('cmake', ['--version'], { windowsHide: true
 const options = { skip: prerequisiteReason };
 
 function temporary(t, parent = os.tmpdir()) {
+  fs.mkdirSync(parent, { recursive: true });
   const directory = fs.mkdtempSync(path.join(parent, 'ego-addon-id-rollover-'));
   t.after(() => {
     const relative = path.relative(path.resolve(parent), path.resolve(directory));

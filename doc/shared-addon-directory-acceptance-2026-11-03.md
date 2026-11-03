@@ -128,6 +128,11 @@ the migration-fixture failures. Pinning those files to LF preserves their exact
 committed hashes; both affected suites passed with 118 passes, two expected
 retained-source skips and no failures.
 
+The nested migration fixture also creates its own parent directory: SDK-only CI
+does not prepare the repository's ignored `build` directory. Its focused case
+and both affected suites passed again from a fresh checkout with that directory
+absent, without precreating it in test setup.
+
 The installed-package acceptance script also expected the retired standalone
 broker manifest. Its existing CI entrypoint now verifies the direct cooperative
 SDK seal, all eight architecture-correct native payloads, offline installation,
