@@ -24,6 +24,8 @@ const INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256 =
   'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B';
 const OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256 =
   'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6';
+const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 =
+  '5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -225,6 +227,21 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (requiresAdapterReadyLongPathPatch && expectedGeneration < 21)) {
     throw new Error('Compiled SDK adapter-ready long-path patch pin does not match its generation');
   }
+  // Bind the bounded initial-inspection recovery implementation independently
+  // of the retained injector and owned-host long-path corrections.
+  const initialInspectionRecoveryDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256\b/g)];
+  const initialInspectionRecoveryPins = [...validator.matchAll(/\bconst\s+INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (initialInspectionRecoveryDeclarations.length !== initialInspectionRecoveryPins.length || initialInspectionRecoveryDeclarations.length > 1) {
+    throw new Error('Compiled SDK initial inspection recovery patch pin is malformed or ambiguous');
+  }
+  const requiresInitialInspectionRecoveryPatch = initialInspectionRecoveryPins.length === 1;
+  if (requiresInitialInspectionRecoveryPatch && initialInspectionRecoveryPins[0][1].toUpperCase() !== INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256) {
+    throw new Error('Unsupported compiled SDK initial inspection recovery patch pin');
+  }
+  if ((!requiresInitialInspectionRecoveryPatch && expectedGeneration > 21) ||
+      (requiresInitialInspectionRecoveryPatch && expectedGeneration < 22)) {
+    throw new Error('Compiled SDK initial inspection recovery patch pin does not match its generation');
+  }
   const native = path.join(dist, 'runtime/win32-x64/reshade');
   let paired: Record<string, unknown> | undefined;
   for (const bits of [64, 32]) {
@@ -325,6 +342,15 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256 !== undefined) {
       throw new Error('Owned late D3D11 adapter-ready long-path patch provenance requires the sealed SDK implementation pin: ' + bits);
+    }
+    if (requiresInitialInspectionRecoveryPatch) {
+      if (typeof reshade.injectorInitialInspectionRecoveryPatchSha256 !== 'string' ||
+          !NATIVE_DIGEST.test(reshade.injectorInitialInspectionRecoveryPatchSha256) ||
+          reshade.injectorInitialInspectionRecoveryPatchSha256.toUpperCase() !== INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256) {
+        throw new Error('Pinned injector initial inspection recovery patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorInitialInspectionRecoveryPatchSha256 !== undefined) {
+      throw new Error('Injector initial inspection recovery patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);

@@ -158,6 +158,7 @@ test('packs a non-native controlled fixture with real npm and staged public meta
     assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309');
     assert.equal(stamp.injectorPreloadLongPathPatchSha256, 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B');
     assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6');
+    assert.equal(stamp.injectorInitialInspectionRecoveryPatchSha256, '5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7');
   }
 });
 
@@ -232,6 +233,48 @@ test('real npm packaging preserves retained generation-20 packages without claim
     assert.equal(stamp.injectorPreloadLongPathPatchSha256, 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B');
     assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, undefined);
   }
+});
+
+test('real npm packaging preserves retained generation-21 packages without claiming the later initial inspection recovery patch', t => {
+  const f = fixture(t, { runtimeGeneration: 21 });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6');
+    assert.equal(stamp.injectorInitialInspectionRecoveryPatchSha256, undefined);
+  }
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 initial inspection recovery provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {
+  const f = fixture(t), relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+  if (value === undefined) delete stamp.injectorInitialInspectionRecoveryPatchSha256;
+  else stamp.injectorInitialInspectionRecoveryPatchSha256 = value;
+  f.write(path.join(f.dist, relative), JSON.stringify(stamp)); f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /initial inspection recovery patch provenance mismatch.*32/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+test('npm packaging rejects removal of both current initial inspection recovery implementation marker and metadata', t => {
+  const f = fixture(t), validator = path.join(f.dist, 'lib/overlay-package-manifest.js');
+  f.write(validator, fs.readFileSync(validator, 'utf8').replace(/^const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256[^\n]*\n/m, ''));
+  for (const bits of [64, 32]) {
+    const relative = 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json';
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+    delete stamp.injectorInitialInspectionRecoveryPatchSha256;
+    f.write(path.join(f.dist, relative), JSON.stringify(stamp));
+  }
+  f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /initial inspection recovery patch pin.*generation/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
 });
 
 for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 adapter-ready long-path provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {

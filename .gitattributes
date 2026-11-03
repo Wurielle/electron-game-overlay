@@ -5,6 +5,7 @@ libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-addon.patc
 libs/electron-game-overlay-runtime/patches/reshade-injector-preloaded-first-host.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-injector-preload-long-path.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11-adapter-ready-long-path.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-initial-inspection-recovery.patch text eol=lf
 libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/owned-host-prototype/* text eol=lf
 libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/owned-host-prototype/*.patch whitespace=-trailing-space,-space-before-tab
 # Stock ReShade ends the final INI section with an empty CRLF separator.

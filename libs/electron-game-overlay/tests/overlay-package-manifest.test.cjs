@@ -16,9 +16,11 @@ const retainedGeneration16 = Object.freeze({ runtimeGeneration: 16, addonBuildId
 const retainedGeneration18 = Object.freeze({ runtimeGeneration: 18, addonBuildId: '17E16E01C9A243E18EE19D814420E519' });
 const retainedGeneration19 = Object.freeze({ runtimeGeneration: 19 });
 const retainedGeneration20 = Object.freeze({ runtimeGeneration: 20 });
+const retainedGeneration21 = Object.freeze({ runtimeGeneration: 21 });
 const preloadedFirstHostPatchSha256 = 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309';
 const preloadLongPathPatchSha256 = 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B';
 const adapterReadyLongPathPatchSha256 = 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6';
+const initialInspectionRecoveryPatchSha256 = '5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7';
 
 function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-direct-seal-'));
@@ -224,7 +226,7 @@ test('current preload implementation binds capability 1 and the exact injector p
     const suffix = bits === 64 ? '' : '32';
     const native = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/electron_game_overlay_runtime' + suffix + '.build.json')));
     const reshade = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
-    assert.equal(native.runtimeGeneration, 21);
+    assert.equal(native.runtimeGeneration, 22);
     assert.equal(native.addonPreloadProtocol, 1);
     assert.equal(reshade.addonPreloadProtocol, 1);
     assert.equal(reshade.injectorAddonPreloadPatchSha256, 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D');
@@ -420,7 +422,7 @@ test('current preloading binds the exact injector long-path patch independently 
     const suffix = bits === 64 ? '' : '32';
     const native = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/electron_game_overlay_runtime' + suffix + '.build.json')));
     const reshade = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
-    assert.equal(native.runtimeGeneration, 21);
+    assert.equal(native.runtimeGeneration, 22);
     assert.equal(reshade.schemaVersion, 30);
     assert.equal(reshade.injectorPreloadLongPathPatchSha256, preloadLongPathPatchSha256);
   }
@@ -479,14 +481,31 @@ for (const removeProvenance of [false, true]) test('current code cannot omit its
   assert.throws(() => validateOverlayDistributionSync(f.dist), /preload long-path patch pin does not match its generation/i);
 });
 
-test('generation-21 preloading binds both injector and owned-host long-path patches for both architectures', t => {
+test('retained generation-21 payloads preserve both long-path corrections without claiming later inspection recovery', t => {
+  const f = fixture(t, retainedGeneration21), before = fs.readFileSync(f.manifestPath);
+  const manifest = validateOverlayDistributionSync(f.dist);
+  assert.deepEqual(createOverlayDistributionManifestSync(f.dist, manifest.packageVersion), manifest);
+  assert.deepEqual(fs.readFileSync(f.manifestPath), before);
+  assert.doesNotMatch(fs.readFileSync(path.join(f.dist, 'lib/overlay-package-manifest.js'), 'utf8'), /INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256/);
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    const native = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/electron_game_overlay_runtime' + suffix + '.build.json')));
+    const reshade = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(native.runtimeGeneration, 21);
+    assert.equal(reshade.injectorPreloadLongPathPatchSha256, preloadLongPathPatchSha256);
+    assert.equal(reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256, adapterReadyLongPathPatchSha256);
+    assert.equal(reshade.injectorInitialInspectionRecoveryPatchSha256, undefined);
+  }
+});
+
+test('current preloading binds both injector and owned-host long-path patches for both architectures', t => {
   const f = fixture(t);
   validateOverlayDistributionSync(f.dist);
   for (const bits of [64, 32]) {
     const suffix = bits === 64 ? '' : '32';
     const native = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/electron_game_overlay_runtime' + suffix + '.build.json')));
     const reshade = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
-    assert.equal(native.runtimeGeneration, 21);
+    assert.equal(native.runtimeGeneration, 22);
     assert.equal(reshade.schemaVersion, 30);
     assert.equal(reshade.injectorPreloadLongPathPatchSha256, preloadLongPathPatchSha256);
     assert.equal(reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256, adapterReadyLongPathPatchSha256);
@@ -544,6 +563,74 @@ for (const removeProvenance of [false, true]) test('current code cannot omit its
   if (removeProvenance) for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { delete stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256; });
   f.payload.seal();
   assert.throws(() => validateOverlayDistributionSync(f.dist), /adapter-ready long-path patch pin does not match its generation/i);
+});
+
+test('generation-22 packages bind initial inspection recovery and retain both long-path patches', t => {
+  const f = fixture(t);
+  validateOverlayDistributionSync(f.dist);
+  for (const bits of [64, 32]) {
+    const suffix = bits === 64 ? '' : '32';
+    const native = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/electron_game_overlay_runtime' + suffix + '.build.json')));
+    const reshade = JSON.parse(fs.readFileSync(path.join(f.dist, 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(native.runtimeGeneration, 22);
+    assert.equal(reshade.schemaVersion, 30);
+    assert.equal(reshade.injectorPreloadLongPathPatchSha256, preloadLongPathPatchSha256);
+    assert.equal(reshade.ownedLateD3d11AdapterReadyLongPathPatchSha256, adapterReadyLongPathPatchSha256);
+    assert.equal(reshade.injectorInitialInspectionRecoveryPatchSha256, initialInspectionRecoveryPatchSha256);
+  }
+});
+
+for (const [name, value] of [['missing', undefined], ['null', null], ['wrong type', 1], ['malformed', 'bad'], ['wrong valid digest', '0'.repeat(64)]]) test('initial inspection recovery patch rejects ' + name + ' provenance after full hash rebinding', t => {
+  const f = fixture(t);
+  for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => {
+    if (value === undefined) delete stamp.injectorInitialInspectionRecoveryPatchSha256;
+    else stamp.injectorInitialInspectionRecoveryPatchSha256 = value;
+  });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /initial inspection recovery patch provenance mismatch/i);
+  assert.throws(() => createOverlayDistributionManifestSync(f.dist, '0.1.0-rc.7'), /initial inspection recovery patch provenance mismatch/i);
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('x86 initial inspection recovery provenance is independently required: ' + (value === undefined ? 'missing' : 'wrong digest'), t => {
+  const f = fixture(t);
+  mutateStamp(f, 'ReShade32.build.json', stamp => {
+    if (value === undefined) delete stamp.injectorInitialInspectionRecoveryPatchSha256;
+    else stamp.injectorInitialInspectionRecoveryPatchSha256 = value;
+  });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /initial inspection recovery patch provenance mismatch.*32/i);
+});
+
+test('generation-21 code cannot claim initial inspection recovery through source-stamp metadata alone', t => {
+  const f = fixture(t, retainedGeneration21);
+  for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { stamp.injectorInitialInspectionRecoveryPatchSha256 = initialInspectionRecoveryPatchSha256; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /initial inspection recovery patch provenance requires the sealed SDK implementation pin/i);
+});
+
+test('a valid initial inspection recovery marker cannot relabel a generation-21 implementation', t => {
+  const f = fixture(t, retainedGeneration21), modulePath = 'lib/overlay-package-manifest.js';
+  f.write(modulePath, fs.readFileSync(path.join(f.dist, modulePath), 'utf8') + `const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = '${initialInspectionRecoveryPatchSha256}';\n`);
+  for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { stamp.injectorInitialInspectionRecoveryPatchSha256 = initialInspectionRecoveryPatchSha256; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /initial inspection recovery patch pin does not match its generation/i);
+});
+
+for (const [name, text] of [
+  ['nonliteral', 'const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = process.env.PATCH_HASH;\n'],
+  ['mutable literal', `let INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = '${initialInspectionRecoveryPatchSha256}';\n`],
+  ['uninitialized', 'const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256;\n'],
+  ['malformed digest', "const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = 'bad';\n"],
+  ['duplicate', `const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = '${initialInspectionRecoveryPatchSha256}';\nconst INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = '${initialInspectionRecoveryPatchSha256}';\n`],
+  ['wrong valid digest', "const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256 = '" + '0'.repeat(64) + "';\n"],
+]) test('incoming SDK data rejects a ' + name + ' initial inspection recovery implementation pin', t => {
+  const f = fixture(t, retainedGeneration21), modulePath = 'lib/overlay-package-manifest.js';
+  f.write(modulePath, fs.readFileSync(path.join(f.dist, modulePath), 'utf8') + text + 'throw new Error("Incoming validator must never execute");\n'); f.payload.seal();
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /initial inspection recovery patch pin/i);
+});
+
+for (const removeProvenance of [false, true]) test('current code cannot omit its initial inspection recovery marker' + (removeProvenance ? ' and source provenance' : ''), t => {
+  const f = fixture(t), modulePath = 'lib/overlay-package-manifest.js';
+  f.write(modulePath, fs.readFileSync(path.join(f.dist, modulePath), 'utf8').replace(/^const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256[^\n]*\n/gm, ''));
+  if (removeProvenance) for (const bits of [64, 32]) mutateStamp(f, 'ReShade' + bits + '.build.json', stamp => { delete stamp.injectorInitialInspectionRecoveryPatchSha256; });
+  f.payload.seal();
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /initial inspection recovery patch pin does not match its generation/i);
 });
 
 test('payload junctions cannot redirect integrity reads outside the SDK', t => {

@@ -79,7 +79,7 @@ $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 21
+$ExpectedRuntimeGeneration = 22
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
@@ -147,6 +147,8 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-preload-long-path.patch"
     ownedLateD3d11AdapterReadyLongPathPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-owned-late-d3d11-adapter-ready-long-path.patch"
+    injectorInitialInspectionRecoveryPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-initial-inspection-recovery.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-process-instance-binding.patch"
@@ -175,6 +177,10 @@ Assert-Sha256Equal `
     -Expected "BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6" `
     -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11AdapterReadyLongPathPatchSha256).Hash `
     -Label "frozen owned late D3D11 adapter-ready long-path patch"
+Assert-Sha256Equal `
+    -Expected "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorInitialInspectionRecoveryPatchSha256).Hash `
+    -Label "frozen injector initial-inspection recovery patch"
 $ExpectedArtifactNames = @(
     $ArchitectureConfig.AddonName
     "electron_game_overlay_reshade_manager.exe"

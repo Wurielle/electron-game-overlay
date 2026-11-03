@@ -106,6 +106,9 @@ An additional no-barrier fast-folder run retained a Windows 299 failure. It is
 outside the accepted standard matrix and remains a separate paused diagnostic.
 Its observer reports `nativeInjectionExecuted: true`; this acceptance record
 does not infer an injection boundary from that flag or erase the failure.
+After the accepted RC.11 work was committed and pushed, the user authorized
+resuming that separate investigation. Its native no-payload proof and candidate
+correction are documented in the [RC.12 record](sdk-rc12-initial-inspection.md).
 
 The local candidate is based on commit
 `f51777621927ff090d0281ad069b720ed553d589` plus its exact uncommitted source
@@ -121,4 +124,4 @@ modify Izabela or execute its tests; the consumer ran the authorized install and
 retest in its own chat. All work remains local, uncommitted and unpushed.
 Existing targets retain their mapped host; updating this SDK does not replace
 it. No foreign ReShade installation or security setting is changed. The Windows
-299 investigation remains paused.
+299 follow-up remains separate from this exact package's accepted matrix.

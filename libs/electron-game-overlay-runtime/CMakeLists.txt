@@ -11,6 +11,9 @@ set(RESHAPE_CURRENT_INJECTOR_CONTENT_SHA256
 set(RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256
     "91D82243D81D2CDC082DA1AF9BFF55A13315BF59F1FE5F9ACA1DFAE8442C8A10"
 )
+set(RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256
+    "58ED5A9C5F0B0806D7D4AE65D060271AD8D62676A62332F0BE6FEAD88B6D8BFA"
+)
 set(RESHAPE_PRE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256
     "AEA939BCC391BC5C2F63683558B78A88222BD5E9C4B81EFB5069CAA346F724BE"
 )
@@ -232,6 +235,12 @@ set(RESHAPE_ADAPTER_READY_LONG_PATH_PATCH
 set(RESHAPE_ADAPTER_READY_LONG_PATH_PATCH_SHA256
     "BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6"
 )
+set(RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-initial-inspection-recovery.patch"
+)
+set(RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256
+    "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7"
+)
 set(RESHAPE_INJECTOR_PROCESS_INSTANCE_BINDING_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-process-instance-binding.patch"
 )
@@ -344,6 +353,12 @@ string(REPLACE "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_PRE_A
     "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_ADAPTER_READY_LONG_PATH_INL_CONTENT_SHA256}"
     RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256
     "${RESHAPE_PRELOAD_LONG_PATH_PATCHED_CONTENT_SHA256}")
+# Generation 22 preserves the mapped host implementation and adds only a
+# terminal injector correction to the independently pinned generation-21 tree.
+string(REPLACE "tools/injector.cpp=${RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCHED_CONTENT_SHA256
+    "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
@@ -378,6 +393,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_PRELOADED_FIRST_HOST_PATCH}"
     "${RESHAPE_PRELOAD_LONG_PATH_PATCH}"
     "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}"
+    "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH}"
 )
 
 function(verify_reshade_pinned_commit source_dir)
@@ -927,6 +943,23 @@ function(ego_prepare_owned_late_source_cache source_dir)
         if(NOT adapter_patch_hash STREQUAL RESHAPE_ADAPTER_READY_LONG_PATH_PATCH_SHA256)
             message(FATAL_ERROR "The adapter-ready long-path patch hash is not the frozen implementation.")
         endif()
+    endif()
+    if(DEFINED RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH)
+        get_filename_component(inspection_patch_dir "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH}" DIRECTORY)
+        get_filename_component(inspection_patch_name "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH}" NAME)
+        ego_read_source_cache_file("${inspection_patch_dir}" "${inspection_patch_name}" inspection_patch_hash ignored_text)
+        if(NOT inspection_patch_hash STREQUAL RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256)
+            message(FATAL_ERROR "The initial-inspection recovery patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    # Generation 22 must restore the complete generation-21 vector before
+    # either older terminal file is peeled. Every supplied patch pin above is
+    # checked before this first atomic publication.
+    if(injector_hash STREQUAL RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256)
+        ego_apply_initial_inspection_recovery_source_tail("${source_root}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
+    if(DEFINED RESHAPE_ADAPTER_READY_LONG_PATH_PATCH)
         set(adapter_source_relative_path "source/ego_owned_late_d3d11/owned_late_d3d11.inl")
         if(EXISTS "${source_root}/${adapter_source_relative_path}" OR
            IS_SYMLINK "${source_root}/${adapter_source_relative_path}")
@@ -1420,6 +1453,27 @@ function(ego_apply_adapter_ready_long_path_source_tail source_dir)
     ego_apply_terminal_source_file_tail("${source_dir}"
         "source/ego_owned_late_d3d11/owned_late_d3d11.inl"
         "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}" "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_initial_inspection_recovery_source_tail source_dir)
+    set(before_hash "${RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown initial-inspection patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_INITIAL_INSPECTION_RECOVERY_INJECTOR_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_PRELOAD_LONG_PATH_INJECTOR_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH}" "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256}"
         "${before_hash}" "${after_hash}" ${apply_direction})
 endfunction()
 
@@ -3261,6 +3315,9 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
 ego_apply_adapter_ready_long_path_source_tail("${reshade_SOURCE_DIR}")
 set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCHED_CONTENT_SHA256}")
+ego_apply_initial_inspection_recovery_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCHED_CONTENT_SHA256}")
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and

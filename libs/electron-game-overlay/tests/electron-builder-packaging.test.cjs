@@ -303,3 +303,31 @@ for (const value of [undefined, '0'.repeat(64)]) test('fully rebound current ada
   assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
   assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
 });
+
+test('public verification and afterPack preserve retained generation-21 packages without initial inspection recovery provenance', async t => {
+  const f = await fixture(t, { runtimeGeneration: 21 });
+  const original = await fs.readFile(path.join(f.leaf, 'overlay-manifest.json'));
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(await fs.readFile(path.join(f.destination, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6');
+    assert.equal(stamp.injectorInitialInspectionRecoveryPatchSha256, undefined);
+  }
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('fully rebound current initial inspection recovery provenance ' + (value === undefined ? 'removal' : 'substitution') + ' fails before replacing a valid Electron package', async t => {
+  const f = await fixture(t);
+  await packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk });
+  const original = await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json'));
+  const relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(await fs.readFile(path.join(f.leaf, relative)));
+  if (value === undefined) delete stamp.injectorInitialInspectionRecoveryPatchSha256;
+  else stamp.injectorInitialInspectionRecoveryPatchSha256 = value;
+  f.payload.write(relative, JSON.stringify(stamp)); f.payload.bindNativeHashes(); f.payload.seal();
+  await assert.rejects(verifyOverlayPackage(f.sdk), /initial inspection recovery patch provenance mismatch.*32/i);
+  await assert.rejects(packageOverlayForElectronBuilder(f.context, { packageRoot: f.sdk }), /initial inspection recovery patch provenance mismatch.*32/i);
+  assert.deepEqual(await fs.readFile(path.join(f.destination, 'dist/overlay-manifest.json')), original);
+  assert.equal((await verifyOverlayPackage(f.destination)).sealedPayloads, f.sealedCount);
+});

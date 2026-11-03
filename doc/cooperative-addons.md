@@ -78,6 +78,22 @@ physical-key gate requires physical input, not a relabeled synthetic event.
 
 ## Implementation status
 
+### Transient initial inspection recovery — generation 22
+
+After committing and pushing accepted RC.11 as `b89eeb6`, the user resumed the
+separate Windows 299 investigation. Generation 22 adds bounded read-only
+recovery to both initial inspection gates, retaining positive ownership facts
+and requiring fresh readiness. Real console-process probes reproduce transient
+enumeration and remote-read failures and recover on both architectures;
+persistent failures still stop before payload loading. The host and add-on
+implementations remain unchanged. See the
+[RC.12 record](sdk-rc12-initial-inspection.md) for deterministic, actual native
+and package evidence. Consumer retesting passed 16/16 native cases across 20
+authenticated lifecycles: three fresh fast-folder positive/negative rounds and
+the complete standard matrix, with loaded module paths of 292–322 characters.
+No 299 or phase telemetry appeared in those consumer samples; direct recovery
+proof remains the separate native SDK probes. The complete SDK was unchanged.
+
 ### Long-path activation readiness — generation 21
 
 The original long-profile consumer retest of generation 20 loaded and
@@ -92,7 +108,8 @@ consumer matrix passed 10/10 on 2026-11-03, including x64/x86, fractional scale
 and two-launch rearming. Loaded module paths reached 292–310 characters.
 The consumer corrected its test module inspector without patching the SDK or
 changing production paths. A separate fast-folder Windows 299 failure is
-retained outside that accepted matrix; its investigation remains paused.
+retained outside that accepted matrix; the subsequent authorized investigation
+and generation-22 candidate are recorded above.
 
 ### Registered DLL long paths — generation 20
 

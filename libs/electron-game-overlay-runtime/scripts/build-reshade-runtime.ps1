@@ -184,6 +184,14 @@ if ($OwnedLateD3d11AdapterReadyLongPathPatchHash -cne
     "BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6") {
     throw "The owned late D3D11 adapter-ready long-path patch does not match its frozen source."
 }
+$InjectorInitialInspectionRecoveryPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-initial-inspection-recovery.patch"
+$InjectorInitialInspectionRecoveryPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorInitialInspectionRecoveryPatch).Hash
+if ($InjectorInitialInspectionRecoveryPatchHash -cne
+    "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7") {
+    throw "The injector initial-inspection recovery patch does not match its frozen source."
+}
 $ExpectedPatchedFiles = @(
     "ReShade.vcxproj"
     "include/reshade.hpp"
@@ -224,7 +232,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
     "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
     "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
-    "tools/injector.cpp" = "91D82243D81D2CDC082DA1AF9BFF55A13315BF59F1FE5F9ACA1DFAE8442C8A10"
+    "tools/injector.cpp" = "58ED5A9C5F0B0806D7D4AE65D060271AD8D62676A62332F0BE6FEAD88B6D8BFA"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -286,11 +294,12 @@ function Test-ReShadePatchedSourceState {
             return $false
         }
     }
-    # Check both independent terminal patches after the exact nineteen-file
+    # Check all three independent terminal patches after the exact nineteen-file
     # inventory and content proof. Earlier overlapping seams do not reverse independently.
     foreach ($Patch in @(
         $InjectorPreloadLongPathPatch
         $OwnedLateD3d11AdapterReadyLongPathPatch
+        $InjectorInitialInspectionRecoveryPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
             return $false
@@ -356,6 +365,7 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorPreloadedFirstHostPatchSha256 -eq $InjectorPreloadedFirstHostPatchHash -and
             $Stamp.injectorPreloadLongPathPatchSha256 -eq $InjectorPreloadLongPathPatchHash -and
             $Stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256 -eq $OwnedLateD3d11AdapterReadyLongPathPatchHash -and
+            $Stamp.injectorInitialInspectionRecoveryPatchSha256 -eq $InjectorInitialInspectionRecoveryPatchHash -and
             ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
             $Stamp.addonPreloadProtocol -eq 1 -and
             $Stamp.cooperativeAddonProtocol -eq 1 -and
@@ -505,6 +515,7 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorPreloadedFirstHostPatchSha256 = $InjectorPreloadedFirstHostPatchHash
     injectorPreloadLongPathPatchSha256 = $InjectorPreloadLongPathPatchHash
     ownedLateD3d11AdapterReadyLongPathPatchSha256 = $OwnedLateD3d11AdapterReadyLongPathPatchHash
+    injectorInitialInspectionRecoveryPatchSha256 = $InjectorInitialInspectionRecoveryPatchHash
     addonPreloadProtocol = 1
     cooperativeAddonProtocol = 1
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash
