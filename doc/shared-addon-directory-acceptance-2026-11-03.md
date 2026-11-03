@@ -119,6 +119,25 @@ Neither issue prompted a production SDK or native-code change.
 The compact [graphics evidence record](evidence/shared-addon-directory-acceptance-2026-11-03.json)
 retains final and earlier report paths/hashes and cleanup observations separately.
 
+## Merge CI follow-up
+
+The first clean GitHub Actions checkout exposed two CI assumptions that the
+prepared local workspace did not exercise. Two historical cooperative injector
+patches lacked explicit LF attributes: a `core.autocrlf=true` checkout reproduced
+the migration-fixture failures. Pinning those files to LF preserves their exact
+committed hashes; both affected suites passed with 118 passes, two expected
+retained-source skips and no failures.
+
+The installed-package acceptance script also expected the retired standalone
+broker manifest. Its existing CI entrypoint now verifies the direct cooperative
+SDK seal, all eight architecture-correct native payloads, offline installation,
+public Node-only helpers and declarations, afterPack restoration and isolated
+shared-directory registration/removal. Both real CI invocation forms passed,
+including an exact repack of the preview tarball. Missing installer JavaScript
+and missing x86 injector negative controls fail before SDK code execution.
+The separate generic consumer and historical controlled broker fixtures remain
+unchanged. These fixes do not change mapped runtime code or the tested SDK bytes.
+
 ## Limits
 
 ReShade scans only top-level architecture-compatible add-on files. Already

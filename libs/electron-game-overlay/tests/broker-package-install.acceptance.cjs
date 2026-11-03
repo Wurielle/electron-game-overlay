@@ -1,5 +1,6 @@
 'use strict';
 
+// Cooperative installed-SDK acceptance (the filename is retained for CI links).
 // Opt-in: node this-file --package-root <package> --sdk-root <built-dist>
 //   --tslib-root <real-tslib> --typescript-root <real-typescript>
 //   --scratch-root <parent-owned-directory> --report <persistent-json>
@@ -79,12 +80,28 @@ try {
     filter: (source) => !['node_modules', '.git', 'dist'].includes(path.basename(source)) });
   const sdk = fs.realpathSync(args['sdk-root'] || path.join(args['package-root'], 'dist'));
   fs.cpSync(sdk, path.join(stage, 'dist'), { recursive: true });
-  const leaf = 'dist/broker/win32-x64';
-  const originalManifest = json(path.join(sdk, 'broker/win32-x64/broker-manifest.json'));
+  const leaf = 'dist';
+  const originalManifest = json(path.join(sdk, 'overlay-manifest.json'));
   assert.equal(originalManifest.schema, 1);
-  assert.equal(originalManifest.platform, 'win32');
-  assert.equal(originalManifest.arch, 'x64');
-  report.manifestSha256 = sha(path.join(sdk, 'broker/win32-x64/broker-manifest.json'));
+  assert.equal(originalManifest.kind, 'electron-game-overlay-sdk-distribution');
+  assert.equal(fs.existsSync(path.join(sdk, 'broker')), false, 'cooperative SDK must not contain a standalone broker');
+  report.manifestSha256 = sha(path.join(sdk, 'overlay-manifest.json'));
+  report.distributionKind = originalManifest.kind;
+  // Match the public packager when this gate consumes the workspace package.
+  // An already prepared candidate is packed without changing its metadata.
+  const stageMetadata = json(path.join(stage, 'package.json'));
+  assert.equal(stageMetadata.version, originalManifest.packageVersion);
+  if (stageMetadata.private === true) {
+    stageMetadata.private = false;
+    stageMetadata.files = ['dist', 'README.md', 'LICENSE'];
+    if (fs.existsSync(path.join(stage, 'SDK_PROVENANCE.json'))) stageMetadata.files.push('SDK_PROVENANCE.json');
+    delete stageMetadata.exports['.'].gelectron;
+    delete stageMetadata.scripts;
+    fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify(stageMetadata, null, 2) + '\n');
+  }
+  if (!fs.existsSync(path.join(stage, 'LICENSE'))) {
+    fs.copyFileSync(path.resolve(args['package-root'], '../../LICENSE'), path.join(stage, 'LICENSE'));
+  }
   if (args['drop-sealed']) {
     assert.ok(originalManifest.files.some((entry) => entry.path === args['drop-sealed']), 'mutation must name a declared sealed payload');
     fs.unlinkSync(path.join(stage, leaf, args['drop-sealed']));
@@ -96,6 +113,8 @@ try {
   report.packFileCount = packed.files.length;
   report.packFiles = packed.files.map((entry) => entry.path);
   const files = new Set(report.packFiles);
+  assert.ok(files.has('dist/overlay-manifest.json'), 'direct SDK seal missing from actual npm tarball');
+  assert.equal(report.packFiles.some(file => file.startsWith('dist/broker/')), false, 'broker payload entered cooperative tarball');
   for (const entry of originalManifest.files) {
     assert.ok(files.has(`${leaf}/${entry.path}`), `sealed payload missing from actual npm tarball: ${entry.path}`);
   }
@@ -120,8 +139,8 @@ try {
     assert.ok(fs.existsSync(path.join(installed, target)), `installed export missing: ${target}`);
   }
   report.stage = 'installed-payload';
-  const manifest = json(path.join(installed, leaf, 'broker-manifest.json'));
-  assert.equal(sha(path.join(installed, leaf, 'broker-manifest.json')), report.manifestSha256);
+  const manifest = json(path.join(installed, leaf, 'overlay-manifest.json'));
+  assert.equal(sha(path.join(installed, leaf, 'overlay-manifest.json')), report.manifestSha256);
   report.sealedPayloads = manifest.files.map((entry) => {
     const file = path.resolve(installed, leaf, entry.path);
     assert.ok(inside(path.join(installed, leaf), file), 'sealed path escapes distribution');
@@ -129,13 +148,9 @@ try {
     assert.equal(sha(file), entry.sha256, `sealed hash: ${entry.path}`);
     return { ...entry };
   });
-  // Root SDK payloads must be byte-identical to the real sealed provider leaf.
-  for (const entry of manifest.files.filter((entry) => /^(lib|runtime)\//.test(entry.path))) {
-    assert.equal(sha(path.join(installed, 'dist', entry.path)), entry.sha256, `SDK/leaf identity: ${entry.path}`);
-  }
   assert.ok(fs.statSync(path.join(installed, 'dist/lib/overlay-process-identity.d.ts')).size > 0);
-  const binaries = [{ file: path.join(leaf, manifest.executable), machine: 0x8664 }];
-  for (const base of ['dist', leaf]) {
+  const binaries = [];
+  for (const base of ['dist']) {
     const runtime = path.join(base, 'runtime/win32-x64/reshade');
     for (const [file, machine] of [['electron_game_overlay_reshade_manager.exe', 0x8664],
       ['electron_game_overlay_reshade_manager32.exe', 0x14c], ['inject.exe', 0x8664],
@@ -157,9 +172,10 @@ try {
   fs.writeFileSync(probe, `const assert = require('node:assert/strict');
 const fs = require('node:fs'); const path = require('node:path');
 const Module = require('node:module'); const root = fs.realpathSync(__dirname);
+const crypto = require('node:crypto');
 const original = Module._resolveFilename; const seen = new Set();
 Module._resolveFilename = function(request, parent, ...rest) {
-  assert.notEqual(request, 'electron', 'broker imported Electron');
+  assert.notEqual(request, 'electron', 'installer/packaging imported Electron');
   const resolved = original.call(this, request, parent, ...rest);
   if (!Module.isBuiltin(resolved)) {
     const real = fs.realpathSync(resolved); const relative = path.relative(root, real);
@@ -168,27 +184,61 @@ Module._resolveFilename = function(request, parent, ...rest) {
   }
   return resolved;
 };
-const broker = require('electron-game-overlay/broker');
-assert.deepEqual(Object.keys(broker).sort(), ['registerOverlayBrokerInstallation', 'unregisterOverlayBrokerInstallation']);
-for (const value of Object.values(broker)) assert.equal(typeof value, 'function');
+const preload = require('electron-game-overlay/preload');
+const packaging = require('electron-game-overlay/packaging');
+for (const name of ['defaultReShadeAddonDirectory', 'registerOverlayAddonInstallation', 'unregisterOverlayAddonInstallation']) assert.equal(typeof preload[name], 'function');
+for (const name of ['createOverlayAfterPack', 'packageOverlayForElectronBuilder', 'verifyOverlayPackage']) assert.equal(typeof packaging[name], 'function');
 assert.ok(require.resolve('electron-game-overlay').endsWith(path.join('dist', 'index.js')));
 assert.equal(require('electron-game-overlay/package.json').name, 'electron-game-overlay');
 assert.ok(require.resolve('tslib').startsWith(root + path.sep));
-assert.throws(() => require.resolve('electron-game-overlay/dist/lib/overlay-broker-entry.js'), {code: 'ERR_PACKAGE_PATH_NOT_EXPORTED'});
-console.log(JSON.stringify({resolved: [...seen].sort(), electronImported: false}));
+assert.throws(() => require.resolve('electron-game-overlay/dist/lib/overlay-addon-preload.js'), {code: 'ERR_PACKAGE_PATH_NOT_EXPORTED'});
+async function main() {
+  const packageRoot = path.dirname(require.resolve('electron-game-overlay/package.json'));
+  const verified = await packaging.verifyOverlayPackage(packageRoot);
+  const appOutDir = path.join(root, 'packaged-app'); fs.mkdirSync(appOutDir);
+  await packaging.createOverlayAfterPack({ packageRoot })({ appOutDir, electronPlatformName: 'win32' });
+  const restored = path.join(appOutDir, 'resources', 'app.asar.unpacked', 'node_modules', 'electron-game-overlay');
+  assert.deepEqual(await packaging.verifyOverlayPackage(restored), verified);
+  assert.equal(fs.existsSync(path.join(restored, 'dist', 'broker')), false);
+  const addonDirectory = path.join(root, 'shared-addons'); fs.mkdirSync(addonDirectory);
+  const foreign = path.join(addonDirectory, 'ordinary-placeholder.addon');
+  fs.writeFileSync(foreign, 'inert ordinary add-on, never executed');
+  const fileIdentity = file => { const stat = fs.statSync(file); return { ino: stat.ino, mtimeMs: stat.mtimeMs, bytes: stat.size, sha256: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') }; };
+  const foreignIdentity = fileIdentity(foreign);
+  const options = { applicationId: 'com.example.installed-a', addonDirectory };
+  const first = await preload.registerOverlayAddonInstallation(options);
+  const identities = [first.addonPath, first.x86AddonPath].map(fileIdentity);
+  assert.deepEqual(await preload.registerOverlayAddonInstallation(options), first);
+  assert.deepEqual([first.addonPath, first.x86AddonPath].map(fileIdentity), identities);
+  const peer = await preload.registerOverlayAddonInstallation({ applicationId: 'com.example.installed-b', addonDirectory });
+  for (const file of [first.addonPath, first.x86AddonPath, peer.addonPath, peer.x86AddonPath]) assert.equal(path.dirname(file), addonDirectory);
+  assert.notEqual(first.addonPath, peer.addonPath);
+  await preload.unregisterOverlayAddonInstallation({ ...options, registrationId: first.registrationId });
+  assert.deepEqual([first.addonPath, first.x86AddonPath].map(fileIdentity), identities);
+  assert.deepEqual(fileIdentity(foreign), foreignIdentity);
+  const catalog = JSON.parse(fs.readFileSync(path.join(addonDirectory, '.electron-game-overlay', 'registrations.json'), 'utf8'));
+  assert.deepEqual(catalog.registrations.map(item => item.applicationId), ['com.example.installed-b']);
+  console.log(JSON.stringify({ resolved: [...seen].sort(), electronImported: false, nativeExecuted: false,
+    verifiedSealedPayloads: verified.sealedPayloads, afterPackSealedPayloads: (await packaging.verifyOverlayPackage(restored)).sealedPayloads,
+    registration: { flatFiles: 4, stableIdentity: true, retiredFilesRetained: true, foreignUnchanged: true } }));
+}
+main().catch(error => { console.error(error.stack || error); process.exitCode = 1; });
 `);
   report.nodeConsumer = JSON.parse(run(process.execPath, [probe], consumer));
   report.stage = 'public-types';
   const typeFile = path.join(consumer, 'consumer.cts');
-  fs.writeFileSync(typeFile, `import { registerOverlayBrokerInstallation, unregisterOverlayBrokerInstallation, type OverlayBrokerInstallationOptions } from 'electron-game-overlay/broker';
-const options: OverlayBrokerInstallationOptions = { allowPrerelease: false };
-const id: Promise<string> = registerOverlayBrokerInstallation(options);
-const result: Promise<void> = unregisterOverlayBrokerInstallation('a'.repeat(64));
-// @ts-expect-error registration identity must be a string
-unregisterOverlayBrokerInstallation(123);
+  fs.writeFileSync(typeFile, `import { registerOverlayAddonInstallation, unregisterOverlayAddonInstallation, type OverlayAddonInstallationOptions, type OverlayAddonInstallation } from 'electron-game-overlay/preload';
+import { verifyOverlayPackage, createOverlayAfterPack } from 'electron-game-overlay/packaging';
+const options: OverlayAddonInstallationOptions = { applicationId: 'com.example.consumer', addonDirectory: 'C:/isolated/addons' };
+const installation: Promise<OverlayAddonInstallation> = registerOverlayAddonInstallation(options);
+const result: Promise<void> = unregisterOverlayAddonInstallation({ applicationId: options.applicationId, registrationId: 'a'.repeat(64) });
+const verification: Promise<Readonly<{ sealedPayloads: number }>> = verifyOverlayPackage('C:/installed/sdk');
+const hook: (context: { appOutDir: string; electronPlatformName: string }) => Promise<void> = createOverlayAfterPack();
+// @ts-expect-error application identity must be a string
+unregisterOverlayAddonInstallation({ applicationId: 123 });
 // @ts-expect-error options must be typed
-registerOverlayBrokerInstallation({ allowPrerelease: 'yes' });
-void id; void result;
+registerOverlayAddonInstallation({ applicationId: 'com.example.consumer', addonDirectory: false });
+void installation; void result; void verification; void hook;
 `);
   const compiler = require(path.join(args['typescript-root'], 'lib/typescript.js'));
   // The compiler is tooling outside the consumer; resolution has no source aliases.
@@ -203,7 +253,8 @@ void id; void result;
   const declarations = program.getSourceFiles().filter((file) =>
     !program.isSourceFileDefaultLibrary(file) && file !== consumerSource
   ).map((file) => fs.realpathSync(file.fileName));
-  assert.ok(declarations.some((file) => file === path.join(installed, 'dist/broker.d.ts')));
+  assert.ok(declarations.some((file) => file === path.join(installed, 'dist/preload.d.ts')));
+  assert.ok(declarations.some((file) => file === path.join(installed, 'dist/packaging.d.ts')));
   for (const file of declarations) assert.ok(inside(path.join(consumer, 'node_modules'), file), 'type consumer escaped installed dependency tree');
   report.typeDeclarations = declarations.map((file) => path.relative(installed, file));
   report.sealedPayloadCount = report.sealedPayloads.length;
