@@ -1,0 +1,426 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-initial-inspection-recovery",
+  "recordedAtUtc": "2026-11-03T18:19:55.385Z",
+  "status": "sdk-recovery-verified-consumer-fast-folder-retest-pending",
+  "candidateVersion": "0.1.0-rc.12",
+  "sourceBaseCommit": "b89eeb6bf3efb94185e5041be582ac11df6342f6",
+  "workingTreeDirty": true,
+  "acceptedRc11CommittedAndPushedBeforeResumption": true,
+  "nativeGeneration": 22,
+  "newPatch": {
+    "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-initial-inspection-recovery.patch",
+    "sha256": "5e9e7d2c8a2ee66f9a478ca193b5962c4f635943d040b121593ad70a3177d8a7"
+  },
+  "injectorSourceNormalizedSha256": "58ed5a9c5f0b0806d7d4ae65d060271ad8d62676a62332f0be6fead88b6d8bfa",
+  "ownedHostSourceNormalizedSha256": "36753053450815b934a6117b1c072a2100aa86032df30d937f9a127ca0f7a5f0",
+  "mappedAddonAndOwnedHostImplementationUnchanged": true,
+  "native": [
+    {
+      "architecture": "x64",
+      "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+      "runtimeSha256": "ee2b6efd3ff97da37d1d352a9ec1ffbc4cd4bd556ee0e58456d66f3ffc4512dd",
+      "injectorSha256": "7d88d90e450e27be879055c80876066173ef569171a1354a78a8d093d5b19f31",
+      "packageStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+        "sha256": "480fb4138780778d60296ee2428b3756a1d9d7da32e7b81bb508152dd114aa22"
+      },
+      "reshadeStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.build.json",
+        "sha256": "3c8e1e1a1fd1c770968aa5ceff9ba5f65f1d682cd1890c3144a441dc4bc2f866"
+      }
+    },
+    {
+      "architecture": "x86",
+      "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "addonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a",
+      "runtimeSha256": "5076c00630c424480c21c386d09ef30e2e5b8bf89ee2fadd7bc8c2e0464641a2",
+      "injectorSha256": "974fc490234195a12c37190498b69c7e1fd109239d779d46d9ef88854338b3fa",
+      "packageStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+        "sha256": "feb5a24fb37815d288bd99bef0dd8db3a3e634f7f70ff89df29e6d48364578ac"
+      },
+      "reshadeStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade32.build.json",
+        "sha256": "01a0afe033bb4de21e47ea7ccf286f3af9db6c4a05b3da60486dd62649e4603c"
+      }
+    }
+  ],
+  "retainedConsumerFailure": {
+    "report": {
+      "path": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela/coverage/experimental-overlay/e2e/2026-11-03T17-28-35.932Z/d3d11-x64-fast-folder/report.json",
+      "sha256": "9d733328c6a48ed226510457d6789fbd36b6e51bcb979672145f2e500b8b4fbc"
+    },
+    "stdout": {
+      "path": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela/coverage/experimental-overlay/e2e/2026-11-03T17-28-35.932Z/d3d11-x64-fast-folder/profile/experimental-game-overlay/runs/prepared-5ddi8z/inject.stdout.log",
+      "sha256": "782926022ec1f364a91fb24782f982d87fd3a112563f0b1fa18d15184d325c5e"
+    },
+    "processId": 3208,
+    "creationTime100ns": "134382005174317555",
+    "targetAgeAtErrorMs": 22.2445,
+    "error": 299,
+    "nativeInjectionStarted": false,
+    "observerNativeInjectionExecuted": true,
+    "exactFailingApi": "Not identified by historical diagnostic",
+    "earlierRc9MatchingFailures": [
+      {
+        "graphics": "D3D9 x64",
+        "targetAgeAtErrorMs": 103.7958
+      },
+      {
+        "graphics": "D3D12 x64",
+        "targetAgeAtErrorMs": 35.2755
+      }
+    ]
+  },
+  "deterministicNative": {
+    "scope": "Exact source-extracted helpers, scripted Win32 boundaries, both read-only gates, no payload execution",
+    "architectures": [
+      {
+        "architecture": "x64",
+        "report": {
+          "path": "build/ii-verified-x64-7514c20b/report.json",
+          "sha256": "1c2da6f282a45dbebba822fe7a55e118c755d9412d0ac498a42c761f377c2f53"
+        },
+        "cases": 54,
+        "assertions": 20982,
+        "explicitRemoteMutationCalls": 0,
+        "processReopens": 0
+      },
+      {
+        "architecture": "x86",
+        "report": {
+          "path": "build/ii-verified-x86-d9f17e05/report.json",
+          "sha256": "303d27df61a6e6e009227b79d67a97ec0b5e298c4f686c29ea8aa142ad2ff04f"
+        },
+        "cases": 54,
+        "assertions": 20982,
+        "explicitRemoteMutationCalls": 0,
+        "processReopens": 0
+      }
+    ],
+    "cases": 108,
+    "assertions": 41964,
+    "explicitRemoteMutationCalls": 0,
+    "processReopens": 0
+  },
+  "actualNativeProbes": {
+    "scope": "Fresh owned console children, retained read-only handles, child-local inert DLL churn and suspension controls; no ReShade or graphics",
+    "baseline": [
+      {
+        "architecture": "x64",
+        "report": {
+          "path": "build/im-probe-churn-x64-424af15b/report.json",
+          "sha256": "a675c0fd01dd77e8d2b5cfce8b6df1652631c5073c546b9227558dbb06f98875"
+        },
+        "ownedChildren": 38,
+        "observations": 2044,
+        "rawEnumeration299": 17,
+        "rawRemoteRead299": 569,
+        "normalFirstInspection299": 0,
+        "normalFirstEnumSuccessButEmpty": 32
+      },
+      {
+        "architecture": "x86",
+        "report": {
+          "path": "build/im-probe-churn-x86-12624ac0/report.json",
+          "sha256": "e3bf74c8ac0d738e9c00c3ef09548bf815f8e5ab1798e6af893c321af79a0084"
+        },
+        "ownedChildren": 38,
+        "observations": 2097,
+        "rawEnumeration299": 53,
+        "rawRemoteRead299": 461,
+        "normalFirstInspection299": 32,
+        "normalFirstEnumSuccessButEmpty": 0
+      }
+    ],
+    "candidates": [
+      {
+        "architecture": "x64",
+        "report": {
+          "path": "build/im-probe-candidate-x64-644a0387/report.json",
+          "sha256": "c7ef2a041983e064506e63cd1b1798fe31f8e771b106565995214300f0af8dc6"
+        },
+        "verification": {
+          "path": "build/im-probe-check-x64-e0f5c747/verification.json",
+          "sha256": "947534ba0995f5803fe0807022c742278ec6e1a5dd0e5cbd629b84c578aae29c"
+        },
+        "observationCases": 38,
+        "realRecoveryCases": 5,
+        "controls": [
+          {
+            "mode": "steady",
+            "returnedError": 0,
+            "phase": "complete",
+            "attempts": 1,
+            "elapsedMs": 0,
+            "firstError": 0,
+            "lastError": 0,
+            "ownedControlTermination": false
+          },
+          {
+            "mode": "resume-during-recovery",
+            "returnedError": 0,
+            "phase": "module-enumeration",
+            "attempts": 9,
+            "elapsedMs": 110,
+            "firstError": 299,
+            "lastError": 0,
+            "ownedControlTermination": false
+          },
+          {
+            "mode": "persistent-suspended",
+            "returnedError": 299,
+            "phase": "module-enumeration",
+            "attempts": 17,
+            "elapsedMs": 250,
+            "firstError": 299,
+            "lastError": 299,
+            "ownedControlTermination": false
+          },
+          {
+            "mode": "exit-during-recovery",
+            "returnedError": 1067,
+            "phase": "process-liveness",
+            "attempts": 3,
+            "elapsedMs": 31,
+            "firstError": 299,
+            "lastError": 1067,
+            "ownedControlTermination": true
+          },
+          {
+            "mode": "churn-during-recovery",
+            "returnedError": 0,
+            "phase": "module-exports",
+            "attempts": 2,
+            "elapsedMs": 15,
+            "firstError": 299,
+            "lastError": 0,
+            "ownedControlTermination": false
+          }
+        ],
+        "observedEmptySuccessfulEnumerationsRejected": 34,
+        "explicitRemoteMutationCalls": 0,
+        "ownedChildrenRemaining": 0
+      },
+      {
+        "architecture": "x86",
+        "report": {
+          "path": "build/im-probe-candidate-x86-f9a5f9a9/report.json",
+          "sha256": "ab8aa83ea50bba2ed4a4a9717784c2a65b8cb2ffbb20e4ee3dbb6ddd8fa7cfe2"
+        },
+        "verification": {
+          "path": "build/im-probe-check-x86-22ba99f1/verification.json",
+          "sha256": "9fd84c6a359c7b00f4f126fd0e9cd70518c678585f2fb6e1a5f002bea60020e8"
+        },
+        "observationCases": 38,
+        "realRecoveryCases": 5,
+        "controls": [
+          {
+            "mode": "steady",
+            "returnedError": 0,
+            "phase": "complete",
+            "attempts": 1,
+            "elapsedMs": 0,
+            "firstError": 0,
+            "lastError": 0,
+            "ownedControlTermination": false
+          },
+          {
+            "mode": "resume-during-recovery",
+            "returnedError": 0,
+            "phase": "module-enumeration",
+            "attempts": 9,
+            "elapsedMs": 125,
+            "firstError": 299,
+            "lastError": 0,
+            "ownedControlTermination": false
+          },
+          {
+            "mode": "persistent-suspended",
+            "returnedError": 299,
+            "phase": "module-enumeration",
+            "attempts": 16,
+            "elapsedMs": 250,
+            "firstError": 299,
+            "lastError": 299,
+            "ownedControlTermination": false
+          },
+          {
+            "mode": "exit-during-recovery",
+            "returnedError": 1067,
+            "phase": "process-liveness",
+            "attempts": 3,
+            "elapsedMs": 31,
+            "firstError": 299,
+            "lastError": 1067,
+            "ownedControlTermination": true
+          },
+          {
+            "mode": "churn-during-recovery",
+            "returnedError": 0,
+            "phase": "module-exports",
+            "attempts": 2,
+            "elapsedMs": 0,
+            "firstError": 299,
+            "lastError": 0,
+            "ownedControlTermination": false
+          }
+        ],
+        "observedEmptySuccessfulEnumerationsRejected": 0,
+        "explicitRemoteMutationCalls": 0,
+        "ownedChildrenRemaining": 0
+      }
+    ],
+    "explicitRemoteMutationCalls": 0,
+    "ownedChildTermination": "One deliberate owned-child termination per architecture tests authoritative exit; persistent suspended children are resumed and exit through the fixture",
+    "historicalApiAttribution": "Actual enumeration and remote-read failure mechanisms reproduced; original consumer API remains unproven"
+  },
+  "recoveryPolicy": {
+    "transientWindowMs": 250,
+    "attemptLimit": 256,
+    "positiveOwnershipEvidenceRetained": true,
+    "freshReadinessRequired": true,
+    "partialOutputsCleared": true,
+    "officialWaitDeadlinePreserved": true,
+    "persistentFailureStillClosed": true,
+    "retriesTargetReadsOnly": true,
+    "postMutationInjectionRetryIntroduced": false,
+    "strictDiagnosticAndResultJsonShapesUnchanged": true,
+    "telemetryPrefix": "EGO_INITIAL_MODULE_INSPECTION_V1"
+  },
+  "sdkSuite": {
+    "tests": 1368,
+    "pass": 1358,
+    "fail": 0,
+    "skipped": 10,
+    "concurrency": 4,
+    "node": "26.12.1",
+    "durationMs": 167229.8557,
+    "log": {
+      "path": "build/initial-inspection-sdk-suite.log",
+      "sha256": "c95ef7dbf381f878fe2ee65c575c212998ae7f1b0dead50bd26860e93a153f3c"
+    }
+  },
+  "nativeBuilds": {
+    "x64": {
+      "path": "build/initial-inspection-build-x64.log",
+      "sha256": "d899e7aa00ff75697e11a46bad5da2664d702d48a5c45a29b2560ee5a740519c"
+    },
+    "x86": {
+      "path": "build/initial-inspection-build-x86.log",
+      "sha256": "46e8d73eaa3390cb566c91f8a8e42011c3c065b6e73b4551741d75d34c708d7b"
+    },
+    "consoleAbi": {
+      "x64": {
+        "path": "build/initial-inspection-abi-x64.log",
+        "sha256": "2e50281aeb308ea9ad1b3cad3f2f37048bf03262ec3259619f0c20baa6d1c114"
+      },
+      "x86": {
+        "path": "build/initial-inspection-abi-x86.log",
+        "sha256": "646926b23331349e578f9ad5aa73eda585d38a349cdd83c822ca83ac267d8e54"
+      },
+      "pass": 2,
+      "fail": 0
+    }
+  },
+  "sourceCacheTests": {
+    "retained19Through21": 226,
+    "added22": 16,
+    "pass": 242,
+    "fail": 0,
+    "skipped": 0,
+    "includedInSdkSuite": true
+  },
+  "sourceSdkManifest": {
+    "path": "libs/electron-game-overlay/dist/overlay-manifest.json",
+    "sha256": "aafa18f7a8fbc49b1c4121dc4b11c65b02fd7e3249a8628282ba13687e021e8b"
+  },
+  "sealedPayloadCount": 154,
+  "changedSealedPayloads": [
+    {
+      "path": "lib/overlay-broker-protocol.d.ts",
+      "size": 10545,
+      "sha256": "aae6697cd51e1a88eb5528f02f96404afd7cfeb4c98b6ef8094433713fb82049"
+    },
+    {
+      "path": "lib/overlay-broker-protocol.js",
+      "size": 24906,
+      "sha256": "f9a15fedfbcc48c464c2a469684f2395bd03d2c32a19a6f5667f3d07cceaec3f"
+    },
+    {
+      "path": "lib/overlay-package-manifest.js",
+      "size": 27356,
+      "sha256": "837fb1fa24ac624dbef169db51e1dd1aad373ecf7aa96e9d1f1637de371a6ab4"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade32.build.json",
+      "size": 4288,
+      "sha256": "01a0afe033bb4de21e47ea7ccf286f3af9db6c4a05b3da60486dd62649e4603c"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade32.dll",
+      "size": 4406272,
+      "sha256": "5076c00630c424480c21c386d09ef30e2e5b8bf89ee2fadd7bc8c2e0464641a2"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade64.build.json",
+      "size": 4288,
+      "sha256": "3c8e1e1a1fd1c770968aa5ceff9ba5f65f1d682cd1890c3144a441dc4bc2f866"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade64.dll",
+      "size": 5531136,
+      "sha256": "ee2b6efd3ff97da37d1d352a9ec1ffbc4cd4bd556ee0e58456d66f3ffc4512dd"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+      "size": 1100,
+      "sha256": "480fb4138780778d60296ee2428b3756a1d9d7da32e7b81bb508152dd114aa22"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+      "size": 1101,
+      "sha256": "feb5a24fb37815d288bd99bef0dd8db3a3e634f7f70ff89df29e6d48364578ac"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/inject.exe",
+      "size": 198656,
+      "sha256": "7d88d90e450e27be879055c80876066173ef569171a1354a78a8d093d5b19f31"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/inject32.exe",
+      "size": 161280,
+      "sha256": "974fc490234195a12c37190498b69c7e1fd109239d779d46d9ef88854338b3fa"
+    },
+    {
+      "path": "tsconfig.lib.tsbuildinfo",
+      "size": 42343,
+      "sha256": "033db45559796bc948f258726f7e26d39fc6c1984cd2f6db17d8d5a87d62858d"
+    }
+  ],
+  "preservedRc11Tarball": {
+    "path": "artifacts/rc11-preload-activation/electron-game-overlay-0.1.0-rc.11.tgz",
+    "sha256": "ddc09fe1b2851469ad057601374320d299fe6cac915731e1859f7db27c5efca6"
+  },
+  "packageHandoff": {
+    "releaseDirectory": "artifacts/rc12-initial-inspection",
+    "sourceSnapshotPrecedesTarball": true,
+    "candidateReport": "artifacts/rc12-initial-inspection/sdk-preview-report.json",
+    "offlineConsumerReport": "artifacts/rc12-initial-inspection/SDK_PACKAGE_CHECKS.json",
+    "finalHashEvidence": "artifacts/rc12-initial-inspection/RELEASE_EVIDENCE.json"
+  },
+  "acceptance": {
+    "consumerFastFolderRetest": "pending",
+    "consumerStandardMatrixForThisCandidate": "not run",
+    "priorRc11StandardAcceptancePreserved": true,
+    "consumerWorkspaceModified": false,
+    "consumerReplacementInstalled": false,
+    "graphicsExecutedForFix": false,
+    "userGameExecuted": false,
+    "securitySettingsChanged": false,
+    "committed": false,
+    "pushed": false
+  }
+}

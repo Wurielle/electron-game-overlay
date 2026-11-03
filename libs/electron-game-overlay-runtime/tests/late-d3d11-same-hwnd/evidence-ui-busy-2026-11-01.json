@@ -1,0 +1,628 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-controlled-ui-busy-paired-acceptance",
+  "recordedDate": "2026-11-01",
+  "status": "paired-negative-and-positive-audited",
+  "scope": {
+    "fixture": "Owned late D3D11 self-loading, two raw same-HWND swapchains, paused primary and 2800ms busy HWND-owner thread during first worker Presents.",
+    "automaticProcessAttachmentProven": false,
+    "realGameAcceptanceProven": false,
+    "physicalInputProven": false,
+    "input": "Synthetic foreground SendInput VK_A holds and left-button clicks; native legacy/WM_INPUT and GetAsyncKeyState/GetKeyState/GetKeyboardState are separate oracles.",
+    "bufferedRawInputAcceptanceProven": false,
+    "packageCompatibilityClaim": false,
+    "sdkContinuityLimit": "Host/controller/producer hashes and SDK index.js entry shim match across controls. The entry shim alone does not establish equality of the complete transitive SDK JavaScript graph."
+  },
+  "unchangedFixtureSources": {
+    "host": {
+      "path": "libs/electron-game-overlay-runtime/tests/late-d3d11-same-hwnd/host.cpp",
+      "sha256": "3b095a92ab087f5dc66859c697b8f596c5849f7521c15f468401e5d0c2209de7"
+    },
+    "controller": {
+      "path": "libs/electron-game-overlay-runtime/scripts/run-late-d3d11-same-hwnd-proof.ps1",
+      "sha256": "0315f4c46e1168630deefe519dbad56d31e2f52b6ad4c448eb9360e0df6d43e5"
+    },
+    "producer": {
+      "path": "libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/scene-producer.cjs",
+      "sha256": "46d825bd5725ff18b772bfaba589fdd2d14dddf4ba492e2c0e4697383b981e6c"
+    }
+  },
+  "sdkEntryShimSha256": "ac4d59edffc5b4667fd6b803366e98242f2f2ce0f8fb84970ab8e2fb78232565",
+  "negativeControl": {
+    "architecture": "x64",
+    "runtimeGeneration": 15,
+    "addonBuildId": "BCE6C5C8746F4300861300B2BDA3594E",
+    "status": "failed",
+    "expectedFailureControl": true,
+    "featureAcceptancePassed": false,
+    "failureCode": "runtime-input-routing-failed",
+    "nativeWin32Error": 1460,
+    "reason": "Synchronous cross-thread subclass setup timed out while the actual HWND owner remained deliberately busy; producer rejected the critical diagnostic before input acceptance.",
+    "retainedNativeLogLine": "21:26:51:512 [33288] | ERROR | [Electron Game Overlay Runtime] Electron game overlay could not install its official-ReShade WH_GETMESSAGE input hook for root HWND 00000000014111EC on thread 20772 (Win32 error 1460). Interception remains inactive.",
+    "hashes": {
+      "runtime": "3596918808a1b13e3e6fd13c085ed647d9f206bf7d1c649c420a0278eb1a27a4",
+      "addon": "845695b6b855e7a892b081cc440319e50cd931ce1cfb3242618b55206838ec22",
+      "host": "5ad88498907782790931afac97f07beda855d8c086ea178234fd06a0345a6477",
+      "template": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+    },
+    "completedInputWindows": 0,
+    "uiBusyCompleted": false,
+    "childExitCodes": [
+      {
+        "exitCode": -1,
+        "cleanupTerminationRequested": true
+      },
+      {
+        "exitCode": 1,
+        "cleanupTerminationRequested": false
+      }
+    ],
+    "artifacts": {
+      "evidence": {
+        "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-02b84a1547d342d19589a14c3a5abe50/evidence.json",
+        "sha256": "48f88b035dabd188c674795e9c5911f140a5d30ed5da7cab0c530bb73bfd4e2b"
+      },
+      "nativeReport": {
+        "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-02b84a1547d342d19589a14c3a5abe50/stage/host-report.json",
+        "sha256": "00ab356615cf3db04eb34e17d570cb82cb263348d6484aa18bf57b48f790d5a9"
+      },
+      "producerState": {
+        "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-02b84a1547d342d19589a14c3a5abe50/producer/scene-state.json",
+        "sha256": "1a76760e4ab5854d882dc2ff4127cee4f1ee446c3faf7332f133a6eea220ecd1"
+      },
+      "nativeLog": {
+        "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-02b84a1547d342d19589a14c3a5abe50/stage/ReShade.log",
+        "sha256": "7b978ed14cce5da10b8206aec5ca176b90b7d4b61daf46fd542a9fe1e6582a01"
+      },
+      "display": {
+        "path": "build/readiness-gen15-ui-busy-negative.display.json",
+        "sha256": "847b7e6f70310f73d75dbd88a371846a8c4fdf5cf15cfc946990a416399589a9"
+      }
+    }
+  },
+  "positiveControls": [
+    {
+      "architecture": "x64",
+      "status": "passed",
+      "runtimeGeneration": 16,
+      "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "hashes": {
+        "runtime": "c403a8b113485eec6cc3b2c0b384c3f9b17fe2b76aad0385f5dd2ac61cc1be66",
+        "addon": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122",
+        "host": "5ad88498907782790931afac97f07beda855d8c086ea178234fd06a0345a6477",
+        "stageTemplate": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      "packageManifest": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+        "sha256": "edc9677616fa61071738b13f422283e04c7521bf5a1a67a900d21bbe6de1fa9c",
+        "matchedRetainedStagedPeBytes": true,
+        "record": {
+          "schemaVersion": 4,
+          "kind": "electron-game-overlay-runtime-build",
+          "platform": "win32-x64",
+          "configuration": "RelWithDebInfo",
+          "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+          "cooperativeAddonProtocol": 1,
+          "injectorProcessInstanceBinding": 1,
+          "injectorFutureTargets": 2,
+          "managerProtocolSchemaVersion": 1,
+          "runtimeGeneration": 16,
+          "targetTransportMin": 1,
+          "targetTransportMax": 1,
+          "managerSourceSha256": "2578DCDE87E8FEB5F308C0019CE0AF94407A9379133D7ACE5ED4252BEDDC015D",
+          "managerSha256": "8F361594CF3014E50A7FAE0222BD801A1523B5CF3589E5BD8EED0F9B9FC26C4D",
+          "addonSha256": "A259F9125F3E509BF64827A8F72B5BA8AA4091765E2AB16E404EBC659A43D122",
+          "injectorSha256": "960F96BF663B8AEFD5F69C92843D3D88C7DBC2F6B5DDD489DDEADA0648442767",
+          "reshadeRuntimeSha256": "C403A8B113485EEC6CC3B2C0B384C3F9B17FE2B76AAD0385F5DD2AC61CC1BE66",
+          "reshadeConfigSha256": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB",
+          "reshadeBuildStampSha256": "6DD552CC209F8259B5E101A0865779F395E3C4FA7F161717330681332344DF44"
+        }
+      },
+      "uiBusy": {
+        "requestedMs": 2800,
+        "observedMs": 2828,
+        "ownerThreadId": 15876,
+        "presentationThreadId": 32932,
+        "nativePresentCalls": 160,
+        "adoptions": 2,
+        "endUnixMs": 1793565673232,
+        "postResumeReadyEvents": [
+          {
+            "kind": "hello",
+            "atUnixMs": 1793565673247,
+            "afterResumeMs": 15
+          },
+          {
+            "kind": "swapchain-input-ready",
+            "atUnixMs": 1793565673247,
+            "afterResumeMs": 15
+          },
+          {
+            "kind": "swapchain-input-ready",
+            "atUnixMs": 1793565673249,
+            "afterResumeMs": 17
+          }
+        ]
+      },
+      "acknowledgementScope": "Interception true is observed before the blocked input window; explicit release false is observed before its release window. The stopped producer retains a stale true snapshot after disconnect; native restoration/withdrawal is the authority then.",
+      "keyboard": {
+        "releasedBeforeLifecycle": {
+          "expectedBlocked": false,
+          "acknowledgementSnapshot": false,
+          "producerSnapshotIsStale": false,
+          "holdMs": 422,
+          "newNativeSamplesDuringActualHold": 8,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 0,
+            "up": 0
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 1,
+            "keyUpMessages": 1,
+            "characterMessages": 1,
+            "rawKeyDownMessages": 1,
+            "rawKeyUpMessages": 1
+          },
+          "pollDownSamples": {
+            "async": 12,
+            "queue": 12,
+            "keyboard": 12
+          },
+          "releasedCleanly": true
+        },
+        "interceptedAfterLifecycle": {
+          "expectedBlocked": true,
+          "acknowledgementSnapshot": true,
+          "producerSnapshotIsStale": false,
+          "holdMs": 407,
+          "newNativeSamplesDuringActualHold": 13,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 1,
+            "up": 1
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 0,
+            "keyUpMessages": 0,
+            "characterMessages": 0,
+            "rawKeyDownMessages": 0,
+            "rawKeyUpMessages": 0
+          },
+          "pollDownSamples": {
+            "async": 0,
+            "queue": 0,
+            "keyboard": 0
+          },
+          "releasedCleanly": true
+        },
+        "releasedAfterLifecycle": {
+          "expectedBlocked": false,
+          "acknowledgementSnapshot": false,
+          "producerSnapshotIsStale": false,
+          "holdMs": 422,
+          "newNativeSamplesDuringActualHold": 19,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 0,
+            "up": 0
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 1,
+            "keyUpMessages": 1,
+            "characterMessages": 1,
+            "rawKeyDownMessages": 1,
+            "rawKeyUpMessages": 1
+          },
+          "pollDownSamples": {
+            "async": 25,
+            "queue": 25,
+            "keyboard": 25
+          },
+          "releasedCleanly": true
+        },
+        "releasedAfterProducerDisconnect": {
+          "expectedBlocked": false,
+          "acknowledgementSnapshot": true,
+          "producerSnapshotIsStale": true,
+          "holdMs": 437,
+          "newNativeSamplesDuringActualHold": 20,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 0,
+            "up": 0
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 1,
+            "keyUpMessages": 1,
+            "characterMessages": 1,
+            "rawKeyDownMessages": 1,
+            "rawKeyUpMessages": 1
+          },
+          "pollDownSamples": {
+            "async": 26,
+            "queue": 26,
+            "keyboard": 26
+          },
+          "releasedCleanly": true
+        }
+      },
+      "pointer": {
+        "interceptedPointerAfterLifecycle": {
+          "expectedBlocked": true,
+          "deltas": {
+            "dom": 1,
+            "legacy": 0,
+            "raw": 0
+          }
+        },
+        "releasedPointerAfterLifecycle": {
+          "expectedBlocked": false,
+          "deltas": {
+            "dom": 0,
+            "legacy": 1,
+            "raw": 1
+          }
+        },
+        "releasedPointerAfterProducerDisconnect": {
+          "expectedBlocked": false,
+          "deltas": {
+            "dom": 0,
+            "legacy": 1,
+            "raw": 1
+          }
+        }
+      },
+      "cursor": {
+        "baseline": "1:65539",
+        "text": "1:65541",
+        "released": "1:65539",
+        "textAssertion": "Retained controller required CursorIs(32513), the Windows IDC_IBEAM shared cursor.",
+        "clipBaseline": "0:0:1920:1080",
+        "clipReleased": "0:0:1920:1080"
+      },
+      "registration": {
+        "oldNativeId": 1,
+        "newNativeId": 2,
+        "onlyNewWindowAndRankPublished": true,
+        "noImplicitFocusBeforeExplicitFocus": true,
+        "sameAuthenticatedTcpEndpoint": true,
+        "authenticationCount": 1,
+        "connectionCount": 1,
+        "transportLossCount": 0,
+        "disconnectCountBeforeIntentionalExit": 0
+      },
+      "pixels": {
+        "overlay": [
+          198,
+          40,
+          40
+        ],
+        "afterProducerExit": [
+          20,
+          31,
+          51
+        ],
+        "source": "Foreground desktop GetPixel at client(60,80); retained controller checks exact HWND/PID foreground."
+      },
+      "retirement": {
+        "windowAndRankIdsAfterProducerExit": [],
+        "focusAfterProducerExit": 0,
+        "nativeRetirements": 2,
+        "quarantines": 0,
+        "renderFailures": 0,
+        "pipelineStateMismatches": 0,
+        "childExitCodes": [
+          {
+            "exitCode": 0,
+            "cleanupTerminationRequested": false
+          },
+          {
+            "exitCode": 0,
+            "cleanupTerminationRequested": false
+          }
+        ],
+        "templateUnchanged": true,
+        "generatedIniCount": 0
+      },
+      "display": {
+        "before": "on",
+        "during": "on",
+        "temporaryRequestReleased": true
+      },
+      "artifacts": {
+        "evidence": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-7b03bbb1e71248ea8dcb9f68bc193ee0/evidence.json",
+          "sha256": "70ac8432e0f821832d27369dd5ad3741210afd479c777ed921482cf45761b9c8"
+        },
+        "nativeReport": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-7b03bbb1e71248ea8dcb9f68bc193ee0/stage/host-report.json",
+          "sha256": "17fe6b2def6287b1daa64be3b12c7c489a33c0ee957caa9d2e387c4bf2290a51"
+        },
+        "producerState": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-7b03bbb1e71248ea8dcb9f68bc193ee0/producer/scene-state.json",
+          "sha256": "06adfbb26d6ae0f055269b98ca958e328e4a82061eb91102aa3699f70e584aa8"
+        },
+        "nativeLog": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-x64-7b03bbb1e71248ea8dcb9f68bc193ee0/stage/ReShade.log",
+          "sha256": "724d9fd798849609bee23e7b92b9fe092bc52352c0044c9245c50d9e9dfb7236"
+        },
+        "display": {
+          "path": "build/readiness-gen16-busy-20261101-204104/01-late-d3d11-ui-busy-hook-recovery.display.json",
+          "sha256": "572772b4bb28977383c2f8b0f7432dcaf76e5a4d17c4f93ac815a4bb43225c66"
+        }
+      }
+    },
+    {
+      "architecture": "Win32",
+      "status": "passed",
+      "runtimeGeneration": 16,
+      "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "hashes": {
+        "runtime": "e6d8f723882dea97f1d62d0b3368639ea65a2dad346d4db1b462808d56af0830",
+        "addon": "fcab046c07b573a030753f73cc678c56da5507cd142b804b76d2eab935b95684",
+        "host": "78b8adad80a87bf7cdf104b8e7fba1fa6ffd614a88a1019ec20f05bb74db6bcf",
+        "stageTemplate": "a4beeb5c9f49abf6c170c82c256b0ac6d901b517a702165166f405454edd47fb"
+      },
+      "packageManifest": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+        "sha256": "4f16635ef8aadff15c7d650e559f16eb2c39a2110367f7d3d11c8b465e66b334",
+        "matchedRetainedStagedPeBytes": true,
+        "record": {
+          "schemaVersion": 4,
+          "kind": "electron-game-overlay-runtime-build",
+          "platform": "win32-ia32",
+          "configuration": "RelWithDebInfo",
+          "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+          "cooperativeAddonProtocol": 1,
+          "injectorProcessInstanceBinding": 1,
+          "injectorFutureTargets": 2,
+          "managerProtocolSchemaVersion": 1,
+          "runtimeGeneration": 16,
+          "targetTransportMin": 1,
+          "targetTransportMax": 1,
+          "managerSourceSha256": "2578DCDE87E8FEB5F308C0019CE0AF94407A9379133D7ACE5ED4252BEDDC015D",
+          "managerSha256": "8D23C2CEC5BA49C2F434305D2BEE7EDC7BD14A6881E09879D88F2A118F8DCAD6",
+          "addonSha256": "FCAB046C07B573A030753F73CC678C56DA5507CD142B804B76D2EAB935B95684",
+          "injectorSha256": "0CF7DFE1B24BA8A17A96A60DCBB60C53195FDD65C6244ABEE3949678D1D8D69B",
+          "reshadeRuntimeSha256": "E6D8F723882DEA97F1D62D0B3368639EA65A2DAD346D4DB1B462808D56AF0830",
+          "reshadeConfigSha256": "A4BEEB5C9F49ABF6C170C82C256B0AC6D901B517A702165166F405454EDD47FB",
+          "reshadeBuildStampSha256": "0089B9843F19950D64E9BF133B1DCC386D761F512345532FE91B75B9AAAFDF84"
+        }
+      },
+      "uiBusy": {
+        "requestedMs": 2800,
+        "observedMs": 2860,
+        "ownerThreadId": 46500,
+        "presentationThreadId": 23948,
+        "nativePresentCalls": 162,
+        "adoptions": 2,
+        "endUnixMs": 1793565691764,
+        "postResumeReadyEvents": [
+          {
+            "kind": "hello",
+            "atUnixMs": 1793565691775,
+            "afterResumeMs": 11
+          },
+          {
+            "kind": "swapchain-input-ready",
+            "atUnixMs": 1793565691776,
+            "afterResumeMs": 12
+          }
+        ]
+      },
+      "acknowledgementScope": "Interception true is observed before the blocked input window; explicit release false is observed before its release window. The stopped producer retains a stale true snapshot after disconnect; native restoration/withdrawal is the authority then.",
+      "keyboard": {
+        "releasedBeforeLifecycle": {
+          "expectedBlocked": false,
+          "acknowledgementSnapshot": false,
+          "producerSnapshotIsStale": false,
+          "holdMs": 421,
+          "newNativeSamplesDuringActualHold": 7,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 0,
+            "up": 0
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 1,
+            "keyUpMessages": 1,
+            "characterMessages": 1,
+            "rawKeyDownMessages": 1,
+            "rawKeyUpMessages": 1
+          },
+          "pollDownSamples": {
+            "async": 12,
+            "queue": 12,
+            "keyboard": 12
+          },
+          "releasedCleanly": true
+        },
+        "interceptedAfterLifecycle": {
+          "expectedBlocked": true,
+          "acknowledgementSnapshot": true,
+          "producerSnapshotIsStale": false,
+          "holdMs": 406,
+          "newNativeSamplesDuringActualHold": 13,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 1,
+            "up": 1
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 0,
+            "keyUpMessages": 0,
+            "characterMessages": 0,
+            "rawKeyDownMessages": 0,
+            "rawKeyUpMessages": 0
+          },
+          "pollDownSamples": {
+            "async": 0,
+            "queue": 0,
+            "keyboard": 0
+          },
+          "releasedCleanly": true
+        },
+        "releasedAfterLifecycle": {
+          "expectedBlocked": false,
+          "acknowledgementSnapshot": false,
+          "producerSnapshotIsStale": false,
+          "holdMs": 422,
+          "newNativeSamplesDuringActualHold": 13,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 0,
+            "up": 0
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 1,
+            "keyUpMessages": 1,
+            "characterMessages": 1,
+            "rawKeyDownMessages": 1,
+            "rawKeyUpMessages": 1
+          },
+          "pollDownSamples": {
+            "async": 26,
+            "queue": 26,
+            "keyboard": 26
+          },
+          "releasedCleanly": true
+        },
+        "releasedAfterProducerDisconnect": {
+          "expectedBlocked": false,
+          "acknowledgementSnapshot": true,
+          "producerSnapshotIsStale": true,
+          "holdMs": 422,
+          "newNativeSamplesDuringActualHold": 11,
+          "outsideUninjectedControllerObservedDown": true,
+          "domDeltas": {
+            "down": 0,
+            "up": 0
+          },
+          "nativeDeltas": {
+            "keyDownMessages": 1,
+            "keyUpMessages": 1,
+            "characterMessages": 1,
+            "rawKeyDownMessages": 1,
+            "rawKeyUpMessages": 1
+          },
+          "pollDownSamples": {
+            "async": 20,
+            "queue": 19,
+            "keyboard": 19
+          },
+          "releasedCleanly": true
+        }
+      },
+      "pointer": {
+        "interceptedPointerAfterLifecycle": {
+          "expectedBlocked": true,
+          "deltas": {
+            "dom": 1,
+            "legacy": 0,
+            "raw": 0
+          }
+        },
+        "releasedPointerAfterLifecycle": {
+          "expectedBlocked": false,
+          "deltas": {
+            "dom": 0,
+            "legacy": 1,
+            "raw": 1
+          }
+        },
+        "releasedPointerAfterProducerDisconnect": {
+          "expectedBlocked": false,
+          "deltas": {
+            "dom": 0,
+            "legacy": 1,
+            "raw": 1
+          }
+        }
+      },
+      "cursor": {
+        "baseline": "1:65539",
+        "text": "1:65541",
+        "released": "1:65539",
+        "textAssertion": "Retained controller required CursorIs(32513), the Windows IDC_IBEAM shared cursor.",
+        "clipBaseline": "0:0:1920:1080",
+        "clipReleased": "0:0:1920:1080"
+      },
+      "registration": {
+        "oldNativeId": 1,
+        "newNativeId": 2,
+        "onlyNewWindowAndRankPublished": true,
+        "noImplicitFocusBeforeExplicitFocus": true,
+        "sameAuthenticatedTcpEndpoint": true,
+        "authenticationCount": 1,
+        "connectionCount": 1,
+        "transportLossCount": 0,
+        "disconnectCountBeforeIntentionalExit": 0
+      },
+      "pixels": {
+        "overlay": [
+          198,
+          40,
+          40
+        ],
+        "afterProducerExit": [
+          20,
+          31,
+          51
+        ],
+        "source": "Foreground desktop GetPixel at client(60,80); retained controller checks exact HWND/PID foreground."
+      },
+      "retirement": {
+        "windowAndRankIdsAfterProducerExit": [],
+        "focusAfterProducerExit": 0,
+        "nativeRetirements": 2,
+        "quarantines": 0,
+        "renderFailures": 0,
+        "pipelineStateMismatches": 0,
+        "childExitCodes": [
+          {
+            "exitCode": 0,
+            "cleanupTerminationRequested": false
+          },
+          {
+            "exitCode": 0,
+            "cleanupTerminationRequested": false
+          }
+        ],
+        "templateUnchanged": true,
+        "generatedIniCount": 0
+      },
+      "display": {
+        "before": "on",
+        "during": "on",
+        "temporaryRequestReleased": true
+      },
+      "artifacts": {
+        "evidence": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-Win32-b6c6af20384d4d65a9fcaef77179f8ea/evidence.json",
+          "sha256": "1de90623f5f24f74038dc9c025632556e25b11c5b894b36138c347ae06cd9dae"
+        },
+        "nativeReport": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-Win32-b6c6af20384d4d65a9fcaef77179f8ea/stage/host-report.json",
+          "sha256": "f9b3fb815302f9eb11596e4290e131471c34ac077bd31cbbb4b4b9ee4e455ab5"
+        },
+        "producerState": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-Win32-b6c6af20384d4d65a9fcaef77179f8ea/producer/scene-state.json",
+          "sha256": "cde240d49182e02d26b32af73b0e679e6f3e67be4e97308e1427a6bfd730b9ba"
+        },
+        "nativeLog": {
+          "path": "build/late-d3d11-same-hwnd/proof-ui-busy-hook-recovery-Win32-b6c6af20384d4d65a9fcaef77179f8ea/stage/ReShade.log",
+          "sha256": "1a45ba08ff3eabfe3a913798eaaacbb361216e005f8243e79ee946762ffbd6d5"
+        },
+        "display": {
+          "path": "build/readiness-gen16-busy-20261101-204104/02-late-d3d11-ui-busy-hook-recovery.display.json",
+          "sha256": "46258ce1b3265a45b597cc743c6c365795f2500d099dc354007ef761331fac1e"
+        }
+      }
+    }
+  ],
+  "rootBatchReport": {
+    "path": "build/readiness-gen16-busy-20261101-204104/report.json",
+    "sha256": "a6990fc10cc1ac997732a5f772799b7caa136c7cf71c71a44a8f5721876edc8e"
+  }
+}

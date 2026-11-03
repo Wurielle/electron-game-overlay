@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <cwchar>
@@ -30,12 +31,18 @@ constexpr wchar_t kSecondaryWindowTitle[] =
 constexpr wchar_t kInjectedRuntimeWaitMarker[] = L"reshade-injection-wait.enabled";
 constexpr wchar_t kStartupBarrierMarker[] =
     L"electron-game-overlay-startup-barrier.enabled";
+// Opt-in controlled-demo instrumentation only; no production attach path.
+HMODULE g_test_external_runtime = nullptr;
+bool g_test_present_ack_enabled = false;
+unsigned g_test_successful_presents = 0;
 constexpr wchar_t kDestroyFinalSurfaceRequestMarker[] =
     L"electron-game-overlay-destroy-final-surface.request";
 constexpr wchar_t kDestroyPrimarySurfaceRequestMarker[] =
     L"electron-game-overlay-destroy-primary-surface.request";
 constexpr wchar_t kFinalSurfaceDestroyedAckMarker[] =
     L"electron-game-overlay-final-surface-destroyed.ack";
+constexpr wchar_t kRecreateSurfacesRequestMarker[] =
+    L"electron-game-overlay-recreate-surfaces.request";
 
 struct graphics_state
 {
@@ -55,11 +62,39 @@ struct host_options
 {
     bool multi_swapchain = false;
     bool release_primary = false;
+    bool defer_secondary_present_until_primary_release = false;
+    bool allow_surface_recreation = false;
     ULONGLONG release_primary_after_ms = 0;
 };
 
 graphics_state g_graphics;
 input_oracle g_input_oracle;
+
+// Controlled-host evidence only. The default path performs no extra DXGI
+// queries, timing calls or logging around Present.
+struct present_diagnostic_state
+{
+    std::uint64_t calls = 0;
+    unsigned samples = 0;
+    ULONGLONG next_sample_ms = 0;
+    HRESULT previous_result = E_PENDING;
+};
+bool g_present_diagnostic_enabled = false;
+present_diagnostic_state g_primary_present_diagnostic;
+present_diagnostic_state g_secondary_present_diagnostic;
+constexpr unsigned kPresentDiagnosticMaximumSamplesPerSurface = 64;
+constexpr ULONGLONG kPresentDiagnosticIntervalMs = 1'000;
+struct present_diagnostic_log
+{
+    HANDLE file = INVALID_HANDLE_VALUE;
+    ~present_diagnostic_log()
+    {
+        if (file != INVALID_HANDLE_VALUE)
+            CloseHandle(file);
+    }
+} g_present_diagnostic_log;
+
+bool module_sibling_path(const wchar_t *name, std::wstring &path);
 
 void publish_stdout_marker(const char *format, ...)
 {
@@ -90,6 +125,122 @@ void publish_stdout_marker(const char *format, ...)
             nullptr));
     }
     OutputDebugStringA(marker);
+    constexpr char present_prefix[] = "EGO_CONTROLLED_PRESENT_V1 ";
+    if (g_present_diagnostic_log.file != INVALID_HANDLE_VALUE &&
+        std::strncmp(marker, present_prefix, sizeof(present_prefix) - 1) == 0)
+    {
+        DWORD written = 0;
+        if (WriteFile(
+                g_present_diagnostic_log.file,
+                marker,
+                static_cast<DWORD>(marker_length),
+                &written,
+                nullptr) == FALSE || written != marker_length)
+        {
+            CloseHandle(g_present_diagnostic_log.file);
+            g_present_diagnostic_log.file = INVALID_HANDLE_VALUE;
+        }
+    }
+}
+
+void configure_present_diagnostic()
+{
+    wchar_t enabled[2] = {};
+    g_present_diagnostic_enabled =
+        GetEnvironmentVariableW(
+            L"ELECTRON_GAME_OVERLAY_CONTROLLED_PRESENT_DIAGNOSTIC",
+            enabled,
+            static_cast<DWORD>(sizeof(enabled) / sizeof(enabled[0]))) == 1 &&
+        enabled[0] == L'1';
+    if (!g_present_diagnostic_enabled)
+        return;
+
+    // The exact controlled-host image chooses this fixed sibling filename.
+    // CREATE_NEW never replaces an earlier log or follows an existing link.
+    std::wstring log_path;
+    if (module_sibling_path(
+            L"electron-game-overlay-present-v1.log", log_path))
+    {
+        g_present_diagnostic_log.file = CreateFileW(
+            log_path.c_str(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            nullptr,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+    }
+}
+
+void observe_present_result(
+    IDXGISwapChain *swap_chain,
+    HRESULT result,
+    const LARGE_INTEGER &qpc_before,
+    const LARGE_INTEGER &qpc_after)
+{
+    auto &state = swap_chain == g_graphics.secondary_swap_chain.Get()
+        ? g_secondary_present_diagnostic
+        : g_primary_present_diagnostic;
+    ++state.calls;
+    if (state.samples >= kPresentDiagnosticMaximumSamplesPerSurface)
+        return;
+    const ULONGLONG now = GetTickCount64();
+    if (state.samples != 0 && now < state.next_sample_ms &&
+        state.previous_result == result)
+        return;
+    state.previous_result = result;
+    state.next_sample_ms = now + kPresentDiagnosticIntervalMs;
+    ++state.samples;
+
+    DXGI_SWAP_CHAIN_DESC description = {};
+    const HRESULT description_result = swap_chain->GetDesc(&description);
+    UINT last_present_count = 0;
+    const HRESULT count_result =
+        swap_chain->GetLastPresentCount(&last_present_count);
+    const HRESULT removal_reason =
+        g_graphics.device->GetDeviceRemovedReason();
+    FILETIME utc = {};
+    GetSystemTimeAsFileTime(&utc);
+    const std::uint64_t utc_100ns =
+        (static_cast<std::uint64_t>(utc.dwHighDateTime) << 32) |
+        utc.dwLowDateTime;
+    LARGE_INTEGER frequency = {};
+    const bool has_frequency = QueryPerformanceFrequency(&frequency) != FALSE;
+    publish_stdout_marker(
+        "EGO_CONTROLLED_PRESENT_V1 sample=%u/%u pid=%lu tid=%lu "
+        "utc100ns=%llu tickMs=%llu surface=%s chain=0x%llx hwnd=0x%llx "
+        "calls=%llu presentHr=0x%08lx occluded=%s failed=%s "
+        "qpcBefore=%lld qpcAfter=%lld qpcFrequency=%lld "
+        "descHr=0x%08lx windowed=%s swapEffect=%u "
+        "lastPresentCountHr=0x%08lx lastPresentCount=%u "
+        "deviceRemovedReason=0x%08lx foregroundHwnd=0x%llx "
+        "scope=api-return-not-display-proof",
+        state.samples,
+        kPresentDiagnosticMaximumSamplesPerSurface,
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()),
+        static_cast<unsigned long long>(utc_100ns),
+        static_cast<unsigned long long>(now),
+        &state == &g_secondary_present_diagnostic ? "secondary" : "primary",
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(swap_chain)),
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(description.OutputWindow)),
+        static_cast<unsigned long long>(state.calls),
+        static_cast<unsigned long>(result),
+        result == DXGI_STATUS_OCCLUDED ? "true" : "false",
+        FAILED(result) ? "true" : "false",
+        static_cast<long long>(qpc_before.QuadPart),
+        static_cast<long long>(qpc_after.QuadPart),
+        has_frequency ? static_cast<long long>(frequency.QuadPart) : 0LL,
+        static_cast<unsigned long>(description_result),
+        SUCCEEDED(description_result) && description.Windowed ? "true" : "false",
+        static_cast<unsigned>(description.SwapEffect),
+        static_cast<unsigned long>(count_result),
+        last_present_count,
+        static_cast<unsigned long>(removal_reason),
+        static_cast<unsigned long long>(
+            reinterpret_cast<std::uintptr_t>(GetForegroundWindow())));
 }
 
 bool parse_positive_milliseconds(
@@ -132,6 +283,16 @@ bool parse_host_options(host_options &options)
         {
             options.multi_swapchain = true;
         }
+        else if (std::wcscmp(
+                     argument,
+                     L"--defer-secondary-present-until-primary-release") == 0)
+        {
+            options.defer_secondary_present_until_primary_release = true;
+        }
+        else if (std::wcscmp(argument, L"--allow-surface-recreation") == 0)
+        {
+            options.allow_surface_recreation = true;
+        }
         else if (std::wcsncmp(
                      argument,
                      release_prefix,
@@ -156,7 +317,10 @@ bool parse_host_options(host_options &options)
     }
 
     LocalFree(arguments);
-    return valid && (!options.release_primary || options.multi_swapchain);
+    return valid &&
+        (!options.release_primary || options.multi_swapchain) &&
+        (!options.defer_secondary_present_until_primary_release ||
+         options.multi_swapchain);
 }
 
 bool activate_controlled_window(HWND window)
@@ -206,6 +370,206 @@ bool module_sibling_path(const wchar_t *name, std::wstring &path)
     return true;
 }
 
+bool write_preload_test_file(
+    const wchar_t *name,
+    const std::string &contents,
+    DWORD creation_disposition)
+{
+    std::wstring path;
+    if (!module_sibling_path(name, path))
+        return false;
+    const HANDLE file = CreateFileW(
+        path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        creation_disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    DWORD written = 0;
+    const bool succeeded = WriteFile(
+        file, contents.data(), static_cast<DWORD>(contents.size()),
+        &written, nullptr) != FALSE && written == contents.size() &&
+        FlushFileBuffers(file) != FALSE;
+    const DWORD error = succeeded ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(file);
+    SetLastError(error);
+    return succeeded;
+}
+
+bool report_preload_test_failure(const char *phase, DWORD error)
+{
+    char message[256] = {};
+    std::snprintf(
+        message, sizeof(message),
+        "EGO_TEST_EXTERNAL_SELF_LOAD_V1 failed phase=%s win32Error=%lu\n",
+        phase, static_cast<unsigned long>(error));
+    std::fputs(message, stderr);
+    OutputDebugStringA(message);
+    write_preload_test_file(
+        L"electron-game-overlay-preload-runtime.log", message, CREATE_ALWAYS);
+    return false;
+}
+
+std::string preload_test_utf8(const std::wstring &value)
+{
+    if (value.empty())
+        return {};
+    const int length = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (length == 0)
+        return {};
+    std::string result(static_cast<std::size_t>(length), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+            static_cast<int>(value.size()), result.data(), length,
+            nullptr, nullptr) != length)
+        return {};
+    return result;
+}
+
+// This explicit test-only marker models an external ReShade installation. It
+// is not an injector path and never writes a proxy or configuration into the
+// demo directory. Its LoadLibrary reference intentionally lasts to exit.
+bool load_test_external_runtime()
+{
+    std::wstring marker;
+    if (!module_sibling_path(
+            L"electron-game-overlay-demo-present.enabled", marker))
+        return report_preload_test_failure("present-marker-path", ERROR_BAD_PATHNAME);
+    g_test_present_ack_enabled =
+        GetFileAttributesW(marker.c_str()) != INVALID_FILE_ATTRIBUTES;
+
+    if (!module_sibling_path(
+            L"electron-game-overlay-preload-runtime.path", marker))
+        return report_preload_test_failure("runtime-marker-path", ERROR_BAD_PATHNAME);
+    const HANDLE file = CreateFileW(
+        marker.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+            ? true : report_preload_test_failure("open-marker", error);
+    }
+    BY_HANDLE_FILE_INFORMATION information = {};
+    LARGE_INTEGER size = {};
+    bool valid = GetFileInformationByHandle(file, &information) != FALSE &&
+        (information.dwFileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0 &&
+        GetFileSizeEx(file, &size) != FALSE &&
+        size.QuadPart > 0 && size.QuadPart <= 131'072;
+    std::string bytes;
+    if (valid)
+    {
+        bytes.resize(static_cast<std::size_t>(size.QuadPart));
+        DWORD read = 0;
+        valid = ReadFile(
+            file, bytes.data(), static_cast<DWORD>(bytes.size()), &read,
+            nullptr) != FALSE && read == bytes.size();
+    }
+    CloseHandle(file);
+    if (!valid)
+        return report_preload_test_failure("read-marker", ERROR_INVALID_DATA);
+    if (bytes.size() >= 3 &&
+        static_cast<unsigned char>(bytes[0]) == 0xef &&
+        static_cast<unsigned char>(bytes[1]) == 0xbb &&
+        static_cast<unsigned char>(bytes[2]) == 0xbf)
+        bytes.erase(0, 3);
+    if (!bytes.empty() && bytes.back() == '\n')
+    {
+        bytes.pop_back();
+        if (!bytes.empty() && bytes.back() == '\r')
+            bytes.pop_back();
+    }
+    if (bytes.empty() || bytes.find_first_of("\r\n") != std::string::npos ||
+        bytes.find('\0') != std::string::npos)
+        return report_preload_test_failure("single-line-marker", ERROR_INVALID_DATA);
+    const int length = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+        static_cast<int>(bytes.size()), nullptr, 0);
+    if (length <= 0 || length >= 32'768)
+        return report_preload_test_failure("utf8-marker", ERROR_INVALID_DATA);
+    std::wstring path(static_cast<std::size_t>(length), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+            static_cast<int>(bytes.size()), path.data(), length) != length)
+        return report_preload_test_failure("decode-marker", ERROR_INVALID_DATA);
+    const bool drive_path = path.size() > 3 &&
+        ((path[0] >= L'A' && path[0] <= L'Z') ||
+         (path[0] >= L'a' && path[0] <= L'z')) &&
+        path[1] == L':' && path[2] == L'\\';
+    const bool unc_path = path.size() > 4 && path[0] == L'\\' &&
+        path[1] == L'\\' && path[2] != L'?' && path[2] != L'.';
+    std::wstring full_path(32'768, L'\0');
+    const DWORD full_length = GetFullPathNameW(
+        path.c_str(), static_cast<DWORD>(full_path.size()),
+        full_path.data(), nullptr);
+    if ((!drive_path && !unc_path) || full_length == 0 ||
+        full_length >= full_path.size())
+        return report_preload_test_failure("absolute-runtime-path", ERROR_BAD_PATHNAME);
+    full_path.resize(full_length);
+    const std::size_t separator = full_path.find_last_of(L"\\/");
+    if (_wcsicmp(full_path.c_str(), path.c_str()) != 0 ||
+        separator == std::wstring::npos ||
+        _wcsicmp(full_path.c_str() + separator + 1, L"ReShade64.dll") != 0)
+        return report_preload_test_failure("canonical-runtime-path", ERROR_BAD_PATHNAME);
+    const DWORD attributes = GetFileAttributesW(full_path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+        return report_preload_test_failure("runtime-file", ERROR_INVALID_DATA);
+    if (GetModuleHandleW(L"ReShade64.dll") != nullptr)
+        return report_preload_test_failure("already-loaded-runtime", ERROR_ALREADY_EXISTS);
+    const std::wstring base_path = full_path.substr(0, separator + 1);
+    if (!SetEnvironmentVariableW(L"RESHADE_BASE_PATH_OVERRIDE", base_path.c_str()))
+        return report_preload_test_failure("target-base-path", GetLastError());
+    g_test_external_runtime = LoadLibraryExW(
+        full_path.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (g_test_external_runtime == nullptr)
+        return report_preload_test_failure("load-runtime", GetLastError());
+    g_test_present_ack_enabled = true;
+    // Match the controlled host's pre-armed injection wait: the hook worker
+    // must finish before this deliberately fast demo creates its device.
+    Sleep(750);
+    const std::string message =
+        "EGO_TEST_EXTERNAL_SELF_LOAD_V1 loaded\nruntimePath=" +
+        preload_test_utf8(full_path) + "\n";
+    if (!write_preload_test_file(
+            L"electron-game-overlay-preload-runtime.log", message, CREATE_ALWAYS))
+        return report_preload_test_failure("runtime-log", GetLastError());
+    return true;
+}
+
+bool observe_test_preload_present(HRESULT result)
+{
+    if (!g_test_present_ack_enabled || result != S_OK ||
+        g_test_successful_presents >= 8)
+        return true;
+    if (++g_test_successful_presents != 8)
+        return true;
+    FILETIME creation = {}, exit = {}, kernel = {}, user = {};
+    if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user))
+        return report_preload_test_failure("present-process-identity", GetLastError());
+    ULARGE_INTEGER creation_value = {};
+    creation_value.LowPart = creation.dwLowDateTime;
+    creation_value.HighPart = creation.dwHighDateTime;
+    std::wstring runtime_path(32'768, L'\0');
+    const HMODULE runtime = GetModuleHandleW(L"ReShade64.dll");
+    const DWORD length = runtime == nullptr ? 0 : GetModuleFileNameW(
+        runtime, runtime_path.data(), static_cast<DWORD>(runtime_path.size()));
+    if (length == 0 || length >= runtime_path.size())
+        return report_preload_test_failure("present-runtime-path", ERROR_MOD_NOT_FOUND);
+    runtime_path.resize(length);
+    const std::string message =
+        "EGO_CONTROLLED_PRESENT_V1\npid=" + std::to_string(GetCurrentProcessId()) +
+        "\ncreationFileTime=" + std::to_string(creation_value.QuadPart) +
+        "\nsuccessfulPresents=" + std::to_string(g_test_successful_presents) +
+        "\nruntimePath=" + preload_test_utf8(runtime_path) + "\n";
+    if (!write_preload_test_file(
+            L"electron-game-overlay-demo-present.ready", message, CREATE_NEW))
+        return report_preload_test_failure("present-ready-file", GetLastError());
+    return true;
+}
+
 bool marker_present(const wchar_t *name)
 {
     std::wstring path;
@@ -214,6 +578,16 @@ bool marker_present(const wchar_t *name)
     const DWORD attributes = GetFileAttributesW(path.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES &&
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool consume_marker(const wchar_t *name)
+{
+    std::wstring path;
+    if (!module_sibling_path(name, path))
+        return false;
+    if (DeleteFileW(path.c_str()) != FALSE)
+        return true;
+    return GetLastError() == ERROR_FILE_NOT_FOUND;
 }
 
 bool publish_final_surface_destroyed_ack()
@@ -347,6 +721,12 @@ bool wait_for_prearmed_injected_runtime()
 
 void report_graphics_failure(const wchar_t *message)
 {
+    if (g_test_present_ack_enabled)
+        write_preload_test_file(
+            L"electron-game-overlay-demo-failure.log",
+            "EGO_CONTROLLED_GRAPHICS_FAILURE_V1\nmessage=" +
+                preload_test_utf8(message) + "\n",
+            CREATE_ALWAYS);
     OutputDebugStringW(message);
     MessageBoxW(g_graphics.window, message, kWindowTitle, MB_OK | MB_ICONERROR);
     PostQuitMessage(1);
@@ -406,17 +786,36 @@ HRESULT create_device_with_driver(D3D_DRIVER_TYPE driver_type)
 bool create_graphics_device()
 {
     HRESULT result = create_device_with_driver(D3D_DRIVER_TYPE_HARDWARE);
+    const HRESULT hardware_result = result;
+    bool warp_attempted = false;
     if (FAILED(result))
     {
+        warp_attempted = true;
         g_graphics.swap_chain.Reset();
         g_graphics.context.Reset();
         g_graphics.device.Reset();
         result = create_device_with_driver(D3D_DRIVER_TYPE_WARP);
     }
 
-    return SUCCEEDED(result) && create_render_target(
+    const bool render_target_ready = SUCCEEDED(result) && create_render_target(
         g_graphics.swap_chain.Get(),
         g_graphics.render_target);
+    if (g_test_present_ack_enabled)
+    {
+        char diagnostic[512] = {};
+        sprintf_s(
+            diagnostic,
+            "EGO_CONTROLLED_GRAPHICS_RESULT_V1\nbackend=d3d11\n"
+            "hardwareResult=0x%08lx\nwarpAttempted=%s\n"
+            "finalDeviceResult=0x%08lx\nrenderTargetReady=%s\n",
+            static_cast<unsigned long>(hardware_result),
+            warp_attempted ? "true" : "false",
+            static_cast<unsigned long>(result),
+            render_target_ready ? "true" : "false");
+        write_preload_test_file(
+            L"electron-game-overlay-demo-graphics.log", diagnostic, CREATE_ALWAYS);
+    }
+    return render_target_ready;
 }
 
 bool create_secondary_swap_chain()
@@ -520,7 +919,18 @@ HRESULT render_surface(
 
     g_graphics.context->OMSetRenderTargets(1, &render_target, nullptr);
     g_graphics.context->ClearRenderTargetView(render_target, clear_color);
-    return swap_chain->Present(1, 0);
+    if (!g_present_diagnostic_enabled)
+    {
+        const HRESULT result = swap_chain->Present(1, 0);
+        return observe_test_preload_present(result) ? result : E_FAIL;
+    }
+
+    LARGE_INTEGER qpc_before = {}, qpc_after = {};
+    QueryPerformanceCounter(&qpc_before);
+    const HRESULT result = swap_chain->Present(1, 0);
+    QueryPerformanceCounter(&qpc_after);
+    observe_present_result(swap_chain, result, qpc_before, qpc_after);
+    return observe_test_preload_present(result) ? result : E_FAIL;
 }
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
@@ -594,12 +1004,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     {
         constexpr wchar_t message[] =
             L"Invalid controlled-host options. --release-primary-after-ms requires "
-            L"--multi-swapchain and a positive integer delay.";
+            L"--multi-swapchain and a positive integer delay; "
+            L"--defer-secondary-present-until-primary-release also requires "
+            L"--multi-swapchain.";
         OutputDebugStringW(message);
         MessageBoxW(nullptr, message, kWindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
     if (!enable_per_monitor_v2_awareness())
+        return 1;
+    configure_present_diagnostic();
+    if (!load_test_external_runtime())
         return 1;
     if (!wait_for_test_startup_barrier())
         return 1;
@@ -703,6 +1118,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 
     if (!create_graphics_device())
     {
+        if (g_test_present_ack_enabled)
+            write_preload_test_file(
+                L"electron-game-overlay-demo-failure.log",
+                "EGO_CONTROLLED_GRAPHICS_FAILURE_V1\nphase=initial-device-or-render-target\n",
+                CREATE_ALWAYS);
         MessageBoxW(
             g_graphics.window,
             L"Unable to create a D3D11 device. See the debugger output for details.",
@@ -784,26 +1204,103 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     if (!g_input_oracle.initialize(g_graphics.window))
         report_graphics_failure(L"Unable to initialize the controlled raw/pointer-input oracle.");
 
-    const auto start_time = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
     MSG message = {};
     bool final_surface_destroyed_for_test = false;
+    bool final_surface_ack_published_for_test = false;
     bool primary_released_for_test = false;
     bool both_presenting_reported = false;
     bool remaining_present_reported = false;
+    bool deferred_secondary_ready_reported = false;
     std::uint64_t secondary_presents_at_primary_release = 0;
 
     while (message.message != WM_QUIT)
     {
+        if (options.allow_surface_recreation &&
+            final_surface_destroyed_for_test &&
+            marker_present(kRecreateSurfacesRequestMarker))
+        {
+            if (IsWindow(g_graphics.window) == FALSE ||
+                (options.multi_swapchain &&
+                 IsWindow(g_graphics.secondary_window) == FALSE))
+            {
+                report_graphics_failure(
+                    L"The controlled host cannot recreate surfaces after a window was destroyed.");
+                message.wParam = 1;
+                break;
+            }
+            if (!consume_marker(kDestroyPrimarySurfaceRequestMarker) ||
+                !consume_marker(kDestroyFinalSurfaceRequestMarker) ||
+                !consume_marker(kRecreateSurfacesRequestMarker))
+            {
+                report_graphics_failure(
+                    L"Unable to consume the controlled surface recreation request markers.");
+                message.wParam = 1;
+                break;
+            }
+            if (!create_graphics_device() ||
+                (options.multi_swapchain && !create_secondary_swap_chain()))
+            {
+                destroy_graphics_device();
+                report_graphics_failure(
+                    L"Unable to recreate the controlled D3D11 graphics surfaces.");
+                message.wParam = 1;
+                break;
+            }
+            final_surface_destroyed_for_test = false;
+            primary_released_for_test = false;
+            both_presenting_reported = false;
+            remaining_present_reported = false;
+            deferred_secondary_ready_reported = false;
+            g_graphics.primary_present_count = 0;
+            g_graphics.secondary_present_count = 0;
+            secondary_presents_at_primary_release = 0;
+            start_time = std::chrono::steady_clock::now();
+            static_cast<void>(activate_controlled_window(g_graphics.window));
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_SURFACES_RECREATED backend=d3d11 "
+                "primaryHwnd=0x%llx secondaryHwnd=0x%llx "
+                "sameWindows=true processAlive=true",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(
+                        g_graphics.secondary_window)));
+            continue;
+        }
+
         if (!final_surface_destroyed_for_test &&
             marker_present(kDestroyFinalSurfaceRequestMarker))
         {
             destroy_graphics_device();
             final_surface_destroyed_for_test = true;
-            if (!publish_final_surface_destroyed_ack())
+            // Preserve the first acknowledgement as evidence across opt-in
+            // recreation cycles; later releases have their own stdout marker.
+            if (!final_surface_ack_published_for_test)
             {
-                report_graphics_failure(
-                    L"Unable to publish the controlled final-surface destruction acknowledgement.");
+                if (!publish_final_surface_destroyed_ack())
+                {
+                    report_graphics_failure(
+                        L"Unable to publish the controlled final-surface destruction acknowledgement.");
+                }
+                else
+                {
+                    final_surface_ack_published_for_test = true;
+                }
             }
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_FINAL_GRAPHICS_RELEASED backend=d3d11 "
+                "primaryHwnd=0x%llx secondaryHwnd=0x%llx "
+                "primaryHwndAlive=%s secondaryHwndAlive=%s processAlive=true",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(
+                        g_graphics.secondary_window)),
+                IsWindow(g_graphics.window) != FALSE ? "true" : "false",
+                IsWindow(g_graphics.secondary_window) != FALSE
+                    ? "true"
+                    : "false");
             continue;
         }
 
@@ -853,7 +1350,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
                 ++g_graphics.primary_present_count;
             }
         }
-        if (g_graphics.secondary_swap_chain != nullptr)
+        if (g_graphics.secondary_swap_chain != nullptr &&
+            (!options.defer_secondary_present_until_primary_release ||
+             primary_released_for_test))
         {
             if (FAILED(render_surface(
                     g_graphics.secondary_swap_chain.Get(),
@@ -867,6 +1366,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             {
                 ++g_graphics.secondary_present_count;
             }
+        }
+
+        if (options.defer_secondary_present_until_primary_release &&
+            !deferred_secondary_ready_reported &&
+            !primary_released_for_test &&
+            g_graphics.primary_present_count >= 3 &&
+            g_graphics.secondary_present_count == 0 &&
+            g_graphics.secondary_swap_chain != nullptr)
+        {
+            deferred_secondary_ready_reported = true;
+            publish_stdout_marker(
+                "EGO_CONTROLLED_HOST_DEFERRED_SECONDARY_READY backend=d3d11 "
+                "primaryPresentCount=%llu secondaryPresentCount=0 "
+                "secondarySwapchainAlive=true",
+                static_cast<unsigned long long>(
+                    g_graphics.primary_present_count));
         }
 
         if (options.multi_swapchain && !both_presenting_reported &&
@@ -900,10 +1415,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
             !primary_released_for_test && options.release_primary &&
             elapsed_ms >= static_cast<std::int64_t>(
                 options.release_primary_after_ms);
+        const bool deferred_primary_release_ready =
+            options.defer_secondary_present_until_primary_release &&
+            primary_release_marker_present &&
+            g_graphics.primary_present_count != 0 &&
+            g_graphics.secondary_swap_chain != nullptr;
         if (options.multi_swapchain && !primary_released_for_test &&
-            !final_surface_destroyed_for_test && both_presenting_reported &&
-            (primary_release_marker_present ||
-             primary_release_delay_elapsed))
+            !final_surface_destroyed_for_test &&
+            ((both_presenting_reported &&
+              (primary_release_marker_present ||
+               primary_release_delay_elapsed)) ||
+             deferred_primary_release_ready))
         {
             secondary_presents_at_primary_release =
                 g_graphics.secondary_present_count;

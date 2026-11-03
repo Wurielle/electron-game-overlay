@@ -21,10 +21,17 @@ param(
     [ValidateSet("explicit-hwnd", "null-focus")]
     [string]$RawRegistrationTarget = "explicit-hwnd",
     [Parameter(DontShow = $true)]
-    [string]$ElectronExecutable
+    [string]$ElectronExecutable,
+    [Parameter(DontShow = $true)]
+    [string]$ClientReadyMarker,
+    [string]$DeviceLossMonitorDirectory
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
+if (-not [string]::IsNullOrWhiteSpace($DeviceLossMonitorDirectory)) {
+    . (Join-Path $PSScriptRoot 'device-loss-monitor.ps1') -FunctionsOnly
+}
 
 if ($RawRegistrationTiming -eq "before-injection" -and $InputMode -eq "legacy") {
     throw "Raw registration timing applies only to wm-input and raw-buffer modes."
@@ -123,9 +130,22 @@ else {
 }
 $AttemptCount = $AttemptCountOverride
 
+function Get-ControlledElectronProcesses {
+    $DefaultElectron = Join-Path $RepoRoot "node_modules\electron\dist\electron.exe"
+    @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                [string]::Equals($_.ExecutablePath, $Electron,
+                    [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals($_.ExecutablePath, $DefaultElectron,
+                    [StringComparison]::OrdinalIgnoreCase)
+            }
+    )
+}
+
 function Get-MatchingClientProcesses {
     @(
-        Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
+        Get-ControlledElectronProcesses |
             Where-Object {
                 $_.CommandLine -like "*$RepoRoot*" -and
                 ($_.CommandLine -like "*--reshade-overlay*" -or
@@ -417,8 +437,11 @@ function Stop-AttemptElectronProcesses {
     param([Parameter(Mandatory = $true)][string]$UserData)
 
     $ProcessIds = @(
-        Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -like "*$UserData*" } |
+        Get-ControlledElectronProcesses |
+            Where-Object {
+                $_.CommandLine -and $_.CommandLine.IndexOf(
+                    $UserData, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            } |
             ForEach-Object { $_.ProcessId }
     )
     foreach ($ProcessId in $ProcessIds) {
@@ -967,6 +990,7 @@ function Invoke-ClientSdkAttempt {
     $TargetDirectoryLog = Join-Path $TargetDirectory "ReShade.log"
     $ClientProcess = $null
     $HostProcess = $null
+    $DeviceLossMonitor = $null
     $ReShadeRunDirectory = $null
     $RegistrationReadyTitle = $null
     $AttemptPassed = $false
@@ -1034,6 +1058,9 @@ function Invoke-ClientSdkAttempt {
                     $RegistrationReadyTitle
                 )
             }
+            # This host intentionally exists before attachment. Bind the SDK to
+            # that exact PID instead of asking a future watcher to rediscover it.
+            $ClientArguments += "--reshade-expected-target-pid=$($HostProcess.Id)"
             Write-Host "  pre-injection registration: $RegistrationReadyTitle"
         }
 
@@ -1052,7 +1079,25 @@ function Invoke-ClientSdkAttempt {
             -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
             -Deadline $StartupDeadline
 
+        # A packaged demo can finish showing its control window after the
+        # injector is armed. Let its test bootstrap confirm that startup is
+        # complete before the controlled host takes foreground ownership.
+        if (-not [string]::IsNullOrWhiteSpace($ClientReadyMarker)) {
+            Wait-ForClientMarker `
+                -Path $ClientStdout `
+                -ClientProcess $ClientProcess `
+                -Marker $ClientReadyMarker `
+                -Deadline $StartupDeadline
+        }
+
         if ($RawRegistrationTiming -eq "after-injection") {
+            # The native watcher baselines processes before it announces ready.
+            # Launching after spawn alone can put this fresh host in that baseline.
+            Wait-ForClientMarker `
+                -Path $ClientStdout `
+                -ClientProcess $ClientProcess `
+                -Marker "RESHADE_CLIENT_INJECTOR_WATCHER_READY" `
+                -Deadline $StartupDeadline
             $HostProcess = Start-Process `
                 -FilePath $TargetExecutablePath `
                 -WorkingDirectory $TargetDirectory `
@@ -1102,6 +1147,13 @@ function Invoke-ClientSdkAttempt {
 
         $ReShadeRunDirectory = Get-ReShadeRunDirectory -ClientLog $ClientLog
         $ReShadeLog = Join-Path $ReShadeRunDirectory "ReShade.log"
+        if (-not [string]::IsNullOrWhiteSpace($DeviceLossMonitorDirectory)) {
+            $DeviceLossMonitor = Start-EgoDeviceLossMonitor -TargetProcess $HostProcess `
+                -ExpectedExecutablePath $TargetExecutablePath -MonitorRoot $DeviceLossMonitorDirectory `
+                -OwnedRunDirectory $AttemptDirectory -NativeRunDirectory $ReShadeRunDirectory `
+                -OwnedLogPaths @($ClientStdout, $ClientStderr, $ReShadeLog, $TargetDirectoryLog,
+                    (Join-Path $ReShadeRunDirectory 'inject.stdout.log'), (Join-Path $ReShadeRunDirectory 'inject.stderr.log'))
+        }
         $ReShadeRunDirectory |
             Set-Content `
                 -LiteralPath (Join-Path $AttemptDirectory "reshade-run-directory.txt") `
@@ -1342,6 +1394,9 @@ function Invoke-ClientSdkAttempt {
             throw "The game input oracle changed during overlay interaction.`nBefore: $BaselineTitle`nAfter:  $InterceptedTitle"
         }
 
+        # Freeze feature input before the release shortcut can send its own
+        # modifier events to the currently focused overlay field.
+        $ActionLogSnapshot = [string](Get-ClientLogText -Path $ClientStdout)
         [ReShadeClientSdkGate.NativeInputMethods]::SendControlI()
         Wait-ForClientMarker `
             -Path $ClientStdout `
@@ -1359,32 +1414,36 @@ function Invoke-ClientSdkAttempt {
         if ($EnabledIndex -lt 0 -or $DisabledIndex -le $EnabledIndex) {
             throw "The interception acknowledgement markers are out of order."
         }
+        if (-not $ClientLog.StartsWith($ActionLogSnapshot, [StringComparison]::Ordinal)) {
+            throw "The client log changed its captured feature-input prefix."
+        }
+        $ActionEnabledIndex = $ActionLogSnapshot.IndexOf($EnabledMarker, [StringComparison]::Ordinal)
         $ActionEndMarker =
             "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC keyup " +
             "target=hudhook-status-input-target"
-        $ActionEndIndex = $ClientLog.LastIndexOf(
+        $ActionEndIndex = $ActionLogSnapshot.LastIndexOf(
             $ActionEndMarker,
-            $DisabledIndex,
-            $DisabledIndex - $EnabledIndex,
             [StringComparison]::Ordinal
         )
-        if ($ActionEndIndex -lt $EnabledIndex) {
+        if ($ActionEnabledIndex -lt 0 -or $ActionEndIndex -lt $ActionEnabledIndex) {
             throw "The final scripted status-field key release was not observed."
         }
         $ActionStartMarker =
             "HUDHOOK_CLIENT_STATUS_INPUT_DIAGNOSTIC mousedown " +
             "target=hudhook-status-input-target"
-        $ActionStartIndex = $ClientLog.IndexOf(
+        $ActionStartIndex = $ActionLogSnapshot.IndexOf(
             $ActionStartMarker,
-            $EnabledIndex,
+            $ActionEnabledIndex,
             [StringComparison]::Ordinal
         )
-        if ($ActionStartIndex -lt $EnabledIndex -or
+        if ($ActionStartIndex -lt $ActionEnabledIndex -or
             $ActionStartIndex -ge $ActionEndIndex) {
             throw "The first scripted status-field mouse press was not observed."
         }
-        $ActionEndExclusive = $ActionEndIndex + $ActionEndMarker.Length
-        $InterceptedLog = $ClientLog.Substring(
+        # Include the complete settled capture, including any invalid trailing
+        # duplicate event after the final expected key release.
+        $ActionEndExclusive = $ActionLogSnapshot.Length
+        $InterceptedLog = $ActionLogSnapshot.Substring(
             $ActionStartIndex,
             $ActionEndExclusive - $ActionStartIndex
         )
@@ -1566,6 +1625,7 @@ function Invoke-ClientSdkAttempt {
         }
     }
     finally {
+        if ($DeviceLossMonitor) { Stop-EgoDeviceLossMonitor $DeviceLossMonitor }
         Stop-AttemptElectronProcesses -UserData $UserData
 
         $InjectorProcessIds = @(
@@ -1602,6 +1662,7 @@ function Invoke-ClientSdkAttempt {
 if ($FunctionsOnly) {
     return
 }
+. (Join-Path $PSScriptRoot 'visual-test-display-lease.ps1')
 
 if (-not (Test-Path -LiteralPath $Electron -PathType Leaf)) {
     throw "Electron is unavailable: $Electron"
@@ -1680,11 +1741,14 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
+$VisualDisplayReport = [ordered]@{ scope='Visual input gate display precondition'; backend=$Backend; architecture=$Architecture }
+$VisualDisplayLease = $null
 try {
+    $VisualDisplayLease = Enter-VisualTestDisplayLease $VisualDisplayReport
     $Attempts = @()
     for ($Attempt = 1; $Attempt -le $AttemptCount; ++$Attempt) {
         Write-Host "Starting $BackendLabel client/SDK attempt $Attempt of $AttemptCount ..."
@@ -1693,8 +1757,11 @@ try {
 
         Start-Sleep -Milliseconds 500
         $RemainingAttemptElectronProcesses = @(
-            Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
-                Where-Object { $_.CommandLine -like "*$($AttemptResult.UserData)*" }
+            Get-ControlledElectronProcesses |
+                Where-Object {
+                    $_.CommandLine -and $_.CommandLine.IndexOf(
+                        $AttemptResult.UserData, [StringComparison]::OrdinalIgnoreCase) -ge 0
+                }
         )
         $RemainingHosts = Get-MatchingHosts
         $RemainingClients = Get-MatchingClientProcesses
@@ -1731,10 +1798,9 @@ try {
     Write-Host "Evidence preserved in: $RunDirectory"
 }
 finally {
+    Exit-VisualTestDisplayLease $VisualDisplayLease $VisualDisplayReport
+    $VisualDisplayReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $RunDirectory 'display-precondition.json') -Encoding UTF8
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }

@@ -2,6 +2,7 @@
 param([switch]$SkipBuild)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Reuse the production client gate's controlled-host, log, window, coordinate,
 # and SendInput helpers without running its sequential two-attempt scenario.
@@ -34,6 +35,7 @@ $HostB = $null
 $ClientA = $null
 $ClientB = $null
 $RunDirectories = [Collections.Generic.List[string]]::new()
+$LegacyDiscoverySnapshots = [Collections.Generic.List[object]]::new()
 
 function Get-FreeTcpPort {
     param([int[]]$Excluded = @())
@@ -448,35 +450,84 @@ function Assert-TargetDiscoveryRecord {
     )
 
     $Properties = @($Record.PSObject.Properties.Name | Sort-Object)
-    if (($Properties -join ",") -ne "pid,port,targetPid,token,version") {
+    if (($Properties -join ",") -cne "pid,port,targetPid,token,version") {
         throw "$Label discovery schema was not exact: $($Properties -join ',')."
     }
-    if ([int]$Record.version -ne 1 -or
-        [int]$Record.pid -ne $ClientPid -or
-        [int]$Record.targetPid -ne $TargetPid -or
-        [int]$Record.port -lt 1 -or
-        [int]$Record.port -gt 65535 -or
-        -not ([string]$Record.token -cmatch '^[0-9a-f]{64}$')) {
-        throw "$Label discovery record failed validation: $($Record | ConvertTo-Json -Compress)"
+    foreach ($Field in @('version', 'pid', 'targetPid', 'port')) {
+        if ($Record.$Field -isnot [int] -and $Record.$Field -isnot [long]) {
+            throw "$Label discovery field '$Field' was not a JSON integer."
+        }
+    }
+    if ($Record.version -ne 1 -or
+        $Record.pid -ne $ClientPid -or
+        $Record.targetPid -ne $TargetPid -or
+        $Record.port -lt 1 -or
+        $Record.port -gt 65535 -or
+        $Record.token -isnot [string] -or
+        -not ($Record.token -cmatch '^[0-9a-f]{64}$')) {
+        throw "$Label discovery record failed identity, endpoint or credential validation."
     }
 }
 
-function Assert-GlobalDiscoveryRecord {
+function Assert-PrivateTargetRoutes {
     param(
-        [Parameter(Mandatory = $true)]$Record,
-        [Parameter(Mandatory = $true)][int[]]$AllowedClientPids
+        [Parameter(Mandatory = $true)][string]$RouteAPath,
+        [Parameter(Mandatory = $true)][string]$RouteBPath,
+        [Parameter(Mandatory = $true)][string]$RunDirectoryA,
+        [Parameter(Mandatory = $true)][string]$RunDirectoryB,
+        [Parameter(Mandatory = $true)]$RecordA,
+        [Parameter(Mandatory = $true)]$RecordB,
+        [Parameter(Mandatory = $true)][int]$ClientPidA,
+        [Parameter(Mandatory = $true)][int]$ClientPidB,
+        [Parameter(Mandatory = $true)][int]$TargetPidA,
+        [Parameter(Mandatory = $true)][int]$TargetPidB
     )
 
-    $Properties = @($Record.PSObject.Properties.Name | Sort-Object)
-    if (($Properties -join ",") -ne "pid,port,token,version") {
-        throw "Global discovery schema was not exact: $($Properties -join ',')."
+    Assert-TargetDiscoveryRecord -Record $RecordA -ClientPid $ClientPidA -TargetPid $TargetPidA -Label 'App A'
+    Assert-TargetDiscoveryRecord -Record $RecordB -ClientPid $ClientPidB -TargetPid $TargetPidB -Label 'App B'
+    $APath = [IO.Path]::GetFullPath($RouteAPath)
+    $BPath = [IO.Path]::GetFullPath($RouteBPath)
+    if (-not [IO.Path]::IsPathRooted($RouteAPath) -or
+        -not [IO.Path]::IsPathRooted($RouteBPath) -or
+        -not [string]::Equals($APath, [IO.Path]::GetFullPath((Join-Path $RunDirectoryA 'electron-overlay-transport-v1.json')), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($BPath, [IO.Path]::GetFullPath((Join-Path $RunDirectoryB 'electron-overlay-transport-v1.json')), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Each application must publish its target credential beside its own staged engine.'
     }
-    if ([int]$Record.version -ne 1 -or
-        [int]$Record.pid -notin $AllowedClientPids -or
-        [int]$Record.port -lt 1 -or
-        [int]$Record.port -gt 65535 -or
-        -not ([string]$Record.token -cmatch '^[0-9a-f]{64}$')) {
-        throw "Global discovery was replaced by an unrelated or invalid record: $($Record | ConvertTo-Json -Compress)"
+    if ($ClientPidA -eq $ClientPidB -or $TargetPidA -eq $TargetPidB -or
+        [string]::Equals($APath, $BPath, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals([IO.Path]::GetFullPath($RunDirectoryA), [IO.Path]::GetFullPath($RunDirectoryB), [StringComparison]::OrdinalIgnoreCase) -or
+        $RecordA.port -eq $RecordB.port -or $RecordA.token -ceq $RecordB.token) {
+        throw 'The two applications and targets must own distinct private directories, endpoints and credentials.'
+    }
+}
+
+function Get-DiscoveryPathSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $FullPath)) {
+        return [pscustomobject]@{ Path = $FullPath; Exists = $false; Length = 0; Sha256 = $null }
+    }
+    $Item = Get-Item -LiteralPath $FullPath -Force
+    if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $Item.Length -gt 4096) {
+        throw "Legacy discovery is not a bounded regular file: $FullPath"
+    }
+    return [pscustomobject]@{
+        Path = $FullPath
+        Exists = $true
+        Length = $Item.Length
+        Sha256 = (Get-FileHash -LiteralPath $FullPath -Algorithm SHA256).Hash
+    }
+}
+
+function Assert-DiscoveryPathsUnchanged {
+    param([Parameter(Mandatory = $true)][object[]]$Snapshots)
+
+    foreach ($Before in $Snapshots) {
+        $After = Get-DiscoveryPathSnapshot -Path $Before.Path
+        if ($After.Exists -ne $Before.Exists -or $After.Length -ne $Before.Length -or $After.Sha256 -cne $Before.Sha256) {
+            throw "A private participant changed an unrelated legacy discovery path: $($Before.Path)"
+        }
     }
 }
 
@@ -817,27 +868,9 @@ if ($ExistingHosts.Count -ne 0 -or
     )
     throw "Close the existing controlled host/ReShade client run before this test (PID: $($ProcessIds -join ', '))."
 }
-if (Test-Path -LiteralPath $GlobalDiscoveryPath -PathType Leaf) {
-    try {
-        $ExistingGlobalRecord =
-            Get-Content -Raw -LiteralPath $GlobalDiscoveryPath |
-                ConvertFrom-Json
-        $ExistingGlobalPid = [int]$ExistingGlobalRecord.pid
-        if ($ExistingGlobalPid -gt 0 -and
-            (Get-Process `
-                -Id $ExistingGlobalPid `
-                -ErrorAction SilentlyContinue)) {
-            throw "Close the active overlay transport that owns global discovery before this test (PID: $ExistingGlobalPid)."
-        }
-    }
-    catch {
-        if ($_.Exception.Message -like "Close the active overlay transport*") {
-            throw
-        }
-        # A stale or malformed record has no live owner. The first test client
-        # atomically replaces it and graceful teardown removes that owned copy.
-    }
-}
+# Private participants neither replace nor acquire the legacy global endpoint.
+# Retain a byte fingerprint, even for a stale record, and prove it is untouched.
+$LegacyDiscoverySnapshots.Add((Get-DiscoveryPathSnapshot -Path $GlobalDiscoveryPath))
 
 if (-not $SkipBuild) {
     & $Nx run client:build
@@ -923,8 +956,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -945,6 +978,10 @@ try {
     }
     Assert-ExactTargetProcess -ProcessId $HostA.Id -ExpectedPath $TargetAPath
     Assert-ExactTargetProcess -ProcessId $HostB.Id -ExpectedPath $TargetBPath
+    foreach ($OwnedHost in @($HostA, $HostB)) {
+        $LegacyPath = Join-Path $GlobalDiscoveryDirectory "$TargetDiscoveryPrefix$($OwnedHost.Id).json"
+        $LegacyDiscoverySnapshots.Add((Get-DiscoveryPathSnapshot -Path $LegacyPath))
+    }
 
     $ClientAArguments = @(
         "`"$RepoRoot`"",
@@ -1058,64 +1095,13 @@ try {
         -Path $RendezvousPathB `
         -Process $ClientB `
         -Deadline $AttachDeadline
-    Assert-TargetDiscoveryRecord `
-        -Record $DiscoveryA `
-        -ClientPid $ClientA.Id `
-        -TargetPid $HostA.Id `
-        -Label "App A"
-    Assert-TargetDiscoveryRecord `
-        -Record $DiscoveryB `
-        -ClientPid $ClientB.Id `
-        -TargetPid $HostB.Id `
-        -Label "App B"
-    if ([string]::Equals(
-            [string]$DiscoveryA.token,
-            [string]$DiscoveryB.token,
-            [StringComparison]::Ordinal) -or
-        [int]$DiscoveryA.port -eq [int]$DiscoveryB.port) {
-        throw "The independent sessions did not receive distinct target credentials and loopback endpoints."
-    }
-
-    $StaticDiscoveryPathA = Join-Path `
-        $GlobalDiscoveryDirectory `
-        "$TargetDiscoveryPrefix$($HostA.Id).json"
-    $StaticDiscoveryPathB = Join-Path `
-        $GlobalDiscoveryDirectory `
-        "$TargetDiscoveryPrefix$($HostB.Id).json"
-    $StaticDiscoveryA = Wait-ForDiscoveryRecord `
-        -Path $StaticDiscoveryPathA `
-        -Process $ClientA `
-        -Deadline $AttachDeadline
-    $StaticDiscoveryB = Wait-ForDiscoveryRecord `
-        -Path $StaticDiscoveryPathB `
-        -Process $ClientB `
-        -Deadline $AttachDeadline
-    Assert-TargetDiscoveryRecord `
-        -Record $StaticDiscoveryA `
-        -ClientPid $ClientA.Id `
-        -TargetPid $HostA.Id `
-        -Label "App A static"
-    Assert-TargetDiscoveryRecord `
-        -Record $StaticDiscoveryB `
-        -ClientPid $ClientB.Id `
-        -TargetPid $HostB.Id `
-        -Label "App B static"
-    if ([string]$StaticDiscoveryA.token -cne [string]$DiscoveryA.token -or
-        [string]$StaticDiscoveryB.token -cne [string]$DiscoveryB.token) {
-        throw "A static exact-PID route did not match its per-run credential."
-    }
-
-    $GlobalDiscovery = Wait-ForDiscoveryRecord `
-        -Path $GlobalDiscoveryPath `
-        -Process $ClientA `
-        -Deadline $AttachDeadline
-    Assert-GlobalDiscoveryRecord `
-        -Record $GlobalDiscovery `
-        -AllowedClientPids @($ClientA.Id, $ClientB.Id)
-    if ([string]$GlobalDiscovery.token -ceq [string]$DiscoveryA.token -or
-        [string]$GlobalDiscovery.token -ceq [string]$DiscoveryB.token) {
-        throw "A target reused the backward-compatible global discovery credential instead of its exact-PID rendezvous."
-    }
+    Assert-PrivateTargetRoutes `
+        -RouteAPath $RendezvousPathA -RouteBPath $RendezvousPathB `
+        -RunDirectoryA $RunDirectoryA -RunDirectoryB $RunDirectoryB `
+        -RecordA $DiscoveryA -RecordB $DiscoveryB `
+        -ClientPidA $ClientA.Id -ClientPidB $ClientB.Id `
+        -TargetPidA $HostA.Id -TargetPidB $HostB.Id
+    Assert-DiscoveryPathsUnchanged -Snapshots $LegacyDiscoverySnapshots.ToArray()
 
     Remove-Item -LiteralPath $TargetABarrier -Force
     Remove-Item -LiteralPath $TargetBBarrier -Force
@@ -1322,6 +1308,20 @@ try {
             "RESHADE_CLIENT_TARGET_DISCONNECTED pid=$($HostB.Id)")) {
         throw "App B disconnected when App A's target exited."
     }
+    $SurvivingDiscoveryB = Wait-ForDiscoveryRecord `
+        -Path $RendezvousPathB `
+        -Process $ClientB `
+        -Deadline ([DateTime]::UtcNow.AddSeconds(10))
+    Assert-TargetDiscoveryRecord `
+        -Record $SurvivingDiscoveryB `
+        -ClientPid $ClientB.Id `
+        -TargetPid $HostB.Id `
+        -Label "Surviving App B"
+    if ($SurvivingDiscoveryB.port -ne $DiscoveryB.port -or
+        $SurvivingDiscoveryB.token -cne $DiscoveryB.token) {
+        throw "App A target shutdown replaced App B's independent endpoint or credential."
+    }
+    Assert-DiscoveryPathsUnchanged -Snapshots $LegacyDiscoverySnapshots.ToArray()
 
     if (-not [ReShadeClientSdkGate.NativeInputMethods]::ActivateWindow(
             $WindowB)) {
@@ -1351,9 +1351,7 @@ try {
 
     foreach ($OwnedPath in @(
             $RendezvousPathA,
-            $RendezvousPathB,
-            $StaticDiscoveryPathA,
-            $StaticDiscoveryPathB
+            $RendezvousPathB
         )) {
         Wait-ForPathRemoval `
             -Path $OwnedPath `
@@ -1492,65 +1490,41 @@ try {
             DistinctRendezvousPaths = $true
             DistinctLoopbackPorts = $true
             DistinctCredentials = $true
-            ExactPidStaticRoutes = @(
-                $StaticDiscoveryPathA,
-                $StaticDiscoveryPathB
-            )
-            GlobalDiscoveryOwnerDuringRun = [int]$GlobalDiscovery.pid
-            GlobalDiscoveryWasNotUsedForExactPidRuntimeRendezvous = $true
+            PrivateRoutesBoundToExactProducerAndTarget = $true
+            LegacyDiscoveryPathsUnchanged = $true
+            LegacyDiscoverySnapshots = $LegacyDiscoverySnapshots.ToArray()
             CrossTargetConnections = 0
             CrossSessionInputDeliveries = 0
             AppASceneMutationObservedByAppB = $false
             AppATargetExitDisconnectedAppB = $false
+            AppATargetExitChangedAppBCredential = $false
             OwnedRendezvousReleased = $true
         }
     }
 
-    # Close the non-owner first, then the current global-discovery owner. CDP
-    # Browser.close takes Electron through before-quit, so each overlay session
-    # can remove only records it still owns instead of relying on forced
-    # process termination.
-    $ShutdownOrder = if ([int]$GlobalDiscovery.pid -eq $ClientA.Id) {
-        @(
-            @{
-                Process = $ClientB
-                WebSocketUrl = $DevToolsPageB.webSocketDebuggerUrl
-            },
-            @{
-                Process = $ClientA
-                WebSocketUrl = $DevToolsPageA.webSocketDebuggerUrl
-            }
-        )
-    }
-    else {
-        @(
-            @{
-                Process = $ClientA
-                WebSocketUrl = $DevToolsPageA.webSocketDebuggerUrl
-            },
-            @{
-                Process = $ClientB
-                WebSocketUrl = $DevToolsPageB.webSocketDebuggerUrl
-            }
-        )
-    }
+    # CDP Browser.close takes each independent session through before-quit,
+    # retaining the graceful cleanup oracle for its own staged credential.
+    $ShutdownOrder = @(
+        @{
+            Process = $ClientA
+            WebSocketUrl = $DevToolsPageA.webSocketDebuggerUrl
+        },
+        @{
+            Process = $ClientB
+            WebSocketUrl = $DevToolsPageB.webSocketDebuggerUrl
+        }
+    )
     foreach ($ClientShutdown in $ShutdownOrder) {
         Close-ClientThroughDevTools `
             -WebSocketUrl $ClientShutdown.WebSocketUrl `
             -Process $ClientShutdown.Process
     }
-    Wait-ForPathRemoval `
-        -Path $GlobalDiscoveryPath `
-        -Deadline ([DateTime]::UtcNow.AddSeconds(10))
+    Assert-DiscoveryPathsUnchanged -Snapshots $LegacyDiscoverySnapshots.ToArray()
 }
 finally {
     Stop-OwnedProcesses
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process"
-        )
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 
@@ -1606,9 +1580,7 @@ if ($RemainingElectron.Count -ne 0 -or
 if (-not $Summary) {
     throw "The two-app/two-target gate did not complete its isolation proof."
 }
-Wait-ForPathRemoval `
-    -Path $GlobalDiscoveryPath `
-    -Deadline ([DateTime]::UtcNow.AddSeconds(10))
+Assert-DiscoveryPathsUnchanged -Snapshots $LegacyDiscoverySnapshots.ToArray()
 
 $Summary |
     ConvertTo-Json -Depth 9 |

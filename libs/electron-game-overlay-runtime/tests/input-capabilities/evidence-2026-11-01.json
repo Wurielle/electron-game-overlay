@@ -1,0 +1,604 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-input-capability-acceptance",
+  "recordedAt": "2026-11-01T17:53:28.270Z",
+  "scope": "Actual controlled Windows x64 D3D11 targets and genuine private SDK producers; Windows SendInput virtual-key/mouse/wheel acceptance.",
+  "limitations": [
+    "Stock GetRawInputBuffer parity is unsupported; this proves explicit capability rejection, not a stock buffered hook.",
+    "VK_SPACE was injected with Windows SendInput; this is not a human physical-key test.",
+    "Each lane used one SDK development graph with package label 0.1.0-rc.7; the graphs differed between recorded runs. This is not independently released-package or mixed-version acceptance.",
+    "This does not establish other graphics APIs, x86, ambiguous registration layouts, touch/pen, or arbitrary concurrent input pumps.",
+    "Build-root report files are retained local source evidence; this committed summary preserves their hashes and relevant observations without machine-specific absolute paths or credentials."
+  ],
+  "cases": [
+    {
+      "mode": "owned",
+      "result": "passed",
+      "report": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-owned-20261101-173046-95cf02b1/report.json",
+        "sha256": "bd51e6744126a540969f6ed304149cf10069d77e1e02434d78b9a073aa3b0522"
+      },
+      "sdk": {
+        "packageVersion": "0.1.0-rc.7",
+        "javascriptGraphSha256": "7afdd2183b9a8c57a15ba1135df91a79e927853d976512a148af22e2dbe7a3ff",
+        "nativeGeneration": 14,
+        "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+        "addonAbi": 1,
+        "addonSha256": "a5e15a093f4c04287b2220b0850717625261e26eb92c4875f8c68732ac76be8b",
+        "evidencePath": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-owned-20261101-173046-95cf02b1/strict-sdk.json",
+        "evidenceSha256": "93c2a177e2719f087b8cef6794c6bc7577b072a83e7b3571ae562b4bd1266833",
+        "nativeManifestSha256": "71faaec3f9a9dcb5ae45bf72471546f89939699d7a2fbd13a06376007bf10bfc"
+      },
+      "target": {
+        "pid": 46664,
+        "creationTime100ns": "134380278467210128",
+        "executablePath": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-owned-20261101-173046-95cf02b1/target/d3d11_overlay_test_host.exe"
+      },
+      "host": {
+        "kind": "project-owned patched ReShade x64",
+        "runtimePath": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-owned-20261101-173046-95cf02b1/runs-strict/d3d11_overlay_test_host.exe-byaLx8/ReShade64.dll",
+        "runtimeSha256": "d3b18c80eab3dc255a2de2fdaeb01926b4695feb5a9dd564a6ec136fe2e94cca",
+        "peInspection": {
+          "inspectedModuleCount": 90,
+          "reShadeHostCount": 1,
+          "egoEngineCount": 1,
+          "moduleFilesVerified": true
+        }
+      },
+      "strict": {
+        "requiredInputCapabilities": [
+          "copied-raw-input-buffer"
+        ],
+        "helloCapabilities": [
+          "window-order-v1",
+          "window-focus-v1",
+          "window-cursor-v1",
+          "process-instance-hello-v1",
+          "input-capabilities-v1",
+          "copied-wm-input-v1",
+          "copied-raw-input-buffer-v1"
+        ],
+        "publicInputCapabilities": {
+          "copiedWmInput": "supported",
+          "copiedRawInputBuffer": "supported"
+        },
+        "counts": {
+          "authenticationCount": 1,
+          "connectionCount": 1,
+          "transportLostCount": 0,
+          "targetDisconnectedCount": 0,
+          "renderingCount": 1,
+          "trueAckCount": 2
+        },
+        "wire": {
+          "nativeConnections": 1,
+          "helloCount": 1,
+          "outboundBytes": 1848573,
+          "outboundPackets": 12,
+          "outboundFrames": 7,
+          "interceptTruePackets": 2,
+          "outboundTypes": {
+            "overlay.init": 1,
+            "window.cursor": 2,
+            "command.input.intercept": 2
+          }
+        },
+        "actualBytesWrittenByConnection": [
+          1848573
+        ],
+        "connectionClosed": [
+          false
+        ],
+        "dom": {
+          "id": 1,
+          "bounds": {
+            "x": 40,
+            "y": 80,
+            "width": 300,
+            "height": 220
+          },
+          "color": "#c62828",
+          "downs": 1,
+          "ups": 1,
+          "keydowns": 1,
+          "value": " ",
+          "wheel": [
+            {
+              "x": 110,
+              "y": 55,
+              "dx": 0,
+              "dy": -120
+            }
+          ],
+          "heldKeys": [],
+          "dpr": 1
+        }
+      },
+      "pixels": [
+        {
+          "name": "strict actual composing pixel",
+          "clientX": 55,
+          "clientY": 200,
+          "expectedRgb": [
+            198,
+            40,
+            40
+          ],
+          "observedRgb": [
+            198,
+            40,
+            40
+          ],
+          "attempts": 1
+        }
+      ],
+      "inputProof": {
+        "text": " ",
+        "overlayValue": " ",
+        "gameInputUnchanged": true,
+        "sourceMode": "raw-buffer",
+        "before": "Controlled D3D11 overlay test host | game input: move=0 down=0 up=0 wheel=0 key=0 raw=0 ptr=0/0/0 poll-left=0 cursor-change=0 raw-accepted=0/0/0/0/0/0 buffer=0 buffer-error=0 mode=raw-buffer target=explicit-hwnd raw-register=ok clip=off",
+        "after": "Controlled D3D11 overlay test host | game input: move=0 down=0 up=0 wheel=0 key=0 raw=0 ptr=0/0/0 poll-left=0 cursor-change=0 raw-accepted=0/0/0/0/0/0 buffer=0 buffer-error=0 mode=raw-buffer target=explicit-hwnd raw-register=ok clip=off",
+        "releasedRawBufferAdvanced": true
+      },
+      "releasedGameInput": {
+        "Title": "Controlled D3D11 overlay test host | game input: move=0 down=0 up=0 wheel=0 key=0 raw=0 ptr=0/0/0 poll-left=0 cursor-change=2 raw-accepted=1/1/1/1/1/1 buffer=2 buffer-error=0 mode=raw-buffer target=explicit-hwnd raw-register=ok clip=on",
+        "Move": 0,
+        "Down": 0,
+        "Up": 0,
+        "Wheel": 0,
+        "Key": 0,
+        "Raw": 0,
+        "PointerUpdate": 0,
+        "PointerDown": 0,
+        "PointerUp": 0,
+        "PollLeft": 0,
+        "CursorChange": 2,
+        "RawMove": 1,
+        "RawDown": 1,
+        "RawUp": 1,
+        "RawWheel": 1,
+        "RawKeyDown": 1,
+        "RawKeyUp": 1,
+        "RawBuffer": 2,
+        "RawBufferError": 0,
+        "Mode": "raw-buffer",
+        "RawRegistrationTarget": "explicit-hwnd",
+        "RawRegistration": "ok",
+        "Clip": "on"
+      },
+      "displayLease": {
+        "status": "on",
+        "clearSucceeded": true,
+        "closeSucceeded": true
+      }
+    },
+    {
+      "mode": "stock",
+      "result": "passed",
+      "report": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-174851-aae4a8da/report.json",
+        "sha256": "4e33b74f49efad9228c9bfb245a74841fd0d9e44957c93a3c4657b5bbd71538e"
+      },
+      "sdk": {
+        "packageVersion": "0.1.0-rc.7",
+        "javascriptGraphSha256": "c0d9d9d8a84549b4e4d43227ce63fd5a7007a0d38fe90c20d8771a6dc6091c26",
+        "nativeGeneration": 14,
+        "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+        "addonAbi": 1,
+        "addonSha256": "a5e15a093f4c04287b2220b0850717625261e26eb92c4875f8c68732ac76be8b",
+        "evidencePath": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-174851-aae4a8da/strict-sdk.json",
+        "evidenceSha256": "295f1fe808b109a255c1dce61efb5b67d037dffbf361bbd20b158e3a293d683e",
+        "nativeManifestSha256": "71faaec3f9a9dcb5ae45bf72471546f89939699d7a2fbd13a06376007bf10bfc"
+      },
+      "target": {
+        "pid": 9748,
+        "creationTime100ns": "134380289315887124",
+        "executablePath": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-174851-aae4a8da/target/d3d11_overlay_test_host.exe"
+      },
+      "host": {
+        "kind": "unmodified ReShade 6.7.3.2148 x64 full add-on",
+        "runtimePath": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-174851-aae4a8da/target/d3d11.dll",
+        "runtimeSha256": "ec9245d05c11751f2ac0d2256e6921ad8fb36be9172ef6d587856591eb729a25",
+        "peInspection": {
+          "inspectedModuleCount": 94,
+          "reShadeHostCount": 1,
+          "egoEngineCount": 3,
+          "moduleFilesVerified": true
+        }
+      },
+      "strict": {
+        "requiredInputCapabilities": [
+          "copied-raw-input-buffer"
+        ],
+        "helloCapabilities": [
+          "window-order-v1",
+          "window-focus-v1",
+          "window-cursor-v1",
+          "process-instance-hello-v1",
+          "input-capabilities-v1",
+          "copied-wm-input-v1"
+        ],
+        "publicInputCapabilities": {
+          "copiedWmInput": "supported",
+          "copiedRawInputBuffer": "unsupported"
+        },
+        "counts": {
+          "authenticationCount": 0,
+          "connectionCount": 0,
+          "transportLostCount": 0,
+          "targetDisconnectedCount": 0,
+          "renderingCount": 0,
+          "trueAckCount": 0
+        },
+        "wire": {
+          "nativeConnections": 2,
+          "helloCount": 2,
+          "outboundBytes": 0,
+          "outboundPackets": 0,
+          "outboundFrames": 0,
+          "interceptTruePackets": 0,
+          "outboundTypes": {}
+        },
+        "actualBytesWrittenByConnection": [
+          0,
+          0
+        ],
+        "connectionClosed": [
+          true,
+          true
+        ],
+        "dom": {
+          "id": 1,
+          "bounds": {
+            "x": 40,
+            "y": 80,
+            "width": 300,
+            "height": 220
+          },
+          "color": "#c62828",
+          "downs": 0,
+          "ups": 0,
+          "keydowns": 0,
+          "value": "",
+          "wheel": [],
+          "heldKeys": [],
+          "dpr": 1
+        },
+        "rejection": {
+          "code": "target-input-capability-unsupported",
+          "stage": "runtime-initialization",
+          "retrySafety": "indeterminate",
+          "requiredInputCapabilities": [
+            "copied-raw-input-buffer"
+          ]
+        }
+      },
+      "pixels": [
+        {
+          "name": "permissive actual composing pixel",
+          "clientX": 415,
+          "clientY": 200,
+          "expectedRgb": [
+            21,
+            101,
+            192
+          ],
+          "observedRgb": [
+            21,
+            101,
+            192
+          ],
+          "attempts": 1
+        },
+        {
+          "name": "permissive actual composing pixel",
+          "clientX": 415,
+          "clientY": 200,
+          "expectedRgb": [
+            21,
+            101,
+            192
+          ],
+          "observedRgb": [
+            21,
+            101,
+            192
+          ],
+          "attempts": 1
+        }
+      ],
+      "inputProof": {
+        "text": " ",
+        "overlayValue": "  ",
+        "gameInputUnchanged": true,
+        "sourceMode": "wm-input",
+        "before": "Controlled D3D11 overlay test host | game input: move=0 down=0 up=0 wheel=0 key=0 raw=0 ptr=0/0/0 poll-left=0 cursor-change=1 raw-accepted=0/0/0/0/0/0 buffer=0 buffer-error=0 mode=wm-input target=explicit-hwnd raw-register=ok clip=off",
+        "after": "Controlled D3D11 overlay test host | game input: move=0 down=0 up=0 wheel=0 key=0 raw=0 ptr=0/0/0 poll-left=0 cursor-change=1 raw-accepted=0/0/0/0/0/0 buffer=0 buffer-error=0 mode=wm-input target=explicit-hwnd raw-register=ok clip=off",
+        "releasedRawBufferAdvanced": false
+      },
+      "releasedGameInput": {
+        "Title": "Controlled D3D11 overlay test host | game input: move=0 down=0 up=0 wheel=0 key=0 raw=6 ptr=0/0/0 poll-left=0 cursor-change=2 raw-accepted=1/1/1/1/1/1 buffer=0 buffer-error=0 mode=wm-input target=explicit-hwnd raw-register=ok clip=on",
+        "Move": 0,
+        "Down": 0,
+        "Up": 0,
+        "Wheel": 0,
+        "Key": 0,
+        "Raw": 6,
+        "PointerUpdate": 0,
+        "PointerDown": 0,
+        "PointerUp": 0,
+        "PollLeft": 0,
+        "CursorChange": 2,
+        "RawMove": 1,
+        "RawDown": 1,
+        "RawUp": 1,
+        "RawWheel": 1,
+        "RawKeyDown": 1,
+        "RawKeyUp": 1,
+        "RawBuffer": 0,
+        "RawBufferError": 0,
+        "Mode": "wm-input",
+        "RawRegistrationTarget": "explicit-hwnd",
+        "RawRegistration": "ok",
+        "Clip": "on"
+      },
+      "displayLease": {
+        "status": "on",
+        "clearSucceeded": true,
+        "closeSucceeded": true
+      },
+      "permissive": {
+        "requiredInputCapabilities": [
+          "copied-wm-input"
+        ],
+        "helloCapabilities": [
+          "window-order-v1",
+          "window-focus-v1",
+          "window-cursor-v1",
+          "process-instance-hello-v1",
+          "input-capabilities-v1",
+          "copied-wm-input-v1"
+        ],
+        "publicInputCapabilities": {
+          "copiedWmInput": "supported",
+          "copiedRawInputBuffer": "unsupported"
+        },
+        "counts": {
+          "authenticationCount": 1,
+          "connectionCount": 1,
+          "transportLostCount": 0,
+          "targetDisconnectedCount": 0,
+          "renderingCount": 1,
+          "trueAckCount": 2
+        },
+        "dom": {
+          "id": 1,
+          "bounds": {
+            "x": 400,
+            "y": 80,
+            "width": 300,
+            "height": 220
+          },
+          "color": "#1565c0",
+          "downs": 2,
+          "ups": 2,
+          "keydowns": 2,
+          "value": "  ",
+          "wheel": [
+            {
+              "x": 110,
+              "y": 55,
+              "dx": 0,
+              "dy": -120
+            },
+            {
+              "x": 110,
+              "y": 55,
+              "dx": 0,
+              "dy": -120
+            }
+          ],
+          "heldKeys": [],
+          "dpr": 1
+        },
+        "continuity": {
+          "before": {
+            "localAddress": "127.0.0.1",
+            "localPort": 56726,
+            "remoteAddress": "127.0.0.1",
+            "remotePort": 56728,
+            "owningProcess": 47396,
+            "state": "Established"
+          },
+          "after": {
+            "localAddress": "127.0.0.1",
+            "localPort": 56726,
+            "remoteAddress": "127.0.0.1",
+            "remotePort": 56728,
+            "owningProcess": 47396,
+            "state": "Established"
+          },
+          "sameTcpTuple": true,
+          "samePrivatePort": true,
+          "samePrivateCredentialFingerprint": true,
+          "sameProcessId": true,
+          "authenticationBefore": 1,
+          "authenticationAfter": 1,
+          "connectionBefore": 1,
+          "connectionAfter": 1
+        }
+      },
+      "stockPreservation": {
+        "before": [
+          {
+            "RelativePath": "addons/fps_limit.addon64",
+            "Sha256": "bb10ce621b7f60a10d56f9a1f71f4cb3c5f6d3025f1dfa334f65f3584b7772f5",
+            "Length": 14848,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291399287757280"
+          },
+          {
+            "RelativePath": "CapabilityWitness.fx",
+            "Sha256": "5c452f5157e72d8bc1bf000e6085bf8bb959ed5cf4528359e749bde45e353d43",
+            "Length": 550,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314256314"
+          },
+          {
+            "RelativePath": "CapabilityWitness.ini",
+            "Sha256": "4724a32cebd98394269cf5f012aa58a3c681344764affd9af17deaa74a0c9463",
+            "Length": 131,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314256314"
+          },
+          {
+            "RelativePath": "d3d11_overlay_test_host.exe",
+            "Sha256": "9589bcabab07257272d3fb71e9e1d637b63669022e1d888d57163ecd4e9201b2",
+            "Length": 312320,
+            "Attributes": 32,
+            "LastWriteUtcTicks": "639291491364491347"
+          },
+          {
+            "RelativePath": "d3d11.dll",
+            "Sha256": "ec9245d05c11751f2ac0d2256e6921ad8fb36be9172ef6d587856591eb729a25",
+            "Length": 5487616,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639078875080000000"
+          },
+          {
+            "RelativePath": "reshade-raw-wm-input-gate.enabled",
+            "Sha256": "e056a35db086947e2f5969d747f0a7517bff00c7ffff1f9e7b47b72bfac9d948",
+            "Length": 8,
+            "Attributes": 32,
+            "LastWriteUtcTicks": "639291521312968071"
+          },
+          {
+            "RelativePath": "ReShade.ini",
+            "Sha256": "4afca656779eed4fabc15b3ba2b4db509914dd317e4ff7d91d1950acd8d8f4cc",
+            "Length": 263,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314251267"
+          }
+        ],
+        "whileTargetAlive": [
+          {
+            "RelativePath": "addons/fps_limit.addon64",
+            "Sha256": "bb10ce621b7f60a10d56f9a1f71f4cb3c5f6d3025f1dfa334f65f3584b7772f5",
+            "Length": 14848,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291399287757280"
+          },
+          {
+            "RelativePath": "CapabilityWitness.fx",
+            "Sha256": "5c452f5157e72d8bc1bf000e6085bf8bb959ed5cf4528359e749bde45e353d43",
+            "Length": 550,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314256314"
+          },
+          {
+            "RelativePath": "CapabilityWitness.ini",
+            "Sha256": "4724a32cebd98394269cf5f012aa58a3c681344764affd9af17deaa74a0c9463",
+            "Length": 131,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314256314"
+          },
+          {
+            "RelativePath": "d3d11_overlay_test_host.exe",
+            "Sha256": "9589bcabab07257272d3fb71e9e1d637b63669022e1d888d57163ecd4e9201b2",
+            "Length": 312320,
+            "Attributes": 32,
+            "LastWriteUtcTicks": "639291491364491347"
+          },
+          {
+            "RelativePath": "d3d11.dll",
+            "Sha256": "ec9245d05c11751f2ac0d2256e6921ad8fb36be9172ef6d587856591eb729a25",
+            "Length": 5487616,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639078875080000000"
+          },
+          {
+            "RelativePath": "reshade-raw-wm-input-gate.enabled",
+            "Sha256": "e056a35db086947e2f5969d747f0a7517bff00c7ffff1f9e7b47b72bfac9d948",
+            "Length": 8,
+            "Attributes": 32,
+            "LastWriteUtcTicks": "639291521312968071"
+          },
+          {
+            "RelativePath": "ReShade.ini",
+            "Sha256": "4afca656779eed4fabc15b3ba2b4db509914dd317e4ff7d91d1950acd8d8f4cc",
+            "Length": 263,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314251267"
+          }
+        ],
+        "afterHostExitAndAdapterRemoval": [
+          {
+            "RelativePath": "addons/fps_limit.addon64",
+            "Sha256": "bb10ce621b7f60a10d56f9a1f71f4cb3c5f6d3025f1dfa334f65f3584b7772f5",
+            "Length": 14848,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291399287757280"
+          },
+          {
+            "RelativePath": "CapabilityWitness.fx",
+            "Sha256": "5c452f5157e72d8bc1bf000e6085bf8bb959ed5cf4528359e749bde45e353d43",
+            "Length": 550,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314256314"
+          },
+          {
+            "RelativePath": "CapabilityWitness.ini",
+            "Sha256": "4724a32cebd98394269cf5f012aa58a3c681344764affd9af17deaa74a0c9463",
+            "Length": 131,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314256314"
+          },
+          {
+            "RelativePath": "d3d11_overlay_test_host.exe",
+            "Sha256": "9589bcabab07257272d3fb71e9e1d637b63669022e1d888d57163ecd4e9201b2",
+            "Length": 312320,
+            "Attributes": 32,
+            "LastWriteUtcTicks": "639291491364491347"
+          },
+          {
+            "RelativePath": "d3d11.dll",
+            "Sha256": "ec9245d05c11751f2ac0d2256e6921ad8fb36be9172ef6d587856591eb729a25",
+            "Length": 5487616,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639078875080000000"
+          },
+          {
+            "RelativePath": "reshade-raw-wm-input-gate.enabled",
+            "Sha256": "e056a35db086947e2f5969d747f0a7517bff00c7ffff1f9e7b47b72bfac9d948",
+            "Length": 8,
+            "Attributes": 32,
+            "LastWriteUtcTicks": "639291521312968071"
+          },
+          {
+            "RelativePath": "ReShade.ini",
+            "Sha256": "4afca656779eed4fabc15b3ba2b4db509914dd317e4ff7d91d1950acd8d8f4cc",
+            "Length": 263,
+            "Attributes": 33,
+            "LastWriteUtcTicks": "639291521314251267"
+          }
+        ],
+        "allBytesAndMetadataEqual": true,
+        "managerPrepareStatus": "installed",
+        "managerRemoveStatus": "removed",
+        "foreignAddon": {
+          "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-174851-aae4a8da/target/addons/fps_limit.addon64",
+          "sha256": "bb10ce621b7f60a10d56f9a1f71f4cb3c5f6d3025f1dfa334f65f3584b7772f5"
+        },
+        "witnessTechnique": "CapabilityWitness@CapabilityWitness.fx",
+        "coexistenceLog": {
+          "path": "build/electron-game-overlay-runtime/client-sdk-input-capabilities-stock-20261101-174851-aae4a8da/target/ReShade.log",
+          "sha256": "a5a90a3d76f886a144411c64cd43db570866c4769fa4b6ae8f704368961cd58c",
+          "foreignFpsAddonRegistered": true,
+          "publicAdapterRegistered": true,
+          "witnessEffectCompiled": true
+        }
+      }
+    }
+  ]
+}

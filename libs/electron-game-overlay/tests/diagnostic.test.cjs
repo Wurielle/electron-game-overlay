@@ -11,6 +11,20 @@ const producerDiagnostic = (code, context, overrides = {}) => ({
   ...overrides,
 });
 
+test('required input capability failures have bounded typed support evidence', () => {
+  const diagnostic = { schemaVersion: 1, source: 'electron-overlay-transport',
+    code: 'target-input-capability-unsupported', pid: 123,
+    context: { capability: 'copied-raw-input-buffer', support: 'unknown' } };
+  const parsed = parseOverlayDiagnostic(diagnostic);
+  assert.equal(parsed.severity, 'error');
+  assert.ok(Object.isFrozen(parsed.context));
+  for (const context of [undefined, { capability: 'other', support: 'unknown' },
+    { capability: 'copied-raw-input-buffer', support: 'supported' },
+    { capability: 'copied-raw-input-buffer', support: 'unsupported', extra: true }]) {
+    assert.equal(parseOverlayDiagnostic({ ...diagnostic, context }), null);
+  }
+});
+
 test('canonicalizes and freezes the fixed producer diagnostic contract', () => {
   const cases = [
     {

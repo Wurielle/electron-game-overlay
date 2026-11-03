@@ -30,6 +30,9 @@ typedef int32_t ego_status;
 #define EGO_STATUS_NOT_CONNECTED (-INT32_C(9))
 
 #define EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS UINT32_C(1000)
+#define EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES UINT64_C(131068)
+#define EGO_INPUT_CAPABILITY_COPIED_WM_INPUT UINT64_C(1)
+#define EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER UINT64_C(2)
 
 #define EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION UINT32_C(1)
 #define EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY UINT32_C(1)
@@ -138,6 +141,30 @@ uint32_t EGO_CALL ego_abi_version(void);
 ego_status EGO_CALL ego_transport_create(
     uint32_t abi_version,
     ego_transport **out_transport);
+/*
+ * Participant-private discovery, independent of the target process environment.
+ * directory_utf8 is an absolute Windows directory without a trailing NUL; its
+ * bytes are copied synchronously. Length is in [1,
+ * EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES] and the decoded path is at most 32767
+ * UTF-16 code units. No system/global discovery fallback is permitted.
+ */
+ego_status EGO_CALL ego_transport_create_for_directory(
+    uint32_t abi_version,
+    const uint8_t *directory_utf8,
+    uint64_t directory_utf8_len,
+    ego_transport **out_transport);
+/*
+ * Immutable native-host input capabilities, advertised in the first hello and
+ * every reconnect. Zero means known unsupported; the older constructors leave
+ * these capabilities unknown. Unknown bits and RAW_INPUT_BUFFER without
+ * COPIED_WM_INPUT are invalid. Directory/output rules match the scoped ctor.
+ */
+ego_status EGO_CALL ego_transport_create_for_directory_with_input_capabilities(
+    uint32_t abi_version,
+    const uint8_t *directory_utf8,
+    uint64_t directory_utf8_len,
+    uint64_t input_capabilities,
+    ego_transport **out_transport);
 ego_status EGO_CALL ego_transport_destroy(ego_transport *transport);
 /*
  * Waits until packets published before this call are written to the current
@@ -159,6 +186,20 @@ ego_status EGO_CALL ego_scene_snapshot_get_window(
     const ego_scene_snapshot *snapshot,
     uint64_t index,
     ego_window_frame_v1 *inout_frame);
+/* Registration identity paired with this immutable snapshot's window/pixels. */
+ego_status EGO_CALL ego_scene_snapshot_window_incarnation(
+    const ego_scene_snapshot *snapshot,
+    uint64_t index,
+    uint64_t *out_incarnation);
+/* All live registrations, including those temporarily awaiting frame pixels. */
+ego_status EGO_CALL ego_scene_snapshot_registration_count(
+    const ego_scene_snapshot *snapshot,
+    uint64_t *out_count);
+ego_status EGO_CALL ego_scene_snapshot_get_registration(
+    const ego_scene_snapshot *snapshot,
+    uint64_t index,
+    uint32_t *out_window_id,
+    uint64_t *out_incarnation);
 
 ego_status EGO_CALL ego_transport_cursor_at(const ego_transport *transport, int32_t x, int32_t y, int32_t *out_cursor);
 
@@ -181,9 +222,21 @@ ego_status EGO_CALL ego_transport_apply_input_filter(
     ego_transport *transport,
     uint32_t routing_enabled,
     uint32_t acknowledge);
+/*
+ * Atomic authoritative retirement of the actual native input owner. Releases
+ * focus/capture and the effective filter with its terminal ACK, preserving the
+ * producer's interception request. Not a substitute for checked Present grants
+ * or a transient new-session cleanup.
+ */
+ego_status EGO_CALL ego_transport_retire_input_filter(ego_transport *transport);
 ego_status EGO_CALL ego_transport_get_input_state(
     const ego_transport *transport,
     ego_input_state_v1 *inout_state);
+/* Atomically samples input eligibility/request state with its revision token. */
+ego_status EGO_CALL ego_transport_get_cooperative_input_state(
+    const ego_transport *transport,
+    ego_input_state_v1 *inout_state,
+    uint64_t *out_revision);
 
 ego_status EGO_CALL ego_transport_publish_target_surface(
     ego_transport *transport,
@@ -202,6 +255,74 @@ ego_status EGO_CALL ego_transport_publish_diagnostic(
 /* Observes/routes a copied message. The status is not an input-block decision. */
 ego_status EGO_CALL ego_transport_route_window_message(
     ego_transport *transport,
+    uintptr_t target_hwnd,
+    uint32_t message,
+    uint64_t wparam,
+    int64_t lparam);
+
+/* Owner-local geometry/alpha hit testing in physical game-client pixels. */
+ego_status EGO_CALL ego_transport_hit_test_window(
+    const ego_transport *transport,
+    uint32_t window_id,
+    uint64_t incarnation,
+    int32_t x,
+    int32_t y,
+    uint32_t *out_hit);
+
+/* Current registration identity, including unpainted windows; zero means absent. */
+ego_status EGO_CALL ego_transport_window_incarnation(
+    const ego_transport *transport,
+    uint32_t window_id,
+    uint64_t *out_incarnation);
+
+/*
+ * Next ordered SDK focus command after the acknowledged revision. revision==0
+ * means none pending. Repeating after_revision repeats the same command; only
+ * acknowledged older entries are removed. Grants/clicks do not add commands.
+ */
+ego_status EGO_CALL ego_transport_cooperative_focus_request(
+    const ego_transport *transport,
+    uint64_t after_revision,
+    uint64_t *out_revision,
+    uint32_t *out_window_id,
+    uint64_t *out_incarnation,
+    uint32_t *out_focused);
+
+/* Applies global ownership; focused_window_id==0 blurs this participant only. */
+ego_status EGO_CALL ego_transport_set_cooperative_focus(
+    ego_transport *transport,
+    uint32_t focused_window_id,
+    uint64_t incarnation);
+
+/* Aggregate OR routing policy; the producer's own requested flag is retained. */
+ego_status EGO_CALL ego_transport_set_cooperative_interception(
+    ego_transport *transport,
+    uint32_t global_requested);
+/* A stale token cannot acknowledge a newer producer request/eligibility state. */
+ego_status EGO_CALL ego_transport_set_cooperative_interception_checked(
+    ego_transport *transport,
+    uint32_t global_requested,
+    uint64_t sampled_revision);
+
+/* Full participant retirement, including capture/drag cleanup and blur. */
+ego_status EGO_CALL ego_transport_release_cooperative_ownership(
+    ego_transport *transport);
+
+/* Cursor belonging to the exact global hit/capture owner, with no fallback. */
+ego_status EGO_CALL ego_transport_cursor_for_window(
+    const ego_transport *transport,
+    uint32_t window_id,
+    uint64_t incarnation,
+    int32_t *out_cursor);
+
+/*
+ * Routes through this owner's existing input implementation to the selected
+ * local window only. window_id==0 drops without any local-stack fallback.
+ */
+ego_status EGO_CALL ego_transport_route_owned_window_message(
+    ego_transport *transport,
+    uint32_t window_id,
+    uint64_t incarnation,
     uintptr_t target_hwnd,
     uint32_t message,
     uint64_t wparam,

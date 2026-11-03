@@ -1,6 +1,6 @@
-import { OverlayBrokerClient } from './overlay-broker-client.js';
+import { CooperativeOverlayTransport } from './cooperative-overlay-transport.js';
 import type { NativeInputMessage } from './input-translation.js';
-import type { Disposable } from './types.js';
+import type { Disposable, OverlayInputCapability } from './types.js';
 
 export interface NativeRectangle {
   x: number;
@@ -32,7 +32,7 @@ export interface NativeOverlayWindowGeometry {
 }
 
 export type NativeTargetAuthorizationDisposition =
-  'injection-owner' | 'joined-existing';
+  'injection-owner' | 'joined-existing' | 'participant';
 
 export type NativeTargetConnection = Readonly<{
   pid: number;
@@ -57,6 +57,8 @@ export type NativeRuntimeProviderMetadata = Readonly<{
 }>;
 
 export interface NativeOverlay {
+  /** @internal Private members require an exact OS incarnation before route publication. */
+  readonly requiresProcessInstanceIdentity?: boolean;
   start(): void;
   whenReady(): Promise<unknown>;
   authorizeTarget?(
@@ -65,9 +67,10 @@ export interface NativeOverlay {
     expectedExecutablePath?: string,
     runtimeProvider?: NativeRuntimeProviderMetadata,
     signal?: AbortSignal,
+    expectedCreationTime100ns?: string,
   ): Promise<Disposable | NativeTargetAuthorization>;
   /** @internal Legacy untargeted rendezvous for pre-creation name/path watchers. */
-  authorizeGlobalTarget?(): Promise<Disposable>;
+  authorizeGlobalTarget?(discoveryPath?: string): Promise<Disposable>;
   /** Application-local policy gate; does not establish process exit or injection permission. */
   setTargetSuppressed?(pid:number,suppressed:boolean):void;
   /** Local managed-attachment admission; never changes broker ownership. */
@@ -94,9 +97,8 @@ export interface NativeOverlay {
 }
 
 export function createNativeOverlay(
-  allowPrereleaseBroker = false,
+  _allowPrereleaseBroker = false,
+  options: Readonly<{ requiredInputCapabilities?: readonly OverlayInputCapability[] }> = {},
 ): NativeOverlay {
-  return allowPrereleaseBroker
-    ? new OverlayBrokerClient({ brokerInstallation: { allowPrerelease: true } })
-    : new OverlayBrokerClient();
+  return new CooperativeOverlayTransport(options);
 }

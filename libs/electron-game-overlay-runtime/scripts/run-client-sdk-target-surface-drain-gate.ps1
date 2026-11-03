@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Reuse the controlled-host build, process, log, and cleanup helpers without
 # running the larger input gate.
@@ -416,8 +417,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 Write-Host ""
@@ -454,6 +455,11 @@ try {
         -Path $ClientStdout `
         -ClientProcess $ClientProcess `
         -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
+        -Deadline $StartupDeadline
+    Wait-ForClientMarker `
+        -Path $ClientStdout `
+        -ClientProcess $ClientProcess `
+        -Marker "RESHADE_CLIENT_INJECTOR_WATCHER_READY" `
         -Deadline $StartupDeadline
     $DevToolsPage = Wait-ForDevToolsPage `
         -Port $DevToolsPort `
@@ -654,10 +660,7 @@ finally {
             Wait-Process -Id $_.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
         }
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 

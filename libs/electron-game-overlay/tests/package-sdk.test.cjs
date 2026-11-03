@@ -6,9 +6,11 @@ const path = require('node:path');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { preloadArgs } = require('./helpers/source-packaging-loader.cjs');
+const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
 const cli = path.resolve(__dirname, '../scripts/package-sdk.cjs');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-function fixture(t) {
+function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-pack-nonnative-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const pkg = path.join(root, 'repo/libs/sdk');
@@ -18,29 +20,16 @@ function fixture(t) {
   write(path.join(pkg, 'package.json'), JSON.stringify(metadata));
   write(path.join(root, 'repo/LICENSE'), 'GPL fixture license: NON-NATIVE CONTROLLED FIXTURE');
   write(path.join(pkg, 'README.md'), '# NON-NATIVE CONTROLLED SDK FIXTURE');
-  for (const name of ['index.js', 'broker.js', 'packaging.js']) write(path.join(dist, name), 'module.exports = {};\n');
-  for (const name of ['index.d.ts', 'broker.d.ts', 'packaging.d.ts']) write(path.join(dist, name), 'export {};\n');
-  // Parser-only headers, never executable or evidence of genuine Windows/native execution.
-  const pe = machine => { const bytes = Buffer.alloc(128); bytes.write('MZ'); bytes.writeUInt32LE(64, 60); bytes.writeUInt32LE(0x4550, 64); bytes.writeUInt16LE(machine, 68); return bytes; };
-  const leaf = path.join(dist, 'broker/win32-x64');
-  write(path.join(leaf, 'electron-game-overlay-broker.exe'), pe(0x8664));
-  for (const [name, machine] of [['electron_game_overlay_reshade_manager.exe', 0x8664], ['electron_game_overlay_reshade_manager32.exe', 0x14c], ['inject.exe', 0x8664], ['inject32.exe', 0x14c], ['electron_game_overlay.addon64', 0x8664], ['electron_game_overlay.addon32', 0x14c], ['ReShade64.dll', 0x8664], ['ReShade32.dll', 0x14c]]) {
-    for (const base of [dist, leaf]) write(path.join(base, 'runtime/win32-x64/reshade', name), pe(machine));
-  }
-  for (const base of [dist, leaf]) write(path.join(base, 'runtime/THIRD-PARTY-NOTICES.txt'), 'Controlled native notice');
-  write(path.join(leaf, 'node_modules/tslib/package.json'), JSON.stringify({ name: 'tslib', version: '2.8.1', main: 'tslib.js' }));
-  write(path.join(leaf, 'node_modules/tslib/tslib.js'), '// controlled dependency');
-  write(path.join(leaf, 'node_modules/tslib/LICENSE.txt'), 'controlled dependency notice');
-  const files = [];
-  function walk(dir, prefix = '') { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const relative = prefix + entry.name; if (entry.isDirectory()) walk(path.join(dir, entry.name), relative + '/'); else { const bytes = fs.readFileSync(path.join(dir, entry.name)); files.push({ path: relative, size: bytes.length, sha256: hash(bytes) }); } } }
-  walk(leaf);
-  const manifest = { schema: 1, version: '0.0.1', protocolMin: 1, protocolMax: 1, platform: 'win32', arch: 'x64', executable: 'electron-game-overlay-broker.exe', files };
-  const manifestPath = path.join(leaf, 'broker-manifest.json');
-  write(manifestPath, JSON.stringify(manifest));
-  return { root, pkg, dist, leaf, manifest, manifestPath, write, output: path.join(root, 'output') };
+  const distribution = writeCooperativeDistribution(dist, { packageVersion: metadata.version, ...options });
+  return {
+    root, pkg, dist, leaf: dist, manifestPath: distribution.manifestPath,
+    get manifest() { return distribution.manifest; },
+    seal: distribution.seal, bindNativeHashes: distribution.bindNativeHashes,
+    write, output: path.join(root, 'output'),
+  };
 }
 function run(f, extra = []) {
-  const result = spawnSync(process.execPath, [cli, '--package-root', f.pkg, '--built-dist', f.dist, '--output', f.output, ...extra], { encoding: 'utf8', timeout: 30000 });
+  const result = spawnSync(process.execPath, [...preloadArgs, cli, '--package-root', f.pkg, '--built-dist', f.dist, '--output', f.output, ...extra], { encoding: 'utf8', timeout: 30000 });
   return { ...result, report: fs.existsSync(path.join(f.output, 'sdk-preview-report.json')) ? JSON.parse(fs.readFileSync(path.join(f.output, 'sdk-preview-report.json'))) : null };
 }
 test('rejects non-preview versions before staging and invalidates stale success', t => {
@@ -67,14 +56,24 @@ for (const extra of [['--unknown-option'], ['unexpected-positional']]) test('str
   assert.deepEqual(fs.readdirSync(f.output), ['sdk-preview-report.json']);
 });
 for (const [name, mutate, expected] of [
-  ['missing sealed payload', f => fs.unlinkSync(path.join(f.leaf, f.manifest.files[0].path)), /ENOENT|sealed/i],
+  ['missing sealed payload', f => fs.unlinkSync(path.join(f.leaf, f.manifest.files[0].path)), /ENOENT|sealed|missing payload/i],
   ['tampered sealed payload', f => f.write(path.join(f.leaf, f.manifest.files[0].path), 'tamper'), /sealed/i],
   ['escaping sealed path', f => { f.manifest.files[0].path = '../escape'; f.write(f.manifestPath, JSON.stringify(f.manifest)); }, /path/i],
   ['symlink payload', f => { const target = path.join(f.leaf, f.manifest.files[0].path); fs.unlinkSync(target); fs.symlinkSync(path.join(f.dist, 'index.js'), target); }, /symbolic/i],
-  ['undeclared broker file', f => f.write(path.join(f.leaf, 'old.exe'), 'old'), /undeclared/i],
+  ['undeclared SDK file', f => f.write(path.join(f.dist, 'old.exe'), 'old'), /undeclared|inventory|unexpected|path/i],
   ['broken export', f => { const metadata = JSON.parse(fs.readFileSync(path.join(f.pkg, 'package.json'))); metadata.exports['./broker'].types = './dist/missing.d.ts'; f.write(path.join(f.pkg, 'package.json'), JSON.stringify(metadata)); }, /export/i],
-  ['wrong native architecture', f => { const file = 'runtime/win32-x64/reshade/inject32.exe'; const bytes = fs.readFileSync(path.join(f.leaf, file)); bytes.writeUInt16LE(0x8664, 68); for (const base of [f.dist, f.leaf]) f.write(path.join(base, file), bytes); const entry = f.manifest.files.find(e => e.path === file); entry.sha256 = hash(bytes); f.write(f.manifestPath, JSON.stringify(f.manifest)); }, /architecture/i],
-  ['root native identity differs', f => f.write(path.join(f.dist, 'runtime/win32-x64/reshade/inject.exe'), 'different'), /identity/i],
+  ['wrong native architecture', f => { const file = 'runtime/win32-x64/reshade/inject32.exe'; const bytes = fs.readFileSync(path.join(f.dist, file)); bytes.writeUInt16LE(0x8664, 68); f.write(path.join(f.dist, file), bytes); f.bindNativeHashes(); f.seal(); }, /architecture/i],
+  ['native bytes differ from sealed identity', f => f.write(path.join(f.dist, 'runtime/win32-x64/reshade/inject.exe'), 'different'), /integrity|hash|payload/i],
+  ['unsupported cooperative native capability', f => {
+    const name = 'runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json';
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, name)));
+    delete stamp.cooperativeAddonProtocol;
+    f.write(path.join(f.dist, name), JSON.stringify(stamp)); f.seal();
+  }, /cooperative|manifest/i],
+  ['distribution version differs from its package', f => {
+    f.manifest.packageVersion = '0.1.0-rc.999';
+    f.write(f.manifestPath, JSON.stringify(f.manifest));
+  }, /version|manifest/i],
 ]) test('rejects ' + name + ' before candidate creation', t => {
   const f = fixture(t);
   try { mutate(f); } catch (error) { if (name === 'symlink payload' && ['EPERM', 'EACCES'].includes(error.code)) { t.skip('Host does not permit owned fixture symlinks'); return; } throw error; }
@@ -108,7 +107,7 @@ for (const [name, argumentsFor] of [
     return fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).map(entry => [entry.name, entry.isDirectory() ? snapshot(path.join(root, entry.name)) : hash(fs.readFileSync(path.join(root, entry.name)))]);
   }
   const before = hash(JSON.stringify(snapshot(f.root)));
-  const result = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', timeout: 30000 });
+  const result = spawnSync(process.execPath, [...preloadArgs, cli, ...args], { encoding: 'utf8', timeout: 30000 });
   assert.equal(hash(JSON.stringify(snapshot(f.root))), before, 'input directory layout and every file byte must remain unchanged');
   assert.equal(result.status, 1, result.stdout);
   const report = JSON.parse(result.stdout);
@@ -120,8 +119,6 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   const f = fixture(t);
   f.write(path.join(f.pkg, 'secret.txt'), 'not distributable');
   f.write(path.join(f.pkg, 'scripts/postinstall.js'), 'throw Error()');
-  f.write(path.join(f.dist, 'old.exe'), 'obsolete');
-  f.write(path.join(f.dist, 'tests/leak.js'), 'not distributable');
   const before = fs.readFileSync(path.join(f.pkg, 'package.json'));
   const manifest = fs.readFileSync(f.manifestPath);
   const result = run(f);
@@ -138,16 +135,236 @@ test('packs a non-native controlled fixture with real npm and staged public meta
   assert.equal(metadata.types, './dist/index.d.ts');
   assert.equal(metadata.scripts, undefined);
   assert.deepEqual(fs.readFileSync(path.join(f.pkg, 'package.json')), before);
-  assert.deepEqual(fs.readFileSync(path.join(stage, 'dist/broker/win32-x64/broker-manifest.json')), manifest);
+  assert.deepEqual(fs.readFileSync(path.join(stage, 'dist/overlay-manifest.json')), manifest);
   const listing = spawnSync('tar', ['-tzf', result.report.tarball], { encoding: 'utf8' });
   assert.equal(listing.status, 0, listing.stderr);
   const files = listing.stdout.trim().split(/\r?\n/).sort();
   assert.deepEqual(files, result.report.packFiles.map(file => 'package/' + file).sort());
-  for (const entry of f.manifest.files) assert.ok(files.includes('package/dist/broker/win32-x64/' + entry.path), entry.path);
+  for (const entry of f.manifest.files) assert.ok(files.includes('package/dist/' + entry.path), entry.path);
   assert.ok(files.includes('package/LICENSE'));
   assert.ok(files.includes('package/README.md'));
   assert.ok(files.includes('package/dist/runtime/THIRD-PARTY-NOTICES.txt'));
+  assert.ok(files.includes('package/dist/node_modules/tslib/CopyrightNotice.txt'));
+  assert.ok(!files.some(file => file.startsWith('package/dist/broker/')));
   assert.ok(!files.some(file => /secret|postinstall|old\.exe|\/tests\//.test(file)));
+  const nativeStamp = JSON.parse(fs.readFileSync(path.join(stage, 'dist/runtime/win32-x64/reshade/ReShade64.build.json')));
+  assert.equal(nativeStamp.schemaVersion, 30);
+  assert.equal(nativeStamp.ownedLateD3d11PatchSha256, '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE');
+  assert.equal(nativeStamp.injectorFirstHostResultPatchSha256, 'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554');
+  assert.equal(nativeStamp.addonPreloadProtocol, 1);
+  assert.equal(nativeStamp.injectorAddonPreloadPatchSha256, 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D');
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(stage, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309');
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B');
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6');
+    assert.equal(stamp.injectorInitialInspectionRecoveryPatchSha256, '5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7');
+  }
+});
+
+test('real npm packaging preserves a retained generation-14 schema-29 SDK without adding current provenance', t => {
+  const f = fixture(t, { runtimeGeneration: 14, addonBuildId: '412D57BEA49440738CC4C3903038F2E7' });
+  const original = fs.readFileSync(f.manifestPath);
+  const result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.schemaVersion, 29);
+    assert.equal(stamp.ownedLateD3d11PatchSha256, undefined);
+  }
+});
+test('real npm packaging preserves the earlier generation-15 schema-30 SDK without a later CLI patch claim', t => {
+  const f = fixture(t, { runtimeGeneration: 15, addonBuildId: 'BCE6C5C8746F4300861300B2BDA3594E', firstHostResultPatch: false });
+  const original = fs.readFileSync(f.manifestPath);
+  const result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.schemaVersion, 30);
+    assert.equal(stamp.injectorFirstHostResultPatchSha256, undefined);
+  }
+});
+test('real npm packaging preserves the retained generation-16 SDK without preload metadata', t => {
+  const f = fixture(t, { runtimeGeneration: 16, addonBuildId: 'E8FE3783F29E4FB297D8B006D0087725' });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.addonPreloadProtocol, undefined);
+    assert.equal(stamp.injectorAddonPreloadPatchSha256, undefined);
+  }
+});
+
+test('real npm packaging preserves generation-18 preload packages without claiming the later fresh-owner ordering patch', t => {
+  const f = fixture(t, { runtimeGeneration: 18, addonBuildId: '17E16E01C9A243E18EE19D814420E519' });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.addonPreloadProtocol, 1);
+    assert.equal(stamp.injectorAddonPreloadPatchSha256, 'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D');
+    assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, undefined);
+  }
+});
+
+test('real npm packaging preserves retained generation-19 packages without claiming the later preload long-path patch', t => {
+  const f = fixture(t, { runtimeGeneration: 19 });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.injectorPreloadedFirstHostPatchSha256, 'A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309');
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, undefined);
+  }
+});
+
+test('real npm packaging preserves retained generation-20 packages without claiming the later adapter-ready long-path patch', t => {
+  const f = fixture(t, { runtimeGeneration: 20 });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.injectorPreloadLongPathPatchSha256, 'FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B');
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, undefined);
+  }
+});
+
+test('real npm packaging preserves retained generation-21 packages without claiming the later initial inspection recovery patch', t => {
+  const f = fixture(t, { runtimeGeneration: 21 });
+  const original = fs.readFileSync(f.manifestPath), result = run(f);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json')), original);
+  for (const bits of [64, 32]) {
+    const stamp = JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/runtime/win32-x64/reshade/ReShade' + bits + '.build.json')));
+    assert.equal(stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256, 'BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6');
+    assert.equal(stamp.injectorInitialInspectionRecoveryPatchSha256, undefined);
+  }
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 initial inspection recovery provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {
+  const f = fixture(t), relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+  if (value === undefined) delete stamp.injectorInitialInspectionRecoveryPatchSha256;
+  else stamp.injectorInitialInspectionRecoveryPatchSha256 = value;
+  f.write(path.join(f.dist, relative), JSON.stringify(stamp)); f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /initial inspection recovery patch provenance mismatch.*32/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+test('npm packaging rejects removal of both current initial inspection recovery implementation marker and metadata', t => {
+  const f = fixture(t), validator = path.join(f.dist, 'lib/overlay-package-manifest.js');
+  f.write(validator, fs.readFileSync(validator, 'utf8').replace(/^const INJECTOR_INITIAL_INSPECTION_RECOVERY_PATCH_SHA256[^\n]*\n/m, ''));
+  for (const bits of [64, 32]) {
+    const relative = 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json';
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+    delete stamp.injectorInitialInspectionRecoveryPatchSha256;
+    f.write(path.join(f.dist, relative), JSON.stringify(stamp));
+  }
+  f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /initial inspection recovery patch pin.*generation/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 adapter-ready long-path provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {
+  const f = fixture(t), relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+  if (value === undefined) delete stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256;
+  else stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256 = value;
+  f.write(path.join(f.dist, relative), JSON.stringify(stamp)); f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /adapter-ready long-path patch provenance mismatch.*32/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+test('npm packaging rejects removal of both current adapter-ready long-path implementation marker and metadata', t => {
+  const f = fixture(t), validator = path.join(f.dist, 'lib/overlay-package-manifest.js');
+  f.write(validator, fs.readFileSync(validator, 'utf8').replace(/^const OWNED_LATE_D3D11_ADAPTER_READY_LONG_PATH_PATCH_SHA256[^\n]*\n/m, ''));
+  for (const bits of [64, 32]) {
+    const relative = 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json';
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+    delete stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256;
+    f.write(path.join(f.dist, relative), JSON.stringify(stamp));
+  }
+  f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /adapter-ready long-path patch pin.*generation/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 preload long-path provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {
+  const f = fixture(t), relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+  if (value === undefined) delete stamp.injectorPreloadLongPathPatchSha256;
+  else stamp.injectorPreloadLongPathPatchSha256 = value;
+  f.write(path.join(f.dist, relative), JSON.stringify(stamp)); f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /preload long-path patch provenance mismatch.*32/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+test('npm packaging rejects removal of both current preload long-path implementation marker and metadata', t => {
+  const f = fixture(t), validator = path.join(f.dist, 'lib/overlay-package-manifest.js');
+  f.write(validator, fs.readFileSync(validator, 'utf8').replace(/^const INJECTOR_PRELOAD_LONG_PATH_PATCH_SHA256[^\n]*\n/m, ''));
+  for (const bits of [64, 32]) {
+    const relative = 'runtime/win32-x64/reshade/ReShade' + bits + '.build.json';
+    const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+    delete stamp.injectorPreloadLongPathPatchSha256;
+    f.write(path.join(f.dist, relative), JSON.stringify(stamp));
+  }
+  f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /preload long-path patch pin.*generation/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+for (const value of [undefined, '0'.repeat(64)]) test('npm packaging rejects current x86 fresh-owner ordering provenance ' + (value === undefined ? 'removal' : 'substitution') + ' after full rebinding', t => {
+  const f = fixture(t), relative = 'runtime/win32-x64/reshade/ReShade32.build.json';
+  const stamp = JSON.parse(fs.readFileSync(path.join(f.dist, relative)));
+  if (value === undefined) delete stamp.injectorPreloadedFirstHostPatchSha256;
+  else stamp.injectorPreloadedFirstHostPatchSha256 = value;
+  f.write(path.join(f.dist, relative), JSON.stringify(stamp)); f.bindNativeHashes(); f.seal();
+  const result = run(f);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.report.error, /preloaded first-host patch provenance mismatch.*32/i);
+  assert.equal(result.report.stageRoot, null);
+  assert.equal(result.report.tarball, null);
+});
+
+test('candidate version override changes only staged package and seal metadata', t => {
+  const f = fixture(t);
+  const sourceMetadata = fs.readFileSync(path.join(f.pkg, 'package.json'));
+  const sourceManifest = fs.readFileSync(f.manifestPath);
+  const result = run(f, ['--version', '0.1.0-rc.8']);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const stage = result.report.stageRoot;
+  assert.equal(JSON.parse(fs.readFileSync(path.join(stage, 'package.json'))).version, '0.1.0-rc.8');
+  const stagedManifest = JSON.parse(fs.readFileSync(path.join(stage, 'dist/overlay-manifest.json')));
+  assert.equal(stagedManifest.packageVersion, '0.1.0-rc.8');
+  assert.deepEqual(stagedManifest.files, f.manifest.files);
+  assert.deepEqual(fs.readFileSync(path.join(f.pkg, 'package.json')), sourceMetadata);
+  assert.deepEqual(fs.readFileSync(f.manifestPath), sourceManifest);
+  assert.equal(result.report.sourceManifestSha256, hash(sourceManifest));
+  assert.equal(result.report.manifestSha256, hash(fs.readFileSync(path.join(stage, 'dist/overlay-manifest.json'))));
 });
 
 test('source snapshot provenance rejects substituted artifacts before distribution', t => {
@@ -168,18 +385,6 @@ test('source provenance cannot label a dirty snapshot as a committed source', t 
 
 test('dirty-source provenance is included in the actual npm archive', t => {
   const f=fixture(t), file=path.join(f.root,'provenance.json');
-  for (const bits of [64,32]) {
-    const stamps={
-      [`electron_game_overlay_runtime${bits===64?'':'32'}.build.json`]:{addonBuildId:'fixture-only',runtimeGeneration:6},
-      [`ReShade${bits}.build.json`]:{commit:'2'.repeat(40)}
-    };
-    for (const [name,value] of Object.entries(stamps)) {
-      const relative='runtime/win32-x64/reshade/'+name, bytes=Buffer.from(JSON.stringify(value));
-      for(const base of [f.dist,f.leaf])f.write(path.join(base,relative),bytes);
-      f.manifest.files.push({path:relative,size:bytes.length,sha256:hash(bytes)});
-    }
-  }
-  f.write(f.manifestPath,JSON.stringify(f.manifest));
   const snapshot=Buffer.from('controlled source archive fixture'), manifest=Buffer.from('controlled manifest fixture');
   f.write(path.join(f.root,'source.zip'),snapshot);f.write(path.join(f.root,'sources.json'),manifest);
   const provenance={schemaVersion:2,version:'0.1.0-rc.7',baseCommit:'1'.repeat(40),workingTreeDirty:true,

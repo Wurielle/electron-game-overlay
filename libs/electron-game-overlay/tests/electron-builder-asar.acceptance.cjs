@@ -115,7 +115,7 @@ app.whenReady().then(async()=>{
   report.asarExecuted = true;
   const notice = path.join(
       finalSdk,
-      'dist/broker/win32-x64/node_modules/tslib/CopyrightNotice.txt',
+      'dist/node_modules/tslib/CopyrightNotice.txt',
     ),
     original = fs.readFileSync(notice);
   try {

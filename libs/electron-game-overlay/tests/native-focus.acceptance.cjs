@@ -61,6 +61,9 @@ function cleanup() {
 function fail(error) {
   if (done) return;
   state.error = error.stack || String(error);
+  state.errorCode = error.code;
+  state.errorPath = error.path;
+  state.errorSyscall = error.syscall;
   persist();
   cleanup();
   app.exit(1);
@@ -93,7 +96,7 @@ app
     });
     launcher = new ReShadeOverlayLauncher(config);
     launcher.onEvent((event) => {
-      state.events.push({ type: event.type, at: Date.now() });
+      state.events.push({ type: event.type, at: Date.now(), runDirectory: event.runDirectory });
       if (event.type === 'injector-returned' && member === 'a' && !args.game) {
         fs.rmSync(
           path.join(

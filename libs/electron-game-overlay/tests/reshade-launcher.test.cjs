@@ -31,6 +31,7 @@ const {
   createReShadeLaunchConfig,
 } = require('../dist/lib/reshade-launcher.js');
 const existingReShadeInstallation = require('../dist/lib/existing-reshade-installation.js');
+const { targetIdentityRequirements } = require('../dist/lib/overlay-session-authorization.js');
 
 const artifacts = [
   'inject.exe',
@@ -127,7 +128,7 @@ const officialAddonSuccessFor = (
     runtimeModulePath,
     addonModulePath,
     addonAbi: 1,
-    addonBuildId: '12EE788081A34E00B10862242DF38893',
+    addonBuildId: 'CCE20935ADD44EF6A5A7973014B2E07F',
     reshadeBasePath: path.win32.dirname(runtimeModulePath),
     addonDirectoryPath: path.win32.dirname(addonModulePath),
     electronGameOverlayAddonDisabled: false,
@@ -197,6 +198,241 @@ const runtimeStartupRecord = (pid, code, additionalFields = {}) =>
     ...additionalFields,
   });
 const temporaryDirectories = new Set();
+
+test('private member attachment queries its staged manager before publishing and always loads its own engine', async () => {
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  targetIdentityRequirements.set(harness.session, true);
+  const expected = '9007199254740993';
+  let published = false;
+  harness.session.authorizeTarget = async (_pid, _path, image, _provider, _signal, creationTime) => {
+    published = true;
+    assert.equal(image, 'C:\\games\\game.exe');
+    assert.equal(creationTime, expected);
+    return Object.assign(() => {}, { disposition: 'participant', expectedCreationTime100ns: creationTime });
+  };
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 });
+    await waitFor(() => execution.calls.length === 1);
+    assert.equal(published, false);
+    assert.equal(path.basename(execution.calls[0].executable), 'electron_game_overlay_reshade_manager.exe');
+    assert.deepEqual(execution.calls[0].arguments, ['--query-process-image', '4242']);
+    execution.calls[0].callback(null, JSON.stringify({
+      schemaVersion: 1, kind: 'electron-game-overlay-process-image', pid: 4242,
+      executablePath: 'C:\\games\\game.exe', creationTime100ns: expected,
+    }) + '\n', '');
+    await waitFor(() => execution.calls.length === 2);
+    assert.equal(published, true);
+    assert.deepEqual(execution.calls[1].arguments,
+      ['game.exe', '--pid', '4242', '--expected-creation-time-100ns', expected]);
+    const addonModulePath = path.join(execution.calls[1].options.cwd, 'electron_game_overlay.addon64');
+    execution.calls[1].callback(null,
+      'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n' +
+      injectorResult({ pid: 4242, runtimeMode: 'participant-addon',
+        runtimeModulePath: 'C:\\host\\ReShade64.dll', reshadeBasePath: 'D:\\configured-host', addonModulePath,
+        addonAbi: 1, memberProtocolVersion: 1 }), '');
+    harness.emitNative('game.process', { pid: 4242, path: 'C:\\games\\game.exe' });
+    const result = await attachment;
+    assert.equal(result.runtimeMode, 'participant-addon');
+    assert.equal(result.addonModulePath, addonModulePath);
+    assert.equal(result.hostRuntimePath, 'C:\\host\\ReShade64.dll');
+    assert.equal(result.reshadeLogPath, 'D:\\configured-host\\ReShade.log');
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
+test('prearmed private path watcher authenticates its first host from staged credentials after a four-field injected result', { timeout: 10_000 }, async (t) => {
+  const net = require('node:net');
+  const { CooperativeOverlayTransport } = require('../dist/lib/cooperative-overlay-transport.js');
+  const { createOverlaySession } = require('../dist/lib/overlay-session.js');
+  const { encodeJsonTransportPacket } = require('../dist/lib/overlay-loopback-transport.js');
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const transport = new CooperativeOverlayTransport({
+    directory: path.join(fixture.root, 'private-participant'),
+    isProcessAlive: () => true,
+  });
+  const session = createOverlaySession(transport);
+  session.electronScreen = new EventEmitter();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const events = [], connected = [], received = [];
+  launcher.onEvent((event) => events.push(event));
+  session.on('targetConnected', (target) => connected.push(target));
+  let targetedAuthorizations = 0, socket;
+  const authorizeTarget = transport.authorizeTarget.bind(transport);
+  transport.authorizeTarget = (...args) => {
+    targetedAuthorizations += 1;
+    return authorizeTarget(...args);
+  };
+  t.after(() => {
+    socket?.destroy();
+    launcher.dispose();
+    session.close();
+    transport.stop();
+    execution.restore();
+  });
+  const pid = 4242, image = 'C:\\Games\\first-host.exe';
+  const creationTime100ns = '9007199254740993';
+  const attachment = launcher.attach(session, { pathContains: '\\Games\\' });
+  // Observe rejection immediately so assertion cleanup cannot leave an unhandled promise.
+  attachment.catch(() => {});
+  await waitFor(() => execution.calls.length === 1);
+  const invocation = execution.calls[0];
+  const discoveryPath = path.join(invocation.options.cwd, 'electron-overlay-transport-v1.json');
+  const stagedCredentialBytes = readFileSync(discoveryPath, 'utf8');
+  const record = JSON.parse(stagedCredentialBytes);
+  const participant = await transport.whenReady();
+  assert.equal(record.port, participant.port);
+  assert.equal(record.token, participant.token);
+  assert.equal(record.targetPid, undefined, 'the private future-target route exists before native selection');
+  assert.deepEqual(invocation.arguments, ['--path-contains', '\\Games\\']);
+  assert.equal(targetedAuthorizations, 0);
+
+  const selection = `EGO_TARGET_SELECTED_V2\t${pid}\t${creationTime100ns}\t${image}\nEGO_TARGET_SELECTED\t${pid}\n`;
+  invocation.emitStdout('ReShade path watcher armed.\n' + selection);
+  assert.deepEqual(events.filter((event) => event.type === 'target-selected').map((event) => ({
+    pid: event.pid, executablePath: event.executablePath, creationTime100ns: event.creationTime100ns,
+  })), [{ pid, executablePath: image, creationTime100ns }]);
+  assert.equal(readFileSync(discoveryPath, 'utf8'), stagedCredentialBytes,
+    'V2 selection evidence must not replace the prearmed global credential with a targeted route');
+  assert.equal(targetedAuthorizations, 0);
+
+  const stdout = selection + pathInjectorSuccessFor(pid, image);
+  const structuredLine = stdout.split('\n').find((line) => line.startsWith('ELECTRON_GAME_OVERLAY_INJECTOR_RESULT '));
+  assert.deepEqual(Object.keys(JSON.parse(structuredLine.slice('ELECTRON_GAME_OVERLAY_INJECTOR_RESULT '.length))).sort(),
+    ['pid', 'runtimeMode', 'schemaVersion', 'targetExecutablePath']);
+  invocation.callback(null, stdout, '');
+  await waitFor(() => events.some((event) => event.type === 'injector-returned'));
+  assert.equal(readFileSync(discoveryPath, 'utf8'), stagedCredentialBytes);
+  transport.addWindow(7, { name: 'first-host-scene', transparent: true,
+    rect: { x: 10, y: 20, width: 2, height: 1 } });
+
+  socket = net.createConnection({ host: '127.0.0.1', port: record.port });
+  let pending = Buffer.alloc(0);
+  socket.on('data', (chunk) => {
+    pending = Buffer.concat([pending, chunk]);
+    while (pending.length >= 5 && pending.length >= 5 + pending.readUInt32LE(0)) {
+      const end = 5 + pending.readUInt32LE(0);
+      assert.equal(pending[4], 1);
+      received.push(JSON.parse(pending.subarray(5, end).toString('utf8')));
+      pending = pending.subarray(end);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  socket.write(encodeJsonTransportPacket({ type: 'game.process', protocolVersion: 1,
+    token: record.token, pid, path: image, creationTime100ns,
+    capabilities: ['process-instance-hello-v1'] }));
+  const result = await attachment;
+  await waitFor(() => received.length > 0);
+  assert.equal(result.runtimeMode, 'injected-runtime');
+  assert.equal(result.injectorTargetPid, pid);
+  assert.equal(result.targetExecutablePath, image);
+  assert.equal(result.selectedPath, image);
+  assert.equal(result.runDirectory, invocation.options.cwd);
+  assert.equal(result.addonModulePath, undefined);
+  assert.deepEqual(connected.map((target) => ({ pid: target.pid,
+    executablePath: target.executablePath, creationTime100ns: target.creationTime100ns })),
+  [{ pid, executablePath: image, creationTime100ns }]);
+  assert.equal(received[0].type, 'overlay.init');
+  assert.equal(received[0].windows[0].name, 'first-host-scene');
+  assert.equal(targetedAuthorizations, 0, 'a first-host injected result must not take the participant join authorizer');
+  assert.equal(events.some((event) => event.type === 'target-rendezvous-authorized'), false);
+  assert.equal(execution.calls.length, 1, 'first-host completion requires no manager query or second native invocation');
+});
+
+test('private member image mismatch rejects before route publication or injector execution', async () => {
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  targetIdentityRequirements.set(harness.session, true);
+  let published = false;
+  harness.session.authorizeTarget = async () => { published = true; return () => {}; };
+  try {
+    const attachment = launcher.attach(harness.session, {
+      processName: 'game.exe', pid: 4242,
+    });
+    const rejected = assert.rejects(attachment, /OS identity does not match/);
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, JSON.stringify({
+      schemaVersion: 1, kind: 'electron-game-overlay-process-image', pid: 4242,
+      executablePath: 'C:\\games\\other.exe', creationTime100ns: '100',
+    }), '');
+    await rejected;
+    assert.equal(published, false);
+    assert.equal(execution.calls.length, 1);
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
+test('private member attachment refuses artifacts without proven cooperative host ownership support', async () => {
+  const fixture = createBindingRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  targetIdentityRequirements.set(harness.session, true);
+  try {
+    await assert.rejects(launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 }),
+      /does not support independent cooperative add-on attachment/);
+    assert.equal(execution.calls.length, 0);
+    assert.equal(harness.targetAuthorizations.length, 0);
+  } finally { launcher.dispose(); execution.restore(); }
+
+  const cooperative = createCooperativeRuntime();
+  assert.equal(createConfig(cooperative).cooperativeAddonProtocol, 1);
+  rewriteRuntimePackageBuildStamp(cooperative.runtimeDirectory, 'electron_game_overlay_runtime32.build.json', (manifest) => {
+    delete manifest.cooperativeAddonProtocol;
+  });
+  assert.throws(() => createConfig(cooperative), /different runtime provider metadata/);
+});
+
+test('private member official startup proof is followed by instance-bound member-only attachment', async () => {
+  const fixture = createCooperativeRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  const harness = createSessionHarness();
+  const expected = '9007199254740993';
+  const image = 'D:\\Games\\Official\\game.exe';
+  const runtime = 'D:\\Games\\Official\\dxgi.dll';
+  harness.session.authorizeTarget = async () => Object.assign(() => {}, {
+    disposition: 'participant', expectedCreationTime100ns: expected,
+  });
+  const preparation = stubExistingReShadePreparation(async () => officialPreparedAddonResult({
+    status: 'already-current', targetExecutablePath: image, reshadeModulePath: runtime,
+  }));
+  const inspection = stubLoadedOfficialReShadeInspection(async (options) => officialLoadedAddonInspectionResult({
+    targetExecutablePath: options.targetExecutablePath, reshadeModulePath: options.reshadeModulePath,
+    loadedAddonModulePath: options.loadedAddonModulePath,
+  }));
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242, executablePath: image });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(Object.assign(new Error('existing'), { code: 183 }),
+      injectorPreflightDiagnostic({ code: 'target-existing-reshade-installation', pid: 4242,
+        targetExecutablePath: image, modulePath: runtime, windowsErrorCode: 183 }) +
+      'ReShade injection not started.\n', '');
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, officialAddonSuccessFor(4242, runtime,
+      'D:\\Games\\Official\\electron_game_overlay.addon64', 'game.exe'), '');
+    await waitFor(() => execution.calls.length === 3);
+    assert.deepEqual(execution.calls[2].arguments,
+      [image, '--pid', '4242', '--expected-creation-time-100ns', expected, '--addon-only']);
+    const addon = path.join(execution.calls[2].options.cwd, 'electron_game_overlay.addon64');
+    execution.calls[2].callback(null,
+      'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n' +
+      injectorResult({ pid: 4242, targetExecutablePath: image, runtimeMode: 'participant-addon',
+        runtimeModulePath: runtime, reshadeBasePath: 'D:\\host-config', addonModulePath: addon,
+        addonAbi: 1, memberProtocolVersion: 1 }), '');
+    harness.emitNative('game.process', { pid: 4242, path: image });
+    const result = await attachment;
+    assert.equal(result.runtimeMode, 'participant-addon');
+    assert.equal(result.addonModulePath, addon);
+    assert.equal(result.reshadeLogPath, 'D:\\host-config\\ReShade.log');
+  } finally { launcher.dispose(); preparation.restore(); inspection.restore(); execution.restore(); }
+});
 
 test.afterEach(() => {
   for (const directory of temporaryDirectories) {
@@ -285,6 +521,16 @@ function createBindingRuntime() {
   return fixture;
 }
 
+function createCooperativeRuntime() {
+  const fixture = createBindingRuntime();
+  for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, (manifest) => {
+      manifest.cooperativeAddonProtocol = 1;
+    });
+  }
+  return fixture;
+}
+
 test('binding invalid or unsupported expectation refuses before exec', async () => {
   for (const expected of [null, 123, '', '0', '01', '-1', '1.0', '1e3', '18446744073709551616', '9007199254740993']) {
     const fixture = expected === '9007199254740993' ? createRuntime() : createBindingRuntime();
@@ -308,14 +554,18 @@ test('binding invalid or unsupported expectation refuses before exec', async () 
 });
 
 test('binding native failures require exact proof and never retry (controlled native child)', async () => {
-  for (const [code, winerr] of [['target-process-instance-mismatch', 1306], ['target-process-instance-query-failed', 5], ['target-process-instance-query-failed', 13]]) {
+  for (const [code, winerr] of [
+    ['target-process-instance-mismatch', 1306], ['target-process-instance-query-failed', 5], ['target-process-instance-query-failed', 13],
+    ['target-session-mismatch', 5], ['target-session-query-failed', 5], ['target-session-query-failed', 87],
+  ]) {
     for (const variant of ['valid', 'exit', 'started', 'success', 'missing-marker', 'wrong-code']) {
       const fixture = createBindingRuntime(); const execution = stubExecFile();
       const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
       try {
         const result = launchReShadeOverlay(launcher, { processName: 'game.exe', pid: 4242 }).then(() => null, e => e);
         await waitFor(() => execution.calls.length === 1);
-        execution.calls[0].callback(Object.assign(new Error('binding rejected'), { code: variant === 'exit' ? 87 : winerr }), injectorPreflightDiagnostic({ code, pid: 4242, windowsErrorCode: variant === 'wrong-code' ? 87 : winerr, injectionStarted: variant === 'started' }) + (variant === 'missing-marker' ? '' : 'ReShade injection not started.\n') + (variant === 'success' ? injectorSuccessFor(4242, 'game.exe') : ''), '');
+        const differentError = winerr === 87 ? 5 : 87;
+        execution.calls[0].callback(Object.assign(new Error('binding rejected'), { code: variant === 'exit' ? differentError : winerr }), injectorPreflightDiagnostic({ code, pid: 4242, windowsErrorCode: variant === 'wrong-code' ? differentError : winerr, injectionStarted: variant === 'started' }) + (variant === 'missing-marker' ? '' : 'ReShade injection not started.\n') + (variant === 'success' ? injectorSuccessFor(4242, 'game.exe') : ''), '');
         const error = await result;
         assert.ok(isReShadeOperationError(error));
         assert.equal(error.diagnostic.code, variant === 'valid' ? code : 'injector-result-invalid');
@@ -5682,7 +5932,7 @@ function writeRuntimePackageBuildStamp(runtimeDirectory, spec) {
       kind: 'electron-game-overlay-runtime-build',
       platform: spec.platform,
       configuration: 'RelWithDebInfo',
-      addonBuildId: '12EE788081A34E00B10862242DF38893',
+      addonBuildId: 'CCE20935ADD44EF6A5A7973014B2E07F',
       managerProtocolSchemaVersion: 1,
       runtimeGeneration: 1,
       targetTransportMin: 1,
@@ -6185,6 +6435,7 @@ function createSessionHarness(
             'targetConnected',
             'targetTransportLost',
             'targetDisconnected',
+            'targetInputCapabilitiesRejected',
           ].includes(event),
         );
         let handlers = lifecycleHandlers.get(event);
@@ -6209,12 +6460,14 @@ function createSessionHarness(
         'game.process': 'targetConnected',
         'game.process.transport-lost': 'targetTransportLost',
         'game.process.disconnected': 'targetDisconnected',
+        'game.process.input-capabilities-rejected': 'targetInputCapabilitiesRejected',
       }[event];
       assert.ok(typedEvent, `unexpected lifecycle event ${event}`);
       for (const handler of Array.from(
         lifecycleHandlers.get(typedEvent) ?? [],
       )) {
         handler({
+          ...payload,
           pid: payload.pid,
           executablePath: payload.path ?? 'C:\\Games\\unknown.exe',
         });
@@ -6405,6 +6658,36 @@ function policyRuntime() {
 }
 const nativePolicyTarget={pathContains:'\\',processPolicy:{allow:['**/steamapps/**']}};
 
+test('a missing required host input capability rejects attachment promptly while retaining possibly consumed ownership', async () => {
+  const fixture = createRuntime(), execution = stubExecFile(), harness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'game.exe', pid: 4242, executablePath: 'C:\\Games\\game.exe' });
+    const rejected = assert.rejects(attachment, error => {
+      assert.ok(error instanceof ReShadeOperationError);
+      assert.equal(error.code, 'target-input-capability-unsupported');
+      assert.equal(error.stage, 'runtime-initialization');
+      assert.equal(error.retrySafety, 'indeterminate');
+      assert.equal(error.diagnostic.pid, 4242);
+      return true;
+    });
+    await waitFor(() => execution.calls.length === 1);
+    const rejection = { pid: 4242, path: 'C:\\Games\\game.exe',
+      inputCapabilities: { copiedWmInput: 'supported', copiedRawInputBuffer: 'unsupported' },
+      requiredInputCapabilities: ['copied-raw-input-buffer'] };
+    harness.emitNative('game.process.input-capabilities-rejected', { ...rejection, pid: 4243 });
+    assert.equal(launcher.state, 'attaching', 'another target cannot reject this attachment');
+    harness.emitNative('game.process.input-capabilities-rejected', rejection);
+    await waitFor(() => execution.calls[0].child.killed);
+    execution.calls[0].callback(Object.assign(new Error('terminated'), { killed: true }), '', '');
+    await rejected;
+    assert.equal(launcher.state, 'blocked');
+    assert.equal(harness.targetAuthorizations[0].releaseCount, 0, 'unsupported input is not process-exit or permission to reinject');
+    await assert.rejects(launcher.attach(harness.session, { processName: 'game.exe', pid: 4242 }), /indeterminate/);
+    assert.equal(execution.calls.length, 1);
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
 test('quiescence before any native invocation invalidates delayed attachment without executing a child', async()=>{
   const execution=stubExecFile(),wait=deferred(),harness=createSessionHarness(wait.promise),launcher=new ReShadeOverlayLauncher(createConfig(policyRuntime()));
   try {
@@ -6451,6 +6734,30 @@ test('an older injector capability cannot claim safe native policy quiescence',a
  try {assert.equal(await launcher.quiesceUnselectedPolicyWatcher(),false);} finally {launcher.dispose();}
 });
 
+for (const target of [{ pathContains: '\\steamapps\\' }, { processName: 'game.exe' }]) {
+  test('ordinary future watcher fallback requires drained no-selection proof: ' + JSON.stringify(target), async () => {
+    const execution = stubExecFile(), harness = createSessionHarness();
+    const launcher = new ReShadeOverlayLauncher(createConfig(policyRuntime()));
+    try {
+      const attachment = launcher.attach(harness.session, target);
+      const settled = attachment.catch(() => {});
+      await waitFor(() => execution.calls.length === 1);
+      const call = execution.calls[0];
+      const stop = launcher.quiesceUnselectedFutureWatcher();
+      let finished = false;
+      stop.then(() => { finished = true; });
+      await flushMicrotasks();
+      assert.equal(finished, false, 'a child kill alone does not authorize an exact fallback');
+      call.child.exitCode = 1;
+      call.child.stdout.readableEnded = true;
+      call.callback(Object.assign(new Error('terminated'), { killed: true, code: 1 }), '', '');
+      assert.equal(await stop, true);
+      await settled;
+      assert.equal(execution.calls.length, 1);
+    } finally { launcher.dispose(); execution.restore(); }
+  });
+}
+
 
 test('quiescence never kills a policy watcher whose selected incarnation is already known',async()=>{
  const execution=stubExecFile(),harness=createSessionHarness(),launcher=new ReShadeOverlayLauncher(createConfig(policyRuntime()));
@@ -6464,3 +6771,394 @@ test('quiescence never kills a policy watcher whose selected incarnation is alre
   assert.equal(launcher.state,'connected');
  } finally {launcher.dispose();execution.restore();}
 });
+
+test('preload invocation selects one strict filename without changing default target selection', () => {
+  const runDirectory = path.join(tmpdir(), 'ego-preload-invocation');
+  const name = `ego-preload-${'a'.repeat(32)}-${'B'.repeat(32)}-${'c'.repeat(16)}.addon64`;
+  for (const target of [
+    { processName: 'demo.exe', pid: 4242 },
+    { processName: 'demo.exe' },
+    { pathContains: '\\controlled-demos\\' },
+  ]) {
+    const ordinary = buildReShadeInvocation(target, runDirectory);
+    const preload = buildReShadeInvocation(target, runDirectory, { preloadedAddonName: name });
+    assert.deepEqual(preload.arguments, [...ordinary.arguments, '--preloaded-addon-name', name]);
+    assert.equal(preload.executable, ordinary.executable);
+    assert.equal(preload.targetLabel, ordinary.targetLabel);
+    assert.equal(preload.workingDirectory, ordinary.workingDirectory);
+  }
+  for (const malformed of [
+    '', '.', '..', `subdir\\${name}`, `C:\\cache\\${name}`, `${name}\r\n--addon-only`,
+    name.replace('ego-preload-', 'ordinary-'), name.replace('.addon64', '.dll'),
+    name.replace('a'.repeat(32), 'a'.repeat(31)),
+  ]) {
+    assert.throws(() => buildReShadeInvocation({ processName: 'demo.exe', pid: 4242 },
+      runDirectory, { preloadedAddonName: malformed }), /preload|add.on|filename/i);
+  }
+});
+
+test('preload configuration requires the current registered engine and remains opt-in', async () => {
+  const fixture = await createAddonPreloadRuntime();
+  const ordinary = createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory: fixture.runsRootDirectory,
+  });
+  assert.equal(ordinary.addonPreload, undefined);
+  const config = createAddonPreloadConfig(fixture);
+  assert.equal(config.addonPreload.applicationId, fixture.applicationId);
+  assert.equal(config.addonPreload.addonDirectory, require('node:fs').realpathSync(fixture.addonDirectory));
+  assert.equal(config.addonPreload.storageRoot, undefined, 'legacy alias normalizes to the shared add-on directory');
+  assert.equal(Object.isFrozen(config.addonPreload), true);
+  const aliasConfig = createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory: fixture.runsRootDirectory,
+    addonPreload: { applicationId: fixture.applicationId, storageRoot: fixture.addonDirectory },
+  });
+  assert.deepEqual(aliasConfig.addonPreload, config.addonPreload);
+  assert.throws(() => createAddonPreloadConfig(fixture, { applicationId: 'com.example.unregistered' }),
+    /not registered/i);
+  const addon = path.join(fixture.runtimeDirectory, 'electron_game_overlay.addon64');
+  writeFileSync(addon, Buffer.concat([readFileSync(addon), Buffer.from('changed body')]));
+  assert.throws(() => createAddonPreloadConfig(fixture), /hash|SHA-256|match/i,
+    'registration cannot override a failed sealed runtime validation');
+});
+
+test('preload configuration requires matching explicit support on both architectures', async () => {
+  const fixture = await createAddonPreloadRuntime();
+  const stamps = ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json'];
+  for (const name of stamps) rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name,
+    stamp => { delete stamp.addonPreloadProtocol; });
+  assert.equal(createReShadeLaunchConfig({ bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory: fixture.runsRootDirectory }).addonPreload, undefined,
+  'packages without preload support remain usable through normal attachment');
+  assert.throws(() => createAddonPreloadConfig(fixture), /preload.*support|support.*preload/i);
+  rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, stamps[0], stamp => { stamp.addonPreloadProtocol = 1; });
+  assert.throws(() => createAddonPreloadConfig(fixture), /different.*metadata/i,
+    'a new x64 injector cannot claim support for an older x86 injector');
+  rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, stamps[1], stamp => { stamp.addonPreloadProtocol = 2; });
+  assert.throws(() => createAddonPreloadConfig(fixture), /schema|preload|support|provenance/i);
+});
+
+test('shared add-on preloading requires a current host while earlier runtimes remain usable normally', async () => {
+  const fixture = await createAddonPreloadRuntime({ runtimeGeneration: 22 });
+  const ordinary = createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory: fixture.runsRootDirectory,
+  });
+  assert.equal(ordinary.runtimeProvider.runtimeGeneration, 22);
+  assert.equal(ordinary.addonPreload, undefined);
+  assert.throws(() => createAddonPreloadConfig(fixture), /shared.*add.on|generation.*23|preload.*support/i);
+});
+
+test('preload staging uses one stable shared folder and refreshes future host disablement without copying DLLs', async () => {
+  const fixture = await createAddonPreloadRuntime();
+  const sourceIni = readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini'));
+  const preloadApi = require('../dist/lib/overlay-addon-preload.js');
+  await preloadApi.unregisterOverlayAddonInstallation({
+    applicationId: fixture.otherApplicationId, addonDirectory: fixture.addonDirectory,
+  });
+  const config = createAddonPreloadConfig(fixture);
+  const laterInstallation = await preloadApi.registerOverlayAddonInstallation({
+    applicationId: fixture.otherApplicationId, addonDirectory: fixture.addonDirectory, packageRoot: fixture.packageRoot,
+  });
+  const newestApplicationId = 'com.example.preload-c';
+  const newestInstallation = await preloadApi.registerOverlayAddonInstallation({
+    applicationId: newestApplicationId, addonDirectory: fixture.addonDirectory, packageRoot: fixture.packageRoot,
+  });
+  const foreign = path.join(fixture.addonDirectory, 'other-library.addon64');
+  const nested = path.join(fixture.addonDirectory, 'another-library');
+  mkdirSync(nested);
+  writeFileSync(foreign, 'ordinary third-party add-on; inert fixture bytes');
+  writeFileSync(path.join(nested, 'nested.addon64'), 'stock ReShade does not scan nested folders');
+  const firstFiles = new Map([fixture.installation, laterInstallation, newestInstallation].flatMap(registered =>
+    [registered.addonPath, registered.x86AddonPath].map(file =>
+      [file, { bytes: readFileSync(file), ino: statSync(file).ino, mtimeMs: statSync(file).mtimeMs }])));
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(config);
+  const nextLauncher = new ReShadeOverlayLauncher(config);
+  let runDirectory;
+  let nextRunDirectory;
+  const unsubscribe = launcher.onEvent(event => {
+    if (event.type === 'runtime-staged') runDirectory = event.runDirectory;
+  });
+  const unsubscribeNext = nextLauncher.onEvent(event => {
+    if (event.type === 'runtime-staged') nextRunDirectory = event.runDirectory;
+  });
+  try {
+    await launcher.prepare();
+    assert.equal(execution.calls.length, 0);
+    const directory = fixture.addonDirectory;
+    assert.equal(existsSync(path.join(runDirectory, 'preloaded-addons')), false);
+    assert.deepEqual(readdirSync(directory).filter(name => name.startsWith('ego-preload-')).sort(), [
+      path.basename(fixture.installation.addonPath), path.basename(fixture.installation.x86AddonPath),
+      path.basename(fixture.otherInstallation.addonPath), path.basename(fixture.otherInstallation.x86AddonPath),
+      path.basename(newestInstallation.addonPath), path.basename(newestInstallation.x86AddonPath),
+    ].sort(), 'an application installed after config creation participates in the next host');
+    const stagedIni = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8');
+    assert.equal(stagedIni, sourceIni.toString('utf8').replace('AddonPath=.', `AddonPath=${path.toNamespacedPath(directory)}`));
+    assert.equal(stagedIni.replace(/\r\n/g, '').includes('\n'), false, 'CRLF is preserved');
+    assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), sourceIni);
+    for (const artifact of artifacts.filter(name => name !== 'ReShade.ini')) {
+      assert.deepEqual(readFileSync(path.join(runDirectory, artifact)),
+        readFileSync(path.join(fixture.runtimeDirectory, artifact)));
+    }
+    await preloadApi.unregisterOverlayAddonInstallation({
+      applicationId: fixture.otherApplicationId, addonDirectory: fixture.addonDirectory,
+    });
+    await preloadApi.unregisterOverlayAddonInstallation({
+      applicationId: newestApplicationId, addonDirectory: fixture.addonDirectory,
+    });
+    await nextLauncher.prepare();
+    assert.notEqual(nextRunDirectory, runDirectory, 'session-specific configuration remains private');
+    assert.equal(existsSync(path.join(nextRunDirectory, 'preloaded-addons')), false);
+    const nextIni = readFileSync(path.join(nextRunDirectory, 'ReShade.ini'), 'utf8');
+    const retired = [laterInstallation.addonPath, laterInstallation.x86AddonPath,
+      newestInstallation.addonPath, newestInstallation.x86AddonPath]
+      .map(file => `@${path.basename(file)}`).sort();
+    assert.equal(nextIni, stagedIni.replace('DisabledAddons=@user-disabled.addon64',
+      `DisabledAddons=@user-disabled.addon64,${retired.join(',')}`),
+    'the same long-lived config excludes removed EGO add-ons from the next host scan');
+    for (const [file, before] of firstFiles) {
+      assert.deepEqual(readFileSync(file), before.bytes);
+      assert.equal(statSync(file).ino, before.ino, 'registered DLLs keep the same file identity across hosts');
+      assert.equal(statSync(file).mtimeMs, before.mtimeMs, 'preparation and removal do not rewrite registered DLLs');
+    }
+    assert.equal(readFileSync(foreign, 'utf8'), 'ordinary third-party add-on; inert fixture bytes');
+    assert.equal(readFileSync(path.join(nested, 'nested.addon64'), 'utf8'), 'stock ReShade does not scan nested folders');
+    assert.equal(nextIni.includes('@other-library.addon64'), false, 'ordinary foreign add-ons follow stock scanning');
+    assert.equal(readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8'), stagedIni,
+      'future registry changes do not rewrite an already prepared host');
+    assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), sourceIni);
+    assert.equal(execution.calls.length, 0);
+  } finally {
+    unsubscribe(); unsubscribeNext(); launcher.dispose(); nextLauncher.dispose(); execution.restore();
+  }
+});
+
+test('preload staging refuses a changed sealed INI before publishing its folder or spawning', async () => {
+  const fixture = await createAddonPreloadRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
+  const changedIni = Buffer.from('[ADDON]\r\nAddonPath=C:\\foreign\\addons\r\n');
+  writeFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini'), changedIni);
+  try {
+    await assert.rejects(launcher.prepare(), error => {
+      assert.equal(error.stage, 'runtime-staging');
+      assert.match(error.message, /reshadeConfigSha256|configuration|hash|match/i);
+      return true;
+    });
+    assert.equal(execution.calls.length, 0);
+    assert.deepEqual(readdirSync(fixture.runsRootDirectory), []);
+    assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), changedIni,
+      'the launcher never repairs or rewrites its source configuration');
+  } finally { launcher.dispose(); execution.restore(); }
+});
+
+test('preload staging preserves long registered filenames in the stable external scan directory', async () => {
+  const fixture = await createAddonPreloadRuntime({ addonSubdirectory: path.join(...Array(11).fill('long-profile-segment')) });
+  const registeredName = path.basename(fixture.installation.addonPath);
+  const sourceIni = readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini'));
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
+  let runDirectory;
+  const unsubscribe = launcher.onEvent(event => {
+    if (event.type === 'runtime-staged') runDirectory = event.runDirectory;
+  });
+  try {
+    await launcher.prepare();
+    const registeredPath = fixture.installation.addonPath;
+    assert.ok(registeredPath.length >= 300, 'exercise the complete registered DLL path beyond MAX_PATH');
+    assert.ok(path.join(runDirectory, 'ReShade64.dll').length < 260,
+      'this regression concerns registered filenames, independently of runtime base-path limits');
+    const scanDirectory = path.toNamespacedPath(fixture.addonDirectory);
+    const configured = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8')
+      .split(/\r?\n/).find(line => line.startsWith('AddonPath='));
+    assert.equal(configured, `AddonPath=${scanDirectory}`);
+    if (process.platform === 'win32') assert.ok(scanDirectory.startsWith('\\\\?\\'));
+    assert.deepEqual(readFileSync(path.join(scanDirectory, registeredName)),
+      readFileSync(fixture.installation.addonPath));
+    assert.deepEqual(readFileSync(path.join(fixture.runtimeDirectory, 'ReShade.ini')), sourceIni);
+    assert.equal(execution.calls.length, 0, 'preparation does not execute an injector');
+  } finally { unsubscribe(); launcher.dispose(); execution.restore(); }
+});
+
+test('preload staging escapes commas using the stock ReShade INI value convention', async () => {
+  const fixture = await createAddonPreloadRuntime({ addonSubdirectory: path.join('Company, Inc', 'Addons') });
+  const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
+  let runDirectory;
+  const unsubscribe = launcher.onEvent(event => {
+    if (event.type === 'runtime-staged') runDirectory = event.runDirectory;
+  });
+  try {
+    await launcher.prepare();
+    const configured = readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8')
+      .split(/\r?\n/).find(line => line.startsWith('AddonPath='));
+    assert.equal(configured, `AddonPath=${path.toNamespacedPath(fixture.addonDirectory).replaceAll(',', ',,')}`);
+    assert.equal(configured.slice('AddonPath='.length).replaceAll(',,', ','),
+      path.toNamespacedPath(fixture.addonDirectory));
+  } finally { unsubscribe(); launcher.dispose(); }
+});
+
+test('preload engine choice is retained through x86 handoff and future watcher invocation', { timeout: 10_000 }, async () => {
+  for (const lane of ['x86', 'future']) {
+    const fixture = await createAddonPreloadRuntime();
+    const execution = stubExecFile();
+    const config = createAddonPreloadConfig(fixture);
+    const launcher = new ReShadeOverlayLauncher(config);
+    try {
+      const target = lane === 'x86'
+        ? { processName: 'demo.exe', pid: 4242, executablePath: 'C:\\controlled-demos\\demo.exe' }
+        : { processName: 'demo.exe' };
+      const request = launchReShadeOverlay(launcher, target);
+      void request.catch(() => {});
+      await waitFor(() => execution.calls.length === 1);
+      const first = execution.calls[0];
+      assert.deepEqual(first.arguments.slice(-2), ['--preloaded-addon-name', path.basename(fixture.installation.addonPath)]);
+      if (lane === 'x86') {
+        first.callback(Object.assign(new Error('x86 target'), { code: 706 }),
+          architectureMismatchFor(4242, target.executablePath), '');
+        await waitFor(() => execution.calls.length === 2);
+        const second = execution.calls[1];
+        assert.equal(path.basename(second.executable), 'inject32.exe');
+        assert.deepEqual(second.arguments.slice(-2), ['--preloaded-addon-name', path.basename(fixture.installation.x86AddonPath)]);
+        second.callback(null, injectorSuccessAt(4242, target.executablePath), '');
+      } else {
+        first.emitStdout('ReShade process watcher armed.\n');
+        first.callback(null, injectorSuccessAt(4242, 'C:\\controlled-demos\\demo.exe'), '');
+      }
+      assert.equal((await request).injectorTargetPid, 4242);
+    } finally { launcher.dispose(); execution.restore(); }
+  }
+});
+
+test('preload engine choice survives the official startup wait and member-only retry', { timeout: 10_000 }, async () => {
+  const fixture = await createAddonPreloadRuntime();
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
+  const harness = createSessionHarness();
+  const image = 'C:\\controlled-demos\\demo.exe';
+  const runtime = 'C:\\existing-official\\dxgi.dll';
+  harness.session.authorizeTarget = async () => Object.assign(() => {}, {
+    disposition: 'participant', expectedCreationTime100ns: '100',
+  });
+  const preparation = stubExistingReShadePreparation(async () => officialPreparedAddonResult({
+    status: 'already-current', targetExecutablePath: image, reshadeModulePath: runtime,
+  }));
+  const inspection = stubLoadedOfficialReShadeInspection(async options => officialLoadedAddonInspectionResult({
+    targetExecutablePath: options.targetExecutablePath, reshadeModulePath: options.reshadeModulePath,
+    loadedAddonModulePath: options.loadedAddonModulePath,
+  }));
+  try {
+    const attachment = launcher.attach(harness.session, { processName: 'demo.exe', pid: 4242, executablePath: image });
+    void attachment.catch(() => {});
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(Object.assign(new Error('existing official host'), { code: 183 }),
+      injectorPreflightDiagnostic({ code: 'target-existing-reshade-installation', pid: 4242,
+        targetExecutablePath: image, modulePath: runtime, windowsErrorCode: 183 }) +
+      'ReShade injection not started.\n', '');
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, officialAddonSuccessFor(4242, runtime,
+      'C:\\existing-official\\electron_game_overlay.addon64', 'demo.exe', { targetExecutablePath: image }), '');
+    await waitFor(() => execution.calls.length === 3);
+    const expectedSelection = ['--preloaded-addon-name', path.basename(fixture.installation.addonPath)];
+    assert.deepEqual(execution.calls[0].arguments.slice(-2), expectedSelection);
+    assert.equal(execution.calls[1].arguments.includes('--preloaded-addon-name'), false,
+      'the official startup observer remains read-only');
+    assert.deepEqual(execution.calls[1].arguments.slice(-2), ['--wait-for-official-addon', '30000']);
+    assert.deepEqual(execution.calls[2].arguments.slice(-3), [...expectedSelection, '--addon-only']);
+    const addonModulePath = path.join(execution.calls[2].options.cwd, 'electron_game_overlay.addon64');
+    execution.calls[2].callback(null, 'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n' +
+      injectorResult({ pid: 4242, targetExecutablePath: image, runtimeMode: 'participant-addon',
+        runtimeModulePath: runtime, reshadeBasePath: 'C:\\existing-official', addonModulePath,
+        addonAbi: 1, memberProtocolVersion: 1 }), '');
+    harness.emitNative('game.process', { pid: 4242, path: image });
+    assert.equal((await attachment).addonModulePath, addonModulePath);
+  } finally { launcher.dispose(); preparation.restore(); inspection.restore(); execution.restore(); }
+});
+
+test('preload participant proof accepts exact registered bytes, retained snapshots and safe private-stage fallback only', async () => {
+  for (const variant of ['selected', 'selected-prefixed', 'retained-snapshot', 'private-fallback', 'other-app', 'changed-selected']) {
+    const fixture = await createAddonPreloadRuntime();
+    const execution = stubExecFile();
+    const launcher = new ReShadeOverlayLauncher(createAddonPreloadConfig(fixture));
+    const harness = createSessionHarness();
+    const image = 'C:\\controlled-demos\\demo.exe';
+    harness.session.authorizeTarget = async () => Object.assign(() => {}, {
+      disposition: 'participant', expectedCreationTime100ns: '100',
+    });
+    try {
+      const attachment = launcher.attach(harness.session, { processName: 'demo.exe', pid: 4242, executablePath: image });
+      const outcome = attachment.then(result => ({ result }), error => ({ error }));
+      await waitFor(() => execution.calls.length === 1);
+      const call = execution.calls[0];
+      const selected = fixture.installation.addonPath;
+      let addonModulePath = selected;
+      if (variant === 'selected-prefixed') addonModulePath = path.toNamespacedPath(selected);
+      if (variant === 'retained-snapshot') {
+        const previousHost = path.join(fixture.root, 'existing-host', 'preloaded-addons');
+        mkdirSync(previousHost, { recursive: true });
+        addonModulePath = path.join(previousHost, path.basename(selected));
+        writeFileSync(addonModulePath, readFileSync(selected));
+      }
+      if (variant === 'private-fallback') addonModulePath = path.join(call.options.cwd, 'electron_game_overlay.addon64');
+      if (variant === 'other-app') addonModulePath = fixture.otherInstallation.addonPath;
+      if (variant === 'changed-selected') writeFileSync(selected, Buffer.concat([readFileSync(selected), Buffer.from('altered')]));
+      call.callback(null, 'Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n' +
+        injectorResult({ pid: 4242, targetExecutablePath: image, runtimeMode: 'participant-addon',
+          runtimeModulePath: 'C:\\existing-host\\ReShade64.dll', reshadeBasePath: 'C:\\existing-host',
+          addonModulePath, addonAbi: 1, memberProtocolVersion: 1 }), '');
+      harness.emitNative('game.process', { pid: 4242, path: image });
+      const settled = await outcome;
+      if (variant === 'selected' || variant === 'selected-prefixed' || variant === 'retained-snapshot' || variant === 'private-fallback') {
+        assert.equal(settled.result.runtimeMode, 'participant-addon');
+        assert.equal(settled.result.addonModulePath, addonModulePath);
+      } else {
+        assert.equal(settled.error.diagnostic.code, 'injector-result-invalid');
+        assert.equal(settled.error.retrySafety, 'indeterminate');
+        assert.equal(execution.calls.length, 1, 'invalid evidence must not initiate a second attachment');
+      }
+    } finally { launcher.dispose(); execution.restore(); }
+  }
+});
+
+async function createAddonPreloadRuntime({ runtimeGeneration = 23, addonSubdirectory = 'shared-reshade-addons' } = {}) {
+  const fixture = createCooperativeRuntime();
+  const addonBuildId = JSON.parse(readFileSync(path.join(fixture.runtimeDirectory,
+    'electron_game_overlay_runtime.build.json'), 'utf8')).addonBuildId;
+  const packageRoot = path.join(fixture.root, 'installed-sdk');
+  mkdirSync(packageRoot);
+  writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+    name: 'electron-game-overlay', version: '0.1.0-rc.7',
+  }));
+  const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
+  const distribution = writeCooperativeDistribution(path.join(packageRoot, 'dist'), { addonBuildId, runtimeGeneration });
+  const runtimeDirectory = path.join(packageRoot, 'dist', 'runtime', 'win32-x64', 'reshade');
+  distribution.write('runtime/win32-x64/reshade/ReShade.ini',
+    '[GENERAL]\r\nPerformanceMode=1\r\n\r\n[ADDON]\r\nAddonPath=.\r\nDisabledAddons=@user-disabled.addon64\r\n\r\n[INPUT]\r\nKeyOverlay=0,0,0,0\r\n\r\n');
+  distribution.bindNativeHashes();
+  for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
+    rewriteRuntimePackageBuildStamp(runtimeDirectory, name, stamp => {
+      for (const key of Object.keys(stamp)) {
+        if (key.endsWith('Sha256')) stamp[key] = stamp[key].toUpperCase();
+      }
+    });
+  }
+  distribution.seal();
+  const preloadApi = require('../dist/lib/overlay-addon-preload.js');
+  const addonDirectory = path.join(fixture.root, addonSubdirectory);
+  const applicationId = 'com.example.preload-a';
+  const otherApplicationId = 'com.example.preload-b';
+  const installation = await preloadApi.registerOverlayAddonInstallation({ applicationId, addonDirectory, packageRoot });
+  const otherInstallation = await preloadApi.registerOverlayAddonInstallation({
+    applicationId: otherApplicationId, addonDirectory, packageRoot,
+  });
+  return { ...fixture, runtimeDirectory, packageRoot, addonDirectory, applicationId, otherApplicationId,
+    installation, otherInstallation };
+}
+
+function createAddonPreloadConfig(fixture, addonPreload = {}) {
+  return createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory, runsRootDirectory: fixture.runsRootDirectory,
+    addonPreload: { applicationId: fixture.applicationId, addonDirectory: fixture.addonDirectory, ...addonPreload },
+  });
+}

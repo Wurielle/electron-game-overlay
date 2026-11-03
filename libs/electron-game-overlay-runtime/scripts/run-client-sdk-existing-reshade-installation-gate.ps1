@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Reuse the controlled-host, process-discovery, cleanup, window, and native
 # input helpers without running the normal successful-injection gate.
@@ -99,6 +100,33 @@ function Assert-ExactTargetProcess {
         return
     }
     throw "Controlled target PID $ProcessId came from an unexpected path/command: path=$($Target.ExecutablePath) command=$($Target.CommandLine)"
+}
+
+function Assert-InstanceBoundInjectorArguments {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$ProcessName,
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][string]$CreationTime100ns
+    )
+
+    [uint64]$ParsedCreationTime = 0
+    if ($ProcessId -le 0 -or
+        $CreationTime100ns -cnotmatch '^[1-9][0-9]{0,19}$' -or
+        -not [uint64]::TryParse($CreationTime100ns, [ref]$ParsedCreationTime)) {
+        throw "The retained controlled target identity is invalid."
+    }
+    $Expected = @(
+        $ProcessName, "--pid", [string]$ProcessId,
+        "--expected-creation-time-100ns", $CreationTime100ns
+    )
+    if ($Arguments.Count -ne 5 -or
+        @($Arguments | Where-Object { $_ -isnot [string] }).Count -ne 0 -or
+        ($Arguments | ConvertTo-Json -Compress) -cne
+            ($Expected | ConvertTo-Json -Compress)) {
+        throw "The production SDK did not bind the exact controlled PID and creation FILETIME: $($Arguments | ConvertTo-Json -Compress)"
+    }
+    return $Expected
 }
 
 function Get-DirectoryManifest {
@@ -571,8 +599,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -581,6 +609,8 @@ try {
         -WorkingDirectory $TargetDirectory `
         -PassThru
     $HostPid = $HostProcess.Id
+    $HostCreationTime100ns = $HostProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
     Assert-ExactTargetProcess `
         -ProcessId $HostPid `
         -ExpectedPath $TargetExecutablePath
@@ -688,11 +718,13 @@ try {
         -Deadline $AttachDeadline
     [object[]]$InjectorArguments =
         $InjectorStarted.Groups["arguments"].Value | ConvertFrom-Json
-    $ExpectedInjectorArguments = @($HostName, "--pid", [string]$HostPid)
-    if (($InjectorArguments | ConvertTo-Json -Compress) -cne
-        ($ExpectedInjectorArguments | ConvertTo-Json -Compress)) {
-        throw "The production SDK did not invoke the injector with the exact controlled PID: $($InjectorArguments | ConvertTo-Json -Compress)"
-    }
+    $ExpectedInjectorArguments = @(
+        Assert-InstanceBoundInjectorArguments `
+            -Arguments $InjectorArguments `
+            -ProcessName $HostName `
+            -ProcessId $HostPid `
+            -CreationTime100ns $HostCreationTime100ns
+    )
 
     $InjectorFailed = Wait-ForLogRegex `
         -Path $ClientStderr `
@@ -873,6 +905,7 @@ try {
         Backend = "d3d11"
         Case = "exact-pid-existing-reshade-installation-no-break"
         TargetProcessId = $HostPid
+        TargetCreationTime100ns = $HostCreationTime100ns
         TargetExecutablePath = $TargetExecutablePath
         OfficialRuntime = [pscustomobject]@{
             SourcePath = $ResolvedOfficialRuntime
@@ -922,10 +955,7 @@ finally {
     }
     finally {
         foreach ($VariableName in $ControlledEnvironmentVariables) {
-            [Environment]::SetEnvironmentVariable(
-                $VariableName,
-                $PreviousEnvironment[$VariableName],
-                "Process")
+            Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
         }
     }
 }

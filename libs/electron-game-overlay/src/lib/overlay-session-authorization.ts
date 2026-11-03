@@ -34,11 +34,18 @@ type TargetAuthorizer = (
   expectedExecutablePath?: string,
   runtimeProvider?: NativeRuntimeProviderMetadata,
   signal?: AbortSignal,
+  expectedCreationTime100ns?: string,
 ) => Promise<Disposable | OverlaySessionTargetAuthorization>;
-type GlobalTargetAuthorizer = () => Promise<Disposable>;
+type GlobalTargetAuthorizer = (discoveryPath?: string) => Promise<Disposable>;
 
 /** @internal */
 export const targetAuthorizers = new WeakMap<object, TargetAuthorizer>();
+/** @internal Keeps host identity queries outside the Electron-free transport. */
+export const targetIdentityRequirements = new WeakMap<object, boolean>();
+/** @internal */
+export function overlaySessionRequiresTargetIdentity(session: ReShadeAttachmentSession): boolean {
+  return targetIdentityRequirements.get(session) === true;
+}
 /** @internal */
 export const globalTargetAuthorizers = new WeakMap<
   object,
@@ -53,6 +60,7 @@ export async function authorizeOverlaySessionTarget(
   expectedExecutablePath?: string,
   runtimeProvider?: NativeRuntimeProviderMetadata,
   signal?: AbortSignal,
+  expectedCreationTime100ns?: string,
 ): Promise<OverlaySessionTargetAuthorization> {
   const testHarness = session as unknown as {
     authorizeTarget?: TargetAuthorizer;
@@ -72,6 +80,7 @@ export async function authorizeOverlaySessionTarget(
       expectedExecutablePath,
       runtimeProvider,
       signal,
+      expectedCreationTime100ns,
     ),
   );
 }
@@ -79,6 +88,7 @@ export async function authorizeOverlaySessionTarget(
 /** @internal */
 export async function authorizeOverlaySessionGlobalTarget(
   session: ReShadeAttachmentSession,
+  discoveryPath?: string,
 ): Promise<Disposable> {
   const testHarness = session as unknown as {
     authorizeGlobalTarget?: GlobalTargetAuthorizer;
@@ -91,7 +101,7 @@ export async function authorizeOverlaySessionGlobalTarget(
   if (!authorizeTarget) {
     throw new TypeError('invalid OverlaySession instance');
   }
-  return authorizeTarget();
+  return authorizeTarget(discoveryPath);
 }
 
 /** @internal */
@@ -117,8 +127,8 @@ export function normalizeSessionTargetAuthorization(
       authorization as Partial<OverlaySessionTargetAuthorization>;
     return createSessionTargetAuthorization(
       authorization,
-      enriched.disposition === 'joined-existing'
-        ? 'joined-existing'
+      enriched.disposition === 'joined-existing' || enriched.disposition === 'participant'
+        ? enriched.disposition
         : 'injection-owner',
       enriched.target,
       enriched.expectedCreationTime100ns,

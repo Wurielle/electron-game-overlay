@@ -6,35 +6,24 @@ const path = require('node:path');
 const { copyProductionGraph, validateClientAssets, validatePayloads } = require('../scripts/package-demo.cjs');
 
 function sdkFixture(root) {
-  const write = (name, data) => { const file = path.join(root, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data); };
-  const binary = Buffer.alloc(68); binary.write('MZ'); binary.writeUInt32LE(64, 60); binary.write('PE\0\0', 64);
-  write('package.json', JSON.stringify({ name: 'electron-game-overlay', version: '0.0.1', main: './dist/index.js' }));
-  for (const name of ['index.js', 'broker.js']) write(`dist/${name}`, 'throw new Error("must not execute SDK while packaging")');
-  const runtime = 'dist/runtime/win32-x64/reshade';
-  write(`${runtime}/ReShade.ini`, 'fixture');
-  for (const bits of [32, 64]) {
-    const suffix = bits === 64 ? '' : '32';
-    for (const name of [`electron_game_overlay.addon${bits}`, `electron_game_overlay_reshade_manager${suffix}.exe`, `inject${suffix}.exe`, `ReShade${bits}.dll`]) write(`${runtime}/${name}`, binary);
-    for (const name of [`electron_game_overlay_runtime${suffix}.build.json`, `ReShade${bits}.build.json`]) write(`${runtime}/${name}`, '{}');
-  }
-  const files = [];
-  for (const [name, bytes] of [['electron-game-overlay-broker.exe', binary], ['node_modules/tslib/tslib.js', Buffer.from('sealed dependency')], ['licenses/node.txt', Buffer.from('license')]]) {
-    write(`dist/broker/win32-x64/${name}`, bytes);
-    files.push({ path: name, size: bytes.length, sha256: require('node:crypto').createHash('sha256').update(bytes).digest('hex') });
-  }
-  write('dist/broker/win32-x64/broker-manifest.json', JSON.stringify({ schema: 1, platform: 'win32', arch: 'x64', executable: 'electron-game-overlay-broker.exe', files }));
+  const { writeCooperativeDistribution } = require('../../../libs/electron-game-overlay/tests/helpers/cooperative-package-fixture.cjs');
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.0.1', main: './dist/index.js' }));
+  return writeCooperativeDistribution(path.join(root, 'dist'), { packageVersion: '0.0.1' });
 }
 
 test('explicit SDK replaces only the embedded SDK preserving its metadata, bytes and sealed dependencies', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-sdk-revision-'));
   try {
     const source = path.join(root, 'revision'), installed = path.join(root, 'node_modules/electron-game-overlay'), output = path.join(root, 'out');
-    sdkFixture(source); sdkFixture(installed);
+    const revision = sdkFixture(source); sdkFixture(installed);
     fs.writeFileSync(path.join(source, 'dist/index.js'), 'module.exports="different compiled revision"');
+    revision.seal();
     const other = path.join(root, 'node_modules/tslib'); fs.mkdirSync(other, { recursive: true }); fs.writeFileSync(path.join(other, 'package.json'), '{"version":"2.8.1"}');
     copyProductionGraph(root, output, { dependencies: { 'electron-game-overlay': { path: installed }, tslib: { path: other } } }, source);
     const embedded = path.join(output, 'node_modules/electron-game-overlay');
-    for (const name of ['package.json', 'dist/index.js', 'dist/broker/win32-x64/node_modules/tslib/tslib.js', 'dist/runtime/win32-x64/reshade/electron_game_overlay.addon64']) assert.deepEqual(fs.readFileSync(path.join(embedded, name)), fs.readFileSync(path.join(source, name)));
+    for (const name of ['package.json', 'dist/index.js', 'dist/node_modules/tslib/tslib.js', 'dist/overlay-manifest.json', 'dist/runtime/win32-x64/reshade/electron_game_overlay.addon64']) assert.deepEqual(fs.readFileSync(path.join(embedded, name)), fs.readFileSync(path.join(source, name)));
+    assert.equal(fs.existsSync(path.join(embedded, 'dist/broker')), false);
     assert.equal(fs.readFileSync(path.join(output, 'node_modules/tslib/package.json'), 'utf8'), '{"version":"2.8.1"}');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
@@ -49,7 +38,7 @@ test('explicit SDK rejects invalid metadata, output overlap, native payload and 
       () => fs.writeFileSync(path.join(source, 'package.json'), '{"name":"electron-game-overlay","version":"fake"}'),
       () => fs.writeFileSync(path.join(source, 'package.json'), '{"name":"electron-game-overlay","version":"0.0.1","main":"../outside.js"}'),
       () => fs.unlinkSync(path.join(source, 'dist/runtime/win32-x64/reshade/electron_game_overlay.addon64')),
-      () => fs.writeFileSync(path.join(source, 'dist/broker/win32-x64/node_modules/tslib/tslib.js'), 'tampered'),
+      () => fs.writeFileSync(path.join(source, 'dist/node_modules/tslib/tslib.js'), 'tampered'),
       () => fs.unlinkSync(path.join(source, 'dist/index.js')),
     ]) {
       sdkFixture(source); mutate();
@@ -125,8 +114,9 @@ test('complete packaging fixture wires explicit revision and entry while default
     const write = (name, data) => { const file = path.join(root, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data); };
     const binary = Buffer.alloc(68); binary.write('MZ'); binary.writeUInt32LE(64, 60); binary.write('PE\0\0', 64);
     const installed = path.join(root, 'node_modules/electron-game-overlay'), revision = path.join(root, 'revision');
-    sdkFixture(installed); sdkFixture(revision);
+    sdkFixture(installed); const revisionFixture = sdkFixture(revision);
     fs.writeFileSync(path.join(revision, 'dist/index.js'), 'module.exports="independent compiled bytes"');
+    revisionFixture.seal();
     const graph = { dependencies: {} };
     for (const name of ['electron-game-overlay', 'koffi', 'wql-process-monitor']) graph.dependencies[name] = { version: name === 'electron-game-overlay' ? '0.0.1' : '1.0.0', path: path.join(root, 'node_modules', name) };
     write('package.json', JSON.stringify({ version: '1.0.0', dependencies: Object.fromEntries(Object.keys(graph.dependencies).map(name => [name, '*'])) }));
@@ -137,8 +127,10 @@ test('complete packaging fixture wires explicit revision and entry while default
     write('apps/client/dist/index/index.html', '<html></html>');
     for (const name of ['broker-recovery-diagnostic.cjs', 'windows-broker-identity.cjs']) write(`apps/client/scripts/${name}`, `throw new Error('copy-only fixture: ${name}');`);
     write('libs/electron-game-overlay-runtime/scripts/test-cases/broker-recovery-diagnostic.cmd', fs.readFileSync(path.resolve(__dirname, '../../..', 'libs/electron-game-overlay-runtime/scripts/test-cases/broker-recovery-diagnostic.cmd')));
+    const trustedValidator = require('../../../libs/electron-game-overlay/dist/lib/overlay-package-manifest.js');
     Module._load = function(id, parent, isMain) {
-      if (id === 'node:child_process') return { execFileSync: () => JSON.stringify(graph) };
+      if (typeof id === 'string' && id.replaceAll('\\', '/').endsWith('dist/lib/overlay-package-manifest.js')) return trustedValidator;
+      if (id === 'node:child_process') return { execFileSync: (file) => file === path.join(root, 'node.exe') ? `v${process.versions.node}\n` : JSON.stringify(graph) };
       return original.call(this, id, parent, isMain);
     };
     const filename = path.join(root, 'apps/client/scripts/package-demo.cjs');
@@ -172,8 +164,34 @@ test('packaging fixture copies real runtime bytes and license, not Windows execu
     copyNodeRuntime(root, source, license);
     assert.deepEqual(fs.readFileSync(path.join(root, 'resources/node/node.exe')), binary);
     assert.equal(fs.readFileSync(path.join(root, 'resources/node/LICENSE'), 'utf8'), 'fixture Node license');
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'resources/node/runtime.json'), 'utf8'));
+    assert.equal(manifest.kind, 'electron-game-overlay-watcher-runtime');
+    assert.equal(manifest.version, process.versions.node);
     fs.writeFileSync(source, 'not PE');
     assert.throws(() => copyNodeRuntime(root, source, license), /PE/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('watcher runtime has independent version and file integrity without a broker distribution', () => {
+  const { copyNodeRuntime, supportedNodeVersion } = require('../scripts/package-demo.cjs');
+  const { verifyBundledNodeRuntime } = require('../scripts/smoke-packaged-demo.cjs');
+  for (const version of ['20.19.0', '20.20.1', '22.12.0', '24.13.1', '26.12.1']) assert.equal(supportedNodeVersion(version), true, version);
+  for (const version of ['20.18.0', '21.9.0', '22.11.0', '24', 'v24.13.1', '24.13.1-alpha.1']) assert.equal(supportedNodeVersion(version), false, version);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ego-watcher-runtime-'));
+  try {
+    const binary = Buffer.alloc(68); binary.write('MZ'); binary.writeUInt32LE(64, 60); binary.write('PE\0\0', 64);
+    const source = path.join(root, 'source.exe'), license = path.join(root, 'source-license');
+    fs.writeFileSync(source, binary); fs.writeFileSync(license, 'separate runtime license');
+    assert.throws(() => copyNodeRuntime(root, source, path.join(root, 'missing-license'), '24.13.1'), /ENOENT|missing/i);
+    assert.equal(fs.existsSync(path.join(root, 'resources')), false);
+    copyNodeRuntime(root, source, license, '24.13.1');
+    assert.equal(verifyBundledNodeRuntime(root).version, '24.13.1');
+    assert.equal(fs.existsSync(path.join(root, 'resources/app/node_modules/electron-game-overlay/dist/broker')), false);
+    fs.appendFileSync(path.join(root, 'resources/node/node.exe'), 'altered');
+    assert.throws(() => verifyBundledNodeRuntime(root), /integrity/);
+    copyNodeRuntime(root, source, license, '24.13.1');
+    fs.appendFileSync(path.join(root, 'resources/node/LICENSE'), 'altered');
+    assert.throws(() => verifyBundledNodeRuntime(root), /integrity/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -248,7 +266,7 @@ test('production closure dereferences workspace, preserves nested versions, excl
     const sdk = path.join(root, 'sdk');
     write(path.join(sdk, 'package.json'), '{"name":"sdk"}');
     write(path.join(sdk, 'dist/index.js'), 'module.exports=1');
-    write(path.join(sdk, 'dist/broker/win32-x64/node_modules/tslib/tslib.js'), 'sealed broker dependency');
+    write(path.join(sdk, 'dist/node_modules/tslib/tslib.js'), 'sealed SDK dependency');
     write(path.join(sdk, 'src/dev.ts'), 'not shipped');
     fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
     fs.symlinkSync(sdk, path.join(root, 'node_modules/sdk'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -262,8 +280,8 @@ test('production closure dereferences workspace, preserves nested versions, excl
     assert.equal(fs.lstatSync(path.join(output, 'node_modules/sdk')).isSymbolicLink(), false);
     assert.equal(fs.existsSync(path.join(output, 'node_modules/sdk/src')), false);
     assert.equal(fs.existsSync(path.join(output, 'node_modules/sdk/dist/index.js')), true);
-    assert.equal(fs.existsSync(path.join(output, 'node_modules/sdk/dist/broker/win32-x64/node_modules/tslib/tslib.js')), true, 'sealed broker dependencies must survive production-tree filtering');
-    assert.equal(fs.readFileSync(path.join(output, 'node_modules/sdk/dist/broker/win32-x64/node_modules/tslib/tslib.js'), 'utf8'), 'sealed broker dependency');
+    assert.equal(fs.existsSync(path.join(output, 'node_modules/sdk/dist/node_modules/tslib/tslib.js')), true, 'sealed SDK dependencies must survive production-tree filtering');
+    assert.equal(fs.readFileSync(path.join(output, 'node_modules/sdk/dist/node_modules/tslib/tslib.js'), 'utf8'), 'sealed SDK dependency');
     assert.equal(JSON.parse(fs.readFileSync(path.join(output, 'node_modules/a/node_modules/b/package.json'))).version, '2');
     assert.equal(fs.existsSync(path.join(output, 'node_modules/a/node_modules/dev')), false);
     assert.equal(fs.existsSync(path.join(output, 'node_modules/electron')), false);

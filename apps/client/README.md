@@ -76,5 +76,38 @@ Building the client first builds `electron-game-overlay` and stages its x64/x86
 runtime package. The client itself contains no injector or injected payload;
 all native behavior comes through the public SDK.
 
+## Package the portable demo
+
+The ordinary SDK/client build seals the application-private engine distribution
+in `dist/overlay-manifest.json`; it does not build or require a standalone
+broker executable. Portable demo packaging verifies that seal and both native
+architectures before copying the SDK.
+
+The Steam observer still needs its own Node.js executable in the portable
+bundle. Supply the matching Node.js license independently from the SDK:
+
+```powershell
+node apps/client/scripts/package-demo.cjs `
+  --output 'C:/absolute/path/to/repository/artifacts/demo' `
+  --node-license 'C:/path/to/the/current/node-distribution/LICENSE'
+```
+
+By default the packager copies the Node executable running that command. Use
+`--node-runtime 'C:/path/to/node.exe'` to supply another supported runtime. It
+checks the executable's version, records executable/license hashes in
+`resources/node/runtime.json`, and refuses a missing license. The required Node
+range matches the workspace: `^20.19.0 || >=22.12.0`.
+
+The bounded packaged-runtime smoke uses the bundled observer runtime and its
+recorded version rather than a broker's Node version:
+
+```powershell
+node apps/client/scripts/smoke-packaged-demo.cjs `
+  --package 'C:/absolute/path/to/repository/artifacts/demo'
+```
+
+This validates packaging and a genuine Electron/observer startup. It is not
+evidence of game injection or overlay input/rendering acceptance.
+
 Human-facing runtime gates are indexed by their own launchers under
 [`libs/electron-game-overlay-runtime/scripts/test-cases`](../../libs/electron-game-overlay-runtime/scripts/test-cases).

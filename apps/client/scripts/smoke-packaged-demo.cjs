@@ -3,7 +3,19 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { parseArgs } = require('node:util');
-const { validateClientAssets, validatePayloads } = require('./package-demo.cjs');
+const { validateClientAssets, validatePayloads, supportedNodeVersion } = require('./package-demo.cjs');
+
+function verifyBundledNodeRuntime(output) {
+  const directory = path.join(output, 'resources/node');
+  const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'runtime.json'), 'utf8'));
+  if (manifest.schemaVersion !== 1 || manifest.kind !== 'electron-game-overlay-watcher-runtime' || !supportedNodeVersion(manifest.version)) throw new Error('Invalid bundled watcher runtime manifest');
+  for (const [file, field] of [['node.exe', 'executableSha256'], ['LICENSE', 'licenseSha256']]) {
+    const target = path.join(directory, file);
+    const stat = fs.lstatSync(target);
+    if (!stat.isFile() || stat.isSymbolicLink() || !stat.size || !/^[a-f0-9]{64}$/.test(manifest[field]) || createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== manifest[field]) throw new Error(`Bundled watcher runtime integrity mismatch: ${file}`);
+  }
+  return manifest;
+}
 
 function probeWatcher(app, node) {
   const env = { ...process.env };
@@ -133,7 +145,6 @@ app.whenReady().then(async () => {
   assert.ok(Number(process.versions.modules) > 0);
   assert.ok(Number(process.versions.napi) >= 8);
   assert.equal(typeof load('electron-game-overlay').ElectronGameOverlay, 'function');
-  assert.equal(typeof load('electron-game-overlay/broker').registerOverlayBrokerInstallation, 'function');
   const koffi = load('koffi');
   const kernel = koffi.load('kernel32.dll');
   const pid = kernel.func('uint32_t __stdcall GetCurrentProcessId()')();
@@ -148,17 +159,14 @@ app.whenReady().then(async () => {
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (/^(NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE)$/i.test(key)) delete env[key];
     const child = spawnSync(original, [work], { cwd: work, env, timeout: 45000, encoding: 'utf8', windowsHide: true });
-    const broker = spawnSync(path.join(app, 'node_modules/electron-game-overlay/dist/broker/win32-x64/electron-game-overlay-broker.exe'), ['--help'], { cwd: work, env: { ...env, PATH: '' }, timeout: 15000, encoding: 'utf8', windowsHide: true });
-    if (broker.error || broker.status !== 0 || !/Usage:/.test(broker.stdout || '')) throw new Error('Genuine sealed broker --help probe failed (service was not requested)');
-    report.brokerHelpExecuted = true;
     if (fs.existsSync(resultFile)) report.runtime = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
     if (child.error || child.status !== 0 || report.runtime?.status !== 'passed') throw new Error(`Bounded Electron runtime probe failed: ${child.error?.message || `exit ${child.status}`}`);
     report.stage = 'genuine-packaged-watcher'; save();
     const node = path.join(output, 'resources/node/node.exe');
-    if (process.versions.node !== '26.12.1' || hash(node) !== hash(process.execPath)) throw new Error('Bundled Node differs from pinned packaging runtime');
-    if (hash(path.join(output, 'resources/node/LICENSE')) !== hash(path.join(app, 'node_modules/electron-game-overlay/dist/broker/win32-x64/licenses/node.txt'))) throw new Error('Bundled Node license mismatch');
+    const watcherRuntime = verifyBundledNodeRuntime(output);
     const version = spawnSync(node, ['--version'], { env: { PATH: '' }, timeout: 5000, encoding: 'utf8', windowsHide: true });
-    if (version.status !== 0 || version.stdout.trim() !== 'v26.12.1') throw new Error('Bundled Node version mismatch');
+    if (version.error || version.status !== 0 || version.stdout.trim() !== `v${watcherRuntime.version}`) throw new Error('Bundled Node version mismatch');
+    report.watcherRuntimeVersion = watcherRuntime.version;
     report.watcher = await probeWatcher(app, node);
     report.stage = 'genuine-packaged-recovery-diagnostic'; save();
     report.recoveryDiagnostic = probeRecoveryDiagnostic(app, node, path.join(output, 'windows-broker-identity.json'));
@@ -167,7 +175,7 @@ app.whenReady().then(async () => {
   } catch (error) { report.error = error.message; save(); throw error; }
   finally { if (work) fs.rmSync(work, { recursive: true, force: true }); }
 }
-module.exports = { smoke, probeWatcher, probeRecoveryDiagnostic };
+module.exports = { smoke, probeWatcher, probeRecoveryDiagnostic, verifyBundledNodeRuntime };
 if (require.main === module) {
   (async () => {
   try {

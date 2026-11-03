@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "recordedDate": "2026-11-01",
+  "scope": "first-device-loss diagnostic tooling",
+  "genuineGpuLossObserved": false,
+  "gpuRootCauseClaimed": false,
+  "controlledNoFault": {
+    "gateResult": "D3D11_REAL_CLIENT_SDK_GATE_PASS",
+    "gateEvidence": "build/electron-game-overlay-runtime/client-sdk-d3d11-legacy-20261101-172747/result.txt",
+    "monitorRoot": "build/device-loss-monitor/d3d11-20261101-172746-ec8284c0",
+    "cycles": [
+      {
+        "monitor": "385340a2937e4584b1a19c646908c5ca",
+        "targetProcessId": 42496,
+        "targetCreationTime100ns": "134380240693415672",
+        "targetExecutableWithinGate": "attempt-1/target/d3d11_overlay_test_host.exe",
+        "armedAtUtc": "2026-11-01T16:27:51.6817818Z",
+        "finishedAtUtc": "2026-11-01T16:27:57.2156924Z",
+        "nonceAndIdentityMatched": true,
+        "eventLogStatus": "watching",
+        "eventBaselineRecordId": 10740,
+        "status": "target-exited-without-observed-device-loss",
+        "stderrEmpty": true,
+        "dumpCaptured": false
+      },
+      {
+        "monitor": "df7054c5080447dcbac020085342edcb",
+        "targetProcessId": 45136,
+        "targetCreationTime100ns": "134380240801948941",
+        "targetExecutableWithinGate": "attempt-2/target/d3d11_overlay_test_host.exe",
+        "armedAtUtc": "2026-11-01T16:28:02.2538178Z",
+        "finishedAtUtc": "2026-11-01T16:28:07.5007361Z",
+        "nonceAndIdentityMatched": true,
+        "eventLogStatus": "watching",
+        "eventBaselineRecordId": 10741,
+        "status": "target-exited-without-observed-device-loss",
+        "stderrEmpty": true,
+        "dumpCaptured": false
+      }
+    ]
+  },
+  "syntheticCapture": {
+    "evidence": "build/device-loss-monitor/synthetic-self-test-20261101-175819-d8587a9e/self-test-report.json",
+    "monitor": "89ff431c6e76495cb13cd6e595c603e7",
+    "status": "synthetic-self-test-passed",
+    "synthetic": true,
+    "genuineGpuLossObserved": false,
+    "uiUsed": false,
+    "targetSelection": "retained-owned-Start-Process-only",
+    "targetExecutable": "pwsh.exe",
+    "targetProcessId": 40688,
+    "targetCreationTime100ns": "134380258991730600",
+    "wrongPidAndCreationMarkersIgnored": true,
+    "trigger": "identity-bound-device-health",
+    "markerStatus": "device-hung",
+    "firstFaultDetectionMilliseconds": 47.5568,
+    "dumpStartMilliseconds": 55.6284,
+    "dumpWriteMilliseconds": 541.8064,
+    "dumpComplete": true,
+    "dumpWin32Error": 0,
+    "dumpFlags": 659809,
+    "dumpBytes": 22147563,
+    "mdmpSignatureVerified": true,
+    "dumpSha256": "25a244feebac5955066d70a0ae9109393f52f8dfa476a5b3042fc3bed530a218",
+    "childAliveUntilOwnedCleanup": true,
+    "ownedChildExitObserved": true,
+    "forcedCancellationExercised": false,
+    "exhaustedDiskExercised": false
+  },
+  "retainedFailedAttempt": {
+    "evidence": "build/device-loss-monitor/synthetic-self-test-20261101-175702-870ab963/self-test-report.json",
+    "status": "synthetic-self-test-failed",
+    "reason": "harness lost subsecond DateTime precision through local-culture Parse(object)",
+    "completeDumpWasProduced": true,
+    "failedReportRewritten": false,
+    "thresholdsRelaxed": false
+  },
+  "pureTests": {
+    "command": "node --test libs/electron-game-overlay-runtime/tests/device-loss-monitor.test.cjs",
+    "passed": 3,
+    "actualDumpExecutedByPureTests": false
+  }
+}

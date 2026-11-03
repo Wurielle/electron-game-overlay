@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-01",
+  "fixture": "input-frame-consumer-console",
+  "scope": "Pure explicit membership/current-token helper; excludes host integration, GUI, native key polling and real-game acceptance",
+  "compiler": "MSVC 19.44.35223.0",
+  "helperNormalizedSha256": "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0",
+  "fixtureSourceSha256": "67C2780BEEAA43A209AFCFF889133959C8259BDAD4D3083BB4502768C5D12413",
+  "runs": [
+    {
+      "architecture": "x64",
+      "configuration": "Release",
+      "exitCode": 0,
+      "binarySha256": "9603E9C1F458250F90882158F77678A21771F0EB199D1F872DD08C77E97E4D46",
+      "result": {
+        "status": "passed",
+        "deterministicCases": 7,
+        "randomSeeds": 8,
+        "randomSteps": 40000,
+        "assertions": 835573
+      }
+    },
+    {
+      "architecture": "Win32",
+      "configuration": "Release",
+      "exitCode": 0,
+      "binarySha256": "9802B8D30782AC24E7A1443A56EC3FBE6130A22FEA66E71320FA2CC89CB93CBE",
+      "result": {
+        "status": "passed",
+        "deterministicCases": 7,
+        "randomSeeds": 8,
+        "randomSteps": 40000,
+        "assertions": 835573
+      }
+    }
+  ]
+}

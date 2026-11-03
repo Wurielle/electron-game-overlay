@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "recordedDate": "2026-11-01",
+  "status": "passed",
+  "scope": "Actual public ReShade API console regression; one D3D12 device and two exact graphics queues. No window, swap chain, game, overlay, input, GPU fault or performance acceptance claim.",
+  "finding": "Initial device-level uploads could select another queue. The production helper uses an explicit mapped upload buffer and the exact runtime command list, then waits on that queue before freeing staging.",
+  "historicalGunFrogD3D11Hang": "Unassigned. This D3D12-specific defect and regression do not explain that earlier device-loss observation.",
+  "helperSha256": "b2c1fbc416fcfe1eb37b4a7973d15513cba2aab59ad05a1bb0bc3112a89f20ff",
+  "transfer": {
+    "format": "RGBA8 UNORM",
+    "width": 67,
+    "height": 3,
+    "sourceRowPitch": 280,
+    "gpuTransferRowPitch": 512,
+    "allPixelsCompared": true
+  },
+  "runs": [
+    {
+      "architecture": "x64",
+      "status": "passed",
+      "adapter": "NVIDIA GeForce GTX 1080",
+      "softwareAdapter": false,
+      "runtimeSha256": "68fe4c27addaabd842ef0d179756916a535adca7b2223ee9a559a2d748be3baf",
+      "fixtureExecutableSha256": "f8112e7eb87ec666ba9cc357a7655288fdd14b854ded86f7457b0a7200a820e8",
+      "sourceEvidence": "build/d3d12-initial-upload-queue/run-065b8317cc5c47f2bd38fb8720971dc4/evidence.json",
+      "sourceEvidenceSha256": "6e3ace7ed3bae0aa9d1a46ef449ea74eb5d9ae26fad4f8361f8e04c868278376",
+      "cases": [
+        {
+          "kind": "exact-runtime-queue-production-helper",
+          "processId": 46484,
+          "creationTime100ns": "134380267394823367",
+          "uploadMilliseconds": 3,
+          "foreignQueueInitiallyBlocked": true,
+          "foreignCompletionBeforeExplicitRelease": 0,
+          "watchdogReleasedGate": false,
+          "negativeControlDetected": false,
+          "uploadCompletedWhileForeignQueueBlocked": true,
+          "allGpuPixelsMatch": true,
+          "deviceHealthy": true
+        },
+        {
+          "kind": "legacy-device-upload-negative-control",
+          "processId": 47716,
+          "creationTime100ns": "134380267411954525",
+          "uploadMilliseconds": 3012,
+          "foreignQueueInitiallyBlocked": true,
+          "foreignCompletionBeforeExplicitRelease": 1,
+          "watchdogReleasedGate": true,
+          "negativeControlDetected": true,
+          "uploadCompletedWhileForeignQueueBlocked": false,
+          "allGpuPixelsMatch": true,
+          "deviceHealthy": true
+        }
+      ]
+    },
+    {
+      "architecture": "Win32",
+      "status": "passed",
+      "adapter": "NVIDIA GeForce GTX 1080",
+      "softwareAdapter": false,
+      "runtimeSha256": "52a14df52daf21a3808f02111fd4eb674181f4db277484f3dc3854eb561e364e",
+      "fixtureExecutableSha256": "49e7982d564a3b8e91917a97cfc199f3fdeb38a2b80446f99522e1eafbf687ec",
+      "sourceEvidence": "build/d3d12-initial-upload-queue/run-4e4398fafc2f44119eba3be2d29ebc6b/evidence.json",
+      "sourceEvidenceSha256": "172664a239b4a38f10cb362964d49ca201f9169df4699436e7ea6b1fb442e16c",
+      "cases": [
+        {
+          "kind": "exact-runtime-queue-production-helper",
+          "processId": 49140,
+          "creationTime100ns": "134380267704308702",
+          "uploadMilliseconds": 4,
+          "foreignQueueInitiallyBlocked": true,
+          "foreignCompletionBeforeExplicitRelease": 0,
+          "watchdogReleasedGate": false,
+          "negativeControlDetected": false,
+          "uploadCompletedWhileForeignQueueBlocked": true,
+          "allGpuPixelsMatch": true,
+          "deviceHealthy": true
+        },
+        {
+          "kind": "legacy-device-upload-negative-control",
+          "processId": 13484,
+          "creationTime100ns": "134380267721215248",
+          "uploadMilliseconds": 3009,
+          "foreignQueueInitiallyBlocked": true,
+          "foreignCompletionBeforeExplicitRelease": 1,
+          "watchdogReleasedGate": true,
+          "negativeControlDetected": true,
+          "uploadCompletedWhileForeignQueueBlocked": false,
+          "allGpuPixelsMatch": true,
+          "deviceHealthy": true
+        }
+      ]
+    }
+  ]
+}

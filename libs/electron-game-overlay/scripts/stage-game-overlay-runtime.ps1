@@ -76,10 +76,10 @@ $PlatformRuntimeDirectory = Join-Path `
     "win32-x64"
 $DestinationDirectory = Join-Path $PlatformRuntimeDirectory "reshade"
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "12EE788081A34E00B10862242DF38893"
+$ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 7
+$ExpectedRuntimeGeneration = 23
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
@@ -133,10 +133,66 @@ $ExpectedPatchProvenance = [ordered]@{
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-name-watcher-ready.patch"
     injectorProcessPolicyPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-process-policy.patch"
+    injectorCooperativeMembersPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-cooperative-members.patch"
+    ownedLateD3d11PatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-owned-late-d3d11.patch"
+    injectorFirstHostResultPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-first-host-result.patch"
+    injectorAddonPreloadPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-preloaded-addon.patch"
+    injectorPreloadedFirstHostPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-preloaded-first-host.patch"
+    injectorPreloadLongPathPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-preload-long-path.patch"
+    ownedLateD3d11AdapterReadyLongPathPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-owned-late-d3d11-adapter-ready-long-path.patch"
+    injectorInitialInspectionRecoveryPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-initial-inspection-recovery.patch"
+    injectorSharedAddonDirectoryPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-shared-addon-directory.patch"
+    ownedLateD3d11ForeignAddonIsolationPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-owned-late-d3d11-addon-failure-isolation.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-future-targets.patch"
     injectorProcessInstanceBindingPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-process-instance-binding.patch"
 }
+Assert-Sha256Equal `
+    -Expected "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11PatchSha256).Hash `
+    -Label "frozen owned late D3D11 production patch"
+Assert-Sha256Equal `
+    -Expected "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorFirstHostResultPatchSha256).Hash `
+    -Label "frozen injector first-host result patch"
+Assert-Sha256Equal `
+    -Expected "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorAddonPreloadPatchSha256).Hash `
+    -Label "frozen injector add-on preload patch"
+Assert-Sha256Equal `
+    -Expected "A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorPreloadedFirstHostPatchSha256).Hash `
+    -Label "frozen injector preloaded first-host patch"
+Assert-Sha256Equal `
+    -Expected "FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorPreloadLongPathPatchSha256).Hash `
+    -Label "frozen injector preload long-path patch"
+Assert-Sha256Equal `
+    -Expected "BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11AdapterReadyLongPathPatchSha256).Hash `
+    -Label "frozen owned late D3D11 adapter-ready long-path patch"
+Assert-Sha256Equal `
+    -Expected "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorInitialInspectionRecoveryPatchSha256).Hash `
+    -Label "frozen injector initial-inspection recovery patch"
+Assert-Sha256Equal `
+    -Expected "54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.injectorSharedAddonDirectoryPatchSha256).Hash `
+    -Label "frozen injector shared add-on directory patch"
+Assert-Sha256Equal `
+    -Expected "2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99" `
+    -Actual (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $ExpectedPatchProvenance.ownedLateD3d11ForeignAddonIsolationPatchSha256).Hash `
+    -Label "frozen owned late D3D11 foreign add-on isolation patch"
 $ExpectedArtifactNames = @(
     $ArchitectureConfig.AddonName
     "electron_game_overlay_reshade_manager.exe"
@@ -225,9 +281,12 @@ try {
 catch {
     throw "The native runtime build stamp is invalid: $BuildStampPath"
 }
-if ($BuildStamp.schemaVersion -ne 29 -or
+if ($BuildStamp.schemaVersion -ne 30 -or
+    $BuildStamp.cooperativeAddonProtocol -ne 1 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.injectorFutureTargets -ne 2 -or
+    ($BuildStamp.addonPreloadProtocol -isnot [int] -and $BuildStamp.addonPreloadProtocol -isnot [long]) -or
+    $BuildStamp.addonPreloadProtocol -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
     $BuildStamp.configuration -ne "Release" -or
     $BuildStamp.platform -ne $ArchitectureConfig.RuntimePlatform -or
@@ -262,8 +321,10 @@ catch {
 }
 $ExpectedPackageBuildStampProperties = @(
     "addonBuildId"
+    "addonPreloadProtocol"
     "addonSha256"
     "configuration"
+    "cooperativeAddonProtocol"
     "injectorSha256"
     "injectorProcessInstanceBinding"
     "injectorFutureTargets"
@@ -291,8 +352,11 @@ if (@(
             $ActualPackageBuildStampProperties
     ).Count -ne 0 -or
     $PackageBuildStamp.schemaVersion -ne 4 -or
+    $PackageBuildStamp.cooperativeAddonProtocol -ne 1 -or
     $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $PackageBuildStamp.injectorFutureTargets -ne 2 -or
+    ($PackageBuildStamp.addonPreloadProtocol -isnot [int] -and $PackageBuildStamp.addonPreloadProtocol -isnot [long]) -or
+    $PackageBuildStamp.addonPreloadProtocol -ne 1 -or
     $PackageBuildStamp.kind -ne "electron-game-overlay-runtime-build" -or
     $PackageBuildStamp.platform -ne $ArchitectureConfig.PackagePlatform -or
     $PackageBuildStamp.configuration -ne "RelWithDebInfo" -or

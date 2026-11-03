@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +37,11 @@ pub const EGO_STATUS_TIMED_OUT: i32 = -8;
 pub const EGO_STATUS_NOT_CONNECTED: i32 = -9;
 
 pub const EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS: u32 = 1_000;
+pub const EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES: u64 = 4 * 32_767;
+pub const EGO_INPUT_CAPABILITY_COPIED_WM_INPUT: u64 = crate::INPUT_CAPABILITY_COPIED_WM_INPUT;
+pub const EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER: u64 =
+    crate::INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER;
+const MAX_DIRECTORY_UTF16_UNITS: usize = 32_767;
 
 pub const EGO_RUNTIME_DIAGNOSTIC_ABI_VERSION: u32 = 1;
 pub const EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY: u32 = 1;
@@ -75,7 +81,6 @@ pub struct EgoTransport {
 /// Opaque immutable scene lease. Every pointer in `views` is retained by
 /// `scene` and remains valid until this object is released.
 pub struct EgoSceneSnapshot {
-    #[allow(dead_code)]
     scene: Arc<ElectronScene>,
     views: Vec<EgoWindowFrameV1>,
 }
@@ -237,6 +242,62 @@ fn bool_u32(value: bool) -> u32 {
 
 fn optional_id(value: Option<u32>) -> (u32, u32) {
     value.map_or((0, 0), |id| (1, id))
+}
+
+fn input_state_record(state: crate::InputRouterState, desired: bool) -> FfiResult<EgoInputStateV1> {
+    let (has_topmost_window, topmost_window_id) = optional_id(state.topmost_window_id);
+    let (has_focused_window, focused_window_id) = optional_id(state.focused_window_id);
+    let (has_captured_window, captured_window_id) = optional_id(state.captured_window_id);
+    Ok(EgoInputStateV1 {
+        struct_size: std::mem::size_of::<EgoInputStateV1>() as u32,
+        abi_version: EGO_ABI_VERSION,
+        requested_interception: bool_u32(state.requested_interception),
+        desired_interception: bool_u32(desired),
+        effective_interception: bool_u32(state.effective_interception),
+        target_focused: bool_u32(state.target_focused),
+        window_count: u64::try_from(state.window_count).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_INTERNAL_ERROR,
+                "input window count does not fit the ABI",
+            )
+        })?,
+        pointer_captured: bool_u32(state.pointer_captured),
+        has_topmost_window,
+        topmost_window_id,
+        has_focused_window,
+        focused_window_id,
+        has_captured_window,
+        captured_window_id,
+    })
+}
+
+fn private_directory_from_utf8(bytes: &[u8]) -> FfiResult<PathBuf> {
+    if bytes.is_empty() || bytes.len() > EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES as usize {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory length is invalid",
+        ));
+    }
+    let value = std::str::from_utf8(bytes).map_err(|_| {
+        FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory is not valid UTF-8",
+        )
+    })?;
+    if value.contains('\0') || value.encode_utf16().count() > MAX_DIRECTORY_UTF16_UNITS {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory contains NUL or exceeds the Windows path limit",
+        ));
+    }
+    let directory = PathBuf::from(value);
+    if !directory.is_absolute() {
+        return Err(FfiError::new(
+            EGO_STATUS_INVALID_ARGUMENT,
+            "private transport directory must be an absolute Windows path",
+        ));
+    }
+    Ok(directory)
 }
 
 fn make_scene_snapshot(scene: Arc<ElectronScene>) -> FfiResult<EgoSceneSnapshot> {
@@ -517,6 +578,109 @@ pub unsafe extern "C" fn ego_transport_create(
     })
 }
 
+/// Starts a participant-private transport without consulting process-wide
+/// environment variables or legacy discovery records.
+///
+/// # Safety
+/// `directory_utf8` must be readable for `directory_utf8_len` bytes and contain
+/// an absolute Windows directory encoded as UTF-8 without a trailing NUL. Its
+/// bytes are copied synchronously. `out_transport` must be writable, and a
+/// successful handle must be destroyed exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_create_for_directory(
+    abi_version: u32,
+    directory_utf8: *const u8,
+    directory_utf8_len: u64,
+    out_transport: *mut *mut EgoTransport,
+) -> i32 {
+    create_private_transport(
+        abi_version,
+        directory_utf8,
+        directory_utf8_len,
+        None,
+        out_transport,
+    )
+}
+
+/// Starts a private transport with immutable native-host input capabilities.
+/// The first hello and every reconnect advertise these optional capabilities.
+///
+/// # Safety
+/// Directory and output pointers follow [`ego_transport_create_for_directory`].
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_create_for_directory_with_input_capabilities(
+    abi_version: u32,
+    directory_utf8: *const u8,
+    directory_utf8_len: u64,
+    input_capabilities: u64,
+    out_transport: *mut *mut EgoTransport,
+) -> i32 {
+    create_private_transport(
+        abi_version,
+        directory_utf8,
+        directory_utf8_len,
+        Some(input_capabilities),
+        out_transport,
+    )
+}
+
+unsafe fn create_private_transport(
+    abi_version: u32,
+    directory_utf8: *const u8,
+    directory_utf8_len: u64,
+    input_capabilities: Option<u64>,
+    out_transport: *mut *mut EgoTransport,
+) -> i32 {
+    ffi_call(|| {
+        let out_transport = out_transport.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_transport pointer is null")
+        })?;
+        *out_transport = ptr::null_mut();
+        if abi_version != EGO_ABI_VERSION {
+            return Err(FfiError::new(
+                EGO_STATUS_ABI_MISMATCH,
+                format!("requested ABI version {abi_version} does not match {EGO_ABI_VERSION}"),
+            ));
+        }
+        if input_capabilities
+            .is_some_and(|capabilities| !crate::valid_input_capabilities(capabilities))
+        {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "native input capability flags are invalid",
+            ));
+        }
+        if directory_utf8.is_null()
+            || directory_utf8_len == 0
+            || directory_utf8_len > EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES
+        {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "private transport directory pointer or length is invalid",
+            ));
+        }
+        let directory = private_directory_from_utf8(std::slice::from_raw_parts(
+            directory_utf8,
+            directory_utf8_len as usize,
+        ))?;
+        let bridge = match input_capabilities {
+            Some(capabilities) => ElectronFrameBridge::spawn_for_directory_with_input_capabilities(
+                directory,
+                capabilities,
+            ),
+            None => ElectronFrameBridge::spawn_for_directory(directory),
+        }
+        .map_err(|error| {
+            FfiError::new(
+                EGO_STATUS_INITIALIZATION_FAILED,
+                format!("cannot initialize private Electron overlay transport: {error}"),
+            )
+        })?;
+        *out_transport = Box::into_raw(Box::new(EgoTransport { bridge }));
+        Ok(())
+    })
+}
+
 /// # Safety
 /// `transport` must be a live handle returned by [`ego_transport_create`]. No
 /// other ABI call may use it concurrently, and it must not be destroyed more
@@ -667,6 +831,106 @@ pub unsafe extern "C" fn ego_scene_snapshot_get_window(
 }
 
 /// # Safety
+/// `snapshot` must remain live and `out_incarnation` must be writable. The
+/// registration identity belongs to the same immutable snapshot as its pixels.
+#[no_mangle]
+pub unsafe extern "C" fn ego_scene_snapshot_window_incarnation(
+    snapshot: *const EgoSceneSnapshot,
+    index: u64,
+    out_incarnation: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
+        *out_incarnation = 0;
+        let snapshot = snapshot_ref(snapshot)?;
+        let index = usize::try_from(index).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_OUT_OF_RANGE,
+                "scene window index is out of range",
+            )
+        })?;
+        *out_incarnation = snapshot
+            .scene
+            .windows
+            .get(index)
+            .ok_or_else(|| {
+                FfiError::new(
+                    EGO_STATUS_OUT_OF_RANGE,
+                    "scene window index is out of range",
+                )
+            })?
+            .incarnation;
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `snapshot` must remain live and `out_count` must be writable. Registrations
+/// include windows awaiting pixels and are separate from compositable frames.
+#[no_mangle]
+pub unsafe extern "C" fn ego_scene_snapshot_registration_count(
+    snapshot: *const EgoSceneSnapshot,
+    out_count: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_count = out_count.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_count pointer is null")
+        })?;
+        *out_count = 0;
+        let snapshot = snapshot_ref(snapshot)?;
+        *out_count = snapshot.scene.registrations.len() as u64;
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `snapshot` must remain live and both outputs must be writable. Identity is
+/// retained through raster replacement and disappears only when registration
+/// is removed or reset in this immutable producer snapshot.
+#[no_mangle]
+pub unsafe extern "C" fn ego_scene_snapshot_get_registration(
+    snapshot: *const EgoSceneSnapshot,
+    index: u64,
+    out_window_id: *mut u32,
+    out_incarnation: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_window_id = out_window_id.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_window_id pointer is null")
+        })?;
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
+        *out_window_id = 0;
+        *out_incarnation = 0;
+        let snapshot = snapshot_ref(snapshot)?;
+        let index = usize::try_from(index).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_OUT_OF_RANGE,
+                "scene registration index is out of range",
+            )
+        })?;
+        let registration = snapshot.scene.registrations.get(index).ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_OUT_OF_RANGE,
+                "scene registration index is out of range",
+            )
+        })?;
+        *out_window_id = registration.window_id;
+        *out_incarnation = registration.incarnation;
+        Ok(())
+    })
+}
+
+/// # Safety
 /// Transport must be live and out_cursor must be writable. -1 means game-owned.
 #[no_mangle]
 pub unsafe extern "C" fn ego_transport_cursor_at(
@@ -751,6 +1015,19 @@ pub unsafe extern "C" fn ego_transport_apply_input_filter(
 }
 
 /// # Safety
+/// The transport must remain live. Call only when the backend authoritatively
+/// retires its actual native input owner. Target focus cleanup, filter release
+/// and the terminal ACK share one router transaction; producer intent survives.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_retire_input_filter(transport: *mut EgoTransport) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        transport.bridge.retire_input_filter();
+        Ok(())
+    })
+}
+
+/// # Safety
 /// `transport` must remain live for the call. `inout_state` must point to a
 /// writable record initialized with its size and ABI version.
 #[no_mangle]
@@ -769,30 +1046,36 @@ pub unsafe extern "C" fn ego_transport_get_input_state(
             EGO_ABI_VERSION,
         )?;
         let state = transport.bridge.input_state();
-        let (has_topmost_window, topmost_window_id) = optional_id(state.topmost_window_id);
-        let (has_focused_window, focused_window_id) = optional_id(state.focused_window_id);
-        let (has_captured_window, captured_window_id) = optional_id(state.captured_window_id);
-        *inout_state = EgoInputStateV1 {
-            struct_size: std::mem::size_of::<EgoInputStateV1>() as u32,
-            abi_version: EGO_ABI_VERSION,
-            requested_interception: bool_u32(state.requested_interception),
-            desired_interception: bool_u32(transport.bridge.desired_interception()),
-            effective_interception: bool_u32(state.effective_interception),
-            target_focused: bool_u32(state.target_focused),
-            window_count: u64::try_from(state.window_count).map_err(|_| {
-                FfiError::new(
-                    EGO_STATUS_INTERNAL_ERROR,
-                    "input window count does not fit the ABI",
-                )
-            })?,
-            pointer_captured: bool_u32(state.pointer_captured),
-            has_topmost_window,
-            topmost_window_id,
-            has_focused_window,
-            focused_window_id,
-            has_captured_window,
-            captured_window_id,
-        };
+        *inout_state = input_state_record(state, transport.bridge.desired_interception())?;
+        Ok(())
+    })
+}
+
+/// # Safety
+/// The transport must remain live; the initialized v1 record and revision
+/// output must be writable. The revision and state share one router lock.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_get_cooperative_input_state(
+    transport: *const EgoTransport,
+    inout_state: *mut EgoInputStateV1,
+    out_revision: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        let inout_state = inout_state.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "input state pointer is null")
+        })?;
+        let out_revision = out_revision.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_revision pointer is null")
+        })?;
+        validate_output_record::<EgoInputStateV1>(
+            inout_state.struct_size,
+            inout_state.abi_version,
+            EGO_ABI_VERSION,
+        )?;
+        let (state, desired, revision) = transport.bridge.cooperative_input_state();
+        *inout_state = input_state_record(state, desired)?;
+        *out_revision = revision;
         Ok(())
     })
 }
@@ -921,6 +1204,246 @@ pub unsafe extern "C" fn ego_transport_route_window_message(
 }
 
 /// # Safety
+/// `transport` must remain live and `out_hit` must be writable. Coordinates
+/// are physical client pixels, interpreted by the window owner's router.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_hit_test_window(
+    transport: *const EgoTransport,
+    window_id: u32,
+    incarnation: u64,
+    x: i32,
+    y: i32,
+    out_hit: *mut u32,
+) -> i32 {
+    ffi_call(|| {
+        let out_hit = out_hit
+            .as_mut()
+            .ok_or_else(|| FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_hit pointer is null"))?;
+        *out_hit = 0;
+        let transport = transport_ref(transport)?;
+        *out_hit = bool_u32(
+            transport
+                .bridge
+                .hit_test_window(window_id, incarnation, x, y),
+        );
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live and `out_incarnation` must be writable. Zero
+/// means the local ID is not registered. Unpainted windows retain identity.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_window_incarnation(
+    transport: *const EgoTransport,
+    window_id: u32,
+    out_incarnation: *mut u64,
+) -> i32 {
+    ffi_call(|| {
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
+        *out_incarnation = 0;
+        let transport = transport_ref(transport)?;
+        *out_incarnation = transport.bridge.window_incarnation(window_id);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// All outputs must be writable and `transport` must remain live. Revision
+/// zero means no explicit SDK window-focus request has been observed.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_cooperative_focus_request(
+    transport: *const EgoTransport,
+    after_revision: u64,
+    out_revision: *mut u64,
+    out_window_id: *mut u32,
+    out_incarnation: *mut u64,
+    out_focused: *mut u32,
+) -> i32 {
+    ffi_call(|| {
+        let out_revision = out_revision.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_revision pointer is null")
+        })?;
+        let out_window_id = out_window_id.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_window_id pointer is null")
+        })?;
+        let out_focused = out_focused.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_focused pointer is null")
+        })?;
+        let out_incarnation = out_incarnation.as_mut().ok_or_else(|| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "out_incarnation pointer is null",
+            )
+        })?;
+        let transport = transport_ref(transport)?;
+        let (revision, window_id, incarnation, focused) =
+            transport.bridge.cooperative_focus_request(after_revision);
+        *out_revision = revision;
+        *out_window_id = window_id;
+        *out_incarnation = incarnation;
+        *out_focused = bool_u32(focused);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live. A zero ID clears this participant's focus;
+/// this does not change actual target focus or interception requests.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_set_cooperative_focus(
+    transport: *mut EgoTransport,
+    focused_window_id: u32,
+    incarnation: u64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        transport.bridge.set_cooperative_focus(
+            (focused_window_id != 0).then_some(focused_window_id),
+            incarnation,
+        );
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live and `global_requested` must be zero or one.
+/// This controls aggregate routing without changing the producer's own request.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_set_cooperative_interception(
+    transport: *mut EgoTransport,
+    global_requested: u32,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if global_requested > 1 {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "global interception request must be zero or one",
+            ));
+        }
+        transport
+            .bridge
+            .set_cooperative_interception(global_requested != 0);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// The transport must remain live. `sampled_revision` is the token returned
+/// with the input state used to compute this aggregate grant. Stale decisions
+/// still apply their actual filter phase, but cannot acknowledge newer input.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_set_cooperative_interception_checked(
+    transport: *mut EgoTransport,
+    global_requested: u32,
+    sampled_revision: u64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if global_requested > 1 {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "global interception request must be zero or one",
+            ));
+        }
+        transport
+            .bridge
+            .set_cooperative_interception_for_revision(global_requested != 0, sampled_revision);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live. Retirement releases this participant's pointer
+/// capture, caption drag and keyboard focus without altering another member.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_release_cooperative_ownership(
+    transport: *mut EgoTransport,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        transport.bridge.release_cooperative_ownership();
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `transport` must remain live and `out_cursor` must be writable. Global
+/// hit testing/capture already selected `window_id`; no local fallback occurs.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_cursor_for_window(
+    transport: *const EgoTransport,
+    window_id: u32,
+    incarnation: u64,
+    out_cursor: *mut i32,
+) -> i32 {
+    ffi_call(|| {
+        let out_cursor = out_cursor.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_cursor pointer is null")
+        })?;
+        *out_cursor = -1;
+        let transport = transport_ref(transport)?;
+        *out_cursor = transport.bridge.cursor_for_window(window_id, incarnation);
+        Ok(())
+    })
+}
+
+/// # Safety
+/// The handle must remain live and nonzero HWNDs must belong to the target.
+/// The window ID has already been selected by the cooperative registry. Zero
+/// drops the event without falling back to this participant's local stack.
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_route_owned_window_message(
+    transport: *mut EgoTransport,
+    window_id: u32,
+    incarnation: u64,
+    target_hwnd: usize,
+    message: u32,
+    wparam: u64,
+    lparam: i64,
+) -> i32 {
+    ffi_call(|| {
+        let transport = transport_ref(transport)?;
+        if window_id == 0 {
+            return Ok(());
+        }
+        if target_hwnd == 0 {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "target HWND is null",
+            ));
+        }
+        let wparam = usize::try_from(wparam).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "wparam does not fit this target",
+            )
+        })?;
+        let lparam = isize::try_from(lparam).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "lparam does not fit this target",
+            )
+        })?;
+        transport.bridge.route_owned_window_message(
+            window_id,
+            incarnation,
+            HWND(target_hwnd as *mut c_void),
+            message,
+            WPARAM(wparam),
+            LPARAM(lparam),
+        );
+        Ok(())
+    })
+}
+
+/// # Safety
 /// When non-null, `buffer` must be writable for `buffer_size` bytes and
 /// `required_size` must be writable. A null buffer is valid only with size 0.
 #[no_mangle]
@@ -970,6 +1493,708 @@ pub unsafe extern "C" fn ego_get_last_error_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_metadata_is_available_without_compositable_frames() {
+        let snapshot = make_scene_snapshot(Arc::new(ElectronScene {
+            state_revision: 1,
+            registrations: vec![crate::ElectronWindowRegistration {
+                window_id: 7,
+                incarnation: 11,
+            }],
+            windows: Vec::new(),
+        }))
+        .unwrap();
+        let mut frames = 99;
+        let mut registrations = 0;
+        assert_eq!(
+            unsafe { ego_scene_snapshot_window_count(&snapshot, &mut frames) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_scene_snapshot_registration_count(&snapshot, &mut registrations) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(frames, 0);
+        assert_eq!(registrations, 1);
+        let mut id = 0;
+        let mut incarnation = 0;
+        assert_eq!(
+            unsafe { ego_scene_snapshot_get_registration(&snapshot, 0, &mut id, &mut incarnation) },
+            EGO_STATUS_OK
+        );
+        assert_eq!((id, incarnation), (7, 11));
+        assert_eq!(
+            unsafe { ego_scene_snapshot_get_registration(&snapshot, 1, &mut id, &mut incarnation) },
+            EGO_STATUS_OUT_OF_RANGE
+        );
+        assert_eq!((id, incarnation), (0, 0));
+    }
+
+    #[test]
+    fn private_directory_validation_rejects_ambiguous_encoding_and_nonabsolute_paths() {
+        for invalid in [
+            &b""[..],
+            &b"relative\\member"[..],
+            &b"C:drive-relative"[..],
+            &b"\\root-relative"[..],
+            &b"C:\\member\0foreign"[..],
+            &[0xff, 0xfe][..],
+        ] {
+            assert_eq!(
+                private_directory_from_utf8(invalid).unwrap_err().status,
+                EGO_STATUS_INVALID_ARGUMENT,
+            );
+        }
+        assert_eq!(
+            private_directory_from_utf8(format!("C:\\{}", "x".repeat(32_767)).as_bytes())
+                .unwrap_err()
+                .status,
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+        for valid in [
+            r"C:\members\app-a",
+            r"\\server\share\app-b",
+            "C:\\メンバー\\🦀",
+        ] {
+            assert_eq!(
+                private_directory_from_utf8(valid.as_bytes()).unwrap(),
+                PathBuf::from(valid),
+            );
+        }
+
+        let mut output = 1usize as *mut EgoTransport;
+        assert_eq!(
+            unsafe {
+                ego_transport_create_for_directory(EGO_ABI_VERSION, ptr::null(), 0, &mut output)
+            },
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+        assert!(output.is_null());
+        assert_eq!(
+            unsafe {
+                ego_transport_create_for_directory(
+                    EGO_ABI_VERSION,
+                    b"C:\\member".as_ptr(),
+                    EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES + 1,
+                    &mut output,
+                )
+            },
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+        assert!(output.is_null());
+    }
+
+    #[test]
+    fn private_input_capability_constructor_rejects_invalid_flags_and_arguments() {
+        let directory = b"C:\\member";
+        for capabilities in [EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER, 4, u64::MAX] {
+            let mut output = 1usize as *mut EgoTransport;
+            assert_eq!(
+                unsafe {
+                    ego_transport_create_for_directory_with_input_capabilities(
+                        EGO_ABI_VERSION,
+                        directory.as_ptr(),
+                        directory.len() as u64,
+                        capabilities,
+                        &mut output,
+                    )
+                },
+                EGO_STATUS_INVALID_ARGUMENT,
+            );
+            assert!(output.is_null());
+        }
+        for (abi, directory, length, expected) in [
+            (
+                EGO_ABI_VERSION + 1,
+                directory.as_ptr(),
+                directory.len() as u64,
+                EGO_STATUS_ABI_MISMATCH,
+            ),
+            (EGO_ABI_VERSION, ptr::null(), 0, EGO_STATUS_INVALID_ARGUMENT),
+            (
+                EGO_ABI_VERSION,
+                directory.as_ptr(),
+                EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES + 1,
+                EGO_STATUS_INVALID_ARGUMENT,
+            ),
+            (
+                EGO_ABI_VERSION,
+                b"relative".as_ptr(),
+                8,
+                EGO_STATUS_INVALID_ARGUMENT,
+            ),
+        ] {
+            let mut output = 1usize as *mut EgoTransport;
+            assert_eq!(
+                unsafe {
+                    ego_transport_create_for_directory_with_input_capabilities(
+                        abi,
+                        directory,
+                        length,
+                        0,
+                        &mut output,
+                    )
+                },
+                expected,
+            );
+            assert!(output.is_null());
+        }
+        assert_eq!(
+            unsafe {
+                ego_transport_create_for_directory_with_input_capabilities(
+                    EGO_ABI_VERSION,
+                    directory.as_ptr(),
+                    directory.len() as u64,
+                    0,
+                    ptr::null_mut(),
+                )
+            },
+            EGO_STATUS_INVALID_ARGUMENT,
+        );
+    }
+
+    #[test]
+    fn private_input_capabilities_are_in_the_first_socket_hello_and_reconnect() {
+        use std::fs;
+        use std::io::Read;
+        use std::net::{Shutdown, TcpListener};
+        use std::time::Instant;
+
+        struct OwnedTransport(*mut EgoTransport);
+        impl Drop for OwnedTransport {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { ego_transport_destroy(self.0) }, EGO_STATUS_OK);
+            }
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ego-input-capabilities-{}-{nonce}",
+            std::process::id(),
+        ));
+        for capabilities in [None, Some(0), Some(1), Some(3)] {
+            let directory = root.join(format!("{capabilities:?}"));
+            fs::create_dir_all(&directory).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let token = "ab".repeat(32);
+            fs::write(
+                directory.join("electron-overlay-transport-v1.targeted"),
+                b"private",
+            )
+            .unwrap();
+            fs::write(
+                directory.join("electron-overlay-transport-v1.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "pid": std::process::id(),
+                    "port": listener.local_addr().unwrap().port(),
+                    "token": token, "targetPid": std::process::id(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let bytes = directory.to_str().unwrap().as_bytes();
+            let mut handle = ptr::null_mut();
+            let status = unsafe {
+                match capabilities {
+                    Some(capabilities) => {
+                        ego_transport_create_for_directory_with_input_capabilities(
+                            EGO_ABI_VERSION,
+                            bytes.as_ptr(),
+                            bytes.len() as u64,
+                            capabilities,
+                            &mut handle,
+                        )
+                    }
+                    None => ego_transport_create_for_directory(
+                        EGO_ABI_VERSION,
+                        bytes.as_ptr(),
+                        bytes.len() as u64,
+                        &mut handle,
+                    ),
+                }
+            };
+            assert_eq!(status, EGO_STATUS_OK);
+            let transport = OwnedTransport(handle);
+            for _ in 0..2 {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut peer = loop {
+                    match listener.accept() {
+                        Ok((peer, _)) => break peer,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "capability transport did not connect"
+                            );
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("capability accept failed: {error}"),
+                    }
+                };
+                peer.set_nonblocking(false).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut header = [0u8; 5];
+                peer.read_exact(&mut header).unwrap();
+                assert_eq!(header[4], crate::electron_wire::JSON_KIND);
+                let length = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+                assert!(length <= 64 * 1024);
+                let mut body = vec![0; length];
+                peer.read_exact(&mut body).unwrap();
+                let hello: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(hello["type"], "game.process");
+                assert_eq!(hello["token"], token);
+                let advertised = hello["capabilities"].as_array().unwrap();
+                for (name, expected) in [
+                    ("input-capabilities-v1", capabilities.is_some()),
+                    (
+                        "copied-wm-input-v1",
+                        capabilities.is_some_and(|flags| flags & 1 != 0),
+                    ),
+                    (
+                        "copied-raw-input-buffer-v1",
+                        capabilities.is_some_and(|flags| flags & 2 != 0),
+                    ),
+                ] {
+                    assert_eq!(
+                        advertised.iter().any(|value| value == name),
+                        expected,
+                        "incorrect {name} for flags {capabilities:?}"
+                    );
+                }
+                // A peer rejected before its SDK snapshot remains dormant;
+                // merely sending the capability hello is not authentication.
+                assert_eq!(unsafe { (*transport.0).bridge.producer_session_epoch() }, 0);
+                peer.shutdown(Shutdown::Both).unwrap();
+            }
+            drop(transport);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn private_directory_transports_keep_tokens_scenes_and_disconnects_isolated() {
+        use std::fs;
+        use std::io::{Read, Write};
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        use std::time::Instant;
+
+        const CHILD_FLAG: &str = "EGO_TEST_PRIVATE_TRANSPORT_CHILD";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            // Run with a conflicting process-wide route in a separate process;
+            // other unit tests never observe temporary global environment state.
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ffi::tests::private_directory_transports_keep_tokens_scenes_and_disconnects_isolated",
+                    "--nocapture",
+                ])
+                .env(CHILD_FLAG, "1")
+                .env(
+                    "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
+                    r"C:\foreign-process-wide-route-not-used-by-private-members",
+                )
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "private-route child failed:\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
+            );
+            return;
+        }
+
+        struct OwnedTransport(*mut EgoTransport);
+        impl Drop for OwnedTransport {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { ego_transport_destroy(self.0) }, EGO_STATUS_OK);
+            }
+        }
+        fn accept(listener: &TcpListener) -> TcpStream {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        return stream;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "private member did not connect");
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("private member accept failed: {error}"),
+                }
+            }
+        }
+        fn hello(stream: &mut TcpStream) -> serde_json::Value {
+            let mut header = [0u8; 5];
+            stream.read_exact(&mut header).unwrap();
+            assert_eq!(header[4], crate::electron_wire::JSON_KIND);
+            let length = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+            assert!(length <= 64 * 1024);
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            serde_json::from_slice(&body).unwrap()
+        }
+        fn send_scene(stream: &mut TcpStream, name: &str, bgra: [u8; 4]) {
+            let init = serde_json::json!({
+                "type": "overlay.init",
+                "windows": [{"windowId": 7, "name": name, "transparent": false,
+                    "rect": {"x": 4, "y": 5, "width": 1, "height": 1}}],
+            });
+            stream
+                .write_all(&crate::electron_wire::encode_json(&init.to_string()).unwrap())
+                .unwrap();
+            let mut packet = Vec::from(16u32.to_le_bytes());
+            packet.push(crate::electron_wire::FRAME_KIND);
+            packet.extend_from_slice(&7u32.to_le_bytes());
+            packet.extend_from_slice(&1u32.to_le_bytes());
+            packet.extend_from_slice(&1u32.to_le_bytes());
+            packet.extend_from_slice(&bgra);
+            stream.write_all(&packet).unwrap();
+        }
+        fn wait_for(mut condition: impl FnMut() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !condition() {
+                assert!(Instant::now() < deadline, "private scene did not settle");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("ego-private-native-{}-{nonce}", std::process::id(),));
+        let a = root.join("a");
+        let b = root.join("b");
+        let listener_a = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener_b = TcpListener::bind("127.0.0.1:0").unwrap();
+        for (directory, listener, token) in [(&a, &listener_a, "a"), (&b, &listener_b, "b")] {
+            fs::create_dir_all(directory).unwrap();
+            fs::write(
+                directory.join("electron-overlay-transport-v1.targeted"),
+                b"private",
+            )
+            .unwrap();
+            fs::write(
+                directory.join("electron-overlay-transport-v1.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "pid": std::process::id(),
+                    "port": listener.local_addr().unwrap().port(),
+                    "token": token.repeat(64), "targetPid": std::process::id(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let create = |directory: &std::path::Path| {
+            let mut bytes = directory.to_str().unwrap().as_bytes().to_vec();
+            let mut transport = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    ego_transport_create_for_directory(
+                        EGO_ABI_VERSION,
+                        bytes.as_ptr(),
+                        bytes.len() as u64,
+                        &mut transport,
+                    )
+                },
+                EGO_STATUS_OK,
+            );
+            bytes.fill(b'?');
+            OwnedTransport(transport)
+        };
+        let transport_a = create(&a);
+        let transport_b = create(&b);
+        let mut peer_a = accept(&listener_a);
+        let mut peer_b = accept(&listener_b);
+        assert_eq!(hello(&mut peer_a)["token"], "a".repeat(64));
+        assert_eq!(hello(&mut peer_b)["token"], "b".repeat(64));
+        send_scene(&mut peer_a, "member-a", [1, 2, 3, 255]);
+        send_scene(&mut peer_b, "member-b", [4, 5, 6, 255]);
+        wait_for(|| unsafe {
+            (*transport_a.0).bridge.scene().windows.len() == 1
+                && (*transport_b.0).bridge.scene().windows.len() == 1
+        });
+        let scene_a = unsafe { (*transport_a.0).bridge.scene() };
+        let scene_b = unsafe { (*transport_b.0).bridge.scene() };
+        assert_eq!(scene_a.windows[0].window_id, 7);
+        assert_eq!(scene_b.windows[0].window_id, 7);
+        assert_eq!(scene_a.windows[0].name, "member-a");
+        assert_eq!(scene_b.windows[0].name, "member-b");
+        assert_eq!(&*scene_a.windows[0].rgba, &[3, 2, 1, 255]);
+        assert_eq!(&*scene_b.windows[0].rgba, &[6, 5, 4, 255]);
+
+        let retained_snapshot = make_scene_snapshot(Arc::clone(&scene_a)).unwrap();
+        let mut old_incarnation = 0;
+        assert_eq!(
+            unsafe {
+                ego_scene_snapshot_window_incarnation(&retained_snapshot, 0, &mut old_incarnation)
+            },
+            EGO_STATUS_OK,
+        );
+        assert_ne!(old_incarnation, 0);
+        peer_a
+            .write_all(
+                &crate::electron_wire::encode_json(
+                    &serde_json::json!({"type":"window.close","windowId":7}).to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        send_scene(&mut peer_a, "member-a-recreated", [10, 11, 12, 255]);
+        wait_for(|| unsafe {
+            (*transport_a.0)
+                .bridge
+                .scene()
+                .windows
+                .first()
+                .is_some_and(|window| window.name == "member-a-recreated")
+        });
+        let new_incarnation = unsafe { (*transport_a.0).bridge.window_incarnation(7) };
+        assert_ne!(new_incarnation, old_incarnation);
+        let mut snapshot_incarnation = 0;
+        assert_eq!(
+            unsafe {
+                ego_scene_snapshot_window_incarnation(
+                    &retained_snapshot,
+                    0,
+                    &mut snapshot_incarnation,
+                )
+            },
+            EGO_STATUS_OK,
+        );
+        assert_eq!(snapshot_incarnation, old_incarnation);
+        let mut hit = 1;
+        assert_eq!(
+            unsafe {
+                ego_transport_hit_test_window(transport_a.0, 7, old_incarnation, 4, 5, &mut hit)
+            },
+            EGO_STATUS_OK,
+        );
+        assert_eq!(hit, 0);
+        assert_eq!(
+            unsafe {
+                ego_transport_hit_test_window(transport_a.0, 7, new_incarnation, 4, 5, &mut hit)
+            },
+            EGO_STATUS_OK,
+        );
+        assert_eq!(hit, 1);
+        assert_eq!(
+            unsafe { ego_transport_set_target_focused(transport_a.0, 1) },
+            EGO_STATUS_OK
+        );
+        // Native prepared a disabled aggregate before a newer producer command.
+        // Its stale terminal phase must not enqueue a false ACK ahead of the
+        // true acknowledgement once that command has been sampled and applied.
+        let mut input_state: EgoInputStateV1 = unsafe { std::mem::zeroed() };
+        input_state.struct_size = std::mem::size_of::<EgoInputStateV1>() as u32;
+        input_state.abi_version = EGO_ABI_VERSION;
+        let mut sampled_revision = 0;
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        peer_a
+            .write_all(
+                &crate::electron_wire::encode_json(
+                    r#"{"type":"command.input.intercept","intercept":true}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        wait_for(|| unsafe { (*transport_a.0).bridge.input_state().requested_interception });
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(
+                    transport_a.0,
+                    0,
+                    sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 0, 1) },
+            EGO_STATUS_OK
+        );
+        let previous_revision = sampled_revision;
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_ne!(sampled_revision, previous_revision);
+        assert_eq!(input_state.requested_interception, 1);
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(
+                    transport_a.0,
+                    1,
+                    sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            hello(&mut peer_a),
+            serde_json::json!({
+                "type":"game.input.intercept", "intercepting":true,
+            })
+        );
+        assert_eq!(
+            unsafe { ego_transport_set_cooperative_interception(transport_a.0, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        let mut cursor = 0;
+        assert_eq!(
+            unsafe {
+                ego_transport_cursor_for_window(transport_a.0, 7, old_incarnation, &mut cursor)
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(cursor, -1);
+        assert_eq!(
+            unsafe {
+                ego_transport_cursor_for_window(transport_a.0, 7, new_incarnation, &mut cursor)
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(cursor, 32512);
+
+        // A real owner retirement must release even after a newer producer
+        // request invalidates the old Present sample. It must preserve that
+        // request for a promoted owner, and a repeated retirement is silent.
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        let retired_sample = sampled_revision;
+        peer_a
+            .write_all(
+                &crate::electron_wire::encode_json(
+                    r#"{"type":"command.input.intercept","intercept":true}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        wait_for(|| unsafe {
+            (*transport_a.0).bridge.cooperative_input_state().2 != retired_sample
+        });
+        assert_eq!(
+            unsafe { ego_transport_retire_input_filter(transport_a.0) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            hello(&mut peer_a),
+            serde_json::json!({
+                "type":"game.input.intercept", "intercepting":false,
+            })
+        );
+        assert!(unsafe { (*transport_a.0).bridge.input_state().requested_interception });
+        assert_eq!(
+            unsafe { ego_transport_retire_input_filter(transport_a.0) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_set_target_focused(transport_a.0, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(transport_a.0, 1, retired_sample)
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_get_cooperative_input_state(
+                    transport_a.0,
+                    &mut input_state,
+                    &mut sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe {
+                ego_transport_set_cooperative_interception_checked(
+                    transport_a.0,
+                    1,
+                    sampled_revision,
+                )
+            },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            unsafe { ego_transport_apply_input_filter(transport_a.0, 1, 1) },
+            EGO_STATUS_OK
+        );
+        assert_eq!(
+            hello(&mut peer_a),
+            serde_json::json!({
+                "type":"game.input.intercept", "intercepting":true,
+            })
+        );
+
+        drop(listener_a);
+        peer_a.shutdown(Shutdown::Both).unwrap();
+        wait_for(|| unsafe { (*transport_a.0).bridge.scene().windows.is_empty() });
+        send_scene(&mut peer_b, "member-b-surviving", [7, 8, 9, 255]);
+        wait_for(|| unsafe {
+            (*transport_b.0)
+                .bridge
+                .scene()
+                .windows
+                .first()
+                .is_some_and(|window| window.name == "member-b-surviving")
+        });
+        assert_eq!(
+            unsafe { (*transport_b.0).bridge.input_state().window_count },
+            1
+        );
+        drop(transport_a);
+        drop(transport_b);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn valid_target_surface() -> EgoTargetSurfaceV1 {
         EgoTargetSurfaceV1 {

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Compile-only inert console loader-seam fixture; no new injector, real ReShade, graphics or game execution.",
+  "addonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+  "fixtureSourceSha256": "5E040EE3FAF5A48AE4BE6026D7B46514B40D2D1E85C0D66F4A5D245CD64C0BE4",
+  "cmakeSourceSha256": "223C9C96F06572B15DF866F4D5697D0BF238C7A9E420468CEF964B35B5159820",
+  "builds": [
+    {
+      "architecture": "x64",
+      "configuration": "Release",
+      "compile": "passed",
+      "undecoratedExportsVerified": true,
+      "artifacts": [
+        {
+          "file": "owned_late_bootstrap_target.exe",
+          "sha256": "A8DC6F08354C951B9694839054F6B3367BB42E2BAB5D96B7F384B937752E24F4"
+        },
+        {
+          "file": "owned_late_bootstrap_owned_host.dll",
+          "sha256": "21566673E5E45D259EAB8C934D145252754DF7D284BB4E7955C8694BE1A72340"
+        },
+        {
+          "file": "owned_late_bootstrap_foreign_host.dll",
+          "sha256": "D7F9CD1DE4D091C5D203AA492B2FE675F8304E113AEAEE5FCE45496AFDFAD18A"
+        },
+        {
+          "file": "owned_late_bootstrap_malformed_host.dll",
+          "sha256": "AFD718CC0247BB2E1C2A56DD11A167286155784340F8912D8EB912690B89214A"
+        },
+        {
+          "file": "owned_late_bootstrap_member.dll",
+          "sha256": "75645143246390C976FD2D71BF59B89E58D30435787E624BA4D2234B9092A259"
+        }
+      ]
+    },
+    {
+      "architecture": "Win32",
+      "configuration": "Release",
+      "compile": "passed",
+      "undecoratedExportsVerified": true,
+      "artifacts": [
+        {
+          "file": "owned_late_bootstrap_target.exe",
+          "sha256": "FFABECE0B3517304914CB8BD0CA2CFBBBCBC5C71A620D840EFEA980CA1FE2DF1"
+        },
+        {
+          "file": "owned_late_bootstrap_owned_host.dll",
+          "sha256": "92296E6B1906C59FEFF0373A0AAC88BD899F0C430E83C69E45813307A33B2C5C"
+        },
+        {
+          "file": "owned_late_bootstrap_foreign_host.dll",
+          "sha256": "CA1CD711B2B8A2B0D1877EB3689602892F2B07A6FB6E4E0F1FDE8545BB84E08C"
+        },
+        {
+          "file": "owned_late_bootstrap_malformed_host.dll",
+          "sha256": "1116CDF909B443634BADE82142071F4E022168E84DCD4FB6899FE85AF478DDFA"
+        },
+        {
+          "file": "owned_late_bootstrap_member.dll",
+          "sha256": "DBC61C3A6F09F35D91FEFBE8C9CD0C224B17655D9D91FEAD4C64F3031F3C8C96"
+        }
+      ]
+    }
+  ],
+  "executed": false,
+  "productionBuildChanged": false
+}

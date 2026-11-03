@@ -43,7 +43,7 @@ function fixture(t) {
         kind: 'electron-game-overlay-runtime-build',
         platform: bits === 64 ? 'win32-x64' : 'win32-ia32',
         configuration: 'RelWithDebInfo',
-        addonBuildId: '12EE788081A34E00B10862242DF38893',
+        addonBuildId: 'CCE20935ADD44EF6A5A7973014B2E07F',
         managerProtocolSchemaVersion: 1,
         managerSourceSha256: 'A'.repeat(64),
         runtimeGeneration: 1,
@@ -426,23 +426,25 @@ test(
   },
 );
 
-test('normal SDK build packages the standalone broker only after both runtime stages', () => {
+test('normal SDK build seals both native architectures without packaging a default standalone broker', () => {
   const project = require('../project.json');
   const commands = project.targets.build.options.commands;
-  const standalone = commands.indexOf(
-    'node scripts/build-standalone-broker.cjs',
-  );
+  const seal = commands.indexOf('node scripts/seal-sdk-distribution.cjs');
   assert.ok(
-    standalone >= 0,
-    'normal builds must produce the standalone distribution',
+    seal >= 0,
+    'normal builds must seal the complete independent SDK distribution',
   );
+  assert.equal(commands.some(command => command.includes('build-standalone-broker.cjs')), false,
+    'the cooperative SDK build must not publish a shared broker service');
   const stages = commands
     .map((command, index) => ({ command, index }))
     .filter(({ command }) =>
       command.includes('stage-game-overlay-runtime.ps1'),
     );
   assert.equal(stages.length, 2);
-  assert.ok(stages.every(({ index }) => index < standalone));
+  assert.ok(stages.every(({ index }) => index < seal));
+  assert.ok(stages.some(({ command }) => command.includes('-Architecture x64')));
+  assert.ok(stages.some(({ command }) => command.includes('-Architecture x86')));
   assert.equal(project.targets.build.options.parallel, false);
 });
 

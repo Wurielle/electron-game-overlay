@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,4 +12,5 @@ $ErrorActionPreference = "Stop"
     -TargetExecutablePath "C:\Program Files (x86)\Steam\steamapps\common\Gun Frog\Gun Frog.exe" `
     -LaunchUri "steam://rungameid/3173130" `
     -GunFrogButtonProof `
+    -SkipBuild:$SkipBuild `
     -NoLaunch:$NoLaunch

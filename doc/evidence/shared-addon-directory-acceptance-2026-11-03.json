@@ -1,0 +1,1671 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-shared-addon-directory-acceptance",
+  "recordedAtUtc": "2026-11-03T21:17:33.260Z",
+  "scope": "Repository DirectX demos only. Genuine public SDK attachment, authenticated surfaces and exact desktop pixels; Windows SendInput is synthetic and is not physical-key acceptance. OS mapped paths/bases plus current module-file hashes do not attest remote-memory bytes or historical injection counts. Test-only self-load cells are identified separately. No real user game, production registration catalog, security setting or existing user ReShade installation was changed.",
+  "candidate": {
+    "sdkDist": "libs/electron-game-overlay/dist",
+    "packageVersion": "0.1.0-rc.7",
+    "sealedDistribution": {
+      "path": "libs/electron-game-overlay/dist/overlay-manifest.json",
+      "size": 25372,
+      "sha256": "331f581d8f16154279647803704d16728893b95c62210b0e922869af5141b322"
+    },
+    "entrySha256": "ac4d59edffc5b4667fd6b803366e98242f2f2ce0f8fb84970ab8e2fb78232565",
+    "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335",
+    "native": {
+      "x64": {
+        "runtimeGeneration": 23,
+        "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+        "packageManifest": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+          "size": 1100,
+          "sha256": "0706ed2512a6cab491df4660216343951cef053b750b4d8be60cf63c57207914"
+        },
+        "host": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.dll",
+          "size": 5531136,
+          "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d"
+        },
+        "injector": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject.exe",
+          "size": 199680,
+          "sha256": "52ff0d066344b607306e2a188702a326ae8b85f493d7922cb40d6ed55eeb2c04"
+        },
+        "addon": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay.addon64",
+          "size": 4391936,
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918"
+        }
+      },
+      "x86": {
+        "runtimeGeneration": 23,
+        "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+        "packageManifest": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+          "size": 1101,
+          "sha256": "4690af69cf3d228b8a1b91307134e1a65d623b31c92e5cf0741362e6150f5764"
+        },
+        "host": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade32.dll",
+          "size": 4406272,
+          "sha256": "847516fe4b1a5c488c154e87d633e2bee64334080de50de5b129f42f9459137e"
+        },
+        "injector": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/inject32.exe",
+          "size": 162816,
+          "sha256": "3004966b778bb995d1b3c052184bde0803cbe4c1f6688da3e0c61133df950997"
+        },
+        "addon": {
+          "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay.addon32",
+          "size": 3955200,
+          "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+        }
+      }
+    }
+  },
+  "retainedMixedVersionCandidate": {
+    "sdkDist": "build/installed-cooperative-pair-gen11-gen16-async-20261101-final/consumer-b/node_modules/electron-game-overlay/dist",
+    "runtimeGeneration": 16,
+    "addonBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+    "addonSha256": "a259f9125f3e509bf64827a8f72b5ba8aa4091765e2ab16e404ebc659a43d122",
+    "javascriptGraphSha256": "a401e62322b9fc5c3feaa53962121a7a8ee9fdeaf0b607535d00bc70054f8b32",
+    "runtimeManifest": {
+      "path": "build/installed-cooperative-pair-gen11-gen16-async-20261101-final/consumer-b/node_modules/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+      "size": 1130,
+      "sha256": "edc9677616fa61071738b13f422283e04c7521bf5a1a67a900d21bbe6de1fa9c"
+    }
+  },
+  "totals": {
+    "passedTargetCases": 13,
+    "apiArchitectureMatrix": 6,
+    "lateD3D11": 1,
+    "strongFeatureCells": 4,
+    "mixedVersionCells": 2,
+    "authenticatedProducerLifecycles": 30
+  },
+  "controllerChecks": {
+    "exactPidBinding": {
+      "passed": 16,
+      "command": "node --test apps/client/scripts/cooperative-exact-pid-binding.test.cjs",
+      "source": {
+        "path": "apps/client/scripts/cooperative-exact-pid-binding.cjs",
+        "size": 3043,
+        "sha256": "a8976853953f1f56e8391284c93f73d2e26e295025668389a17a24ce9d7f032c"
+      },
+      "tests": {
+        "path": "apps/client/scripts/cooperative-exact-pid-binding.test.cjs",
+        "size": 3706,
+        "sha256": "73306f9fbec55e08a9d0deaac2b49bb134ba2105f8ea3353859ac76e8c787fc7"
+      }
+    },
+    "preloadController": {
+      "passed": 18,
+      "report": {
+        "path": "build/preloaded-demo-controller-tests/ccd0155fc10a47299ecc1fb38e6e73c6/checks.json",
+        "size": 2056,
+        "sha256": "b82c600df8755faa65a3ef4f7c97f898a9d9983126153de25de03c4698f73925"
+      }
+    },
+    "sharedDirectoryController": {
+      "passed": 31,
+      "report": {
+        "path": "build/shared-addon-directory-controller-tests/f7989d4ad70c4ce5bcf7ee2aaddcabe2/checks.json",
+        "size": 5588,
+        "sha256": "e62531c8d1760c34986bf9840174357810e1ad9b74232c5bcbf8ab05edc996b6"
+      }
+    }
+  },
+  "finalCleanupObservation": {
+    "schemaVersion": 1,
+    "scope": "Read-only current OS process query scoped to the 13 exact repository-owned acceptance case directories. Authoritative target exits and retained producer/child handle waits are separately recorded by each controller.",
+    "observedAtUtc": "2026-11-03T21:17:16.5677258Z",
+    "checkedCaseDirectories": 13,
+    "remainingOwnedProcessCount": 0,
+    "remainingOwnedProcesses": [],
+    "report": {
+      "path": "build/shared-addon-directory-final-cleanup.json",
+      "size": 414,
+      "sha256": "e3b3696cfa68b71c170c927160ed729bb788e670ee756d21c48c18501de7d21f"
+    }
+  },
+  "verifiedBehavior": [
+    "Stable registered DLL paths are used directly; no per-run add-on snapshot directory",
+    "Offline peer modules load and remain dormant until their own application attaches",
+    "Late activation reuses the same mapped module bases and private authenticated routes",
+    "One ReShade host observed per target; no foreign existing installation or game-directory installation",
+    "Ordinary non-EGO add-on initializes from the same folder; another add-on returning false from AddonInit does not block EGO",
+    "Retired immutable files remain on disk but DisabledAddons excludes them from actual future scans",
+    "Exact red/blue and interleaved surface pixels, alpha cutout rendering and pointer routing, independent window raising",
+    "Native cursor shapes, both wheel axes, caption dragging and cross-app OR interception",
+    "Synthetic keyboard isolation, peer crash survival and safe fresh-engine restart",
+    "Registration removal leaves mapped modules, immutable bytes and file creation times intact"
+  ],
+  "strongAggregateReports": [
+    {
+      "path": "build/pl/r-4ee7d03c9c5a/report.json",
+      "size": 28139,
+      "sha256": "a45a67039136447337c525040da5838aaf9d6cb8333875648d5a7e5bdca33e2b"
+    },
+    {
+      "path": "build/pl/r-61797a9ca9c9/report.json",
+      "size": 27988,
+      "sha256": "ee750b4f46a380cce1f13529891dd49e2f01b038308141187c6d8d30254ce096"
+    }
+  ],
+  "cases": [
+    {
+      "id": "d3d9-x64-pre-device-822b00a00ad3",
+      "backend": "d3d9",
+      "architecture": "x64",
+      "attachmentTiming": "pre-device",
+      "status": "passed",
+      "report": {
+        "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/report.json",
+        "size": 12197,
+        "sha256": "ffc35e9acf9cb8018e63c4a243efdcdbdd68cb462e12417ec2fc6befc2ebf71e"
+      },
+      "passedChecks": 8,
+      "observedHost": {
+        "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/runs-a/demo.exe-VDuLx4/ReShade64.dll",
+        "baseAddress": "140720375136256",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "count": 1
+      },
+      "mappedEgoAddons": [
+        {
+          "member": "a",
+          "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/addons/ego-preload-76dc82a139eae44b94a482615374918b-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720368648192",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        },
+        {
+          "member": "b",
+          "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/addons/ego-preload-ec2d73809244887b5478376278564a90-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720334241792",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        }
+      ],
+      "moduleObservations": [
+        {
+          "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/initial-modules.json",
+          "size": 15976,
+          "sha256": "dca5bbc6350762b16df2515ff39486752e63d264f0334b5f48054332973623f3"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/both-modules.json",
+          "size": 15976,
+          "sha256": "dca5bbc6350762b16df2515ff39486752e63d264f0334b5f48054332973623f3"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/survivor-modules.json",
+          "size": 15976,
+          "sha256": "dca5bbc6350762b16df2515ff39486752e63d264f0334b5f48054332973623f3"
+        }
+      ],
+      "retiredRegistration": {
+        "applicationId": "com.electron-game-overlay.shared-folder.retired",
+        "retainedBytes": true,
+        "mappedCount": 0,
+        "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+        "x86AddonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+      },
+      "ordinaryAddons": {
+        "acceptedReceipt": {
+          "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/addons/sentinel-34104.ready",
+          "size": 76,
+          "sha256": "81700058ddd7657a3dea8e967ef1164e137d3e62e8b29371df27b20945a21d31"
+        },
+        "rejectedReceipt": {
+          "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/addons/rejected-34104.ready",
+          "size": 76,
+          "sha256": "81700058ddd7657a3dea8e967ef1164e137d3e62e8b29371df27b20945a21d31"
+        },
+        "acceptedFileSha256": "322fca6f33a35e8bf595f7a2c061a17ea6fcb3d55665ac6be4b2b43266f218bd",
+        "rejectedFileSha256": "9ac359f91b65222093814343110cf09951cdec94d5a29fc2f6c01690a2aabd3b"
+      },
+      "pixels": {
+        "exactMatches": 3
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 8148,
+          "creationTime100ns": "134382134337262983",
+          "state": {
+            "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/p/a/a-state.json",
+            "size": 9830,
+            "sha256": "b60fade8190253d93ca12cecd71f2a419916adf13940438982fb16d5d58c1d32"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 6872,
+          "creationTime100ns": "134382134354073700",
+          "state": {
+            "path": "build/shared-addon-directory/d3d9-x64-pre-device-822b00a00ad3/p/b/b-state.json",
+            "size": 10859,
+            "sha256": "ca79bd50c48ffa22d2845f65c82f9834939ab4c62c61108da2cb5dcbc1c3c4f4"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 34104,
+          "creationTime100ns": "134382134337104175",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:03:59.9566884Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d10-x64-pre-device-becd43513ce2",
+      "backend": "d3d10",
+      "architecture": "x64",
+      "attachmentTiming": "pre-device",
+      "status": "passed",
+      "report": {
+        "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/report.json",
+        "size": 12204,
+        "sha256": "64327830ba53b4b88c5de8d576915f8021e7376f99faa11417ac3b6b74708517"
+      },
+      "passedChecks": 8,
+      "observedHost": {
+        "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/runs-a/demo.exe-3yRLF9/ReShade64.dll",
+        "baseAddress": "140720375136256",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "count": 1
+      },
+      "mappedEgoAddons": [
+        {
+          "member": "a",
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/addons/ego-preload-76dc82a139eae44b94a482615374918b-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720368648192",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        },
+        {
+          "member": "b",
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/addons/ego-preload-ec2d73809244887b5478376278564a90-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720362160128",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        }
+      ],
+      "moduleObservations": [
+        {
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/initial-modules.json",
+          "size": 16954,
+          "sha256": "82b6bf975b052212b61a03ae8fab45993e6cd23b470b399db14a0067cb37ca00"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/both-modules.json",
+          "size": 16954,
+          "sha256": "82b6bf975b052212b61a03ae8fab45993e6cd23b470b399db14a0067cb37ca00"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/survivor-modules.json",
+          "size": 16954,
+          "sha256": "82b6bf975b052212b61a03ae8fab45993e6cd23b470b399db14a0067cb37ca00"
+        }
+      ],
+      "retiredRegistration": {
+        "applicationId": "com.electron-game-overlay.shared-folder.retired",
+        "retainedBytes": true,
+        "mappedCount": 0,
+        "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+        "x86AddonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+      },
+      "ordinaryAddons": {
+        "acceptedReceipt": {
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/addons/sentinel-52804.ready",
+          "size": 76,
+          "sha256": "ba7dcd6bfe9a2e79696afdc28cb2d25f07ae1ae8fb60667f80e2b9586d8a89cc"
+        },
+        "rejectedReceipt": {
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/addons/rejected-52804.ready",
+          "size": 76,
+          "sha256": "ba7dcd6bfe9a2e79696afdc28cb2d25f07ae1ae8fb60667f80e2b9586d8a89cc"
+        },
+        "acceptedFileSha256": "322fca6f33a35e8bf595f7a2c061a17ea6fcb3d55665ac6be4b2b43266f218bd",
+        "rejectedFileSha256": "9ac359f91b65222093814343110cf09951cdec94d5a29fc2f6c01690a2aabd3b"
+      },
+      "pixels": {
+        "exactMatches": 3,
+        "observations": [
+          {
+            "expected": "0x2828C6",
+            "y": 130,
+            "x": 55,
+            "label": "first shared-folder app red surface",
+            "geometry": "client=0,0,1280,720;window=26,26,1322,785;clientOrigin=34,57;foreground=81793314",
+            "window": "81793314",
+            "observed": "0x2828C6"
+          },
+          {
+            "expected": "0xC06515",
+            "y": 210,
+            "x": 430,
+            "label": "second shared-folder app blue surface",
+            "geometry": "client=0,0,1280,720;window=26,26,1322,785;clientOrigin=34,57;foreground=81793314",
+            "window": "81793314",
+            "observed": "0xC06515"
+          },
+          {
+            "expected": "0xC06515",
+            "y": 210,
+            "x": 430,
+            "label": "peer surface survives initiating application crash",
+            "geometry": "client=0,0,1280,720;window=26,26,1322,785;clientOrigin=34,57;foreground=81793314",
+            "window": "81793314",
+            "observed": "0xC06515"
+          }
+        ]
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 55980,
+          "creationTime100ns": "134382134414923583",
+          "state": {
+            "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/p/a/a-state.json",
+            "size": 9851,
+            "sha256": "ca9f3ec00e762344bf63c7fd01f6a2baf3ba5a9a3568447c1eb4a263f507895e"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 11880,
+          "creationTime100ns": "134382134436630573",
+          "state": {
+            "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/p/b/b-state.json",
+            "size": 10884,
+            "sha256": "0f80c67e3d3a81bfef86667ac1c1333b775dc608105eb49ae7f08038a57884eb"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 52804,
+          "creationTime100ns": "134382134414767619",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:04:08.3911135Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d11-x64-pre-device-3bd8e9218700",
+      "backend": "d3d11",
+      "architecture": "x64",
+      "attachmentTiming": "pre-device",
+      "status": "passed",
+      "report": {
+        "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/report.json",
+        "size": 12216,
+        "sha256": "be3121448522596416873b890efc5bdccffb6390ba610ac2a41197ba85bde4e7"
+      },
+      "passedChecks": 8,
+      "observedHost": {
+        "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/runs-a/demo.exe-49Fa8f/ReShade64.dll",
+        "baseAddress": "140720375136256",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "count": 1
+      },
+      "mappedEgoAddons": [
+        {
+          "member": "a",
+          "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/addons/ego-preload-76dc82a139eae44b94a482615374918b-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720368648192",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        },
+        {
+          "member": "b",
+          "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/addons/ego-preload-ec2d73809244887b5478376278564a90-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720362160128",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        }
+      ],
+      "moduleObservations": [
+        {
+          "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/initial-modules.json",
+          "size": 16303,
+          "sha256": "db19577c74023848cddf35cb68286355aa9dee1d6d713dff465333647de83c04"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/both-modules.json",
+          "size": 16303,
+          "sha256": "db19577c74023848cddf35cb68286355aa9dee1d6d713dff465333647de83c04"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/survivor-modules.json",
+          "size": 16303,
+          "sha256": "db19577c74023848cddf35cb68286355aa9dee1d6d713dff465333647de83c04"
+        }
+      ],
+      "retiredRegistration": {
+        "applicationId": "com.electron-game-overlay.shared-folder.retired",
+        "retainedBytes": true,
+        "mappedCount": 0,
+        "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+        "x86AddonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+      },
+      "ordinaryAddons": {
+        "acceptedReceipt": {
+          "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/addons/sentinel-34104.ready",
+          "size": 76,
+          "sha256": "c5b011481fd904d9776a21cce34e1f8fc250f18a3010b52b6bd499c8d3f0ed97"
+        },
+        "rejectedReceipt": {
+          "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/addons/rejected-34104.ready",
+          "size": 76,
+          "sha256": "c5b011481fd904d9776a21cce34e1f8fc250f18a3010b52b6bd499c8d3f0ed97"
+        },
+        "acceptedFileSha256": "322fca6f33a35e8bf595f7a2c061a17ea6fcb3d55665ac6be4b2b43266f218bd",
+        "rejectedFileSha256": "9ac359f91b65222093814343110cf09951cdec94d5a29fc2f6c01690a2aabd3b"
+      },
+      "pixels": {
+        "exactMatches": 3
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 35468,
+          "creationTime100ns": "134382134499394493",
+          "state": {
+            "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/p/a/a-state.json",
+            "size": 9855,
+            "sha256": "1f1403bef7b882b9a3d334bc5cfa6b0eb584890146cdfce5dcda9d0b7ff8b410"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 9128,
+          "creationTime100ns": "134382134517783122",
+          "state": {
+            "path": "build/shared-addon-directory/d3d11-x64-pre-device-3bd8e9218700/p/b/b-state.json",
+            "size": 10886,
+            "sha256": "0989bf70ef92304d89752a89d01083c5a3fe2c221020c863446d9168400c991c"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 34104,
+          "creationTime100ns": "134382134499239370",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:04:16.3021570Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d12-x64-pre-device-b96857ea772a",
+      "backend": "d3d12",
+      "architecture": "x64",
+      "attachmentTiming": "pre-device",
+      "status": "passed",
+      "report": {
+        "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/report.json",
+        "size": 12204,
+        "sha256": "f92a3b27d3b2310f5ccdca1c3d91ff3a5655f5cac6233da9b4f97dca998b5569"
+      },
+      "passedChecks": 8,
+      "observedHost": {
+        "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/runs-a/demo.exe-72wgTt/ReShade64.dll",
+        "baseAddress": "140720375136256",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "count": 1
+      },
+      "mappedEgoAddons": [
+        {
+          "member": "b",
+          "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/addons/ego-preload-ec2d73809244887b5478376278564a90-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720362160128",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        },
+        {
+          "member": "a",
+          "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/addons/ego-preload-76dc82a139eae44b94a482615374918b-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720368648192",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        }
+      ],
+      "moduleObservations": [
+        {
+          "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/initial-modules.json",
+          "size": 17332,
+          "sha256": "289f8eccd487dfa81cb88f53fdff3bd8cd26758e429690a338134c79303ab1cc"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/both-modules.json",
+          "size": 17332,
+          "sha256": "289f8eccd487dfa81cb88f53fdff3bd8cd26758e429690a338134c79303ab1cc"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/survivor-modules.json",
+          "size": 17332,
+          "sha256": "289f8eccd487dfa81cb88f53fdff3bd8cd26758e429690a338134c79303ab1cc"
+        }
+      ],
+      "retiredRegistration": {
+        "applicationId": "com.electron-game-overlay.shared-folder.retired",
+        "retainedBytes": true,
+        "mappedCount": 0,
+        "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+        "x86AddonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+      },
+      "ordinaryAddons": {
+        "acceptedReceipt": {
+          "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/addons/sentinel-57200.ready",
+          "size": 76,
+          "sha256": "4e7bdf9eebf5e719c5bd3884dc48b97d8a5d58bdd9e876cf2ffb3fd441ba61ad"
+        },
+        "rejectedReceipt": {
+          "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/addons/rejected-57200.ready",
+          "size": 76,
+          "sha256": "4e7bdf9eebf5e719c5bd3884dc48b97d8a5d58bdd9e876cf2ffb3fd441ba61ad"
+        },
+        "acceptedFileSha256": "322fca6f33a35e8bf595f7a2c061a17ea6fcb3d55665ac6be4b2b43266f218bd",
+        "rejectedFileSha256": "9ac359f91b65222093814343110cf09951cdec94d5a29fc2f6c01690a2aabd3b"
+      },
+      "pixels": {
+        "exactMatches": 3
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 47540,
+          "creationTime100ns": "134382134578083357",
+          "state": {
+            "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/p/a/a-state.json",
+            "size": 9851,
+            "sha256": "a10c9d2eb3ef3d04d6963c44e3c6fb02f1e2fdcccf6bfc7674000c01c5da8cf0"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 37212,
+          "creationTime100ns": "134382134596254923",
+          "state": {
+            "path": "build/shared-addon-directory/d3d12-x64-pre-device-b96857ea772a/p/b/b-state.json",
+            "size": 10884,
+            "sha256": "d69a907c621ffc87e181ecfaa3e042631e8b1e4670ae796e11060c931069b660"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 57200,
+          "creationTime100ns": "134382134577919607",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:04:24.2665869Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d9-x86-pre-device-b1f4de5445e3",
+      "backend": "d3d9",
+      "architecture": "x86",
+      "attachmentTiming": "pre-device",
+      "status": "passed",
+      "report": {
+        "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/report.json",
+        "size": 13475,
+        "sha256": "7af739149e6a830ee8c26dbfb7a13d346545831d117905d5412121ecea8de0f0"
+      },
+      "passedChecks": 8,
+      "observedHost": {
+        "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/runs-a/demo.exe-ozO8EC/ReShade32.dll",
+        "baseAddress": "1757544448",
+        "sha256": "847516fe4b1a5c488c154e87d633e2bee64334080de50de5b129f42f9459137e",
+        "count": 1
+      },
+      "mappedEgoAddons": [
+        {
+          "member": "a",
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/addons/ego-preload-76dc82a139eae44b94a482615374918b-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+          "baseAddress": "1745682432",
+          "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a",
+          "reusedAfterPeerAttach": true
+        },
+        {
+          "member": "b",
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/addons/ego-preload-ec2d73809244887b5478376278564a90-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+          "baseAddress": "1739718656",
+          "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a",
+          "reusedAfterPeerAttach": true
+        }
+      ],
+      "moduleObservations": [
+        {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/initial-modules.json",
+          "size": 16314,
+          "sha256": "e37c29fd3c1460c50ab561af21f0a318d6a147cdaf751aabe6337f508b2f75a5"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/both-modules.json",
+          "size": 16314,
+          "sha256": "e37c29fd3c1460c50ab561af21f0a318d6a147cdaf751aabe6337f508b2f75a5"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/survivor-modules.json",
+          "size": 16314,
+          "sha256": "e37c29fd3c1460c50ab561af21f0a318d6a147cdaf751aabe6337f508b2f75a5"
+        }
+      ],
+      "retiredRegistration": {
+        "applicationId": "com.electron-game-overlay.shared-folder.retired",
+        "retainedBytes": true,
+        "mappedCount": 0,
+        "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+        "x86AddonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+      },
+      "ordinaryAddons": {
+        "acceptedReceipt": {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/addons/sentinel-15144.ready",
+          "size": 76,
+          "sha256": "c63a5f52972da651746a614cb07649acd6f1b34c575d3a01b717a6b068727ac6"
+        },
+        "rejectedReceipt": {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/addons/rejected-15144.ready",
+          "size": 76,
+          "sha256": "c63a5f52972da651746a614cb07649acd6f1b34c575d3a01b717a6b068727ac6"
+        },
+        "acceptedFileSha256": "439f343ea5890e7c9c169cb6b4d53731925d36ffdf039b2c5ba4bbcab59b185c",
+        "rejectedFileSha256": "3cf0d8ce42a6cb46ca4209f3ab700535a54867a6268b09fd74dc04e474baa587"
+      },
+      "pixels": {
+        "exactMatches": 3
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 21772,
+          "creationTime100ns": "134382137166241686",
+          "state": {
+            "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/p/a/a-state.json",
+            "size": 9903,
+            "sha256": "7c85f76ad9fa6d92bc558456d3d698825274fabb0849ed8f0e8ae865c8767723"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 58120,
+          "creationTime100ns": "134382137183125729",
+          "state": {
+            "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/p/b/b-state.json",
+            "size": 10932,
+            "sha256": "ba87a374bd09e96363948ffb33bfcbdac206d496198061d95d0dbb26f59d7772"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 15144,
+          "creationTime100ns": "134382137166074637",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:08:42.8929434Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      },
+      "architectureHandoff": {
+        "source": {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/runs-a/demo.exe-ozO8EC/inject.stdout.log",
+          "size": 929,
+          "sha256": "a8e4824a279f903f847a9b161b62435ca60cc22b043684b8e8df8319404d42f2"
+        },
+        "validatedX86": {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/validated-x86-initial-3445788f618d4a0a8efe5afb070f97d6.stdout.log",
+          "size": 377,
+          "sha256": "a00fe8b4b90c92acbdeff65665efdf0c3d5238b3aa9839c13a99b478f89a381c"
+        },
+        "windowsErrorCode": 706,
+        "injectionStarted": false
+      }
+    },
+    {
+      "id": "d3d10-x86-pre-device-4ca34a547233",
+      "backend": "d3d10",
+      "architecture": "x86",
+      "attachmentTiming": "pre-device",
+      "status": "passed",
+      "report": {
+        "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/report.json",
+        "size": 13482,
+        "sha256": "86d75c74a994d386263270889f11d0776e2b0bd7906aec0edc17498abebe9f2a"
+      },
+      "passedChecks": 8,
+      "observedHost": {
+        "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/runs-a/demo.exe-3w61TG/ReShade32.dll",
+        "baseAddress": "1757872128",
+        "sha256": "847516fe4b1a5c488c154e87d633e2bee64334080de50de5b129f42f9459137e",
+        "count": 1
+      },
+      "mappedEgoAddons": [
+        {
+          "member": "a",
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/addons/ego-preload-76dc82a139eae44b94a482615374918b-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+          "baseAddress": "1745682432",
+          "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a",
+          "reusedAfterPeerAttach": true
+        },
+        {
+          "member": "b",
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/addons/ego-preload-ec2d73809244887b5478376278564a90-CCE20935ADD44EF6A5A7973014B2E07F-3850842892b3a00b.addon32",
+          "baseAddress": "1739718656",
+          "sha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a",
+          "reusedAfterPeerAttach": true
+        }
+      ],
+      "moduleObservations": [
+        {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/initial-modules.json",
+          "size": 17262,
+          "sha256": "ea0505fad550e45057c40ef705be47e913988bed493f2b4a19f371d3fd3cf2a2"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/both-modules.json",
+          "size": 17262,
+          "sha256": "ea0505fad550e45057c40ef705be47e913988bed493f2b4a19f371d3fd3cf2a2"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/survivor-modules.json",
+          "size": 17262,
+          "sha256": "ea0505fad550e45057c40ef705be47e913988bed493f2b4a19f371d3fd3cf2a2"
+        }
+      ],
+      "retiredRegistration": {
+        "applicationId": "com.electron-game-overlay.shared-folder.retired",
+        "retainedBytes": true,
+        "mappedCount": 0,
+        "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+        "x86AddonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+      },
+      "ordinaryAddons": {
+        "acceptedReceipt": {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/addons/sentinel-4812.ready",
+          "size": 75,
+          "sha256": "e224a3ba972f5937a9ed36ab57e08544e6996ebf263d85ab3498a8c04f95d882"
+        },
+        "rejectedReceipt": {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/addons/rejected-4812.ready",
+          "size": 75,
+          "sha256": "e224a3ba972f5937a9ed36ab57e08544e6996ebf263d85ab3498a8c04f95d882"
+        },
+        "acceptedFileSha256": "439f343ea5890e7c9c169cb6b4d53731925d36ffdf039b2c5ba4bbcab59b185c",
+        "rejectedFileSha256": "3cf0d8ce42a6cb46ca4209f3ab700535a54867a6268b09fd74dc04e474baa587"
+      },
+      "pixels": {
+        "exactMatches": 3
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 5756,
+          "creationTime100ns": "134382137244151931",
+          "state": {
+            "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/p/a/a-state.json",
+            "size": 9904,
+            "sha256": "db93ebe24b23596d49710d5396f96c51e7336a3e8f7b5f38a4039d8b9f30494a"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 51340,
+          "creationTime100ns": "134382137263446912",
+          "state": {
+            "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/p/b/b-state.json",
+            "size": 10939,
+            "sha256": "7b906de8388eaf5e27a2bed16f8c54d317307fa0a549e4ab1e3171b0c63504f6"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 4812,
+          "creationTime100ns": "134382137243987387",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:08:50.5617784Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      },
+      "architectureHandoff": {
+        "source": {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/runs-a/demo.exe-3w61TG/inject.stdout.log",
+          "size": 926,
+          "sha256": "5300f9ad3ea9567e0a67410eb18391b82fe7f3dec52348e10e8e914f032f8455"
+        },
+        "validatedX86": {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/validated-x86-initial-cded2e9708a744889d4e4fcb3c53bb52.stdout.log",
+          "size": 375,
+          "sha256": "ba2a1c848e25cf54a17c329f622221c999400413e0de0e9d47795511febcf560"
+        },
+        "windowsErrorCode": 706,
+        "injectionStarted": false
+      }
+    },
+    {
+      "id": "d3d11-x64-late-40c9662c2e26",
+      "backend": "d3d11",
+      "architecture": "x64",
+      "attachmentTiming": "late",
+      "status": "passed",
+      "report": {
+        "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/report.json",
+        "size": 26217,
+        "sha256": "bfe797b27dc931e73d331c4509096f7af7d0975f808eb93e455d16a8fbfaea55"
+      },
+      "passedChecks": 9,
+      "observedHost": {
+        "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/runs-a/demo.exe-kXMqx5/ReShade64.dll",
+        "baseAddress": "140720408625152",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "count": 1
+      },
+      "mappedEgoAddons": [
+        {
+          "member": "a",
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/addons/ego-preload-76dc82a139eae44b94a482615374918b-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720402137088",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        },
+        {
+          "member": "b",
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/addons/ego-preload-ec2d73809244887b5478376278564a90-CCE20935ADD44EF6A5A7973014B2E07F-f45ca8feb398fa4c.addon64",
+          "baseAddress": "140720395649024",
+          "sha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+          "reusedAfterPeerAttach": true
+        }
+      ],
+      "moduleObservations": [
+        {
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/initial-modules.json",
+          "size": 16273,
+          "sha256": "0a627ac8a34d0655d32a7bec3826f6da1db4d7cba4755661f2ccd56fdc3b735b"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/both-modules.json",
+          "size": 16273,
+          "sha256": "0a627ac8a34d0655d32a7bec3826f6da1db4d7cba4755661f2ccd56fdc3b735b"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/survivor-modules.json",
+          "size": 16273,
+          "sha256": "0a627ac8a34d0655d32a7bec3826f6da1db4d7cba4755661f2ccd56fdc3b735b"
+        }
+      ],
+      "retiredRegistration": {
+        "applicationId": "com.electron-game-overlay.shared-folder.retired",
+        "retainedBytes": true,
+        "mappedCount": 0,
+        "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+        "x86AddonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a"
+      },
+      "ordinaryAddons": {
+        "acceptedReceipt": {
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/addons/sentinel-42808.ready",
+          "size": 76,
+          "sha256": "1cf98af713b89101b0402d000b59a97e7dc5b7fed2accdbce74e1c5c3a256774"
+        },
+        "rejectedReceipt": {
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/addons/rejected-42808.ready",
+          "size": 76,
+          "sha256": "1cf98af713b89101b0402d000b59a97e7dc5b7fed2accdbce74e1c5c3a256774"
+        },
+        "acceptedFileSha256": "322fca6f33a35e8bf595f7a2c061a17ea6fcb3d55665ac6be4b2b43266f218bd",
+        "rejectedFileSha256": "9ac359f91b65222093814343110cf09951cdec94d5a29fc2f6c01690a2aabd3b"
+      },
+      "pixels": {
+        "exactMatches": 3
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 8084,
+          "creationTime100ns": "134382136533400581",
+          "state": {
+            "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/p/a/a-state.json",
+            "size": 9721,
+            "sha256": "a6aea10eb1533780bd26c3c5006fc06d34ab6ed05cd847a46bf70ff6c6d4609f"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 7960,
+          "creationTime100ns": "134382136549158330",
+          "state": {
+            "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/p/b/b-state.json",
+            "size": 10730,
+            "sha256": "d2e78cc7c4da81fbd9542725d78a9c9e6755557afb2da8c9cddb4cfb2002c5e6"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 42808,
+          "creationTime100ns": "134382136520887270",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:07:39.1584589Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      },
+      "preAttachmentGraphics": {
+        "oracle": {
+          "path": "build/shared-addon-directory/d3d11-x64-late-40c9662c2e26/target/electron-game-overlay-present-v1.log",
+          "size": 2808,
+          "sha256": "4728586698a3ef473697c080df647789c85f7e386757df4e6695d38743125ac9"
+        },
+        "successfulPrimaryPresentCalls": 62,
+        "preAttachmentModules": {
+          "count": 61,
+          "reshadeCount": 0,
+          "addonCount": 0
+        },
+        "scope": "Successful primary Present API return after at least eight calls; exact target creation/image independently rechecked through retained OS handle. This is not display proof."
+      }
+    },
+    {
+      "id": "d3d11-self-load",
+      "backend": "d3d11",
+      "architecture": "x64",
+      "status": "passed",
+      "scope": "Test-owned target self-LoadLibrary before devices; real ReShade scans the stable external AddonPath; no producer is running.",
+      "report": {
+        "path": "build/pl/r-4ee7d03c9c5a/s/result.json",
+        "size": 10607,
+        "sha256": "dff80b324a9d2e3286ff3594278fdedca81ae210d883b1187380f7420e90bf02"
+      },
+      "passedChecks": 17,
+      "observedHost": {
+        "path": "build/pl/r-4ee7d03c9c5a/s/h/ReShade64.dll",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "baseAddress": "0x00007ffc26780000",
+        "count": 1
+      },
+      "mappedObservations": [
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/s/all-apps-offline-resources.json",
+          "size": 21096,
+          "sha256": "4e0f7c7e82badf415d425afb5f198b89cecb319edf42af4d0ddf9e1b998bfacb"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/s/both-apps-active-resources.json",
+          "size": 20572,
+          "sha256": "bd5747e5fa6cd88161fd8e991d8d7dca0adce5da886983f821864d799ff02dd8"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/s/first-app-active-dispatcher-offline-resources.json",
+          "size": 19955,
+          "sha256": "cfd6b65a4bbc5ff087acaa71ada550afe8dde6923212d571dd2429ee139bea65"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/s/initial-scan-resources.json",
+          "size": 17828,
+          "sha256": "4a8a4693ee13b6aca05e8ad51c677cee23f9ec007d984cd09a911b171db7eda9"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/s/restarted-app-fresh-member-resources.json",
+          "size": 21283,
+          "sha256": "ec797561282ce18d921a60b1cbacbc4bbe05e7ac1915f68b82e2f6b74d0d20cb"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/s/survivor-after-peer-crash-resources.json",
+          "size": 20480,
+          "sha256": "befdc3ce759702db31acc560d885273915e7790d3d87687dba73a40cd0fea9e5"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/s/unregister-keeps-current-target-resources.json",
+          "size": 21283,
+          "sha256": "ebf3aea1e50ad7f331c3ffdd796ac0de4a257d3d92960be3a75f4cdb5be07f41"
+        }
+      ],
+      "pixels": {
+        "exactMatches": 9
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 12372,
+          "creationTime100ns": "134382135266415091",
+          "state": {
+            "path": "build/pl/r-4ee7d03c9c5a/s/p/a1/a-state.json",
+            "size": 10975,
+            "sha256": "607253b54ab904f15912a8dec3bf3bc872c192182294c6f61c76e15f35188ae0"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "a",
+          "processId": 35820,
+          "creationTime100ns": "134382135344173310",
+          "state": {
+            "path": "build/pl/r-4ee7d03c9c5a/s/p/a2/a-state.json",
+            "size": 9569,
+            "sha256": "aa1c6d93cf2c617535de6bbae88777650be887a1586a3daf5c6471bc9cccedf7"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 54508,
+          "creationTime100ns": "134382135278514986",
+          "state": {
+            "path": "build/pl/r-4ee7d03c9c5a/s/p/b1/b-state.json",
+            "size": 9743,
+            "sha256": "f8de3b49475b4ef921d12dd84dcbf28cc401a8ca0a5c79326d79c0b08fe7d085"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 39400,
+          "creationTime100ns": "134382135248228607",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:05:39.1226476Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d11-production-injection",
+      "backend": "d3d11",
+      "architecture": "x64",
+      "status": "passed",
+      "scope": "Genuine public SDK first-host injection before devices; initiating app active, second registered app dormant.",
+      "report": {
+        "path": "build/pl/r-4ee7d03c9c5a/i/result.json",
+        "size": 15144,
+        "sha256": "b4a17b84ab17dcda8705b934f44f6db2aa6a274f8b5d3bcff74f48b8cb189da6"
+      },
+      "passedChecks": 16,
+      "observedHost": {
+        "path": "build/pl/r-4ee7d03c9c5a/i/a1/p.exe-6rWyGe/ReShade64.dll",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "baseAddress": "0x00007ffc07c80000",
+        "count": 1
+      },
+      "mappedObservations": [
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/i/all-apps-offline-resources.json",
+          "size": 21154,
+          "sha256": "d0df562bd82127a87da1836262407defcffad8464fc1acbbceca4c9402d3e4b5"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/i/both-apps-active-resources.json",
+          "size": 20629,
+          "sha256": "f27ca6d9983f628df4205945b16f15086155d1576d616475890e6328ccfea44a"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/i/initial-scan-resources.json",
+          "size": 20005,
+          "sha256": "c81011360d950993035387b6beba139937bb5afa45b1fbd590640fb301487133"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/i/restarted-app-fresh-member-resources.json",
+          "size": 21341,
+          "sha256": "222c7ee17e1c549525f833471e8cc5dddf4a4bc569f04fc08bbbf26236f0896a"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/i/survivor-after-peer-crash-resources.json",
+          "size": 20538,
+          "sha256": "8c9807703dd4a8c7c46e98880ba0782c0f5e700d675ff4d0213d82698e08acc3"
+        },
+        {
+          "path": "build/pl/r-4ee7d03c9c5a/i/unregister-keeps-current-target-resources.json",
+          "size": 21341,
+          "sha256": "36a71eab5c5a038d86aa787a2ee4c169a8093fafd305a03396b68532b9e2360a"
+        }
+      ],
+      "pixels": {
+        "exactMatches": 9
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 41528,
+          "creationTime100ns": "134382135395231061",
+          "state": {
+            "path": "build/pl/r-4ee7d03c9c5a/i/p/a1/a-state.json",
+            "size": 10265,
+            "sha256": "ccf390f476c13b6e1a4e4cedfb120d12f7ed93595713f1faf8f996339254b276"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "a",
+          "processId": 50092,
+          "creationTime100ns": "134382135475470764",
+          "state": {
+            "path": "build/pl/r-4ee7d03c9c5a/i/p/a2/a-state.json",
+            "size": 9629,
+            "sha256": "719025ffd6f03587a9deda86b7ad23a9e83455b4edc5b651cb5bd26f019a8d90"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 4436,
+          "creationTime100ns": "134382135414566454",
+          "state": {
+            "path": "build/pl/r-4ee7d03c9c5a/i/p/b1/b-state.json",
+            "size": 9816,
+            "sha256": "62778a9f76d9574145688ebef69ec05ddc316f1eaacd0ccac3f303a33b3d16ae"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 48740,
+          "creationTime100ns": "134382135395146004",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:05:51.9560531Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d12-self-load",
+      "backend": "d3d12",
+      "architecture": "x64",
+      "status": "passed",
+      "scope": "Test-owned target self-LoadLibrary before devices; real ReShade scans the stable external AddonPath; no producer is running.",
+      "report": {
+        "path": "build/pl/r-61797a9ca9c9/s/result.json",
+        "size": 10540,
+        "sha256": "7221af4a1852f6dce5f373987f527cb8404ca005b77f9169c8f4b03d869ffa07"
+      },
+      "passedChecks": 17,
+      "observedHost": {
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "baseAddress": "0x00007ffc12010000",
+        "path": "build/pl/r-61797a9ca9c9/s/h/ReShade64.dll",
+        "count": 1
+      },
+      "mappedObservations": [
+        {
+          "path": "build/pl/r-61797a9ca9c9/s/all-apps-offline-resources.json",
+          "size": 17832,
+          "sha256": "121a1d7ae33b0b92b242d633a512c0e96cf0662f7d878fdec72dff93c7fce7f0"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/s/both-apps-active-resources.json",
+          "size": 17307,
+          "sha256": "1a15f64d7ab52b48bb195ba40d9564aec41df805a1208be013e943606a2a2023"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/s/first-app-active-dispatcher-offline-resources.json",
+          "size": 16690,
+          "sha256": "86705af41db4afec5538951ff331f47e62c7f0252e44d8cb35f21947458eb192"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/s/initial-scan-resources.json",
+          "size": 16003,
+          "sha256": "a04e8a5806f9ab26166824bc92cad605b8688607149b0dfc7e601f0315e6dc5a"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/s/restarted-app-fresh-member-resources.json",
+          "size": 18019,
+          "sha256": "aab653837924fbe52a54e37417b4e5c2af70754cde2d6166c9606a94742a23c2"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/s/survivor-after-peer-crash-resources.json",
+          "size": 17216,
+          "sha256": "3078fab259d31926bd7be6e4bed498d3ebdd52714ad18e4374259e31c053da63"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/s/unregister-keeps-current-target-resources.json",
+          "size": 18019,
+          "sha256": "38f57d3651ab90ef261386b1dc31d96f342f0aa4fb67d7a98d8b90f8e78c5b8b"
+        }
+      ],
+      "pixels": {
+        "exactMatches": 9
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 15496,
+          "creationTime100ns": "134382135739707040",
+          "state": {
+            "path": "build/pl/r-61797a9ca9c9/s/p/a1/a-state.json",
+            "size": 10972,
+            "sha256": "5b6e0965965516befa9a7dabdcdc544956ced2ee72071f67a2fff328921a7dff"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "a",
+          "processId": 42112,
+          "creationTime100ns": "134382135818252385",
+          "state": {
+            "path": "build/pl/r-61797a9ca9c9/s/p/a2/a-state.json",
+            "size": 9566,
+            "sha256": "9df04c49bb336efbc8f7ec53a3c876071a3412d938e4854dd3944994ba1a71f0"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 42308,
+          "creationTime100ns": "134382135751342718",
+          "state": {
+            "path": "build/pl/r-61797a9ca9c9/s/p/b1/b-state.json",
+            "size": 9740,
+            "sha256": "d53865ab4ccf9b8b56e6ca77bd13ace7f0d214d3ed382e9d70b359ae0edffd4c"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 16864,
+          "creationTime100ns": "134382135721385918",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:06:26.6475138Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d12-production-injection",
+      "backend": "d3d12",
+      "architecture": "x64",
+      "status": "passed",
+      "scope": "Genuine public SDK first-host injection before devices; initiating app active, second registered app dormant.",
+      "report": {
+        "path": "build/pl/r-61797a9ca9c9/i/result.json",
+        "size": 15060,
+        "sha256": "98afe2a516a032b75e362eb81c4a43713c68abae47f3b1db0487f8b4e0827a8c"
+      },
+      "passedChecks": 16,
+      "observedHost": {
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "baseAddress": "0x00007ffc05f80000",
+        "path": "build/pl/r-61797a9ca9c9/i/a1/p.exe-lmSzhF/ReShade64.dll",
+        "count": 1
+      },
+      "mappedObservations": [
+        {
+          "path": "build/pl/r-61797a9ca9c9/i/all-apps-offline-resources.json",
+          "size": 17882,
+          "sha256": "116d6732b11d01e2a62864d6de502948b084a5d33fdd1ee0b3f31d61102c1ec9"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/i/both-apps-active-resources.json",
+          "size": 17357,
+          "sha256": "4a3990574faa1c4803d5b32696738e109919ced548ab466714f15a15231cdf34"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/i/initial-scan-resources.json",
+          "size": 16733,
+          "sha256": "b48222368caa21f35e2914fa5e7e2c5714c6834100af1015c8c8fbf5140fbe0d"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/i/restarted-app-fresh-member-resources.json",
+          "size": 18069,
+          "sha256": "2d9213b1181c75a08bdfee7b5f656e580cdf1bf2d1b43c308b4e16071ecedf7f"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/i/survivor-after-peer-crash-resources.json",
+          "size": 17266,
+          "sha256": "e563cd36bd08c38e240d2f51f3537f2942a1e074130152bc297fe188d4d5f983"
+        },
+        {
+          "path": "build/pl/r-61797a9ca9c9/i/unregister-keeps-current-target-resources.json",
+          "size": 18069,
+          "sha256": "d32bf94ecaad0bdde2b31df91a4a7352d31cdb7a1eb7dcbd38d7838723cf407d"
+        }
+      ],
+      "pixels": {
+        "exactMatches": 9
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 17164,
+          "creationTime100ns": "134382135870469769",
+          "state": {
+            "path": "build/pl/r-61797a9ca9c9/i/p/a1/a-state.json",
+            "size": 10262,
+            "sha256": "f3de5459601a4e08cf221db9ef778af3ae16fbe80b4622411192305de621f6fe"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "a",
+          "processId": 57200,
+          "creationTime100ns": "134382135953128356",
+          "state": {
+            "path": "build/pl/r-61797a9ca9c9/i/p/a2/a-state.json",
+            "size": 9626,
+            "sha256": "9b7d1712816d3d058155e79534e309667bd74b06b8340112f215101654853a5c"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 22992,
+          "creationTime100ns": "134382135888587574",
+          "state": {
+            "path": "build/pl/r-61797a9ca9c9/i/p/b1/b-state.json",
+            "size": 9815,
+            "sha256": "31d5b139fe81149173ce02cd41338cfe2dbdb5c63ccd733a0388a2adcda3938c"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 17664,
+          "creationTime100ns": "134382135870366442",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:06:39.8681876Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d11-unregistered-generation-16",
+      "backend": "d3d11",
+      "architecture": "x64",
+      "status": "passed",
+      "scope": "Copied repository DirectX demo; test-only self-load of the current SDK owned host with its exact reserved marker, not foreign stock-host compatibility; actual old SDK dynamic attachment. Windows SendInput, not physical-key acceptance. File hashes and OS module bases, not remote-memory attestation.",
+      "report": {
+        "path": "build/pl/c-a918101c8618/report.json",
+        "size": 10343,
+        "sha256": "88620ee2eca59742140fea1f412f539e6808da13db366dd618b886166eb33e4b"
+      },
+      "passedChecks": 9,
+      "observedHost": {
+        "path": "build/pl/c-a918101c8618/h/ReShade64.dll",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "count": 1
+      },
+      "registeredBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "unregisteredBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "mappedObservations": [
+        {
+          "path": "build/pl/c-a918101c8618/both-versions-active-resources.json",
+          "size": 20212,
+          "sha256": "db36bad55955bde1c3c4b75b96c339318aaf2945f3c641d98217d471eedaaee8"
+        },
+        {
+          "path": "build/pl/c-a918101c8618/both-versions-offline-resources.json",
+          "size": 20025,
+          "sha256": "c66a85e83dffef9377208ca5edf0d3af122134d79b23696545b114f8983f101f"
+        },
+        {
+          "path": "build/pl/c-a918101c8618/dormant-current-app-offline-resources.json",
+          "size": 17291,
+          "sha256": "6bdc742338adaf38205a47a1bd952034fce849d823f7c671557075269faf0c91"
+        },
+        {
+          "path": "build/pl/c-a918101c8618/old-survives-current-dispatcher-app-crash-resources.json",
+          "size": 20120,
+          "sha256": "2bd01ead63e0582e9406036962af26a84c5bb5ac76abdc161c7be2a64428f8e6"
+        },
+        {
+          "path": "build/pl/c-a918101c8618/old-unregistered-active-current-offline-resources.json",
+          "size": 19598,
+          "sha256": "5ebfba15297c2e5a4c80687a5156026a2783d19692c6f1ec9815716890d84205"
+        }
+      ],
+      "pixels": {
+        "exactMatches": 5
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 37212,
+          "creationTime100ns": "134382140535571737",
+          "state": {
+            "path": "build/pl/c-a918101c8618/p/a1/a-state.json",
+            "size": 9669,
+            "sha256": "95cd129587d95cf802fe9f51b9f484355c6ff69d6305d1cc14c399804041b4f3"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 26652,
+          "creationTime100ns": "134382140513614912",
+          "state": {
+            "path": "build/pl/c-a918101c8618/p/b1/b-state.json",
+            "size": 11260,
+            "sha256": "8152c054b2f8f577831505b6c2bbb47543f3d0e60eedb1ea31448a1397956d7e"
+          },
+          "javascriptGraphSha256": "a401e62322b9fc5c3feaa53962121a7a8ee9fdeaf0b607535d00bc70054f8b32"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 46000,
+          "creationTime100ns": "134382140495754841",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:14:20.6069629Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    },
+    {
+      "id": "d3d12-unregistered-generation-16",
+      "backend": "d3d12",
+      "architecture": "x64",
+      "status": "passed",
+      "scope": "Copied repository DirectX demo; test-only self-load of the current SDK owned host with its exact reserved marker, not foreign stock-host compatibility; actual old SDK dynamic attachment. Windows SendInput, not physical-key acceptance. File hashes and OS module bases, not remote-memory attestation.",
+      "report": {
+        "path": "build/pl/c-6ed08bec0a6b/report.json",
+        "size": 10285,
+        "sha256": "b9a32f4eab5e28e22089b47981fb92294b3829b916ff9d56c85a010e8bba9162"
+      },
+      "passedChecks": 9,
+      "observedHost": {
+        "path": "build/pl/c-6ed08bec0a6b/h/ReShade64.dll",
+        "sha256": "dc824835e86abe2c8217fed66cf350528a64cc25babd9ae640febbaa4b76267d",
+        "count": 1
+      },
+      "registeredBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "unregisteredBuildId": "E8FE3783F29E4FB297D8B006D0087725",
+      "mappedObservations": [
+        {
+          "path": "build/pl/c-6ed08bec0a6b/both-versions-active-resources.json",
+          "size": 16953,
+          "sha256": "f0cd31479926263f2cf92b411f5564d14380899b52301b1400a87e124da6b5e3"
+        },
+        {
+          "path": "build/pl/c-6ed08bec0a6b/both-versions-offline-resources.json",
+          "size": 16767,
+          "sha256": "ef7242cbd7cce15a783fc1923c755af8e1c6611f486f1075ea3718d1cf0a0a8a"
+        },
+        {
+          "path": "build/pl/c-6ed08bec0a6b/dormant-current-app-offline-resources.json",
+          "size": 15469,
+          "sha256": "474556c0d314c8843b49fb16a192894dda9b1e408d7a435641d8e593d16578fd"
+        },
+        {
+          "path": "build/pl/c-6ed08bec0a6b/old-survives-current-dispatcher-app-crash-resources.json",
+          "size": 16862,
+          "sha256": "67ad07046de80cd4f7b4e37fdbde47ddfb683c42b915679551671f5eab5b5a36"
+        },
+        {
+          "path": "build/pl/c-6ed08bec0a6b/old-unregistered-active-current-offline-resources.json",
+          "size": 16339,
+          "sha256": "469624d5258be1e30ff1c83899b0a1585ae5d08b89671439096d17460e84bf41"
+        }
+      ],
+      "pixels": {
+        "exactMatches": 5
+      },
+      "producers": [
+        {
+          "member": "a",
+          "processId": 42188,
+          "creationTime100ns": "134382140656145301",
+          "state": {
+            "path": "build/pl/c-6ed08bec0a6b/p/a1/a-state.json",
+            "size": 9670,
+            "sha256": "96dabbf90d65a5e1fddae5cfab421ed06210e0109e05a067f7925eba77788c96"
+          },
+          "javascriptGraphSha256": "6d31cf122dddcc4eacf3fec9160a6a523fbea58ef17d6070d5c71e8cbb1fc335"
+        },
+        {
+          "member": "b",
+          "processId": 55556,
+          "creationTime100ns": "134382140636152990",
+          "state": {
+            "path": "build/pl/c-6ed08bec0a6b/p/b1/b-state.json",
+            "size": 11259,
+            "sha256": "d458e70257881c60d4c23cb0e441e5ba2f111e9f7e5387e07b0c81b50a9e8171"
+          },
+          "javascriptGraphSha256": "a401e62322b9fc5c3feaa53962121a7a8ee9fdeaf0b607535d00bc70054f8b32"
+        }
+      ],
+      "cleanup": {
+        "target": {
+          "pid": 39080,
+          "creationTime100ns": "134382140617736879",
+          "hasExited": true,
+          "observedCreationMatches": true,
+          "exitCode": 0,
+          "exitCodeHex": "0x00000000",
+          "forcedTermination": false,
+          "exitTimeUtc": "2026-11-03T21:14:33.0638140Z"
+        },
+        "cleanupErrors": [],
+        "producerScope": "Controller waited for the exact retained producer/child handles; no cleanup errors were reported. Individual producer exit-code records are not claimed."
+      }
+    }
+  ],
+  "earlierRuns": [
+    {
+      "path": "build/shared-addon-directory/d3d10-x64-2dc0348008c4/report.json",
+      "classification": "Unexplained visual miss",
+      "explanation": "The first preliminary D3D10 run timed out on the exact blue pixel after authentication and loading checks passed; that run did not capture the observed color. Cause remains unproven. Diagnostics were added without changing the assertion; two subsequent fresh D3D10 x64 cases passed exact red/blue and survivor pixel checks.",
+      "subsequentPasses": [
+        {
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-9f70f1d32b44/report.json",
+          "size": 10248,
+          "sha256": "495998e1bf12811cdd6cb59a093d115e018ac2dce8e112da0ac06b93dc575034"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d10-x64-pre-device-becd43513ce2/report.json",
+          "size": 12204,
+          "sha256": "64327830ba53b4b88c5de8d576915f8021e7376f99faa11417ac3b6b74708517"
+        }
+      ],
+      "report": {
+        "path": "build/shared-addon-directory/d3d10-x64-2dc0348008c4/report.json",
+        "size": 8948,
+        "sha256": "778b0717b21b2efc1f3fe91e6341c3bab5df08f708682f10ba9ab416a0553a70"
+      }
+    },
+    {
+      "path": "build/shared-addon-directory/d3d9-x86-pre-device-8f6bf3fb85d2/report.json",
+      "classification": "Controller-only architecture-handoff parsing failure",
+      "explanation": "The old x64-only strict controller rejected the SDK's expected x64 architecture-mismatch diagnostic 706 followed by x86 success. It stopped before releasing the demo startup barrier. The controller now validates both sections and delegates the x86 result to the existing strict parser; the actual captured output and both fresh x86 graphics cases pass. No SDK code or native payload changed for this correction.",
+      "subsequentPasses": [
+        {
+          "path": "build/shared-addon-directory/d3d9-x86-pre-device-b1f4de5445e3/report.json",
+          "size": 13475,
+          "sha256": "7af739149e6a830ee8c26dbfb7a13d346545831d117905d5412121ecea8de0f0"
+        },
+        {
+          "path": "build/shared-addon-directory/d3d10-x86-pre-device-4ca34a547233/report.json",
+          "size": 13482,
+          "sha256": "86d75c74a994d386263270889f11d0776e2b0bd7906aec0edc17498abebe9f2a"
+        }
+      ],
+      "report": {
+        "path": "build/shared-addon-directory/d3d9-x86-pre-device-8f6bf3fb85d2/report.json",
+        "size": 6615,
+        "sha256": "a0ae64ad9b36b7d2eff2c5afb4a31874fba632b7b54590fcecff6572d86b81f6"
+      }
+    }
+  ]
+}

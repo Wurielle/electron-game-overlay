@@ -198,6 +198,30 @@ test('early native selection deduplicates observer creation and handles authenti
   assert.equal(f.watcher.targets[0].status, 'connected');
   assert.equal(f.launches.length, 1);
 });
+
+test('controlled early acceptance rejects only owned-image fallback and tolerates unrelated machine processes', async (t) => {
+  const { createEarlyTargetFallbackGuard } = require('./managed-target-policy.fixture.cjs');
+  const guard = createEarlyTargetFallbackGuard(game.executablePath);
+  assert.throws(() => guard(identity()), /Early discovery must never use exact-PID fallback/);
+  assert.throws(() => guard(identity(43, '9007199254740994', 'c:/GAMES/GAME.exe')), /Early discovery/);
+  assert.equal(guard(identity(99, '9', 'C:\\Windows\\System32\\unrelated.exe')), false);
+  const f = fixture(t, { earlyTargets: [game], acceptBestEffort: guard });
+  await f.start();
+  const launcher = f.launches[0];
+  launcher.emit({ type: 'injector-watcher-ready' });
+  await f.watcher.ready;
+  f.observer.onCreated(identity(99, '9', 'C:\\Windows\\System32\\unrelated.exe'));
+  f.observer.onCreated(identity());
+  returned(launcher);
+  connected(launcher);
+  assert.equal(f.launches.length, 1, 'the owned image uses only its prearmed native attempt');
+  assert.equal(f.watcher.targets[0].mode, 'early');
+  assert.equal(f.events.some(event => event.type === 'error'), false);
+  f.observer.onExited(identity(99, '9', 'C:\\Windows\\System32\\unrelated.exe'));
+  f.observer.onExited(identity());
+  await tick();
+  assert.equal(f.launches.length, 2, 'the early selector rearms after authoritative owned-target exit');
+});
 test('authoritative exit disposes and rearms a fresh launcher; unrelated exits are ignored', async (t) => {
   const f = fixture(t, { earlyTargets: [game] });
   await f.start();
@@ -680,4 +704,284 @@ test('a later policy revision supersedes a pending discovery stop without arming
     creationCutoff100ns: '20',
   });
   await Promise.all([add, remove]);
+});
+
+function trackInitialReadiness(watcher) {
+  const state = { status: 'pending' };
+  watcher.ready.then(
+    () => { state.status = 'fulfilled'; },
+    (error) => { state.status = 'rejected'; state.error = error; },
+  );
+  return state;
+}
+
+test('startup revision: replacing a preparing policy waits for the current watcher and ignores obsolete preparation failure', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, {
+    earlyPolicy: { allow: [broad] },
+    holdPreparation: true,
+  });
+  await f.start();
+  const initial = f.prepared[0];
+  const state = trackInitialReadiness(f.watcher);
+  const update = f.watcher.update({
+    earlyPolicy: { allow: [broad, '**/database-game.exe'] },
+  });
+  await tick();
+  assert.equal(initial.disposed, true);
+  assert.equal(state.status, 'pending', 'retiring a policy is not a controller startup failure');
+  assert.equal(f.prepared.length, 2);
+  assert.equal(f.events.some((event) => event.type === 'ready'), false);
+  const current = f.prepared[1];
+  current.prepareGate.resolve();
+  await tick();
+  assert.equal(f.launches.length, 1);
+  initial.prepareGate.reject(Error('obsolete preparation failed'));
+  await tick();
+  assert.equal(initial.calls.length, 0);
+  assert.equal(state.status, 'pending');
+  assert.equal(f.events.some((event) => event.type === 'error'), false);
+  current.emit({ type: 'injector-watcher-ready', creationCutoff100ns: '20' });
+  await Promise.all([f.watcher.ready, update]);
+  assert.equal(state.status, 'fulfilled');
+  assert.equal(f.events.filter((event) => event.type === 'ready').length, 1);
+  await f.watcher.update({ earlyPolicy: { allow: [broad, '**/database-game.exe'] } });
+  assert.equal(f.observer.disposed, false);
+});
+
+test('startup revision: rapid replacement of an unselected native watcher waits for quiescence and arms only the latest policy', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, { earlyPolicy: { allow: [broad] }, holdQuiescence: true });
+  await f.start();
+  const initial = f.launches[0];
+  const state = trackInitialReadiness(f.watcher);
+  const intermediate = f.watcher.update({ earlyPolicy: { allow: [broad, '**/intermediate.exe'] } });
+  const latest = f.watcher.update({ earlyPolicy: { allow: [broad, '**/latest.exe'] } });
+  initial.emit({ type: 'injector-watcher-ready', creationCutoff100ns: '10' });
+  await tick();
+  assert.equal(initial.quiesceCalls, 1);
+  assert.equal(state.status, 'pending');
+  assert.equal(f.launches.length, 1, 'no replacement runs before checked quiescence');
+  initial.quiesceGate.resolve(true);
+  await tick();
+  assert.equal(f.launches.length, 2);
+  const current = f.launches[1];
+  assert.deepEqual(Array.from(current.calls[0].processPolicy.allow), [broad.toLowerCase(), '**/latest.exe'].sort());
+  assert.equal(f.events.some((event) => event.type === 'ready' || event.type === 'error'), false);
+  current.emit({ type: 'injector-watcher-ready', creationCutoff100ns: '20' });
+  await Promise.all([f.watcher.ready, intermediate, latest]);
+  assert.equal(f.events.filter((event) => event.type === 'armed').length, 1);
+  assert.equal(f.events.filter((event) => event.type === 'ready').length, 1);
+});
+
+test('startup revision: an armed callback replacing policy cannot publish obsolete controller readiness', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, { earlyPolicy: { allow: [broad] } });
+  await f.start();
+  const state = trackInitialReadiness(f.watcher);
+  let replacement;
+  f.watcher.onEvent((event) => {
+    if (event.type === 'armed' && !replacement) {
+      replacement = f.watcher.update({ earlyPolicy: { allow: [broad, '**/database-game.exe'] } });
+    }
+  });
+  f.launches[0].emit({ type: 'injector-watcher-ready', creationCutoff100ns: '10' });
+  await tick();
+  assert.ok(replacement);
+  assert.equal(state.status, 'pending', 'the readiness continuation must recheck policy after the armed callback');
+  assert.equal(f.events.filter((event) => event.type === 'ready').length, 0);
+  assert.equal(f.launches.length, 2);
+  f.launches[1].emit({ type: 'injector-watcher-ready', creationCutoff100ns: '20' });
+  await Promise.all([f.watcher.ready, replacement]);
+  assert.equal(f.events.filter((event) => event.type === 'ready').length, 1);
+  assert.equal(f.events.some((event) => event.type === 'error'), false);
+});
+
+test('startup revision: cancelling policy before initial preparation completes settles an empty current policy without failing the controller', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, { earlyPolicy: { allow: [broad] }, holdPreparation: true });
+  await f.start();
+  const initial = f.prepared[0];
+  const state = trackInitialReadiness(f.watcher);
+  const cancellation = f.watcher.cancel();
+  await tick();
+  assert.equal(state.status, 'fulfilled');
+  await Promise.all([f.watcher.ready, cancellation]);
+  initial.prepareGate.reject(Error('obsolete cancelled preparation failed'));
+  await tick();
+  assert.equal(f.launches.length, 0);
+  assert.equal(f.events.some((event) => event.type === 'error'), false);
+  const replacement = f.watcher.update({ earlyPolicy: { allow: [broad] } });
+  await tick();
+  f.prepared[1].prepareGate.resolve();
+  await tick();
+  f.launches[0].emit({ type: 'injector-watcher-ready', creationCutoff100ns: '20' });
+  await replacement;
+  assert.equal(f.observer.disposed, false);
+});
+
+test('startup revision: a genuine current replacement preparation failure still rejects initial readiness', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, { earlyPolicy: { allow: [broad] }, holdPreparation: true });
+  await f.start();
+  const state = trackInitialReadiness(f.watcher);
+  const update = f.watcher.update({ earlyPolicy: { allow: [broad, '**/database-game.exe'] } });
+  await tick();
+  assert.equal(state.status, 'pending');
+  assert.equal(f.prepared.length, 2);
+  const failed = assert.rejects(f.watcher.ready, /current replacement preparation failed/);
+  f.prepared[1].prepareGate.reject(Error('current replacement preparation failed'));
+  await failed;
+  await update.catch(() => undefined);
+  assert.equal(f.events.some((event) => event.type === 'ready'), false);
+  assert.equal(f.events.some((event) => event.type === 'error' && /current replacement preparation failed/.test(event.error.message)), true);
+  assert.equal(f.observer.disposed, true);
+});
+
+test('startup revision: removing best effort does not wait for an obsolete spare preparation', async (t) => {
+  const f = fixture(t, { acceptBestEffort: () => true, holdPreparation: true });
+  await f.start();
+  const spare = f.prepared[0];
+  const state = trackInitialReadiness(f.watcher);
+  const update = f.watcher.update({});
+  await tick();
+  assert.equal(spare.disposed, true);
+  assert.equal(state.status, 'fulfilled', 'current empty policy must not wait for a disposed spare');
+  await Promise.all([f.watcher.ready, update]);
+  spare.prepareGate.reject(Error('obsolete spare preparation failed'));
+  await tick();
+  assert.equal(f.prepared.length, 1);
+  assert.equal(f.launches.length, 0);
+  assert.equal(f.events.filter((event) => event.type === 'ready').length, 1);
+  assert.equal(f.events.some((event) => event.type === 'error'), false);
+  assert.equal(f.observer.disposed, false);
+});
+
+test('startup revision: dispose interrupts a held current preparation and settles both startup and update without ready', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, { earlyPolicy: { allow: [broad] }, holdPreparation: true });
+  await f.start();
+  const state = trackInitialReadiness(f.watcher);
+  const update = f.watcher.update({ earlyPolicy: { allow: [broad, '**/database-game.exe'] } });
+  const updateState = { status: 'pending' };
+  update.then(
+    () => { updateState.status = 'fulfilled'; },
+    (error) => { updateState.status = 'rejected'; updateState.error = error; },
+  );
+  await tick();
+  assert.equal(state.status, 'pending');
+  assert.equal(f.prepared.length, 2);
+  const rejected = assert.rejects(f.watcher.ready, /disposed|stopped/);
+  f.watcher.dispose();
+  await tick();
+  assert.equal(state.status, 'rejected');
+  assert.equal(updateState.status, 'rejected');
+  assert.match(updateState.error.message, /disposed|stopped/);
+  await Promise.all([rejected, update.catch(() => undefined)]);
+  for (const launcher of f.prepared) assert.equal(launcher.disposed, true);
+  assert.equal(f.observer.disposed, true);
+  assert.equal(f.events.some((event) => event.type === 'ready'), false);
+});
+
+test('startup revision: uncertain native replacement rejects initial discovery readiness without failing the live controller', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, { earlyPolicy: { allow: [broad] }, uncertainQuiescence: true });
+  await f.start();
+  const initial = f.launches[0];
+  const rejected = assert.rejects(f.watcher.ready, /uncertain|blocked/i);
+  const update = f.watcher.update({ earlyPolicy: { allow: [broad, '**/database-game.exe'] } });
+  await Promise.all([rejected, update.catch(() => undefined)]);
+  assert.equal(initial.quiesceCalls, 1);
+  assert.equal(initial.disposed, undefined, 'an uncertain native watcher must stay reserved');
+  assert.equal(f.launches.length, 1);
+  assert.equal(f.observer.disposed, false, 'discovery blockage is not a controller-wide failure');
+  assert.equal(f.events.some((event) => event.type === 'discovery-blocked'), true);
+  assert.equal(f.events.some((event) => event.type === 'ready'), false);
+  assert.equal(f.events.some((event) => event.type === 'error' && !event.selector && !event.target), false);
+  await f.watcher.update({});
+  assert.equal(initial.quiesceCalls, 1, 'blocked discovery never retries the uncertain stop');
+});
+
+test('startup revision: a nonempty additive update before the observer baseline arms only the current policy', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const f = fixture(t, { earlyPolicy: { allow: [broad] } });
+  const state = trackInitialReadiness(f.watcher);
+  await tick();
+  assert.ok(f.observer);
+  const update = f.watcher.update({
+    earlyPolicy: { allow: [broad, '**/database-game.exe'] },
+  });
+  await tick();
+  assert.equal(f.prepared.length, 0, 'no initial or replacement native work precedes the observer baseline');
+  assert.equal(state.status, 'pending');
+  f.observationReady.resolve();
+  await tick();
+  assert.equal(f.prepared.length, 1, 'the superseded initial policy must never arm');
+  assert.equal(f.launches.length, 1);
+  const current = f.launches[0];
+  assert.deepEqual(Array.from(current.calls[0].processPolicy.allow), [broad.toLowerCase(), '**/database-game.exe'].sort());
+  assert.equal(state.status, 'pending');
+  assert.equal(f.events.some((event) => event.type === 'ready'), false);
+  current.emit({ type: 'injector-watcher-ready', creationCutoff100ns: '20' });
+  await Promise.all([f.watcher.ready, update]);
+  assert.equal(f.events.filter((event) => event.type === 'armed').length, 1);
+  assert.equal(f.events.filter((event) => event.type === 'ready').length, 1);
+  assert.equal(f.events.some((event) => event.type === 'error'), false);
+});
+
+test('startup revision: blocked replacement preserves an already connected allowed target and its launcher', async (t) => {
+  const broad = 'C:/controlled/target/**';
+  const file = 'C:/controlled/target/game.exe';
+  const f = fixture(t, {
+    earlyPolicy: { allow: [broad] },
+    acceptBestEffort: () => false,
+    holdPreparation: true,
+    uncertainQuiescence: true,
+  });
+  await f.start();
+  const state = trackInitialReadiness(f.watcher);
+  assert.equal(f.prepared.length, 2);
+  const spare = f.prepared[0];
+  const active = f.prepared[1];
+  active.prepareGate.resolve();
+  await tick();
+  active.emit({ type: 'injector-watcher-ready', creationCutoff100ns: '10' });
+  f.observer.onCreated(identity(42, '100', file));
+  active.emit({ type: 'target-selected', pid: 42, creationTime100ns: '100', executablePath: file });
+  connected(active, 42, file);
+  await tick();
+  assert.equal(f.prepared.length, 3);
+  const successor = f.prepared[2];
+  successor.prepareGate.resolve();
+  await tick();
+  successor.emit({ type: 'injector-watcher-ready', creationCutoff100ns: '10' });
+  assert.equal(state.status, 'pending', 'the staged best-effort spare still holds initial readiness');
+  assert.equal(f.watcher.targets[0].status, 'connected');
+  const retainedSelector = active.calls[0];
+  const rejected = assert.rejects(f.watcher.ready, /uncertain|blocked/i);
+  const update = f.watcher.update({
+    earlyPolicy: { allow: [broad, '**/database-game.exe'] },
+  });
+  await Promise.all([rejected, update.catch(() => undefined)]);
+  assert.equal(spare.disposed, true);
+  assert.equal(successor.quiesceCalls, 1);
+  assert.equal(successor.disposed, undefined);
+  assert.equal(active.disposed, undefined);
+  assert.equal(active.calls.length, 1);
+  assert.equal(active.calls[0], retainedSelector, 'the connected target keeps its existing launcher request');
+  assert.equal(active.confirmed.length, 0);
+  assert.equal(f.launches.length, 2, 'blocked replacement must not inject or arm another watcher');
+  assert.equal(f.watcher.targets.length, 1);
+  assert.equal(f.watcher.targets[0].cancelled, false);
+  assert.equal(f.watcher.targets[0].status, 'connected');
+  assert.equal(f.observer.disposed, false);
+  assert.equal(f.events.some((event) => event.type === 'ready' || event.type === 'cancelled'), false);
+  assert.equal(f.events.some((event) => event.type === 'discovery-blocked'), true);
+  assert.equal(f.events.some((event) => event.type === 'error' && !event.selector && !event.target), false);
+  f.handlers.get('targetTransportLost')({ pid: 42 });
+  assert.equal(f.watcher.targets[0].status, 'transport-lost');
+  f.handlers.get('targetConnected')({ pid: 42, executablePath: file });
+  assert.equal(f.watcher.targets[0].status, 'connected', 'the retained route can still recover without reattachment');
+  assert.equal(active.calls.length, 1);
+  assert.equal(active.disposed, undefined);
 });

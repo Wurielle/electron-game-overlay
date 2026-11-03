@@ -2,6 +2,7 @@
 param([switch]$SkipBuild)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 # Load the input gate's read-only log, window, and SendInput helpers without
 # executing that gate. Keeping these primitives shared makes the two gates use
@@ -369,6 +370,12 @@ function Start-FrontendInjectionCycle {
         -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_STARTED(?: .*)?\r?$' `
         -AfterIndex $AfterIndex `
         -Deadline $AttachDeadline
+    $WatcherReady = Wait-ForClientRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_WATCHER_READY(?: .*)?\r?$' `
+        -AfterIndex $AfterIndex `
+        -Deadline $AttachDeadline
 
     $script:CurrentHostProcess = Start-Process `
         -FilePath $TargetExecutablePath `
@@ -434,6 +441,7 @@ function Start-FrontendInjectionCycle {
         ReShadeLog = $ReShadeLog
         StartIndex = $AfterIndex
         AttachingIndex = $Attaching.Index
+        WatcherReadyIndex = $WatcherReady.Index
         ConnectedIndex = $Connected.Index
         ConnectedStateIndex = $ConnectedState.Index
         InjectorReturnedIndex = $InjectorReturned.Index
@@ -765,8 +773,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -887,6 +895,10 @@ try {
         -Expected 2
     Assert-ClientRegexCount `
         -Text $FinalClientLog `
+        -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_WATCHER_READY(?: .*)?\r?$' `
+        -Expected 2
+    Assert-ClientRegexCount `
+        -Text $FinalClientLog `
         -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_RETURNED(?: .*)?\r?$' `
         -Expected 2
     Assert-ClientRegexCount `
@@ -960,10 +972,7 @@ try {
 finally {
     Stop-ExactReinjectionProcesses
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 

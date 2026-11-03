@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 # Reuse the controlled-host, native-input, process-discovery, and scoped
 # Electron-cleanup helpers without running the successful injection gate.
 . (Join-Path $PSScriptRoot "run-client-sdk-input-gate.ps1") `
@@ -41,7 +42,7 @@ $TransactionPath =
         $AddonDirectory `
         ".electron-game-overlay-addon.transaction.json"
 $RuntimeDistributionDirectory =
-    Join-Path $RuntimeRoot "dist\win32-x64"
+    Join-Path $RepoRoot "libs\electron-game-overlay\dist\runtime\win32-x64\reshade"
 $AddonManagerPath =
     Join-Path `
         $RuntimeDistributionDirectory `
@@ -95,6 +96,101 @@ function Wait-ForLogRegex {
     throw "Timed out waiting for client pattern '$Pattern'. Inspect $Path."
 }
 
+function Get-UpgradeBoundArguments {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][string]$CreationTime100ns,
+        [ValidateSet('initial', 'official-wait', 'participant')][string]$Phase = 'initial'
+    )
+    [uint64]$ParsedCreationTime = 0
+    if ($ProcessId -le 0 -or -not [IO.Path]::IsPathRooted($ExecutablePath) -or
+        $CreationTime100ns -cnotmatch '^[1-9][0-9]{0,19}$' -or
+        -not [uint64]::TryParse($CreationTime100ns, [ref]$ParsedCreationTime)) {
+        throw 'The upgrade gate requires an exact retained OS process identity.'
+    }
+    $Arguments = @(
+        [IO.Path]::GetFullPath($ExecutablePath), '--pid', [string]$ProcessId,
+        '--expected-creation-time-100ns', $CreationTime100ns
+    )
+    if ($Phase -eq 'official-wait') {
+        $Arguments += @('--wait-for-official-addon', '30000')
+    }
+    elseif ($Phase -eq 'participant') {
+        $Arguments += '--addon-only'
+    }
+    return $Arguments
+}
+
+function Assert-UpgradeBoundArguments {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][string]$CreationTime100ns,
+        [ValidateSet('initial', 'official-wait', 'participant')][string]$Phase = 'initial'
+    )
+    $Expected = @(Get-UpgradeBoundArguments -ExecutablePath $ExecutablePath `
+        -ProcessId $ProcessId -CreationTime100ns $CreationTime100ns -Phase $Phase)
+    if (@($Arguments | Where-Object { $_ -isnot [string] }).Count -ne 0 -or
+        ($Arguments | ConvertTo-Json -Compress) -cne ($Expected | ConvertTo-Json -Compress)) {
+        throw "The $Phase invocation did not retain the exact target PID, creation FILETIME and phase flags."
+    }
+}
+
+function Assert-UpgradePrearmedSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InjectorOutput,
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][string]$CreationTime100ns
+    )
+    $Records = @([regex]::Matches($InjectorOutput,
+        '(?m)^EGO_TARGET_SELECTED_V2\t(?<pid>[1-9][0-9]*)\t(?<created>[1-9][0-9]*)\t(?<image>[^\t\r\n]+)\r?$'))
+    if ($Records.Count -ne 1 -or
+        $Records[0].Groups['pid'].Value -cne [string]$ProcessId -or
+        $Records[0].Groups['created'].Value -cne $CreationTime100ns -or
+        -not [string]::Equals($Records[0].Groups['image'].Value,
+            [IO.Path]::GetFullPath($ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The prearmed native selection did not prove the exact retained target incarnation.'
+    }
+}
+
+function Assert-UpgradeLifecycleOrder {
+    param(
+        [Parameter(Mandatory = $true)][long]$WatcherReadyIndex,
+        [Parameter(Mandatory = $true)][long]$DetectedIndex,
+        [Parameter(Mandatory = $true)][long]$InitialIndex,
+        [Parameter(Mandatory = $true)][long]$OfficialWaitIndex,
+        [Parameter(Mandatory = $true)][long]$ReleaseBoundaryIndex,
+        [Parameter(Mandatory = $true)][long]$ParticipantIndex,
+        [Parameter(Mandatory = $true)][long]$ReturnedIndex,
+        [Parameter(Mandatory = $true)][long]$ConnectedIndex,
+        [Parameter(Mandatory = $true)][long]$AutoConnectedIndex,
+        [Parameter(Mandatory = $true)][bool]$Prearmed
+    )
+    foreach ($Index in @($WatcherReadyIndex, $DetectedIndex, $InitialIndex,
+            $OfficialWaitIndex, $ReleaseBoundaryIndex, $ParticipantIndex,
+            $ReturnedIndex, $ConnectedIndex, $AutoConnectedIndex)) {
+        if ($Index -lt 0) { throw 'The upgrade lifecycle is missing required evidence.' }
+    }
+    # The target may authenticate while its member-only native call is still
+    # completing. Require both independent proofs after release, not a total
+    # ordering between TCP authentication and injector completion callbacks.
+    if ($WatcherReadyIndex -ge $DetectedIndex -or
+        $DetectedIndex -ge $InitialIndex -or
+        $InitialIndex -gt $ReleaseBoundaryIndex -or
+        $WatcherReadyIndex -ge $OfficialWaitIndex -or
+        (-not $Prearmed -and $InitialIndex -ge $OfficialWaitIndex) -or
+        $OfficialWaitIndex -gt $ReleaseBoundaryIndex -or
+        $ParticipantIndex -le $ReleaseBoundaryIndex -or
+        $ParticipantIndex -ge $ReturnedIndex -or
+        $ConnectedIndex -le $ReleaseBoundaryIndex -or
+        $AutoConnectedIndex -le $ReleaseBoundaryIndex) {
+        throw 'The upgrade lifecycle must be armed and instance-bound before release, then independently prove member completion and authenticated connection after release.'
+    }
+}
+
 function Assert-NoTargetFailureOrMaintenance {
     param(
         [Parameter(Mandatory = $true)][int]$ProcessId,
@@ -126,6 +222,209 @@ function Assert-NoTargetFailureOrMaintenance {
                 "failure or deferred maintenance marker matching '$Pattern'."
             )
         }
+    }
+}
+
+function Assert-UpgradeParticipantResult {
+    param(
+        [Parameter(Mandatory = $true)][object]$Record,
+        [Parameter(Mandatory = $true)][int]$ExpectedPid,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedRuntimePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAddonPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedBasePath
+    )
+
+    $ExpectedKeys = @(
+        'schemaVersion', 'pid', 'targetExecutablePath', 'runtimeMode',
+        'runtimeModulePath', 'reshadeBasePath', 'addonModulePath',
+        'addonAbi', 'memberProtocolVersion'
+    )
+    $ActualKeys = @($Record.PSObject.Properties.Name)
+    if ($ActualKeys.Count -ne $ExpectedKeys.Count -or
+        @(Compare-Object $ExpectedKeys $ActualKeys -CaseSensitive).Count -ne 0) {
+        throw 'The private participant result has unexpected or missing fields.'
+    }
+    foreach ($Field in @('schemaVersion', 'pid', 'addonAbi', 'memberProtocolVersion')) {
+        if ($Record.$Field -isnot [int] -and $Record.$Field -isnot [long]) {
+            throw "The private participant result has a non-integer $Field."
+        }
+    }
+    if ($ExpectedPid -le 0 -or $Record.schemaVersion -ne 1 -or
+        $Record.pid -ne $ExpectedPid -or
+        $Record.runtimeMode -cne 'participant-addon' -or
+        $Record.addonAbi -ne 1 -or $Record.memberProtocolVersion -ne 1) {
+        throw 'The injector did not load this application as a protocol-1 participant in the exact upgraded target.'
+    }
+    $ExpectedPaths = @{
+        targetExecutablePath = $ExpectedExecutablePath
+        runtimeModulePath = $ExpectedRuntimePath
+        addonModulePath = $ExpectedAddonPath
+        reshadeBasePath = $ExpectedBasePath
+    }
+    foreach ($Field in $ExpectedPaths.Keys) {
+        $Actual = $Record.$Field
+        if ($Actual -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($Actual) -or
+            -not [IO.Path]::IsPathRooted($Actual) -or
+            -not [string]::Equals(
+                [IO.Path]::GetFullPath($Actual),
+                [IO.Path]::GetFullPath($ExpectedPaths[$Field]),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw "The private participant result has a foreign or relative $Field."
+        }
+    }
+}
+
+function Select-UpgradeParticipantResult {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Results,
+        [Parameter(Mandatory = $true)][int]$ExpectedPid
+    )
+
+    $TargetResults = @($Results | Where-Object { $_.Result.pid -eq $ExpectedPid })
+    $Participants = @($TargetResults | Where-Object { $_.Result.runtimeMode -ceq 'participant-addon' })
+    $Intermediate = @($TargetResults | Where-Object { $_.Result.runtimeMode -ceq 'official-addon' })
+    if ($Participants.Count -ne 1 -or $Intermediate.Count -gt 1 -or
+        $TargetResults.Count -ne (1 + $Intermediate.Count)) {
+        throw 'Expected exactly one final private participant result and at most one intermediate official add-on proof for this target.'
+    }
+    $Participant = $Participants[0]
+    if ($Participant.StdoutPath -isnot [string] -or
+        -not [IO.Path]::IsPathRooted($Participant.StdoutPath)) {
+        throw 'The private participant proof must originate in an absolute application stage.'
+    }
+    if ($Intermediate.Count -eq 1) {
+        $Proof = $Intermediate[0]
+        if ($TargetResults[0].Result.runtimeMode -cne 'official-addon' -or
+            $Proof.StdoutPath -isnot [string] -or
+            -not [IO.Path]::IsPathRooted($Proof.StdoutPath) -or
+            -not [string]::Equals(
+                [IO.Path]::GetFullPath($Proof.StdoutPath),
+                [IO.Path]::GetFullPath($Participant.StdoutPath),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'The intermediate official proof must precede this application stage participant.'
+        }
+        foreach ($Field in @('targetExecutablePath', 'runtimeModulePath', 'reshadeBasePath')) {
+            if ($Proof.Result.$Field -isnot [string] -or
+                -not [IO.Path]::IsPathRooted($Proof.Result.$Field) -or
+                -not [string]::Equals(
+                    [IO.Path]::GetFullPath($Proof.Result.$Field),
+                    [IO.Path]::GetFullPath($Participant.Result.$Field),
+                    [StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw "The intermediate official proof changed target identity: $Field."
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Result = $Participant.Result
+        StdoutPath = $Participant.StdoutPath
+        IntermediateOfficialResults = $Intermediate
+    }
+}
+
+function Assert-UpgradeParticipantModules {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Modules,
+        [Parameter(Mandatory = $true)][string]$ExpectedRuntimePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAdapterPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedParticipantPath
+    )
+
+    $ExpectedPaths = @($ExpectedRuntimePath, $ExpectedAdapterPath, $ExpectedParticipantPath) |
+        ForEach-Object { [IO.Path]::GetFullPath($_) }
+    if (@($ExpectedPaths | Sort-Object -Unique).Count -ne 3) {
+        throw 'The official host, installed adapter and application engine must have distinct module paths.'
+    }
+    foreach ($ExpectedPath in $ExpectedPaths) {
+        $Matches = @($Modules | Where-Object {
+            $_.FileName -and [string]::Equals(
+                [IO.Path]::GetFullPath($_.FileName), $ExpectedPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        })
+        if ($Matches.Count -ne 1) {
+            throw "The upgraded target did not load exactly one expected module: $ExpectedPath"
+        }
+    }
+    $ReShadeModules = @($Modules | Where-Object {
+        $_.FileName -and (
+            $_.FileVersionInfo.ProductName -ieq 'ReShade' -or
+            [IO.Path]::GetFileName($_.FileName) -imatch '^ReShade(?:32|64)\.dll$' -or
+            [string]::Equals(
+                [IO.Path]::GetFullPath($_.FileName),
+                [IO.Path]::GetFullPath($ExpectedRuntimePath),
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        )
+    })
+    if ($ReShadeModules.Count -ne 1) {
+        throw 'The upgraded target must contain exactly one ReShade runtime, including renamed runtime modules.'
+    }
+    $UnexpectedEngines = @($Modules | Where-Object {
+        $_.FileName -and
+        [IO.Path]::GetFileName($_.FileName) -imatch '^electron_game_overlay\.addon(?:32|64)$' -and
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath($_.FileName), [IO.Path]::GetFullPath($ExpectedAdapterPath),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and -not [string]::Equals(
+            [IO.Path]::GetFullPath($_.FileName), [IO.Path]::GetFullPath($ExpectedParticipantPath),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    })
+    if ($UnexpectedEngines.Count -ne 0) {
+        throw 'The upgraded target loaded an unexpected extra application engine.'
+    }
+}
+
+function Assert-UpgradeParticipantArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$StagePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAddonHash,
+        [Parameter(Mandatory = $true)][string]$PackageDirectory
+    )
+
+    if (-not [IO.Path]::IsPathRooted($StagePath) -or
+        -not [IO.Path]::IsPathRooted($PackageDirectory) -or
+        $ExpectedAddonHash -cnotmatch '^[0-9A-F]{64}$') {
+        throw 'The expected private engine stage, sealed package or hash is invalid.'
+    }
+    $AddonPath = Join-Path $StagePath 'electron_game_overlay.addon64'
+    $ManifestPath = Join-Path $StagePath 'electron_game_overlay_runtime.build.json'
+    $Stamp = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    $PackageStamp = Get-Content -LiteralPath (Join-Path $PackageDirectory 'electron_game_overlay_runtime.build.json') -Raw |
+        ConvertFrom-Json
+    foreach ($Manifest in @($Stamp, $PackageStamp)) {
+        foreach ($Field in @('schemaVersion', 'cooperativeAddonProtocol', 'injectorProcessInstanceBinding')) {
+            if ($Manifest.$Field -isnot [int] -and $Manifest.$Field -isnot [long]) {
+                throw "The private engine or sealed package manifest has a non-integer $Field."
+            }
+        }
+        if ($Manifest.schemaVersion -ne 4 -or
+            $Manifest.cooperativeAddonProtocol -ne 1 -or
+            $Manifest.injectorProcessInstanceBinding -ne 1 -or
+            $Manifest.addonBuildId -isnot [string] -or
+            $Manifest.addonBuildId -cnotmatch '^[0-9A-F]{32}$' -or
+            $Manifest.addonSha256 -cne $ExpectedAddonHash) {
+            throw 'The private engine and sealed package must both prove schema 4, cooperative protocol 1 and exact current engine identity.'
+        }
+    }
+    $ActualHash = (Get-FileHash -LiteralPath $AddonPath -Algorithm SHA256).Hash
+    $PackageHash = (Get-FileHash -LiteralPath (Join-Path $PackageDirectory 'electron_game_overlay.addon64') -Algorithm SHA256).Hash
+    if ($Stamp.addonBuildId -cne $PackageStamp.addonBuildId -or
+        $ActualHash -cne $ExpectedAddonHash -or $PackageHash -cne $ExpectedAddonHash) {
+        throw 'The private engine stage does not match the exact sealed package build ID and bytes.'
+    }
+    return [pscustomobject]@{
+        AddonPath = [IO.Path]::GetFullPath($AddonPath)
+        ManifestPath = [IO.Path]::GetFullPath($ManifestPath)
+        AddonBuildId = $Stamp.addonBuildId
+        AddonSha256 = $ActualHash
+        CooperativeAddonProtocol = $Stamp.cooperativeAddonProtocol
+        StagePath = [IO.Path]::GetFullPath($StagePath)
     }
 }
 
@@ -737,11 +1036,19 @@ foreach ($RequiredArtifact in @(
         $AddonManagerPath,
         $ProductionAddonPath,
         (Join-Path $RuntimeDistributionDirectory "inject.exe"),
+        (Join-Path $RuntimeDistributionDirectory "inject32.exe"),
         (Join-Path $RuntimeDistributionDirectory "ReShade64.dll"),
+        (Join-Path $RuntimeDistributionDirectory "ReShade32.dll"),
         (Join-Path $RuntimeDistributionDirectory "ReShade64.build.json"),
+        (Join-Path $RuntimeDistributionDirectory "ReShade32.build.json"),
+        (Join-Path $RuntimeDistributionDirectory "electron_game_overlay.addon32"),
+        (Join-Path $RuntimeDistributionDirectory "electron_game_overlay_reshade_manager32.exe"),
         (Join-Path `
             $RuntimeDistributionDirectory `
             "electron_game_overlay_runtime.build.json"),
+        (Join-Path `
+            $RuntimeDistributionDirectory `
+            "electron_game_overlay_runtime32.build.json"),
         (Join-Path $RuntimeDistributionDirectory "ReShade.ini"))) {
     if (-not (Test-Path -LiteralPath $RequiredArtifact -PathType Leaf)) {
         throw "A required production gate artifact is unavailable: $RequiredArtifact"
@@ -933,7 +1240,7 @@ Write-Host "  - Version-agnostic ReShade seed: $ResolvedOfficialRuntime"
 Write-Host "  - Isolated Steam target: $TargetExecutablePath"
 Write-Host "  - The manager-owned add-on is seeded before the runtime identity changes."
 Write-Host "  - A benign PE overlay byte models a still-loadable ReShade upgrade."
-Write-Host "  - The production watcher must connect through official-addon mode."
+Write-Host "  - The production watcher must load its private participant through the existing official host."
 Write-Host "  - The owned add-on, marker, and every seeded file must be preserved."
 Write-Host "  - Evidence is preserved in: $RunDirectory"
 Write-Host ""
@@ -948,8 +1255,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -987,6 +1294,11 @@ try {
             -Process $ClientProcess `
             -Pattern '(?m)^STEAM_GAME_AUTO_ATTACH_ARMING(?: .*)?\r?$' `
             -Deadline $StartupDeadline)
+    $PrearmedWatcherReady = Wait-ForLogRegex `
+            -Path $ClientStdout `
+            -Process $ClientProcess `
+            -Pattern '(?m)^RESHADE_CLIENT_INJECTOR_WATCHER_READY(?: .*)?\r?$' `
+            -Deadline $StartupDeadline
     Register-RunOwnedInjectors
     if (-not $ObservedPathWatcherInjector) {
         throw (
@@ -1000,6 +1312,8 @@ try {
         -WorkingDirectory $TargetDirectory `
         -PassThru
     $HostPid = $HostProcess.Id
+    $HostCreationTime100ns = $HostProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
     Assert-ExactTargetProcess `
         -ProcessId $HostPid `
         -ExpectedPath $TargetExecutablePath
@@ -1009,26 +1323,29 @@ try {
         -Compress
     $EscapedTargetPathJson = [regex]::Escape($TargetPathJson)
     $TargetDescriptionJson = ConvertTo-Json `
-        -InputObject $HostName `
+        -InputObject ([IO.Path]::GetFullPath($TargetExecutablePath)) `
         -Compress
     $EscapedTargetDescriptionJson =
         [regex]::Escape($TargetDescriptionJson)
+    $BoundTargetIdentity = @{
+        ExecutablePath = $TargetExecutablePath
+        ProcessId = $HostPid
+        CreationTime100ns = $HostCreationTime100ns
+    }
     $InitialInjectorArgumentsJson = ConvertTo-Json `
-        -InputObject @($HostName, "--pid", [string]$HostPid) `
+        -InputObject @(Get-UpgradeBoundArguments @BoundTargetIdentity -Phase initial) `
         -Compress
     $EscapedInitialInjectorArgumentsJson =
         [regex]::Escape($InitialInjectorArgumentsJson)
     $AddonWaitArgumentsJson = ConvertTo-Json `
-        -InputObject @(
-            $HostName,
-            "--pid",
-            [string]$HostPid,
-            "--wait-for-official-addon",
-            "30000"
-        ) `
+        -InputObject @(Get-UpgradeBoundArguments @BoundTargetIdentity -Phase official-wait) `
         -Compress
     $EscapedAddonWaitArgumentsJson =
         [regex]::Escape($AddonWaitArgumentsJson)
+    $ParticipantArgumentsJson = ConvertTo-Json `
+        -InputObject @(Get-UpgradeBoundArguments @BoundTargetIdentity -Phase participant) `
+        -Compress
+    $EscapedParticipantArgumentsJson = [regex]::Escape($ParticipantArgumentsJson)
 
     $ExpectedRuntimePath = [IO.Path]::GetFullPath($ReShadeModulePath)
     $ExpectedAddonPath = [IO.Path]::GetFullPath($OwnedAddonPath)
@@ -1095,9 +1412,13 @@ try {
         -Pattern (
             "(?m)^RESHADE_CLIENT_INJECTOR_STARTED " +
             "target=$EscapedTargetDescriptionJson " +
-            "arguments=$EscapedInitialInjectorArgumentsJson\r?`$"
+            "arguments=$EscapedInitialInjectorArgumentsJson\r?`$|" +
+            "(?m)^STEAM_GAME_AUTO_ATTACH_EXACT_COORDINATED pid=$HostPid " +
+            "creationTime100ns=$HostCreationTime100ns code=prearmed-target-selected\r?`$"
         ) `
         -Deadline $StartupDeadline
+    $PrearmedTargetSelected = $InjectorStarted.Value.StartsWith(
+        'STEAM_GAME_AUTO_ATTACH_EXACT_COORDINATED ', [StringComparison]::Ordinal)
     $AddonWaitStarted = Wait-ForLogRegex `
         -Path $ClientStdout `
         -Process $ClientProcess `
@@ -1107,6 +1428,36 @@ try {
             "arguments=$EscapedAddonWaitArgumentsJson\r?`$"
         ) `
         -Deadline $StartupDeadline
+    if (-not $PrearmedTargetSelected) {
+        $ActualInitialArguments = [regex]::Match($InjectorStarted.Value,
+            ' arguments=(?<arguments>\[[^\r\n]+\])').Groups['arguments'].Value | ConvertFrom-Json
+        Assert-UpgradeBoundArguments -Arguments $ActualInitialArguments @BoundTargetIdentity -Phase initial
+    }
+    $ActualWaitArguments = [regex]::Match($AddonWaitStarted.Value,
+        ' arguments=(?<arguments>\[[^\r\n]+\])').Groups['arguments'].Value | ConvertFrom-Json
+    Assert-UpgradeBoundArguments -Arguments $ActualWaitArguments @BoundTargetIdentity -Phase official-wait
+    $PrearmedSelectionEvidencePath = $null
+    $PrearmedSelectionStdoutPath = $null
+    if ($PrearmedTargetSelected) {
+        # The SDK writes this completed selection before starting official wait,
+        # then replaces its stdout file with later phase output. Preserve it now.
+        $SelectionEvidence = @(
+            foreach ($InjectorPath in (Get-StagedInjectorPaths)) {
+                $OutputPath = Join-Path ([IO.Path]::GetDirectoryName($InjectorPath)) 'inject.stdout.log'
+                if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) { continue }
+                $Output = Get-Content -Raw -LiteralPath $OutputPath
+                if ($Output -notmatch "(?m)^EGO_TARGET_SELECTED_V2\t$HostPid\t$HostCreationTime100ns\t") { continue }
+                Assert-UpgradePrearmedSelection -InjectorOutput $Output @BoundTargetIdentity
+                [pscustomobject]@{Path=$OutputPath;Text=$Output}
+            }
+        )
+        if ($SelectionEvidence.Count -ne 1) {
+            throw 'The pending official wait did not retain exactly one own-stage native selection proof.'
+        }
+        $PrearmedSelectionStdoutPath = [IO.Path]::GetFullPath($SelectionEvidence[0].Path)
+        $PrearmedSelectionEvidencePath = Join-Path $RunDirectory 'prearmed-selected-identity.stdout.log'
+        Set-Content -LiteralPath $PrearmedSelectionEvidencePath -Value $SelectionEvidence[0].Text -Encoding UTF8
+    }
 
     Register-RunOwnedInjectors
     Assert-ExactTargetProcess `
@@ -1169,6 +1520,18 @@ try {
         throw "Could not foreground the controlled D3D11 host for normal exit."
     }
     $AttachDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    $ParticipantStarted = Wait-ForLogRegex `
+        -Path $ClientStdout `
+        -Process $ClientProcess `
+        -Pattern (
+            "(?m)^RESHADE_CLIENT_INJECTOR_STARTED " +
+            "target=$EscapedTargetDescriptionJson " +
+            "arguments=$EscapedParticipantArgumentsJson\r?`$"
+        ) `
+        -Deadline $AttachDeadline
+    $ActualParticipantArguments = [regex]::Match($ParticipantStarted.Value,
+        ' arguments=(?<arguments>\[[^\r\n]+\])').Groups['arguments'].Value | ConvertFrom-Json
+    Assert-UpgradeBoundArguments -Arguments $ActualParticipantArguments @BoundTargetIdentity -Phase participant
     $InjectorReturned = Wait-ForLogRegex `
         -Path $ClientStdout `
         -Process $ClientProcess `
@@ -1190,96 +1553,65 @@ try {
             "processName=$([regex]::Escape((ConvertTo-Json -InputObject $HostName -Compress)))\r?`$"
         ) `
         -Deadline $AttachDeadline
-    if ($Detected.Index -ge $InjectorStarted.Index -or
-        $InjectorStarted.Index -ge $AddonWaitStarted.Index -or
-        $AddonWaitStarted.Index -gt $PreReleaseClientLogBoundaryIndex -or
-        $InjectorReturned.Index -le $PreReleaseClientLogBoundaryIndex -or
-        $InjectorReturned.Index -ge $Connected.Index -or
-        $InjectorReturned.Index -ge $AutoConnected.Index) {
-        throw (
-            "The production lifecycle was not watcher detection -> pending " +
-            "injector -> startup release -> official add-on return -> " +
-            "authenticated transport/auto-attach connection."
-        )
-    }
+    Assert-UpgradeLifecycleOrder `
+        -WatcherReadyIndex $PrearmedWatcherReady.Index `
+        -DetectedIndex $Detected.Index `
+        -InitialIndex $InjectorStarted.Index `
+        -OfficialWaitIndex $AddonWaitStarted.Index `
+        -ReleaseBoundaryIndex $PreReleaseClientLogBoundaryIndex `
+        -ParticipantIndex $ParticipantStarted.Index `
+        -ReturnedIndex $InjectorReturned.Index `
+        -ConnectedIndex $Connected.Index `
+        -AutoConnectedIndex $AutoConnected.Index `
+        -Prearmed $PrearmedTargetSelected
 
-    $TargetInjectorResults = @(
-        Get-StructuredInjectorResults |
-            Where-Object { $_.Result.pid -eq $HostPid }
-    )
-    if ($TargetInjectorResults.Count -ne 1) {
-        throw (
-            "Expected exactly one structured injector result/native grace " +
-            "owner for controlled PID $HostPid; found " +
-            "$($TargetInjectorResults.Count)."
-        )
+    $ParticipantResult = Select-UpgradeParticipantResult `
+        -Results @(Get-StructuredInjectorResults) -ExpectedPid $HostPid
+    # Retain the final proof wrapper for summary/log evidence. An optional
+    # read-only official proof is only a phase leading to this private engine.
+    $TargetInjectorResults = @($ParticipantResult)
+    $IntermediateOfficialResults = @($ParticipantResult.IntermediateOfficialResults)
+    $InjectorResult = $ParticipantResult.Result
+    $ParticipantStage = [IO.Path]::GetDirectoryName($ParticipantResult.StdoutPath)
+    $ParticipantArtifact = Assert-UpgradeParticipantArtifact -StagePath $ParticipantStage `
+        -ExpectedAddonHash $ProductionAddonHash -PackageDirectory $RuntimeDistributionDirectory
+    if ($PrearmedTargetSelected) {
+        if (-not [string]::Equals($PrearmedSelectionStdoutPath,
+                [IO.Path]::GetFullPath($ParticipantResult.StdoutPath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The final private participant changed the prearmed native selection stage.'
+        }
+        Assert-UpgradePrearmedSelection `
+            -InjectorOutput (Get-Content -Raw -LiteralPath $PrearmedSelectionEvidencePath) `
+            @BoundTargetIdentity
     }
-    $InjectorResult = $TargetInjectorResults[0].Result
-    if ($InjectorResult.schemaVersion -ne 1 -or
-        $InjectorResult.runtimeMode -cne "official-addon" -or
-        $InjectorResult.addonAbi -ne 1 -or
-        $InjectorResult.electronGameOverlayAddonDisabled -ne $false -or
-        -not ([string]$InjectorResult.targetExecutablePath).Equals(
-            [IO.Path]::GetFullPath($TargetExecutablePath),
-            [StringComparison]::OrdinalIgnoreCase) -or
-        -not ([string]$InjectorResult.runtimeModulePath).Equals(
-            $ExpectedRuntimePath,
-            [StringComparison]::OrdinalIgnoreCase) -or
-        -not ([string]$InjectorResult.addonModulePath).Equals(
-            $ExpectedAddonPath,
-            [StringComparison]::OrdinalIgnoreCase) -or
-        -not ([string]$InjectorResult.addonDirectoryPath).Equals(
-            [IO.Path]::GetFullPath($AddonDirectory),
-            [StringComparison]::OrdinalIgnoreCase)) {
-        throw (
-            "The production injector did not return the expected " +
-            "version-agnostic official-addon contract: " +
-            ($InjectorResult | ConvertTo-Json -Compress)
-        )
+    Assert-UpgradeParticipantResult -Record $InjectorResult `
+        -ExpectedPid $HostPid -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath $ExpectedRuntimePath -ExpectedAddonPath $ParticipantArtifact.AddonPath `
+        -ExpectedBasePath $TargetDirectory
+    foreach ($Intermediate in $IntermediateOfficialResults) {
+        if ($Intermediate.Result.schemaVersion -ne 1 -or
+            $Intermediate.Result.addonAbi -ne 1 -or
+            $Intermediate.Result.electronGameOverlayAddonDisabled -ne $false -or
+            -not [string]::Equals(
+                [IO.Path]::GetFullPath($Intermediate.Result.addonModulePath),
+                $ExpectedAddonPath, [StringComparison]::OrdinalIgnoreCase
+            ) -or -not [string]::Equals(
+                [IO.Path]::GetFullPath($Intermediate.Result.addonDirectoryPath),
+                [IO.Path]::GetFullPath($AddonDirectory), [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'The intermediate official proof did not identify the preserved installed adapter.'
+        }
     }
 
     $LoadedAfterConnection = @(
         ([Diagnostics.Process]::GetProcessById($HostPid)).Modules
     )
-    foreach ($ExpectedModulePath in @(
-            $ExpectedRuntimePath,
-            $ExpectedAddonPath)) {
-        $Matches = @(
-            $LoadedAfterConnection |
-                Where-Object {
-                    $_.FileName -and
-                    [string]::Equals(
-                        [IO.Path]::GetFullPath($_.FileName),
-                        $ExpectedModulePath,
-                        [StringComparison]::OrdinalIgnoreCase)
-                }
-        )
-        if ($Matches.Count -ne 1) {
-            throw (
-                "The connected target did not map expected official-add-on " +
-                "module exactly once: $ExpectedModulePath"
-            )
-        }
-    }
-    $UnexpectedProjectRuntimePath = [IO.Path]::GetFullPath(
-        (Join-Path $RuntimeDistributionDirectory "ReShade64.dll")
-    )
-    $UnexpectedProjectRuntime = @(
-        $LoadedAfterConnection |
-            Where-Object {
-                $_.FileName -and
-                [string]::Equals(
-                    [IO.Path]::GetFullPath($_.FileName),
-                    $UnexpectedProjectRuntimePath,
-                    [StringComparison]::OrdinalIgnoreCase)
-            }
-    )
-    if ($UnexpectedProjectRuntime.Count -ne 0) {
-        throw (
-            "The production launcher loaded its project ReShade runtime " +
-            "beside the upgraded existing runtime."
-        )
-    }
+    Assert-UpgradeParticipantModules -Modules $LoadedAfterConnection `
+        -ExpectedRuntimePath $ExpectedRuntimePath -ExpectedAdapterPath $ExpectedAddonPath `
+        -ExpectedParticipantPath $ParticipantArtifact.AddonPath
+    Save-JsonEvidence -Value @($LoadedAfterConnection | ForEach-Object {
+        [pscustomobject]@{FileName=$_.FileName;ProductName=$_.FileVersionInfo.ProductName}
+    }) -Path (Join-Path $RunDirectory 'connected-modules.json')
 
     Register-RunOwnedInjectors
     Assert-ExactTargetProcess `
@@ -1380,6 +1712,7 @@ try {
         Backend = "d3d11"
         Case = "steam-watcher-version-agnostic-reshade-upgrade-coexistence"
         TargetProcessId = $HostPid
+        TargetCreationTime100ns = $HostCreationTime100ns
         TargetExecutablePath = $TargetExecutablePath
         Runtime = [pscustomobject]@{
             SourcePath = $ResolvedOfficialRuntime
@@ -1401,15 +1734,23 @@ try {
             TransactionJournalCreated = $false
         }
         ProductionLifecycle = [pscustomobject]@{
+            InitialMode = if ($PrearmedTargetSelected) { 'prearmed-native-selection' } else { 'instance-bound-exact' }
+            InitialArguments = if ($PrearmedTargetSelected) { $null } else { $ActualInitialArguments }
+            PrearmedSelectionEvidence = $PrearmedSelectionEvidencePath
+            OfficialWaitArguments = $ActualWaitArguments
+            ParticipantArguments = $ActualParticipantArguments
             WatcherDetectedMarkerIndex = $Detected.Index
             InjectorStartedMarkerIndex = $InjectorStarted.Index
             AddonWaitStartedMarkerIndex = $AddonWaitStarted.Index
             StartupReleaseLogBoundaryIndex = $PreReleaseClientLogBoundaryIndex
+            ParticipantStartedMarkerIndex = $ParticipantStarted.Index
             InjectorReturnedMarkerIndex = $InjectorReturned.Index
             TargetConnectedMarkerIndex = $Connected.Index
             AutoAttachConnectedMarkerIndex = $AutoConnected.Index
             WatcherReleasedMarkerIndex = $Released.Index
             RuntimeMode = [string]$InjectorResult.runtimeMode
+            PrivateParticipant = $ParticipantArtifact
+            ConnectedModuleEvidence = Join-Path $RunDirectory 'connected-modules.json'
             InjectorStdout = $TargetInjectorResults[0].StdoutPath
             DeferredMaintenanceEmitted = $false
             HostExitCode = $HostProcess.ExitCode
@@ -1434,10 +1775,7 @@ finally {
     }
     finally {
         foreach ($VariableName in $ControlledEnvironmentVariables) {
-            [Environment]::SetEnvironmentVariable(
-                $VariableName,
-                $PreviousEnvironment[$VariableName],
-                "Process")
+            Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
         }
     }
 }

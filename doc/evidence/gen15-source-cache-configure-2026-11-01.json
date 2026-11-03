@@ -1,0 +1,698 @@
+{
+  "schemaVersion": 1,
+  "kind": "gen15-full-project-source-pipeline-regression",
+  "date": "2026-11-01",
+  "addonBuildId": "BCE6C5C8746F4300861300B2BDA3594E",
+  "runtimeGeneration": 15,
+  "cooperativeAddonProtocol": 1,
+  "reshadeCommit": "4a50d1eddace85734871d91792ff214f13f66c01",
+  "imguiCommit": "3912b3d9a9c1b3f17431aebafd86d2f40ee6e59c",
+  "frozenLatePatchSha256": "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE",
+  "currentInjectorNormalizedSha256": "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C",
+  "sourceCmake": {
+    "path": "libs/electron-game-overlay-runtime/CMakeLists.txt",
+    "bytes": 147318,
+    "sha256": "4dd12e386222cc58207e65b29dc3afcca1659bb8bfb89b53affac0d3f6304309"
+  },
+  "cases": [
+    {
+      "name": "configure-final-short",
+      "exit": 0,
+      "elapsedMs": 2593,
+      "nativeBuildInvoked": false,
+      "command": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final-short-command.json",
+        "bytes": 934,
+        "sha256": "af1750d4ea8e07f989c586138c815cbb7cf55c8e9b7fa275819fa829862e4e0f"
+      },
+      "stdout": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final-short.stdout.log",
+        "bytes": 316,
+        "sha256": "6afdb18cbab9715756517e523886ccae3697832abb2adb430e52ce2c3ddcdaa9"
+      },
+      "stderr": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final-short.stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "configure-pristine",
+      "exit": 0,
+      "elapsedMs": 9568,
+      "nativeBuildInvoked": false,
+      "command": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine-command.json",
+        "bytes": 940,
+        "sha256": "d5a19b5a38846e7bf1e269158ed72e52af00a871b42d07e471e2025076cc9d53"
+      },
+      "stdout": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine.stdout.log",
+        "bytes": 767,
+        "sha256": "60b1c494f221313479143d60b6f1acde626d0e9b8bcc6bd53f5378040c9cc372"
+      },
+      "stderr": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine.stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "configure-final-repeat",
+      "exit": 0,
+      "elapsedMs": 3220,
+      "nativeBuildInvoked": false,
+      "command": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final-repeat-command.json",
+        "bytes": 953,
+        "sha256": "b02ecfc894d47e6bb6e87def85a6c037032fe9021889e42d72fbc8fa3b09c4cf"
+      },
+      "stdout": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final-repeat.stdout.log",
+        "bytes": 316,
+        "sha256": "ade0c73c2fbbd33f3959cbe8437154b6e858a285e3a3d90c2297b2bf3854cbef"
+      },
+      "stderr": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final-repeat.stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "configure-pristine-repeat",
+      "exit": 0,
+      "elapsedMs": 3089,
+      "nativeBuildInvoked": false,
+      "command": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine-repeat-command.json",
+        "bytes": 962,
+        "sha256": "8cbc93528ce4ede4676b68b29efead309ba0613a39b9d205da0c7f0165737948"
+      },
+      "stdout": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine-repeat.stdout.log",
+        "bytes": 319,
+        "sha256": "31a69fde1a628a403db024c4589f95f4dafac13e79ad43357056576f0c4ce497"
+      },
+      "stderr": {
+        "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine-repeat.stderr.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "clones": [
+    {
+      "name": "reshade-final",
+      "files": [
+        {
+          "path": "include/reshade.hpp",
+          "bytes": 19405,
+          "sha256": "cc102fa21d311b85713ed167f0e182a4eeccd40cdf3fbe360ad9f83a0cf40767",
+          "normalizedSha256": "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
+        },
+        {
+          "path": "include/reshade_api.hpp",
+          "bytes": 59954,
+          "sha256": "80e9f0cbc06bf96943dc79ca2d133db5d8e69d3a4cd516b6d89d675b8b965218",
+          "normalizedSha256": "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
+        },
+        {
+          "path": "include/reshade_events.hpp",
+          "bytes": 122585,
+          "sha256": "8090912cd69854818c294f7c0f848ebab7c712ab6d601e6889e62514249ee6a7",
+          "normalizedSha256": "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
+        },
+        {
+          "path": "source/addon_manager.cpp",
+          "bytes": 32173,
+          "sha256": "ab8c2a9dbd00c8e6fd10fc96c526c70fdcd19ce311fe7e83f6fd0a83a5804ff7",
+          "normalizedSha256": "E6524902A07A0B4E2947B372503679A84CAA0FD1840329E89564559C3160349E"
+        },
+        {
+          "path": "source/addon_manager.hpp",
+          "bytes": 7326,
+          "sha256": "c1d27ea4c9996f1ead408fad0d0db3aeeae16a4befeb4a0f71ec6c616116989b",
+          "normalizedSha256": "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
+        },
+        {
+          "path": "source/input.cpp",
+          "bytes": 75315,
+          "sha256": "07e38a4b47d91bedf24af68d4f11cd5cda04730184c0cc0b04fdfd9477e2eb63",
+          "normalizedSha256": "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
+        },
+        {
+          "path": "source/input.hpp",
+          "bytes": 7451,
+          "sha256": "463c2fff98b7cbfc1d49a0a6019a8d07c4491b100eab206032619ead9de66d86",
+          "normalizedSha256": "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
+        },
+        {
+          "path": "source/runtime_gui.cpp",
+          "bytes": 208544,
+          "sha256": "90c83b0ce3f97cf0364dfb145406d06d5dccc21381a9ed1292fa1f6678139679",
+          "normalizedSha256": "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
+        },
+        {
+          "path": "tools/injector.cpp",
+          "bytes": 174759,
+          "sha256": "a6e7293d9b74e756cd0ee2de736c6b4f54657fe9d99f920f888b5efd9335085f",
+          "normalizedSha256": "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C"
+        },
+        {
+          "path": "ReShade.vcxproj",
+          "bytes": 49861,
+          "sha256": "68df651bb714ab385f0d3aceb3997a6a5b14be2fa7b272addeea4010a2500c88",
+          "normalizedSha256": "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
+        },
+        {
+          "path": "source/addon.cpp",
+          "bytes": 8973,
+          "sha256": "d19eb54c1dcd371ff032763cce55a2c94ad001b6b94f288872fd19d64cbf43de",
+          "normalizedSha256": "DF69C9E8BE88244B54D92849A183B8A149A74FA959ED49A7109824EF0D8E3D9C"
+        },
+        {
+          "path": "source/d3d11/d3d11_impl_swapchain.cpp",
+          "bytes": 2433,
+          "sha256": "4bb364eca26a4d2ec971811a093e8b1f52ac62d29c8f7e953fd4a52ae5952589",
+          "normalizedSha256": "6F9EA10B4621F37F2D4DAFA2E3F3575973DFDB6B566725BBD8B0BC8187DB52D3"
+        },
+        {
+          "path": "source/d3d11/d3d11_impl_swapchain.hpp",
+          "bytes": 1015,
+          "sha256": "a70bcda947b788212acaf5b59523bf5f3488c6438aba57e387929f1b28660a04",
+          "normalizedSha256": "60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
+        },
+        {
+          "path": "source/ego_owned_late_d3d11/owned_config_file.hpp",
+          "bytes": 8746,
+          "sha256": "42aa81ad7c841b8adf949d5c20434d66d89a6190636db63b964ea158d5c1fd08",
+          "normalizedSha256": "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
+        },
+        {
+          "path": "source/ego_owned_late_d3d11/owned_late_d3d11.hpp",
+          "bytes": 2857,
+          "sha256": "e9f2ce6e29c1a62bfaa1324085f50e1b11e71457aeb9c21339a65d90419bdb5a",
+          "normalizedSha256": "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
+        },
+        {
+          "path": "source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+          "bytes": 42649,
+          "sha256": "19645afd7a9f6559ae6ddcb4924af2ad09b801742a5815097aacea7bab839226",
+          "normalizedSha256": "AEA939BCC391BC5C2F63683558B78A88222BD5E9C4B81EFB5069CAA346F724BE"
+        },
+        {
+          "path": "source/input_frame_consumer.hpp",
+          "bytes": 1954,
+          "sha256": "80488296e6df7b95609149a7008dff73751b228a9b9bdb8ba983c1e09cef2dfe",
+          "normalizedSha256": "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
+        },
+        {
+          "path": "source/runtime.cpp",
+          "bytes": 216088,
+          "sha256": "926235ed48f9fc4d45232f1bfbdaeea21a92c907ead810296c546bef36712aff",
+          "normalizedSha256": "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
+        },
+        {
+          "path": "source/runtime.hpp",
+          "bytes": 25865,
+          "sha256": "8c37e964ea0de4859701e49ec9a4fc73385f21c4a4e3e1e2e365ae53d4baa4d9",
+          "normalizedSha256": "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
+        }
+      ],
+      "exactModifiedPaths": [
+        "ReShade.vcxproj",
+        "include/reshade.hpp",
+        "include/reshade_api.hpp",
+        "include/reshade_events.hpp",
+        "source/addon.cpp",
+        "source/addon_manager.cpp",
+        "source/addon_manager.hpp",
+        "source/d3d11/d3d11_impl_swapchain.cpp",
+        "source/d3d11/d3d11_impl_swapchain.hpp",
+        "source/ego_owned_late_d3d11/owned_config_file.hpp",
+        "source/ego_owned_late_d3d11/owned_late_d3d11.hpp",
+        "source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+        "source/input.cpp",
+        "source/input.hpp",
+        "source/input_frame_consumer.hpp",
+        "source/runtime.cpp",
+        "source/runtime.hpp",
+        "source/runtime_gui.cpp",
+        "tools/injector.cpp"
+      ]
+    },
+    {
+      "name": "reshade-pristine",
+      "files": [
+        {
+          "path": "include/reshade.hpp",
+          "bytes": 19832,
+          "sha256": "8ed86a2e2b7f2672fa1b226c22d5b00816ef94bc10d5dca8996140619a6bb8c9",
+          "normalizedSha256": "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
+        },
+        {
+          "path": "include/reshade_api.hpp",
+          "bytes": 60884,
+          "sha256": "838651e80c35cbd654bbed2a29f4eda314bd2ad20f1575b42b2dee0a66d734a9",
+          "normalizedSha256": "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
+        },
+        {
+          "path": "include/reshade_events.hpp",
+          "bytes": 124538,
+          "sha256": "6a355e6a91867fee4382c3ff1adc462bb41f85428c93cf7f70fc802177f5935b",
+          "normalizedSha256": "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
+        },
+        {
+          "path": "source/addon_manager.cpp",
+          "bytes": 32173,
+          "sha256": "ab8c2a9dbd00c8e6fd10fc96c526c70fdcd19ce311fe7e83f6fd0a83a5804ff7",
+          "normalizedSha256": "E6524902A07A0B4E2947B372503679A84CAA0FD1840329E89564559C3160349E"
+        },
+        {
+          "path": "source/addon_manager.hpp",
+          "bytes": 7545,
+          "sha256": "cf7b3c4e6e2a118670a46a9642d05a8c648a74ff3c1444ca479c06a106757a7c",
+          "normalizedSha256": "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
+        },
+        {
+          "path": "source/input.cpp",
+          "bytes": 75315,
+          "sha256": "07e38a4b47d91bedf24af68d4f11cd5cda04730184c0cc0b04fdfd9477e2eb63",
+          "normalizedSha256": "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
+        },
+        {
+          "path": "source/input.hpp",
+          "bytes": 7451,
+          "sha256": "463c2fff98b7cbfc1d49a0a6019a8d07c4491b100eab206032619ead9de66d86",
+          "normalizedSha256": "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
+        },
+        {
+          "path": "source/runtime_gui.cpp",
+          "bytes": 208544,
+          "sha256": "90c83b0ce3f97cf0364dfb145406d06d5dccc21381a9ed1292fa1f6678139679",
+          "normalizedSha256": "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
+        },
+        {
+          "path": "tools/injector.cpp",
+          "bytes": 174759,
+          "sha256": "a6e7293d9b74e756cd0ee2de736c6b4f54657fe9d99f920f888b5efd9335085f",
+          "normalizedSha256": "C5451CD3C3FFCA5072ED326EC585A0E77CE86CB5E1F17CDFAC42E4FAF9A9845C"
+        },
+        {
+          "path": "ReShade.vcxproj",
+          "bytes": 49861,
+          "sha256": "68df651bb714ab385f0d3aceb3997a6a5b14be2fa7b272addeea4010a2500c88",
+          "normalizedSha256": "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
+        },
+        {
+          "path": "source/addon.cpp",
+          "bytes": 8973,
+          "sha256": "d19eb54c1dcd371ff032763cce55a2c94ad001b6b94f288872fd19d64cbf43de",
+          "normalizedSha256": "DF69C9E8BE88244B54D92849A183B8A149A74FA959ED49A7109824EF0D8E3D9C"
+        },
+        {
+          "path": "source/d3d11/d3d11_impl_swapchain.cpp",
+          "bytes": 2433,
+          "sha256": "4bb364eca26a4d2ec971811a093e8b1f52ac62d29c8f7e953fd4a52ae5952589",
+          "normalizedSha256": "6F9EA10B4621F37F2D4DAFA2E3F3575973DFDB6B566725BBD8B0BC8187DB52D3"
+        },
+        {
+          "path": "source/d3d11/d3d11_impl_swapchain.hpp",
+          "bytes": 1015,
+          "sha256": "a70bcda947b788212acaf5b59523bf5f3488c6438aba57e387929f1b28660a04",
+          "normalizedSha256": "60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
+        },
+        {
+          "path": "source/ego_owned_late_d3d11/owned_config_file.hpp",
+          "bytes": 8746,
+          "sha256": "42aa81ad7c841b8adf949d5c20434d66d89a6190636db63b964ea158d5c1fd08",
+          "normalizedSha256": "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
+        },
+        {
+          "path": "source/ego_owned_late_d3d11/owned_late_d3d11.hpp",
+          "bytes": 2857,
+          "sha256": "e9f2ce6e29c1a62bfaa1324085f50e1b11e71457aeb9c21339a65d90419bdb5a",
+          "normalizedSha256": "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
+        },
+        {
+          "path": "source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+          "bytes": 42649,
+          "sha256": "19645afd7a9f6559ae6ddcb4924af2ad09b801742a5815097aacea7bab839226",
+          "normalizedSha256": "AEA939BCC391BC5C2F63683558B78A88222BD5E9C4B81EFB5069CAA346F724BE"
+        },
+        {
+          "path": "source/input_frame_consumer.hpp",
+          "bytes": 1954,
+          "sha256": "80488296e6df7b95609149a7008dff73751b228a9b9bdb8ba983c1e09cef2dfe",
+          "normalizedSha256": "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
+        },
+        {
+          "path": "source/runtime.cpp",
+          "bytes": 216088,
+          "sha256": "926235ed48f9fc4d45232f1bfbdaeea21a92c907ead810296c546bef36712aff",
+          "normalizedSha256": "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
+        },
+        {
+          "path": "source/runtime.hpp",
+          "bytes": 25865,
+          "sha256": "8c37e964ea0de4859701e49ec9a4fc73385f21c4a4e3e1e2e365ae53d4baa4d9",
+          "normalizedSha256": "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
+        }
+      ],
+      "exactModifiedPaths": [
+        "ReShade.vcxproj",
+        "include/reshade.hpp",
+        "include/reshade_api.hpp",
+        "include/reshade_events.hpp",
+        "source/addon.cpp",
+        "source/addon_manager.cpp",
+        "source/addon_manager.hpp",
+        "source/d3d11/d3d11_impl_swapchain.cpp",
+        "source/d3d11/d3d11_impl_swapchain.hpp",
+        "source/ego_owned_late_d3d11/owned_config_file.hpp",
+        "source/ego_owned_late_d3d11/owned_late_d3d11.hpp",
+        "source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+        "source/input.cpp",
+        "source/input.hpp",
+        "source/input_frame_consumer.hpp",
+        "source/runtime.cpp",
+        "source/runtime.hpp",
+        "source/runtime_gui.cpp",
+        "tools/injector.cpp"
+      ]
+    }
+  ],
+  "patches": [
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-base-path.patch",
+      "bytes": 1424,
+      "sha256": "1c2af7e9c9799104495d8f60df3ebe70c5a9e6c65c9c1b92d259c27da7911907",
+      "normalizedSha256": "a88e44b9a92b5c9c924c44b633200b8751702302d2d837936510bbf869cbf38e"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-conflict-preflight.patch",
+      "bytes": 12589,
+      "sha256": "43614c2b79a174d237de67f0ccbee529055576c037bac55eec2e9dd914f69ba2",
+      "normalizedSha256": "ab4a96e8557870b4e3b04575879050ccd6e75f2f96ab50639038837a0604d313"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-cooperative-members-v3.patch",
+      "bytes": 22737,
+      "sha256": "b3a49baf2b7bc5ac22d3c63a40e64f37c526feb17ece9e2c2af127af3674fbc4",
+      "normalizedSha256": "b3a49baf2b7bc5ac22d3c63a40e64f37c526feb17ece9e2c2af127af3674fbc4"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-cooperative-members.patch",
+      "bytes": 23517,
+      "sha256": "d4fc9a85d26c8458b7d22424402018579477205317e10a38dd0b7e472a448e56",
+      "normalizedSha256": "d4fc9a85d26c8458b7d22424402018579477205317e10a38dd0b7e472a448e56"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-exact-pid.patch",
+      "bytes": 6262,
+      "sha256": "eeb9b9d5e8c66c49eb7d6abfe3779dc7061ebd29f8b9f280709fbfa6104714d3",
+      "normalizedSha256": "529439a8b0596116678e954040e496811dbf0a40c17153dc7ef4ef96e768de10"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-exact-target-path.patch",
+      "bytes": 758,
+      "sha256": "bedcd985ecf9795715c01dbcd659e07eb679b51a50f61269ab3e4c2458b14da3",
+      "normalizedSha256": "c4c3957b736254d66f3ef6fe76f2815b8cfa8d1e17d9d3361a9a9d5e3586a1d3"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-existing-installation-preflight.patch",
+      "bytes": 19004,
+      "sha256": "60df320f1bff0f3eb276589a156a37f2e986e5c085b9a878ef4b32235b0618e4",
+      "normalizedSha256": "45dddfc4782de1a1cc961e368795c5934707d235f4b4b28dc9ed92a990ea926b"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-export-read-bounds.patch",
+      "bytes": 2052,
+      "sha256": "40e7392e18c13e4b78d6a6fe075647e471412b6d87a1fb24a7418f27855b2755",
+      "normalizedSha256": "3255b129a8355a02e58291a14cc8e2bef392d174d8635de5d9be9465ad3d55d7"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-future-targets.patch",
+      "bytes": 10795,
+      "sha256": "a0b68a5513a3938b4383ac05726550dccfc9ade1b0cd6ef7ad06a4672cfa31fb",
+      "normalizedSha256": "8c62e8c470037e0da7d9c95ce06e0257778d91941ac8b3a496f7699a0cd2e267"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-global-layer-preflight.patch",
+      "bytes": 80459,
+      "sha256": "bba8806a01b457e7573e4818fdcd660a800d6b10bf68e8313d58736f076c627e",
+      "normalizedSha256": "fda3e1a08c499db9de2711665ca6cd3ee78fd818fb68c01cc112a8ec8a1427b6"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-legacy-snapshot-observer.patch",
+      "bytes": 4949,
+      "sha256": "5a95516be1608c587aa171265d741537ccf0e7892134ab519ccd2f542303759c",
+      "normalizedSha256": "62b05c4c0817db6817aa505c5f973399297eff00cfce66c221342e35921740f0"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-low-latency-observer.patch",
+      "bytes": 307,
+      "sha256": "4a6d74c30f6a4b62c4d1b8d2e398f12795cc740f8b5954c2303b19aaea1a4ebd",
+      "normalizedSha256": "08e8ac19f2b5418ac7991eaf94bfb7dcf222977cc2c479f4797657f0101df5fe"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-name-watcher-ready.patch",
+      "bytes": 413,
+      "sha256": "9e1c0dbe779ca77ced354a071b4f8fa07c79d02e5fd526e1d234d2ecff186d99",
+      "normalizedSha256": "671afdb43f0fe63d0208fb576f9553eafda8f96715cc5bfb349e6359b2f0f5d3"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-official-addon-host.patch",
+      "bytes": 6355,
+      "sha256": "67db8b2509ba6304e8b7d4f39d4798512503e5d69dc4dcae487b45806bb7cf19",
+      "normalizedSha256": "75206ac0e350322b1fa8587854e6bb6d69cdf7be07a2583014fb3bdcbf96e87d"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-path-watcher-process-identity.patch",
+      "bytes": 4508,
+      "sha256": "3561792a89161c843783d3a098216c6823f8ea494f1001421f27d64b6b16b805",
+      "normalizedSha256": "eb6f8e92538c7d76ca09786b13e44d301e555486d78385229fb50c7cb00a630f"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-path-watcher.patch",
+      "bytes": 8292,
+      "sha256": "b9aba2838d64374ca5b144dcbe8d8ec93bfa99dac7318923c0cf16733af06346",
+      "normalizedSha256": "9e4f0839e32f1d3e22e19b7830079bac829512067b821a5060beb7c737762158"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-per-pid-claim.patch",
+      "bytes": 2793,
+      "sha256": "6f70f5c5febd2815361a6bc3c22f7b1e66cd69963190657b967c482238c989cb",
+      "normalizedSha256": "da1279dfac97c07ce63cfd80cd5bce88f5e9cf8ab0b9c3e566e40336d7d5382f"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-persistent-path-observer.patch",
+      "bytes": 7010,
+      "sha256": "003813a1f517eadb445b965dff42c4ce65d70d85ab95f006eda125149cbd306b",
+      "normalizedSha256": "de6afa733603937e3fd3ae4971d6c514cab57ccce6fe78ffb6ce1ab0ad2bc585"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-process-instance-binding.patch",
+      "bytes": 5746,
+      "sha256": "be2665db969d7ca12ffc902ebeab865a339e8c7e8e903134821517f3c4928531",
+      "normalizedSha256": "239bdb4e154231855d3cfb02b03d0f6d07b5efe3259db5bbf4e1bd86ad10569d"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-process-policy.patch",
+      "bytes": 16264,
+      "sha256": "21ca1be16ec330490fdd3d0cddc3e2e0c57ce00cf4ccb63c2070c4bde8647271",
+      "normalizedSha256": "80961eb073163bec91615cdfca633e322b004075ef96b1f405a10ccd11fdac70"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-resilient-path-observer.patch",
+      "bytes": 5726,
+      "sha256": "fbb49a3669014bb06c2229f7eca873bd5679c613943e535a5ee6673c587dddcb",
+      "normalizedSha256": "8793ad30433da6d40be92833330b711d33fb2bd38cf0639525e19ee25df04142"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-input-observer.patch",
+      "bytes": 47913,
+      "sha256": "34465afd5b0f08fb88f5e8913e7fd7f741efba6fc13cb01934aab4ffdcaab127",
+      "normalizedSha256": "b22fa085f0ecd41ad5fc5d7a051e4df9cfe4fd1d4d969313f85b66977f4f894f"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch",
+      "bytes": 97409,
+      "sha256": "51e1fa4abe6cc35158dc9b347e1ff3fb29cd838fe6040a48ee108c48ad8693ce",
+      "normalizedSha256": "51e1fa4abe6cc35158dc9b347e1ff3fb29cd838fe6040a48ee108c48ad8693ce"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-pointer-input-block.patch",
+      "bytes": 3257,
+      "sha256": "7056a0c236e6da9a8cbbfc5432d229676c5f66cd490fc649194be79d2f04da66",
+      "normalizedSha256": "043b4d51cc50173d38e78c16442dff36f099fb52e34776feee0de508c0e03e4f"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-raw-input-focus-following-root.patch",
+      "bytes": 6536,
+      "sha256": "c2e1f84168bb2dc1bec31f0dffaa4f6506ce565b6f1669bd22dd8f685c68ffb1",
+      "normalizedSha256": "336074b6faee1abf9ff6a9b17dc8f35291bf410d61ac7662bc1ce6eaeff32134"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-raw-input-normalization.patch",
+      "bytes": 27855,
+      "sha256": "648be574f49545c0f20be3a4170047057716bb0730cbd42cd60eb29a7a9ae734",
+      "normalizedSha256": "a998d303a1c0a2e7c94e4aa5334988f4dd273f297396d2ef72b954c3bb9e2198"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-raw-input-registration-reconciliation.patch",
+      "bytes": 19861,
+      "sha256": "53b8ca43201d36fa6ce7535ceba4c590939c4ca3c70b1021a2e7790556e5ca81",
+      "normalizedSha256": "cdf928751b13014e321362491747a63197a076f7d5ccc2ad0179905ec381df51"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-shared-runtime-hardening.patch",
+      "bytes": 6127,
+      "sha256": "40337ab7a8efa46ee2fee08bde83aaed8c878ba0432d63e583d885774449f83c",
+      "normalizedSha256": "e21a3202fb902d7b6bcd2d4f0757ada06c5246b3a912efc44242379da9ad99e7"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-shared-runtime-host.patch",
+      "bytes": 22948,
+      "sha256": "cf8c6754bfe43724d8b36c451053514a6043fc431fa7c5b0792a9ee89a675158",
+      "normalizedSha256": "73720d5dcf41e7489078331f46dcfbc47ebe3794db15908839b535376c24bd02"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-suppress-splash.patch",
+      "bytes": 1159,
+      "sha256": "577c7a438ac8b895be41a910c3ea54bf655ecffa4fd099890d7ac2e4a666170c",
+      "normalizedSha256": "da7cfab279e370ada69720da10cc52b48e4d39e3765c3b7bba3dfd4a8eaebdae"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-x86-runtime.patch",
+      "bytes": 7918,
+      "sha256": "4f2e554be082f14751376656b9da2ea0fb254d18d942c46316e312ed7c13dde2",
+      "normalizedSha256": "d9770fe0cb9d3c097fd32eec722da26aae5847b3c172153e6e01f358b2cb32ef"
+    },
+    {
+      "path": "libs/electron-game-overlay-runtime/patches/reshade-x86-target-architecture-diagnostic.patch",
+      "bytes": 626,
+      "sha256": "52556b4d3d45d51d0e13752ac00c76a26f27974cd34f9a75ab328174d8ca7daf",
+      "normalizedSha256": "a5d10f3e808bc98a08a11b1fa0e29b322ed3c167c278d2a6cca0d7267c9309fa"
+    }
+  ],
+  "failedCachePreimage": {
+    "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/failed-cache-before-recovery.json",
+    "bytes": 5071,
+    "sha256": "c0e01d6af3d311ec9606a2262648f087c76169c09a7865da8b48a3fbe71ebb5e"
+  },
+  "recovery": {
+    "path": "build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/original-cache-recovery.json",
+    "bytes": 3200,
+    "sha256": "5f1c9a6d1722c4e32741f3b87958df707b70c77a4ac4439fa248b36c1e574c26"
+  },
+  "scope": {
+    "fullProductionProjectConfigure": true,
+    "networkFetch": false,
+    "canonicalRecoveryExactKnownVectorOnly": true,
+    "nativeRuntimeBuildInvoked": false,
+    "compilerDetectionMayCompile": true,
+    "gameOrDesktopAcceptance": false
+  },
+  "limits": [
+    "These configure checks exercise the complete source patch stack and generation; they do not build or load the ReShade runtime/add-on.",
+    "Real-game acceptance and final SDK package sealing remain separate after root normal Nx build."
+  ],
+  "artifactReportSha256": "1301f03c01388f8e676789d72df61feee4f24857116cd2bfef40d97c5c9bdd0c",
+  "retained": [
+    {
+      "name": "configure-final-short",
+      "command": {
+        "command": "cmake",
+        "args": [
+          "--preset",
+          "vs2022-x64",
+          "-S",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+          "-B",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\configure-final",
+          "-DFETCHCONTENT_SOURCE_DIR_RESHADE=C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\reshade-final",
+          "-DFETCHCONTENT_SOURCE_DIR_IMGUI=C:/Users/Wuriko/Desktop/dev/electron-game-overlay/build/electron-game-overlay-runtime/_deps/imgui-src",
+          "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+        ],
+        "cwd": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+        "exit": 0,
+        "elapsedMs": 2593,
+        "nativeBuildInvoked": false
+      },
+      "stdout": "-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.\n-- Configuring done (2.4s)\n-- Generating done (0.1s)\n-- Build files have been written to: C:/Users/Wuriko/.codex/worktrees/4325/electron-game-overlay/build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final\n",
+      "stderr": ""
+    },
+    {
+      "name": "configure-pristine",
+      "command": {
+        "command": "cmake",
+        "args": [
+          "--preset",
+          "vs2022-x64",
+          "-S",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+          "-B",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\configure-pristine",
+          "-DFETCHCONTENT_SOURCE_DIR_RESHADE=C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\reshade-pristine",
+          "-DFETCHCONTENT_SOURCE_DIR_IMGUI=C:/Users/Wuriko/Desktop/dev/electron-game-overlay/build/electron-game-overlay-runtime/_deps/imgui-src",
+          "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+        ],
+        "cwd": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+        "exit": 0,
+        "elapsedMs": 9568,
+        "nativeBuildInvoked": false
+      },
+      "stdout": "-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.\n-- The CXX compiler identification is MSVC 19.44.35223.0\n-- Detecting CXX compiler ABI info\n-- Detecting CXX compiler ABI info - done\n-- Check for working CXX compiler: C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe - skipped\n-- Detecting CXX compile features\n-- Detecting CXX compile features - done\n-- Found Git: C:/Program Files/Git/cmd/git.exe (found version \"2.53.0.windows.1\")\n-- Configuring done (9.4s)\n-- Generating done (0.1s)\n-- Build files have been written to: C:/Users/Wuriko/.codex/worktrees/4325/electron-game-overlay/build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine\n",
+      "stderr": ""
+    },
+    {
+      "name": "configure-final-repeat",
+      "command": {
+        "kind": "final",
+        "command": "cmake",
+        "args": [
+          "--preset",
+          "vs2022-x64",
+          "-S",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+          "-B",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\configure-final",
+          "-DFETCHCONTENT_SOURCE_DIR_RESHADE=C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\reshade-final",
+          "-DFETCHCONTENT_SOURCE_DIR_IMGUI=C:/Users/Wuriko/Desktop/dev/electron-game-overlay/build/electron-game-overlay-runtime/_deps/imgui-src",
+          "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+        ],
+        "cwd": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+        "exit": 0,
+        "elapsedMs": 3220,
+        "nativeBuildInvoked": false
+      },
+      "stdout": "-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.\n-- Configuring done (2.9s)\n-- Generating done (0.2s)\n-- Build files have been written to: C:/Users/Wuriko/.codex/worktrees/4325/electron-game-overlay/build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-final\n",
+      "stderr": ""
+    },
+    {
+      "name": "configure-pristine-repeat",
+      "command": {
+        "kind": "pristine",
+        "command": "cmake",
+        "args": [
+          "--preset",
+          "vs2022-x64",
+          "-S",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+          "-B",
+          "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\configure-pristine",
+          "-DFETCHCONTENT_SOURCE_DIR_RESHADE=C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\build\\gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73\\reshade-pristine",
+          "-DFETCHCONTENT_SOURCE_DIR_IMGUI=C:/Users/Wuriko/Desktop/dev/electron-game-overlay/build/electron-game-overlay-runtime/_deps/imgui-src",
+          "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+        ],
+        "cwd": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\libs\\electron-game-overlay-runtime",
+        "exit": 0,
+        "elapsedMs": 3089,
+        "nativeBuildInvoked": false
+      },
+      "stdout": "-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.\n-- Configuring done (2.9s)\n-- Generating done (0.1s)\n-- Build files have been written to: C:/Users/Wuriko/.codex/worktrees/4325/electron-game-overlay/build/gen15-fullconfigure-regression-5aba5224-23ee-4e0a-8df7-e4b615355d73/configure-pristine\n",
+      "stderr": ""
+    }
+  ]
+}

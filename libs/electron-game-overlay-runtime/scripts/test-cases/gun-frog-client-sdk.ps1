@@ -2,10 +2,14 @@
 param(
     [ValidateRange(60, 900)]
     [int]$InteractionTimeoutSeconds = 600,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$DeviceLossMonitorDirectory
 )
 
 $ErrorActionPreference = "Stop"
+if (-not [string]::IsNullOrWhiteSpace($DeviceLossMonitorDirectory)) {
+    . (Join-Path $PSScriptRoot '..\device-loss-monitor.ps1') -FunctionsOnly
+}
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
@@ -23,6 +27,8 @@ $ClientProcess = $null
 $TargetProcessId = 0
 $ReShadeRunDirectory = $null
 $RunPassed = $false
+$DeviceLossMonitor = $null
+$DiagnosticTargetProcess = $null
 
 function Get-MatchingClientProcesses {
     @(
@@ -39,7 +45,7 @@ function Get-ClientLogText {
     if (-not (Test-Path -LiteralPath $ClientStdout -PathType Leaf)) {
         return ""
     }
-    return Get-Content -Raw -LiteralPath $ClientStdout
+    return [string](Get-Content -Raw -LiteralPath $ClientStdout)
 }
 
 function Get-MatchingInjectors {
@@ -170,6 +176,9 @@ try {
     Wait-ForClientMarker `
         -Marker "RESHADE_CLIENT_INJECTOR_STARTED" `
         -Deadline $StartupDeadline
+    Wait-ForClientMarker `
+        -Marker "RESHADE_CLIENT_INJECTOR_WATCHER_READY" `
+        -Deadline $StartupDeadline
 
     Start-Process -FilePath $LaunchUri | Out-Null
 
@@ -207,6 +216,17 @@ try {
         throw "The client did not report its isolated ReShade run directory."
     }
     $ReShadeLog = Join-Path $ReShadeRunDirectory "ReShade.log"
+    if (-not [string]::IsNullOrWhiteSpace($DeviceLossMonitorDirectory)) {
+        $stageMatches = [regex]::Matches((Get-ClientLogText), '(?m)^RESHADE_CLIENT_RUNTIME_STAGED directory=(.+)\r?$')
+        if ($stageMatches.Count -ne 1) { throw 'Device-loss monitoring requires one uniquely owned native stage.' }
+        $DiagnosticTargetProcess = Get-Process -Id $TargetProcessId -ErrorAction Stop
+        $null = $DiagnosticTargetProcess.Handle
+        $DeviceLossMonitor = Start-EgoDeviceLossMonitor -TargetProcess $DiagnosticTargetProcess `
+            -ExpectedExecutablePath $TargetExecutablePath -MonitorRoot $DeviceLossMonitorDirectory `
+            -OwnedRunDirectory $RunDirectory -NativeRunDirectory $ReShadeRunDirectory `
+            -OwnedLogPaths @($ClientStdout, $ClientStderr, $ReShadeLog,
+                (Join-Path $ReShadeRunDirectory 'inject.stdout.log'), (Join-Path $ReShadeRunDirectory 'inject.stderr.log'))
+    }
     while ([DateTime]::UtcNow -lt $StartupDeadline) {
         if ((Test-Path -LiteralPath $ReShadeLog -PathType Leaf) -and
             (Select-String -LiteralPath $ReShadeLog `
@@ -298,6 +318,8 @@ try {
     Write-Host "ReShade evidence preserved in: $ReShadeRunDirectory"
 }
 finally {
+    if ($DeviceLossMonitor) { Stop-EgoDeviceLossMonitor $DeviceLossMonitor }
+    if ($DiagnosticTargetProcess) { $DiagnosticTargetProcess.Dispose() }
     $CleanupIds = @(
         Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -like "*$UserData*" } |

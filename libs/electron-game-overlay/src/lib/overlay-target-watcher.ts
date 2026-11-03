@@ -119,7 +119,7 @@ const asError = (error: unknown) =>
  * follows timeout, transport loss, cancellation, or an uncertain injection.
  */
 export class OverlayTargetWatcher {
-  /** Initial observer, staged best-effort runtime and all early-watcher readiness. */
+  /** Initial discovery readiness, following policy revisions received during startup. */
   public readonly ready: Promise<void>;
   private readonly config: ReShadeLaunchConfig;
   private readonly handlers = new Set<
@@ -146,6 +146,15 @@ export class OverlayTargetWatcher {
   private spareReady?: Promise<void>;
   private policyRevision = 0;
   private discoveryUpdate: Promise<void> = Promise.resolve();
+  private discoveryOutcome?: {
+    revision: number;
+    error?: Error;
+    blocked: boolean;
+  };
+  private resolvePolicyChanged!: () => void;
+  private policyChanged = new Promise<void>((resolve) => {
+    this.resolvePolicyChanged = resolve;
+  });
   private earlyPolicy?: OverlayProcessPolicy;
   private bestEffort?: OverlayTargetPolicy['acceptBestEffort'];
   private disposed = false;
@@ -200,6 +209,10 @@ export class OverlayTargetWatcher {
     setOverlaySessionTargetAdmission(this.session, (pid, path, created) =>
       this.admitTarget(pid, path, created),
     );
+    // Initial startup and updates share one discovery pipeline. An update can
+    // supersede pending preparation without making its cancellation fatal.
+    this.discoveryUpdate = this.reconcileDiscovery(0, selectors);
+    void this.discoveryUpdate.catch(() => undefined);
     this.ready = this.start();
     void this.ready.catch(() => undefined);
     if (options.signal?.aborted) this.dispose();
@@ -233,6 +246,11 @@ export class OverlayTargetWatcher {
       throw new Error('Target watcher is stopped');
     const selectors = snapshotPolicy(policy);
     const revision = ++this.policyRevision;
+    const changed = this.resolvePolicyChanged;
+    this.policyChanged = new Promise<void>((resolve) => {
+      this.resolvePolicyChanged = resolve;
+    });
+    changed();
     this.bestEffort = policy.acceptBestEffort;
     this.earlyPolicy = policy.earlyPolicy
       ? createOverlayProcessPolicy(policy.earlyPolicy)
@@ -270,58 +288,89 @@ export class OverlayTargetWatcher {
     }
     const pending = this.discoveryUpdate
       .catch(() => undefined)
-      .then(async () => {
-        await this.observerReady;
-        await Promise.all(
-          this.slots
-            .filter((slot) => !slot.enabled && slot.quiescence)
-            .map((slot) => slot.quiescence),
-        );
-        if (revision !== this.policyRevision) return;
-        if (this.disposed || this.failed)
-          throw new Error('Target watcher is stopped');
-        let blocked = false;
-        for (const selector of selectors) {
-          if (
-            this.slots.some(
-              (slot) => slot.enabled && sameSelector(slot.selector, selector),
-            )
-          )
-            continue;
-          if (
-            this.slots.some(
-              (slot) => !slot.target && overlaps(slot.selector, selector),
-            )
-          ) {
-            blocked = true;
-            this.emit({
-              type: 'discovery-blocked',
-              selector,
-              error: new Error(
-                'Future discovery remains blocked by an uncertain selector; authorized active targets are retained',
-              ),
-            });
-            continue;
-          }
-          this.slots.push({ selector, enabled: true });
-        }
-        try {
-          await Promise.all([
-            this.prepareSpare(),
-            ...this.slots
-              .filter((slot) => slot.enabled)
-              .map((slot) => this.arm(slot)),
-          ]);
-        } catch (error) {
-          blocked = true;
-          this.emit({ type: 'discovery-blocked', error: asError(error) });
-        }
-        if (!blocked && revision === this.policyRevision)
-          this.emit({ type: 'ready' });
-      });
+      .then(() => this.reconcileDiscovery(revision, selectors));
     this.discoveryUpdate = pending;
     void pending.catch(() => undefined);
     return pending;
+  }
+
+  private async reconcileDiscovery(
+    revision: number,
+    selectors: readonly OverlayEarlyTarget[],
+  ): Promise<void> {
+    await Promise.race([this.observerReady, this.stopped]);
+    if (revision !== this.policyRevision) return;
+    const changed = this.policyChanged;
+    await Promise.race([
+      Promise.all(
+        this.slots
+          .filter((slot) => !slot.enabled && slot.quiescence)
+          .map((slot) => slot.quiescence),
+      ),
+      changed,
+      this.stopped,
+    ]);
+    if (revision !== this.policyRevision) return;
+    if (this.disposed || this.failed)
+      throw new Error('Target watcher is stopped');
+    let error: Error | undefined;
+    let blocked = false;
+    for (const selector of selectors) {
+      if (revision !== this.policyRevision) return;
+      if (
+        this.slots.some(
+          (slot) => slot.enabled && sameSelector(slot.selector, selector),
+        )
+      )
+        continue;
+      if (
+        this.slots.some(
+          (slot) => !slot.target && overlaps(slot.selector, selector),
+        )
+      ) {
+        blocked = true;
+        error ??= new Error(
+          'Future discovery remains blocked by an uncertain selector; authorized active targets are retained',
+        );
+        this.emit({
+          type: 'discovery-blocked',
+          selector,
+          error,
+        });
+        continue;
+      }
+      this.slots.push({ selector, enabled: true });
+    }
+    try {
+      // Preparation may outlive the policy that requested it. Race policy
+      // changes as well as stop, including an obsolete best-effort spare.
+      // A selection can also add a successor while another slot prepares.
+      for (;;) {
+        if (revision !== this.policyRevision) return;
+        const spareReady = this.prepareSpare();
+        const spare = this.spare;
+        const slots = this.slots.filter((slot) => slot.enabled);
+        await Promise.race([
+          Promise.all([spareReady, ...slots.map((slot) => this.arm(slot))]),
+          changed,
+          this.stopped,
+        ]);
+        if (revision !== this.policyRevision) return;
+        if (
+          spare === this.spare &&
+          this.slots.every((slot) => !slot.enabled || slots.includes(slot))
+        )
+          break;
+      }
+    } catch (cause) {
+      if (revision !== this.policyRevision) return;
+      if (this.disposed || this.failed) throw cause;
+      error = asError(cause);
+      this.emit({ type: 'discovery-blocked', error });
+    }
+    if (revision !== this.policyRevision) return;
+    this.discoveryOutcome = { revision, error, blocked };
+    if (!error && !this.disposed && !this.failed) this.emit({ type: 'ready' });
   }
 
   private stopDiscovery(slot: Slot): void {
@@ -377,6 +426,7 @@ export class OverlayTargetWatcher {
   }
 
   private async start(): Promise<void> {
+    let discoveryBlocked = false;
     try {
       await Promise.race([this.session.whenReady(), this.stopped]);
       if (this.disposed) throw new Error('Target watcher is disposed');
@@ -390,13 +440,30 @@ export class OverlayTargetWatcher {
       this.resolveObserver();
       if (this.disposed || this.failed)
         throw new Error('Target watcher is stopped');
-      await Promise.all([
-        this.prepareSpare(),
-        ...this.slots.filter((s) => s.enabled).map((s) => this.arm(s)),
-      ]);
-      this.emit({ type: 'ready' });
+      for (;;) {
+        const revision = this.policyRevision;
+        const pending = this.discoveryUpdate;
+        await Promise.race([pending, this.stopped]);
+        if (this.disposed || this.failed)
+          throw new Error('Target watcher is stopped');
+        if (
+          revision !== this.policyRevision ||
+          pending !== this.discoveryUpdate
+        )
+          continue;
+        const outcome = this.discoveryOutcome;
+        if (!outcome || outcome.revision !== revision)
+          throw new Error('Target discovery did not settle its current policy');
+        if (outcome.error) {
+          // An uncertain retired watcher must retain allowed active targets.
+          // Reject initial readiness without converting this into owner exit.
+          discoveryBlocked = outcome.blocked;
+          throw outcome.error;
+        }
+        return;
+      }
     } catch (error) {
-      if (!this.disposed) this.fail(asError(error));
+      if (!this.disposed && !discoveryBlocked) this.fail(asError(error));
       throw error;
     }
   }

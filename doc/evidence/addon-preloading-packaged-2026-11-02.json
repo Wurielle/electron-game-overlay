@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-portable-addon-preloading-acceptance",
+  "recordedAtUtc": "2026-11-02T18:37:43.8501222Z",
+  "status": "passed-with-retained-earlier-attempts",
+  "scope": "Actual portable ElectronGameOverlayDemo.exe with packaged production Application/UI, SDK and native assets; repository DX11/DX12 demos only. Test bootstrap supplies public parser options and isolated paths. No ASAR, physical keyboard or user-game claim.",
+  "sourceBase": "ecc8407",
+  "runtimeGeneration": 19,
+  "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+  "electronVersion": "39.8.10",
+  "nodeVersion": "26.12.1",
+  "packagingLayout": "resources/app",
+  "testOnlyInstrumentation": {
+    "productionMainChange": "One AST-verified parser call replacement supplies public SDK options; original bytes retained",
+    "bootstrap": "Packaged source resolution, isolated controller profile and real ready-to-show observation",
+    "sdkBytesModified": false,
+    "record": {
+      "path": "artifacts/packaged-preload-b60e14e5c3/PACKAGED_PRELOAD_TEST_INSTRUMENTATION.json",
+      "sha256": "2ca7e33d5f49392bc684e80113d197c3265aa24b3e5ec8becaa5426d822e9601"
+    }
+  },
+  "sdk": {
+    "sealedPayloads": 154,
+    "totalFiles": 156,
+    "inventorySha256": "c1da93078ce21f07201b3bf7c0a8346acf9716e112e5eef0ac6ae2046fef8d3b",
+    "sealSha256": "43e069e4c76651443d0734517754b22b713601387123dd4654e18c21013f48bf",
+    "bytesUnchanged": true
+  },
+  "registration": {
+    "entrypoint": "electron-game-overlay/preload",
+    "packageRoot": "Omitted; resolved from the packaged SDK",
+    "storage": "Isolated test-only storageRoot",
+    "registeredApps": 2,
+    "registration": {
+      "path": "build/pp/a5828fe6/registration.json",
+      "sha256": "69830e13cb51474ddfbf4fb40bd27d88f6d59795021b42efa9400450fb4b6ab0"
+    },
+    "unregistration": {
+      "path": "build/pp/a5828fe6/unregistration.json",
+      "sha256": "43d508851a9275ce5adff2c725e8c74434095c30d482137fdb8d56f95654b0d9"
+    },
+    "remainingEntries": 0,
+    "cachedPayloadsRetainedByDesign": true
+  },
+  "acceptance": {
+    "passedGates": 4,
+    "freshClientHostCycles": 8,
+    "enabledNativeSnapshots": 4,
+    "modes": [
+      "normal-before",
+      "preload-enabled",
+      "normal-after"
+    ],
+    "physicalKeyboardGate": "User waived; synthetic input only in these gates"
+  },
+  "gates": [
+    {
+      "id": "normal-before",
+      "backend": "d3d11",
+      "mode": "normal",
+      "freshCycles": 2,
+      "summary": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d11-legacy-20261102-193022/summary.json",
+        "sha256": "32a6e20c336edb8e198fbd1383ec8c8023e6b3fe226623e0775ea1b9fc97b891"
+      },
+      "result": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d11-legacy-20261102-193022/result.txt",
+        "sha256": "c6c17e436fde48a1a7e39863c4821af231b5013032d143f5b0d368a835371b18"
+      },
+      "packagedProcessReports": [
+        {
+          "path": "build/pp/a5828fe6/normal-app/packaged-process-9716.json",
+          "sha256": "97eab8d3604f4aec5f6e4ea53f1a49cafb1d791d1946f828bc934ce9f07f40f5"
+        },
+        {
+          "path": "build/pp/a5828fe6/normal-app/packaged-process-16532.json",
+          "sha256": "634154ad41441c17b938610d2f68c6f6e17f8c98a1e5801d8a8456b2858e25d7"
+        }
+      ],
+      "nativeSnapshots": []
+    },
+    {
+      "id": "preload-d3d11",
+      "backend": "d3d11",
+      "mode": "preload-enabled",
+      "freshCycles": 2,
+      "summary": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d11-legacy-20261102-193109/summary.json",
+        "sha256": "8baa0d8305728b82473b8c7ea2708f201ee626bf5e48525cb467628a15507317"
+      },
+      "result": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d11-legacy-20261102-193109/result.txt",
+        "sha256": "c6c17e436fde48a1a7e39863c4821af231b5013032d143f5b0d368a835371b18"
+      },
+      "packagedProcessReports": [
+        {
+          "path": "build/pp/a5828fe6/preload-app/packaged-process-39220.json",
+          "sha256": "66907b10870e627dd42662a20a6b06ff99a409be7af98dea97acf31e34ca77a8"
+        },
+        {
+          "path": "build/pp/a5828fe6/preload-app/packaged-process-50244.json",
+          "sha256": "5d99976c687866372f3db8262d5d58c46c68a04994477c9e5758e98a825c51dd"
+        }
+      ],
+      "nativeSnapshots": [
+        {
+          "path": "build/pp/a5828fe6/observe-d3d11/32620-134381178727248445.json",
+          "sha256": "4ab3d70c2f06f93f7709b89a0999704415688ae39b213edd6851bd8e444a6a16"
+        },
+        {
+          "path": "build/pp/a5828fe6/observe-d3d11/22680-134381178829513111.json",
+          "sha256": "ff2e4d6b56a65fceb9fea6235638a193f5f8a5d74e6af164b69390ba917f7ada"
+        }
+      ]
+    },
+    {
+      "id": "preload-d3d12",
+      "backend": "d3d12",
+      "mode": "preload-enabled",
+      "freshCycles": 2,
+      "summary": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d12-legacy-20261102-193352/summary.json",
+        "sha256": "7152e328b9c3be08ffcd58e191072966f8c13d0055ef35c84b2e5dc6c6eb57bf"
+      },
+      "result": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d12-legacy-20261102-193352/result.txt",
+        "sha256": "876d47a068f049d762615a7a7c26f3269b46c604c244d104deaaf29162e91c20"
+      },
+      "packagedProcessReports": [
+        {
+          "path": "build/pp/a5828fe6/preload-app/packaged-process-34216.json",
+          "sha256": "ff077702795ed5f3330fed71d6077647c7eb8d0f2264b1794cc1890db910064e"
+        },
+        {
+          "path": "build/pp/a5828fe6/preload-app/packaged-process-46732.json",
+          "sha256": "2d44418b3cadb13f2d73ff9a2706d7c8c4767982f4f7063d35752f1b661b6adb"
+        }
+      ],
+      "nativeSnapshots": [
+        {
+          "path": "build/pp/a5828fe6/observe-d3d12-final/53776-134381180365452860.json",
+          "sha256": "23f7af32c556e4aa5a6a66b4542121a61893180bfb2e760dcec4a795db830f67"
+        },
+        {
+          "path": "build/pp/a5828fe6/observe-d3d12-final/44504-134381180469085243.json",
+          "sha256": "c93493aca23accccc4bb36245081167abcb8f7e3d8386914db26784fc4bef1cc"
+        }
+      ]
+    },
+    {
+      "id": "normal-after",
+      "backend": "d3d12",
+      "mode": "normal",
+      "freshCycles": 2,
+      "summary": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d12-legacy-20261102-193439/summary.json",
+        "sha256": "657a77a11069f4d9113a2569e6fcd0a8ba3a548f33858fbf9278a295c42598d3"
+      },
+      "result": {
+        "path": "build/electron-game-overlay-runtime/client-sdk-d3d12-legacy-20261102-193439/result.txt",
+        "sha256": "876d47a068f049d762615a7a7c26f3269b46c604c244d104deaaf29162e91c20"
+      },
+      "packagedProcessReports": [
+        {
+          "path": "build/pp/a5828fe6/normal-app/packaged-process-53288.json",
+          "sha256": "b3f25ae66d993f7c3257fe070d02eabe4f554f1026a988399f2fe41cb2c74e2b"
+        },
+        {
+          "path": "build/pp/a5828fe6/normal-app/packaged-process-44528.json",
+          "sha256": "70efb36e903d783c14115a0763c5b0cb188012bcf730c7b10aaaeb8dbeeea9e1"
+        }
+      ],
+      "nativeSnapshots": []
+    }
+  ],
+  "finalAudit": {
+    "path": "build/pp/a5828fe6/final-audit.json",
+    "sha256": "849d3fd1baf88fe4857aa4aacfbd6be7c79ddf764413288418d18728c7fbcec7"
+  },
+  "cleanup": {
+    "path": "build/pp/a5828fe6/cleanup.json",
+    "sha256": "321ca523c1c96b6e72b72946ae09f7e6a2ff82430ff9486baae528b9e1b00234"
+  },
+  "harnessChanges": [
+    "Recognize exact supplied executable and default Electron paths for preflight, scoped cleanup and leftover checks",
+    "Match the per-attempt profile literally, including wildcard characters",
+    "Optional caller-provided readiness marker uses the existing bounded wait before controlled target launch"
+  ],
+  "harnessVerification": {
+    "powershellVersions": [
+      "5.1.26100.6584",
+      "7.6.5"
+    ],
+    "mockedScopeChecks": "Passed in both versions; unrelated executable and profile excluded",
+    "actualCycles": 8
+  },
+  "earlierAttempts": [
+    {
+      "log": {
+        "path": "build/packaged-normal-dx11.log",
+        "sha256": "c49030a29d682398f02ddd084905ca8c40e9f18ed4029e21fdebd3bec03f6fde"
+      },
+      "outcome": "First cycle passed; second timed out on interception acknowledgment. Old cleanup missed the renamed executable; 14 owned test processes were removed. Test bootstrap also now preserves the controller profile."
+    },
+    {
+      "log": {
+        "path": "build/packaged-normal-dx11-cleanup-fixed.log",
+        "sha256": "1c4d1e31f16b5e944dfec1a2281d64e5a2a2208f9d304839355f9e6a123d1547"
+      },
+      "outcome": "First cycle passed; second lost foreground and timed out on Escape forwarding. Final runs wait for the real application startup marker before launching the target."
+    },
+    {
+      "log": {
+        "path": "build/packaged-preload-dx12.log",
+        "sha256": "fdf058218ec5597f4998751c2c5183cdf713d378c1e34abe71250aa3a183c04c"
+      },
+      "outcome": "First enabled DX12 run missed the initial status-window click and timed out. Cause not determined. Two fresh enabled cycles passed unchanged strict assertions on repeat; two normal post-unregister DX12 cycles also passed."
+    }
+  ],
+  "productionRuntimeChanges": "None; sealed SDK and native assets remained unchanged"
+}

@@ -4,6 +4,8 @@ const { app, BrowserWindow, screen } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { createHash } = require('node:crypto');
+const { readNativeImageRaster } = require('../dist/lib/native-image-raster.js');
 const args = Object.fromEntries(
   process.argv
     .slice(2)
@@ -41,6 +43,8 @@ let overlay,
   peer,
   probe,
   timer,
+  lastPaintImage,
+  lastPaintScale,
   done = false;
 const state = {
   member,
@@ -55,6 +59,41 @@ const persist = () =>
     path.join(root, `${member}-state.json`),
     JSON.stringify(state, null, 2),
   );
+function describeSourceRaster(raster, cssBounds) {
+  const { width, height, bitmap } = raster;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || !Buffer.isBuffer(bitmap) || bitmap.length !== width * height * 4 || !(cssBounds.width > 0) || !(cssBounds.height > 0)) throw new Error('Invalid diagnostic source raster.');
+  const scaleX = width / cssBounds.width;
+  const scaleY = height / cssBounds.height;
+  const calibration = {};
+  for (const [name, cssX, cssY] of [['red', 460, 40], ['blue', 520, 40]]) {
+    const x = Math.floor(cssX * scaleX), y = Math.floor(cssY * scaleY);
+    if (x < 0 || y < 0 || x >= width || y >= height) throw new Error('Diagnostic source calibration point is outside the raster.');
+    const offset = (y * width + x) * 4;
+    calibration[name] = { cssX, cssY, x, y, bgra: [...bitmap.subarray(offset, offset + 4)] };
+  }
+  return { width, height, stride: width * 4, bytes: bitmap.length, bitmapSha256: createHash('sha256').update(bitmap).digest('hex'), cssBounds: { ...cssBounds }, scaleX, scaleY, calibration };
+}
+function describeSourceImage(image, cssBounds) {
+  const raster = readNativeImageRaster(image);
+  if (!raster) throw new Error('Diagnostic source image has no raster.');
+  return { ...describeSourceRaster(raster, cssBounds), representationScaleFactor: raster.scaleFactor, imageSize: image.getSize(raster.scaleFactor), representationScales: image.getScaleFactors() };
+}
+function readPublishedDiagnostics(backend, windowId, cssBounds) {
+  const metadata = backend?.windows?.get?.(windowId);
+  const packet = backend?.latestFrames?.get?.(windowId);
+  const result = { scope: 'Read-only retained producer transport state; not a native/GPU readback.', window: metadata ? JSON.parse(JSON.stringify(metadata)) : null, frame: null };
+  if (Buffer.isBuffer(packet)) {
+    if (packet.length < 17 || packet[4] !== 2 || packet.readUInt32LE(0) !== packet.length - 5 || packet.readUInt32LE(5) !== windowId) throw new Error('Diagnostic retained frame packet is malformed.');
+    result.frame = describeSourceRaster({ width: packet.readUInt32LE(9), height: packet.readUInt32LE(13), bitmap: packet.subarray(17) }, cssBounds);
+    result.frame.packetBytes = packet.length;
+  }
+  return result;
+}
+function buildGpuPixelRequest(scaleFactor) {
+  if (!Number.isFinite(scaleFactor) || !(scaleFactor > 0) || scaleFactor > 2) throw new Error('GPU pixel diagnostic requires display scale above0 and at most2.');
+  const points = [[Math.round(480 * scaleFactor), Math.round(100 * scaleFactor)], [Math.round(540 * scaleFactor), Math.round(100 * scaleFactor)], [1270, 710]];
+  return { filename: 'electron-game-overlay-gpu-pixels-v1.request', points, samples: 8, intervalMs: 10000, scope: 'Three pixels only; first dispatcher own window; diagnostic GPU readback does not change strict desktop pixel acceptance.', control: `EGO_GPU_READBACK_V1 ${points.flat().join(' ')} 8 10000\n` };
+}
 function cleanup() {
   if (done) return;
   done = true;
@@ -117,6 +156,14 @@ app
     });
     launcher = new ReShadeOverlayLauncher(config);
     launcher.onEvent((event) => {
+      if (event.type === 'runtime-staged' && args['gpu-readback'] === 'true') {
+        try {
+          const request = buildGpuPixelRequest(state.scaleFactor);
+          const filename = path.join(event.runDirectory, request.filename);
+          fs.writeFileSync(filename, request.control, { encoding: 'ascii', flag: 'wx' });
+          state.gpuPixelRequest = { ...request, file: filename };
+        } catch (error) { state.gpuPixelRequestError = error.stack || String(error); }
+      }
       state.events.push({ type: event.type, at: Date.now() });
       if (event.type === 'injector-returned' && member === 'a' && !args.game) {
         fs.rmSync(
@@ -177,34 +224,26 @@ app
       if (image.getScaleFactors().length === 0 || image.getSize().width <= 0)
         return;
       state.paintCount = (state.paintCount || 0) + 1;
-      const sf = Math.max(...image.getScaleFactors()),
-        data = image.toBitmap({ scaleFactor: sf });
-      const stride = Math.round(600 * sf) * 4,
-        at = Math.floor(40 * sf) * stride + Math.floor(460 * sf) * 4;
-      state.sourceRed = [...data.subarray(at, at + 4)];
-      if (
-        !state.sourceCalibrationSaved &&
-        data[at] === 53 &&
-        data[at + 1] === 57 &&
-        data[at + 2] === 229
-      ) {
-        fs.writeFileSync(
-          path.join(root, 'source-calibration.png'),
-          image.toPNG({ scaleFactor: sf }),
-        );
-        state.sourceCalibrationSaved = true;
-      }
-
-      if (!state.paint) {
-        const scales = image.getScaleFactors();
-        const scale = Math.max(...scales),
-          bitmap = image.toBitmap({ scaleFactor: scale });
-        state.paint = {
-          dipSize: image.getSize(),
-          scales,
-          bytes: bitmap.length,
-        };
-      }
+      try {
+        const cssBounds = window.browserWindow.getContentBounds();
+        state.latestPaint = describeSourceImage(image, cssBounds);
+        state.latestPaint.at = Date.now();
+        state.latestPaint.paintCount = state.paintCount;
+        lastPaintImage = image;
+        lastPaintScale = state.latestPaint.representationScaleFactor;
+        state.sourceRed = state.latestPaint.calibration.red.bgra;
+        state.sourceBlue = state.latestPaint.calibration.blue.bgra;
+        state.published = readPublishedDiagnostics(overlay.nativeOverlay, window.nativeId, cssBounds);
+        if (!state.sourceFirstPaintSaved) {
+          fs.writeFileSync(path.join(root, 'source-first-paint.png'), image.toPNG({ scaleFactor: lastPaintScale }));
+          state.sourceFirstPaintSaved = true;
+        }
+        if (!state.sourceCalibrationSaved && state.sourceRed.join(',') === '53,57,229,255') {
+          fs.writeFileSync(path.join(root, 'source-calibration.png'), image.toPNG({ scaleFactor: lastPaintScale }));
+          state.sourceCalibrationSaved = true;
+        }
+        if (!state.paint) state.paint = { dipSize: image.getSize(), scales: image.getScaleFactors(), bytes: state.latestPaint.bytes, rasterWidth: state.latestPaint.width, rasterHeight: state.latestPaint.height };
+      } catch (error) { state.paintDiagnosticError = error.message; }
     });
     state.windowId = window.nativeId;
     state.scaleFactor = screen.getDisplayMatching(
@@ -386,16 +425,16 @@ app
                 state.targetPid = host.pid;
                 break;
               }
-              case 'capture':
-                fs.writeFileSync(
-                  path.join(root, 'capture.png'),
-                  (
-                    await window.browserWindow.webContents.capturePage()
-                  ).toPNG(),
-                );
+              case 'capture': {
+                const capture = await window.browserWindow.webContents.capturePage();
+                fs.writeFileSync(path.join(root, 'capture.png'), capture.toPNG());
+                state.capture = describeSourceImage(capture, window.browserWindow.getContentBounds());
+                if (lastPaintImage) fs.writeFileSync(path.join(root, 'source-latest-paint.png'), lastPaintImage.toPNG({ scaleFactor: lastPaintScale }));
+                state.published = readPublishedDiagnostics(overlay.nativeOverlay, window.nativeId, window.browserWindow.getContentBounds());
                 state.contentBounds = window.browserWindow.getContentBounds();
                 state.bounds = window.getBounds();
                 break;
+              }
               case 'focus':
                 await window.browserWindow.webContents.executeJavaScript(
                   "document.querySelector('input').focus()",

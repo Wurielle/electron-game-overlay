@@ -505,6 +505,8 @@ impl SharedDragState {
 #[derive(Debug)]
 pub struct ElectronFrame {
     pub window_id: u32,
+    /// Registration identity, unchanged by bounds, paint and caption dragging.
+    pub incarnation: u64,
     pub name: String,
     pub rect: ElectronWindowRect,
     pub transparent: bool,
@@ -526,7 +528,16 @@ pub struct ElectronFrame {
 #[derive(Clone, Debug, Default)]
 pub struct ElectronScene {
     pub state_revision: u64,
+    /// All live registrations, including windows waiting for their first or
+    /// replacement raster. Unlike `windows`, this list is lifetime authority.
+    pub registrations: Vec<ElectronWindowRegistration>,
     pub windows: Vec<Arc<ElectronFrame>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ElectronWindowRegistration {
+    pub window_id: u32,
+    pub incarnation: u64,
 }
 
 /// Placement supplied by the Electron overlay host, in game-client pixels.
@@ -562,13 +573,72 @@ pub struct ElectronFrameBridge {
     thread: Option<JoinHandle<()>>,
 }
 
+pub(crate) const INPUT_CAPABILITY_COPIED_WM_INPUT: u64 = 1;
+pub(crate) const INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER: u64 = 2;
+
+pub(crate) fn valid_input_capabilities(capabilities: u64) -> bool {
+    capabilities & !(INPUT_CAPABILITY_COPIED_WM_INPUT | INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER)
+        == 0
+        && (capabilities & INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER == 0
+            || capabilities & INPUT_CAPABILITY_COPIED_WM_INPUT != 0)
+}
+
 impl ElectronFrameBridge {
     /// Starts the state and loopback transport worker.
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
-        let startup = RuntimeStartupPublisher::from_environment(unsafe { GetCurrentProcessId() });
+        Self::spawn_with_directory(None, None)
+    }
+
+    /// Starts a participant-private transport. Discovery and startup diagnostics
+    /// are confined to this directory; process-wide environment and legacy
+    /// discovery records are never consulted.
+    pub fn spawn_for_directory(directory: PathBuf) -> Result<Self, ElectronFrameBridgeError> {
+        Self::spawn_private(directory, None)
+    }
+
+    /// Starts a private worker with immutable capabilities supplied by its
+    /// native host before its first connection. Zero means known unsupported;
+    /// older constructors leave host input capabilities unknown.
+    pub fn spawn_for_directory_with_input_capabilities(
+        directory: PathBuf,
+        input_capabilities: u64,
+    ) -> Result<Self, ElectronFrameBridgeError> {
+        if !valid_input_capabilities(input_capabilities) {
+            return Err(ElectronFrameBridgeError::Initialization(
+                "native input capability flags are invalid".to_owned(),
+            ));
+        }
+        Self::spawn_private(directory, Some(input_capabilities))
+    }
+
+    fn spawn_private(
+        directory: PathBuf,
+        input_capabilities: Option<u64>,
+    ) -> Result<Self, ElectronFrameBridgeError> {
+        if !directory.is_absolute() || directory.as_os_str().is_empty() {
+            return Err(ElectronFrameBridgeError::Initialization(
+                "private transport directory must be an absolute Windows path".to_owned(),
+            ));
+        }
+        Self::spawn_with_directory(Some(directory), input_capabilities)
+    }
+
+    fn spawn_with_directory(
+        directory: Option<PathBuf>,
+        input_capabilities: Option<u64>,
+    ) -> Result<Self, ElectronFrameBridgeError> {
+        let pid = unsafe { GetCurrentProcessId() };
+        let startup = match &directory {
+            Some(directory) => RuntimeStartupPublisher::for_directory(directory.clone(), pid),
+            None => RuntimeStartupPublisher::from_environment(pid),
+        };
         let scene = Arc::new(RwLock::new(Arc::new(ElectronScene::default())));
         let worker_scene = Arc::clone(&scene);
-        let input_router = Arc::new(Mutex::new(InputRouter::new()));
+        let mut router = InputRouter::new();
+        if directory.is_some() {
+            router.set_cooperative_focus(None);
+        }
+        let input_router = Arc::new(Mutex::new(router));
         let interception = input_router
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -612,6 +682,8 @@ impl ElectronFrameBridge {
                     worker_drag,
                     ready_tx,
                     worker_startup,
+                    directory,
+                    input_capabilities,
                 )
             })
             .map_err(|error| {
@@ -686,11 +758,119 @@ impl ElectronFrameBridge {
             .cursor_at(crate::electron_input::InputPoint::new(x, y))
     }
 
+    pub fn cursor_for_window(&self, window_id: u32, incarnation: u64) -> i32 {
+        let router = self
+            .input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if incarnation == 0 || router.window_incarnation(window_id) != Some(incarnation) {
+            return -1;
+        }
+        router.cursor_for_window(window_id)
+    }
+
     pub fn input_state(&self) -> InputRouterState {
         self.input_router
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .state()
+    }
+
+    /// Samples the eligibility/request state and revision under one router
+    /// lock, so native aggregate decisions cannot acknowledge a newer command.
+    pub fn cooperative_input_state(&self) -> (InputRouterState, bool, u64) {
+        let router = self
+            .input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            router.state(),
+            self.interception.desired(),
+            router.cooperative_input_revision(),
+        )
+    }
+
+    /// Tests one owned window using this implementation's current geometry
+    /// and alpha pixels. Cooperation never borrows another module's scene.
+    pub fn window_incarnation(&self, window_id: u32) -> u64 {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .window_incarnation(window_id)
+            .unwrap_or(0)
+    }
+
+    pub fn hit_test_window(&self, window_id: u32, incarnation: u64, x: i32, y: i32) -> bool {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .hit_test_window_for_incarnation(window_id, incarnation, InputPoint::new(x, y))
+    }
+
+    pub fn cooperative_focus_request(&self, after_revision: u64) -> (u64, u32, u64, bool) {
+        self.input_router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .next_cooperative_focus_request(after_revision)
+    }
+
+    /// Applies the global focus decision without manufacturing a new SDK
+    /// focus request or changing target focus/interception policy.
+    pub fn set_cooperative_focus(&self, window_id: Option<u32>, incarnation: u64) {
+        self.publish_input_update(|router| {
+            router.set_cooperative_focus_for_incarnation(window_id, incarnation)
+        });
+    }
+
+    pub fn set_cooperative_interception(&self, requested: bool) {
+        self.publish_input_update(|router| router.set_cooperative_interception(requested));
+    }
+
+    pub fn set_cooperative_interception_for_revision(&self, requested: bool, revision: u64) {
+        self.publish_input_update(|router| {
+            router.set_cooperative_interception_for_revision(requested, revision)
+        });
+    }
+
+    /// Retires the participant, including pointer/caption ownership. Keyboard
+    /// handoff alone deliberately does not invoke this stronger cleanup.
+    pub fn release_cooperative_ownership(&self) {
+        self.publish_input_update(|router| {
+            self.pending_raise
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            self.stack_generation.fetch_add(1, Ordering::AcqRel);
+            self.drag.take_pending();
+            router.release_cooperative_ownership()
+        });
+    }
+
+    fn publish_input_update(&self, update: impl FnOnce(&mut InputRouter) -> Vec<OutboundMessage>) {
+        let has_messages = {
+            let _order = self
+                .input_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let messages = update(
+                &mut self
+                    .input_router
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            if messages.is_empty() {
+                false
+            } else {
+                self.outbound
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(messages);
+                true
+            }
+        };
+        if has_messages {
+            self.wake_outbound_worker();
+        }
     }
 
     /// Desired interception derived from the public request, target focus, and
@@ -815,6 +995,12 @@ impl ElectronFrameBridge {
         }
     }
 
+    /// Atomically retires the actual native input owner. This terminal release
+    /// is authoritative rather than an aggregate grant based on an old frame.
+    pub fn retire_input_filter(&self) {
+        self.publish_input_update(InputRouter::retire_input_filter);
+    }
+
     /// Queues the latest geometry and state for one injected render surface.
     /// Stale revisions are ignored. Accepted telemetry is coalesced before it
     /// crosses the loopback transport, while input and control packets remain
@@ -891,6 +1077,39 @@ impl ElectronFrameBridge {
     /// transport worker for any resulting Electron packets. No synchronous
     /// cross-process send happens on the render/present thread.
     pub fn route_window_message(&self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) {
+        self.route_window_message_with_owner(None, hwnd, msg, wparam, lparam);
+    }
+
+    /// Routes only to a window already selected by the cooperative registry.
+    /// Zero is an explicit drop and never invokes local topmost fallback.
+    pub fn route_owned_window_message(
+        &self,
+        window_id: u32,
+        incarnation: u64,
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) {
+        if window_id != 0 {
+            self.route_window_message_with_owner(
+                Some((window_id, incarnation)),
+                hwnd,
+                msg,
+                wparam,
+                lparam,
+            );
+        }
+    }
+
+    fn route_window_message_with_owner(
+        &self,
+        window_id: Option<(u32, u64)>,
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) {
         let (has_messages, raised_window, drag_wake_error) = {
             // State mutation and queue publication share this lock with transport
             // commands/lifecycle updates, giving their outbound packets one
@@ -908,22 +1127,33 @@ impl ElectronFrameBridge {
             let target_focused = !foreground.0.is_null()
                 && (foreground == hwnd || (!target_root.0.is_null() && foreground == target_root));
             let mut messages = input_router.set_target_focused(target_focused);
-            messages.extend(input_router.route_win32_message(
-                msg,
-                wparam.0 as u32,
-                lparam.0 as u32,
-                |screen_point| {
-                    let mut client_point = POINT {
-                        x: screen_point.x,
-                        y: screen_point.y,
-                    };
-                    if unsafe { ScreenToClient(hwnd, &raw mut client_point) }.as_bool() {
-                        Some(InputPoint::new(client_point.x, client_point.y))
-                    } else {
-                        None
-                    }
-                },
-            ));
+            let screen_to_client = |screen_point: InputPoint| {
+                let mut client_point = POINT {
+                    x: screen_point.x,
+                    y: screen_point.y,
+                };
+                if unsafe { ScreenToClient(hwnd, &raw mut client_point) }.as_bool() {
+                    Some(InputPoint::new(client_point.x, client_point.y))
+                } else {
+                    None
+                }
+            };
+            messages.extend(match window_id {
+                Some((window_id, incarnation)) => input_router.route_win32_message_for_incarnation(
+                    window_id,
+                    incarnation,
+                    msg,
+                    wparam.0 as u32,
+                    lparam.0 as u32,
+                    screen_to_client,
+                ),
+                None => input_router.route_win32_message(
+                    msg,
+                    wparam.0 as u32,
+                    lparam.0 as u32,
+                    screen_to_client,
+                ),
+            });
             let raised_window = input_router.take_pending_raise().map(|window_id| {
                 let generation = self
                     .stack_generation
@@ -1025,7 +1255,7 @@ impl Drop for ElectronFrameBridge {
                 .input_router
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = input_router.request_interception(false);
+            let _ = input_router.reset_interception_request();
             let _ = input_router.replace_windows(Vec::new());
         }
         let hwnd = HWND(self.window as *mut c_void);
@@ -1084,6 +1314,8 @@ fn run_bridge_thread(
     drag: SharedDragState,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
     startup: RuntimeStartupPublisher,
+    directory: Option<PathBuf>,
+    input_capabilities: Option<u64>,
 ) {
     startup.publish(RuntimeStartupCode::BridgeThreadStarted);
     let title = wide_string(&format!("electron-overlay-frame-{}", unsafe {
@@ -1130,6 +1362,8 @@ fn run_bridge_thread(
         pending_raise,
         drag,
         startup,
+        directory,
+        input_capabilities,
     ));
     let state_ptr = Box::into_raw(state);
 
@@ -1320,6 +1554,8 @@ struct BridgeThreadState {
     legacy_discovery_requires_target_binding: bool,
     target_route_path: Option<PathBuf>,
     routed_discovery_pinned: bool,
+    private_discovery: bool,
+    input_capabilities: Option<u64>,
     scene: PublishedScene,
     input_router: SharedInputRouter,
     producer_session_epoch: Arc<AtomicU64>,
@@ -1356,14 +1592,20 @@ impl BridgeThreadState {
         pending_raise: SharedPendingRaise,
         drag: SharedDragState,
         startup: RuntimeStartupPublisher,
+        directory: Option<PathBuf>,
+        input_capabilities: Option<u64>,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
+        let private_discovery = directory.is_some();
         let (
             discovery_path,
             legacy_discovery_path,
             legacy_discovery_requires_target_binding,
             target_route_path,
-        ) = discovery_paths();
+        ) = match directory {
+            Some(directory) => private_discovery_paths(directory),
+            None => discovery_paths(),
+        };
         Self {
             hwnd,
             transport: None,
@@ -1375,6 +1617,8 @@ impl BridgeThreadState {
             legacy_discovery_requires_target_binding,
             target_route_path,
             routed_discovery_pinned: false,
+            private_discovery,
+            input_capabilities,
             scene,
             input_router,
             producer_session_epoch,
@@ -1402,21 +1646,29 @@ impl BridgeThreadState {
             return;
         }
 
-        let (discovery, selected_discovery_path, requires_target_binding) =
-            match select_discovery_document(
+        let selected = if self.private_discovery {
+            select_private_discovery_document(
+                &self.discovery_path,
+                self.target_route_path.as_deref(),
+                &mut self.routed_discovery_pinned,
+            )
+        } else {
+            select_discovery_document(
                 &self.discovery_path,
                 self.legacy_discovery_path.as_deref(),
                 self.legacy_discovery_requires_target_binding,
                 self.target_route_path.as_deref(),
                 &mut self.routed_discovery_pinned,
-            ) {
-                Ok(selection) => selection,
-                Err(error) => {
-                    self.startup.publish(discovery_failure_startup_code(&error));
-                    debug!(%error, "Electron overlay transport discovery is not ready");
-                    return;
-                }
-            };
+            )
+        };
+        let (discovery, selected_discovery_path, requires_target_binding) = match selected {
+            Ok(selection) => selection,
+            Err(error) => {
+                self.startup.publish(discovery_failure_startup_code(&error));
+                debug!(%error, "Electron overlay transport discovery is not ready");
+                return;
+            }
+        };
         let current_pid = GetCurrentProcessId();
         if discovery.version != TRANSPORT_VERSION {
             self.startup
@@ -1473,7 +1725,7 @@ impl BridgeThreadState {
             return;
         }
 
-        let hello = match game_process_packet(&discovery.token) {
+        let hello = match game_process_packet(&discovery.token, self.input_capabilities) {
             Ok(packet) => packet,
             Err(error) => {
                 self.startup
@@ -1560,7 +1812,7 @@ impl BridgeThreadState {
         self.closed_windows.clear();
         self.bump_state_revision();
         self.update_input_router_and_publish_scene(|router| {
-            let mut outbound = router.request_interception(false);
+            let mut outbound = router.reset_interception_request();
             outbound.extend(router.replace_windows(Vec::new()));
             outbound
         });
@@ -1602,6 +1854,10 @@ impl BridgeThreadState {
                         .as_ref()
                         .is_some_and(|transport| !transport.authenticated)
                     {
+                        self.update_input_router(|router| {
+                            router.begin_producer_session();
+                            Vec::new()
+                        });
                         advance_producer_session_epoch(&self.producer_session_epoch, true);
                     }
                     if let Some(transport) = self.transport.as_mut() {
@@ -1815,10 +2071,11 @@ impl BridgeThreadState {
             "window.focus" => serde_json::from_str::<WindowFocusMessage>(json)
                 .map_err(DispatchError::Json)
                 .map(|message| {
-                    if self
+                    if let Some(incarnation) = self
                         .windows
                         .iter()
-                        .any(|window| window.window_id == message.window_id)
+                        .find(|window| window.window_id == message.window_id)
+                        .map(|window| window.incarnation)
                     {
                         if message.focused {
                             let mut ids: Vec<u32> = self
@@ -1831,8 +2088,18 @@ impl BridgeThreadState {
                             self.on_window_order(WindowOrderMessage { window_ids: ids });
                         }
                         self.update_input_router(|router| {
-                            router.request_window_focus(message.window_id, message.focused)
+                            router.request_window_focus_for_incarnation(
+                                message.window_id, incarnation, message.focused,
+                            )
                         });
+                        let focus_overflowed = self.input_router
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .cooperative_focus_overflowed();
+                        if focus_overflowed {
+                            warn!("Disconnecting Electron producer after cooperative focus queue overflow");
+                            self.disconnect();
+                        }
                     }
                 }),
             "window.bounds" => serde_json::from_str::<WindowBoundsMessage>(json)
@@ -2163,11 +2430,18 @@ impl BridgeThreadState {
             if invalidates_stack_intents {
                 self.stack_generation.fetch_add(1, Ordering::AcqRel);
             }
-            let messages = update(
-                &mut input_router
+            let messages = {
+                let mut router = input_router
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            );
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                router.set_registered_windows(
+                    self.windows
+                        .iter()
+                        .map(|window| (window.window_id, window.incarnation))
+                        .collect(),
+                );
+                update(&mut router)
+            };
             let has_messages = !messages.is_empty();
             if has_messages {
                 outbound
@@ -2242,6 +2516,7 @@ impl BridgeThreadState {
         self.sequence = self.sequence.wrapping_add(1).max(1);
         let frame = Arc::new(ElectronFrame {
             window_id,
+            incarnation: self.windows[index].incarnation,
             name,
             rect,
             transparent,
@@ -2393,6 +2668,7 @@ struct InputInterceptCommand {
 
 struct RegisteredWindow {
     window_id: u32,
+    incarnation: u64,
     latest: Option<Arc<ElectronFrame>>,
     name: String,
     rect: ElectronWindowRect,
@@ -2406,6 +2682,7 @@ impl RegisteredWindow {
     fn from_metadata(window: WindowMetadata, placement_epoch: u64) -> Self {
         Self {
             window_id: window.window_id,
+            incarnation: placement_epoch,
             latest: None,
             name: window.name,
             rect: window.rect,
@@ -2423,6 +2700,7 @@ impl RegisteredWindow {
     fn input_window(&self) -> InputWindow {
         debug_assert!(self.is_compositable());
         let window = InputWindow::new(self.window_id, self.rect.into())
+            .with_incarnation(self.incarnation)
             .with_caption(self.caption)
             .with_scale_factor_micros(self.scale_factor_micros)
             .with_placement_epoch(self.placement_epoch);
@@ -2512,6 +2790,13 @@ fn advance_epoch(epoch: &mut u64) -> u64 {
 }
 
 fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -> ElectronScene {
+    let registrations = windows
+        .iter()
+        .map(|window| ElectronWindowRegistration {
+            window_id: window.window_id,
+            incarnation: window.incarnation,
+        })
+        .collect();
     let windows = windows
         .iter_mut()
         .filter_map(|window| {
@@ -2520,6 +2805,7 @@ fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -
             }
             let current = window.latest.as_ref().cloned()?;
             let frame = if current.state_revision == state_revision
+                && current.incarnation == window.incarnation
                 && current.name == window.name
                 && current.rect == window.rect
                 && current.transparent == window.transparent
@@ -2528,6 +2814,7 @@ fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -
             } else {
                 Arc::new(ElectronFrame {
                     window_id: window.window_id,
+                    incarnation: window.incarnation,
                     name: window.name.clone(),
                     rect: window.rect,
                     transparent: window.transparent,
@@ -2545,6 +2832,7 @@ fn build_scene_snapshot(windows: &mut [RegisteredWindow], state_revision: u64) -
 
     ElectronScene {
         state_revision,
+        registrations,
         windows,
     }
 }
@@ -2882,6 +3170,37 @@ fn discovery_paths() -> (PathBuf, Option<PathBuf>, bool, Option<PathBuf>) {
     )
 }
 
+fn private_discovery_paths(
+    directory: PathBuf,
+) -> (PathBuf, Option<PathBuf>, bool, Option<PathBuf>) {
+    (
+        directory.join(DISCOVERY_FILE),
+        None,
+        false,
+        Some(directory.join(TARGET_ROUTE_FILE)),
+    )
+}
+
+fn select_private_discovery_document(
+    preferred_path: &Path,
+    target_route_path: Option<&Path>,
+    routed_discovery_pinned: &mut bool,
+) -> Result<(DiscoveryDocument, PathBuf, bool), DiscoveryError> {
+    let (discovery, selected_path, _) = select_discovery_document(
+        preferred_path,
+        None,
+        false,
+        target_route_path,
+        routed_discovery_pinned,
+    )?;
+    // A future-target watcher may initially publish an unbound credential in
+    // its own private directory. Once the exact-target marker or a bound
+    // credential is observed, that route remains target-bound on reconnect.
+    let requires_target_binding = *routed_discovery_pinned || discovery.target_pid.is_some();
+    *routed_discovery_pinned |= requires_target_binding;
+    Ok((discovery, selected_path, requires_target_binding))
+}
+
 fn target_discovery_path(temp_directory: &Path, target_pid: u32) -> PathBuf {
     temp_directory.join(DISCOVERY_DIRECTORY).join(format!(
         "{TARGET_DISCOVERY_FILE_PREFIX}{target_pid}{TARGET_DISCOVERY_FILE_SUFFIX}"
@@ -3000,7 +3319,10 @@ fn discovery_target_matches(
     }
 }
 
-fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
+fn game_process_packet(
+    token: &str,
+    input_capabilities: Option<u64>,
+) -> Result<Vec<u8>, NetworkError> {
     let path = std::env::current_exe()
         .map_err(NetworkError::CurrentExecutable)?
         .to_string_lossy()
@@ -3009,15 +3331,42 @@ fn game_process_packet(token: &str) -> Result<Vec<u8>, NetworkError> {
     let mut exited = FILETIME::default();
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
-    unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user) }
-        .map_err(|error| NetworkError::CurrentProcessIdentity(io::Error::other(error)))?;
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .map_err(|error| NetworkError::CurrentProcessIdentity(io::Error::other(error)))?;
     let creation_time = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
-    if creation_time == 0 { return Err(NetworkError::CurrentProcessIdentity(io::Error::other("zero creation time"))); }
+    if creation_time == 0 {
+        return Err(NetworkError::CurrentProcessIdentity(io::Error::other(
+            "zero creation time",
+        )));
+    }
+    let mut capabilities = vec![
+        "window-order-v1",
+        "window-focus-v1",
+        "window-cursor-v1",
+        "process-instance-hello-v1",
+    ];
+    if let Some(input_capabilities) = input_capabilities {
+        capabilities.push("input-capabilities-v1");
+        if input_capabilities & INPUT_CAPABILITY_COPIED_WM_INPUT != 0 {
+            capabilities.push("copied-wm-input-v1");
+        }
+        if input_capabilities & INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER != 0 {
+            capabilities.push("copied-raw-input-buffer-v1");
+        }
+    }
     let json = serde_json::json!({
         "type": "game.process",
         "protocolVersion": TRANSPORT_VERSION,
         "creationTime100ns": creation_time.to_string(),
-        "capabilities": ["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"],
+        "capabilities": capabilities,
         "token": token,
         "pid": unsafe { GetCurrentProcessId() },
         "path": path,
@@ -3281,7 +3630,10 @@ impl fmt::Display for NetworkError {
             Self::CurrentExecutable(error) => {
                 write!(formatter, "cannot resolve target executable path: {error}")
             }
-            Self::CurrentProcessIdentity(error) => write!(formatter, "cannot query current process incarnation: {error}"),
+            Self::CurrentProcessIdentity(error) => write!(
+                formatter,
+                "cannot query current process incarnation: {error}"
+            ),
             Self::Wire(error) => error.fmt(formatter),
         }
     }
@@ -3538,6 +3890,84 @@ mod tests {
             "targetPid": target_pid,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn private_discovery_never_falls_back_to_another_member_or_global_record() {
+        let root = unique_discovery_test_directory("private-members");
+        let member_a = root.join("a");
+        let member_b = root.join("b");
+        let global = root.join(DISCOVERY_DIRECTORY).join(DISCOVERY_FILE);
+        for directory in [&member_a, &member_b, global.parent().unwrap()] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        fs::write(&global, discovery_test_document(1, None)).unwrap();
+        fs::write(
+            member_b.join(DISCOVERY_FILE),
+            discovery_test_document(1, Some(789)),
+        )
+        .unwrap();
+
+        let (a_path, fallback, _, a_marker) = private_discovery_paths(member_a.clone());
+        assert!(fallback.is_none());
+        let mut a_pinned = false;
+        assert!(
+            select_private_discovery_document(&a_path, a_marker.as_deref(), &mut a_pinned,)
+                .as_ref()
+                .is_err_and(DiscoveryError::is_not_found)
+        );
+
+        let (b_path, fallback, _, b_marker) = private_discovery_paths(member_b.clone());
+        assert!(fallback.is_none());
+        let mut b_pinned = false;
+        let (document, selected, bound) =
+            select_private_discovery_document(&b_path, b_marker.as_deref(), &mut b_pinned).unwrap();
+        assert_eq!(selected, b_path);
+        assert!(bound && b_pinned);
+        assert_eq!(document.target_pid, Some(789));
+
+        fs::write(&a_path, discovery_test_document(1, None)).unwrap();
+        let (_, selected, bound) =
+            select_private_discovery_document(&a_path, a_marker.as_deref(), &mut a_pinned).unwrap();
+        assert_eq!(selected, a_path);
+        assert!(!bound && !a_pinned);
+        fs::remove_file(&a_path).unwrap();
+        assert!(
+            select_private_discovery_document(&a_path, a_marker.as_deref(), &mut a_pinned,)
+                .as_ref()
+                .is_err_and(DiscoveryError::is_not_found)
+        );
+        assert!(
+            select_private_discovery_document(&b_path, b_marker.as_deref(), &mut b_pinned,).is_ok()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn private_target_marker_requires_binding_and_remains_pinned_on_reconnect() {
+        let root = unique_discovery_test_directory("private-marker");
+        fs::create_dir_all(&root).unwrap();
+        let (path, _, _, marker) = private_discovery_paths(root.clone());
+        fs::write(&path, discovery_test_document(1, None)).unwrap();
+        fs::write(marker.as_ref().unwrap(), b"target route required").unwrap();
+        let mut pinned = false;
+        let (document, _, bound) =
+            select_private_discovery_document(&path, marker.as_deref(), &mut pinned).unwrap();
+        assert!(bound && pinned);
+        assert!(!discovery_target_matches(document.target_pid, 789, bound));
+        fs::remove_file(marker.as_ref().unwrap()).unwrap();
+        let (_, _, bound) =
+            select_private_discovery_document(&path, marker.as_deref(), &mut pinned).unwrap();
+        assert!(bound);
+        fs::write(&path, b"{").unwrap();
+        assert!(select_private_discovery_document(&path, marker.as_deref(), &mut pinned).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(
+            select_private_discovery_document(&path, marker.as_deref(), &mut pinned)
+                .as_ref()
+                .is_err_and(DiscoveryError::is_not_found)
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3896,6 +4326,8 @@ mod tests {
             SharedPendingRaise::default(),
             SharedDragState::default(),
             RuntimeStartupPublisher::default(),
+            None,
+            None,
         )
     }
 
@@ -3923,6 +4355,242 @@ mod tests {
             drag: SharedDragState::default(),
             window: 0,
             thread: None,
+        }
+    }
+
+    #[test]
+    fn cooperative_focus_overflow_disconnects_the_offending_private_producer() {
+        let mut state = test_bridge_state();
+        state
+            .input_router
+            .lock()
+            .unwrap()
+            .set_cooperative_focus(None);
+        state.on_window(window_metadata(7, "private", 0)).unwrap();
+        let focus =
+            serde_json::json!({"type":"window.focus","windowId":7,"focused":true}).to_string();
+        for _ in 0..=4096 {
+            state.dispatch("window.focus", &focus);
+        }
+        assert!(state.windows.is_empty());
+        assert!(state.scene.read().unwrap().windows.is_empty());
+        assert!(state
+            .input_router
+            .lock()
+            .unwrap()
+            .cooperative_focus_overflowed());
+    }
+
+    #[test]
+    fn reannouncing_an_unframed_window_retires_its_queued_focus_incarnation() {
+        let mut state = test_bridge_state();
+        state
+            .input_router
+            .lock()
+            .unwrap()
+            .set_cooperative_focus(None);
+        state
+            .on_window(window_metadata(7, "unframed-old", 0))
+            .unwrap();
+        let old_incarnation = state.windows[0].incarnation;
+        state.dispatch(
+            "window.focus",
+            r#"{"type":"window.focus","windowId":7,"focused":true}"#,
+        );
+        assert_eq!(
+            state
+                .input_router
+                .lock()
+                .unwrap()
+                .next_cooperative_focus_request(0)
+                .2,
+            old_incarnation
+        );
+        state
+            .on_window(window_metadata(7, "unframed-new", 0))
+            .unwrap();
+        assert_ne!(state.windows[0].incarnation, old_incarnation);
+        state.on_window(window_metadata(8, "painted", 1)).unwrap();
+        state
+            .on_frame(WireFrame {
+                window_id: 8,
+                width: 1,
+                height: 1,
+                bgra: vec![1, 2, 3, 255],
+            })
+            .unwrap();
+        state.dispatch(
+            "window.focus",
+            r#"{"type":"window.focus","windowId":8,"focused":true}"#,
+        );
+        let next = state
+            .input_router
+            .lock()
+            .unwrap()
+            .next_cooperative_focus_request(0);
+        assert_eq!(next.1, 8);
+        assert_ne!(next.2, old_incarnation);
+    }
+
+    #[test]
+    fn registered_metadata_distinguishes_raster_replacement_from_closed_windows() {
+        let mut state = test_bridge_state();
+        state.on_window(window_metadata(7, "resizing", 0)).unwrap();
+        state
+            .on_frame(WireFrame {
+                window_id: 7,
+                width: 1,
+                height: 1,
+                bgra: vec![1, 2, 3, 255],
+            })
+            .unwrap();
+        let initial = state.scene.read().unwrap().clone();
+        assert_eq!(initial.windows.len(), 1);
+        assert_eq!(initial.registrations.len(), 1);
+        let registration = initial.registrations[0];
+        state
+            .on_window_bounds(WindowBoundsMessage {
+                window_id: 7,
+                rect: ElectronWindowRect {
+                    x: 10,
+                    y: 20,
+                    width: 2,
+                    height: 2,
+                },
+                caption: None,
+                scale_factor_micros: None,
+                raster_changed: Some(true),
+            })
+            .unwrap();
+        let awaiting_raster = state.scene.read().unwrap().clone();
+        assert!(awaiting_raster.windows.is_empty());
+        assert_eq!(awaiting_raster.registrations, vec![registration]);
+        state
+            .on_frame(WireFrame {
+                window_id: 7,
+                width: 2,
+                height: 2,
+                bgra: vec![255; 16],
+            })
+            .unwrap();
+        let repainted = state.scene.read().unwrap().clone();
+        assert_eq!(repainted.windows.len(), 1);
+        assert_eq!(repainted.registrations, vec![registration]);
+        state.on_window_close(7).unwrap();
+        assert!(state.scene.read().unwrap().registrations.is_empty());
+        assert_eq!(initial.registrations, vec![registration]);
+        assert_eq!(awaiting_raster.registrations, vec![registration]);
+    }
+
+    #[test]
+    fn pre_auth_disconnect_does_not_fabricate_a_false_producer_acknowledgement() {
+        let mut state = test_bridge_state();
+        state
+            .input_router
+            .lock()
+            .unwrap()
+            .set_cooperative_focus(None);
+        // A provisional connection was rejected before any producer command.
+        state.disconnect();
+        state
+            .on_overlay_init(OverlayInit {
+                windows: vec![window_metadata(7, "awaiting-first-raster", 0)],
+            })
+            .unwrap();
+        let mut router = state.input_router.lock().unwrap();
+        router.set_target_focused(true);
+        let revision = router.cooperative_input_revision();
+        router.set_cooperative_interception_for_revision(false, revision);
+        assert!(router.apply_input_filter(false, true).is_empty());
+        router.request_interception(false);
+        let revision = router.cooperative_input_revision();
+        router.set_cooperative_interception_for_revision(false, revision);
+        assert_eq!(
+            router.apply_input_filter(false, true),
+            vec![OutboundMessage::InputIntercept {
+                intercepting: false
+            }]
+        );
+    }
+
+    #[test]
+    fn cooperative_focus_retains_raster_gap_intent_without_stealing_foreign_focus() {
+        for foreign_focus_during_gap in [false, true] {
+            let mut state = test_bridge_state();
+            state.on_window(window_metadata(7, "resizing", 0)).unwrap();
+            state.on_window(window_metadata(8, "other", 100)).unwrap();
+            for id in [7, 8] {
+                state
+                    .on_frame(WireFrame {
+                        window_id: id,
+                        width: 1,
+                        height: 1,
+                        bgra: vec![255; 4],
+                    })
+                    .unwrap();
+            }
+            let incarnation = state
+                .windows
+                .iter()
+                .find(|window| window.window_id == 7)
+                .unwrap()
+                .incarnation;
+            {
+                let mut router = state.input_router.lock().unwrap();
+                router.set_cooperative_focus(None);
+                router.set_target_focused(true);
+                router.set_cooperative_interception(true);
+                router.apply_input_filter(true, true);
+                router.request_window_focus_for_incarnation(7, incarnation, true);
+                router.set_cooperative_focus_for_incarnation(Some(7), incarnation);
+                router.route_win32_message_for_incarnation(
+                    7,
+                    incarnation,
+                    0x0201,
+                    1,
+                    (21 << 16) | 11,
+                    Some,
+                );
+                assert_eq!(router.state().focused_window_id, Some(7));
+                assert!(router.state().pointer_captured);
+            }
+            state
+                .on_window_bounds(WindowBoundsMessage {
+                    window_id: 7,
+                    rect: ElectronWindowRect {
+                        x: 10,
+                        y: 20,
+                        width: 2,
+                        height: 2,
+                    },
+                    caption: None,
+                    scale_factor_micros: None,
+                    raster_changed: Some(true),
+                })
+                .unwrap();
+            {
+                let mut router = state.input_router.lock().unwrap();
+                assert_eq!(router.state().focused_window_id, None);
+                assert!(!router.state().pointer_captured);
+                assert!(router
+                    .route_win32_message_for_incarnation(7, incarnation, 0x0100, 65, 0, Some)
+                    .is_empty());
+                if foreign_focus_during_gap {
+                    router.set_cooperative_focus(None);
+                }
+            }
+            state
+                .on_frame(WireFrame {
+                    window_id: 7,
+                    width: 2,
+                    height: 2,
+                    bgra: vec![255; 16],
+                })
+                .unwrap();
+            assert_eq!(
+                state.input_router.lock().unwrap().state().focused_window_id,
+                (!foreign_focus_during_gap).then_some(7)
+            );
         }
     }
 
@@ -4833,24 +5501,36 @@ mod tests {
 
     #[test]
     fn process_hello_advertises_optional_window_order_without_version_change() {
-        let packet = game_process_packet(&"01".repeat(32)).unwrap();
+        let packet = game_process_packet(&"01".repeat(32), None).unwrap();
         let packets = WireDecoder::default().push(&packet).unwrap();
         let WirePacket::Json(json) = &packets[0] else {
             panic!("expected hello")
         };
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(value["protocolVersion"], 1);
-        assert!(value["creationTime100ns"].as_str().unwrap().parse::<u64>().unwrap() > 0);
+        assert!(
+            value["creationTime100ns"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
         assert_eq!(
             value["capabilities"],
-            serde_json::json!(["window-order-v1", "window-focus-v1", "window-cursor-v1", "process-instance-hello-v1"])
+            serde_json::json!([
+                "window-order-v1",
+                "window-focus-v1",
+                "window-cursor-v1",
+                "process-instance-hello-v1"
+            ])
         );
     }
 
     #[test]
     fn process_hello_is_the_first_framed_authenticated_target_identity() {
         let token = "01".repeat(32);
-        let packet = game_process_packet(&token).unwrap();
+        let packet = game_process_packet(&token, None).unwrap();
         let mut decoder = WireDecoder::default();
         let packets = decoder.push(&packet).unwrap();
         let WirePacket::Json(json) = &packets[0] else {
@@ -4945,6 +5625,61 @@ mod tests {
         assert_eq!(replacement_session, 3);
         assert!(producer_session_is_active(replacement_session));
         assert_ne!(replacement_session, first_session);
+    }
+
+    #[test]
+    fn stale_inactive_epoch_cleanup_cannot_acknowledge_a_new_active_producer() {
+        fn replies(authoritative_retirement: bool) -> Vec<bool> {
+            let bridge = test_frame_bridge(
+                Arc::new(Mutex::new(())),
+                Arc::new(Mutex::new(VecDeque::new())),
+            );
+            advance_producer_session_epoch(&bridge.producer_session_epoch, true);
+            advance_producer_session_epoch(&bridge.producer_session_epoch, false);
+            let sampled_epoch = bridge.producer_session_epoch();
+            assert_eq!(sampled_epoch, 2);
+            // Native has already sampled inactive epoch 2. Before it acts,
+            // the bridge authenticates epoch 3 and accepts its true command.
+            {
+                let _order = bridge.input_order.lock().unwrap();
+                let mut router = bridge.input_router.lock().unwrap();
+                router.begin_producer_session();
+                router.set_cooperative_focus(None);
+                router.set_target_focused(true);
+                router.replace_windows(vec![
+                    InputWindow::new(7, InputRect::new(0, 0, 10, 10)).with_incarnation(1)
+                ]);
+                router.request_interception(true);
+            }
+            assert_eq!(
+                advance_producer_session_epoch(&bridge.producer_session_epoch, true),
+                3
+            );
+            assert_ne!(bridge.producer_session_epoch(), sampled_epoch);
+            if authoritative_retirement {
+                // The stale observation is not proof that the new producer's
+                // actual native input owner was destroyed.
+                bridge.retire_input_filter();
+            } else {
+                bridge.set_target_focused(false);
+                bridge.apply_input_filter(false, false);
+            }
+            bridge.set_target_focused(true);
+            let (_, _, revision) = bridge.cooperative_input_state();
+            bridge.set_cooperative_interception_for_revision(true, revision);
+            bridge.apply_input_filter(false, false);
+            bridge.apply_input_filter(true, true);
+            let mut replies = Vec::new();
+            let mut outbound = bridge.outbound.lock().unwrap();
+            while let Some(message) = outbound.pop_front() {
+                if let OutboundMessage::InputIntercept { intercepting } = message {
+                    replies.push(intercepting);
+                }
+            }
+            replies
+        }
+        assert_eq!(replies(true), vec![false, true]);
+        assert_eq!(replies(false), vec![true]);
     }
 
     #[test]
@@ -5351,6 +6086,7 @@ mod tests {
         assert_eq!(windows.last().unwrap().name, "Middle replacement");
         assert_eq!(windows.last().unwrap().rect.x, 88);
         assert_eq!(windows.last().unwrap().placement_epoch, 99);
+        assert_eq!(windows.last().unwrap().incarnation, 99);
     }
 
     #[test]
@@ -5365,6 +6101,7 @@ mod tests {
             width: 800,
             height: 450,
         };
+        let original_incarnation = windows[0].incarnation;
 
         assert_eq!(
             update_registered_window_bounds(
@@ -5387,6 +6124,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![10, 20]
         );
+        assert_eq!(windows[0].incarnation, original_incarnation);
+        assert_ne!(windows[0].placement_epoch, original_incarnation);
         assert_eq!(windows[0].rect, replacement_rect);
         assert_eq!(windows[0].placement_epoch, 99);
         assert_eq!(windows[1].rect.x, 20);
@@ -5403,6 +6142,7 @@ mod tests {
         });
         let mut windows = normalize_test_windows(vec![back, window_metadata(20, "Front", 20)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5475,6 +6215,7 @@ mod tests {
         assert!(build_input_windows(&windows).is_empty());
 
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5514,6 +6255,7 @@ mod tests {
         });
         let mut windows = normalize_test_windows(vec![back, window_metadata(20, "Front", 20)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5572,6 +6314,7 @@ mod tests {
     fn explicit_raster_unchanged_bounds_update_retains_latest_pixels() {
         let mut windows = normalize_test_windows(vec![window_metadata(10, "Back", 10)]);
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "Back".to_owned(),
             rect: windows[0].rect,
@@ -5616,6 +6359,7 @@ mod tests {
         let back_pixels: Arc<[u8]> = vec![10, 20, 30, 255].into();
         let front_pixels: Arc<[u8]> = vec![40, 50, 60, 128].into();
         windows[0].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 10,
             name: "stale".to_owned(),
             rect: ElectronWindowRect::default(),
@@ -5628,6 +6372,7 @@ mod tests {
         }));
         let front_rect = windows[2].rect;
         windows[2].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 30,
             name: "Front".to_owned(),
             rect: front_rect,
@@ -5640,6 +6385,7 @@ mod tests {
         }));
         let invalid_rect = windows[3].rect;
         windows[3].latest = Some(Arc::new(ElectronFrame {
+            incarnation: 1,
             window_id: 40,
             name: "Invalid".to_owned(),
             rect: invalid_rect,

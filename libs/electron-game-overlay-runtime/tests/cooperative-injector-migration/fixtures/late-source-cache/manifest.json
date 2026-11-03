@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "kind": "noncompiled-ego-whole-source-cache-fixtures",
+  "sourceCommit": "4a50d1eddace85734871d91792ff214f13f66c01",
+  "meaning": "Text fixtures only; generated once from independently pinned Git blobs and verified old full source. They are never compiled or used as game acceptance.",
+  "baselineAddonBuildId": "412D57BEA49440738CC4C3903038F2E7",
+  "latePatchNormalizedSha256": "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE",
+  "oldModifiedPaths": [
+    "include/reshade.hpp",
+    "include/reshade_api.hpp",
+    "include/reshade_events.hpp",
+    "source/addon_manager.cpp",
+    "source/addon_manager.hpp",
+    "source/input.cpp",
+    "source/input.hpp",
+    "source/runtime_gui.cpp",
+    "tools/injector.cpp"
+  ],
+  "addedPaths": [
+    "source/ego_owned_late_d3d11/owned_config_file.hpp",
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp",
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+    "source/input_frame_consumer.hpp"
+  ],
+  "entries": [
+    {
+      "path": "ReShade.vcxproj",
+      "pristine": {
+        "fixture": "pristine/ReShade.vcxproj.txt",
+        "normalizedSha256": "685BE751EFA61EEFDE92EF4DDFD8932A7B9E3C10BF07077099421D502BEA1C57"
+      },
+      "base": {
+        "fixture": "pristine/ReShade.vcxproj.txt",
+        "normalizedSha256": "685BE751EFA61EEFDE92EF4DDFD8932A7B9E3C10BF07077099421D502BEA1C57"
+      }
+    },
+    {
+      "path": "include/reshade.hpp",
+      "pristine": {
+        "fixture": "pristine/include/reshade.hpp.txt",
+        "normalizedSha256": "DCB22F29CA7D7B2E4A9EA2F19CF98CE2911141659E525D3417F5FFADA75899C8"
+      },
+      "base": {
+        "fixture": "base/include/reshade.hpp.txt",
+        "normalizedSha256": "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
+      }
+    },
+    {
+      "path": "include/reshade_api.hpp",
+      "pristine": {
+        "fixture": "pristine/include/reshade_api.hpp.txt",
+        "normalizedSha256": "8D83EC8A620C48DA7A20D975BD27B3345B24D3F0D5B78AE4C4FE633D61B804EB"
+      },
+      "base": {
+        "fixture": "base/include/reshade_api.hpp.txt",
+        "normalizedSha256": "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
+      }
+    },
+    {
+      "path": "include/reshade_events.hpp",
+      "pristine": {
+        "fixture": "pristine/include/reshade_events.hpp.txt",
+        "normalizedSha256": "64608864E68FAF8E01B896B7726A1B0FC5AEC3CD802B49BA19E1B58F2BCEBDFE"
+      },
+      "base": {
+        "fixture": "base/include/reshade_events.hpp.txt",
+        "normalizedSha256": "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
+      }
+    },
+    {
+      "path": "source/addon.cpp",
+      "pristine": {
+        "fixture": "pristine/source/addon.cpp.txt",
+        "normalizedSha256": "32A338204CF1D99C70F8769011E44DF8D9C8E94277437DD91C9002D972A8ED39"
+      },
+      "base": {
+        "fixture": "pristine/source/addon.cpp.txt",
+        "normalizedSha256": "32A338204CF1D99C70F8769011E44DF8D9C8E94277437DD91C9002D972A8ED39"
+      }
+    },
+    {
+      "path": "source/addon_manager.cpp",
+      "pristine": {
+        "fixture": "pristine/source/addon_manager.cpp.txt",
+        "normalizedSha256": "822F7D151C55A40B9FAF4C9C93A5F50789422E8A164670AD5DA1DC54423B5C0F"
+      },
+      "base": {
+        "fixture": "base/source/addon_manager.cpp.txt",
+        "normalizedSha256": "28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
+      }
+    },
+    {
+      "path": "source/addon_manager.hpp",
+      "pristine": {
+        "fixture": "pristine/source/addon_manager.hpp.txt",
+        "normalizedSha256": "58E17E986E8A9CE007922F92C49B6144185BDEAE66627D576F674F1F6C416F2A"
+      },
+      "base": {
+        "fixture": "base/source/addon_manager.hpp.txt",
+        "normalizedSha256": "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
+      }
+    },
+    {
+      "path": "source/d3d11/d3d11_impl_swapchain.cpp",
+      "pristine": {
+        "fixture": "pristine/source/d3d11/d3d11_impl_swapchain.cpp.txt",
+        "normalizedSha256": "6D8DCC7CD787D49C46D7244CC1E83BA8C26351BD6A65216D96C16D60296A250D"
+      },
+      "base": {
+        "fixture": "pristine/source/d3d11/d3d11_impl_swapchain.cpp.txt",
+        "normalizedSha256": "6D8DCC7CD787D49C46D7244CC1E83BA8C26351BD6A65216D96C16D60296A250D"
+      }
+    },
+    {
+      "path": "source/d3d11/d3d11_impl_swapchain.hpp",
+      "pristine": {
+        "fixture": "pristine/source/d3d11/d3d11_impl_swapchain.hpp.txt",
+        "normalizedSha256": "FF21425B350A5005DFF6EAB2BE026245BEEA78B64CACF6478D37F6B9514C8D55"
+      },
+      "base": {
+        "fixture": "pristine/source/d3d11/d3d11_impl_swapchain.hpp.txt",
+        "normalizedSha256": "FF21425B350A5005DFF6EAB2BE026245BEEA78B64CACF6478D37F6B9514C8D55"
+      }
+    },
+    {
+      "path": "source/ego_owned_late_d3d11/owned_config_file.hpp",
+      "pristine": null,
+      "base": null
+    },
+    {
+      "path": "source/ego_owned_late_d3d11/owned_late_d3d11.hpp",
+      "pristine": null,
+      "base": null
+    },
+    {
+      "path": "source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+      "pristine": null,
+      "base": null
+    },
+    {
+      "path": "source/input.cpp",
+      "pristine": {
+        "fixture": "pristine/source/input.cpp.txt",
+        "normalizedSha256": "AED8904412A8F54E340C64FBA09E80EA0DAB3B246C7E8969B27C2AF284442AB7"
+      },
+      "base": {
+        "fixture": "base/source/input.cpp.txt",
+        "normalizedSha256": "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
+      }
+    },
+    {
+      "path": "source/input.hpp",
+      "pristine": {
+        "fixture": "pristine/source/input.hpp.txt",
+        "normalizedSha256": "8CF526402B7B0E1BF5367A865A89F92D2DE9D59C2AFD92508797A22095BFF6A1"
+      },
+      "base": {
+        "fixture": "base/source/input.hpp.txt",
+        "normalizedSha256": "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
+      }
+    },
+    {
+      "path": "source/input_frame_consumer.hpp",
+      "pristine": null,
+      "base": null
+    },
+    {
+      "path": "source/runtime.cpp",
+      "pristine": {
+        "fixture": "pristine/source/runtime.cpp.txt",
+        "normalizedSha256": "8FD6C3A54592F11CD50FC57FDB29F1181DE9F2F428ADB2133693F96C8E372628"
+      },
+      "base": {
+        "fixture": "pristine/source/runtime.cpp.txt",
+        "normalizedSha256": "8FD6C3A54592F11CD50FC57FDB29F1181DE9F2F428ADB2133693F96C8E372628"
+      }
+    },
+    {
+      "path": "source/runtime.hpp",
+      "pristine": {
+        "fixture": "pristine/source/runtime.hpp.txt",
+        "normalizedSha256": "8599103DE7D8C0F6AD468066BCDEBC1761720A7E009CA6E4BF531BED30D87E0F"
+      },
+      "base": {
+        "fixture": "pristine/source/runtime.hpp.txt",
+        "normalizedSha256": "8599103DE7D8C0F6AD468066BCDEBC1761720A7E009CA6E4BF531BED30D87E0F"
+      }
+    },
+    {
+      "path": "source/runtime_gui.cpp",
+      "pristine": {
+        "fixture": "pristine/source/runtime_gui.cpp.txt",
+        "normalizedSha256": "B6D3B8969FF2D36CC014B2E8BB2C272DA9FFA9BF973524F4A09609A024B0B157"
+      },
+      "base": {
+        "fixture": "base/source/runtime_gui.cpp.txt",
+        "normalizedSha256": "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
+      }
+    },
+    {
+      "path": "tools/injector.cpp",
+      "pristine": {
+        "fixture": "pristine/tools/injector.cpp.txt",
+        "normalizedSha256": "26CFBBFFD692ACFB24BD19CBD93B3C7F81F24555EA67B75C55FAD14861E38B00"
+      },
+      "base": {
+        "fixture": "base/tools/injector.cpp.txt",
+        "normalizedSha256": "EB8B4AD906DC0AC144EF2EF71DD3A9714C4C4325C01D42B66D22B48EE69060F1"
+      }
+    }
+  ]
+}

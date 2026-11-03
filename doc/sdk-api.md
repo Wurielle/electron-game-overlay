@@ -16,6 +16,7 @@ public npm release.
 | --- | --- | --- |
 | `electron-game-overlay` | Electron main process | Owner/session/window classes, launch configuration and attachment, managed target watcher, native process observer, process-policy helpers, errors and public types |
 | `electron-game-overlay/packaging` | Node build configuration; no Electron runtime import | `createOverlayAfterPack`, `packageOverlayForElectronBuilder`, `verifyOverlayPackage` and their types |
+| `electron-game-overlay/preload` | Node installer/setup code; no Electron runtime import | `registerOverlayAddonInstallation`, `unregisterOverlayAddonInstallation`, `defaultOverlayAddonStorageRoot` and their types |
 | `electron-game-overlay/broker` | Node installer/setup code; no Electron runtime import | Optional `registerOverlayBrokerInstallation`, `unregisterOverlayBrokerInstallation`, `OverlayBrokerInstallationOptions` |
 
 | Task | Tool |
@@ -206,7 +207,7 @@ controller-lifetime options, not update fields.
 
 | Member | Contract |
 | --- | --- |
-| `ready: Promise<void>` | Initial session/observer baseline, requested staging and early watchers are ready; no game authentication/render guarantee |
+| `ready: Promise<void>` | Initial session/observer baseline, requested staging and early watchers are ready; follows policy revisions received during startup; no game authentication/render guarantee |
 | `targets` | Immutable `OverlayManagedTarget` attempt snapshots: PID, path, optional exact identity, mode, status and cancellation state |
 | `onEvent(handler)` | Add an observer; return an unsubscribe function |
 | `update(policy): Promise<void>` | Apply active authorization synchronously; settle serialized future discovery changes |
@@ -222,6 +223,19 @@ An allowed live target keeps its launcher, scene, focus and input when discovery
 rules change. For example, adding then removing `**/game.exe` while retaining an
 authorizing folder rule does not cancel that target. A genuine deny cancels it
 synchronously and stops its delivery. Deny always wins over callbacks.
+
+Updates received while initial discovery is preparing supersede that work.
+`ready` waits for the current policy's discovery, rather than rejecting because
+an older slot was intentionally retired. Obsolete completions cannot emit a
+controller `ready` or a discovery failure for the replacement. Genuine current
+startup failures still reject readiness. Uncertain discovery remains blocked
+without cancelling otherwise authorized active targets.
+
+After initial readiness has settled, a later policy update has its own discovery
+lifetime. A previously recorded `armed` or `ready` event does not establish that
+the replacement is ready. Await the current update and observe its current
+readiness/blockage events before launching a target; do not add delays or retry
+an indeterminate injection.
 
 An unused native watcher is replaced only after checked owned-child exit and
 complete output-drain proof that it selected no target. Uncertain/selected attempts
@@ -381,6 +395,28 @@ native architectures. Do not filter it down to DLLs or omit nested `node_modules
 Default runtime discovery resolves the physical ASAR-unpacked package location.
 Non-Windows cross-packaging and signing/update integration are not established
 by the current Windows acceptance.
+
+## Optional installed add-on preloading
+
+`registerOverlayAddonInstallation({ applicationId, packageRoot?, storageRoot? })`
+verifies and caches both architectures from a complete sealed preload-aware SDK.
+It returns an immutable `OverlayAddonInstallation` identifying the application,
+registration, native build and cached add-on paths. Repeated identical
+registration is idempotent; multiple builds can coexist.
+
+`createReShadeLaunchConfig({ addonPreload: { applicationId, storageRoot? } })`
+selects this app's exact registered native build. Each new owned host snapshots
+the current registered inventory. The private staged INI points to an external
+folder; a foreign ReShade installation's configuration remains unchanged.
+Offline applications' DLLs stay dormant until explicit session activation.
+
+`unregisterOverlayAddonInstallation({ applicationId, registrationId?, storageRoot? })`
+removes one registered build, or all builds for that application when its ID is
+omitted. Removal affects future host snapshots; existing targets retain mapped
+modules until target exit. `defaultOverlayAddonStorageRoot()` returns the
+current account's registry/cache root. Normal startup needs no registration.
+See [add-on preloading](addon-preloading.md) for setup, activation and lifetime
+limits.
 
 ## Optional installed broker registration
 

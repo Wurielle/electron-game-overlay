@@ -1,0 +1,85 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index d1f3a2c..ab49adc 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -4427,10 +4427,11 @@ struct owned_preload_snapshot_guard
+ 	scoped_handle addon_file;
+ };
+ 
+-static DWORD pin_owned_preload_directory(const std::wstring &path, scoped_handle &guard)
++static DWORD pin_owned_preload_directory(const std::wstring &path, scoped_handle &guard,
++	DWORD share_mode = FILE_SHARE_READ)
+ {
+ 	guard.handle = CreateFileW(make_extended_length_path(path).c_str(),
+-		FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
++		FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, share_mode, nullptr, OPEN_EXISTING,
+ 		FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+ 	if (guard == INVALID_HANDLE_VALUE) return GetLastError();
+ 	BY_HANDLE_FILE_INFORMATION info{};
+@@ -4453,27 +4454,40 @@ static DWORD validate_first_host_preload_snapshot(const std::wstring &stage,
+ 	std::wstring full_stage;
+ 	if (!get_full_path(stage, full_stage, error)) return error;
+ 	if (_wcsicmp(stage.c_str(), full_stage.c_str()) != 0) return ERROR_BAD_PATHNAME;
+-	const std::wstring snapshot = stage + L"\\preloaded-addons";
++	// AddonPath may be a stable shared directory containing independent third-party
++	// add-ons. Admit only its canonical ordinary path or exact extended alias;
++	// the selected EGO leaf still has to equal this request's validated payload.
++	std::wstring addon_directory = settings.addon_directory_path;
++	if (addon_directory.compare(0, 8, L"\\\\?\\UNC\\") == 0)
++		addon_directory = L"\\\\" + addon_directory.substr(8);
++	else if (addon_directory.compare(0, 4, L"\\\\?\\") == 0)
++		addon_directory.erase(0, 4);
++	if (!is_absolute_windows_path(addon_directory)) return ERROR_INVALID_NAME;
++	std::wstring full_addon_directory;
++	if (!get_full_path(addon_directory, full_addon_directory, error)) return error;
++	if (_wcsicmp(addon_directory.c_str(), full_addon_directory.c_str()) != 0)
++		return ERROR_BAD_PATHNAME;
+ 	const std::wstring expected_runtime = stage + L"\\" + target_reshade_runtime_file;
+-	// The SDK may supply the extended spelling so stock ReShade's scanner can
+-	// load long snapshot leaves. Admit only this exact owned directory alias;
+-	// every canonical stage, reparse, ownership and payload check still follows.
+-	const std::wstring extended_snapshot = make_extended_length_path(snapshot);
++	const std::wstring extended_addon_directory = make_extended_length_path(addon_directory);
+ 	if (_wcsicmp(runtime_path.c_str(), expected_runtime.c_str()) != 0 ||
+ 		_wcsicmp(settings.reshade_base_path.c_str(), stage.c_str()) != 0 ||
+-		(_wcsicmp(settings.addon_directory_path.c_str(), snapshot.c_str()) != 0 &&
+-		 _wcsicmp(settings.addon_directory_path.c_str(), extended_snapshot.c_str()) != 0))
++		(_wcsicmp(settings.addon_directory_path.c_str(), addon_directory.c_str()) != 0 &&
++		 _wcsicmp(settings.addon_directory_path.c_str(), extended_addon_directory.c_str()) != 0))
+ 		return ERROR_ACCESS_DENIED;
+ 	error = pin_owned_preload_directory(stage, guard.stage_directory);
+ 	if (error != ERROR_SUCCESS) return error;
+-	error = pin_owned_preload_directory(snapshot, guard.snapshot_directory);
++	// Registration may publish another immutable leaf concurrently. Keep this
++	// directory fixed while allowing writes; selected-file mutation stays denied.
++	error = pin_owned_preload_directory(addon_directory, guard.snapshot_directory,
++		FILE_SHARE_READ | FILE_SHARE_WRITE);
+ 	if (error != ERROR_SUCCESS) return error;
+ 	const size_t target_separator = target_image.find_last_of(L"\\/");
+ 	std::wstring target_directory;
+ 	if (target_separator == std::wstring::npos ||
+ 		!get_final_directory_path(target_image.substr(0, target_separator), target_directory, error))
+ 		return error != ERROR_SUCCESS ? error : ERROR_BAD_PATHNAME;
+-	if (path_is_same_or_descendant(target_directory, stage)) return ERROR_ACCESS_DENIED;
++	if (path_is_same_or_descendant(target_directory, stage) ||
++		path_is_same_or_descendant(target_directory, addon_directory)) return ERROR_ACCESS_DENIED;
+ 
+ 	bool missing = false;
+ 	std::vector<BYTE> bytes;
+@@ -4495,13 +4509,13 @@ static DWORD validate_first_host_preload_snapshot(const std::wstring &stage,
+ 	if (!read_bounded_regular_file(stage + L"\\ReShade.ini", 1024 * 1024, bytes, missing, error)) return error;
+ 	if (missing) return ERROR_FILE_NOT_FOUND;
+ 
+-	selected_path = snapshot + L"\\" + leaf;
++	selected_path = addon_directory + L"\\" + leaf;
+ 	BYTE hash[32] = {};
+ 	error = hash_immutable_native_file(selected_path, guard.addon_file, hash);
+ 	if (error != ERROR_SUCCESS) return error;
+ 	// The expected digest belongs to the still-held staged DLL whose exact
+-	// package BID/ABI was validated above. Full content equality also binds this
+-	// owned copy to that same PE implementation; no registered-cache path is used.
++	// package BID/ABI was validated above. Full content equality binds only this
++	// shared EGO leaf to that PE; unrelated directory entries are not trusted EGO.
+ 	return memcmp(hash, expected_hash, sizeof(hash)) == 0 ? ERROR_SUCCESS : ERROR_REVISION_MISMATCH;
+ }
+ 

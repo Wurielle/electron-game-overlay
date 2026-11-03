@@ -69,7 +69,7 @@ for (const failure of ['cleanup', 'final-save']) test(`runner-owned ${failure} f
       const previous = require('node:path').basename(process.env.EGO_POPUP_SERVER_LIB) === 'previous';
       const names = ['fresh-popup','first-video','reuse-visible-video','hide-video','show-hidden-video','repeated-popup-0','focus-0','repeated-popup-1','focus-1'];
       const message = 'unrelated windows must not be re-registered with retained Electron geometry';
-      const trace = {nativeExecuted:false,stage:'assertions',status:previous?'failed':'passed',
+      const trace = {nativeExecuted:false,transportMode:'explicit-legacy-broker-fixture',defaultCooperativeTransportExecuted:false,stage:'assertions',status:previous?'failed':'passed',
         failure:previous?{code:'ERR_ASSERTION',message}:undefined,
         phases:names.map((name,i)=>({name,produced:[],unrelated:Array.from({length:previous?[6,7,0,0,7,8,0,9,0][i]:0},()=>({kind:'add',details:{name:'controlled-peer'}}))}))};
       require('node:fs').writeFileSync(process.env.EGO_POPUP_TRACE, JSON.stringify(trace));
@@ -113,11 +113,13 @@ test('legacy RED requires exact assertion, complete counts and producer absence'
   const { classify } = require(runner);
   const names = ['fresh-popup','first-video','reuse-visible-video','hide-video','show-hidden-video','repeated-popup-0','focus-0','repeated-popup-1','focus-1'];
   const message = 'unrelated windows must not be re-registered with retained Electron geometry';
-  const trace = { nativeExecuted: false, stage: 'assertions', status: 'failed', failure: {code:'ERR_ASSERTION', message}, phases: names.map((name,i) => ({name, produced:[], unrelated:Array.from({length:[6,7,0,0,7,8,0,9,0][i]}, () => ({kind:'add', details:{name:'controlled-stale-peer'}}))})) };
+  const trace = { nativeExecuted: false, transportMode:'explicit-legacy-broker-fixture', defaultCooperativeTransportExecuted:false, stage: 'assertions', status: 'failed', failure: {code:'ERR_ASSERTION', message}, phases: names.map((name,i) => ({name, produced:[], unrelated:Array.from({length:[6,7,0,0,7,8,0,9,0][i]}, () => ({kind:'add', details:{name:'controlled-stale-peer'}}))})) };
   assert.equal(classify('previous', {code:1, log:message}, trace), 'legacy-known-failing-characterization');
   for (const [result, modified] of [
     [{code:2,log:message}, trace], [{code:1,log:'setup failure'}, trace], [{code:1,log:message}, undefined],
     [{code:0,log:message}, trace], [{code:1,log:message}, {...trace,stage:'setup'}],
+    [{code:1,log:message}, {...trace,transportMode:'default-cooperative'}],
+    [{code:1,log:message}, {...trace,defaultCooperativeTransportExecuted:true}],
     [{code:1,log:message}, {...trace,cleanupErrors:['controlled cleanup failure']}],
     [{code:1,log:message}, {...trace, phases:trace.phases.slice(1)}],
     [{code:1,log:message}, {...trace, phases:trace.phases.map(p=>({...p,produced:[{details:{name:'controlled-stale-peer'}}]}))}],

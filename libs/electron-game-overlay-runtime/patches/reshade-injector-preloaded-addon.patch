@@ -1,0 +1,607 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 048e370..94707f0 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -10,6 +10,7 @@
+ #include <AclAPI.h>
+ #include <Psapi.h>
+ #include <TlHelp32.h>
++#include <bcrypt.h>
+ #include <algorithm>
+ #include <climits>
+ #include <cstddef>
+@@ -24,6 +25,7 @@
+ 
+ #pragma comment(lib, "psapi.lib")
+ #pragma comment(lib, "advapi32.lib")
++#pragma comment(lib, "bcrypt.lib")
+ 
+ #define RESHADE_LOADING_THREAD_FUNC 1
+ 
+@@ -2069,6 +2071,7 @@ struct target_effective_reshade_settings
+ {
+ 	std::wstring reshade_base_path;
+ 	std::wstring addon_directory_path;
++	std::vector<std::wstring> disabled_addons;
+ 	bool electron_game_overlay_addon_disabled = false;
+ };
+ 
+@@ -2300,6 +2303,7 @@ static bool inspect_target_effective_reshade_settings(
+ 		return false;
+ 	if (disabled_addons_found)
+ 	{
++		settings.disabled_addons = disabled_addons;
+ 		constexpr wchar_t addon_name[] =
+ 			L"Electron Game Overlay Runtime";
+ 		constexpr const wchar_t *addon_file =
+@@ -4047,18 +4051,223 @@ static DWORD require_same_process_session(HANDLE process, bool &mismatch)
+ 	return error != ERROR_SUCCESS ? error : compare_process_sessions(current, target, mismatch);
+ }
+ 
++// A preload is selected only by an immutable per-app leaf, never by a caller-
++// supplied directory. Its bytes and mapped identity are validated separately.
++static bool valid_preloaded_addon_leaf(const std::wstring &leaf)
++{
++	constexpr size_t prefix_size = sizeof("ego-preload-") - 1;
++	constexpr size_t app_begin = prefix_size;
++	constexpr size_t build_begin = app_begin + 32 + 1;
++	constexpr size_t hash_begin = build_begin + 32 + 1;
++	constexpr size_t suffix_begin = hash_begin + 16;
++#ifdef _WIN64
++	constexpr wchar_t suffix[] = L".addon64";
++#else
++	constexpr wchar_t suffix[] = L".addon32";
++#endif
++	if (leaf.size() != suffix_begin + ARRAYSIZE(suffix) - 1 ||
++		leaf.compare(0, prefix_size, L"ego-preload-") != 0 ||
++		leaf[app_begin + 32] != L'-' || leaf[build_begin + 32] != L'-' ||
++		leaf.compare(suffix_begin, ARRAYSIZE(suffix) - 1, suffix) != 0)
++		return false;
++	for (size_t index = app_begin; index != suffix_begin; ++index)
++	{
++		if (index == app_begin + 32 || index == build_begin + 32) continue;
++		const wchar_t digit = leaf[index];
++		if (!((digit >= L'0' && digit <= L'9') || (digit >= L'a' && digit <= L'f') ||
++			(digit >= L'A' && digit <= L'F')))
++			return false;
++	}
++	return true;
++}
++
++static bool bind_preloaded_addon_leaf(const std::wstring &leaf,
++	const char (&build)[33], const BYTE (&hash)[32])
++{
++	if (!valid_preloaded_addon_leaf(leaf)) return false;
++	constexpr size_t build_begin = sizeof("ego-preload-") - 1 + 32 + 1;
++	constexpr size_t hash_begin = build_begin + 32 + 1;
++	constexpr wchar_t hex[] = L"0123456789abcdef";
++	for (size_t index = 0; index != 32; ++index)
++		if (towlower(leaf[build_begin + index]) != towlower(static_cast<unsigned char>(build[index])))
++			return false;
++	for (size_t index = 0; index != 8; ++index)
++		if (towlower(leaf[hash_begin + index * 2]) != hex[hash[index] >> 4] ||
++			towlower(leaf[hash_begin + index * 2 + 1]) != hex[hash[index] & 15])
++			return false;
++	return build[32] == '\0';
++}
++
++static bool preloaded_addon_disabled(const target_effective_reshade_settings &settings,
++	const std::wstring &leaf)
++{
++	if (settings.electron_game_overlay_addon_disabled) return true;
++	const std::wstring name = L"Electron Game Overlay Runtime " + leaf;
++	for (const auto &disabled : settings.disabled_addons)
++	{
++		if (_wcsicmp(disabled.c_str(), name.c_str()) == 0) return true;
++		// Stock's directory scanner rejects every NAME@file entry by the
++		// filename suffix, including an empty or unrecognized NAME prefix.
++		const size_t at = disabled.find(L'@');
++		if (at != std::wstring::npos &&
++			(_wcsicmp(disabled.c_str() + at + 1, leaf.c_str()) == 0 ||
++			 _wcsicmp(disabled.c_str() + at + 1, target_electron_overlay_addon_file) == 0))
++			return true;
++	}
++	return false;
++}
++
++static DWORD require_unelevated_process(HANDLE process)
++{
++	scoped_handle token;
++	if (!OpenProcessToken(process, TOKEN_QUERY, &token))
++	{
++		const DWORD error = GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_ACCESS_DENIED;
++	}
++	TOKEN_ELEVATION elevation{};
++	DWORD size = 0;
++	if (!GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size))
++	{
++		const DWORD error = GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
++	}
++	if (size != sizeof(elevation) || elevation.TokenIsElevated != 0) return ERROR_ACCESS_DENIED;
++	alignas(TOKEN_MANDATORY_LABEL) BYTE integrity_buffer[SECURITY_MAX_SID_SIZE + sizeof(TOKEN_MANDATORY_LABEL)] = {};
++	if (!GetTokenInformation(token, TokenIntegrityLevel, integrity_buffer, sizeof(integrity_buffer), &size))
++	{
++		const DWORD error = GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
++	}
++	if (size < sizeof(TOKEN_MANDATORY_LABEL)) return ERROR_INVALID_DATA;
++	const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(integrity_buffer);
++	if (!IsValidSid(label->Label.Sid)) return ERROR_INVALID_SID;
++	const UCHAR count = *GetSidSubAuthorityCount(label->Label.Sid);
++	if (count == 0) return ERROR_INVALID_SID;
++	return *GetSidSubAuthority(label->Label.Sid, count - 1) <= SECURITY_MANDATORY_MEDIUM_RID
++		? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
++}
++
++static DWORD hash_immutable_native_file(const std::wstring &path, scoped_handle &guard,
++	BYTE (&digest)[32])
++{
++	// Keep this exact regular file open through activation. A mapped module
++	// whose file vanished or changed is not permission to use a different DLL.
++	guard.handle = CreateFileW(make_extended_length_path(path).c_str(), GENERIC_READ,
++		FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++	if (guard == INVALID_HANDLE_VALUE) return GetLastError();
++	BY_HANDLE_FILE_INFORMATION info{};
++	LARGE_INTEGER length{};
++	if (!GetFileInformationByHandle(guard, &info) || !GetFileSizeEx(guard, &length)) return GetLastError();
++	if ((info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
++		return ERROR_CANT_ACCESS_FILE;
++	if (length.QuadPart <= 0 || length.QuadPart > 512 * 1024 * 1024) return ERROR_FILE_TOO_LARGE;
++	BCRYPT_ALG_HANDLE algorithm = nullptr;
++	BCRYPT_HASH_HANDLE hash = nullptr;
++	NTSTATUS status = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
++	if (status >= 0) status = BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0);
++	DWORD error = status >= 0 ? ERROR_SUCCESS : ERROR_INVALID_DATA;
++	BYTE buffer[64 * 1024];
++	ULONGLONG remaining = static_cast<ULONGLONG>(length.QuadPart);
++	while (error == ERROR_SUCCESS && remaining != 0)
++	{
++		DWORD read = 0;
++		const DWORD requested = static_cast<DWORD>(std::min<ULONGLONG>(remaining, sizeof(buffer)));
++		if (!ReadFile(guard, buffer, requested, &read, nullptr)) error = GetLastError();
++		else if (read == 0 || read > requested) error = ERROR_HANDLE_EOF;
++		else if (BCryptHashData(hash, buffer, read, 0) < 0) error = ERROR_INVALID_DATA;
++		else remaining -= read;
++	}
++	if (error == ERROR_SUCCESS && BCryptFinishHash(hash, digest, sizeof(digest), 0) < 0)
++		error = ERROR_INVALID_DATA;
++	if (hash != nullptr) BCryptDestroyHash(hash);
++	if (algorithm != nullptr) BCryptCloseAlgorithmProvider(algorithm, 0);
++	return error;
++}
++
++static DWORD find_preloaded_addon(HANDLE process, const std::wstring &leaf, HMODULE &selected)
++{
++	selected = nullptr;
++	HMODULE modules[1024] = {};
++	DWORD bytes = 0;
++	if (!K32EnumProcessModules(process, modules, sizeof(modules), &bytes)) return GetLastError();
++	if (bytes > sizeof(modules)) return ERROR_MORE_DATA;
++	DWORD error = ERROR_SUCCESS;
++	for (DWORD index = 0; index != bytes / sizeof(HMODULE); ++index)
++	{
++		std::wstring path;
++		if (!remote_module_path(process, modules[index], path, error)) return error;
++		const size_t slash = path.find_last_of(L"\\/");
++		if (_wcsicmp(path.c_str() + (slash == std::wstring::npos ? 0 : slash + 1), leaf.c_str()) != 0)
++			continue;
++		if (selected != nullptr) return ERROR_DUP_NAME;
++		selected = modules[index];
++	}
++	return ERROR_SUCCESS;
++}
++
++static DWORD validate_mapped_preloaded_addon(HANDLE process, HMODULE module,
++	const std::wstring &leaf, const char (&expected_build)[33], const BYTE (&expected_hash)[32],
++	std::wstring &path, scoped_handle &file_guard)
++{
++	DWORD error = ERROR_SUCCESS;
++	uintptr_t abi_address = 0, build_address = 0, activate_address = 0, name_address = 0;
++	unsigned int abi = 0;
++	char build[33] = {};
++	if (!remote_module_path(process, module, path, error)) return error;
++	if (remote_module_export_address(process, module, "ElectronGameOverlayReShadeAddonAbi",
++		abi_address, error) != module_export_inspection::present ||
++		remote_module_export_address(process, module, "ElectronGameOverlayReShadeAddonBuildId",
++			build_address, error) != module_export_inspection::present ||
++		remote_module_export_address(process, module, "ElectronGameOverlayActivatePreloadedMemberV1",
++			activate_address, error) != module_export_inspection::present ||
++		remote_module_export_address(process, module, "NAME", name_address, error) != module_export_inspection::present ||
++		!read_remote_bytes(process, abi_address, &abi, sizeof(abi), error) || abi != 1 ||
++		!read_remote_bytes(process, build_address, build, sizeof(build), error) ||
++		memcmp(build, expected_build, sizeof(build)) != 0)
++		return error != ERROR_SUCCESS ? error : ERROR_REVISION_MISMATCH;
++	const size_t slash = path.find_last_of(L"\\/");
++	const std::wstring mapped_leaf = path.substr(slash == std::wstring::npos ? 0 : slash + 1);
++	if (!valid_preloaded_addon_leaf(mapped_leaf) || _wcsicmp(mapped_leaf.c_str(), leaf.c_str()) != 0)
++		return ERROR_INVALID_NAME;
++	// NAME is assigned by DllMain, which may still be running when a module
++	// first appears in the OS snapshot. Its value is checked after acquiring
++	// the target loader reference, never used as an early race-prone rejection.
++	BYTE hash[32] = {};
++	error = hash_immutable_native_file(path, file_guard, hash);
++	if (error != ERROR_SUCCESS) return error;
++	return memcmp(hash, expected_hash, sizeof(hash)) == 0 ? ERROR_SUCCESS : ERROR_INVALID_DATA;
++}
++
++struct participant_initialize_request
++{
++	uint32_t struct_size = sizeof(participant_initialize_request);
++	uint32_t abi_version = 1;
++	wchar_t run_directory[32768] = {};
++};
++static_assert(sizeof(participant_initialize_request) == 65544);
++static_assert(alignof(participant_initialize_request) == 4 && offsetof(participant_initialize_request, run_directory) == 8);
++
+ struct participant_loading_data
+ {
+ 	WCHAR load_path[32768] = L"";
++	WCHAR observed_module_path[32768] = L"";
++	participant_initialize_request request;
+ 	char initializer_name[48] = "ElectronGameOverlayInitializeMember";
+ 	char can_unload_name[48] = "ElectronGameOverlayCanUnloadFailedMemberV1";
+ 	char build_id_name[48] = "ElectronGameOverlayReShadeAddonBuildId";
+ 	char abi_name[48] = "ElectronGameOverlayReShadeAddonAbi";
++	char public_name_export[8] = "NAME";
++	char expected_public_name[160] = {};
+ 	char expected_build_id[33] = {};
+ 	decltype(&LoadLibraryW) load_library = nullptr;
+ 	decltype(&FreeLibrary) free_library = nullptr;
+ 	decltype(&GetProcAddress) get_proc_address = nullptr;
+ 	decltype(&GetLastError) get_last_error = nullptr;
++	decltype(&GetModuleHandleExW) get_module_handle_ex = nullptr;
++	decltype(&GetModuleFileNameW) get_module_file_name = nullptr;
++	decltype(&CompareStringOrdinal) compare_string_ordinal = nullptr;
++	HMODULE preloaded_module = nullptr;
+ 	volatile LONG *initial_adapter_gate = nullptr;
+ 	DWORD (WINAPI *initialize_owned_late_d3d11)(void *) = nullptr;
+ 	HMODULE loaded_module = nullptr;
+@@ -4085,13 +4294,37 @@ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ {
+ 	// Only a verified owned host with an OPEN gate permits the first public
+ 	// adapter registration. Losing this race never authorizes a second host.
+-	if (data->initial_adapter_gate != nullptr &&
++	if (data->preloaded_module == nullptr && data->initial_adapter_gate != nullptr &&
+ 		InterlockedCompareExchange(data->initial_adapter_gate, 1, 0) != 0)
+ 	{
+ 		data->initialization_error = ERROR_RETRY;
+ 		return ERROR_RETRY;
+ 	}
+-	data->loaded_module = data->load_library(data->load_path);
++	if (data->preloaded_module != nullptr)
++	{
++		// Acquire a real loader reference, then recheck the handle/path before
++		// using any module export. Retain it on uncertain failure; no registered
++		// module is loaded from disk or unloaded by this activation path.
++		if (!data->get_module_handle_ex(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
++			reinterpret_cast<LPCWSTR>(data->preloaded_module), &data->loaded_module))
++		{
++			data->initialization_error = data->get_last_error();
++			if (data->initialization_error == ERROR_SUCCESS) data->initialization_error = ERROR_MOD_NOT_FOUND;
++			return data->initialization_error;
++		}
++		const DWORD length = data->get_module_file_name(data->loaded_module,
++			data->observed_module_path, ARRAYSIZE(data->observed_module_path));
++		if (data->loaded_module != data->preloaded_module || length == 0 ||
++			length >= ARRAYSIZE(data->observed_module_path) ||
++			data->compare_string_ordinal(data->observed_module_path, -1,
++				data->load_path, -1, TRUE) != CSTR_EQUAL)
++		{
++			data->initialization_error = ERROR_INVALID_NAME;
++			return data->initialization_error;
++		}
++	}
++	else
++		data->loaded_module = data->load_library(data->load_path);
+ 	if (data->loaded_module == nullptr)
+ 	{
+ 		data->initialization_error = data->get_last_error();
+@@ -4104,7 +4337,7 @@ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ 	// DllMain has finished registering the first adapter's public callbacks.
+ 	// Publish completion before either normal load_addons or our retained
+ 	// manager initialization may run; neither may wait on a gate we still own.
+-	if (data->initial_adapter_gate != nullptr)
++	if (data->preloaded_module == nullptr && data->initial_adapter_gate != nullptr)
+ 		InterlockedCompareExchange(data->initial_adapter_gate, 2, 1);
+ 	const auto abi = reinterpret_cast<const unsigned int *>(
+ 		data->get_proc_address(data->loaded_module, data->abi_name));
+@@ -4123,6 +4356,25 @@ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ 			return data->initialization_error;
+ 		}
+ 	}
++	if (data->preloaded_module != nullptr)
++	{
++		const auto name = reinterpret_cast<const char *const *>(
++			data->get_proc_address(data->loaded_module, data->public_name_export));
++		if (name == nullptr || *name == nullptr)
++		{
++			data->initialization_error = ERROR_REVISION_MISMATCH;
++			return data->initialization_error;
++		}
++		for (unsigned int i = 0; i != sizeof(data->expected_public_name); ++i)
++		{
++			if ((*name)[i] != data->expected_public_name[i])
++			{
++				data->initialization_error = ERROR_REVISION_MISMATCH;
++				return data->initialization_error;
++			}
++			if (data->expected_public_name[i] == '\0') break;
++		}
++	}
+ 	using initialize_member = DWORD (WINAPI *)(void *);
+ 	const auto initialize = reinterpret_cast<initialize_member>(
+ 		data->get_proc_address(data->loaded_module, data->initializer_name));
+@@ -4131,9 +4383,9 @@ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ 		data->initialization_error = ERROR_PROC_NOT_FOUND;
+ 		return data->initialization_error;
+ 	}
+-	// Initialization runs after LoadLibrary/DllMain returned. The member derives
+-	// its private rendezvous from its own module parent, never process-wide env.
+-	data->initialization_error = initialize(nullptr);
++	// A dormant preload is explicitly bound to this app's private staged route;
++	// ordinary members continue to derive the route from their module parent.
++	data->initialization_error = initialize(data->preloaded_module != nullptr ? &data->request : nullptr);
+ 	if (data->initialization_error != ERROR_SUCCESS)
+ 	{
+ 		// Only the exact module can prove that failed initialization published
+@@ -4142,7 +4394,7 @@ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ 		using can_unload_failed_member = DWORD (WINAPI *)();
+ 		const auto can_unload = reinterpret_cast<can_unload_failed_member>(
+ 			data->get_proc_address(data->loaded_module, data->can_unload_name));
+-		if (can_unload != nullptr && can_unload() == 1 &&
++		if (data->preloaded_module == nullptr && can_unload != nullptr && can_unload() == 1 &&
+ 			data->free_library(data->loaded_module))
+ 			data->loaded_module = nullptr;
+ 	}
+@@ -4316,11 +4568,16 @@ static DWORD inspect_owned_late_d3d11_host(HANDLE process, HMODULE runtime,
+ }
+ 
+ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path,
+-	bool earlier_load_consumed = false, bool report_first_injected_runtime = false)
++	bool earlier_load_consumed = false, bool report_first_injected_runtime = false,
++	const std::wstring &preloaded_addon_leaf = std::wstring())
+ {
+ 	std::wstring addon_path;
+ 	char validated_build_id[33] = {};
++	scoped_handle staged_file_guard;
++	BYTE staged_hash[32] = {};
+ 	DWORD error = staged_participant_path(addon_path);
++	if (error == ERROR_SUCCESS && !preloaded_addon_leaf.empty())
++		error = hash_immutable_native_file(addon_path, staged_file_guard, staged_hash);
+ 	if (error == ERROR_SUCCESS)
+ 		error = validate_staged_participant(addon_path, validated_build_id);
+ 	if (error != ERROR_SUCCESS)
+@@ -4329,24 +4586,39 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		if (!earlier_load_consumed) print_injection_not_started();
+ 		return error;
+ 	}
++	if (!preloaded_addon_leaf.empty())
++	{
++		if (!bind_preloaded_addon_leaf(preloaded_addon_leaf, validated_build_id, staged_hash))
++			error = ERROR_REVISION_MISMATCH;
++		if (error != ERROR_SUCCESS)
++		{
++			write_injector_diagnostic(L"target-preloaded-member-selection-invalid", pid, addon_path, error, image_path);
++			if (!earlier_load_consumed) print_injection_not_started();
++			return error;
++		}
++	}
++	bool preload_already_assigned = false;
+ 	const ULONGLONG deadline = GetTickCount64() + participant_attach_timeout_ms;
+ 	for (;;)
+ 	{
+ 		if (GetTickCount64() >= deadline)
+ 			return ERROR_TIMEOUT;
+ 		HMODULE runtime = nullptr;
++		HMODULE preloaded_module = nullptr;
+ 		owned_late_d3d11_host owned_late;
+ 		for (;;)
+ 		{
+ 			bool ready = false, adapter_ready = false;
+ 			error = inspect_cooperative_host(process, runtime, ready, nullptr, &adapter_ready);
++			if (error == ERROR_SUCCESS && !preloaded_addon_leaf.empty() && !preload_already_assigned)
++				error = find_preloaded_addon(process, preloaded_addon_leaf, preloaded_module);
+ 			if (error == ERROR_SUCCESS)
+ 				error = inspect_owned_late_d3d11_host(process, runtime, owned_late);
+ 			const bool owned_adapter_available = owned_late.initializer != 0 &&
+ 				(owned_late.gate == 0 || owned_late.gate == 2 ||
+ 				 (owned_late.gate == 3 && adapter_ready));
+ 			if (error == ERROR_SUCCESS && runtime != nullptr &&
+-				(owned_adapter_available || (ready && owned_late.initializer == 0)))
++				(owned_adapter_available || ((ready || adapter_ready) && owned_late.initializer == 0) || preloaded_module != nullptr))
+ 				break;
+ 			if (error != ERROR_SUCCESS && !is_transient_module_inspection_error(error))
+ 				break;
+@@ -4392,12 +4664,26 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
+ 		}
+-		if (settings.electron_game_overlay_addon_disabled)
++		if (settings.electron_game_overlay_addon_disabled ||
++			(!preloaded_addon_leaf.empty() && preloaded_addon_disabled(settings, preloaded_addon_leaf)))
+ 		{
+ 			write_injector_diagnostic(L"target-member-disabled", pid, runtime_path, ERROR_ACCESS_DISABLED_BY_POLICY, image_path, &settings);
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return ERROR_ACCESS_DISABLED_BY_POLICY;
+ 		}
++		std::wstring selected_path = addon_path;
++		scoped_handle preload_file_guard;
++		if (preloaded_module != nullptr)
++		{
++			error = validate_mapped_preloaded_addon(process, preloaded_module, preloaded_addon_leaf,
++				validated_build_id, staged_hash, selected_path, preload_file_guard);
++			if (error != ERROR_SUCCESS)
++			{
++				write_injector_diagnostic(L"target-preloaded-member-invalid", pid, selected_path, error, image_path);
++				if (!earlier_load_consumed) print_injection_not_started();
++				return error;
++			}
++		}
+ 		SIZE_T code_size = 0;
+ 		if (!participant_loading_thread_size(code_size))
+ 		{
+@@ -4405,7 +4691,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			return ERROR_BAD_EXE_FORMAT;
+ 		}
+ 		participant_loading_data data;
+-		if (wcscpy_s(data.load_path, addon_path.c_str()) != 0)
++		if (wcscpy_s(data.load_path, selected_path.c_str()) != 0)
+ 		{
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return ERROR_FILENAME_EXCED_RANGE;
+@@ -4415,11 +4701,27 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		data.free_library = FreeLibrary;
+ 		data.get_proc_address = GetProcAddress;
+ 		data.get_last_error = GetLastError;
++		if (preloaded_module != nullptr)
++		{
++			const size_t slash = addon_path.find_last_of(L"\\/");
++			if (slash == std::wstring::npos || wcscpy_s(data.request.run_directory, addon_path.substr(0, slash).c_str()) != 0)
++				return ERROR_BAD_PATHNAME;
++			strcpy_s(data.initializer_name, "ElectronGameOverlayActivatePreloadedMemberV1");
++			const size_t selected_slash = selected_path.find_last_of(L"\\/");
++			std::string public_name = "Electron Game Overlay Runtime ";
++			for (const wchar_t character : selected_path.substr(selected_slash == std::wstring::npos ? 0 : selected_slash + 1))
++				public_name.push_back(static_cast<char>(character));
++			if (strcpy_s(data.expected_public_name, public_name.c_str()) != 0) return ERROR_INVALID_NAME;
++			data.preloaded_module = preloaded_module;
++			data.get_module_handle_ex = GetModuleHandleExW;
++			data.get_module_file_name = GetModuleFileNameW;
++			data.compare_string_ordinal = CompareStringOrdinal;
++		}
+ 		if (owned_late.initializer != 0)
+ 		{
+ 			data.initialize_owned_late_d3d11 =
+ 				reinterpret_cast<DWORD (WINAPI *)(void *)>(owned_late.initializer);
+-			if (owned_late.gate == 0)
++			if (owned_late.gate == 0 && preloaded_module == nullptr)
+ 				data.initial_adapter_gate = reinterpret_cast<volatile LONG *>(owned_late.gate_address);
+ 		}
+ 		const SIZE_T allocation_size = sizeof(data) + code_size;
+@@ -4470,13 +4772,23 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		if (read && data.late_d3d11_error != ERROR_SUCCESS)
+ 			wprintf(L"\nOwned D3D11 late initialization failed with error 0x%lx; runtime ownership remains claimed.\n",
+ 				data.late_d3d11_error);
++		if (read && preloaded_module != nullptr && exit_code == ERROR_ALREADY_ASSIGNED &&
++			data.initialization_error == ERROR_ALREADY_ASSIGNED && data.loaded_module == preloaded_module &&
++			data.late_d3d11_error == ERROR_SUCCESS)
++		{
++			// This exact native export alone proves a prior private route owns
++			// the preloaded copy. An absent module or this explicit result permits
++			// the normal staged member; every other failure remains fail-closed.
++			preload_already_assigned = true;
++			continue;
++		}
+ 		if (!read || exit_code != ERROR_SUCCESS || data.initialization_error != ERROR_SUCCESS)
+ 			return !read ? error : exit_code != ERROR_SUCCESS ? exit_code : data.initialization_error;
+ 		std::wstring loaded_path;
+ 		if (!remote_module_path(process, data.loaded_module, loaded_path, error) ||
+ 			!remote_module_path(process, runtime, runtime_path, error))
+ 			return error;
+-		if (_wcsicmp(loaded_path.c_str(), addon_path.c_str()) != 0)
++		if (_wcsicmp(loaded_path.c_str(), selected_path.c_str()) != 0)
+ 			return ERROR_INVALID_NAME;
+ 		if (report_first_injected_runtime)
+ 		{
+@@ -4568,6 +4880,27 @@ static persistent_host_claim_result pin_host_claim(HANDLE process, DWORD pid, DW
+ 
+ int wmain(int argc, wchar_t *argv[])
+ {
++	std::wstring preloaded_addon_leaf;
++	for (int argument = 1; argument < argc; ++argument)
++	{
++		if (wcscmp(argv[argument], L"--preloaded-addon-name") != 0) continue;
++		if (!preloaded_addon_leaf.empty() || argument + 1 >= argc ||
++			!valid_preloaded_addon_leaf(argv[argument + 1]))
++		{
++			print_injection_not_started();
++			return ERROR_INVALID_PARAMETER;
++		}
++		preloaded_addon_leaf = argv[argument + 1];
++		for (int move = argument; move + 2 < argc; ++move) argv[move] = argv[move + 2];
++		argc -= 2;
++		--argument;
++	}
++	if (!preloaded_addon_leaf.empty() && argc >= 2 &&
++		wcsncmp(argv[1], L"--", 2) == 0 && wcscmp(argv[1], L"--path-contains") != 0)
++	{
++		print_injection_not_started();
++		return ERROR_INVALID_PARAMETER;
++	}
+ 	bool addon_only_requested = false;
+ 	for (int argument = 1; argument < argc; ++argument)
+ 	{
+@@ -4649,7 +4982,8 @@ int wmain(int argc, wchar_t *argv[])
+ 		parse_exact_pid_tail(argc, argv, expected_creation_time,
+ 			process_instance_binding_requested, official_addon_wait_requested,
+ 			official_addon_wait_value_index);
+-	if (addon_only_requested && (!use_exact_pid || official_addon_wait_requested))
++	if ((addon_only_requested && (!use_exact_pid || official_addon_wait_requested)) ||
++		(!preloaded_addon_leaf.empty() && official_addon_wait_requested))
+ 	{
+ 		print_injection_not_started();
+ 		return ERROR_INVALID_PARAMETER;
+@@ -4839,6 +5173,34 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		print_injection_not_started();
+ 		return session_error;
+ 	}
++	scoped_handle preloaded_staged_guard;
++	if (!preloaded_addon_leaf.empty())
++	{
++		DWORD preload_error = require_unelevated_process(GetCurrentProcess());
++		if (preload_error == ERROR_SUCCESS) preload_error = require_unelevated_process(remote_process);
++		if (preload_error != ERROR_SUCCESS)
++		{
++			write_injector_diagnostic(L"target-preloaded-member-elevation-rejected", pid,
++				std::wstring(), preload_error, selected_image_path);
++			print_injection_not_started();
++			return preload_error;
++		}
++		std::wstring staged_path;
++		char build[33] = {};
++		BYTE hash[32] = {};
++		preload_error = staged_participant_path(staged_path);
++		if (preload_error == ERROR_SUCCESS) preload_error = hash_immutable_native_file(staged_path, preloaded_staged_guard, hash);
++		if (preload_error == ERROR_SUCCESS) preload_error = validate_staged_participant(staged_path, build);
++		if (preload_error == ERROR_SUCCESS && !bind_preloaded_addon_leaf(preloaded_addon_leaf, build, hash))
++			preload_error = ERROR_REVISION_MISMATCH;
++		if (preload_error != ERROR_SUCCESS)
++		{
++			write_injector_diagnostic(L"target-preloaded-member-selection-invalid", pid, staged_path,
++				preload_error, selected_image_path);
++			print_injection_not_started();
++			return preload_error;
++		}
++	}
+ 
+ 	// Check process architecture
+ 	BOOL remote_is_wow64 = FALSE;
+@@ -4924,7 +5286,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 			return member_error;
+ 		}
+ 		if (addon_only_requested || pinned || cooperative_present || owned_late.initializer != 0)
+-			return load_participant_only(remote_process, pid, selected_image_path);
++			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf);
+ 	}
+ 
+ 	reusable_runtime_info reusable_runtime;
+@@ -5470,7 +5832,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		switch (pin_host_claim(remote_process, pid, member_error))
+ 		{
+ 		case persistent_host_claim_result::already_pinned:
+-			return load_participant_only(remote_process, pid, selected_image_path);
++			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf);
+ 		case persistent_host_claim_result::failed:
+ 			write_injector_diagnostic(L"target-host-claim-failed", pid, std::wstring(), member_error, selected_image_path);
+ 			print_injection_not_started();
+@@ -5549,7 +5911,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 			return member_error;
+ 		}
+ 		if (owned_late.initializer != 0)
+-			return load_participant_only(remote_process, pid, selected_image_path, true, !reuse_existing_runtime);
++			return load_participant_only(remote_process, pid, selected_image_path, true, !reuse_existing_runtime, preloaded_addon_leaf);
+ 		wprintf(L"Succeeded!\n");
+ 		if (!write_injector_result(
+ 				pid,

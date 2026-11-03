@@ -137,6 +137,198 @@ function Get-FileSha256 {
     ).Hash
 }
 
+function Assert-CurrentRuntimeSourceContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$BuildScriptPath,
+        [Parameter(Mandatory = $true)][object]$PackageBuildStamp,
+        [Parameter(Mandatory = $true)][object]$ClientBuildStamp
+    )
+
+    # Read the build's literal contract without running its build/packaging code.
+    # Equal source/client stamps alone could both describe stale staged bytes.
+    $BuildSource = Get-Content -LiteralPath $BuildScriptPath -Raw
+    $Expected = @{}
+    foreach ($Name in @('RuntimeGeneration', 'TargetTransportMin', 'TargetTransportMax')) {
+        $Pattern = '(?m)^\$' + [regex]::Escape($Name) + ' = ([1-9][0-9]*)\r?$'
+        $Declarations = [regex]::Matches($BuildSource, $Pattern)
+        $Assignments = [regex]::Matches($BuildSource, '(?m)^\$' + [regex]::Escape($Name) + '\s*=')
+        [uint32]$Value = 0
+        if ($Assignments.Count -ne 1 -or $Declarations.Count -ne 1 -or
+            -not [uint32]::TryParse($Declarations[0].Groups[1].Value, [ref]$Value)) {
+            throw "The native build source has no unique valid literal $Name contract."
+        }
+        $Expected[$Name] = $Value
+    }
+    $AddonIds = [regex]::Matches(
+        $BuildSource,
+        '(?m)^\$ExpectedAddonBuildId = "([0-9A-F]{32})"\r?$'
+    )
+    if ([regex]::Matches($BuildSource, '(?m)^\$ExpectedAddonBuildId\s*=').Count -ne 1 -or
+        $AddonIds.Count -ne 1 -or
+        $Expected.TargetTransportMin -gt $Expected.TargetTransportMax) {
+        throw 'The native build source has an invalid add-on identity or transport range.'
+    }
+    foreach ($Stamp in @($PackageBuildStamp, $ClientBuildStamp)) {
+        if ($Stamp.runtimeGeneration -ne $Expected.RuntimeGeneration -or
+            $Stamp.targetTransportMin -ne $Expected.TargetTransportMin -or
+            $Stamp.targetTransportMax -ne $Expected.TargetTransportMax -or
+            $Stamp.addonBuildId -cne $AddonIds[0].Groups[1].Value) {
+            throw 'The runtime package and staged client must match the current native build source contract. Rebuild before running this gate.'
+        }
+    }
+}
+
+function Assert-OfficialParticipantResult {
+    param(
+        [Parameter(Mandatory = $true)][object]$Record,
+        [Parameter(Mandatory = $true)][int]$ExpectedPid,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedRuntimePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAddonPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedBasePath
+    )
+
+    $ExpectedKeys = @(
+        'schemaVersion', 'pid', 'targetExecutablePath', 'runtimeMode',
+        'runtimeModulePath', 'reshadeBasePath', 'addonModulePath',
+        'addonAbi', 'memberProtocolVersion'
+    )
+    $ActualKeys = @($Record.PSObject.Properties.Name)
+    if ($ActualKeys.Count -ne $ExpectedKeys.Count -or
+        @(Compare-Object $ExpectedKeys $ActualKeys -CaseSensitive).Count -ne 0) {
+        throw 'The private participant result has unexpected or missing fields.'
+    }
+    foreach ($Field in @('schemaVersion', 'pid', 'addonAbi', 'memberProtocolVersion')) {
+        if ($Record.$Field -isnot [int] -and $Record.$Field -isnot [long]) {
+            throw "The private participant result has a non-integer $Field."
+        }
+    }
+    if ($ExpectedPid -le 0 -or $Record.schemaVersion -ne 1 -or
+        $Record.pid -ne $ExpectedPid -or
+        $Record.runtimeMode -cne 'participant-addon' -or
+        $Record.addonAbi -ne 1 -or $Record.memberProtocolVersion -ne 1) {
+        throw 'The injector did not load this application as a protocol-1 participant in the exact official target.'
+    }
+    $ExpectedPaths = @{
+        targetExecutablePath = $ExpectedExecutablePath
+        runtimeModulePath = $ExpectedRuntimePath
+        addonModulePath = $ExpectedAddonPath
+        reshadeBasePath = $ExpectedBasePath
+    }
+    foreach ($Field in $ExpectedPaths.Keys) {
+        $Actual = $Record.$Field
+        if ($Actual -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($Actual) -or
+            -not [IO.Path]::IsPathRooted($Actual) -or
+            -not [string]::Equals(
+                [IO.Path]::GetFullPath($Actual),
+                [IO.Path]::GetFullPath($ExpectedPaths[$Field]),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw "The private participant result has a foreign or relative $Field."
+        }
+    }
+}
+
+function Assert-OfficialParticipantModules {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Modules,
+        [Parameter(Mandatory = $true)][string]$ExpectedRuntimePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedForeignAddonPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAdapterPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedParticipantPath
+    )
+
+    # The installed adapter supplies only the cooperative event seam. The
+    # application must additionally load its own staged feature engine.
+    $ExpectedPaths = @(
+        $ExpectedRuntimePath, $ExpectedForeignAddonPath,
+        $ExpectedAdapterPath, $ExpectedParticipantPath
+    ) | ForEach-Object { [IO.Path]::GetFullPath($_) }
+    if (@($ExpectedPaths | Sort-Object -Unique).Count -ne 4) {
+        throw 'The official runtime, foreign add-on, adapter and private engine must have distinct module paths.'
+    }
+    foreach ($ExpectedPath in $ExpectedPaths) {
+        $Matches = @($Modules | Where-Object {
+            $_.FileName -and [string]::Equals(
+                [IO.Path]::GetFullPath($_.FileName), $ExpectedPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        })
+        if ($Matches.Count -ne 1) {
+            throw "Gun Frog did not load exactly one expected module: $ExpectedPath"
+        }
+    }
+    $ReShadeModules = @($Modules | Where-Object {
+        $_.FileName -and (
+            $_.FileVersionInfo.ProductName -ieq 'ReShade' -or
+            [IO.Path]::GetFileName($_.FileName) -imatch '^ReShade(?:32|64)\.dll$' -or
+            [string]::Equals(
+                [IO.Path]::GetFullPath($_.FileName),
+                [IO.Path]::GetFullPath($ExpectedRuntimePath),
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        )
+    })
+    if ($ReShadeModules.Count -ne 1) {
+        throw 'The official-host gate must contain exactly one ReShade runtime, including renamed runtime modules.'
+    }
+    $UnexpectedEngines = @($Modules | Where-Object {
+        $_.FileName -and
+        [IO.Path]::GetFileName($_.FileName) -imatch '^electron_game_overlay\.addon(?:32|64)$' -and
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath($_.FileName),
+            [IO.Path]::GetFullPath($ExpectedAdapterPath),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and -not [string]::Equals(
+            [IO.Path]::GetFullPath($_.FileName),
+            [IO.Path]::GetFullPath($ExpectedParticipantPath),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    })
+    if ($UnexpectedEngines.Count -ne 0) {
+        throw 'The official-host gate loaded an unexpected extra application engine.'
+    }
+}
+
+function Assert-OfficialParticipantArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$StagePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedAddonHash,
+        [Parameter(Mandatory = $true)][string]$ExpectedAddonBuildId
+    )
+
+    if (-not [IO.Path]::IsPathRooted($StagePath) -or
+        $ExpectedAddonHash -cnotmatch '^[0-9A-F]{64}$' -or
+        $ExpectedAddonBuildId -cnotmatch '^[0-9A-F]{32}$') {
+        throw 'The private participant expected identity is invalid.'
+    }
+    $AddonPath = Join-Path $StagePath 'electron_game_overlay.addon64'
+    $ManifestPath = Join-Path $StagePath 'electron_game_overlay_runtime.build.json'
+    $Stamp = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    foreach ($Field in @('schemaVersion', 'cooperativeAddonProtocol', 'injectorProcessInstanceBinding')) {
+        if ($Stamp.$Field -isnot [int] -and $Stamp.$Field -isnot [long]) {
+            throw "The private participant manifest has a non-integer $Field."
+        }
+    }
+    $ActualHash = Get-FileSha256 -Path $AddonPath
+    if ($Stamp.schemaVersion -ne 4 -or
+        $Stamp.cooperativeAddonProtocol -ne 1 -or
+        $Stamp.injectorProcessInstanceBinding -ne 1 -or
+        $Stamp.addonBuildId -cne $ExpectedAddonBuildId -or
+        $Stamp.addonSha256 -cne $ExpectedAddonHash -or
+        $ActualHash -cne $ExpectedAddonHash) {
+        throw 'The private participant must use the exact current source/client engine bytes, build ID and cooperative capability.'
+    }
+    return [pscustomobject]@{
+        AddonPath = [IO.Path]::GetFullPath($AddonPath)
+        ManifestPath = [IO.Path]::GetFullPath($ManifestPath)
+        AddonBuildId = $Stamp.addonBuildId
+        AddonSha256 = $ActualHash
+        CooperativeAddonProtocol = $Stamp.cooperativeAddonProtocol
+    }
+}
+
 function Copy-NewSeedFile {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -1114,22 +1306,25 @@ try {
     $ClientBuildStamp =
         Get-Content -LiteralPath $ClientBuildStampPath -Raw |
         ConvertFrom-Json
+    Assert-CurrentRuntimeSourceContract `
+        -BuildScriptPath (Join-Path $PSScriptRoot 'build.ps1') `
+        -PackageBuildStamp $PackageBuildStamp `
+        -ClientBuildStamp $ClientBuildStamp
     $ProductionAddonHash = Get-FileSha256 -Path $ProductionAddonPath
     $ClientAddonHash = Get-FileSha256 -Path $ClientAddonPath
     $AddonManagerHash = Get-FileSha256 -Path $AddonManagerPath
     if ($PackageBuildStamp.schemaVersion -ne 4 -or
         $PackageBuildStamp.injectorProcessInstanceBinding -ne 1 -or
+        $PackageBuildStamp.cooperativeAddonProtocol -ne 1 -or
         $PackageBuildStamp.kind -cne
             "electron-game-overlay-runtime-build" -or
-        $PackageBuildStamp.runtimeGeneration -ne 2 -or
-        $PackageBuildStamp.targetTransportMin -ne 1 -or
-        $PackageBuildStamp.targetTransportMax -ne 1 -or
         ([string]$PackageBuildStamp.addonBuildId) -cnotmatch
             '^[0-9A-F]{32}$' -or
         $PackageBuildStamp.addonSha256 -cne $ProductionAddonHash -or
         $PackageBuildStamp.managerSha256 -cne $AddonManagerHash -or
         $ClientBuildStamp.schemaVersion -ne 4 -or
         $ClientBuildStamp.injectorProcessInstanceBinding -ne 1 -or
+        $ClientBuildStamp.cooperativeAddonProtocol -ne 1 -or
         $ClientBuildStamp.runtimeGeneration -ne
             $PackageBuildStamp.runtimeGeneration -or
         $ClientBuildStamp.targetTransportMin -ne
@@ -1451,6 +1646,9 @@ technique EGOCoexistenceWitness < enabled = true; >
     Wait-ForClientMarker `
         -Marker "STEAM_GAME_AUTO_ATTACH_ARMING" `
         -Deadline $StartupDeadline
+    Wait-ForClientMarker `
+        -Marker "RESHADE_CLIENT_INJECTOR_WATCHER_READY" `
+        -Deadline $StartupDeadline
 
     $RunOwnsTargetLaunch = $true
     Start-Process -FilePath $LaunchUri | Out-Null
@@ -1500,86 +1698,54 @@ technique EGOCoexistenceWitness < enabled = true; >
     )
     if ($InjectorResultLines.Count -ne 1) {
         throw (
-            "Expected one structured official-add-on result, found " +
+            "Expected one structured private-participant result, found " +
             "$($InjectorResultLines.Count)."
         )
     }
     $InjectorResult =
         $InjectorResultLines[0].Substring($InjectorResultPrefix.Length) |
         ConvertFrom-Json
-    if ($InjectorResult.schemaVersion -ne 1 -or
-        $InjectorResult.pid -ne $TargetProcessId -or
-        $InjectorResult.runtimeMode -cne "official-addon" -or
-        $InjectorResult.addonAbi -ne 1 -or
-        $InjectorResult.addonBuildId -cne
-            $PackageBuildStamp.addonBuildId -or
-        $InjectorResult.electronGameOverlayAddonDisabled -ne $false -or
-        -not ([string]$InjectorResult.targetExecutablePath).Equals(
-            [IO.Path]::GetFullPath($TargetExecutablePath),
-            [StringComparison]::OrdinalIgnoreCase
-        ) -or
-        -not ([string]$InjectorResult.reshadeBasePath).Equals(
-            [IO.Path]::GetFullPath($TargetTestRoot),
-            [StringComparison]::OrdinalIgnoreCase
-        ) -or
-        -not ([string]$InjectorResult.addonDirectoryPath).Equals(
-            [IO.Path]::GetFullPath($TargetAddonDirectory),
-            [StringComparison]::OrdinalIgnoreCase
-        ) -or
-        -not ([string]$InjectorResult.runtimeModulePath).Equals(
-            [IO.Path]::GetFullPath($TargetRuntimePath),
-            [StringComparison]::OrdinalIgnoreCase
-        ) -or
-        -not ([string]$InjectorResult.addonModulePath).Equals(
-            [IO.Path]::GetFullPath($TargetOwnedAddonPath),
-            [StringComparison]::OrdinalIgnoreCase
-        )) {
-        throw (
-            "The injector did not select the exact official-add-on " +
-            "installation: " +
-            ($InjectorResult | ConvertTo-Json -Compress)
-        )
+    $ParticipantArtifact = Assert-OfficialParticipantArtifact -StagePath $ReShadeRunDirectory `
+        -ExpectedAddonHash $ProductionAddonHash `
+        -ExpectedAddonBuildId $PackageBuildStamp.addonBuildId
+    Assert-OfficialParticipantResult -Record $InjectorResult `
+        -ExpectedPid $TargetProcessId `
+        -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath $TargetRuntimePath `
+        -ExpectedAddonPath $ParticipantArtifact.AddonPath `
+        -ExpectedBasePath $TargetTestRoot
+
+    # Both exact-PID and prearmed future-target launches use this application's
+    # staged route. A watcher credential can remain unbound; an exact route
+    # must name this target. Neither route may point at another producer.
+    $PrivateDiscoveryPath = Join-Path $ReShadeRunDirectory 'electron-overlay-transport-v1.json'
+    $PrivateDiscovery = Get-Content -LiteralPath $PrivateDiscoveryPath -Raw | ConvertFrom-Json
+    if (($PrivateDiscovery.version -isnot [int] -and $PrivateDiscovery.version -isnot [long]) -or
+        $PrivateDiscovery.version -ne 1 -or
+        ($PrivateDiscovery.pid -isnot [int] -and $PrivateDiscovery.pid -isnot [long]) -or
+        $PrivateDiscovery.pid -ne $ClientProcess.Id -or
+        ($PrivateDiscovery.port -isnot [int] -and $PrivateDiscovery.port -isnot [long]) -or
+        $PrivateDiscovery.port -le 0 -or $PrivateDiscovery.port -gt 65535 -or
+        $PrivateDiscovery.token -isnot [string] -or
+        $PrivateDiscovery.token -cnotmatch '^[0-9a-f]{64}$' -or
+        ($null -ne $PrivateDiscovery.targetPid -and (
+            ($PrivateDiscovery.targetPid -isnot [int] -and $PrivateDiscovery.targetPid -isnot [long]) -or
+            $PrivateDiscovery.targetPid -ne $TargetProcessId
+        ))) {
+        throw 'The private participant credential does not belong to this Electron producer and exact target.'
     }
 
     $LoadedModules = @(
         (Get-Process -Id $TargetProcessId -ErrorAction Stop).Modules
     )
-    foreach ($ExpectedModulePath in @(
-            $TargetRuntimePath,
-            $TargetForeignAddonPath,
-            $TargetOwnedAddonPath
-        )) {
-        $Matches = @(
-            $LoadedModules |
-                Where-Object {
-                    $_.FileName -and
-                    [string]::Equals(
-                        [IO.Path]::GetFullPath($_.FileName),
-                        [IO.Path]::GetFullPath($ExpectedModulePath),
-                        [StringComparison]::OrdinalIgnoreCase
-                    )
-                }
-        )
-        if ($Matches.Count -ne 1) {
-            throw (
-                "Gun Frog did not load exactly one expected module: " +
-                $ExpectedModulePath
-            )
-        }
-    }
-    $UnexpectedProjectRuntime = @(
-        $LoadedModules |
-            Where-Object {
-                $_.FileName -and
-                [IO.Path]::GetFileName($_.FileName) -ieq "ReShade64.dll"
-            }
-    )
-    if ($UnexpectedProjectRuntime.Count -ne 0) {
-        throw (
-            "The official-host gate also loaded a project ReShade64.dll: " +
-            ($UnexpectedProjectRuntime.FileName -join ", ")
-        )
-    }
+    Assert-OfficialParticipantModules -Modules $LoadedModules `
+        -ExpectedRuntimePath $TargetRuntimePath `
+        -ExpectedForeignAddonPath $TargetForeignAddonPath `
+        -ExpectedAdapterPath $TargetOwnedAddonPath `
+        -ExpectedParticipantPath $ParticipantArtifact.AddonPath
+    Save-JsonEvidence -Value @($LoadedModules | ForEach-Object {
+        [pscustomobject]@{ FileName = $_.FileName; ProductName = $_.FileVersionInfo.ProductName }
+    }) -Path (Join-Path $RunDirectory 'target-loaded-modules.json')
 
     Wait-ForReShadeEvidence -Deadline $StartupDeadline
     if (-not (Get-Process `
@@ -1818,6 +1984,21 @@ technique EGOCoexistenceWitness < enabled = true; >
         AddonDirectoryPath = $TargetAddonDirectory
         AddonBuildId = $PackageBuildStamp.addonBuildId
         ElectronAddonSha256 = $ProductionAddonHash
+        InstalledCooperativeAdapterPath = $TargetOwnedAddonPath
+        PrivateParticipant = [pscustomobject]@{
+            AddonModulePath = $ParticipantArtifact.AddonPath
+            AddonBuildId = $ParticipantArtifact.AddonBuildId
+            AddonSha256 = $ParticipantArtifact.AddonSha256
+            CooperativeAddonProtocol = $ParticipantArtifact.CooperativeAddonProtocol
+            MemberProtocolVersion = $InjectorResult.memberProtocolVersion
+            StageDirectory = $ReShadeRunDirectory
+            DiscoveryPath = $PrivateDiscoveryPath
+            ProducerProcessId = $PrivateDiscovery.pid
+            TargetProcessId = $TargetProcessId
+            RouteScope = $(if ($null -eq $PrivateDiscovery.targetPid) { 'future-target' } else { 'exact-target' })
+            LoadedExactlyOnce = $true
+        }
+        ReShadeRuntimeCount = 1
         ForeignAddon = [pscustomobject]@{
             Name = "FPS Limiter"
             ApiVersion = 18
@@ -1848,6 +2029,7 @@ technique EGOCoexistenceWitness < enabled = true; >
         ClientStderr = $ClientStderr
         OfficialReShadeLog = Join-Path $RunDirectory "official-ReShade.log"
         InjectorStdout = $InjectorStdout
+        LoadedModules = Join-Path $RunDirectory 'target-loaded-modules.json'
     }
 }
 catch {

@@ -1,0 +1,586 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index b675f3b..ba392a2 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -4010,8 +4010,456 @@ static bool get_loading_thread_func_size(SIZE_T &size)
+ }
+ #endif
+ 
++// Each participant loads its own immutable add-on image. ReShade ownership and
++// participant attachment are deliberately separate: this path never loads a
++// second ReShade, changes its configuration, or rewrites an installation.
++constexpr DWORD participant_attach_timeout_ms = 15000;
++
++static DWORD process_token_session_id(HANDLE process, DWORD &session)
++{
++	scoped_handle token;
++	if (!OpenProcessToken(process, TOKEN_QUERY, &token))
++	{
++		const DWORD error = GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_ACCESS_DENIED;
++	}
++	DWORD size = 0;
++	if (!GetTokenInformation(token, TokenSessionId, &session, sizeof(session), &size))
++	{
++		const DWORD error = GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
++	}
++	return size == sizeof(session) ? ERROR_SUCCESS : ERROR_INVALID_DATA;
++}
++
++static DWORD compare_process_sessions(DWORD current, DWORD target, bool &mismatch)
++{
++	mismatch = current != target;
++	return mismatch ? ERROR_ACCESS_DENIED : ERROR_SUCCESS;
++}
++
++static DWORD require_same_process_session(HANDLE process, bool &mismatch)
++{
++	mismatch = false;
++	DWORD current = 0, target = 0;
++	DWORD error = process_token_session_id(GetCurrentProcess(), current);
++	if (error == ERROR_SUCCESS) error = process_token_session_id(process, target);
++	return error != ERROR_SUCCESS ? error : compare_process_sessions(current, target, mismatch);
++}
++
++struct participant_loading_data
++{
++	WCHAR load_path[32768] = L"";
++	char initializer_name[48] = "ElectronGameOverlayInitializeMember";
++	char can_unload_name[48] = "ElectronGameOverlayCanUnloadFailedMemberV1";
++	char build_id_name[48] = "ElectronGameOverlayReShadeAddonBuildId";
++	char abi_name[48] = "ElectronGameOverlayReShadeAddonAbi";
++	char expected_build_id[33] = {};
++	decltype(&LoadLibraryW) load_library = nullptr;
++	decltype(&FreeLibrary) free_library = nullptr;
++	decltype(&GetProcAddress) get_proc_address = nullptr;
++	decltype(&GetLastError) get_last_error = nullptr;
++	HMODULE loaded_module = nullptr;
++	DWORD initialization_error = ERROR_GEN_FAILURE;
++};
++
++#ifndef _WIN64
++__declspec(noinline) __declspec(code_seg(".egomember$z"))
++static DWORD WINAPI participant_loading_thread_end(participant_loading_data *)
++{
++	// Keep this marker distinct from the legacy loader marker so /OPT:ICF
++	// cannot fold their addresses across the two ordered code segments.
++	return 0x45474F4D;
++}
++#endif
++
++#pragma optimize("", off)
++__declspec(noinline)
++#ifndef _WIN64
++__declspec(code_seg(".egomember$m"))
++#endif
++static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
++{
++	data->loaded_module = data->load_library(data->load_path);
++	if (data->loaded_module == nullptr)
++	{
++		data->initialization_error = data->get_last_error();
++		if (data->initialization_error == ERROR_SUCCESS)
++			data->initialization_error = ERROR_MOD_NOT_FOUND;
++		return data->initialization_error;
++	}
++	const auto abi = reinterpret_cast<const unsigned int *>(
++		data->get_proc_address(data->loaded_module, data->abi_name));
++	const auto build = reinterpret_cast<const char *>(
++		data->get_proc_address(data->loaded_module, data->build_id_name));
++	if (abi == nullptr || *abi != 1 || build == nullptr)
++	{
++		data->initialization_error = ERROR_REVISION_MISMATCH;
++		return data->initialization_error;
++	}
++	for (unsigned int i = 0; i != sizeof(data->expected_build_id); ++i)
++	{
++		if (build[i] != data->expected_build_id[i])
++		{
++			data->initialization_error = ERROR_REVISION_MISMATCH;
++			return data->initialization_error;
++		}
++	}
++	using initialize_member = DWORD (WINAPI *)(void *);
++	const auto initialize = reinterpret_cast<initialize_member>(
++		data->get_proc_address(data->loaded_module, data->initializer_name));
++	if (initialize == nullptr)
++	{
++		data->initialization_error = ERROR_PROC_NOT_FOUND;
++		return data->initialization_error;
++	}
++	// Initialization runs after LoadLibrary/DllMain returned. The member derives
++	// its private rendezvous from its own module parent, never process-wide env.
++	data->initialization_error = initialize(nullptr);
++	if (data->initialization_error != ERROR_SUCCESS)
++	{
++		// Only the exact module can prove that failed initialization published
++		// no callbacks and acquired no permanent pin. An initializer error alone
++		// is insufficient, and absence of this optional export remains resident.
++		using can_unload_failed_member = DWORD (WINAPI *)();
++		const auto can_unload = reinterpret_cast<can_unload_failed_member>(
++			data->get_proc_address(data->loaded_module, data->can_unload_name));
++		if (can_unload != nullptr && can_unload() == 1 &&
++			data->free_library(data->loaded_module))
++			data->loaded_module = nullptr;
++	}
++	return data->initialization_error;
++}
++#pragma optimize("", on)
++
++static bool participant_loading_thread_size(SIZE_T &size)
++{
++	constexpr SIZE_T maximum = 4096;
++#ifdef _WIN64
++	const DWORD64 start = reinterpret_cast<DWORD64>(participant_loading_thread);
++	DWORD64 image = 0;
++	const RUNTIME_FUNCTION *const entry = RtlLookupFunctionEntry(start, &image, nullptr);
++	if (entry == nullptr || image + entry->BeginAddress != start ||
++		entry->EndAddress <= entry->BeginAddress ||
++		entry->EndAddress - entry->BeginAddress > maximum)
++		return false;
++	size = entry->EndAddress - entry->BeginAddress;
++#else
++	const uintptr_t start = reinterpret_cast<uintptr_t>(participant_loading_thread);
++	const uintptr_t end = reinterpret_cast<uintptr_t>(participant_loading_thread_end);
++	if (end <= start || end - start > maximum)
++		return false;
++	size = end - start;
++#endif
++	return true;
++}
++
++static DWORD staged_participant_path(std::wstring &path)
++{
++	WCHAR executable[32768] = L"";
++	const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
++	if (length == 0 || length >= ARRAYSIZE(executable))
++		return ERROR_INSUFFICIENT_BUFFER;
++	WCHAR *const leaf = wcsrchr(executable, L'\\');
++	if (leaf == nullptr)
++		return ERROR_BAD_PATHNAME;
++	*leaf = L'\0';
++	path = executable;
++	path += L'\\';
++	path += target_electron_overlay_addon_file;
++	return ERROR_SUCCESS;
++}
++
++static DWORD validate_staged_participant(const std::wstring &path, char (&build)[33])
++{
++	// Map only for bounded PE/data inspection: no DllMain or imports execute.
++	const HMODULE image = LoadLibraryExW(path.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
++	if (image == nullptr)
++		return GetLastError();
++	DWORD error = ERROR_SUCCESS;
++	uintptr_t abi_address = 0, build_address = 0, initializer_address = 0;
++	unsigned int abi = 0;
++	reusable_runtime_info verified;
++	const std::vector<HMODULE> images{image};
++	// Reuse the existing exact-build validator. The package build updates its
++	// single expected build ID; do not maintain a second identity constant.
++	const bool exact_build = inspect_target_for_official_addon(
++		GetCurrentProcess(), images, images.size(), verified, error) == target_preflight_result::official_addon;
++	const bool valid =
++		exact_build &&
++		remote_module_export_address(GetCurrentProcess(), image,
++			"ElectronGameOverlayReShadeAddonAbi", abi_address, error) == module_export_inspection::present &&
++		remote_module_export_address(GetCurrentProcess(), image,
++			"ElectronGameOverlayReShadeAddonBuildId", build_address, error) == module_export_inspection::present &&
++		remote_module_export_address(GetCurrentProcess(), image,
++			"ElectronGameOverlayInitializeMember", initializer_address, error) == module_export_inspection::present &&
++		read_remote_bytes(GetCurrentProcess(), abi_address, &abi, sizeof(abi), error) && abi == 1 &&
++		read_remote_bytes(GetCurrentProcess(), build_address, build, sizeof(build), error);
++	FreeLibrary(image);
++	return valid ? ERROR_SUCCESS : error != ERROR_SUCCESS ? error : ERROR_REVISION_MISMATCH;
++}
++
++static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &ready, bool *present = nullptr)
++{
++	HMODULE modules[1024] = {};
++	DWORD bytes = 0;
++	if (!K32EnumProcessModules(process, modules, sizeof(modules), &bytes))
++		return GetLastError();
++	if (bytes > sizeof(modules))
++		return ERROR_MORE_DATA;
++	runtime = nullptr;
++	ready = false;
++	if (present != nullptr) *present = false;
++	DWORD error = ERROR_SUCCESS;
++	for (DWORD i = 0; i != bytes / sizeof(HMODULE); ++i)
++	{
++		uintptr_t address = 0;
++		const auto reshade = remote_module_export_address(process, modules[i], "ReShadeVersion", address, error);
++		if (reshade == module_export_inspection::failed)
++			return error;
++		if (reshade == module_export_inspection::present)
++		{
++			if (runtime != nullptr)
++				return ERROR_REVISION_MISMATCH;
++			runtime = modules[i];
++		}
++		const auto participant = remote_module_export_address(process, modules[i],
++			"ElectronGameOverlayCooperativeReadyV1", address, error);
++		if (participant == module_export_inspection::failed)
++			return error;
++		if (participant == module_export_inspection::present)
++		{
++			if (present != nullptr) *present = true;
++			LONG value = 0;
++			if (!read_remote_bytes(process, address, &value, sizeof(value), error))
++				return error;
++			ready = ready || value == 1;
++		}
++	}
++	return ERROR_SUCCESS;
++}
++
++static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path)
++{
++	std::wstring addon_path;
++	char validated_build_id[33] = {};
++	DWORD error = staged_participant_path(addon_path);
++	if (error == ERROR_SUCCESS)
++		error = validate_staged_participant(addon_path, validated_build_id);
++	if (error != ERROR_SUCCESS)
++	{
++		write_injector_diagnostic(L"target-member-payload-invalid", pid, addon_path, error, image_path);
++		print_injection_not_started();
++		return error;
++	}
++	const ULONGLONG deadline = GetTickCount64() + participant_attach_timeout_ms;
++	HMODULE runtime = nullptr;
++	for (;;)
++	{
++		bool ready = false;
++		error = inspect_cooperative_host(process, runtime, ready);
++		if (error == ERROR_SUCCESS && runtime != nullptr && ready)
++			break;
++		if (error != ERROR_SUCCESS && error != ERROR_PARTIAL_COPY && error != ERROR_BAD_LENGTH)
++			break;
++		if (GetTickCount64() >= deadline)
++		{
++			error = ERROR_TIMEOUT;
++			break;
++		}
++		if (WaitForSingleObject(process, 10) == WAIT_OBJECT_0)
++		{
++			error = ERROR_PROCESS_ABORTED;
++			break;
++		}
++	}
++	if (error != ERROR_SUCCESS)
++	{
++		write_injector_diagnostic(L"target-member-host-unavailable", pid, addon_path, error, image_path);
++		print_injection_not_started();
++		return error;
++	}
++	std::wstring runtime_path;
++	if (!remote_module_path(process, runtime, runtime_path, error))
++	{
++		print_injection_not_started();
++		return error;
++	}
++	target_environment environment;
++	target_reshade_configuration configuration;
++	target_effective_reshade_settings settings;
++	if (!inspect_target_environment(process, environment, error) ||
++		inspect_target_reshade_configuration(image_path, environment, configuration, error) == module_export_inspection::failed ||
++		!inspect_target_effective_reshade_settings(image_path, runtime_path, process,
++			environment, configuration, settings, error))
++	{
++		write_injector_diagnostic(L"target-module-inspection-failed", pid, runtime_path, error, image_path);
++		print_injection_not_started();
++		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
++	}
++	if (settings.electron_game_overlay_addon_disabled)
++	{
++		write_injector_diagnostic(L"target-member-disabled", pid, runtime_path, ERROR_ACCESS_DISABLED_BY_POLICY, image_path, &settings);
++		print_injection_not_started();
++		return ERROR_ACCESS_DISABLED_BY_POLICY;
++	}
++	SIZE_T code_size = 0;
++	if (!participant_loading_thread_size(code_size))
++	{
++		print_injection_not_started();
++		return ERROR_BAD_EXE_FORMAT;
++	}
++	participant_loading_data data;
++	if (wcscpy_s(data.load_path, addon_path.c_str()) != 0)
++	{
++		print_injection_not_started();
++		return ERROR_FILENAME_EXCED_RANGE;
++	}
++	memcpy(data.expected_build_id, validated_build_id, sizeof(data.expected_build_id));
++	data.load_library = LoadLibraryW;
++	data.free_library = FreeLibrary;
++	data.get_proc_address = GetProcAddress;
++	data.get_last_error = GetLastError;
++	const SIZE_T allocation_size = sizeof(data) + code_size;
++	BYTE *const allocation = static_cast<BYTE *>(VirtualAllocEx(process, nullptr, allocation_size,
++		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
++	if (allocation == nullptr ||
++		!WriteProcessMemory(process, allocation, &data, sizeof(data), nullptr) ||
++		!WriteProcessMemory(process, allocation + sizeof(data), participant_loading_thread, code_size, nullptr) ||
++		!FlushInstructionCache(process, allocation + sizeof(data), code_size))
++	{
++		error = GetLastError();
++		if (allocation != nullptr) VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
++		print_injection_not_started();
++		return error;
++	}
++	const scoped_handle thread = CreateRemoteThread(process, nullptr, 0,
++		reinterpret_cast<LPTHREAD_START_ROUTINE>(allocation + sizeof(data)), allocation, 0, nullptr);
++	if (thread == nullptr)
++	{
++		error = GetLastError();
++		VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
++		print_injection_not_started();
++		return error;
++	}
++	const DWORD wait = WaitForSingleObject(thread, participant_attach_timeout_ms);
++	if (wait != WAIT_OBJECT_0)
++	{
++		// Remote code may still use its arguments. Keep memory/module ownership
++		// indeterminate; neither terminate it nor free it or inject a runtime.
++		error = wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_GEN_FAILURE;
++	}
++	DWORD exit_code = ERROR_GEN_FAILURE;
++	bool read = GetExitCodeThread(thread, &exit_code) != FALSE;
++	if (!read)
++	{
++		error = GetLastError();
++		if (error == ERROR_SUCCESS) error = ERROR_GEN_FAILURE;
++	}
++	else
++		read = read_remote_bytes(process, reinterpret_cast<uintptr_t>(allocation), &data, sizeof(data), error);
++	VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
++	if (!read || exit_code != ERROR_SUCCESS || data.initialization_error != ERROR_SUCCESS)
++		return !read ? error : exit_code != ERROR_SUCCESS ? exit_code : data.initialization_error;
++	std::wstring loaded_path;
++	if (!remote_module_path(process, data.loaded_module, loaded_path, error) ||
++		!remote_module_path(process, runtime, runtime_path, error))
++		return error;
++	if (_wcsicmp(loaded_path.c_str(), addon_path.c_str()) != 0)
++		return ERROR_INVALID_NAME;
++	std::wstring result = L"ELECTRON_GAME_OVERLAY_INJECTOR_RESULT {\"schemaVersion\":1,\"pid\":";
++	result += std::to_wstring(pid);
++	result += L",\"targetExecutablePath\":";
++	append_json_string(result, image_path);
++	result += L",\"runtimeMode\":\"participant-addon\",\"runtimeModulePath\":";
++	append_json_string(result, runtime_path);
++	result += L",\"addonModulePath\":";
++	append_json_string(result, loaded_path);
++	result += L",\"reshadeBasePath\":";
++	append_json_string(result, settings.reshade_base_path);
++	result += L",\"addonAbi\":1,\"memberProtocolVersion\":1}";
++	wprintf(L"Found a matching process with PID %lu! Loading Electron Game Overlay participant into existing ReShade ... Succeeded!\n", pid);
++	fflush(stdout);
++	return write_utf8_stdout_line(result) ? ERROR_SUCCESS : ERROR_WRITE_FAULT;
++}
++
++enum class persistent_host_claim_result { first_owner, already_pinned, failed };
++
++static DWORD host_claim_name(HANDLE process, DWORD pid, std::wstring &name)
++{
++	FILETIME creation{}, exit{}, kernel{}, user{};
++	if (!GetProcessTimes(process, &creation, &exit, &kernel, &user))
++	{
++		return GetLastError();
++	}
++	const uint64_t instance = (static_cast<uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
++	if (instance == 0)
++	{
++		return ERROR_INVALID_DATA;
++	}
++	name = L"Local\\electron-game-overlay-host-v1-" + std::to_wstring(pid) + L"-" + std::to_wstring(instance);
++	return ERROR_SUCCESS;
++}
++
++static DWORD host_claim_is_pinned(HANDLE process, DWORD pid, bool &pinned)
++{
++	pinned = false;
++	std::wstring name;
++	DWORD error = host_claim_name(process, pid, name);
++	if (error != ERROR_SUCCESS) return error;
++	const scoped_handle mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
++	if (mapping != nullptr)
++	{
++		pinned = true;
++		return ERROR_SUCCESS;
++	}
++	error = GetLastError();
++	return error == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : error;
++}
++
++static persistent_host_claim_result pin_host_claim(HANDLE process, DWORD pid, DWORD &error)
++{
++	std::wstring name;
++	error = host_claim_name(process, pid, name);
++	if (error != ERROR_SUCCESS) return persistent_host_claim_result::failed;
++	SetLastError(ERROR_SUCCESS);
++	const scoped_handle mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 64, name.c_str());
++	const DWORD created = GetLastError();
++	if (mapping == nullptr)
++	{
++		error = created;
++		return persistent_host_claim_result::failed;
++	}
++	if (created == ERROR_ALREADY_EXISTS)
++		return persistent_host_claim_result::already_pinned;
++	HANDLE target_copy = nullptr;
++	if (!DuplicateHandle(GetCurrentProcess(), mapping, process, &target_copy, 0, FALSE, DUPLICATE_SAME_ACCESS))
++	{
++		error = GetLastError();
++		return persistent_host_claim_result::failed;
++	}
++	// This target-owned handle is deliberately never closed by the injector.
++	// Mere existence freezes full-runtime ownership through injector/app crashes
++	// and zero-member intervals; the OS releases it on exact process exit.
++	error = ERROR_SUCCESS;
++	return persistent_host_claim_result::first_owner;
++}
++
+ int wmain(int argc, wchar_t *argv[])
+ {
++	bool addon_only_requested = false;
++	for (int argument = 1; argument < argc; ++argument)
++	{
++		if (wcscmp(argv[argument], L"--addon-only") != 0) continue;
++		if (addon_only_requested || argument != argc - 1 || argc < 5 || wcscmp(argv[2], L"--pid") != 0)
++		{
++			print_injection_not_started();
++			return ERROR_INVALID_PARAMETER;
++		}
++		addon_only_requested = true;
++	}
++	if (addon_only_requested) --argc;
+ 	future_observer = argc >= 2 && wcscmp(argv[1], L"--observe-future-path-contains") == 0;
+     const bool process_observer_requested = future_observer || (argc >= 2 && wcscmp(argv[1], L"--observe-path-contains") == 0);
+ 	if (process_observer_requested)
+@@ -4081,6 +4529,11 @@ int wmain(int argc, wchar_t *argv[])
+ 		parse_exact_pid_tail(argc, argv, expected_creation_time,
+ 			process_instance_binding_requested, official_addon_wait_requested,
+ 			official_addon_wait_value_index);
++	if (addon_only_requested && (!use_exact_pid || official_addon_wait_requested))
++	{
++		print_injection_not_started();
++		return ERROR_INVALID_PARAMETER;
++	}
+ 	// Reject a misplaced binding option before observer/watcher selection.
+ 	bool misplaced_binding = false;
+ 	for (int argument = 1; argument < argc; ++argument)
+@@ -4163,10 +4616,10 @@ int wmain(int argc, wchar_t *argv[])
+ 
+ 	// Open target application process
+ 	DWORD desired_process_access =
+-		PROCESS_VM_READ | PROCESS_QUERY_INFORMATION;
++		PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | SYNCHRONIZE;
+ 	if (!official_addon_wait_requested)
+ 		desired_process_access |=
+-			PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE;
++			PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_DUP_HANDLE;
+ 	const scoped_handle remote_process =
+ 		OpenProcess(desired_process_access, FALSE, pid);
+ 	if (remote_process == nullptr)
+@@ -4257,6 +4710,16 @@ int wmain(int argc, wchar_t *argv[])
+ 
+ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) return ERROR_WRITE_FAULT;
+ 
++	bool session_mismatch = false;
++	const DWORD session_error = require_same_process_session(remote_process, session_mismatch);
++	if (session_error != ERROR_SUCCESS)
++	{
++		write_injector_diagnostic(session_mismatch ? L"target-session-mismatch" : L"target-session-query-failed",
++			pid, std::wstring(), session_error, selected_image_path);
++		print_injection_not_started();
++		return session_error;
++	}
++
+ 	// Check process architecture
+ 	BOOL remote_is_wow64 = FALSE;
+ 	IsWow64Process(remote_process, &remote_is_wow64);
+@@ -4281,7 +4744,23 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 
+ 	scoped_injection_claim injection_claim;
+ 	DWORD claim_error = ERROR_SUCCESS;
+-	switch (acquire_injection_claim(pid, injection_claim, claim_error))
++	injection_claim_result claim_result = injection_claim_result::failed;
++	const ULONGLONG claim_deadline = GetTickCount64() + participant_attach_timeout_ms;
++	for (;;)
++	{
++		claim_result = acquire_injection_claim(pid, injection_claim, claim_error);
++		if (claim_result != injection_claim_result::already_claimed || GetTickCount64() >= claim_deadline)
++			break;
++		CloseHandle(injection_claim.mutex);
++		injection_claim.mutex = nullptr;
++		if (WaitForSingleObject(remote_process, 10) == WAIT_OBJECT_0)
++		{
++			claim_error = ERROR_PROCESS_ABORTED;
++			claim_result = injection_claim_result::failed;
++			break;
++		}
++	}
++	switch (claim_result)
+ 	{
+ 	case injection_claim_result::already_claimed:
+ 		if (!write_injector_diagnostic(
+@@ -4307,6 +4786,24 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		break;
+ 	}
+ 
++	if (!official_addon_wait_requested)
++	{
++		bool pinned = false;
++		DWORD member_error = host_claim_is_pinned(remote_process, pid, pinned);
++		HMODULE host = nullptr;
++		bool ready = false, cooperative_present = false;
++		if (member_error == ERROR_SUCCESS)
++			member_error = inspect_cooperative_host(remote_process, host, ready, &cooperative_present);
++		if (member_error != ERROR_SUCCESS)
++		{
++			write_injector_diagnostic(L"target-module-inspection-failed", pid, std::wstring(), member_error, selected_image_path);
++			print_injection_not_started();
++			return member_error;
++		}
++		if (addon_only_requested || pinned || cooperative_present)
++			return load_participant_only(remote_process, pid, selected_image_path);
++	}
++
+ 	reusable_runtime_info reusable_runtime;
+ 	DWORD preflight_error = ERROR_SUCCESS;
+ 	bool reuse_existing_runtime = false;
+@@ -4834,6 +5331,32 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ #else
+ 	const auto loading_thread_func_size = 0;
+ #endif
++	if (!reuse_existing_runtime)
++	{
++		std::wstring member_path;
++		char member_build[33] = {};
++		DWORD member_error = staged_participant_path(member_path);
++		if (member_error == ERROR_SUCCESS)
++			member_error = validate_staged_participant(member_path, member_build);
++		if (member_error != ERROR_SUCCESS)
++		{
++			write_injector_diagnostic(L"target-member-payload-invalid", pid, member_path, member_error, selected_image_path);
++			print_injection_not_started();
++			return member_error;
++		}
++		switch (pin_host_claim(remote_process, pid, member_error))
++		{
++		case persistent_host_claim_result::already_pinned:
++			return load_participant_only(remote_process, pid, selected_image_path);
++		case persistent_host_claim_result::failed:
++			write_injector_diagnostic(L"target-host-claim-failed", pid, std::wstring(), member_error, selected_image_path);
++			print_injection_not_started();
++			return member_error;
++		case persistent_host_claim_result::first_owner:
++			break;
++		}
++	}
++
+ 	const auto load_param = VirtualAllocEx(remote_process, nullptr, loading_thread_func_size + sizeof(arg), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+ #if RESHADE_LOADING_THREAD_FUNC
+ 	const auto loading_thread_func_address = static_cast<LPBYTE>(load_param) + sizeof(arg);

@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-11-01",
+  "scope": "Actual controlled x64 public-COM D3D12 queue/assistant capability probe only; not ReShade or overlay acceptance",
+  "status": "completed",
+  "runRelativePath": "build/late-d3d12-queue-query/runs/run-2b76dfe1c5914f8d97712b7fea52d8c7",
+  "architecture": "x64",
+  "adapter": {
+    "description": "NVIDIA GeForce GTX 1080",
+    "deviceId": 7040,
+    "luidHighPart": 0,
+    "luidLowPart": 64104,
+    "vendorId": 4318,
+    "warpRequested": false
+  },
+  "completedNativePresentsBeforeQueries": 60,
+  "allRecordedPresentsReturnedSOk": true,
+  "queries": {
+    "chainAssistant": {
+      "queryInterfaceHr": "0x80004002",
+      "returnedNonNull": false
+    },
+    "chainGetDeviceID3D12CommandQueueHr": "0x80004002",
+    "chainGetDeviceID3D12DeviceHr": "0x00000000",
+    "chainGetDeviceQueue": {
+      "knownQueueIdentity": {
+        "actualIUnknownHr": "0x80004003",
+        "actualNonNull": false,
+        "expectedIUnknownHr": "0x00000000",
+        "expectedNonNull": true,
+        "matches": false
+      }
+    },
+    "chainGetDeviceQueueReturnedNonNull": false,
+    "chainKnownDeviceIdentity": {
+      "actualIUnknownHr": "0x00000000",
+      "actualNonNull": true,
+      "expectedIUnknownHr": "0x00000000",
+      "expectedNonNull": true,
+      "matches": true
+    },
+    "currentBufferAssistant": {
+      "queryInterfaceHr": "0x80004002",
+      "returnedNonNull": false
+    },
+    "currentBufferIndexAfter": 0,
+    "currentBufferIndexBefore": 0,
+    "currentBufferIndexStableDuringQueries": true,
+    "getCurrentBufferHr": "0x00000000",
+    "knownQueue": {
+      "getDeviceHr": "0x00000000",
+      "isDirect": true,
+      "knownDeviceIdentity": {
+        "actualIUnknownHr": "0x00000000",
+        "actualNonNull": true,
+        "expectedIUnknownHr": "0x00000000",
+        "expectedNonNull": true,
+        "matches": true
+      },
+      "knownQueueIdentity": {
+        "actualIUnknownHr": "0x00000000",
+        "actualNonNull": true,
+        "expectedIUnknownHr": "0x00000000",
+        "expectedNonNull": true,
+        "matches": true
+      },
+      "nodeMask": 1,
+      "type": 0
+    }
+  },
+  "graphicsModulePaths": {
+    "d3d12": "C:\\WINDOWS\\SYSTEM32\\d3d12.dll",
+    "d3d12core": "C:\\WINDOWS\\SYSTEM32\\D3D12Core.dll",
+    "dxgi": "C:\\WINDOWS\\SYSTEM32\\dxgi.dll"
+  },
+  "fixtureInstallsHooks": false,
+  "fixtureLoadsReShade": false,
+  "callsInsertImplicitSync": false,
+  "interpretation": "HRESULTs and known-identity comparisons describe only this exact run; unsupported queries are a completed probe, not a runtime failure or a universal support claim.",
+  "conclusion": "No assistant or original command-queue getter was available through the tested swapchain/backbuffer on this exact runtime. GetDevice returned the exact known D3D12 device. These are tested HRESULTs, not proof of universal interface absence or a portable retrieval guarantee.",
+  "reportSha256": "9139BC21BBBCFEDD24B7B12540470E0ECD0AC37B5B940B44AD761E46B920E091",
+  "hostSha256": "1C943773DEDB6354B561C9DF43B89755552A0CB6B402A0BE1EF1C6BFE8365521",
+  "productionActivation": false,
+  "automaticAttachmentProven": false,
+  "realGameAcceptance": false
+}

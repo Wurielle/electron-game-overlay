@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "recordedUtc": "2026-11-01T23:49:50.4082275Z",
+  "status": "PASS",
+  "scope": "Actual candidate copied participant loader in fixture-owned console children; inert DLL and host exports, no ReShade/SDK/game/graphics execution",
+  "injectorNormalizedSha256": "FA53B7BCACB7EBA6D879398809953166CEC78330D45D9A4B3440051D6D47F8F2",
+  "fixtureBuildId": "ABCDEF0123456789ABCDEF0123456789",
+  "sourceHashes": {
+    "CMakeLists.txt": "7737A471F2C6C4019356E311F7C4FD5F12BE099D98B933D0B0CA2F34ABF3755F",
+    "addon.cpp": "9110D2B0DADE720C06994B2A97C91BBB506F15A07002FBBEB486A4B55A9A7134",
+    "fixture.cpp": "BEE4AC026B2D49EA5C07571ED91AE8DDFB0C2A3917638DE3D70B77285F61BBA0",
+    "README.md": "AAF979440510EF8298D9B92B8617DEC7FB12C23129379404E776AA14182C95DB"
+  },
+  "historicalFourCaseEvidence": {
+    "file": "evidence.windows-console-20261101.json",
+    "sha256": "8C73AEDA20F37A985D86C0C9E16219BF70C72FC2B10F1A41A9F59861409496BE",
+    "injectorNormalizedSha256": "EDFF9D0B4E3EDB505EEFA93F63BB451B1CC2AC7C2831F945EBC12C6ED6AFAA3F",
+    "preservedUnchanged": true
+  },
+  "architectures": [
+    {
+      "architecture": "x64",
+      "status": "PASS",
+      "cases": 7,
+      "assertions": 615,
+      "skips": 0,
+      "memberThunkBytes": 2121,
+      "runtimeThunkBytes": 482,
+      "ownedChildLifetimes": 7,
+      "allOwnedChildrenCleanExitCode": 0,
+      "cleanupTerminationUsed": false,
+      "fixtureExeSha256": "EF373A53DF791BFFFB10D5EFFFAB823C5D1734342C332D7CE9C6DBC3FB2915D0",
+      "inertAddonSha256": "3D84C8CD6EBE8371F6F0A0EA84C3EB148FDFD1C6B85ECAAC1B9CF85EDA388743",
+      "ctestLog": "build/first-host-preload-loader-race/x64/Testing/Temporary/LastTest.log",
+      "ctestLogSha256": "4BEC68D3F21963BB834B8D1493EC47703C4C0C6C158F5AAE327D722C531C47D3"
+    },
+    {
+      "architecture": "Win32",
+      "status": "PASS",
+      "cases": 7,
+      "assertions": 615,
+      "skips": 0,
+      "memberThunkBytes": 1392,
+      "runtimeThunkBytes": 368,
+      "ownedChildLifetimes": 7,
+      "allOwnedChildrenCleanExitCode": 0,
+      "cleanupTerminationUsed": false,
+      "fixtureExeSha256": "DA4FCB738CE3D8A899975BB457A3325BB7D7FDC1075FC93BF49F581EAAA31D61",
+      "inertAddonSha256": "61A8B7B58319D61ED260C2C9318B70E2191B6A2F85E0713A200E021E527F080F",
+      "ctestLog": "build/first-host-preload-loader-race/Win32/Testing/Temporary/LastTest.log",
+      "ctestLogSha256": "A8163AF4162734CFB9E9FAB5E4B4A105E5800F900ADDEB55A6143A6CD07CA833"
+    }
+  ],
+  "mappedCases": [
+    {
+      "name": "success",
+      "genericNameObservedWhileDllMainHeld": true,
+      "expectedError": 0,
+      "activationCalls": 1,
+      "explicitPrivateRouteAccepted": true
+    },
+    {
+      "name": "wrong-name",
+      "genericNameObservedWhileDllMainHeld": true,
+      "expectedError": 1306,
+      "activationCalls": 0,
+      "explicitPrivateRouteAccepted": false
+    },
+    {
+      "name": "assigned",
+      "genericNameObservedWhileDllMainHeld": true,
+      "expectedError": 85,
+      "activationCalls": 1,
+      "explicitPrivateRouteAccepted": true
+    },
+    {
+      "name": "denied",
+      "genericNameObservedWhileDllMainHeld": true,
+      "expectedError": 5,
+      "activationCalls": 1,
+      "explicitPrivateRouteAccepted": true
+    }
+  ],
+  "mappedCommonAssertions": {
+    "preflightAcceptedExactImmutableFileAndMappedBuildAbiWhileNameGeneric": true,
+    "copiedThreadWaitedForDllMainRelease": true,
+    "exactMappedModuleRetained": true,
+    "loadLibraryTrapCalls": 0,
+    "freeLibraryTrapCalls": 0
+  },
+  "snapshotCases": [
+    {
+      "name": "snapshot-success",
+      "initiallyAbsent": true,
+      "loadCalls": 1,
+      "successfulLoads": 1,
+      "activationCalls": 1,
+      "bootstrapCalls": 1
+    },
+    {
+      "name": "snapshot-busy",
+      "initiallyAbsent": true,
+      "rejectedGateValues": [
+        1,
+        2,
+        3
+      ],
+      "rejectedAttemptError": 1237,
+      "rejectedAttemptsLoadCalls": 0,
+      "rejectedAttemptsBootstrapCalls": 0,
+      "fixtureOnlyControlledGateResetBeforeIndependentRetry": true,
+      "loadCallsAfterSuccess": 1,
+      "successfulLoads": 1,
+      "activationCalls": 1,
+      "bootstrapCalls": 1
+    },
+    {
+      "name": "snapshot-load-failure",
+      "initiallyAbsent": true,
+      "firstAttemptError": 126,
+      "firstAttemptMappedImage": false,
+      "firstAttemptGateReopenedTo": 0,
+      "firstAttemptBootstrapCalls": 0,
+      "loadCallsAfterRetry": 2,
+      "successfulLoads": 1,
+      "activationCalls": 1,
+      "bootstrapCalls": 1
+    }
+  ],
+  "snapshotCommonAssertions": {
+    "explicitOwnedSnapshotIntent": 1,
+    "exactAcceptedLoadPath": "stage/preloaded-addons/<102-character strict leaf>",
+    "activationReceivedStageParent": true,
+    "activationCompletedBeforeFakeBootstrap": true,
+    "fakeBootstrapSawExactActivatedSnapshot": true,
+    "fakeBootstrapObservedGate": 2,
+    "ordinaryStagedMemberMapped": false,
+    "unexpectedLoadPaths": 0,
+    "freeLibraryCalls": 0,
+    "finalFullFileShaBuildAbiAndModulePathValidated": true,
+    "normalChildExitCode": 0
+  },
+  "limits": {
+    "maximumCopiedThunkBytes": 4096,
+    "allObservedThunkSizesWithinLimit": true,
+    "ownedChildStopWaitMilliseconds": 5000,
+    "targetDllMainHoldBoundMilliseconds": 10000
+  },
+  "retainedFailedAttempts": [
+    {
+      "architecture": "Win32",
+      "status": "FAILED",
+      "cause": "Actual LoadLibrary returned ERROR_FILENAME_EXCED_RANGE (206) for a 252-character fixture snapshot path before mapping, activation or bootstrap",
+      "error": 206,
+      "snapshotPathCharacters": 252,
+      "log": "build/first-host-preload-loader-race/Win32/failed-long-root-206.log",
+      "logSha256": "871E40889EE00610D1014B6A75D013BA0680B9CE4705EEADF180555345DFBB71"
+    },
+    {
+      "architecture": "x64",
+      "status": "FAILED",
+      "cause": "Fixture expected path retained CMake forward slashes while the OS reported native separators; strict path equality failed before copied execution",
+      "error": null,
+      "snapshotPathCharacters": null,
+      "log": "build/first-host-preload-loader-race/x64/failed-fixture-root-separator.log",
+      "logSha256": "32BCB31937352997232201E6CCA87E40F3005E42A824823E0E1E83032F4BDFE8"
+    },
+    {
+      "architecture": "Win32",
+      "status": "FAILED",
+      "cause": "Fixture expected path retained CMake forward slashes while the OS reported native separators; strict path equality failed before copied execution",
+      "error": null,
+      "snapshotPathCharacters": null,
+      "log": "build/first-host-preload-loader-race/Win32/failed-fixture-root-separator.log",
+      "logSha256": "5548BAD68BDB1B08FE6812FAD1A87F296EB100689983D4A34C78C54F9744B91B"
+    }
+  ],
+  "fixtureCorrections": [
+    "Use a short uniquely created regular directory directly below repository/build, preserving the strict leaf and stage/preloaded-addons structure",
+    "Normalize only the CMake-provided fixture root to Windows preferred separators; strict module/path equality remains unchanged"
+  ],
+  "limitations": [
+    "Does not exercise full injector CLI, authoritative host ownership claims, full fallback loop or structured stdout modes",
+    "Owned host gate/bootstrap are inert target-resident fixture exports; no production ReShade callback lifecycle is exercised",
+    "Does not prove production SDK stage path budgets, ownership-marker/path admission or authentication",
+    "Does not execute actual external AddonPath scanning, rendering, input or game acceptance"
+  ]
+}

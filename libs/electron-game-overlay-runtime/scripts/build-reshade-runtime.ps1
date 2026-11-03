@@ -132,27 +132,123 @@ $InjectorProcessInstanceBindingPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
 $InjectorProcessInstanceBindingPatchHash =
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorProcessInstanceBindingPatch).Hash
+$CooperativeMembersPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-cooperative-members.patch"
+$CooperativeMembersPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $CooperativeMembersPatch).Hash
+$OwnedLateD3d11Patch =
+    Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11.patch"
+$OwnedLateD3d11PatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedLateD3d11Patch).Hash
+if ($OwnedLateD3d11PatchHash -cne
+    "51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE") {
+    throw "The owned late D3D11 production patch does not match its frozen source."
+}
+$InjectorFirstHostResultPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-first-host-result.patch"
+$InjectorFirstHostResultPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorFirstHostResultPatch).Hash
+if ($InjectorFirstHostResultPatchHash -cne
+    "B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554") {
+    throw "The injector first-host result patch does not match its frozen source."
+}
+$InjectorAddonPreloadPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-addon.patch"
+$InjectorAddonPreloadPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorAddonPreloadPatch).Hash
+if ($InjectorAddonPreloadPatchHash -cne
+    "E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D") {
+    throw "The injector add-on preload patch does not match its frozen source."
+}
+$InjectorPreloadedFirstHostPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-preloaded-first-host.patch"
+$InjectorPreloadedFirstHostPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorPreloadedFirstHostPatch).Hash
+if ($InjectorPreloadedFirstHostPatchHash -cne
+    "A8C494EF02E08E5084D7EDC27ABCB73639C18D23469F244F99F090A27DB46309") {
+    throw "The injector preloaded first-host patch does not match its frozen source."
+}
+$InjectorPreloadLongPathPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-preload-long-path.patch"
+$InjectorPreloadLongPathPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorPreloadLongPathPatch).Hash
+if ($InjectorPreloadLongPathPatchHash -cne
+    "FFFF684D2E60D36F1CEC4D073B91A014B7F497A50C4F5B00F7B7F2A57714397B") {
+    throw "The injector preload long-path patch does not match its frozen source."
+}
+$OwnedLateD3d11AdapterReadyLongPathPatch =
+    Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11-adapter-ready-long-path.patch"
+$OwnedLateD3d11AdapterReadyLongPathPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedLateD3d11AdapterReadyLongPathPatch).Hash
+if ($OwnedLateD3d11AdapterReadyLongPathPatchHash -cne
+    "BCC0F0CD455B80DB3ED6D850B63600116B1D9881F1C85602CF76CEF7B23C35A6") {
+    throw "The owned late D3D11 adapter-ready long-path patch does not match its frozen source."
+}
+$InjectorInitialInspectionRecoveryPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-initial-inspection-recovery.patch"
+$InjectorInitialInspectionRecoveryPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorInitialInspectionRecoveryPatch).Hash
+if ($InjectorInitialInspectionRecoveryPatchHash -cne
+    "5E9E7D2C8A2EE66F9A478CA193B5962C4F635943D040B121593AD70A3177D8A7") {
+    throw "The injector initial-inspection recovery patch does not match its frozen source."
+}
+$InjectorSharedAddonDirectoryPatch =
+    Join-Path $RuntimeRoot "patches\reshade-injector-shared-addon-directory.patch"
+$InjectorSharedAddonDirectoryPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorSharedAddonDirectoryPatch).Hash
+if ($InjectorSharedAddonDirectoryPatchHash -cne
+    "54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125") {
+    throw "The injector shared add-on directory patch does not match its frozen source."
+}
+$OwnedLateD3d11ForeignAddonIsolationPatch =
+    Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11-addon-failure-isolation.patch"
+$OwnedLateD3d11ForeignAddonIsolationPatchHash =
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedLateD3d11ForeignAddonIsolationPatch).Hash
+if ($OwnedLateD3d11ForeignAddonIsolationPatchHash -cne
+    "2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99") {
+    throw "The owned late D3D11 foreign add-on isolation patch does not match its frozen source."
+}
 $ExpectedPatchedFiles = @(
+    "ReShade.vcxproj"
     "include/reshade.hpp"
     "include/reshade_api.hpp"
     "include/reshade_events.hpp"
+    "source/addon.cpp"
     "source/addon_manager.cpp"
     "source/addon_manager.hpp"
+    "source/d3d11/d3d11_impl_swapchain.cpp"
+    "source/d3d11/d3d11_impl_swapchain.hpp"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl"
+    "source/input_frame_consumer.hpp"
     "source/input.cpp"
     "source/input.hpp"
+    "source/runtime.cpp"
+    "source/runtime.hpp"
     "source/runtime_gui.cpp"
     "tools/injector.cpp"
 )
 $ExpectedPatchedContentSha256 = [ordered]@{
+    "ReShade.vcxproj" = "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp" = "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
     "include/reshade_events.hpp" = "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
-    "source/addon_manager.cpp" = "28A0E7C805FC8D006E0B21BB9D3B7712ADBCDA771999F48ECD2ACAE3AC6F6488"
+    "source/addon.cpp" = "DF69C9E8BE88244B54D92849A183B8A149A74FA959ED49A7109824EF0D8E3D9C"
+    "source/addon_manager.cpp" = "E6524902A07A0B4E2947B372503679A84CAA0FD1840329E89564559C3160349E"
     "source/addon_manager.hpp" = "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/input.cpp" = "3DCE0AB44CB798EAB7A1D61926A6FF1450015208E75A4FA1D57451AD18E7D7AF"
-    "source/input.hpp" = "FCE52F33FE6B0865DAEBDE02037AE8A37B1BD16799CFC5E21E8C1602FA164352"
-    "source/runtime_gui.cpp" = "84887E6387FE9B72DB04969C953C3245F69B9471D76DCD14A05DEF18CCA80F40"
-    "tools/injector.cpp" = "E6EB9FFC0431EE5703E44EB757819AB946E2E8B0335A6D39186D0B32776DE359"
+    "source/d3d11/d3d11_impl_swapchain.cpp" = "6F9EA10B4621F37F2D4DAFA2E3F3575973DFDB6B566725BBD8B0BC8187DB52D3"
+    "source/d3d11/d3d11_impl_swapchain.hpp" = "60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
+    "source/ego_owned_late_d3d11/owned_config_file.hpp" = "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.hpp" = "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "8265E994A31EEFBE806EA7775E165F1EFB556967DAA5AC5ABF428307F26A9F71"
+    "source/input_frame_consumer.hpp" = "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
+    "source/input.cpp" = "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
+    "source/input.hpp" = "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
+    "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
+    "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
+    "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
+    "tools/injector.cpp" = "B6647995D40C7EF13DD998AF9CFEAD5E5D0A1174E81EEE1121E8AA12C21CB9D1"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -188,22 +284,6 @@ function Test-ReShadePatchedSourceState {
         return $false
     }
 
-    # Terminal injector patches overlap the historical stack, so lower patches
-    # cannot all be reverse-checked independently in the final tree. The
-    # independently reversible terminal seams below plus exact content hashes
-    # prove the complete ordered stack instead.
-    foreach ($Patch in @(
-        $RawInputFocusFollowingRootPatch,
-        $SuppressSplashPatch,
-        $X86RuntimePatch,
-        $X86TargetArchitectureDiagnosticPatch,
-        $InjectorExactTargetPathPatch,
-        $ProcessPolicyPatch
-    )) {
-        if (-not (Test-GitPatchApplied $Patch)) {
-            return $false
-        }
-    }
     $SourceChanges = @(
         & git.exe -C $ReShadeSource status --porcelain --untracked-files=all --ignore-submodules=none 2>$null
     )
@@ -227,6 +307,19 @@ function Test-ReShadePatchedSourceState {
         $PatchedFile = Join-Path $ReShadeSource $Entry.Key
         if (-not (Test-Path -LiteralPath $PatchedFile -PathType Leaf) -or
             (Get-NormalizedTextSha256 $PatchedFile) -ne $Entry.Value) {
+            return $false
+        }
+    }
+    # Check the four independent terminal seams after the exact nineteen-file
+    # inventory and content proof. The shared-directory tail supersedes the old
+    # long-path injector seam, which no longer reverses independently.
+    foreach ($Patch in @(
+        $OwnedLateD3d11AdapterReadyLongPathPatch
+        $InjectorInitialInspectionRecoveryPatch
+        $InjectorSharedAddonDirectoryPatch
+        $OwnedLateD3d11ForeignAddonIsolationPatch
+    )) {
+        if (-not (Test-GitPatchApplied $Patch)) {
             return $false
         }
     }
@@ -254,7 +347,7 @@ function Test-RuntimeBuildCache {
         $Stamp = Get-Content -Raw -LiteralPath $BuildStamp | ConvertFrom-Json
         $RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
         $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
-        return $Stamp.schemaVersion -eq 29 -and
+        return $Stamp.schemaVersion -eq 30 -and
             $Stamp.commit -eq $ExpectedReShadeCommit -and
             $Stamp.observerPatchSha256 -eq $ObserverPatchHash -and
             $Stamp.injectorBasePathPatchSha256 -eq $InjectorBasePathPatchHash -and
@@ -283,6 +376,19 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorProcessInstanceBindingPatchSha256 -eq $InjectorProcessInstanceBindingPatchHash -and
             $Stamp.injectorFutureTargetsPatchSha256 -eq $FutureTargetsPatchHash -and
             $Stamp.injectorProcessPolicyPatchSha256 -eq $ProcessPolicyPatchHash -and
+            $Stamp.injectorCooperativeMembersPatchSha256 -eq $CooperativeMembersPatchHash -and
+            $Stamp.ownedLateD3d11PatchSha256 -eq $OwnedLateD3d11PatchHash -and
+            $Stamp.injectorFirstHostResultPatchSha256 -eq $InjectorFirstHostResultPatchHash -and
+            $Stamp.injectorAddonPreloadPatchSha256 -eq $InjectorAddonPreloadPatchHash -and
+            $Stamp.injectorPreloadedFirstHostPatchSha256 -eq $InjectorPreloadedFirstHostPatchHash -and
+            $Stamp.injectorPreloadLongPathPatchSha256 -eq $InjectorPreloadLongPathPatchHash -and
+            $Stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256 -eq $OwnedLateD3d11AdapterReadyLongPathPatchHash -and
+            $Stamp.injectorInitialInspectionRecoveryPatchSha256 -eq $InjectorInitialInspectionRecoveryPatchHash -and
+            $Stamp.injectorSharedAddonDirectoryPatchSha256 -eq $InjectorSharedAddonDirectoryPatchHash -and
+            $Stamp.ownedLateD3d11ForeignAddonIsolationPatchSha256 -eq $OwnedLateD3d11ForeignAddonIsolationPatchHash -and
+            ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
+            $Stamp.addonPreloadProtocol -eq 1 -and
+            $Stamp.cooperativeAddonProtocol -eq 1 -and
             $Stamp.injectorProcessInstanceBinding -eq 1 -and
             $Stamp.injectorFutureTargets -eq 2 -and
             $Stamp.configuration -eq "Release" -and
@@ -394,7 +500,7 @@ if (-not (Test-Path -LiteralPath $Injector -PathType Leaf)) {
 $RuntimeHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Runtime).Hash
 $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $Injector).Hash
 [ordered]@{
-    schemaVersion = 29
+    schemaVersion = 30
     commit = $ActualReShadeCommit
     observerPatchSha256 = $ObserverPatchHash
     injectorBasePathPatchSha256 = $InjectorBasePathPatchHash
@@ -422,6 +528,18 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorNameWatcherReadyPatchSha256 = $InjectorNameWatcherReadyPatchHash
     injectorFutureTargetsPatchSha256 = $FutureTargetsPatchHash
     injectorProcessPolicyPatchSha256 = $ProcessPolicyPatchHash
+    injectorCooperativeMembersPatchSha256 = $CooperativeMembersPatchHash
+    ownedLateD3d11PatchSha256 = $OwnedLateD3d11PatchHash
+    injectorFirstHostResultPatchSha256 = $InjectorFirstHostResultPatchHash
+    injectorAddonPreloadPatchSha256 = $InjectorAddonPreloadPatchHash
+    injectorPreloadedFirstHostPatchSha256 = $InjectorPreloadedFirstHostPatchHash
+    injectorPreloadLongPathPatchSha256 = $InjectorPreloadLongPathPatchHash
+    ownedLateD3d11AdapterReadyLongPathPatchSha256 = $OwnedLateD3d11AdapterReadyLongPathPatchHash
+    injectorInitialInspectionRecoveryPatchSha256 = $InjectorInitialInspectionRecoveryPatchHash
+    injectorSharedAddonDirectoryPatchSha256 = $InjectorSharedAddonDirectoryPatchHash
+    ownedLateD3d11ForeignAddonIsolationPatchSha256 = $OwnedLateD3d11ForeignAddonIsolationPatchHash
+    addonPreloadProtocol = 1
+    cooperativeAddonProtocol = 1
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash
     injectorProcessInstanceBinding = 1
     injectorFutureTargets = 2

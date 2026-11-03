@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
@@ -34,8 +35,8 @@ $Nx = Join-Path $RepoRoot "node_modules\.bin\nx.cmd"
 $SdkDist = Join-Path $RepoRoot "libs\electron-game-overlay\dist\index.js"
 $RunHost = Join-Path $RunDirectory $HostName
 
-# Both controlled hosts use the same fixed transport name. Reject every stale copy
-# rather than only the current backend or the copy in the current stage.
+# Reject stale copies so the interactive observer and cleanup remain scoped to
+# this invocation. Every staged add-on uses its own private transport record.
 $ExistingHosts = @(
     foreach ($ControlledHostName in @(
             "d3d11_overlay_test_host.exe",
@@ -112,6 +113,8 @@ if (Test-Path -LiteralPath $RunDirectory) {
 }
 
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
+. (Join-Path $PSScriptRoot 'owned-stage-marker.ps1')
+Write-OwnedOverlayRunMarker -RunDirectory $RunDirectory -BuildRoot $BuildRoot
 Copy-Item -LiteralPath $BuiltHost -Destination (Join-Path $RunDirectory $HostName)
 Copy-Item -LiteralPath $Addon -Destination (Join-Path $RunDirectory "electron_game_overlay.addon64")
 Copy-Item -LiteralPath $Runtime -Destination (Join-Path $RunDirectory $ProxyName)
@@ -148,8 +151,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 try {
@@ -180,6 +183,7 @@ try {
         "`"$ElectronDemo`"",
         "--hudhook-client-multiwindow-manual",
         "--hudhook-device-scale-factor=1",
+        "`"--overlay-run-directory=$RunDirectory`"",
         "`"--user-data-dir=$UserData`"",
         "--no-sandbox"
     )
@@ -258,10 +262,7 @@ finally {
         Wait-Process -Id $ProcessId -Timeout 5 -ErrorAction SilentlyContinue
     }
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 

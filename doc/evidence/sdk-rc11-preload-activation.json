@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-long-path-activation-fix",
+  "recordedAtUtc": "2026-11-03T06:22:20.010Z",
+  "status": "sdk-activation-fix-verified-consumer-graphics-retest-pending",
+  "candidateVersion": "0.1.0-rc.11",
+  "sourceBaseCommit": "f51777621927ff090d0281ad069b720ed553d589",
+  "workingTreeDirty": true,
+  "nativeGeneration": 21,
+  "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+  "mappedAddonBytesUnchangedFromRc10": true,
+  "ownedReShadeHostImplementationChanged": true,
+  "injectorSourceUnchangedFromRc10": true,
+  "allNativeToolsRebuilt": true,
+  "newPatch": {
+    "path": "libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11-adapter-ready-long-path.patch",
+    "sha256": "bcc0f0cd455b80db3ed6d850b63600116b1d9881f1c85602cf76cef7b23c35a6"
+  },
+  "retainedInjectorPatch": {
+    "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-preload-long-path.patch",
+    "sha256": "ffff684d2e60d36f1cec4d073b91a014b7f497a50c4f5b00f7b7f2a57714397b"
+  },
+  "hostSourceNormalizedSha256": "36753053450815b934a6117b1c072a2100aa86032df30d937f9a127ca0f7a5f0",
+  "injectorSourceNormalizedSha256": "91d82243d81d2cdc082da1af9bff55a13315bf59f1fe5f9aca1dfae8442c8a10",
+  "originalConsumerFailure": {
+    "projectRoot": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela",
+    "validation": {
+      "path": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela/coverage/experimental-overlay/rc10-validation.json",
+      "sha256": "8be0c3b75598d8f902d1208e7a4cd8941a644745436529ca46d46292fa95d765"
+    },
+    "report": {
+      "path": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela/coverage/experimental-overlay/e2e/2026-11-03T06-00-50.914Z/d3d11-x64/report.json",
+      "sha256": "29d1b2f1cd32c00e6049c00c762ecfdd2b0b8b31604d358cb3a14aa1bedf0c37"
+    },
+    "stdout": {
+      "path": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela/coverage/experimental-overlay/e2e/2026-11-03T06-00-50.914Z/d3d11-x64/profile/experimental-game-overlay/runs/prepared-E2T2d8/inject.stdout.log",
+      "sha256": "727e4c6be293469cb623c4703e5d63c28191ae9c7773af230d0482ee0ea0d53f"
+    },
+    "reshadeLog": {
+      "path": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela/coverage/experimental-overlay/e2e/2026-11-03T06-00-50.914Z/d3d11-x64/profile/experimental-game-overlay/runs/prepared-E2T2d8/ReShade.log",
+      "sha256": "c05f8f58a6dbc06df328e4ceacbb61de103204e3e47f4d8a5307ac4092b3647b"
+    },
+    "ini": {
+      "path": "C:/Users/Wuriko/.codex/worktrees/0be1/izabela/coverage/experimental-overlay/e2e/2026-11-03T06-00-50.914Z/d3d11-x64/profile/experimental-game-overlay/runs/prepared-E2T2d8/ReShade.ini",
+      "sha256": "bae86fad4110725470e9737f9df15d3f88fa13320ff65c5bdde437cc0990ad6e"
+    },
+    "processId": 17160,
+    "error": 21,
+    "callbackReadinessEstablished": false,
+    "sessionReady": true,
+    "currentDiscoveryReady": true,
+    "registeredDll": true,
+    "authenticatedTargetOrSurface": false,
+    "extendedDllPathLength": 293,
+    "ordinaryDllPathLength": 289,
+    "stagePathLength": 169,
+    "shortProfilePositiveAndSeparateNegative": "passed",
+    "originalLongProfile": "failed",
+    "evidenceModified": false
+  },
+  "nativeSelectorEvidence": {
+    "scope": "Exact readiness functions extracted from production source; inert DLLs in fresh longPathAware=false console children; no ReShade, production add-on, graphics or target injection",
+    "baseline": {
+      "cases": 54,
+      "report": {
+        "path": "build/ap-baseline-3a664f8d/report.json",
+        "sha256": "89923d5ea115b7e87a0c305932c168cfd9fd89bbb23cf3349b5288c0cfabc9eb"
+      },
+      "verification": {
+        "path": "build\\ap-baseline-3a664f8d\\verification.json",
+        "sha256": "a27c096446b65a4b04f09904c66a936f37cc9507dcedea88e9a7f2047da51bde"
+      },
+      "expectedFailuresPreserved": true
+    },
+    "candidates": [
+      {
+        "architecture": "x64",
+        "cases": 61,
+        "report": {
+          "path": "build/ap-candidate-x64-99878a02/report.json",
+          "sha256": "ec5a719d9565995aa07f81459f7470101c8d12c734036f877d78b8c31a250ad8"
+        },
+        "verification": {
+          "path": "build/ap-candidate-x64-99878a02/verification.json",
+          "sha256": "d8e57046831963d9cf789a5dacc65af9220fd05885015ab64a42b4a2fae41b5c"
+        }
+      },
+      {
+        "architecture": "x86",
+        "cases": 61,
+        "report": {
+          "path": "build/ap-candidate-x86-a4db8e95/report.json",
+          "sha256": "f206531ae4be9eb54b50b24c513b5c76c5bfd56b840857084587527b2901cc9a"
+        },
+        "verification": {
+          "path": "build/ap-candidate-x86-a4db8e95/verification.json",
+          "sha256": "77d518bc6bdddc2ff02c63ced22c752fc8bc90189a3e735856e060abad2d0d6d"
+        }
+      }
+    ],
+    "candidateCases": 122,
+    "canonicalPathLengths": [
+      233,
+      259,
+      260,
+      289,
+      293,
+      320
+    ],
+    "toolhelpErrorAtLongPaths": 234,
+    "directReadyWordAndK32ReferenceSucceeded": true,
+    "controls": [
+      "adapter word zero/one/two",
+      "adapter word precedence over cooperative word",
+      "legacy fallback",
+      "invalid or missing ABI",
+      "enumeration failure",
+      "buffer growth",
+      "bounded retry exhaustion",
+      "oversized/misaligned/zero required bytes",
+      "module reference failure"
+    ],
+    "explicitRemoteMutationCalls": 0
+  },
+  "sdkSuite": {
+    "tests": 1326,
+    "pass": 1316,
+    "fail": 0,
+    "skipped": 10,
+    "concurrency": 4,
+    "node": "26.12.1",
+    "durationMs": 145527.5643,
+    "log": {
+      "path": "build/preload-activation-sdk-suite.log",
+      "sha256": "f3276c617b8407512e494e124d3b216382b936d452fb0c00f8f2a9fe506aa065"
+    },
+    "scope": "SDK unit/package/source-cache and actual read-only native process-policy/identity helpers; no graphics acceptance"
+  },
+  "nativeBuilds": {
+    "x64": {
+      "path": "build/preload-activation-build-x64.log",
+      "sha256": "5d3761577f0879a60edf145f10245a4b837132afb498591b9d29e3715faae956"
+    },
+    "x86": {
+      "path": "build/preload-activation-build-x86.log",
+      "sha256": "0919828a852ba4aed6d9c6ed01e6cf71252ce7267c3c56b8cb8a1a5b8c725412"
+    },
+    "consoleAbi": {
+      "x64": {
+        "path": "build/preload-activation-abi-x64.log",
+        "sha256": "ce6699f7f57717b2ed5147c1c511a09ac6a2589b6b3cfa2ae5a28e7db52afcb4"
+      },
+      "x86": {
+        "path": "build/preload-activation-abi-x86.log",
+        "sha256": "cd711265efb7d02715621ce39085cb5bb675d73f8d4394c87dc6c185e90102b8"
+      },
+      "pass": 2,
+      "fail": 0
+    }
+  },
+  "sourceCacheTests": {
+    "retainedGeneration19And20": 212,
+    "addedGeneration21": 14,
+    "pass": 226,
+    "fail": 0,
+    "skipped": 0,
+    "includedInSdkSuite": true
+  },
+  "sourceSdkManifest": {
+    "path": "libs/electron-game-overlay/dist/overlay-manifest.json",
+    "sha256": "3d77bd6d919da3001f25819ac011e2682deeb3feb6c6d6caf7d6654102287ef7"
+  },
+  "sealedPayloadCount": 154,
+  "changedSealedPayloads": [
+    {
+      "path": "lib/overlay-broker-protocol.d.ts",
+      "size": 10545,
+      "sha256": "3e267971ffc7d977ca037c20d258f1dd381fe88a7afdef09458f1ba0e78f1265"
+    },
+    {
+      "path": "lib/overlay-broker-protocol.js",
+      "size": 24906,
+      "sha256": "0b982bfaef3f6f469c28be09390f2883108129df4802eb612f223449f4626473"
+    },
+    {
+      "path": "lib/overlay-package-manifest.js",
+      "size": 25123,
+      "sha256": "c6b7f24e6132a9cfa2f58d6cf5cfbadcdd5c870b231691da5cb4a7ee990ff593"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade32.build.json",
+      "size": 4169,
+      "sha256": "7037ce10f0cf1f10541b16a9c0db9798c9bb92238eec8385cc6b2523d98673d3"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade32.dll",
+      "size": 4406272,
+      "sha256": "9bf6f355950e58876040394297c589396d5f1a23c15528f869b0759aae001add"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade64.build.json",
+      "size": 4169,
+      "sha256": "58bb67756addf896e7919c1b0cffd5b67483e9cb6efa87a196f2b8c4d66d866e"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade64.dll",
+      "size": 5531136,
+      "sha256": "c07d2a067f6b9590068bfa329a4a0a3eac2485ed0b54af85b5bad64412dad13d"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+      "size": 1100,
+      "sha256": "bfd8427818dcb08cbd231c5e15d3d94bf7fea5153a6d64a6ef0618bf1baa9818"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+      "size": 1101,
+      "sha256": "e0e81df8ae708107e87e11994fedffb89a682434fc828a3b19a36ab6ca00d772"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/inject.exe",
+      "size": 193536,
+      "sha256": "701a90c9d6d3c8699a9164eac37881eb7d3360392cb42e434414cf7ed825ac17"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/inject32.exe",
+      "size": 156672,
+      "sha256": "3fa366ad592eb61c361d5e5a22a7d97c18aec487ba0fff9c1368b4993cda67ed"
+    },
+    {
+      "path": "tsconfig.lib.tsbuildinfo",
+      "size": 42343,
+      "sha256": "b919a2353935912e004c436cbb17ebdcec361118019ada778b1504c500a66a0f"
+    }
+  ],
+  "native": [
+    {
+      "architecture": "x64",
+      "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+      "runtimeSha256": "c07d2a067f6b9590068bfa329a4a0a3eac2485ed0b54af85b5bad64412dad13d",
+      "injectorSha256": "701a90c9d6d3c8699a9164eac37881eb7d3360392cb42e434414cf7ed825ac17",
+      "packageStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+        "sha256": "bfd8427818dcb08cbd231c5e15d3d94bf7fea5153a6d64a6ef0618bf1baa9818"
+      },
+      "reshadeStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.build.json",
+        "sha256": "58bb67756addf896e7919c1b0cffd5b67483e9cb6efa87a196f2b8c4d66d866e"
+      }
+    },
+    {
+      "architecture": "x86",
+      "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "addonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a",
+      "runtimeSha256": "9bf6f355950e58876040394297c589396d5f1a23c15528f869b0759aae001add",
+      "injectorSha256": "3fa366ad592eb61c361d5e5a22a7d97c18aec487ba0fff9c1368b4993cda67ed",
+      "packageStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+        "sha256": "e0e81df8ae708107e87e11994fedffb89a682434fc828a3b19a36ab6ca00d772"
+      },
+      "reshadeStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade32.build.json",
+        "sha256": "7037ce10f0cf1f10541b16a9c0db9798c9bb92238eec8385cc6b2523d98673d3"
+      }
+    }
+  ],
+  "preservedRc10Artifacts": [
+    {
+      "path": "artifacts/rc10-preload-long-path/electron-game-overlay-0.1.0-rc.10.tgz",
+      "sha256": "090ee75ccd861d1cfc5042c55fa82bb064d209427664f7da41020292168c0b6b"
+    },
+    {
+      "path": "artifacts/rc10-preload-long-path/electron-game-overlay-0.1.0-rc.10-source.zip",
+      "sha256": "101a83a578454f84ff5fcc7e4438beb0be61c3653324268c1e01f0fedf7f6fa6"
+    },
+    {
+      "path": "artifacts/rc10-preload-long-path/electron-game-overlay-0.1.0-rc.10-source-manifest.json",
+      "sha256": "598d1ae3b1f35f2a644048a85c05232c26c2fe25bd6e218f2545257eee504a88"
+    }
+  ],
+  "packageHandoff": {
+    "releaseDirectory": "artifacts/rc11-preload-activation",
+    "sourceSnapshotPrecedesTarball": true,
+    "candidateReport": "artifacts/rc11-preload-activation/sdk-preview-report.json",
+    "offlineConsumerReport": "artifacts/rc11-preload-activation/SDK_PACKAGE_CHECKS.json",
+    "finalHashEvidence": "artifacts/rc11-preload-activation/RELEASE_EVIDENCE.json"
+  },
+  "acceptance": {
+    "originalConsumerLongProfileRetest": "pending",
+    "consumerWorkspaceModified": false,
+    "consumerReplacementInstalled": false,
+    "graphicsExecutedForFix": false,
+    "userGameExecuted": false,
+    "runningApplicationStopped": false,
+    "securitySettingsChanged": false,
+    "committed": false,
+    "pushed": false,
+    "windows299Investigation": "paused",
+    "scopeLimit": "Owned host callback-readiness enumeration; retained targets keep their mapped host and consumer graphics acceptance is not established by console checks"
+  }
+}

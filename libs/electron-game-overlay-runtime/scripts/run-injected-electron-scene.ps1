@@ -10,11 +10,13 @@ param(
     [string]$LaunchUri,
     [switch]$GunFrogButtonProof,
     [switch]$NoLaunch,
+    [switch]$SkipBuild,
     [ValidateRange(30, 600)]
     [int]$LaunchTimeoutSeconds = 120
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'owned-injector-result.ps1')
 
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
@@ -69,34 +71,36 @@ if ($ExistingTargets.Count -ne 0 -or
     throw "Close the existing target/overlay test before this run (PID: $($ProcessIds -join ', '))."
 }
 
-if (-not (Test-Path -LiteralPath $Nx -PathType Leaf)) {
-    throw "The local Nx CLI is missing: $Nx. Install the workspace dependencies first."
-}
-
-& $Nx run electron-game-overlay:build
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SdkDist -PathType Leaf)) {
-    throw "electron-game-overlay build failed or did not produce $SdkDist."
-}
-
-Push-Location $RuntimeRoot
-try {
-    & cmake.exe --preset vs2022-x64-production
-    if ($LASTEXITCODE -ne 0) {
-        throw "CMake configure failed with exit code $LASTEXITCODE."
+if (-not $SkipBuild) {
+    if (-not (Test-Path -LiteralPath $Nx -PathType Leaf)) {
+        throw "The local Nx CLI is missing: $Nx. Install the workspace dependencies first."
     }
-    & cmake.exe --build $ProductionBuildRoot `
-        --config RelWithDebInfo `
-        --target electron_game_overlay `
-        --parallel
-    if ($LASTEXITCODE -ne 0) {
-        throw "Electron ReShade add-on build failed with exit code $LASTEXITCODE."
-    }
-}
-finally {
-    Pop-Location
-}
 
-& (Join-Path $PSScriptRoot "build-reshade-runtime.ps1")
+    & $Nx run electron-game-overlay:build
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $SdkDist -PathType Leaf)) {
+        throw "electron-game-overlay build failed or did not produce $SdkDist."
+    }
+
+    Push-Location $RuntimeRoot
+    try {
+        & cmake.exe --preset vs2022-x64-production
+        if ($LASTEXITCODE -ne 0) {
+            throw "CMake configure failed with exit code $LASTEXITCODE."
+        }
+        & cmake.exe --build $ProductionBuildRoot `
+            --config RelWithDebInfo `
+            --target electron_game_overlay `
+            --parallel
+        if ($LASTEXITCODE -ne 0) {
+            throw "Electron ReShade add-on build failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    & (Join-Path $PSScriptRoot "build-reshade-runtime.ps1")
+}
 
 foreach ($RequiredFile in @(
         $Runtime,
@@ -104,6 +108,7 @@ foreach ($RequiredFile in @(
         $Addon,
         $Config,
         $Electron,
+        $SdkDist,
         $TargetExecutablePath)) {
     if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
         throw "Required injected-scene artifact is missing: $RequiredFile"
@@ -129,6 +134,8 @@ if (Test-Path -LiteralPath $RunDirectory) {
 }
 
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
+. (Join-Path $PSScriptRoot 'owned-stage-marker.ps1')
+Write-OwnedOverlayRunMarker -RunDirectory $RunDirectory -BuildRoot $BuildRoot
 Copy-Item -LiteralPath $Runtime -Destination (Join-Path $RunDirectory "ReShade64.dll")
 Copy-Item -LiteralPath $Injector -Destination (Join-Path $RunDirectory "inject.exe")
 Copy-Item -LiteralPath $Addon -Destination (Join-Path $RunDirectory "electron_game_overlay.addon64")
@@ -177,6 +184,12 @@ try {
         -RedirectStandardOutput $InjectorStdout `
         -RedirectStandardError $InjectorStderr
 
+    . (Join-Path $PSScriptRoot 'watcher-readiness.ps1')
+    Wait-OverlayNativeWatcherReady `
+        -InjectorProcess $InjectorProcess `
+        -StdoutPath $InjectorStdout `
+        -Deadline ([DateTime]::UtcNow.AddSeconds(30))
+
     Start-Process -FilePath $LaunchUri | Out-Null
 
     $LaunchDeadline = [DateTime]::UtcNow.AddSeconds($LaunchTimeoutSeconds)
@@ -220,17 +233,34 @@ try {
     if ($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) {
         throw "The injector exited with code $InjectorExitCode. Inspect $InjectorStdout."
     }
-    if (-not (Test-Path -LiteralPath $InjectorStdout -PathType Leaf) -or
-        -not (Select-String -LiteralPath $InjectorStdout `
-            -SimpleMatch "Injecting ReShade ... Succeeded!" `
-            -Quiet)) {
-        throw "The injector did not report successful injection. Inspect $InjectorStdout."
+    $InjectorResult = Read-OwnedOverlayInitialResult `
+        -StdoutPath $InjectorStdout `
+        -ExpectedPid $TargetProcessId `
+        -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+        -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+        -ExpectedBasePath $RunDirectory
+    $InjectorResult | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'injector-result.json') -Encoding UTF8
+    $NativeTarget = [Diagnostics.Process]::GetProcessById($TargetProcessId)
+    try {
+        $InitialNativeEvidence = Get-OwnedOverlayMappedEvidence `
+            -Process $NativeTarget -InjectorStdoutPath $InjectorStdout `
+            -ExpectedExecutablePath $TargetExecutablePath `
+            -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+            -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+            -ExpectedRuntimeSha256 (Get-FileHash -LiteralPath $Runtime -Algorithm SHA256).Hash `
+            -ExpectedAddonSha256 (Get-FileHash -LiteralPath $Addon -Algorithm SHA256).Hash
     }
+    finally { $NativeTarget.Dispose() }
+    $InitialNativeEvidence | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'initial-native-identity.json') -Encoding UTF8
 
     $ProducerArguments = @(
         "`"$ElectronDemo`"",
         "--hudhook-client-multiwindow-manual",
         "--hudhook-device-scale-factor=1",
+        "`"--overlay-run-directory=$RunDirectory`"",
         "`"--user-data-dir=$UserData`"",
         "--no-sandbox"
     )

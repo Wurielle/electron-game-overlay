@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-11-01T23:41:25.1573670Z",
+  "status": "passed",
+  "scope": "Directly compiled injector policy and first-owned-host snapshot selector helpers; exclusively owned local files, real reparse objects, data-only self exports and authoritative self-token queries. No remote thread, runtime or add-on loading, graphics, desktop input or games.",
+  "injectorSourceNormalizedSha256": "FA53B7BCACB7EBA6D879398809953166CEC78330D45D9A4B3440051D6D47F8F2",
+  "fixtureSourceSha256": "23D442C640F7963849D591FF6E5AC32B2BDCA5B08C1A442B36E0ECE650140FF4",
+  "fixtureCmakeSha256": "AC9915B1FD76228AD8000A74BB10D41A8D5048176E27C777DF5CE98065281B05",
+  "markerHelperFragmentSha256": "A3F043C20C8E29C6E7ADB558358FC76B9130FC9739471F195B416BEF1ACB38C7",
+  "toolchain": "MSVC 19.44.35223.0, Windows SDK 10.0.26100.0, Release",
+  "cases": [
+    "Strict architecture-specific preload leaf grammar and malformed fields",
+    "Build-ID and advertised eight-byte SHA-256 prefix binding",
+    "Unique NAME and stock wildcard filename disable rules, including the fixed reserved EGO filename",
+    "Complete five-field owned-run JSON marker grammar, exact types and directory identity, lowercase UUIDv4/variant, native ISO-shape semantics, supported escapes and decoded Unicode",
+    "Known SHA-256 vector, full equal/changed file hashes, held deny-write/delete guards, missing/empty/directory/actual-symlink rejection and cleanup",
+    "First-host snapshot path, target-tree exclusion, runtime/base/AddonPath identity, exact ASCII and no-BOM strict JSON ownership markers, required files, full candidate hash, held file/directory guards, actual ancestor junction and actual reparse candidate rejection",
+    "Independent authoritative self-token privilege oracle and missing/non-process target rejection",
+    "Actual self module/export inspection distinguishes dormant member and completed adapter",
+    "Actual compiled copied-thunk bounds"
+  ],
+  "architectures": [
+    {
+      "architecture": "x64",
+      "casesPassed": 9,
+      "assertionsPassed": 716,
+      "skips": 0,
+      "exitCode": 0,
+      "memberThunkBytes": 2121,
+      "runtimeThunkBytes": 482,
+      "fixtureBinarySha256": "6EF37A497BB05459BE2D8028B658C03878D976C3D78E4BFC92656FD6F3C86593"
+    },
+    {
+      "architecture": "Win32",
+      "casesPassed": 9,
+      "assertionsPassed": 716,
+      "skips": 0,
+      "exitCode": 0,
+      "memberThunkBytes": 1392,
+      "runtimeThunkBytes": 368,
+      "fixtureBinarySha256": "A4ABDFFCBDEE0148C655818EF98581F5BCF3164F252416E941C139C2C1D5155A"
+    }
+  ],
+  "sourceConfigureGuard": "The foreign-host loading predicate admits (ready || adapter_ready) when the owned late-host capability is absent.",
+  "compatibilityScope": {
+    "readyMeaningUnchanged": "Baseline AdapterReadyV1=1 is accepted without fabricating authenticated MemberReady/ReadyV1.",
+    "manualStockHostLimit": "An older injector requiring member readiness may time out on a manually configured stock-only host while every preloaded app is offline/dormant.",
+    "currentSdkScope": "The SDK preloads only the latest project-owned hosts, whose existing gate/adapter-readiness path supports older SDK joins. Universal older-injector admission on manually configured stock hosts is not claimed."
+  },
+  "retainedEarlierAttempt": {
+    "status": "fixture-setup-failed-before-selector",
+    "observedError": "CreateFileW returned ERROR_PATH_NOT_FOUND (3) for a 269-character fixture-owned candidate path.",
+    "causeAndCorrection": "The deeper new build directory and real 102-character registered leaf exceeded the fixture's ordinary Win32 path budget. The fixture now uses extended-length paths for its own file I/O, preserving the full leaf and layout. Production injector code already used extended-length paths; no production check was relaxed.",
+    "productionAttribution": "None. The failed setup had not invoked the snapshot selector."
+  },
+  "warnings": [
+    "The included injector retains pre-existing C4457 variable shadowing outside this feature."
+  ],
+  "limits": [
+    "The selector uses known dummy native bytes. Full-byte equality binds it to a separately validated staged PE/BID/ABI in production; these cases do not replace that caller validation.",
+    "No fixture invokes the first-host LoadLibrary/Activate branch, grants that branch to an existing host, or proves remote ownership behavior; separate copied-loader fixtures cover those boundaries.",
+    "This does not prove dormant scanner behavior, mixed-app route isolation, hook recovery, rendering, input or foreign-installation preservation.",
+    "Measured thunk sizes belong to these helper fixture binaries; each standalone injector also enforces its own compiled bounds.",
+    "The earlier seven-case EDFF preload policy milestone remains separately recorded in evidence.windows-console-20261101.json."
+  ]
+}

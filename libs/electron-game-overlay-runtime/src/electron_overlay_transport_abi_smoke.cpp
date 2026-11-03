@@ -269,6 +269,66 @@ int main()
         return EXIT_FAILURE;
     }
 
+    // Real graphics retirement must publish its physical fail-open state even
+    // when the producer's requested policy stays unchanged for a successor
+    // surface. Exercise the exported C ABI, not a duplicate router model.
+    const uint32_t requested_before_retirement = input_state.requested_interception;
+    if (!expect_status(
+            "ego_transport_retire_input_filter with a null transport",
+            ego_transport_retire_input_filter(nullptr),
+            EGO_STATUS_INVALID_ARGUMENT) ||
+        !expect_status(
+            "ego_transport_set_target_focused before retirement",
+            ego_transport_set_target_focused(transport, 1),
+            EGO_STATUS_OK) ||
+        !expect_status(
+            "ego_transport_apply_input_filter before retirement",
+            ego_transport_apply_input_filter(transport, 1, 0),
+            EGO_STATUS_OK) ||
+        !expect_status(
+            "ego_transport_get_input_state before retirement",
+            ego_transport_get_input_state(transport, &input_state),
+            EGO_STATUS_OK))
+    {
+        ego_scene_snapshot_release(snapshot);
+        ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+    if (input_state.target_focused != 1 || input_state.effective_interception != 1 ||
+        input_state.requested_interception != requested_before_retirement)
+    {
+        std::fputs("retirement fixture did not establish an active physical filter\n", stderr);
+        ego_scene_snapshot_release(snapshot);
+        ego_transport_destroy(transport);
+        return EXIT_FAILURE;
+    }
+    for (unsigned retirement = 0; retirement != 2; ++retirement)
+    {
+        if (!expect_status(
+                "ego_transport_retire_input_filter",
+                ego_transport_retire_input_filter(transport),
+                EGO_STATUS_OK) ||
+            !expect_status(
+                "ego_transport_get_input_state after retirement",
+                ego_transport_get_input_state(transport, &input_state),
+                EGO_STATUS_OK))
+        {
+            ego_scene_snapshot_release(snapshot);
+            ego_transport_destroy(transport);
+            return EXIT_FAILURE;
+        }
+        if (input_state.target_focused != 0 || input_state.effective_interception != 0 ||
+            input_state.desired_interception != 0 || input_state.pointer_captured != 0 ||
+            input_state.has_focused_window != 0 || input_state.has_captured_window != 0 ||
+            input_state.requested_interception != requested_before_retirement)
+        {
+            std::fputs("physical filter retirement changed producer policy or retained input ownership\n", stderr);
+            ego_scene_snapshot_release(snapshot);
+            ego_transport_destroy(transport);
+            return EXIT_FAILURE;
+        }
+    }
+
     uint64_t session_epoch = UINT64_MAX;
     if (!expect_status(
             "ego_transport_session_epoch",

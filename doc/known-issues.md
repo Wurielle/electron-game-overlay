@@ -26,6 +26,27 @@ that behavioral detections will stop.
 
 ### Same-PID multi-application boundary
 
+The default SDK now uses [per-application cooperative engines](cooperative-addons.md),
+the clean rewrite authorized on 2026-11-01. Each app/version owns its native
+feature implementation and private transport; one ReShade host remains shared.
+The first eligible initialization is retained until authoritative target exit.
+An app's exit, timeout or missing socket cannot authorize a second host.
+Exact target handles, executable paths and creation FILETIMEs bind publication
+and authentication. Process watchers baseline existing processes and pass each
+new selected target through the same native ownership boundary.
+
+Generation-16 Gun Frog acceptance passed all four original lanes and all four
+independently installed gen11/gen16 startup-order × graceful/crash cells,
+including survivor input and fresh-game relaunch. Final input/backend cases
+and the eight-cycle resource case also passed. Exact package identities and
+the complete recorded acceptance matrix are in the
+[readiness record](readiness-acceptance-2026-11-01.md). Shared native address
+space is not fault containment, and the 500-app/500-version goal remains
+unmeasured. The retained broker implementation below is historical/optional;
+its elected feature-engine behavior is not the default cooperative path.
+
+#### Historical unreleased broker implementation
+
 Independent applications can share one target only when every participant uses
 an exact-PID attachment and belongs to the frozen broker protocol/target
 transport v1 compatibility family. The broker selects the highest compatible
@@ -73,6 +94,16 @@ See
 state and versioning contract.
 
 ### Current ReShade migration support envelope
+
+The current cooperative generation-16 candidate adds owned-only late D3D11
+adoption and asynchronous owner-thread input setup. Eight x64/Win32 late
+lifecycle cases and both delayed-UI-thread cases passed, as did all original
+Gun Frog and installed mixed-package game cases. These updates do not patch
+foreign ReShade or establish generic late D3D12 support. The sections below
+retain the dated evidence that led to this implementation; current exact hashes
+and acceptance boundaries are in the readiness record above.
+
+#### Earlier graphics/input milestones
 
 The bundled production Windows runtime uses the project's pinned ReShade 6.7.3
 full add-on host. On July 12, 2026, its controlled D3D11 and D3D12 input gates
@@ -299,22 +330,25 @@ evidence is under
 and
 `build/electron-game-overlay-runtime/client-sdk-d3d12-process-start-20260730-084831`.
 
-Exact PID narrows selection but does not make post-render injection work. In a
-controlled probe, the injector ran three seconds after D3D11 and D3D12 targets
+The historical July 13 probe showed that exact PID alone did not establish
+post-render attachment. Its injector ran three seconds after D3D11 and D3D12 targets
 were already rendering. It returned success and `ReShade64.dll` was present in
 each process, but there were no graphics-API redirect, runtime-initialization,
 add-on-load, or first-scene markers. The pinned runtime did not adopt the
-existing device or swap chain, so this route is unsupported. Evidence is under
+existing device or swap chain in that run. Evidence is under
 `build/reshade-imgui-overlay/late-injection-probe-20260713-114753`.
+The current owned D3D11 path separately supports native discovery/adoption;
+generic late D3D12 and adoption of already-unwrapped graphics chains through an
+unchanged foreign host are outside that accepted path. This is separate from a
+private engine joining an already working stock-host adapter. See
+[late attachment](late-graphics-attachment.md).
 
-The native path watcher's ignore-baseline now retains exact process handles,
-closing the sequential relaunch defect above. Exact-PID requests and the demo's
-native lifecycle correlation still identify targets by PID plus verified
-executable basename; a creation token is not yet carried end to end. Delayed
-fallback WMI events across PID reuse therefore remain a lifecycle-hardening item. The suspended
-gates also establish ordering, not an arbitrary safe delay for a normal running
-process. Package publishing is intentionally deferred while the repository-built
-client and SDK remain under local acceptance testing.
+The earlier native path watcher retained process handles to close the sequential
+relaunch defect. Its PID/basename-only lifecycle limits were historical: current
+cooperative publication/authentication carries the retained exact process
+creation identity. Neither that identity nor the old suspended gates imply an
+arbitrary safe delay for a normal running process. Package publishing remains
+deferred while the final local acceptance matrix is completed.
 
 The accepted Gun Frog shutdown emitted a non-fatal ReShade warning about an
 inconsistent `ID3D11Device3` reference count. The short PEAK rerun likewise
@@ -490,20 +524,30 @@ claim those cases.
 An official ReShade API-18 host can normalize copied `WM_INPUT` through the
 public add-on path, but the public API exposes no copied `GetRawInputBuffer`
 callback. Official-host buffered input therefore remains unsupported until an
-ownership-safe add-on hook and coexistence boundary are proven. Touch/pen,
-secondary/X pointer buttons, double-click semantics, pointer wheel, concurrent
-input pumps, same-HWND swap-chain ownership, and distinct D3D12 queues also
-remain explicit runtime hardening. Same-HWND support specifically needs a pinned
-ReShade input-handler owner-promotion/clear patch; the public add-on API cannot
-safely perform that transfer during teardown.
+ownership-safe add-on hook and coexistence boundary are proven. Immutable SDK
+input requirements and host-derived capability negotiation make this explicit:
+requiring copied buffered input on an unsupported host produces a typed
+`target-input-capability-unsupported` rejection before outbound overlay/frame/
+interception commands, while a permissive peer can keep working. A stock-host
+coexistence pass is not buffered-input parity.
 
-Target FPS is process-scoped and sampled only from the stable primary swap chain.
-The accepted bounded policy uses the first valid presenter, preserves ownership
-through resize, and promotes a remaining presenter only after final primary
-destruction. Production client/SDK gates pass this for distinct HWNDs sharing one
-D3D11 device/context or one D3D12 device/direct queue, including primary-only
-composition, input blocking/interaction on both owners, replacement surface/FPS
-telemetry, and no process disconnect. Evidence is under
+Touch/pen, secondary/X pointer buttons, double-click semantics, pointer wheel,
+concurrent input pumps and distinct D3D12 queues remain explicit hardening.
+Owned D3D11 same-HWND ownership is now covered by pinned input-consumer and
+per-engine presenter-driver handling. Generation 16 passed resize, primary
+final destruction and a live-but-paused primary on x64/Win32, plus delayed owner
+thread recovery. This does not claim equivalent same-HWND behavior from an
+unchanged stock host; its public add-on API cannot itself transfer the stock
+input-handler owner during teardown.
+
+Target FPS remains process-scoped. Distinct-HWND selection retains a stable
+primary through resize and promotes a remaining presenter after final primary
+destruction. For same-HWND eligible peers, the currently presenting chain can
+drive logical/input/telemetry progress while the original lifetime anchor is
+alive but paused; each presenter keeps its own GPU resources. Retiring an older
+presenter must not release the active peer's input policy. The current
+readiness record retains these cases separately from the earlier distinct-HWND
+device/context or device/direct-queue acceptance under
 `client-sdk-d3d11-multi-swapchain-20260801-103555` and
 `client-sdk-d3d12-multi-swapchain-20260801-103532` below the runtime build root.
 

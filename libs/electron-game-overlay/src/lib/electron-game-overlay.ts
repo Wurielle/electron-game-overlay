@@ -1,8 +1,10 @@
 import { createNativeOverlay, type NativeOverlay } from './native.js';
 import { createOverlaySession, OverlaySession } from './overlay-session.js';
+import type { OverlayInputCapability } from './types.js';
+import { normalizeRequiredInputCapabilities } from './input-capabilities.js';
 
 /**
- * Application-level broker startup policy. Existing compatible owners always win.
+ * Application-level overlay options.
  * @example
  * ```ts
  * import { ElectronGameOverlay, type ElectronGameOverlayOptions } from 'electron-game-overlay';
@@ -11,8 +13,13 @@ import { createOverlaySession, OverlaySession } from './overlay-session.js';
  * ```
  */
 export interface ElectronGameOverlayOptions {
-  /** Permit prerelease candidates during startup selection; false by default. */
+  /** @deprecated Retained as a no-op; each application now supplies its own engine. */
   allowPrereleaseBroker?: boolean;
+  /**
+   * Immutable host input requirements, checked before any target receives this
+   * application's scene or interception request. Unknown support also rejects.
+   */
+  requiredInputCapabilities?: readonly OverlayInputCapability[];
 }
 
 /**
@@ -23,22 +30,26 @@ export interface ElectronGameOverlayOptions {
  * no longer needs overlay support.
  */
 export class ElectronGameOverlay {
-  private readonly nativeOverlay: NativeOverlay;
+  private nativeOverlay: NativeOverlay;
+  private readonly backendOptions: Readonly<ElectronGameOverlayOptions>;
+  private hasCreatedSession = false;
   private activeSession: OverlaySession | undefined;
   private disposed = false;
 
   /**
    * Creates an overlay owner; transport startup remains session-lazy.
-   * @param options - Explicit preview-broker opt-in; omitted for stable selection.
+   * @param options - Application overlay options.
    * @example
    * ```ts
    * const overlay = new ElectronGameOverlay({ allowPrereleaseBroker: true });
    * ```
    */
   constructor(options: ElectronGameOverlayOptions = {}) {
-    this.nativeOverlay = createNativeOverlay(
-      options.allowPrereleaseBroker === true,
-    );
+    this.backendOptions = Object.freeze({
+      allowPrereleaseBroker: options.allowPrereleaseBroker === true,
+      requiredInputCapabilities: normalizeRequiredInputCapabilities(options.requiredInputCapabilities),
+    });
+    this.nativeOverlay = this.createBackend();
   }
 
   /** Creates a session without starting its transport until it is first used. */
@@ -52,7 +63,11 @@ export class ElectronGameOverlay {
       );
     }
 
+    // A closed session may have published a durable route into a live target.
+    // Preserve that consumed route and give the next session its own namespace.
+    if (this.hasCreatedSession) this.nativeOverlay = this.createBackend();
     const session = createOverlaySession(this.nativeOverlay);
+    this.hasCreatedSession = true;
     this.activeSession = session;
     session.onClose(() => {
       if (this.activeSession === session) {
@@ -60,6 +75,12 @@ export class ElectronGameOverlay {
       }
     });
     return session;
+  }
+
+  private createBackend(): NativeOverlay {
+    return createNativeOverlay(this.backendOptions.allowPrereleaseBroker === true, {
+      requiredInputCapabilities: this.backendOptions.requiredInputCapabilities,
+    });
   }
 
   /**

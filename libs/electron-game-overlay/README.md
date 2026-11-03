@@ -2,8 +2,11 @@
 
 Render Electron HTML/CSS interfaces inside Windows Direct3D games. Use this
 package from Electron's **main process**. Electron renders offscreen windows in
-your application; a per-user broker shares one target runtime across independent
-applications and routes each application's frames and input separately.
+your application. Each application/version owns an authenticated private
+transport and native overlay engine inside the target. Compatible engines share
+one ReShade host and a small cooperative protocol for window order, focus,
+capture and interception. Normal SDK startup does not run a broker service or
+select one application's engine for everyone else.
 
 Mouse wheels and common Chromium cursor shapes are routed automatically while
 interception is active. rc.3 fixes pointer-wheel delivery and adds negotiated
@@ -18,15 +21,17 @@ and input coordinates retain strict validation; see the
 ## Candidate installation
 
 The distribution candidate is `electron-game-overlay-0.1.0-rc.7.tgz`, supplied as
-a build artifact, **not a public npm release**. In your own application directory:
+a build artifact, **not a public npm release**. Use an artifact built from the
+matching cooperative-implementation source revision; older rc.7 artifacts can
+contain the historical broker implementation. In your own application directory:
 
 ```powershell
 npm install --save-exact electron@39.8.10 "C:\downloads\electron-game-overlay-0.1.0-rc.7.tgz"
 ```
 
 The tarball includes compiled JavaScript/declarations and the packaged Windows
-runtime/broker assets. Consumers do not need Nx, the source workspace, TypeScript,
-or a native compiler. A first install still needs npm/Electron downloads or a
+native assets and its sealed JavaScript dependency. Consumers do not need Nx,
+the source workspace, TypeScript, or a native compiler. A first install still needs npm/Electron downloads or a
 populated cache. Keep the complete installed package; do not copy individual
 runtime files or replace build stamps/manifests.
 
@@ -35,7 +40,8 @@ The normal Electron range is `>=39.1.0 <40`; the exact experimental runtime
 For native keyboard focus, exact-path prearming, watcher deadlines, public process
 observation, and compatibility limits, read the
 [rc.2 attachment guide](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/doc/sdk-rc2-attachment-and-focus.md).
-Use `new ElectronGameOverlay({ allowPrereleaseBroker: true })` with this candidate.
+Use `new ElectronGameOverlay()` with the cooperative candidate. The retained
+`allowPrereleaseBroker` option does not affect this default implementation.
 
 ## Run the minimal consumer
 
@@ -49,7 +55,7 @@ npm start -- --smoke
 ```
 
 Smoke mode opens and verifies a real Electron page and constructs an unstarted
-SDK session. It performs **no broker startup or native attachment** and is not a
+SDK session. It performs **no native attachment** and is not a
 game-rendering test. On Windows, keep your supported game closed and run:
 
 ```powershell
@@ -69,8 +75,9 @@ failure dispose the launcher, close the session and dispose the owner. See the
 [full API guide](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/README.md#application-setup)
 for window, input, targeting and lifecycle contracts. Public entry points are
 `electron-game-overlay` (Electron main), `electron-game-overlay/packaging` (Node
-build configuration) and `electron-game-overlay/broker` (optional installer
-registration). Ordinary overlay apps do not create a broker themselves.
+build configuration). `electron-game-overlay/broker` retains historical broker
+installer operations; normal cooperative apps do not use its registration or
+start a broker.
 
 ## Supported boundary
 
@@ -86,6 +93,73 @@ registration). Ordinary overlay apps do not create a broker themselves.
 
 License: GPL-3.0-only; see the included `LICENSE`.
 
+## Independent applications and the shared host
+
+Applications can ship different compatible SDK/native engine versions without
+coordinated upgrades. Each owns its frames, scene/GPU resources and input
+implementation. App-local window IDs can overlap, windows from different apps
+can interleave in global order, and input/focus returns only to the owning app.
+Interception is the OR of participating requests; another app's exit or crash
+removes its own state while survivors keep working.
+
+ReShade itself is a common dependency. The first eligible initialization
+supplies the host when none exists; later apps load their own engines into that
+host. They do not replace it because their preferred ReShade version is newer.
+The baseline callback module remains mapped until target exit, including after
+its supplying app stops. Shared coordination uses versioned, fixed-layout POD
+and owned callback/handle boundaries. Native modules still share the game's
+address space; this is not native crash containment.
+
+The injector validates the exact target image and creation identity and retains
+possibly consumed host ownership until authoritative process exit. A timeout,
+lost connection or app shutdown is not permission to inject a second ReShade.
+Use exact PID/path attachment when your process watcher knows that identity.
+
+For clean targets, project runtime files are staged outside the game directory.
+An existing supported x64 official ReShade installation is preserved: its
+runtime, INI, presets, effects and foreign add-ons are not replaced. Only the
+native transaction helper may maintain reserved EGO add-on files; installation
+or update can require a game restart. An incompatible installation fails closed.
+
+## Required input capabilities
+
+An application can require specific copied-input routes before a target receives
+its scene or interception request:
+
+```ts
+const overlay = new ElectronGameOverlay({
+  requiredInputCapabilities: ['copied-raw-input-buffer'],
+});
+const session = overlay.createSession();
+session.on('targetInputCapabilitiesRejected', ({ pid, inputCapabilities }) => {
+  console.error('Required input route unavailable', pid, inputCapabilities);
+});
+session.on('targetConnected', ({ pid }) => {
+  console.log(session.targets.inputCapabilities(pid));
+});
+```
+
+Requirements accept `copied-wm-input` and `copied-raw-input-buffer` and are copied
+and frozen when the owner is constructed. The read API returns an immutable
+`{ copiedWmInput, copiedRawInputBuffer }` snapshot with `supported`, `unsupported`
+or `unknown` values, or `null` before a credential-verified observation.
+`targetConnected` also exposes optional capabilities and input-capability data.
+Missing optional capability metadata means `unknown`; with no requirements,
+legacy targets remain accepted.
+
+Unknown or unsupported required features reject only this application's route
+before authentication, frames or interception are sent. The typed rejection event
+accompanies diagnostic `target-input-capability-unsupported`; a matching attachment
+rejects with that `ReShadeOperationError` code and `indeterminate` retry safety.
+Retain possibly consumed host ownership and do not retry the live PID.
+
+Stock official ReShade supports the copied `WM_INPUT` route but does not support
+copied `GetRawInputBuffer` delivery. The bundled patched host advertises buffered
+support only after its private observer ABI is verified. These capabilities cover
+those copied-input routes, not every possible input pump. Optional wire tokens
+are `input-capabilities-v1`, `copied-wm-input-v1` and
+`copied-raw-input-buffer-v1`; they add no mandatory handshake or version equality.
+
 
 ## Managed attachment and packaging
 
@@ -97,6 +171,10 @@ and [minimal managed consumer](https://github.com/Wurielle/electron-game-overlay
 Early selectors must be fully authorized before creation. A best-effort JS
 predicate cannot guarantee early injection. Keep complete sealed assets on the
 physical filesystem using the SDK afterPack helper and ASAR unpack pattern.
+Keep the SDK external in your main-process bundle and retain the complete sealed
+`dist`, including both native architectures and its nested dependency. Normal
+cooperative packaging needs no standalone broker executable or catalog
+registration, and no separate Node.js runtime for the overlay SDK.
 
 Current process-policy behavior and fast-start limitations: [rc.6 guide](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/doc/sdk-rc6-process-policy.md).
 
@@ -116,10 +194,20 @@ types. Current application helpers include:
 | Validate/evaluate native rules | `createOverlayProcessPolicy()`, `overlayProcessPolicyAllows()` |
 | Observe without injection | `observeOverlayProcesses()` |
 | Package with electron-builder | `/packaging`: `createOverlayAfterPack()`, `packageOverlayForElectronBuilder()`, `verifyOverlayPackage()` |
-| Optional installer registration | `/broker`: `registerOverlayBrokerInstallation()`, `unregisterOverlayBrokerInstallation()` |
+| Preload installed app add-ons | `/preload`: `registerOverlayAddonInstallation()`, `unregisterOverlayAddonInstallation()`; opt in through `createReShadeLaunchConfig({ addonPreload: { applicationId } })` |
+| Historical broker installer registration | `/broker`: `registerOverlayBrokerInstallation()`, `unregisterOverlayBrokerInstallation()`; unused by cooperative startup |
 
 A resolved watcher update applies current authorization; `discovery-blocked`
 reports unavailable future discovery without cancelling an allowed active target.
+
+Optional [installed add-on preloading](../../doc/addon-preloading.md) lets a new
+owned ReShade host scan a stable shared folder, normally
+`%LOCALAPPDATA%\ReShade\Addons`. Apps register their dormant add-ons once and
+activate their own private engines when they connect. Other libraries can place
+ordinary ReShade add-ons in that same folder. Use `addonDirectory` in installer
+and launcher options to select another location. Registration and removal affect
+future host scans; existing ReShade
+installations retain their own configuration.
 Wait for `ready`/`armed` before a future launch. These events do not guarantee
 pre-graphics injection. The [managed example](https://github.com/Wurielle/electron-game-overlay/tree/dev/examples/managed-overlay)
 shows normal ownership and packaging; private deep imports are not required.

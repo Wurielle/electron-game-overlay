@@ -1,0 +1,293 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-rc12-consumer-acceptance",
+  "recordedAtUtc": "2026-11-03T19:08:54.192Z",
+  "status": "fast-folder-and-standard-matrix-passed-recovery-not-triggered-in-consumer-samples",
+  "candidateVersion": "0.1.0-rc.12",
+  "nativeGeneration": 22,
+  "sourceBaseCommit": "b89eeb6bf3efb94185e5041be582ac11df6342f6",
+  "sourceWorkingTreeDirtyAtPackaging": true,
+  "package": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\artifacts\\rc12-initial-inspection\\electron-game-overlay-0.1.0-rc.12.tgz",
+    "sha256": "10ecef4b7a46a870ea8cf5c1160321bf449712c5a93808e11a2a214051e708af"
+  },
+  "sourceManifest": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\artifacts\\rc12-initial-inspection\\electron-game-overlay-0.1.0-rc.12-source-manifest.json",
+    "sha256": "289d7003ef386e2de166ed726df60e91bf88de4fcb201862d2b9e31a086968c1"
+  },
+  "sourceSnapshot": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\artifacts\\rc12-initial-inspection\\electron-game-overlay-0.1.0-rc.12-source.zip",
+    "sha256": "f1052a4877d6cd4e75f436d6ada6dfcb269cb1173ca7e23d752c22e1822c67ca"
+  },
+  "implementationFilesVerifiedUnchangedSincePackaging": 752,
+  "postPackagingAcceptanceDocumentation": true,
+  "originalSdkRecoveryEvidence": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\4325\\electron-game-overlay\\doc\\evidence\\sdk-rc12-initial-inspection.json",
+    "sha256": "f2e245b0bcdbbcc45901d7fa150e90efca6001b8d0af75b35c99b7e39c6b8854"
+  },
+  "consumerValidation": {
+    "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\rc12-validation.json",
+    "sha256": "f1a56fb1cf9d7e31194c6c1069c2ce2f2adcdec782088f572007b00a149f2d2a"
+  },
+  "groups": [
+    {
+      "scope": "fast-folder-round-1",
+      "passed": 2,
+      "failed": 0,
+      "summary": {
+        "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T18-59-47.410Z\\summary.json",
+        "sha256": "32b7ab9358afb34f543385ef946e400c3340fd97fa5655c7757d813756c63155"
+      }
+    },
+    {
+      "scope": "fast-folder-round-2",
+      "passed": 2,
+      "failed": 0,
+      "summary": {
+        "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T19-00-05.648Z\\summary.json",
+        "sha256": "8085bf08a817a129770f8f78c9e17064f54d220c0922352b4eaed821a6146158"
+      }
+    },
+    {
+      "scope": "fast-folder-round-3",
+      "passed": 2,
+      "failed": 0,
+      "summary": {
+        "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T19-00-21.081Z\\summary.json",
+        "sha256": "657563daf205149c6c3bc2d548d2b093bfbb04b41e3df9a8b942bf62b51ec208"
+      }
+    },
+    {
+      "scope": "standard-matrix",
+      "passed": 10,
+      "failed": 0,
+      "summary": {
+        "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\experimental-overlay\\e2e\\2026-11-03T19-01-02.994Z\\summary.json",
+        "sha256": "ffc1637a7305e9819eb9d3ca231c8adac073a148d2b3ec12dadde5da93ebd70a"
+      }
+    }
+  ],
+  "nativeCasesPassed": 16,
+  "nativeCasesFailed": 0,
+  "authenticatedTargetLifecycles": 20,
+  "minLoadedModulePathLength": 292,
+  "maxLoadedModulePathLength": 322,
+  "loadedModulePathLengths": [
+    305,
+    305,
+    322,
+    305,
+    305,
+    322,
+    305,
+    305,
+    322,
+    292,
+    293,
+    293,
+    293,
+    292,
+    293,
+    304,
+    303,
+    299,
+    299,
+    310
+  ],
+  "cases": [
+    {
+      "case": "d3d11-x64",
+      "targetMode": "fast-folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": false,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 2,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "fast-folder",
+      "scaleFactor": 1,
+      "negativeControl": true,
+      "startupBarrier": false,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "fast-folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": false,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 2,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "fast-folder",
+      "scaleFactor": 1,
+      "negativeControl": true,
+      "startupBarrier": false,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "fast-folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": false,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 2,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "fast-folder",
+      "scaleFactor": 1,
+      "negativeControl": true,
+      "startupBarrier": false,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d9-x64",
+      "targetMode": "folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d10-x64",
+      "targetMode": "folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d12-x64",
+      "targetMode": "folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d9-x86",
+      "targetMode": "folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d10-x86",
+      "targetMode": "folder",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "folder",
+      "scaleFactor": 1.25,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "folder",
+      "scaleFactor": 1.5,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "early",
+      "scaleFactor": 1,
+      "negativeControl": false,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 2,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    },
+    {
+      "case": "d3d11-x64",
+      "targetMode": "folder",
+      "scaleFactor": 1,
+      "negativeControl": true,
+      "startupBarrier": true,
+      "nativeInjectionConfirmed": true,
+      "lifecycleCount": 1,
+      "inputSource": "Windows SendInput virtual-key down/up pairs"
+    }
+  ],
+  "consumerChecks": {
+    "unitPassed": 217,
+    "unitFailed": 0,
+    "types": "passed",
+    "sealedPayloads": 154,
+    "packagedFiles": 159,
+    "registrationId": "9f2fa5924cc4e0acb38b77ce489a7ccaa0692e1a9a3c69cb14857769fa3dcad5",
+    "sdkPatched": false
+  },
+  "observationLimit": {
+    "nativePhaseRecords": 0,
+    "observedConsumer299Recoveries": 0,
+    "consumerDirectRecoveryProof": false,
+    "description": "Passing fresh runs do not prove a transient read failure occurred. A recovered299 is claimed only when native phase telemetry records firstWindowsError299 and lastWindowsError0. No target delay/barrier/path shortening/SDK patch was added.",
+    "directRecoveryProofRemainsSdkNativeProbes": true
+  },
+  "testTelemetryCorrection": "nativeInjectionConfirmed is set after authenticated surface readiness, not merely after spawning a target. Native stdout/diagnostic phase evidence remains authoritative for failures.",
+  "cleanup": {
+    "ownedNativeProcessesRemaining": 0,
+    "backendPortOccupied": false,
+    "uiDevPortOccupied": false,
+    "evidence": {
+      "path": "C:\\Users\\Wuriko\\.codex\\worktrees\\0be1\\izabela\\coverage\\rc12-cleanup.json",
+      "sha256": "446b755a9dedc698e04f86da0561edef144defb477b2d83274aa5e5daffe3d93"
+    }
+  },
+  "changedByThisRecording": {
+    "sdkImplementation": false,
+    "consumerWorkspace": false,
+    "testsExecuted": false,
+    "nativeExecution": false,
+    "securitySettings": false
+  },
+  "artifactPreservation": "Original RC.12 tarball, source snapshot and pending-at-build evidence remain unchanged; later acceptance is recorded separately"
+}

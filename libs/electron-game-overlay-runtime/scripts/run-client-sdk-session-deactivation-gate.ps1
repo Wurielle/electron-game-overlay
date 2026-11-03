@@ -7,6 +7,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'process-environment.ps1')
+. (Join-Path $PSScriptRoot 'owned-injector-result.ps1')
 
 # Reuse the controlled host's window, input-oracle, SendInput, and process
 # helpers without running the larger interaction gate.
@@ -184,7 +186,10 @@ if (-not (Test-Path -LiteralPath $ProducerRoot -PathType Container)) {
     throw "The controlled Electron producer is unavailable: $ProducerRoot"
 }
 
-New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
+New-Item -ItemType Directory -Path $RunDirectory -ErrorAction Stop | Out-Null
+. (Join-Path $PSScriptRoot 'owned-stage-marker.ps1')
+Write-OwnedOverlayRunMarker -RunDirectory $RunDirectory -BuildRoot $BuildRoot
+New-Item -ItemType Directory -Path $TargetDirectory -ErrorAction Stop | Out-Null
 Copy-Item -LiteralPath $BuiltHost -Destination $TargetExecutablePath
 Copy-Item -LiteralPath $RuntimeSource -Destination (Join-Path $RunDirectory "ReShade64.dll")
 Copy-Item -LiteralPath $InjectorSource -Destination (Join-Path $RunDirectory "inject.exe")
@@ -213,8 +218,8 @@ $ControlledEnvironmentVariables = @(
 $PreviousEnvironment = @{}
 foreach ($VariableName in $ControlledEnvironmentVariables) {
     $PreviousEnvironment[$VariableName] =
-        [Environment]::GetEnvironmentVariable($VariableName, "Process")
-    [Environment]::SetEnvironmentVariable($VariableName, $null, "Process")
+        Get-OverlayProcessEnvironmentVariable -Name $VariableName
+    Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $null
 }
 
 Write-Host ""
@@ -234,6 +239,12 @@ try {
         -RedirectStandardOutput $InjectorStdout `
         -RedirectStandardError $InjectorStderr
 
+    . (Join-Path $PSScriptRoot 'watcher-readiness.ps1')
+    Wait-OverlayNativeWatcherReady `
+        -InjectorProcess $InjectorProcess `
+        -StdoutPath $InjectorStdout `
+        -Deadline ([DateTime]::UtcNow.AddSeconds(30))
+
     $HostProcess = Start-Process `
         -FilePath $TargetExecutablePath `
         -WorkingDirectory $TargetDirectory `
@@ -245,13 +256,27 @@ try {
     $InjectorProcess.WaitForExit()
     $InjectorProcess.Refresh()
     $InjectorExitCode = $InjectorProcess.ExitCode
-    if (($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) -or
-        -not (Select-String `
-            -LiteralPath $InjectorStdout `
-            -SimpleMatch "Injecting ReShade ... Succeeded!" `
-            -Quiet)) {
+    if ($null -ne $InjectorExitCode -and $InjectorExitCode -ne 0) {
         throw "The injector did not report a normal successful injection. Inspect $InjectorStdout and $InjectorStderr."
     }
+    $InjectorResult = Read-OwnedOverlayInitialResult `
+        -StdoutPath $InjectorStdout `
+        -ExpectedPid $HostProcess.Id `
+        -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+        -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+        -ExpectedBasePath $RunDirectory
+    $InjectorResult | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'injector-result.json') -Encoding UTF8
+    $InitialNativeEvidence = Get-OwnedOverlayMappedEvidence `
+        -Process $HostProcess -InjectorStdoutPath $InjectorStdout `
+        -ExpectedExecutablePath $TargetExecutablePath `
+        -ExpectedRuntimePath (Join-Path $RunDirectory 'ReShade64.dll') `
+        -ExpectedAddonPath (Join-Path $RunDirectory 'electron_game_overlay.addon64') `
+        -ExpectedRuntimeSha256 (Get-FileHash -LiteralPath $RuntimeSource -Algorithm SHA256).Hash `
+        -ExpectedAddonSha256 (Get-FileHash -LiteralPath $AddonSource -Algorithm SHA256).Hash
+    $InitialNativeEvidence | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $RunDirectory 'initial-native-identity.json') -Encoding UTF8
     Remove-Item -LiteralPath $StartupBarrierPath -Force -ErrorAction Stop
     Remove-Item -LiteralPath $InjectionWaitPath -Force -ErrorAction Stop
 
@@ -273,6 +298,7 @@ try {
         "--hudhook-client-multiwindow-runner",
         "`"--input-control-file=$InputControlFile`"",
         "--hudhook-device-scale-factor=1",
+        "`"--overlay-run-directory=$RunDirectory`"",
         "`"--user-data-dir=$UserData`"",
         "--no-sandbox"
     )
@@ -409,6 +435,8 @@ try {
         retiredTextures = $RetiredTextures
         runtimeModule = $ExpectedRuntime
         addonModule = $ExpectedAddon
+        injectorResult = $InjectorResult
+        initialNativeIdentity = $InitialNativeEvidence
         baselineTitle = $BaselineTitle
         releasedTitle = $Released.Title
     } |
@@ -450,10 +478,7 @@ finally {
         }
     }
     foreach ($VariableName in $ControlledEnvironmentVariables) {
-        [Environment]::SetEnvironmentVariable(
-            $VariableName,
-            $PreviousEnvironment[$VariableName],
-            "Process")
+        Set-OverlayProcessEnvironmentVariable -Name $VariableName -Value $PreviousEnvironment[$VariableName]
     }
 }
 

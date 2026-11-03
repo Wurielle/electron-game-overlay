@@ -1,4 +1,13 @@
 export { ElectronGameOverlay } from './electron-game-overlay.js';
+export {
+  defaultOverlayAddonStorageRoot,
+  registerOverlayAddonInstallation,
+  unregisterOverlayAddonInstallation,
+  type OverlayAddonInstallation,
+  type OverlayAddonInstallationOptions,
+  type OverlayAddonPreloadOptions,
+  type OverlayAddonUninstallationOptions,
+} from './overlay-addon-preload.js';
 export { observeOverlayProcesses, type OverlayProcessObserverOptions, type OverlayProcessIdentity } from './process-observer.js';
 export type { ElectronGameOverlayOptions } from './electron-game-overlay.js';
 export { ElectronOverlayWindow } from './electron-overlay-window.js';
@@ -43,11 +52,15 @@ export type {
   OverlayDiagnosticSource,
   OverlayGraphicsApi,
   OverlayGraphicsFps,
+  OverlayInputCapability,
+  OverlayInputCapabilitySupport,
   OverlaySessionEventHandler,
   OverlaySessionEventMap,
   OverlaySessionEventName,
   OverlayTargetDpi,
   OverlayTargetFollowArea,
+  OverlayTargetInputCapabilities,
+  OverlayTargetInputCapabilityRejection,
   OverlayTargetMonitor,
   OverlayTargetRect,
   OverlayTargetSize,

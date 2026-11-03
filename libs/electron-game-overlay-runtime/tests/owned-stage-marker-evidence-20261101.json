@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "fixture": "owned-native-stage-markers",
+  "scope": "Filesystem-only harness ownership markers; no SDK/native runtime build or GUI",
+  "status": "passed",
+  "failure": null,
+  "helperSha256": "9E5F546A216CFE9E1F25D79043F4512601BEF61C182B9BAE5796D3F50684A4EC",
+  "artifactDirectory": "build/owned-stage-marker-tests/e81e32224b6246e49a339520ac7e8e1d",
+  "cases": [
+    {
+      "name": "fresh-exact-runtime-and-json-markers",
+      "status": "passed"
+    },
+    {
+      "name": "idempotent-preserves-both-marker-bytes-and-timestamps",
+      "status": "passed"
+    },
+    {
+      "name": "existing-correct-runtime-marker-accepted-without-overwrite",
+      "status": "passed"
+    },
+    {
+      "name": "runtime-mismatch-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "runtime-bom-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "runtime-crlf-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "runtime-nul-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "runtime-oversized-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "runtime-marker-directory-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "ownership-malformed-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "ownership-wrong-directory-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "ownership-duplicate-key-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "ownership-unknown-field-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "ownership-marker-directory-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "run-equals-build-root-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "build-root-outside-repository-build-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "run-outside-selected-build-root-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "run-through-junction-rejected",
+      "status": "passed"
+    },
+    {
+      "name": "junction-build-root-rejected",
+      "status": "passed"
+    }
+  ],
+  "skipped": []
+}

@@ -13,9 +13,12 @@ param(
     [switch]$FutureTarget,
     [switch]$ProcessPolicy,
     [switch]$BasenameRule,
+    [switch]$CalibrationOnly,
+    [switch]$GpuReadback,
     [ValidateRange(0,600)][int]$IdleSeconds = 0
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'visual-test-display-lease.ps1')
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 if (-not $ElectronExecutable) { $ElectronExecutable = Join-Path $RepoRoot 'node_modules\electron\dist\electron.exe' }
 $ElectronExecutable = (Resolve-Path -LiteralPath $ElectronExecutable).Path
@@ -24,7 +27,8 @@ New-Item -ItemType Directory -Path $Evidence | Out-Null
 $Suffix = if ($Architecture -eq 'x86') { '-x86' } else { '' }
 $HostPath = Join-Path $RepoRoot "build\electron-game-overlay-runtime-production$Suffix\RelWithDebInfo\${Backend}_overlay_test_host.exe"
 $ScriptPath = Join-Path $RepoRoot 'libs\electron-game-overlay\tests\native-pointer.acceptance.cjs'
-$Report = @{ backend=$Backend; architecture=$Architecture; scale=$ScaleFactor; osrScale=$OsrScaleFactor; attached=[bool]$Attached; inputMode=$InputMode; status = 'failed'; inputSource = $(if ($PhysicalKeyboard) { 'human physical keyboard' } elseif ($PhysicalFirstKeys) { 'human physical first-show/reopen keys; Windows SendInput for later gates' } else { 'Windows SendInput virtual keys' }); evidence = $Evidence; clicksSent = 0; checks = @() }
+$Report = @{ backend=$Backend; architecture=$Architecture; scale=$ScaleFactor; osrScale=$OsrScaleFactor; attached=[bool]$Attached; inputMode=$InputMode; calibrationOnly=[bool]$CalibrationOnly; status = 'failed'; inputSource = $(if ($CalibrationOnly) { 'No feature input; strict calibration observation only' } elseif ($PhysicalKeyboard) { 'human physical keyboard' } elseif ($PhysicalFirstKeys) { 'human physical first-show/reopen keys; Windows SendInput for later gates' } else { 'Windows SendInput virtual keys' }); evidence = $Evidence; clicksSent = 0; checks = @() }
+$Report.gpuReadback = [bool]$GpuReadback
 function Read-State([string]$Member) {
     $File = Join-Path $Evidence "$Member-state.json"
     if (-not (Test-Path -LiteralPath $File)) { return $null }
@@ -88,12 +92,14 @@ public static class EgoExplicitFocusKeys {
 Add-Type -TypeDefinition @'
 using System;
 using System.Text;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class EgoPointer {
  [StructLayout(LayoutKind.Sequential)] struct MOUSE { public int x,y; public uint data,flags,time; public UIntPtr extra; }
  [StructLayout(LayoutKind.Explicit,Size=32)] struct UNION { [FieldOffset(0)] public MOUSE mouse; }
  [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public UNION data; }
  [StructLayout(LayoutKind.Sequential)] struct POINT { public int x,y; }
+ [StructLayout(LayoutKind.Sequential)] struct RECT { public int left,top,right,bottom; }
  [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public uint size,flags; public IntPtr cursor; public POINT point; }
  [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO c);
  [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr module,IntPtr id);
@@ -107,8 +113,115 @@ public static class EgoPointer {
  [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr dc,int x,int y);
  public static int DarkColumns(IntPtr h,int x,int y,int width,int height) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p))return 0;var dc=GetDC(IntPtr.Zero);int columns=0;try{for(int col=0;col<width;col++){bool dark=false;for(int row=0;row<height;row++){uint rgb=GetPixel(dc,p.x+col,p.y+row);if((rgb&255)<100&&((rgb>>8)&255)<100&&((rgb>>16)&255)<100){dark=true;break;}}if(dark)columns++;}}finally{ReleaseDC(IntPtr.Zero,dc);}return columns; }
  public static uint Pixel(IntPtr h,int x,int y) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p))return 0xFFFFFFFF;var dc=GetDC(IntPtr.Zero);try{return GetPixel(dc,p.x,p.y);}finally{ReleaseDC(IntPtr.Zero,dc);} }
+ [DllImport("user32.dll",SetLastError=true)] static extern bool GetWindowRect(IntPtr h,out RECT rect);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool GetClientRect(IntPtr h,out RECT rect);
+ [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
+ [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h,uint flags);
+ [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h,StringBuilder value,int capacity);
+ static Dictionary<string,object> Identity(IntPtr h) {
+  uint pid;uint thread=GetWindowThreadProcessId(h,out pid);var name=new StringBuilder(256);
+  if(h!=IntPtr.Zero)GetClassName(h,name,name.Capacity);
+  return new Dictionary<string,object>{{"hwnd","0x"+h.ToInt64().ToString("x")},{"hwndDecimal",h.ToInt64().ToString()},{"pid",pid},{"threadId",thread},{"className",name.ToString()},{"valid",h!=IntPtr.Zero&&thread!=0}};
+ }
+ static Dictionary<string,object> RectMetadata(RECT rect,bool valid,int error) {
+  return new Dictionary<string,object>{{"valid",valid},{"left",rect.left},{"top",rect.top},{"right",rect.right},{"bottom",rect.bottom},{"width",rect.right-rect.left},{"height",rect.bottom-rect.top},{"win32Error",valid?0:error}};
+ }
+ public static object TargetGeometry(IntPtr h) {
+  RECT window,client;bool windowValid=GetWindowRect(h,out window);int windowError=Marshal.GetLastWin32Error();
+  bool clientValid=GetClientRect(h,out client);int clientError=Marshal.GetLastWin32Error();
+  var topLeft=new POINT{x=client.left,y=client.top};var bottomRight=new POINT{x=client.right,y=client.bottom};
+  bool topValid=clientValid&&ClientToScreen(h,ref topLeft);int topError=Marshal.GetLastWin32Error();
+  bool bottomValid=clientValid&&ClientToScreen(h,ref bottomRight);int bottomError=Marshal.GetLastWin32Error();
+  var screen=new RECT{left=topLeft.x,top=topLeft.y,right=bottomRight.x,bottom=bottomRight.y};
+  return new Dictionary<string,object>{{"window",Identity(h)},{"root",Identity(GetAncestor(h,2))},{"rootOwner",Identity(GetAncestor(h,3))},{"windowRect",RectMetadata(window,windowValid,windowError)},{"clientRect",RectMetadata(client,clientValid,clientError)},{"clientScreenRect",RectMetadata(screen,topValid&&bottomValid,!clientValid?clientError:!topValid?topError:bottomError)},{"coordinateObservation","Unmodified Win32 coordinates in the collector thread DPI context; no DPI or window mutation."}};
+ }
+ public static object PointMetadata(IntPtr h,int x,int y) {
+  var point=new POINT{x=x,y=y};bool converted=ClientToScreen(h,ref point);int error=Marshal.GetLastWin32Error();
+  var atPoint=converted?WindowFromPoint(point):IntPtr.Zero;
+  return new Dictionary<string,object>{{"clientToScreenSucceeded",converted},{"screenX",converted?(object)point.x:null},{"screenY",converted?(object)point.y:null},{"win32Error",converted?0:error},{"windowAtPoint",Identity(atPoint)},{"rootAtPoint",Identity(GetAncestor(atPoint,2))},{"rootOwnerAtPoint",Identity(GetAncestor(atPoint,3))}};
+ }
+ [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
+ [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool ProcessIdToSessionId(uint pid,out uint session);
+ [DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetThreadDesktop(uint thread);
+ [DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetProcessWindowStation();
+ [DllImport("user32.dll",SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags,bool inherit,uint access);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool CloseDesktop(IntPtr desktop);
+ [DllImport("user32.dll",EntryPoint="GetUserObjectInformationW",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool UserObjectName(IntPtr handle,int index,StringBuilder name,uint bytes,out uint needed);
+ [DllImport("user32.dll",EntryPoint="GetUserObjectInformationW",SetLastError=true)] static extern bool UserObjectInput(IntPtr handle,int index,out int value,uint bytes,out uint needed);
+ [DllImport("user32.dll")] static extern IntPtr GetThreadDpiAwarenessContext();
+ [DllImport("user32.dll")] static extern IntPtr GetWindowDpiAwarenessContext(IntPtr window);
+ [DllImport("user32.dll")] static extern int GetAwarenessFromDpiAwarenessContext(IntPtr context);
+ [DllImport("user32.dll")] static extern bool AreDpiAwarenessContextsEqual(IntPtr first,IntPtr second);
+ [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
+ [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+ [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+ [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW",SetLastError=true)] static extern IntPtr WindowLong64(IntPtr window,int index);
+ [DllImport("user32.dll",EntryPoint="GetWindowLongW",SetLastError=true)] static extern int WindowLong32(IntPtr window,int index);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool GetWindowDisplayAffinity(IntPtr window,out uint affinity);
+ [DllImport("gdi32.dll")] static extern int GetDeviceCaps(IntPtr dc,int index);
+ [DllImport("gdi32.dll")] static extern uint GetObjectType(IntPtr dc);
+ [DllImport("gdi32.dll")] static extern int GetMapMode(IntPtr dc);
+ [DllImport("gdi32.dll")] static extern int GetGraphicsMode(IntPtr dc);
+ [DllImport("gdi32.dll")] static extern int GetClipBox(IntPtr dc,out RECT rect);
+ [DllImport("gdi32.dll")] static extern bool GetDCOrgEx(IntPtr dc,out POINT point);
+ [DllImport("gdi32.dll")] static extern bool GetViewportOrgEx(IntPtr dc,out POINT point);
+ [DllImport("gdi32.dll")] static extern bool GetViewportExtEx(IntPtr dc,out POINT point);
+ [DllImport("gdi32.dll")] static extern bool GetWindowOrgEx(IntPtr dc,out POINT point);
+ [DllImport("gdi32.dll")] static extern bool GetWindowExtEx(IntPtr dc,out POINT point);
+ [DllImport("gdi32.dll")] static extern bool LPtoDP(IntPtr dc,ref POINT point,int count);
+ [DllImport("dwmapi.dll")] static extern int DwmIsCompositionEnabled(out bool enabled);
+ [DllImport("dwmapi.dll",EntryPoint="DwmGetWindowAttribute")] static extern int DwmFlag(IntPtr window,uint attribute,out uint value,uint bytes);
+ [DllImport("dwmapi.dll",EntryPoint="DwmGetWindowAttribute")] static extern int DwmRect(IntPtr window,uint attribute,out RECT value,uint bytes);
+ [DllImport("dwmapi.dll")] static extern int DwmGetCompositionTimingInfo(IntPtr window,IntPtr timing);
+ [DllImport("wtsapi32.dll",SetLastError=true)] static extern bool WTSQuerySessionInformationW(IntPtr server,uint session,int info,out IntPtr data,out uint bytes);
+ [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr data);
+ static object DesktopMetadata(IntPtr handle,bool desktop) {
+  var name=new StringBuilder(256);uint needed;bool named=handle!=IntPtr.Zero&&UserObjectName(handle,2,name,(uint)(name.Capacity*2),out needed);int nameError=Marshal.GetLastWin32Error();
+  int input=0;bool inputValid=desktop&&handle!=IntPtr.Zero&&UserObjectInput(handle,6,out input,4,out needed);int inputError=Marshal.GetLastWin32Error();
+  return new Dictionary<string,object>{{"handle","0x"+handle.ToInt64().ToString("x")},{"name",named?name.ToString():null},{"nameSucceeded",named},{"nameWin32Error",named?0:nameError},{"inputQuerySucceeded",inputValid},{"receivesInput",inputValid?(object)(input!=0):null},{"inputWin32Error",inputValid?0:inputError}};
+ }
+ static object DpiMetadata(IntPtr context) {
+  string name="unknown";int[] values={-4,-3,-2,-1,-5};string[] names={"per-monitor-v2","per-monitor","system","unaware","unaware-gdi-scaled"};
+  for(int i=0;i<values.Length;i++)if(AreDpiAwarenessContextsEqual(context,new IntPtr(values[i])))name=names[i];
+  return new Dictionary<string,object>{{"context",context.ToInt64().ToString()},{"awareness",GetAwarenessFromDpiAwarenessContext(context)},{"name",name}};
+ }
+ static object SessionValue(uint session,int info,bool word) {
+  IntPtr data=IntPtr.Zero;uint bytes;bool valid=WTSQuerySessionInformationW(IntPtr.Zero,session,info,out data,out bytes);int error=Marshal.GetLastWin32Error();
+  try{return new Dictionary<string,object>{{"succeeded",valid&&data!=IntPtr.Zero&&bytes>=(word?2u:4u)},{"value",valid&&data!=IntPtr.Zero&&bytes>=(word?2u:4u)?(object)(word?(uint)(ushort)Marshal.ReadInt16(data):(uint)Marshal.ReadInt32(data)):null},{"bytes",bytes},{"win32Error",valid?0:error}};}finally{if(data!=IntPtr.Zero)WTSFreeMemory(data);}
+ }
+ static object SessionMetadata(uint pid) {
+  uint session;bool valid=ProcessIdToSessionId(pid,out session);int error=Marshal.GetLastWin32Error();
+  return new Dictionary<string,object>{{"pid",pid},{"sessionQuerySucceeded",valid},{"sessionId",valid?(object)session:null},{"win32Error",valid?0:error},{"connectionState",valid?SessionValue(session,8,false):null},{"clientProtocol",valid?SessionValue(session,16,true):null}};
+ }
+ static object Coordinates(POINT point,bool valid) {return new Dictionary<string,object>{{"succeeded",valid},{"x",point.x},{"y",point.y}};}
+ static object ScreenDcMetadata(IntPtr window) {
+  IntPtr dc=GetDC(IntPtr.Zero);if(dc==IntPtr.Zero)return new Dictionary<string,object>{{"succeeded",false},{"win32Error",null},{"errorProvenance","GetDC returned NULL; it does not document an extended-error guarantee."}};
+  try {
+   POINT origin,viewport,viewportSize,logical,logicalSize;bool originOk=GetDCOrgEx(dc,out origin),viewportOk=GetViewportOrgEx(dc,out viewport),viewportSizeOk=GetViewportExtEx(dc,out viewportSize),logicalOk=GetWindowOrgEx(dc,out logical),logicalSizeOk=GetWindowExtEx(dc,out logicalSize);
+   var clientOrigin=new POINT();bool converted=ClientToScreen(window,ref clientOrigin);var deviceOrigin=clientOrigin;bool mapped=LPtoDP(dc,ref deviceOrigin,1);RECT clip;int clipKind=GetClipBox(dc,out clip);
+   return new Dictionary<string,object>{{"succeeded",true},{"objectType",GetObjectType(dc)},{"mapMode",GetMapMode(dc)},{"graphicsMode",GetGraphicsMode(dc)},{"dcOrigin",Coordinates(origin,originOk)},{"viewportOrigin",Coordinates(viewport,viewportOk)},{"viewportExtent",Coordinates(viewportSize,viewportSizeOk)},{"windowOrigin",Coordinates(logical,logicalOk)},{"windowExtent",Coordinates(logicalSize,logicalSizeOk)},{"clientOriginLogical",Coordinates(clientOrigin,converted)},{"clientOriginDevice",Coordinates(deviceOrigin,converted&&mapped)},{"clipKind",clipKind},{"clip",RectMetadata(clip,clipKind!=0,0)},{"horizontalPixels",GetDeviceCaps(dc,8)},{"verticalPixels",GetDeviceCaps(dc,10)},{"desktopHorizontalPixels",GetDeviceCaps(dc,118)},{"desktopVerticalPixels",GetDeviceCaps(dc,117)},{"dpiX",GetDeviceCaps(dc,88)},{"dpiY",GetDeviceCaps(dc,90)},{"bitsPerPixel",GetDeviceCaps(dc,12)},{"planes",GetDeviceCaps(dc,14)},{"technology",GetDeviceCaps(dc,2)},{"rasterCaps",GetDeviceCaps(dc,38)},{"refreshHz",GetDeviceCaps(dc,116)}};
+  }finally{ReleaseDC(IntPtr.Zero,dc);}
+ }
+ static object DwmMetadata(IntPtr window) {
+  bool composition;int compositionResult=DwmIsCompositionEnabled(out composition);uint cloaked;int cloakResult=DwmFlag(window,14,out cloaked,4);RECT bounds;int boundsResult=DwmRect(window,9,out bounds,16);uint affinity;bool affinityValid=GetWindowDisplayAffinity(window,out affinity);int affinityError=Marshal.GetLastWin32Error();
+  var result=new Dictionary<string,object>{{"compositionHresult",compositionResult},{"compositionEnabled",compositionResult==0?(object)composition:null},{"cloakedHresult",cloakResult},{"cloakedFlags",cloakResult==0?(object)cloaked:null},{"frameBoundsHresult",boundsResult},{"extendedFrameBounds",RectMetadata(bounds,boundsResult==0,0)},{"displayAffinitySucceeded",affinityValid},{"displayAffinity",affinityValid?(object)affinity:null},{"displayAffinityWin32Error",affinityValid?0:affinityError}};
+  // SDK dwmapi.h is pack1: DWM_TIMING_INFO=292 bytes. Modern Windows
+  // requires HWND=NULL; prefix counters are global, never target-display proof.
+  IntPtr timing=Marshal.AllocHGlobal(292);try {
+   Marshal.Copy(new byte[292],0,timing,292);Marshal.WriteInt32(timing,292);int hr=DwmGetCompositionTimingInfo(IntPtr.Zero,timing);result["globalTimingHresult"]=hr;
+   if(hr==0)result["globalTiming"]=new Dictionary<string,object>{{"scope","Global compositor prefix counters only; not per-window display proof."},{"qpcRefreshPeriod",Marshal.ReadInt64(timing,12)},{"qpcVBlank",Marshal.ReadInt64(timing,28)},{"refreshCount",Marshal.ReadInt64(timing,36)},{"qpcCompose",Marshal.ReadInt64(timing,48)},{"frameCount",Marshal.ReadInt64(timing,56)},{"dxPresent",(uint)Marshal.ReadInt32(timing,64)},{"frameSubmitted",Marshal.ReadInt64(timing,76)},{"dxPresentSubmitted",(uint)Marshal.ReadInt32(timing,84)},{"frameConfirmed",Marshal.ReadInt64(timing,88)},{"framesLate",Marshal.ReadInt64(timing,112)},{"framesOutstanding",(uint)Marshal.ReadInt32(timing,120)}};
+  }finally{Marshal.FreeHGlobal(timing);}return result;
+ }
+ public static object CollectorEnvironment(IntPtr window) {
+  uint targetPid;uint targetThread=GetWindowThreadProcessId(window,out targetPid);uint collectorThread=GetCurrentThreadId();IntPtr input=OpenInputDesktop(0,false,1);int inputError=Marshal.GetLastWin32Error();object inputMetadata;
+  try{inputMetadata=DesktopMetadata(input,true);}finally{if(input!=IntPtr.Zero)CloseDesktop(input);}
+  uint style=unchecked((uint)(IntPtr.Size==8?WindowLong64(window,-16).ToInt64():WindowLong32(window,-16))),extended=unchecked((uint)(IntPtr.Size==8?WindowLong64(window,-20).ToInt64():WindowLong32(window,-20)));
+  return new Dictionary<string,object>{{"scope","Read-only API metadata; no desktop switch, DPI mutation, additional pixel read, or capture."},{"collector",SessionMetadata(GetCurrentProcessId())},{"target",SessionMetadata(targetPid)},{"collectorThreadId",collectorThread},{"targetThreadId",targetThread},{"windowStation",DesktopMetadata(GetProcessWindowStation(),false)},{"collectorDesktop",DesktopMetadata(GetThreadDesktop(collectorThread),true)},{"targetDesktop",DesktopMetadata(GetThreadDesktop(targetThread),true)},{"inputDesktop",inputMetadata},{"inputDesktopOpenSucceeded",input!=IntPtr.Zero},{"inputDesktopOpenWin32Error",input!=IntPtr.Zero?0:inputError},{"remoteSession",GetSystemMetrics(0x1000)!=0},{"remoteControl",GetSystemMetrics(0x2001)!=0},{"collectorDpi",DpiMetadata(GetThreadDpiAwarenessContext())},{"targetDpi",DpiMetadata(GetWindowDpiAwarenessContext(window))},{"targetDpiValue",GetDpiForWindow(window)},{"windowVisibleStyle",IsWindowVisible(window)},{"windowMinimized",IsIconic(window)},{"windowStyle","0x"+style.ToString("x8")},{"windowExtendedStyle","0x"+extended.ToString("x8")},{"screenDc",ScreenDcMetadata(window)},{"dwm",DwmMetadata(window)}};
+ }
  [DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint n, INPUT[] inputs, int size);
- [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h,ref POINT p);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool ClientToScreen(IntPtr h,ref POINT p);
  [DllImport("user32.dll")] static extern int GetSystemMetrics(int n);
  [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
  public static void Place(IntPtr h,int x,int y) { var p=new POINT{x=x,y=y};if(!ClientToScreen(h,ref p)||!SetCursorPos(p.x,p.y))throw new Exception("Place failed"); }
@@ -123,11 +236,88 @@ public static class EgoPointer {
  public static void Wheel(int delta,bool horizontal) { var i=new INPUT{data=new UNION{mouse=new MOUSE{data=unchecked((uint)delta),flags=horizontal?0x1000u:0x800u}}};if(SendInput(1,new[]{i},Marshal.SizeOf(typeof(INPUT)))!=1)throw new Exception("Wheel failed"); }
 }
 '@
+& (Join-Path $PSScriptRoot 'read-display-power-state.ps1') -DefinitionsOnly
 function Move-OverlayPointer([int]$X, [int]$Y) {
     $PhysicalX=[int][Math]::Round($X*$Ready.scaleFactor)
     $PhysicalY=[int][Math]::Round($Y*$Ready.scaleFactor)
     if ($InputMode -eq 'legacy') { [EgoPointer]::Place($Target.MainWindowHandle,$PhysicalX,$PhysicalY) }
     else { [EgoPointer]::Move($Target.MainWindowHandle,$PhysicalX,$PhysicalY) }
+}
+function Get-NativeCalibrationDiagnostics([object]$TargetProcess, [object]$FixtureState, [double]$RequestedScaleFactor, [double]$RequestedOsrScaleFactor) {
+    # Failure evidence only: these samples never participate in the strict gate.
+    $TargetWindow = [IntPtr]$TargetProcess.MainWindowHandle
+    $ObservedScale = $RequestedScaleFactor
+    if ($FixtureState -and [double]::TryParse([string]$FixtureState.scaleFactor, [ref]$ObservedScale) -and -not [double]::IsNaN($ObservedScale) -and -not [double]::IsInfinity($ObservedScale) -and $ObservedScale -gt 0) {
+        $ScaleSource = 'fixture.scaleFactor'
+    } else { $ObservedScale = $RequestedScaleFactor; $ScaleSource = 'requested scale fallback' }
+    $Diagnostic = [ordered]@{
+        schemaVersion = 1; capturedAt = [DateTime]::UtcNow.ToString('o')
+        coordinateSpace = 'target client physical pixels; diagnostic samples do not alter acceptance'
+        expectedTarget = [ordered]@{ pid = $TargetProcess.Id; hwnd = '0x' + $TargetWindow.ToInt64().ToString('x'); hwndDecimal = $TargetWindow.ToInt64().ToString() }
+        requestedScaleFactor = $RequestedScaleFactor; requestedOsrScaleFactor = $RequestedOsrScaleFactor
+        sampledScaleFactor = $ObservedScale; scaleSource = $ScaleSource; fixture = $FixtureState
+        foregroundTitle = $null; targetGeometry = $null; collectorEnvironment = $null; sessionDisplayPower = $null; calibrationPoints = @()
+        grid = [ordered]@{ width = 1280; height = 720; columns = 16; rows = 9; samples = @() }
+    }
+    try { $Diagnostic.foregroundTitle = [EgoPointer]::Foreground() } catch { $Diagnostic.foregroundError = $_.Exception.Message }
+    try { $Diagnostic.targetGeometry = [EgoPointer]::TargetGeometry($TargetWindow) } catch { $Diagnostic.targetGeometryError = $_.Exception.Message }
+    try { $Diagnostic.collectorEnvironment = [EgoPointer]::CollectorEnvironment($TargetWindow) } catch { $Diagnostic.collectorEnvironmentError = $_.Exception.Message }
+    try { $Diagnostic.sessionDisplayPower = [EgoDisplayPowerRead]::Read('session-display-at-pixel-observation', '2b84c20e-ad23-4ddf-93db-05ffbd7efca5', 1000) } catch { $Diagnostic.sessionDisplayPowerError = $_.Exception.Message }
+    $ReadPixel = {
+        param([int]$ClientX, [int]$ClientY)
+        $Sample = [ordered]@{ clientX = $ClientX; clientY = $ClientY }
+        # Adjacent metadata query only; the original desktop Pixel oracle is unchanged.
+        try { $Sample.screen = [EgoPointer]::PointMetadata($TargetWindow, $ClientX, $ClientY) } catch { $Sample.screenMetadataError = $_.Exception.Message }
+        try {
+            $Color = [uint32][EgoPointer]::Pixel($TargetWindow, $ClientX, $ClientY)
+            $Sample.colorRef = $Color; $Sample.hex = '0x{0:x8}' -f $Color
+            $Sample.red = [int]($Color -band 255); $Sample.green = [int](($Color -shr 8) -band 255); $Sample.blue = [int](($Color -shr 16) -band 255)
+            $Sample.valid = $Color -ne [uint32]::MaxValue
+        } catch { $Sample.error = $_.Exception.Message }
+        return $Sample
+    }
+    foreach ($Calibration in @(@('red', 480, 100, 0x3539e5), @('blue', 540, 100, 0xe5881e))) {
+        foreach ($CoordinateScale in @('unscaled', 'scaled')) {
+            $Multiplier = if ($CoordinateScale -eq 'scaled') { $ObservedScale } else { 1 }
+            $Sample = & $ReadPixel ([int][Math]::Round($Calibration[1] * $Multiplier)) ([int][Math]::Round($Calibration[2] * $Multiplier))
+            $Sample.name = $Calibration[0]; $Sample.coordinates = $CoordinateScale
+            $Sample.expectedColorRef = [uint32]$Calibration[3]; $Sample.expectedHex = '0x{0:x8}' -f [uint32]$Calibration[3]
+            $Diagnostic.calibrationPoints += $Sample
+        }
+    }
+    for ($GridRow = 0; $GridRow -lt 9; $GridRow++) {
+        for ($GridColumn = 0; $GridColumn -lt 16; $GridColumn++) {
+            $ClientX = [int][Math]::Round(($GridColumn + 0.5) * 1280 / 16)
+            $ClientY = [int][Math]::Round(($GridRow + 0.5) * 720 / 9)
+            $Diagnostic.grid.samples += (& $ReadPixel $ClientX $ClientY)
+        }
+    }
+    $StrictSamples = @($Diagnostic.calibrationPoints | Where-Object { $_.coordinates -eq 'scaled' })
+    $ForegroundKnown = -not [string]::IsNullOrEmpty($Diagnostic.foregroundTitle)
+    $OwnerKnown = @($StrictSamples | Where-Object { -not $_.screen -or -not $_.screen.rootAtPoint.valid }).Count -eq 0
+    $CoordinateKnown = @($StrictSamples | Where-Object { -not $_.screen }).Count -eq 0
+    $Diagnostic.preconditions = [ordered]@{
+        scope = 'Diagnostic flags only; strict red/blue pixel equality remains the acceptance oracle.'
+        foregroundMatchesTarget = $(if ($ForegroundKnown) { $Diagnostic.foregroundTitle.StartsWith($TargetWindow.ToInt64().ToString() + ':') } else { $null })
+        sessionDisplayObservedOn = $(if ($Diagnostic.sessionDisplayPower.initialNotificationReceived) { $Diagnostic.sessionDisplayPower.state -eq 1 } else { $null })
+        scaledPointCoordinatesConverted = $(if ($CoordinateKnown) { @($StrictSamples | Where-Object { -not $_.screen.clientToScreenSucceeded }).Count -eq 0 } else { $null })
+        scaledPointRootsMatchTarget = $(if ($OwnerKnown) { @($StrictSamples | Where-Object { $_.screen.rootAtPoint.hwnd -cne $Diagnostic.expectedTarget.hwnd -or $_.screen.rootAtPoint.pid -ne $TargetProcess.Id }).Count -eq 0 } else { $null })
+        scaledPixelsMatchExpected = @($StrictSamples | Where-Object { -not $_.valid -or $_.colorRef -ne $_.expectedColorRef }).Count -eq 0
+    }
+    return $Diagnostic
+}
+function Save-NativeCalibrationObservation([string]$Label) {
+    try {
+        $Observation = Get-NativeCalibrationDiagnostics $Target (Read-State a) $ScaleFactor $OsrScaleFactor
+        $Observation.phase = $Label
+        $Name = "native-calibration-$Label.json"
+        $Observation | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $Evidence $Name) -Encoding UTF8
+        $Report.calibrationObservations += @([ordered]@{ phase = $Label; file = $Name; capturedAt = $Observation.capturedAt; preconditions = $Observation.preconditions })
+        return $Observation
+    } catch {
+        $Report.calibrationObservationErrors += @([ordered]@{ phase = $Label; error = $_.Exception.Message })
+        return $null
+    }
 }
 function Type-Key([string]$Key, [string]$Member, [string]$Expected) {
     Wait-State $Member { param($s) $s.intercepting -and $s.nativeFocusedWindowId -eq $s.windowId } 'native keyboard owner' | Out-Null
@@ -152,9 +342,11 @@ function Assert-DroppedKey([string]$Key, [string]$Expected) {
     $Report.checks += "key $Key blocked"
 }
 $Client = $null
+$VisualDisplayLease = $null
 $PriorPipe = $env:ELECTRON_GAME_OVERLAY_BROKER_PIPE
 $env:ELECTRON_GAME_OVERLAY_BROKER_PIPE = '\\.\pipe\ego-native-focus-' + [guid]::NewGuid().ToString('N')
 try {
+    $VisualDisplayLease = Enter-VisualTestDisplayLease $Report
     $Arguments = @('"' + $ScriptPath + '"', '"--evidence=' + $Evidence + '"', '"--host=' + $HostPath + '"')
     if ($GameExecutable) { $Arguments += '"--game=' + (Resolve-Path -LiteralPath $GameExecutable).Path + '"' }
     if ($FutureTarget) { $Arguments += '--future=true' }
@@ -164,6 +356,7 @@ try {
     $Arguments = @("--force-device-scale-factor=$ScaleFactor","--input-mode=$InputMode") + $Arguments
     if ($OsrScaleFactor -gt 0) {$Arguments += "--osr-scale=$OsrScaleFactor"}
     if ($Attached) {$Arguments += '--attached=true'}
+    if ($GpuReadback) {$Arguments += '--gpu-readback=true'}
     $Client = Start-Process -FilePath $ElectronExecutable -ArgumentList $Arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $Evidence 'stdout.txt') -RedirectStandardError (Join-Path $Evidence 'stderr.txt')
     if (-not $GameExecutable) {
         # A cached native provider can own injection. Waiting for the app's
@@ -185,6 +378,10 @@ try {
         } while ([DateTime]::UtcNow -lt $BarrierDeadline)
     }
     $Ready = Wait-State a { param($s) $s.attached -and $s.rendering } 'authenticated rendering' ($IdleSeconds + 120)
+    if ($GpuReadback) {
+        if ($Ready.gpuPixelRequestError -or -not $Ready.gpuPixelRequest) { throw "GPU diagnostic request was not staged: $($Ready.gpuPixelRequestError)" }
+        $Report.gpuPixelRequest = $Ready.gpuPixelRequest
+    }
     $Target = Get-Process -Id $Ready.targetPid
     $Deadline = [DateTime]::UtcNow.AddSeconds(15)
     do { $Target.Refresh(); if ($Target.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 40 } while ([DateTime]::UtcNow -lt $Deadline)
@@ -200,12 +397,21 @@ try {
         $Report.mappedAddonSha256 = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($MappedAddon.FileName)))).Replace('-','').ToLowerInvariant()
     }
 
+    if ($CalibrationOnly) { Save-NativeCalibrationObservation start | Out-Null }
     foreach ($PixelCase in @(@(480,100,0x3539e5),@(540,100,0xe5881e))) {
         $PixelX = [int][Math]::Round($PixelCase[0]*$Ready.scaleFactor)
         $PixelY = [int][Math]::Round($PixelCase[1]*$Ready.scaleFactor)
         Wait-State a {param($s) [EgoPointer]::Pixel($Target.MainWindowHandle,$PixelX,$PixelY) -eq $PixelCase[2]} 'native composited calibration pixel' 30 | Out-Null
     }
     $Report.checks += 'actual native red/blue calibration pixels at scaled CSS coordinates'
+    if ($CalibrationOnly) {
+        Save-NativeCalibrationObservation passed | Out-Null
+        $Report.status = 'passed'
+        $Report.electron = $Ready.electron
+        $Report.paint = $Ready.paint
+        $Report.a = Read-State a
+        return
+    }
     Command a release
     Wait-State a { param($s) -not $s.intercepting } 'initial cursor ownership release' | Out-Null
     Move-OverlayPointer 760 440
@@ -319,16 +525,27 @@ try {
     $Report.electron = $Ready.electron
     $Report.paint = $Ready.paint
     $Report.a = Read-State a
-} catch { $Report.error = $_.Exception.Message; try {Command a capture} catch {}; $Report.cursorSnapshot = [EgoPointer]::CursorSnapshot(); $Report.foreground = [EgoPointer]::Foreground();
+} catch { $OriginalFailure = $_; $Report.error = $OriginalFailure.Exception.Message;
+    $CalibrationFailureObservation = $null
+    if ($CalibrationOnly -and $Target) { $CalibrationFailureObservation = Save-NativeCalibrationObservation failed }
+    if ($Client) { try {Command a capture} catch {} };
+    try { $Report.cursorSnapshot = [EgoPointer]::CursorSnapshot(); $Report.foreground = [EgoPointer]::Foreground() } catch { $Report.nativeDiagnosticError = $_.Exception.Message }
     if ($Target) {
-        $Report.targetHandle = $Target.MainWindowHandle.ToInt64();
-        $Report.nativePixels = @([EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(480*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)),[EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(540*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)))
-    }; throw }
+        try {
+            $Report.targetHandle = $Target.MainWindowHandle.ToInt64()
+            $Report.nativePixels = @([EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(480*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)),[EgoPointer]::Pixel($Target.MainWindowHandle,[int][Math]::Round(540*$ScaleFactor),[int][Math]::Round(100*$ScaleFactor)))
+        } catch { $Report.nativePixelDiagnosticError = $_.Exception.Message }
+        try {
+            $Report.nativeCalibrationDiagnostics = if ($CalibrationFailureObservation) { $CalibrationFailureObservation } else { Get-NativeCalibrationDiagnostics $Target (Read-State a) $ScaleFactor $OsrScaleFactor }
+            $Report.nativeCalibrationDiagnostics | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $Evidence 'native-calibration-failure.json') -Encoding UTF8
+        } catch { $Report.nativeCalibrationDiagnosticError = $_.Exception.Message }
+    }; throw $OriginalFailure }
 finally {
     if ($Client -and -not $Client.HasExited) {
         try { Command a exit; $Client.WaitForExit(5000) | Out-Null } catch { try { $Client.Refresh(); if (-not $Client.HasExited) { $Client.Kill() } } catch {} }
     }
     $env:ELECTRON_GAME_OVERLAY_BROKER_PIPE = $PriorPipe
+    Exit-VisualTestDisplayLease $VisualDisplayLease $Report
     $Report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Evidence 'report.json') -Encoding UTF8
     Write-Host "Pointer evidence: $Evidence"
 }

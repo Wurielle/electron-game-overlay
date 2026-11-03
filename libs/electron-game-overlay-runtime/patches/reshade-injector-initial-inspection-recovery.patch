@@ -1,0 +1,454 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 2d40c49..d1f3a2c 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -572,6 +572,15 @@ struct reusable_runtime_info
+ 	unsigned int addon_abi = 0;
+ };
+ 
++struct initial_module_inspection_observation
++{
++	const wchar_t *phase = L"not-started";
++	unsigned int attempts = 0;
++	ULONGLONG elapsed_ms = 0;
++	DWORD first_error = ERROR_SUCCESS;
++	DWORD last_error = ERROR_SUCCESS;
++};
++
+ static bool read_remote_bytes(HANDLE process, uintptr_t address, void *destination, SIZE_T size, DWORD &error)
+ {
+ 	SIZE_T bytes_read = 0;
+@@ -3265,8 +3274,11 @@ static target_preflight_result inspect_target_for_official_addon(
+ static target_preflight_result inspect_target_for_reshade_once(
+ 	HANDLE process,
+ 	reusable_runtime_info &runtime,
+-	DWORD &error)
++	DWORD &error,
++	const wchar_t **inspection_phase = nullptr,
++	bool *host_observed = nullptr)
+ {
++	if (host_observed != nullptr) *host_observed = false;
+ 	constexpr char reshade_version_export[] = "ReShadeVersion";
+ 	constexpr char host_abi_export[] = "ElectronGameOverlayReShadeHostAbi";
+ 	constexpr char addon_gate_export[] = "ElectronGameOverlayReShadeAddonGate";
+@@ -3277,6 +3289,7 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 	constexpr size_t max_modules = 4096;
+ 	std::vector<HMODULE> modules(max_modules);
+ 	DWORD bytes_needed = 0;
++	if (inspection_phase != nullptr) *inspection_phase = L"preflight-module-enumeration";
+ 	if (!K32EnumProcessModules(
+ 			process,
+ 			modules.data(),
+@@ -3284,17 +3297,23 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 			&bytes_needed))
+ 	{
+ 		error = GetLastError();
++		if (error == ERROR_SUCCESS) error = ERROR_PARTIAL_COPY;
+ 		return target_preflight_result::inspection_failed;
+ 	}
+-	if (
+-		bytes_needed % sizeof(HMODULE) != 0 ||
+-		bytes_needed > modules.size() * sizeof(HMODULE))
++	// An uninitialized or malformed module list cannot prove no host exists.
++	if (bytes_needed == 0 || bytes_needed % sizeof(HMODULE) != 0)
++	{
++		error = bytes_needed == 0 ? ERROR_PARTIAL_COPY : ERROR_BAD_LENGTH;
++		return target_preflight_result::inspection_failed;
++	}
++	if (bytes_needed > modules.size() * sizeof(HMODULE))
+ 	{
+ 		error = ERROR_INSUFFICIENT_BUFFER;
+ 		return target_preflight_result::inspection_failed;
+ 	}
+ 
+ 	const size_t module_count = bytes_needed / sizeof(HMODULE);
++	if (inspection_phase != nullptr) *inspection_phase = L"preflight-module-exports";
+ 	for (size_t index = 0; index < module_count; ++index)
+ 	{
+ 		uintptr_t export_address = 0;
+@@ -3312,7 +3331,9 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 		case module_export_inspection::present:
+ 			break;
+ 		}
++		if (host_observed != nullptr) *host_observed = true;
+ 
++		if (inspection_phase != nullptr) *inspection_phase = L"preflight-module-path";
+ 		if (!remote_module_path(
+ 				process,
+ 				modules[index],
+@@ -3321,6 +3342,7 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 			return target_preflight_result::inspection_failed;
+ 
+ 		uintptr_t host_abi_address = 0;
++		if (inspection_phase != nullptr) *inspection_phase = L"preflight-module-exports";
+ 		const module_export_inspection host_abi_inspection =
+ 			remote_module_export_address(
+ 				process,
+@@ -3331,12 +3353,15 @@ static target_preflight_result inspect_target_for_reshade_once(
+ 		if (host_abi_inspection == module_export_inspection::failed)
+ 			return target_preflight_result::inspection_failed;
+ 		if (host_abi_inspection == module_export_inspection::not_present)
++		{
++			if (inspection_phase != nullptr) *inspection_phase = L"preflight-official-addon";
+ 			return inspect_target_for_official_addon(
+ 				process,
+ 				modules,
+ 				module_count,
+ 				runtime,
+ 				error);
++		}
+ 		if (!read_remote_bytes(
+ 				process,
+ 				host_abi_address,
+@@ -3395,50 +3420,104 @@ static target_preflight_result inspect_target_for_reshade(
+ 	HANDLE process,
+ 	DWORD official_addon_wait_ms,
+ 	reusable_runtime_info &runtime,
+-	DWORD &error)
++	DWORD &error,
++	initial_module_inspection_observation *out_observation = nullptr,
++	bool previously_observed_host = false)
+ {
+-	constexpr unsigned int max_inspection_attempts = 4;
+-	const ULONGLONG wait_deadline =
+-		GetTickCount64() + official_addon_wait_ms;
++	constexpr ULONGLONG retry_budget_ms = 250;
++	constexpr unsigned int maximum_attempts = 256;
++	const ULONGLONG started = GetTickCount64();
++	const ULONGLONG wait_deadline = started + official_addon_wait_ms;
++	initial_module_inspection_observation observation;
++	bool host_evidence_observed = previously_observed_host;
++	const wchar_t *last_failure_phase = L"not-started";
++	const auto finish = [&](target_preflight_result result) {
++		observation.elapsed_ms = GetTickCount64() - started;
++		observation.last_error = error;
++		if (result == target_preflight_result::inspection_failed)
++		{
++			runtime = {};
++			if (observation.first_error == ERROR_SUCCESS) observation.first_error = error;
++		}
++		else observation.phase = observation.first_error != ERROR_SUCCESS ? last_failure_phase : L"complete";
++		if (out_observation != nullptr) *out_observation = observation;
++		return result;
++	};
++	const auto wait_for_target = [&](DWORD milliseconds) {
++		const DWORD result = WaitForSingleObject(process, milliseconds);
++		if (result == WAIT_TIMEOUT) return static_cast<DWORD>(ERROR_SUCCESS);
++		observation.phase = L"preflight-process-liveness";
++		if (result == WAIT_OBJECT_0) return static_cast<DWORD>(ERROR_PROCESS_ABORTED);
++		const DWORD wait_error = result == WAIT_FAILED ? GetLastError() : ERROR_GEN_FAILURE;
++		return wait_error != ERROR_SUCCESS ? wait_error : static_cast<DWORD>(ERROR_GEN_FAILURE);
++	};
+ 	for (;;)
+ 	{
+ 		target_preflight_result result =
+ 			target_preflight_result::inspection_failed;
++		const ULONGLONG episode_started = GetTickCount64();
++		ULONGLONG inspection_deadline = episode_started + retry_budget_ms;
++		if (official_addon_wait_ms != 0 && inspection_deadline > wait_deadline)
++			inspection_deadline = wait_deadline;
+ 		for (unsigned int attempt = 0;
+-			 attempt < max_inspection_attempts;
++			 attempt < maximum_attempts;
+ 			 ++attempt)
+ 		{
+ 			runtime = {};
+-			error = ERROR_SUCCESS;
++			error = wait_for_target(0);
++			if (error != ERROR_SUCCESS) return finish(target_preflight_result::inspection_failed);
++			++observation.attempts;
++			bool observed_host = false;
+ 			result = inspect_target_for_reshade_once(
+ 				process,
+ 				runtime,
+-				error);
+-			if (result != target_preflight_result::inspection_failed ||
+-				!is_transient_module_inspection_error(error) ||
+-				attempt + 1 == max_inspection_attempts)
++				error,
++				&observation.phase,
++				&observed_host);
++			host_evidence_observed = host_evidence_observed || observed_host;
++			if (result == target_preflight_result::clear && host_evidence_observed)
++			{
++				// Losing a previously observed host is not permission to inject a
++				// second one. Seek a complete current proof, then fail closed.
++				result = target_preflight_result::inspection_failed;
++				error = ERROR_PARTIAL_COPY;
++				observation.phase = L"preflight-host-evidence-lost";
++			}
++			if (result != target_preflight_result::inspection_failed)
+ 				break;
+-			Sleep(1);
++			if (error == ERROR_SUCCESS) error = ERROR_PARTIAL_COPY;
++			if (observation.first_error == ERROR_SUCCESS) observation.first_error = error;
++			last_failure_phase = observation.phase;
++			if (!is_transient_module_inspection_error(error) ||
++				GetTickCount64() >= inspection_deadline || attempt + 1 == maximum_attempts)
++				return finish(result);
++			const DWORD wait_error = wait_for_target(1);
++			if (wait_error != ERROR_SUCCESS)
++			{
++				error = wait_error;
++				return finish(target_preflight_result::inspection_failed);
++			}
++			if (GetTickCount64() >= inspection_deadline) return finish(result);
+ 		}
+ 
+ 		const bool may_still_load_official_addon =
+ 			result == target_preflight_result::clear ||
+ 			result == target_preflight_result::official_addon_pending;
+ 		if (!may_still_load_official_addon)
+-			return result;
++			return finish(result);
+ 		if (official_addon_wait_ms == 0)
+-			return result == target_preflight_result::official_addon_pending
++			return finish(result == target_preflight_result::official_addon_pending
+ 				? target_preflight_result::runtime_incompatible
+-				: result;
++				: result);
+ 
+ 		const ULONGLONG now = GetTickCount64();
+ 		if (now >= wait_deadline)
+-			return result == target_preflight_result::official_addon_pending
++			return finish(result == target_preflight_result::official_addon_pending
+ 				? target_preflight_result::runtime_incompatible
+-				: result;
++				: result);
+ 		const ULONGLONG remaining = wait_deadline - now;
+-		Sleep(static_cast<DWORD>(
+-			remaining < 25 ? remaining : 25));
++		error = wait_for_target(static_cast<DWORD>(remaining < 25 ? remaining : 25));
++		if (error != ERROR_SUCCESS) return finish(target_preflight_result::inspection_failed);
+ 	}
+ }
+ 
+@@ -3491,6 +3570,25 @@ static void append_json_string(std::wstring &json, const std::wstring &value)
+ 	json.push_back(L'"');
+ }
+ 
++static bool write_initial_module_inspection_summary(
++	const initial_module_inspection_observation &observation)
++{
++	// Separate optional telemetry preserves the existing strict diagnostic and
++	// result record shapes. A recovered read-only failure is not an injection.
++	std::wstring line = L"EGO_INITIAL_MODULE_INSPECTION_V1 {\"phase\":";
++	append_json_string(line, observation.phase);
++	line.append(L",\"attempts\":");
++	line.append(std::to_wstring(observation.attempts));
++	line.append(L",\"elapsedMs\":");
++	line.append(std::to_wstring(observation.elapsed_ms));
++	line.append(L",\"firstWindowsError\":");
++	line.append(std::to_wstring(observation.first_error));
++	line.append(L",\"lastWindowsError\":");
++	line.append(std::to_wstring(observation.last_error));
++	line.push_back(L'}');
++	return fwprintf(stdout, L"%ls\n", line.c_str()) >= 0 && fflush(stdout) == 0;
++}
++
+ static bool write_injector_diagnostic(
+ 	const wchar_t *code,
+ 	DWORD pid,
+@@ -4654,19 +4752,28 @@ static DWORD validate_staged_participant(const std::wstring &path, char (&build)
+ }
+ 
+ static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &ready,
+-	bool *present = nullptr, bool *adapter_ready = nullptr)
++	bool *present = nullptr, bool *adapter_ready = nullptr,
++	const wchar_t **inspection_phase = nullptr, bool *ownership_observed = nullptr)
+ {
++	runtime = nullptr;
++	ready = false;
++	if (present != nullptr) *present = false;
++	if (adapter_ready != nullptr) *adapter_ready = false;
++	if (ownership_observed != nullptr) *ownership_observed = false;
++	if (inspection_phase != nullptr) *inspection_phase = L"module-enumeration";
+ 	HMODULE modules[1024] = {};
+ 	DWORD bytes = 0;
+ 	if (!K32EnumProcessModules(process, modules, sizeof(modules), &bytes))
+-		return GetLastError();
++	{
++		const DWORD error = GetLastError();
++		return error != ERROR_SUCCESS ? error : ERROR_PARTIAL_COPY;
++	}
++	if (bytes == 0) return ERROR_PARTIAL_COPY;
++	if (bytes % sizeof(HMODULE) != 0) return ERROR_BAD_LENGTH;
+ 	if (bytes > sizeof(modules))
+ 		return ERROR_MORE_DATA;
+-	runtime = nullptr;
+-	ready = false;
+-	if (present != nullptr) *present = false;
+-	if (adapter_ready != nullptr) *adapter_ready = false;
+ 	DWORD error = ERROR_SUCCESS;
++	if (inspection_phase != nullptr) *inspection_phase = L"module-exports";
+ 	for (DWORD i = 0; i != bytes / sizeof(HMODULE); ++i)
+ 	{
+ 		uintptr_t address = 0;
+@@ -4675,6 +4782,7 @@ static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &re
+ 			return error;
+ 		if (reshade == module_export_inspection::present)
+ 		{
++			if (ownership_observed != nullptr) *ownership_observed = true;
+ 			if (runtime != nullptr)
+ 				return ERROR_REVISION_MISMATCH;
+ 			runtime = modules[i];
+@@ -4685,6 +4793,7 @@ static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &re
+ 			return error;
+ 		if (participant == module_export_inspection::present)
+ 		{
++			if (ownership_observed != nullptr) *ownership_observed = true;
+ 			if (present != nullptr) *present = true;
+ 			LONG value = 0;
+ 			if (!read_remote_bytes(process, address, &value, sizeof(value), error))
+@@ -4745,6 +4854,93 @@ static DWORD inspect_owned_late_d3d11_host(HANDLE process, HMODULE runtime,
+ 	return ERROR_SUCCESS;
+ }
+ 
++// Only the initial preflight uses this recovery budget. Its caller holds the
++// already identity-bound process handle and the injection mutex; no persistent
++// ownership, target allocation, thread or payload load has been published.
++static DWORD host_claim_is_pinned(HANDLE process, DWORD pid, bool &pinned);
++
++static DWORD inspect_initial_host_readonly(
++	HANDLE process, DWORD pid, bool &pinned, HMODULE &runtime,
++	bool &ready, bool &cooperative_present, owned_late_d3d11_host &owned_late,
++	initial_module_inspection_observation &observation)
++{
++	constexpr ULONGLONG retry_budget_ms = 250;
++	constexpr unsigned int maximum_attempts = 256;
++	const ULONGLONG started = GetTickCount64();
++	observation = {};
++	bool pinned_observed = false;
++	bool ownership_observed = false;
++	const wchar_t *last_failure_phase = L"not-started";
++	const auto clear_outputs = [&]() {
++		pinned = false;
++		runtime = nullptr;
++		ready = false;
++		cooperative_present = false;
++		owned_late = {};
++	};
++	const auto finish = [&](DWORD error) {
++		observation.elapsed_ms = GetTickCount64() - started;
++		observation.last_error = error;
++		if (error != ERROR_SUCCESS && observation.first_error == ERROR_SUCCESS)
++			observation.first_error = error;
++		if (error != ERROR_SUCCESS) clear_outputs();
++		return error;
++	};
++	const auto wait_for_target = [&](DWORD milliseconds) {
++		const DWORD result = WaitForSingleObject(process, milliseconds);
++		if (result == WAIT_TIMEOUT) return static_cast<DWORD>(ERROR_SUCCESS);
++		observation.phase = L"process-liveness";
++		if (result == WAIT_OBJECT_0) return static_cast<DWORD>(ERROR_PROCESS_ABORTED);
++		const DWORD error = result == WAIT_FAILED ? GetLastError() : ERROR_GEN_FAILURE;
++		return error != ERROR_SUCCESS ? error : static_cast<DWORD>(ERROR_GEN_FAILURE);
++	};
++	for (;;)
++	{
++		clear_outputs();
++		DWORD error = wait_for_target(0);
++		if (error != ERROR_SUCCESS) return finish(error);
++		++observation.attempts;
++		observation.phase = L"host-claim";
++		error = host_claim_is_pinned(process, pid, pinned);
++		if (error == ERROR_SUCCESS)
++		{
++			pinned_observed = pinned_observed || pinned;
++			pinned = pinned_observed;
++		}
++		bool observed_by_scan = false;
++		if (error == ERROR_SUCCESS)
++			error = inspect_cooperative_host(process, runtime, ready,
++				&cooperative_present, nullptr, &observation.phase, &observed_by_scan);
++		ownership_observed = ownership_observed || observed_by_scan;
++		if (error == ERROR_SUCCESS)
++		{
++			observation.phase = L"owned-late-host";
++			error = inspect_owned_late_d3d11_host(process, runtime, owned_late);
++		}
++		if (error == ERROR_SUCCESS && ownership_observed && !observed_by_scan)
++		{
++			error = ERROR_PARTIAL_COPY;
++			observation.phase = L"host-evidence-lost";
++		}
++		observation.elapsed_ms = GetTickCount64() - started;
++		if (error == ERROR_SUCCESS)
++		{
++			// After recovery, phase identifies the last failed read-only stage.
++			observation.phase = observation.first_error != ERROR_SUCCESS
++				? last_failure_phase : L"complete";
++			return finish(ERROR_SUCCESS);
++		}
++		if (observation.first_error == ERROR_SUCCESS) observation.first_error = error;
++		last_failure_phase = observation.phase;
++		if (!is_transient_module_inspection_error(error) ||
++			observation.elapsed_ms >= retry_budget_ms || observation.attempts >= maximum_attempts)
++			return finish(error);
++		const DWORD wait_error = wait_for_target(1);
++		if (wait_error != ERROR_SUCCESS) return finish(wait_error);
++		if (GetTickCount64() - started >= retry_budget_ms) return finish(error);
++	}
++}
++
+ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path,
+ 	bool earlier_load_consumed = false, bool report_first_injected_runtime = false,
+ 	const std::wstring &preloaded_addon_leaf = std::wstring(), bool full_runtime_started_by_this_request = false)
+@@ -5483,23 +5679,29 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		break;
+ 	}
+ 
++	bool initial_host_observed = false;
+ 	if (!official_addon_wait_requested)
+ 	{
+ 		bool pinned = false;
+-		DWORD member_error = host_claim_is_pinned(remote_process, pid, pinned);
+ 		HMODULE host = nullptr;
+ 		bool ready = false, cooperative_present = false;
+ 		owned_late_d3d11_host owned_late;
+-		if (member_error == ERROR_SUCCESS)
+-			member_error = inspect_cooperative_host(remote_process, host, ready, &cooperative_present);
+-		if (member_error == ERROR_SUCCESS)
+-			member_error = inspect_owned_late_d3d11_host(remote_process, host, owned_late);
++		initial_module_inspection_observation initial_inspection;
++		DWORD member_error = inspect_initial_host_readonly(remote_process, pid,
++			pinned, host, ready, cooperative_present, owned_late, initial_inspection);
++		if (initial_inspection.first_error != ERROR_SUCCESS &&
++			!write_initial_module_inspection_summary(initial_inspection))
++		{
++			print_injection_not_started();
++			return ERROR_WRITE_FAULT;
++		}
+ 		if (member_error != ERROR_SUCCESS)
+ 		{
+ 			write_injector_diagnostic(L"target-module-inspection-failed", pid, std::wstring(), member_error, selected_image_path);
+ 			print_injection_not_started();
+ 			return member_error;
+ 		}
++		initial_host_observed = host != nullptr;
+ 		if (addon_only_requested || pinned || cooperative_present || owned_late.initializer != 0)
+ 			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf);
+ 	}
+@@ -5507,12 +5709,21 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 	reusable_runtime_info reusable_runtime;
+ 	DWORD preflight_error = ERROR_SUCCESS;
+ 	bool reuse_existing_runtime = false;
++	initial_module_inspection_observation preflight_inspection;
+ 	const target_preflight_result preflight_result =
+ 		inspect_target_for_reshade(
+ 			remote_process,
+ 			official_addon_wait_ms,
+ 			reusable_runtime,
+-			preflight_error);
++			preflight_error,
++			&preflight_inspection,
++			initial_host_observed);
++	if (preflight_inspection.first_error != ERROR_SUCCESS &&
++		!write_initial_module_inspection_summary(preflight_inspection))
++	{
++		print_injection_not_started();
++		return ERROR_WRITE_FAULT;
++	}
+ 	if (official_addon_wait_requested &&
+ 		(preflight_result == target_preflight_result::clear ||
+ 		 preflight_result == target_preflight_result::reusable_runtime))

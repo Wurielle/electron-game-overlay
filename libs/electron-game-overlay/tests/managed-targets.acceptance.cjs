@@ -14,6 +14,7 @@ const args = Object.fromEntries(
     }),
 );
 const root = path.resolve(args.evidence);
+const { createEarlyTargetFallbackGuard } = require('./managed-target-policy.fixture.cjs');
 fs.mkdirSync(root, { recursive: true });
 app.setPath('userData', path.join(root, 'profile'));
 app.disableHardwareAcceleration();
@@ -92,9 +93,7 @@ void app
             earlyTargets: [
               { processName: path.basename(target), executablePath: target },
             ],
-            acceptBestEffort: () => {
-              throw Error('Early discovery must never use exact-PID fallback');
-            },
+            acceptBestEffort: createEarlyTargetFallbackGuard(target),
           }),
       onEvent: (e) => {
         events.push({

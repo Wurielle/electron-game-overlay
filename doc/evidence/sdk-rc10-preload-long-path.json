@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 1,
+  "kind": "electron-game-overlay-preload-long-path-fix",
+  "recordedAtUtc": "2026-11-02T21:53:49.308Z",
+  "status": "sdk-long-path-fix-verified-consumer-graphics-retest-pending",
+  "candidateVersion": "0.1.0-rc.10",
+  "sourceBaseCommit": "f51777621927ff090d0281ad069b720ed553d589",
+  "workingTreeDirty": true,
+  "nativeGeneration": 20,
+  "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+  "mappedAddonBytesUnchangedFromRc9": true,
+  "reshadeImplementationUnchanged": true,
+  "reshadeRebuilt": true,
+  "injectorSourceNormalizedSha256": "91d82243d81d2cdc082da1af9bff55a13315bf59f1fe5f9aca1dfae8442c8a10",
+  "newPatch": {
+    "path": "libs/electron-game-overlay-runtime/patches/reshade-injector-preload-long-path.patch",
+    "sha256": "ffff684d2e60d36f1cec4d073b91a014b7f497a50c4f5b00f7b7f2a57714397b"
+  },
+  "loaderEvidence": {
+    "scope": "Inert local DLL loading and stock scanner flags in longPathAware=false console children; no production injector entry, ReShade, target injection, graphics or game",
+    "baseline": {
+      "path": "build/lp-probe-8dfee723/report.json",
+      "sha256": "0b3715bd5805ed005ac33a6aa705759d20fb9dd50177f3b76096a4283a126bb6",
+      "cases": 35
+    },
+    "candidate": {
+      "path": "build/lp-probe-2c30daad/report.json",
+      "sha256": "610797757fe0000d85e5f1e66f73300c55f59decb11c12851e175e3068d284f7",
+      "cases": 45
+    },
+    "canonicalPathLengths": [
+      233,
+      259,
+      260,
+      289,
+      320
+    ],
+    "ordinaryFailuresAt": [
+      259,
+      260,
+      289,
+      320
+    ],
+    "ordinaryError": 206,
+    "prefixOnlyIdentityError": 123,
+    "extendedPathsAllSucceeded": true,
+    "explicitRemoteMutationCalls": 0
+  },
+  "snapshotPolicyEvidence": {
+    "path": "build/lp-policy-3ca46b02fc6d4838b52a5a5c0605c8cd/report.json",
+    "sha256": "a9479bd1546733020e0db0681c08a5201bf5ca4fd31da74099d428dbe31dab5b",
+    "scope": "Direct native selector policy with inert owned files, no DLL loading or remote execution",
+    "cases": 290,
+    "assertions": 1833,
+    "admissions": 20,
+    "rejections": 270,
+    "actualReparseCases": 30,
+    "skipped": 0,
+    "explicitRemoteMutationCalls": 0
+  },
+  "sdkSuite": {
+    "tests": 1286,
+    "pass": 1276,
+    "fail": 0,
+    "skipped": 10,
+    "concurrency": 4,
+    "node": "26.12.1",
+    "durationMs": 145754.8318,
+    "log": {
+      "path": "build/preload-long-path-sdk-suite.log",
+      "sha256": "d832c93d3ca6b5ff4628cb2818ac0f6809f2c217501fb97aaf642c8b10e6ec85"
+    },
+    "scope": "SDK unit/package/source-cache tests and actual native read-only identity/process-policy evaluators; no graphics acceptance"
+  },
+  "nativeBuilds": {
+    "x64": {
+      "path": "build/preload-long-path-build-x64.log",
+      "sha256": "fbc80f38081d399c0049d3ddc38cb9e85bf5ca31b73fb313543f518879951772"
+    },
+    "x86": {
+      "path": "build/preload-long-path-build-x86.log",
+      "sha256": "0da22338185e484e90de490306dea8880fb66a6557d8242c6f067d8de86638ea"
+    },
+    "consoleAbi": {
+      "x64": {
+        "path": "build/preload-long-path-abi-x64.log",
+        "sha256": "ef3995bbdf7364a7ac414056e6195c229559dd46ad8598faa469b2ae741124a1"
+      },
+      "x86": {
+        "path": "build/preload-long-path-abi-x86.log",
+        "sha256": "2df9176d87951f615d60e922dd61bfb0b50c4c9532025e00b51a7d7a21557aab"
+      },
+      "pass": 2,
+      "fail": 0
+    }
+  },
+  "sourceCacheTests": {
+    "frozen": 203,
+    "added": 9,
+    "pass": 212,
+    "fail": 0,
+    "skipped": 0,
+    "includedInSdkSuite": true
+  },
+  "sourceSdkManifest": {
+    "path": "libs/electron-game-overlay/dist/overlay-manifest.json",
+    "sha256": "0cbfb2f97a4cc22c5562491710aa427e1132d4bf49bdb30c5f77c1c7d77007e6"
+  },
+  "sealedPayloadCount": 154,
+  "changedSealedPayloads": [
+    {
+      "path": "lib/overlay-broker-protocol.d.ts",
+      "size": 10545,
+      "sha256": "495e17691a5ed47cdc381d67ae3644553eb82878a4d01488b06cb9073eebc769"
+    },
+    {
+      "path": "lib/overlay-broker-protocol.js",
+      "size": 24906,
+      "sha256": "4884c7f05a210557228145d4ae8d3fa599340113531505d0536653c7822b900c"
+    },
+    {
+      "path": "lib/overlay-package-manifest.js",
+      "size": 22848,
+      "sha256": "204ae61627ebba5d0515f26734e0043c4402309df2642dc7b0aeab01ef8813f8"
+    },
+    {
+      "path": "lib/reshade-launcher.d.ts.map",
+      "size": 9235,
+      "sha256": "66cb917e180020ae68699fef084bd54377e477c4e01f017a97b83f342e7354d9"
+    },
+    {
+      "path": "lib/reshade-launcher.js",
+      "size": 202811,
+      "sha256": "67e5a004a3f5686351378917ace680904b7129fde68896d0b6f362701b5ccd0b"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade32.build.json",
+      "size": 4049,
+      "sha256": "4e683f5ecdd833d9213c70ad59b9c8ac3d6eef5193dac394a6fa1c3e7349ee84"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade32.dll",
+      "size": 4405248,
+      "sha256": "9cf07761c30bef4f7da5b0febd86a96fd97aa1d57ec9a36e68a374dce169ab4a"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade64.build.json",
+      "size": 4049,
+      "sha256": "c1a15127ce65cd9ca0f9a682270bef383654f97ed8c985e844a6db142b0fff09"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/ReShade64.dll",
+      "size": 5530112,
+      "sha256": "98dc5cd4061c3d109e7f7cad7f3db1cfaa0c664ecdeb871b8500e281c9532346"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+      "size": 1100,
+      "sha256": "9722c57a6dffe80ad94ccb9f61a55bb539ae8f8d8c1f2ef6bab3b69ed0d0830d"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+      "size": 1101,
+      "sha256": "45734783bdbd924631851d334a9f908cdd498585c0e452fb9d572e0437d578b1"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/inject.exe",
+      "size": 193536,
+      "sha256": "39731917db5663aa39adeadb7683e078aa453da1e696937c4194a670c8792909"
+    },
+    {
+      "path": "runtime/win32-x64/reshade/inject32.exe",
+      "size": 156672,
+      "sha256": "7c30594304831209af7226034edccd89980fac7ff5efc2e6cf68c532839bab55"
+    },
+    {
+      "path": "tsconfig.lib.tsbuildinfo",
+      "size": 42343,
+      "sha256": "37692628142e1c8732bd652c58e628d9d95713d85f19d2b4e939650377813b32"
+    }
+  ],
+  "native": [
+    {
+      "architecture": "x64",
+      "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "addonSha256": "f45ca8feb398fa4caa543a174a393d45e555f9eeac8167fd94b66e1a46da9918",
+      "runtimeSha256": "98dc5cd4061c3d109e7f7cad7f3db1cfaa0c664ecdeb871b8500e281c9532346",
+      "injectorSha256": "39731917db5663aa39adeadb7683e078aa453da1e696937c4194a670c8792909",
+      "packageStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime.build.json",
+        "sha256": "9722c57a6dffe80ad94ccb9f61a55bb539ae8f8d8c1f2ef6bab3b69ed0d0830d"
+      },
+      "reshadeStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade64.build.json",
+        "sha256": "c1a15127ce65cd9ca0f9a682270bef383654f97ed8c985e844a6db142b0fff09"
+      }
+    },
+    {
+      "architecture": "x86",
+      "addonBuildId": "CCE20935ADD44EF6A5A7973014B2E07F",
+      "addonSha256": "3850842892b3a00b7cc4cbfa0fd03d105645acb8cf0a0f14f711cc55f03a9f8a",
+      "runtimeSha256": "9cf07761c30bef4f7da5b0febd86a96fd97aa1d57ec9a36e68a374dce169ab4a",
+      "injectorSha256": "7c30594304831209af7226034edccd89980fac7ff5efc2e6cf68c532839bab55",
+      "packageStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/electron_game_overlay_runtime32.build.json",
+        "sha256": "45734783bdbd924631851d334a9f908cdd498585c0e452fb9d572e0437d578b1"
+      },
+      "reshadeStamp": {
+        "path": "libs/electron-game-overlay/dist/runtime/win32-x64/reshade/ReShade32.build.json",
+        "sha256": "4e683f5ecdd833d9213c70ad59b9c8ac3d6eef5193dac394a6fa1c3e7349ee84"
+      }
+    }
+  ],
+  "packageHandoff": {
+    "releaseDirectory": "artifacts/rc10-preload-long-path",
+    "sourceSnapshotPrecedesTarball": true,
+    "candidateReport": "artifacts/rc10-preload-long-path/sdk-preview-report.json",
+    "offlineConsumerReport": "artifacts/rc10-preload-long-path/SDK_PACKAGE_CHECKS.json",
+    "finalHashEvidence": "artifacts/rc10-preload-long-path/RELEASE_EVIDENCE.json"
+  },
+  "acceptance": {
+    "originalConsumerLongProfileRetest": "pending",
+    "consumerWorkspaceModified": false,
+    "consumerReplacementInstalled": false,
+    "graphicsExecutedForFix": false,
+    "userGameExecuted": false,
+    "runningApplicationStopped": false,
+    "securitySettingsChanged": false,
+    "committed": false,
+    "pushed": false,
+    "windows299Investigation": "paused",
+    "scopeLimit": "Registered add-on DLL path spelling; not unrestricted runtime base-path support or proof of historical consumer root cause"
+  }
+}
