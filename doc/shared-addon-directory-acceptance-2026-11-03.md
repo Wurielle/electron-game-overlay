@@ -152,6 +152,15 @@ all six successful target-module snapshots. Exact process/time rejection and
 future-process selection checks remain enabled. No production injector or
 feature-engine changes were required.
 
+The pinned-old-SDK popup/video comparison explicitly injects its historical
+broker backend at the native factory boundary. Previously it replaced an import
+that the new default backend no longer uses. All popup, video, placement,
+order-token and reconnect assertions are retained; the complete 17-outcome
+matrix passed against the intact pinned old SDK. Reports identify this as a
+controlled legacy broker characterization and explicitly exclude execution of
+the default cooperative transport or native runtime. Actual cooperative/default
+backend acceptance remains the separate SDK transport and DX-demo evidence.
+
 ## Limits
 
 ReShade scans only top-level architecture-compatible add-on files. Already

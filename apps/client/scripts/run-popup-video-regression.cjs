@@ -5,6 +5,8 @@ const assertionMessage = 'unrelated windows must not be re-registered with retai
 const phaseNames = ['fresh-popup','first-video','reuse-visible-video','hide-video','show-hidden-video','repeated-popup-0','focus-0','repeated-popup-1','focus-1'];
 function classify(coordinator, result, trace) {
   assert.ok(trace && trace.nativeExecuted === false && trace.stage === 'assertions', 'complete assertion trace required');
+  assert.equal(trace.transportMode, 'explicit-legacy-broker-fixture', 'historical native boundary must be explicit');
+  assert.equal(trace.defaultCooperativeTransportExecuted, false, 'broker matrix must not claim default cooperative acceptance');
   assert.ok(!trace.cleanupErrors?.length, 'cleanup failure is not behavioral RED');
   assert.deepEqual(trace.phases.map(p => p.name), phaseNames);
   const counts = trace.phases.map(p => p.unrelated.length);
@@ -29,7 +31,10 @@ function classify(coordinator, result, trace) {
 
 async function runMatrix(options = {}) {
   const output = path.resolve(options.output || 'test-results/popup-video-matrix/report.json');
-  const report = { status: 'failed', stage: 'setup', nativeExecuted: false, platform: process.platform, cases: [] };
+  const report = { status: 'failed', stage: 'setup', nativeExecuted: false,
+    transportMode:'explicit-legacy-broker-fixture',defaultCooperativeTransportExecuted:false,
+    scope:'Historical broker popup/video registration and retained-token replay comparison; current default cooperative/native acceptance is separate.',
+    platform: process.platform, cases: [] };
   fs.mkdirSync(path.dirname(output), { recursive: true });
   const save = () => fs.writeFileSync(output, JSON.stringify(report, null, 2));
   save();

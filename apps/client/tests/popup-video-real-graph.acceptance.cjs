@@ -1,5 +1,7 @@
 // Explicit external-baseline runner: EGO_POPUP_SERVER_LIB selects an intact shipped lib graph.
-// Real application + SDK + independent broker clients/private sockets; Electron/native boundary controlled.
+// Retained broker regression: real application/session/window graphs and private sockets.
+// The native factory is explicitly bound to broker clients; this does not exercise
+// the default cooperative transport or make a current native/game acceptance claim.
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
@@ -60,7 +62,6 @@ function appGraph(pipePath, clients, producer, sdkLib) {
     mod.require = specifier => {
       if (specifier === 'electron') return electron;
       if (specifier === 'electron-game-overlay') return sdk;
-      if (filename === path.join(sdkLib, 'native.js') && specifier === './overlay-broker-client.js') return {OverlayBrokerClient: PrivateClient};
       if (specifier.startsWith('.')) {
         const resolved = path.resolve(path.dirname(filename), specifier);
         for (const candidate of [resolved, `${resolved}.ts`, `${resolved}.js`]) {
@@ -72,6 +73,12 @@ function appGraph(pipePath, clients, producer, sdkLib) {
     const source = fs.readFileSync(filename, 'utf8');
     loadedHashes.set(filename, createHash('sha256').update(source).digest('hex'));
     mod._compile(require('./helpers/compile-demo-factory.cjs')(filename.endsWith('.ts') ? ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText : source, filename), filename);
+    if (filename === path.join(sdkLib, 'native.js')) {
+      assert.equal(typeof mod.exports.createNativeOverlay, 'function', 'intact SDK native factory exists');
+      // This matrix characterizes broker-issued IDs/tokens and coordinator replay.
+      // Select that controlled boundary explicitly across both SDK generations.
+      mod.exports.createNativeOverlay = () => new PrivateClient();
+    }
     return mod.exports;
   }
   sdk = load(path.join(sdkLib, 'electron-game-overlay.js'));
@@ -111,7 +118,10 @@ test('actual popup/video paths never replay unrelated placements', {timeout: 200
     for (const client of clients) try { client.stop(); } catch(error) { cleanupErrors.push(error.message); }
     try { if (server) await server.stop(); } catch(error) { cleanupErrors.push(error.message); }
     process.argv = argv; global.CONFIG = config;
-    const report = {status:completed && !cleanupErrors.length ? 'passed' : 'failed',stage,failure,cleanupErrors,nativeExecuted:false,serverLib,sdkLib,phases,producer,calls,recoveryCharacterization,loadedHashes:Object.fromEntries(loadedHashes),
+    const report = {status:completed && !cleanupErrors.length ? 'passed' : 'failed',stage,failure,cleanupErrors,nativeExecuted:false,
+      transportMode:'explicit-legacy-broker-fixture',defaultCooperativeTransportExecuted:false,
+      scope:'Retained broker regression using actual application/session/window graphs with an explicit broker-client native factory and controlled Electron/native boundary. Not current default cooperative/native/game acceptance.',
+      serverLib,sdkLib,phases,producer,calls,recoveryCharacterization,loadedHashes:Object.fromEntries(loadedHashes),
       hashes:Object.fromEntries([path.join(serverLib,'overlay-broker-server.js'),path.join(sdkLib,'overlay-broker-client.js'),path.join(sdkLib,'overlay-session.js'),path.join(sdkLib,'electron-overlay-window.js')].filter(file=>fs.existsSync(file)).map(file => [file,createHash('sha256').update(fs.readFileSync(file)).digest('hex')]))};
     if (process.env.EGO_POPUP_TRACE) fs.writeFileSync(process.env.EGO_POPUP_TRACE, JSON.stringify(report,null,2));
     assert.deepEqual(cleanupErrors, [], 'fixture cleanup must complete');
