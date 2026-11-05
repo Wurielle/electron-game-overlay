@@ -1,0 +1,87 @@
+name: SDK release
+
+on:
+  push:
+    branches: [main, dev, rc, alpha, beta]
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - .github/workflows/release.yml
+      - .github/release-tools/**
+      - libs/electron-game-overlay/scripts/package-sdk.cjs
+      - libs/electron-game-overlay/tests/package-sdk.test.cjs
+
+permissions:
+  contents: read
+
+# All channels share tags; finish a release instead of cancelling its upload.
+concurrency:
+  group: sdk-release
+  cancel-in-progress: false
+
+jobs:
+  release-policy:
+    name: Conventional release policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          cache: npm
+          cache-dependency-path: .github/release-tools/package-lock.json
+      - run: npm ci --prefix .github/release-tools --ignore-scripts --no-audit --no-fund
+      - run: node --test .github/release-tools/release.test.cjs
+
+  release:
+    name: Build and release Windows SDK
+    needs: release-policy
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      NX_DAEMON: 'false'
+      NX_NO_CLOUD: 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            .github/release-tools/package-lock.json
+      - name: Install locked build and release dependencies
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix .github/release-tools --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare Windows Rust targets
+        run: rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
+      - name: Build sealed x64 and x86 native SDK distribution
+        shell: powershell
+        run: |
+          Get-Command Get-FileHash -ErrorAction Stop | Out-Null
+          npm exec --yes=false -- nx run electron-game-overlay:build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check packaging and native process policy
+        env:
+          EGO_REQUIRE_NATIVE_PROCESS_POLICY: '1'
+        run: node --test libs/electron-game-overlay/tests/package-sdk.test.cjs libs/electron-game-overlay/tests/process-policy.test.cjs
+      - name: Exercise release packaging without publishing on pull requests
+        if: github.event_name == 'pull_request'
+        run: node .github/release-tools/prepare.cjs 0.0.0-nightly.0
+      - name: Publish conventional release and changelog
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/release-tools/node_modules/semantic-release/bin/semantic-release.js --extends ./.github/release-tools/release.config.cjs

@@ -1,6 +1,6 @@
 'use strict';
 // node package-sdk.cjs --package-root <leaf> --built-dist <dist> --output <directory>
-// [--version 0.1.0-rc.N]. Produces sdk-preview-report.json, a retained stage and npm tarball.
+// [--version X.Y.Z[-{nightly,rc,alpha,beta}.N]]. Produces a report, retained stage and tgz.
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
@@ -59,7 +59,7 @@ function main() {
     parseArgs({ options }); // Validate syntax only; all work uses the values checked above.
     for (const key of ['package-root', 'built-dist']) if (!values[key]) throw Error(`--${key} is required`);
     report.version = values.version;
-    if (!/^0\.1\.0-rc\.[1-9][0-9]{0,5}$/.test(values.version)) throw Error('Candidate version must match 0.1.0-rc.N (N=1..999999)');
+    if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:nightly|rc|alpha|beta)\.(0|[1-9][0-9]*))?$/.test(values.version)) throw Error('Version must be X.Y.Z or X.Y.Z-{nightly,rc,alpha,beta}.N');
     if (values['source-commit'] !== undefined && !/^[0-9a-f]{40}$/.test(values['source-commit'])) throw Error('--source-commit must be a full lowercase Git commit');
     let sourceProvenance;
     if (values['source-provenance']) {
