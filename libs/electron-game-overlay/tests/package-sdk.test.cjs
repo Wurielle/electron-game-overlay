@@ -32,11 +32,30 @@ function run(f, extra = []) {
   const result = spawnSync(process.execPath, [...preloadArgs, cli, '--package-root', f.pkg, '--built-dist', f.dist, '--output', f.output, ...extra], { encoding: 'utf8', timeout: 30000 });
   return { ...result, report: fs.existsSync(path.join(f.output, 'sdk-preview-report.json')) ? JSON.parse(fs.readFileSync(path.join(f.output, 'sdk-preview-report.json'))) : null };
 }
-test('rejects non-preview versions before staging and invalidates stale success', t => {
+test('packs a stable release without changing the sealed source distribution', t => {
+  const f = fixture(t);
+  const before = fs.readFileSync(f.manifestPath);
+  const result = run(f, ['--version', '1.2.3']);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.report.version, '1.2.3');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'package.json'))).version, '1.2.3');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json'))).packageVersion, '1.2.3');
+  assert.deepEqual(fs.readFileSync(f.manifestPath), before);
+});
+for (const channel of ['nightly', 'alpha', 'beta', 'rc']) test('packs computed ' + channel + ' versions with matching metadata', t => {
+  const f = fixture(t);
+  const version = '2.3.4-' + channel + '.12';
+  const result = run(f, ['--version', version]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.report.version, version);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'package.json'))).version, version);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(result.report.stageRoot, 'dist/overlay-manifest.json'))).packageVersion, version);
+});
+test('rejects malformed versions before staging and invalidates stale success', t => {
   const f = fixture(t);
   fs.mkdirSync(f.output);
   f.write(path.join(f.output, 'sdk-preview-report.json'), JSON.stringify({ status: 'passed', tarball: 'stale' }));
-  const result = run(f, ['--version', '1.0.0']);
+  const result = run(f, ['--version', '01.0.0']);
   assert.equal(result.status, 1);
   assert.equal(result.report.status, 'failed');
   assert.match(result.report.error, /version/i);
