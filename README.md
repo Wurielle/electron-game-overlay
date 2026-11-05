@@ -139,7 +139,8 @@ npm run demo:basic-window -- --target-process="game.exe"
 ```
 
 Wait for `Injector watcher ready`, then launch the game. The demo runner adds
-the required runtime opt-in automatically.
+`--reshade-overlay` for these CLI-based demos automatically; applications can
+configure the SDK directly without a command-line flag, as shown below.
 
 See [`demos`](demos) for all focused examples and their launch commands.
 `apps/client` is the larger validation application, not the recommended place
@@ -151,6 +152,11 @@ The SDK is used from Electron's main process. Disable Electron GPU acceleration
 before `ready`, create one overlay session, create the offscreen windows you
 want to publish, and attach a launcher to the target.
 
+**Your application does not need a `--reshade-overlay` launch argument.** Use
+`createReShadeLaunchConfig()` to opt in directly in code. It validates the bundled
+runtime without starting a watcher or injecting anything; attachment starts
+only when your application calls `attach()`.
+
 ```ts
 import { app } from 'electron';
 import path from 'node:path';
@@ -158,15 +164,12 @@ import {
   ElectronGameOverlay,
   ReShadeOverlayLauncher,
   isReShadeOperationError,
-  parseReShadeLaunchConfig,
+  createReShadeLaunchConfig,
 } from 'electron-game-overlay';
 
 app.disableHardwareAcceleration();
 
-const config = parseReShadeLaunchConfig(process.argv);
-if (!config) {
-  throw new Error('Start Electron with --reshade-overlay.');
-}
+const config = createReShadeLaunchConfig();
 
 const overlay = new ElectronGameOverlay();
 const session = overlay.createSession();
@@ -218,11 +221,37 @@ void app.whenReady().then(async () => {
 });
 ```
 
-Start the compiled Electron entry point with the explicit opt-in:
+Start the compiled Electron entry point normally; no overlay flag is needed:
+
+```powershell
+npx electron path\to\main.js
+```
+
+### Optional command-line opt-in
+
+If your application should enable the overlay only when explicitly requested on
+the command line, replace the `createReShadeLaunchConfig()` call above with:
+
+```ts
+import { parseReShadeLaunchConfig } from 'electron-game-overlay';
+
+const config = parseReShadeLaunchConfig(process.argv);
+if (!config) {
+  throw new Error('Start Electron with --reshade-overlay to enable the overlay.');
+}
+```
+
+For this CLI-based variant only, launch with:
 
 ```powershell
 npx electron path\to\main.js --reshade-overlay
 ```
+
+`--reshade-overlay` is an opt-in convention enforced by
+`parseReShadeLaunchConfig()`, not a requirement of ReShade or of the SDK's
+programmatic API. Without the flag, the parser returns `null`; an application
+can skip overlay setup instead of throwing. Both configuration helpers perform
+the same runtime validation, and neither starts attachment by itself.
 
 For a production application, handle the rejected `attach()` promise and
 surface diagnostics as shown below.
