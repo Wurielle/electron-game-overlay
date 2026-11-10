@@ -41,6 +41,61 @@ function mutateStamp(f, name, mutate) {
   f.payload.seal();
 }
 
+test('generation-24 seals require exact inspection context provenance on both architectures', t => {
+  const f = fixture(t, { runtimeGeneration: 24 });
+  validateOverlayDistributionSync(f.dist);
+  mutateStamp(f, 'ReShade32.build.json', stamp => { delete stamp.injectorInspectionContextPatchSha256; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /inspection context patch provenance mismatch/);
+});
+
+test('generation-25 seals require selection-before-open provenance and its compiled implementation pin', t => {
+  const f = fixture(t, { runtimeGeneration: 25 });
+  validateOverlayDistributionSync(f.dist);
+  mutateStamp(f, 'ReShade32.build.json', stamp => { delete stamp.injectorSelectionBeforeOpenPatchSha256; });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /selection before open patch provenance mismatch/);
+  const missing = fixture(t, { runtimeGeneration: 25, selectionBeforeOpenPatch: false });
+  assert.throws(() => validateOverlayDistributionSync(missing.dist), /selection before open patch pin does not match/);
+});
+
+test('generation-26 startup readiness requires the frozen patch on each architecture and its compiled pin', t => {
+  for (const bits of [64,32]) {
+    const f=fixture(t,{runtimeGeneration:26});validateOverlayDistributionSync(f.dist);
+    mutateStamp(f,`ReShade${bits}.build.json`,stamp=>{delete stamp.injectorStartupReadinessPatchSha256;});
+    assert.throws(()=>validateOverlayDistributionSync(f.dist),/startup readiness patch provenance mismatch/);
+  }
+  const missing=fixture(t,{runtimeGeneration:26,startupReadinessPatch:false});
+  assert.throws(()=>validateOverlayDistributionSync(missing.dist),/startup readiness patch pin does not match/);
+});
+
+test('generation-26 member diagnostics require the frozen native patch and compiled SDK pin', t => {
+  const f = fixture(t, {runtimeGeneration:26});validateOverlayDistributionSync(f.dist);
+  mutateStamp(f,'ReShade32.build.json',stamp=>{delete stamp.injectorMemberDiagnosticsPatchSha256;});
+  assert.throws(()=>validateOverlayDistributionSync(f.dist),/member diagnostics patch provenance mismatch/);
+  const missing=fixture(t,{runtimeGeneration:26,memberDiagnosticsPatch:false});
+  assert.throws(()=>validateOverlayDistributionSync(missing.dist),/member diagnostics patch pin does not match/);
+});
+
+test('generation-27 private elevated authorization requires independent architecture provenance and the compiled pin', t => {
+  for(const bits of [64,32]){
+    const f=fixture(t,{runtimeGeneration:27});validateOverlayDistributionSync(f.dist);
+    mutateStamp(f,`ReShade${bits}.build.json`,stamp=>{delete stamp.injectorElevatedPrivatePatchSha256;});
+    assert.throws(()=>validateOverlayDistributionSync(f.dist),/elevated private patch provenance mismatch/);
+  }
+  const missing=fixture(t,{runtimeGeneration:27,elevatedPrivatePatch:false});
+  assert.throws(()=>validateOverlayDistributionSync(missing.dist),/elevated private patch pin does not match/);
+});
+
+for(const value of [undefined,'1',2])test('generation27 requires explicit native private authorization capability on x86: '+String(value),t=>{
+  const f=fixture(t,{runtimeGeneration:27});
+  mutateStamp(f,'electron_game_overlay_runtime32.build.json',stamp=>{if(value===undefined)delete stamp.privateElevatedAuthorization;else stamp.privateElevatedAuthorization=value;});
+  assert.throws(()=>validateOverlayDistributionSync(f.dist),/manifests disagree|private elevated authorization capability/);
+});
+
+test('generation-24 metadata cannot promote a validator without its inspection implementation pin', t => {
+  const f = fixture(t, { runtimeGeneration: 24, inspectionContextPatch: false });
+  assert.throws(() => validateOverlayDistributionSync(f.dist), /inspection context patch pin does not match/);
+});
+
 test('direct SDK seal validates both native architectures without executing an SDK or broker', t => {
   const f = fixture(t);
   f.write('index.js', 'throw new Error("Packaging must never execute the supplied SDK");\n');
@@ -730,7 +785,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t);
+  const f = fixture(t, { runtimeGeneration: 28 });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');
@@ -748,4 +803,10 @@ test('actual seal script builds a self-contained SDK manifest on the supported b
   const manifest = validateOverlayDistributionSync(f.dist, '0.1.0-rc.7');
   assert.ok(manifest.files.some(file => file.path === 'node_modules/tslib/tslib.js'));
   assert.equal(fs.existsSync(path.join(f.dist, 'broker')), false);
+});
+
+for(const value of [undefined,1,'2',3])test('generation28 requires explicit private high staging capability: '+String(value),t=>{
+  const f=fixture(t,{runtimeGeneration:28});
+  mutateStamp(f,'electron_game_overlay_runtime32.build.json',stamp=>{if(value===undefined)delete stamp.privateElevatedAuthorization;else stamp.privateElevatedAuthorization=value;});
+  assert.throws(()=>validateOverlayDistributionSync(f.dist),/manifests disagree|private elevated authorization capability/);
 });

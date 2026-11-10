@@ -315,6 +315,149 @@ environment layout. The Win32 build targets `ReShade32.dll` and
 loader with an ordered code-section end marker because x86 images do not carry
 the x64 unwind metadata used to measure that thunk.
 
+## `reshade-injector-inspection-context.patch`
+
+Generation 24 adds optional `EGO_TARGET_INSPECTION_CONTEXT_V1` stdout telemetry
+after transient module-inspection failures, using the exact retained target
+handle. It reports selected/handle PIDs, process creation time, injector/process/
+native machine values, architecture-query error, diagnostic loader state/error
+and process liveness. PEB loader fields are observations only and never authorize
+injection, bypass a host check, resume a thread or extend the 250 ms inspection
+budget. The existing strict diagnostic/result schemas remain unchanged.
+
+The patch also checks the previously ignored `IsWow64Process` return value and
+refuses before module inspection or injection if that query fails. Its failure
+emits context before the diagnostic without a module-inspection summary. Mapped
+host/add-on implementations are unchanged, so their exact add-on build ID stays
+`CCE20935ADD44EF6A5A7973014B2E07F`. Injector source, patch provenance and runtime
+generation change together; generation-24 seals require that provenance in both
+architectures. Source-cache migration reverses this tail before generation 23.
+
+The remote report for PID 24224 proves exhausted module enumeration at 250 ms
+with error 299 before injection. It does not establish the underlying cause.
+The separate warnings for PIDs 12028 (preflight), 27116 (runtime initialization)
+and 27592 (injector) cannot be joined into the same attempt. A controlled suspended
+console target reproduced 17 attempts/250 ms/299 on both x64 and x86, then passed
+read-only inspection through the same handle after its owner resumed it. This
+proves one possible cause; it does not diagnose the remote game.
+
+For the next remote investigation, collect one complete attempt's native stdout
+and stderr, its SDK diagnostic with stage/PID/retry safety, selected V2 creation
+identity, SDK version, both package/build manifests and Windows version/machine.
+With this candidate's diagnostics, compare the context creation identity and
+handle PID to that selection. `not-created`/`not-initialized` identifies observed
+loader startup; `initialized` excludes that particular observation but does not
+prove a stable module list. `unavailable` must retain its query/read error instead
+of being treated as an empty list. Machine 34404 is AMD64, 332 is I386; a process
+machine of zero means the native machine. A launcher holding the primary thread
+suspended is additional evidence to record, not an inference from 299. No consumer
+retry or longer timeout is prescribed. Do not combine evidence across launches.
+
+Validation launchers:
+`scripts/test-cases/initial-module-inspection-console.ps1 -Architecture x64`
+and `-Architecture x86`; they launch owned inert console fixtures only. Each also
+checks distinct private image globals and the merged-hard-link control. The
+existing deterministic fixture still covers all 54 ownership/failure cases and
+20,982 assertions on each architecture against the exact candidate source.
+
+The separate mixed-watcher recovery launchers described in the SDK README use
+unmodified released generation-23 native binaries with the current SDK; they do
+not validate a complete generation-24 graphics build. On 2026-11-09, configuring
+the existing canonical native cache refused an unrecognized complete source-cache
+state without changing files. That cache was preserved. Generation-24 injector
+console and deterministic checks instead compiled isolated verified source
+reconstructions on x64 and x86. A subsequent complete generation-24 build on both
+architectures passed using `-BuildCacheRoot build/candidate-gen24-cache`, seeded
+with clean checkouts from the pinned Git objects. The original unrecognized cache
+was not reset or overwritten. Headless ABI, native policy and installed-package
+checks accompany the local candidate under
+`build/candidates/attachment-recovery-gen24`; its validation report identifies
+the exact artifact and dirty source provenance. Generation-24 consumer graphics
+and input acceptance belong to the separate consumer test run.
+
+## `reshade-injector-selection-before-open.patch`
+
+Generation 25 moves future-target V2 selection publication ahead of the
+full-access `OpenProcess`, using the exact retained limited-access identity and
+path already verified by the native selector. Previously a matched process could
+be refused before V2, leaving an armed SDK policy slot with no identity to
+exclude or retire and no safe way to discover a successor. The original
+generation-24 injector reproduces that path on an owned process with a DACL
+supplied atomically to `CreateProcessW`; generation 25 emits its exact PID/path/
+creation identity before the same refusal. No injection access is granted.
+
+V2 identifies selection only. A full-access handle must still independently
+match the path and creation time before architecture/module inspection, claims
+or VM work. The legacy selection line remains after those checks. Failed or
+unavailable identity queries do not synthesize V2 or authorize a blind retry.
+Mapped host/add-on code and build ID remain unchanged. This frozen one-file
+tail reverses before generation 24 and validates the complete source vector
+before publication; both runtime manifests bind its exact provenance.
+
+The owned headless launchers are
+`scripts/test-cases/unopened-target-selection-console.ps1` and
+`scripts/test-cases/owned-target-access-refusal.ps1`, each accepting x64/x86. The
+former compiles the complete production entrypoint with a targeted API seam for
+live refusal and a fast-exit race. The latter runs the actual built injector
+against the owned DACL fixture and verifies retained-handle cleanup. The separate
+`owned-target-access-refusal-negative-control.ps1` preserves generation-24
+reproduction. Its [fixture protocol](../tests/unopened-target-selection/README.md)
+also documents consumer integration. No graphics, external target or system
+security configuration is involved in these gates.
+
+## Generation-27 private elevated authorization
+
+`reshade-injector-elevated-private-authorization.patch` adds a same-account,
+same-interactive-session token gate on the exact retained target handle.
+It permits high-to-high and high-to-medium attachment only through the isolated
+private lane, with no shared registered add-on scan. Normal-to-high, system,
+cross-user/session and unknown token evidence remain refused before mutation.
+The SDK supplies expected hashes for the runtime, engine and private INI;
+native code compares the write-pinned files against those hashes and validates
+the newly created high-labelled directory, its owner/protected DACL and scan
+inventory. The native manager creates only new project-owned directories;
+it never changes a saved administrator preference or existing ReShade assets.
+
+See the [elevated consumer contract](../../../doc/elevated-consumers.md) for
+the token matrix, diagnostic-only medium-writable files and verification limits.
+The new human-facing headless gate is
+`scripts/test-cases/elevated-private-authorization-console.ps1`.
+Injector/helper changes do not alter the mapped EGO feature engine, whose exact
+build ID remains `CCE20935ADD44EF6A5A7973014B2E07F`.
+
+## Generation-26 diagnostics and initial loader readiness
+
+`reshade-injector-member-diagnostics.patch` preserves the authorization policy
+and reports each actor's token-query phase through
+`EGO_PRELOAD_AUTHORIZATION_CONTEXT_V1`. Windows error 5 alone does not identify
+the elevated actor. Structured member failures distinguish preflight from an
+already consumed participant load; the SDK keeps mutation uncertainty terminal.
+
+`reshade-injector-startup-readiness.patch` adds a separate 3000 ms bounded wait
+only after the identity-bound handle positively reports a missing or
+uninitialized loader. It checks liveness on that same handle and never resumes
+or suspends a target, reopens a PID, or retries an uncertain injection. Unknown
+initial state delegates to strict inspection; losing a known pending state
+fails closed. The existing strict module inspection retains its 250 ms budget
+after startup readiness. Readiness neither proves module absence nor authorizes
+injection. Timeout/exit emits `target-startup-readiness-failed` before mutation.
+Successor selection still publishes its own V2 identity independently.
+
+Both tails are frozen, reversible source-cache phases with exact SDK/native
+provenance on x64 and x86. They do not change mapped host/add-on implementation;
+the add-on ID stays `CCE20935ADD44EF6A5A7973014B2E07F`.
+
+Human-facing headless gates have separate launchers:
+`startup-readiness-console.ps1` (owned paused child, 800 ms owner resume,
+unchanged 299 negative control, timeout and exit),
+`member-diagnostics-console.ps1` (real token observations and deterministic
+failure/formatter seams), `consumer-execution-context-console.ps1` (real caller
+binding and fail-closed identity checks), and `consumer-parent-launch-console.ps1`
+(actual medium desktop-parent launch with a test-only early-return seam).
+The latter proves the real process creation, environment and argv path at medium
+integrity; it does not establish an elevated-to-medium consumer round trip.
+None starts graphics, a game or a UAC prompt.
+
 ## `reshade-x86-target-architecture-diagnostic.patch`
 
 Emits the existing strict pre-mutation injector diagnostic with

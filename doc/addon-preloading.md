@@ -146,3 +146,10 @@ ReShade add-on disablement is respected, including the registered filename and
 unique display name. Disabling a registered add-on cannot be bypassed through
 the ordinary loading fallback. Registered per-user code is not injected into
 elevated targets.
+
+Generation 27 preserves that shared-preload restriction while supporting an
+elevated consumer through its [private elevated lane](elevated-consumers.md).
+It keeps the app elevated, leaves registration unchanged, and stages only the
+calling app's own sealed engine with `AddonPath=.`. A high same-user target may
+use that private engine; the shared registered inventory is not scanned or
+activated by this lane.

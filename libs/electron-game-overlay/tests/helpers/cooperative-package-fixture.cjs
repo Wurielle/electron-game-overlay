@@ -27,6 +27,16 @@ function writeCooperativeDistribution(dist, {
   sharedAddonDirectoryPatch = runtimeGeneration >= 23,
   injectorSharedAddonDirectoryPatchSha256 = '54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125',
   foreignAddonIsolationPatch = runtimeGeneration >= 23,
+  inspectionContextPatch = runtimeGeneration >= 24,
+  injectorInspectionContextPatchSha256 = '288C2A76AEDBC827BB00117A455FFE87ECB708CA33411449CD56E2BEA190160E',
+  selectionBeforeOpenPatch = runtimeGeneration >= 25,
+  injectorSelectionBeforeOpenPatchSha256 = 'F83053E59EE9443E98D31A4C238B3D19D6B847D1F6F5E238E05B899FFC87E555',
+  memberDiagnosticsPatch = runtimeGeneration >= 26,
+  injectorMemberDiagnosticsPatchSha256 = 'D56162D2EA444DB44E7F21128A5F316E124E11E08EC1B6F3328D769EA4048A57',
+  startupReadinessPatch = runtimeGeneration >= 26,
+  elevatedPrivatePatch = runtimeGeneration >= 27,
+  elevatedPrivatePatchSha256 = 'DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697',
+  injectorStartupReadinessPatchSha256 = '29C8D7ACA8919189D484B2E22F83DBD564B00D344E8C860058AFCCEAFC808D9D',
   ownedLateD3d11ForeignAddonIsolationPatchSha256 = '2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99',
 } = {}) {
   dist = path.resolve(dist);
@@ -74,6 +84,20 @@ function writeCooperativeDistribution(dist, {
       : '') +
     (foreignAddonIsolationPatch
       ? `const OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256 = '${ownedLateD3d11ForeignAddonIsolationPatchSha256}';\n`
+      : '') +
+    (inspectionContextPatch
+      ? `const INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256 = '${injectorInspectionContextPatchSha256}';\n`
+      : '') +
+    (selectionBeforeOpenPatch
+      ? `const INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256 = '${injectorSelectionBeforeOpenPatchSha256}';\n`
+      : '') +
+    (memberDiagnosticsPatch
+      ? `const INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256 = '${injectorMemberDiagnosticsPatchSha256}';\n`
+      : '') +
+    (elevatedPrivatePatch ? `const INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256 = '${elevatedPrivatePatchSha256}';
+` : '') +
+    (startupReadinessPatch
+      ? `const INJECTOR_STARTUP_READINESS_PATCH_SHA256 = '${injectorStartupReadinessPatchSha256}';\n`
       : ''));
   json('node_modules/tslib/package.json', { name: 'tslib', version: '2.8.1', main: 'tslib.js' });
   write('node_modules/tslib/tslib.js', '// controlled dependency, never executed\n');
@@ -116,6 +140,11 @@ function writeCooperativeDistribution(dist, {
         ...(initialInspectionRecoveryPatch ? { injectorInitialInspectionRecoveryPatchSha256 } : {}),
         ...(sharedAddonDirectoryPatch ? { injectorSharedAddonDirectoryPatchSha256 } : {}),
         ...(foreignAddonIsolationPatch ? { ownedLateD3d11ForeignAddonIsolationPatchSha256 } : {}),
+        ...(inspectionContextPatch ? { injectorInspectionContextPatchSha256 } : {}),
+        ...(selectionBeforeOpenPatch ? { injectorSelectionBeforeOpenPatchSha256 } : {}),
+        ...(memberDiagnosticsPatch ? { injectorMemberDiagnosticsPatchSha256 } : {}),
+        ...(startupReadinessPatch ? { injectorStartupReadinessPatchSha256 } : {}),
+        ...(elevatedPrivatePatch ? { injectorElevatedPrivatePatchSha256: elevatedPrivatePatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
         }),
@@ -126,6 +155,7 @@ function writeCooperativeDistribution(dist, {
         schemaVersion: 4, kind: 'electron-game-overlay-runtime-build',
         platform: bits === 64 ? 'win32-x64' : 'win32-ia32', configuration: 'RelWithDebInfo',
         addonBuildId, cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1,
+        ...(runtimeGeneration>=27?{privateElevatedAuthorization:runtimeGeneration>=28?2:1}:{}),
         ...(addonPreloadProtocol === undefined ? {} : { addonPreloadProtocol }),
         injectorFutureTargets: 2, managerProtocolSchemaVersion: 1, runtimeGeneration,
         targetTransportMin: 1, targetTransportMax: 1, managerSourceSha256: sha('controlled manager source'),

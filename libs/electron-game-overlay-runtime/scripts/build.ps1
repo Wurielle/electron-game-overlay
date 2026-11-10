@@ -2,7 +2,9 @@
 param(
     [switch]$ForceReShade,
     [ValidateSet("x64", "x86")]
-    [string]$Architecture = "x64"
+    [string]$Architecture = "x64",
+    # Optional isolated, reusable source/build cache. Leaves the default cache intact.
+    [string]$BuildCacheRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,6 +91,12 @@ else {
     }
 }
 $ProductionBuildRoot = Join-Path $RepoRoot $ArchitectureConfig.ProductionBuildDirectory
+if ($BuildCacheRoot) {
+    if (-not [IO.Path]::IsPathRooted($BuildCacheRoot)) { $BuildCacheRoot = Join-Path $RepoRoot $BuildCacheRoot }
+    $BuildCacheRoot = [IO.Path]::GetFullPath($BuildCacheRoot)
+    $NativeBuildRoot = Join-Path $BuildCacheRoot "native"
+    $ProductionBuildRoot = Join-Path $BuildCacheRoot "production-$Architecture"
+}
 $ReShadeOutputDirectory = Join-Path `
     $NativeBuildRoot `
     $ArchitectureConfig.ReShadeOutputDirectory
@@ -102,7 +110,7 @@ $DistributionDirectory = Join-Path `
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Bump when the runtime provider or injector implementation changes, never for package semver.
-$RuntimeGeneration = 23
+$RuntimeGeneration = 28
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -178,6 +186,16 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeRoot "patches\reshade-injector-initial-inspection-recovery.patch"
     injectorSharedAddonDirectoryPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-shared-addon-directory.patch"
+    injectorInspectionContextPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-inspection-context.patch"
+    injectorSelectionBeforeOpenPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-selection-before-open.patch"
+    injectorMemberDiagnosticsPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-member-diagnostics.patch"
+    injectorStartupReadinessPatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-startup-readiness.patch"
+    injectorElevatedPrivatePatchSha256 =
+        Join-Path $RuntimeRoot "patches\reshade-injector-elevated-private-authorization.patch"
     ownedLateD3d11ForeignAddonIsolationPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-owned-late-d3d11-addon-failure-isolation.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-future-targets.patch"
@@ -222,11 +240,13 @@ Assert-Sha256Equal `
     -Label "frozen owned late D3D11 foreign add-on isolation patch"
 
 $CMake = Resolve-Executable "cmake.exe"
+$ReShadeBuildOptions = @{ Architecture = $Architecture }
+if ($BuildCacheRoot) { $ReShadeBuildOptions.BuildCacheRoot = $BuildCacheRoot }
 if ($ForceReShade) {
-    & $BuildReShadeScript -Force -Architecture $Architecture
+    & $BuildReShadeScript -Force @ReShadeBuildOptions
 }
 else {
-    & $BuildReShadeScript -Architecture $Architecture
+    & $BuildReShadeScript @ReShadeBuildOptions
 }
 if ($LASTEXITCODE -ne 0) {
     throw "Building the pinned ReShade runtime failed with exit code $LASTEXITCODE."
@@ -234,7 +254,14 @@ if ($LASTEXITCODE -ne 0) {
 
 Push-Location $RuntimeRoot
 try {
-    & $CMake --preset $ArchitectureConfig.CMakePreset
+    $ConfigureOptions = @('--preset', $ArchitectureConfig.CMakePreset)
+    if ($BuildCacheRoot) {
+        # Share the one validated source checkout across both production builds.
+        $ConfigureOptions += @('-B', $ProductionBuildRoot,
+            "-DFETCHCONTENT_SOURCE_DIR_RESHADE=$NativeBuildRoot/_deps/reshade-src",
+            "-DFETCHCONTENT_SOURCE_DIR_IMGUI=$NativeBuildRoot/_deps/imgui-src")
+    }
+    & $CMake @ConfigureOptions
     if ($LASTEXITCODE -ne 0) {
         throw "Configuring the production overlay runtime failed with exit code $LASTEXITCODE."
     }
@@ -345,6 +372,7 @@ $PackageBuildStamp = [ordered]@{
     injectorProcessInstanceBinding = 1
     injectorFutureTargets = 2
     addonPreloadProtocol = 1
+    privateElevatedAuthorization = 2
     managerProtocolSchemaVersion = 1
     runtimeGeneration = $RuntimeGeneration
     targetTransportMin = $TargetTransportMin

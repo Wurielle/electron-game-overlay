@@ -6,9 +6,48 @@ version-specific implementation and acceptance evidence.
 
 The host is Windows x64 with Electron `>=39.1.0 <40` or the exact tested
 `46.0.0-alpha.2` prerelease. Game targets can be x64 or x86 using Direct3D
-9/10/11/12. Other Electron 40+ versions, OpenGL, Vulkan, VR, anti-cheat and elevated
-targets are not supported. The rc.7 tarball is a complete local candidate, not a
+9/10/11/12. Other Electron 40+ versions, OpenGL, Vulkan, VR and anti-cheat
+targets are not supported. Generation 27 adds the explicitly bounded
+[elevated consumer lane](elevated-consumers.md). The rc.7 tarball is a complete local candidate, not a
 public npm release.
+
+## Consumer elevation and replacement startup
+
+The local candidate exports
+`inspectOverlayConsumerExecutionContext(options?)` and
+`launchUnelevatedOverlayConsumer({context, arguments?, config?})` from the root
+SDK entry. Generation 27 keeps an elevated application elevated and preserves
+its administrator preference. `context.overlaySupported` reports ordinary
+interactive caller eligibility, including elevated high callers;
+`relaunchAvailable` separately reports whether the native
+helper found a same-user, same-session, unelevated desktop parent. A missing or
+different-user desktop refuses optional relaunch with `relaunchRefusal`.
+Target user/session/integrity authorization and private staging are described
+in the [elevated consumer contract](elevated-consumers.md).
+
+Whole-consumer de-elevation is an explicit optional operation, separate from
+administrator overlay support. Preparation never calls the launch API and
+never changes a saved administrator preference. If an application explicitly
+chooses replacement, release its single-instance lock immediately before
+calling that API. Pass the inspected context unchanged. Arguments
+default to `process.argv.slice(1)`, preserving Electron's development app path;
+packaged applications may pass their actual application arguments explicitly.
+The helper binds the current caller's PID, creation time and executable hash,
+creates only that executable with a fresh user environment, and verifies the
+owned child's image, user, session and medium token before starting it. It
+requests no UAC prompt and transfers no elevated handles or overlay credentials.
+
+The result is `{status:'launched', context, replacement:{pid,
+creationTime100ns}}` or `{status:'already-unelevated', context}`. Quit the old
+consumer only for `launched`; let the replacement initialize fresh. Reacquire
+the single-instance lock on an error or `already-unelevated`. A successful
+result proves OS process creation and token verification, not Electron readiness
+or overlay authentication. A lost or malformed response does not authorize a
+blind retry, since an owned replacement may already exist.
+
+The implementation uses Microsoft's documented
+[desktop parent process technique](https://devblogs.microsoft.com/oldnewthing/20190425-00/?p=102443/)
+and a [fresh user environment](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createenvironmentblock).
 
 ## Entry points and tool selection
 
@@ -138,7 +177,7 @@ starts no watcher, broker or injection. Options are:
 | Option | Meaning |
 | --- | --- |
 | `bundledRuntimeDirectory` | Absolute directory of the complete staged native bundle; defaults to the SDK's physical runtime location, including ASAR-unpacked discovery |
-| `runsRootDirectory` | Absolute writable parent for SDK-owned isolated launch directories; defaults to `defaultReShadeRunsRootDirectory()` |
+| `runsRootDirectory` | Absolute writable parent for private session state and add-on image identities; verified shared payloads use the sibling `<runsRootDirectory>.payloads-v1` store. Defaults to `defaultReShadeRunsRootDirectory()`; see [runtime session storage](../libs/electron-game-overlay/README.md#runtime-session-storage). |
 
 `defaultReShadeRuntimeDirectory()` and `defaultReShadeRunsRootDirectory()` return
 locations, not proof of an installed/healthy runtime. Use the config validator

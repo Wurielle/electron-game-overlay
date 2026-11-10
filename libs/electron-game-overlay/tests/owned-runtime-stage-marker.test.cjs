@@ -51,7 +51,18 @@ function loadLauncher(overrides = {}) {
   const loaded = new Module(compiledPath, module);
   loaded.filename = compiledPath;
   loaded.paths = Module._nodeModulePaths(path.dirname(compiledPath));
+  const payloadCompiled = path.resolve(__dirname, '../dist/lib/runtime-payload-store.js');
+  const payload = new Module(payloadCompiled, module);
+  payload.filename = payloadCompiled;
+  payload.paths = loaded.paths;
+  payload.require = id => id === 'node:fs/promises'
+    ? { ...fsp, ...overrides }
+    : Module.prototype.require.call(payload, id);
+  payload._compile(ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../src/lib/runtime-payload-store.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  }).outputText, payloadCompiled);
   loaded.require = id => {
+    if (id === './runtime-payload-store.js') return payload.exports;
     if (id === 'node:fs/promises') return { ...fsp, ...overrides };
     if (id === 'node:child_process') return { ...require(id), execFile() { throw new Error('prepare() must never execute an injector'); } };
     return Module.prototype.require.call(loaded, id);

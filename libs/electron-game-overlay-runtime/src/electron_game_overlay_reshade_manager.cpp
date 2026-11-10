@@ -126,6 +126,12 @@
 #include <vector>
 
 #pragma comment(lib, "bcrypt.lib")
+#include <TlHelp32.h>
+#include <userenv.h>
+#include <sddl.h>
+#include <AclAPI.h>
+#pragma comment(lib, "userenv.lib")
+#pragma comment(lib, "advapi32.lib")
 
 #ifndef OBJ_DONT_REPARSE
 #define OBJ_DONT_REPARSE 0x00001000L
@@ -4636,6 +4642,375 @@ std::string query_process_image(int argc, wchar_t **argv)
     return result.str();
 }
 
+struct consumer_token_context
+{
+    bool elevated = false;
+    DWORD integrity = 0, session = 0;
+    std::vector<BYTE> sid;
+};
+
+consumer_token_context read_consumer_token(HANDLE process, const char *actor)
+{
+    HANDLE raw = nullptr;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &raw))
+        throw_windows("consumer-token-open-failed", actor, exit_category::io_failure);
+    unique_handle token(raw);
+    auto query = [&](TOKEN_INFORMATION_CLASS kind) {
+        DWORD length = 0;
+        GetTokenInformation(token.get(), kind, nullptr, 0, &length);
+        if (length == 0 || length > 65536)
+            throw_windows("consumer-token-query-failed", actor, exit_category::io_failure);
+        std::vector<BYTE> value(length);
+        if (!GetTokenInformation(token.get(), kind, value.data(), length, &length) || length > value.size())
+            throw_windows("consumer-token-query-failed", actor, exit_category::io_failure);
+        value.resize(length); return value;
+    };
+    auto elevation = query(TokenElevation), integrity = query(TokenIntegrityLevel), user = query(TokenUser), session = query(TokenSessionId);
+    if (elevation.size() != sizeof(TOKEN_ELEVATION) || integrity.size() < sizeof(TOKEN_MANDATORY_LABEL) || user.size() < sizeof(TOKEN_USER) || session.size() != sizeof(DWORD))
+        throw manager_error("consumer-token-size-invalid", actor, exit_category::preserved_state);
+    auto valid_sid = [&](PSID sid, const std::vector<BYTE> &buffer) {
+        const auto address = reinterpret_cast<std::uintptr_t>(sid), begin = reinterpret_cast<std::uintptr_t>(buffer.data());
+        if (address < begin || address > begin + buffer.size() || begin + buffer.size() - address < 8 || !IsValidSid(sid) || GetLengthSid(sid) > begin + buffer.size() - address)
+            throw manager_error("consumer-token-sid-invalid", actor, exit_category::preserved_state);
+    };
+    const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(integrity.data());
+    const auto identity = reinterpret_cast<const TOKEN_USER *>(user.data());
+    valid_sid(label->Label.Sid, integrity); valid_sid(identity->User.Sid, user);
+    const UCHAR count = *GetSidSubAuthorityCount(label->Label.Sid);
+    if (!count) throw manager_error("consumer-token-sid-invalid", actor, exit_category::preserved_state);
+    consumer_token_context result;
+    result.elevated = reinterpret_cast<const TOKEN_ELEVATION *>(elevation.data())->TokenIsElevated != 0;
+    result.integrity = *GetSidSubAuthority(label->Label.Sid, count - 1);
+    result.session = *reinterpret_cast<const DWORD *>(session.data());
+    result.sid.resize(GetLengthSid(identity->User.Sid));
+    if (!CopySid(static_cast<DWORD>(result.sid.size()), result.sid.data(), identity->User.Sid))
+        throw_windows("consumer-token-sid-invalid", actor, exit_category::io_failure);
+    return result;
+}
+
+std::uint64_t consumer_birth(HANDLE process)
+{
+    FILETIME birth{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(process, &birth, &exited, &kernel, &user))
+        throw_windows("consumer-identity-query-failed", "Unable to read consumer creation identity.", exit_category::io_failure);
+    return (std::uint64_t(birth.dwHighDateTime) << 32) | birth.dwLowDateTime;
+}
+
+std::wstring consumer_image(HANDLE process)
+{
+    std::wstring image(32768, L'\0'); DWORD length = static_cast<DWORD>(image.size());
+    if (!QueryFullProcessImageNameW(process, 0, image.data(), &length) || !length || length >= image.size())
+        throw_windows("consumer-image-query-failed", "Unable to read consumer executable identity.", exit_category::io_failure);
+    image.resize(length); return image;
+}
+
+std::wstring quote_consumer_argument(const std::wstring &value)
+{
+    std::wstring result = L"\""; unsigned slashes = 0;
+    for (wchar_t ch : value) {
+        if (ch == L'\\') { ++slashes; continue; }
+        result.append(ch == L'"' ? slashes * 2 + 1 : slashes, L'\\'); slashes = 0; result += ch;
+    }
+    result.append(slashes * 2, L'\\'); result += L'"'; return result;
+}
+
+std::string consumer_execution_command(int argc, wchar_t **argv, bool launch)
+{
+    if (argc < 3) throw manager_error("invalid-request", "A consumer PID is required.", exit_category::invalid_request);
+    const std::wstring pid_text(argv[2]);
+    if (pid_text.empty() || pid_text[0] == L'0' || pid_text.size() > 10 || pid_text.find_first_not_of(L"0123456789") != std::wstring::npos)
+        throw manager_error("invalid-request", "Invalid consumer PID.", exit_category::invalid_request);
+    const auto numeric_pid = std::stoull(pid_text);
+    if (numeric_pid > MAXDWORD) throw manager_error("invalid-request", "Invalid consumer PID.", exit_category::invalid_request);
+    const DWORD owner_pid = static_cast<DWORD>(numeric_pid);
+    unique_handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    PROCESSENTRY32W entry{sizeof(entry)}; DWORD actual_parent = 0;
+    for (BOOL next = Process32FirstW(snapshot.get(), &entry); next; next = Process32NextW(snapshot.get(), &entry))
+        if (entry.th32ProcessID == GetCurrentProcessId()) { actual_parent = entry.th32ParentProcessID; break; }
+    if (actual_parent != owner_pid)
+        throw manager_error("consumer-parent-mismatch", "Only this helper's actual calling process can be relaunched.", exit_category::preserved_state);
+    unique_handle owner(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, owner_pid));
+    if (!owner || WaitForSingleObject(owner.get(), 0) != WAIT_TIMEOUT)
+        throw_windows("consumer-owner-unavailable", "The calling consumer is unavailable.", exit_category::io_failure);
+    const auto birth = consumer_birth(owner.get()); const auto image = consumer_image(owner.get());
+    const auto context = read_consumer_token(owner.get(), "consumer");
+    unique_handle image_guard(CreateFileW(image.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!image_guard) throw_windows("consumer-image-unavailable", "Unable to pin the consumer executable.", exit_category::io_failure);
+    verify_regular_non_reparse_handle(image_guard.get(), image, "consumer-image-invalid", exit_category::preserved_state, false);
+    const std::string image_hash = hash_handle(image_guard.get(), 512ull * 1024 * 1024, "consumer-image-invalid");
+    const bool supported = !context.elevated && context.integrity <= SECURITY_MANDATORY_MEDIUM_RID;
+    const bool overlay_supported = context.session != 0 && (supported || (context.elevated && context.integrity == SECURITY_MANDATORY_HIGH_RID));
+    DWORD shell_pid = 0; GetWindowThreadProcessId(GetShellWindow(), &shell_pid);
+    unique_handle shell(shell_pid ? OpenProcess(PROCESS_CREATE_PROCESS | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, shell_pid) : nullptr);
+    std::string refusal = "desktop-shell-unavailable";
+    std::optional<consumer_token_context> shell_context;
+    if (shell && WaitForSingleObject(shell.get(), 0) == WAIT_TIMEOUT) {
+        try {
+            shell_context = read_consumer_token(shell.get(), "desktop-shell");
+            if (context.sid != shell_context->sid) refusal = "desktop-user-mismatch";
+            else if (context.session != shell_context->session) refusal = "desktop-session-mismatch";
+            else if (shell_context->elevated || shell_context->integrity > SECURITY_MANDATORY_MEDIUM_RID) refusal = "desktop-shell-not-medium";
+            else refusal.clear();
+        } catch (const manager_error &) { refusal = "desktop-token-query-failed"; }
+    }
+    if (!launch && argc != 3) throw manager_error("invalid-request", "Unexpected consumer-context arguments.", exit_category::invalid_request);
+    DWORD child_pid = 0; std::uint64_t child_birth = 0;
+    if (launch) {
+        if (argc < 5 || std::wstring(argv[3]) != std::to_wstring(birth) || utf8_from_wide(argv[4]) != image_hash)
+            throw manager_error("consumer-identity-mismatch", "The consumer incarnation or immutable executable changed.", exit_category::preserved_state);
+        if (!supported && !refusal.empty()) throw manager_error("consumer-relaunch-unavailable", refusal, exit_category::preserved_state);
+        std::wstring command = quote_consumer_argument(image);
+        for (int index = 5; index < argc; index += 2) {
+            if (index + 1 >= argc || std::wstring_view(argv[index]) != L"--arg" || index >= 517)
+                throw manager_error("invalid-request", "Invalid consumer launch arguments.", exit_category::invalid_request);
+            command += L" " + quote_consumer_argument(argv[index + 1]);
+        }
+        if (command.size() >= 32767) throw manager_error("invalid-request", "Consumer command line is too long.", exit_category::invalid_request);
+        if (!supported) {
+            HANDLE token_raw = nullptr;
+            // CreateEnvironmentBlock requires QUERY | DUPLICATE for a primary
+            // token. This handle is used only to build a fresh environment.
+            if (!OpenProcessToken(shell.get(), TOKEN_QUERY | TOKEN_DUPLICATE, &token_raw)) throw_windows("consumer-shell-token-unavailable", "Unable to read the desktop token.", exit_category::io_failure);
+            unique_handle shell_token(token_raw); void *environment = nullptr;
+            if (!CreateEnvironmentBlock(&environment, shell_token.get(), FALSE)) throw_windows("consumer-environment-unavailable", "Unable to construct the medium user's environment.", exit_category::io_failure);
+            struct environment_guard { void *value; ~environment_guard(){DestroyEnvironmentBlock(value);} } environment_scope{environment};
+            SIZE_T attribute_bytes = 0; InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_bytes);
+            std::vector<BYTE> attributes(attribute_bytes); auto list = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
+            if (!InitializeProcThreadAttributeList(list, 1, 0, &attribute_bytes)) throw_windows("consumer-launch-attributes-failed", "Unable to initialize parent attributes.", exit_category::io_failure);
+            struct attributes_guard { PPROC_THREAD_ATTRIBUTE_LIST value; ~attributes_guard(){DeleteProcThreadAttributeList(value);} } attributes_scope{list};
+            HANDLE shell_handle = shell.get();
+            if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, &shell_handle, sizeof(shell_handle), nullptr, nullptr))
+                throw_windows("consumer-launch-attributes-failed", "Unable to bind the medium desktop parent.", exit_category::io_failure);
+            STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = list;
+            PROCESS_INFORMATION child{}; const auto slash = image.find_last_of(L"\\/"); const auto directory = image.substr(0, slash);
+            // Direct CreateProcess never invokes RunAs or a UAC prompt. A
+            // requireAdministrator executable fails rather than being elevated.
+            // Console consumers must not attach to a console belonging to the
+            // elevated creator. GUI consumers ignore CREATE_NO_WINDOW.
+            if (!CreateProcessW(image.c_str(), command.data(), nullptr, nullptr, FALSE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                    environment, directory.c_str(), &startup.StartupInfo, &child))
+                throw_windows("consumer-launch-failed", "Unable to create an unelevated replacement; no UAC fallback is attempted.", exit_category::io_failure);
+            unique_handle child_process(child.hProcess), child_thread(child.hThread);
+            bool resumed = false;
+            try {
+                const auto verified = read_consumer_token(child_process.get(), "replacement");
+                if (verified.elevated || verified.integrity > SECURITY_MANDATORY_MEDIUM_RID || verified.session != context.session ||
+                    context.sid != verified.sid || _wcsicmp(consumer_image(child_process.get()).c_str(), image.c_str()) != 0)
+                    throw manager_error("consumer-replacement-mismatch", "The replacement did not retain the same user/session/image at medium integrity.", exit_category::preserved_state);
+                child_pid = child.dwProcessId; child_birth = consumer_birth(child_process.get());
+                if (ResumeThread(child_thread.get()) == static_cast<DWORD>(-1)) throw_windows("consumer-resume-failed", "Unable to start the owned replacement.", exit_category::io_failure);
+                resumed = true;
+            } catch (...) { if (!resumed) {TerminateProcess(child_process.get(), 1);WaitForSingleObject(child_process.get(),5000);} throw; }
+        }
+    }
+    std::ostringstream result;
+    result << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-consumer-context\",\"ownerPid\":" << owner_pid
+           << ",\"creationTime100ns\":" << json_string(std::to_string(birth)) << ",\"executablePath\":" << json_string(utf8_from_wide(image))
+           << ",\"executableSha256\":" << json_string(image_hash) << ",\"elevated\":" << (context.elevated?"true":"false")
+           << ",\"integrityRid\":" << context.integrity << ",\"sessionId\":" << context.session << ",\"overlaySupported\":" << (overlay_supported?"true":"false")
+           << ",\"relaunchAvailable\":" << (refusal.empty()?"true":"false") << ",\"relaunchRefusal\":" << (refusal.empty()?"null":json_string(refusal))
+           << ",\"status\":" << json_string(launch?(supported?"already-unelevated":"launched"):"inspected")
+           << ",\"replacementPid\":" << child_pid << ",\"replacementCreationTime100ns\":" << json_string(std::to_string(child_birth)) << "}\n";
+    return result.str();
+}
+
+std::string create_private_elevated_stage(int argc, wchar_t **argv)
+{
+    if (argc != 6) throw manager_error("invalid-request", "Expected caller identity, runs root and safe prefix.", exit_category::invalid_request);
+    const std::wstring pid_text(argv[2]), prefix(argv[5]);
+    if (pid_text.empty() || pid_text[0] == L'0' || pid_text.size() > 10 || pid_text.find_first_not_of(L"0123456789") != std::wstring::npos ||
+        prefix.empty() || prefix.size() > 128 || prefix.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != std::wstring::npos)
+        throw manager_error("invalid-request", "Invalid caller PID or stage prefix.", exit_category::invalid_request);
+    const auto numeric_pid = std::stoull(pid_text);
+    if (numeric_pid > MAXDWORD) throw manager_error("invalid-request", "Invalid caller PID.", exit_category::invalid_request);
+    const DWORD owner_pid = static_cast<DWORD>(numeric_pid);
+    unique_handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    PROCESSENTRY32W entry{sizeof(entry)}; DWORD parent = 0;
+    for (BOOL next = Process32FirstW(snapshot.get(), &entry); next; next = Process32NextW(snapshot.get(), &entry))
+        if (entry.th32ProcessID == GetCurrentProcessId()) {parent = entry.th32ParentProcessID;break;}
+    if (parent != owner_pid) throw manager_error("consumer-parent-mismatch", "Only the actual calling process may create a private stage.", exit_category::preserved_state);
+    unique_handle owner(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, owner_pid));
+    if (!owner || WaitForSingleObject(owner.get(), 0) != WAIT_TIMEOUT || std::wstring(argv[3]) != std::to_wstring(consumer_birth(owner.get())))
+        throw manager_error("consumer-identity-mismatch", "The caller incarnation is unavailable or changed.", exit_category::preserved_state);
+    const auto context = read_consumer_token(owner.get(), "private-stage-owner");
+    if (!context.elevated || context.integrity != SECURITY_MANDATORY_HIGH_RID || context.session == 0)
+        throw manager_error("consumer-integrity-rejected", "Private elevated stages require the actual interactive high caller.", exit_category::preserved_state);
+    const auto root = open_verified_directory(argv[4], true);
+    LPWSTR raw_sid = nullptr;
+    if (!ConvertSidToStringSidW(const_cast<BYTE *>(context.sid.data()), &raw_sid)) throw_windows("private-stage-security-failed", "Unable to encode the caller SID.", exit_category::io_failure);
+    const std::wstring sid(raw_sid); LocalFree(raw_sid);
+    const std::wstring sddl = L"O:" + sid + L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;" + sid + L")S:(ML;OICI;NW;;;HI)";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+        throw_windows("private-stage-security-failed", "Unable to create the private high security descriptor.", exit_category::io_failure);
+    struct descriptor_guard {PSECURITY_DESCRIPTOR value;~descriptor_guard(){LocalFree(value);}} descriptor_scope{descriptor};
+    BYTE random[16]{};
+    if (BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+        throw manager_error("private-stage-random-failed", "Unable to generate a private stage identity.", exit_category::io_failure);
+    constexpr wchar_t digits[] = L"0123456789abcdef";
+    std::wstring leaf = prefix + L"-";
+    for (BYTE value : random) {leaf += digits[value >> 4];leaf += digits[value & 15];}
+    const auto directory = append_leaf(root.canonical_path, leaf);
+    SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
+    // Never create permissively and then tighten: medium processes must not
+    // acquire a writable directory handle before the high label exists.
+    if (!CreateDirectoryW(directory.c_str(), &attributes)) throw_windows("private-stage-create-failed", "Unable to reserve the private elevated stage.", exit_category::io_failure);
+    // A high administrator's default file owner may be the Administrators
+    // group. Reserve all fixed leaves with the exact caller SID at birth;
+    // never repair ownership of an existing or cache-linked file later.
+    const std::wstring file_sddl = L"O:" + sid + L"D:P(A;;FA;;;SY)(A;;FA;;;" + sid + L")S:(ML;;NW;;;HI)";
+    PSECURITY_DESCRIPTOR file_descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(file_sddl.c_str(), SDDL_REVISION_1, &file_descriptor, nullptr))
+        throw_windows("private-stage-security-failed", "Unable to reserve private payload security.", exit_category::io_failure);
+    descriptor_guard file_descriptor_scope{file_descriptor};
+    SECURITY_ATTRIBUTES file_attributes{sizeof(file_attributes), file_descriptor, FALSE};
+    for (const wchar_t *name : {L"inject.exe", L"inject32.exe", L"electron_game_overlay_reshade_manager.exe", L"electron_game_overlay_reshade_manager32.exe",
+        L"ReShade64.dll", L"ReShade32.dll", L"ReShade64.build.json", L"ReShade32.build.json", L"electron_game_overlay_runtime.build.json",
+        L"electron_game_overlay_runtime32.build.json", L"electron_game_overlay.addon64", L"electron_game_overlay.addon32", L"ReShade.ini"}) {
+        unique_handle payload(CreateFileW(append_leaf(directory, name).c_str(), GENERIC_WRITE, FILE_SHARE_READ, &file_attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!payload) throw_windows("private-stage-payload-create-failed", "Unable to reserve a private payload file.", exit_category::io_failure);
+    }
+    // A medium target may write observability data, never a code/scan entry.
+    // Reserve only these two fixed data leaves with a medium label. The code
+    // directory, configuration and newly created control files remain high.
+    // A protected/full SACL at CreateFile requests SeSecurityPrivilege, which
+    // ordinary elevated administrators do not have enabled. Create each leaf
+    // at high integrity first, then change only its mandatory label using the
+    // owned handle's WRITE_OWNER access. Never request audit-SACL access.
+    const std::wstring data_sddl = L"S:(ML;;NW;;;ME)";
+    PSECURITY_DESCRIPTOR data_descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(data_sddl.c_str(), SDDL_REVISION_1, &data_descriptor, nullptr))
+        throw_windows("private-stage-security-failed", "Unable to reserve the bounded diagnostics files.", exit_category::io_failure);
+    descriptor_guard data_descriptor_scope{data_descriptor};
+    PACL label = nullptr; BOOL present = FALSE, defaulted = FALSE;
+    if (!GetSecurityDescriptorSacl(data_descriptor, &present, &label, &defaulted) || !present || !label)
+        throw_windows("private-stage-security-failed", "Unable to obtain the diagnostics label.", exit_category::io_failure);
+    for (const wchar_t *name : {L"ReShade.log", L".electron-game-overlay-runtime-startup.json"}) {
+        const auto file = append_leaf(directory, name);
+        unique_handle data(CreateFileW(file.c_str(), GENERIC_WRITE | READ_CONTROL | WRITE_OWNER, FILE_SHARE_READ, &file_attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!data) throw_windows("private-stage-data-create-failed", "Unable to reserve a private diagnostics file.", exit_category::io_failure);
+        verify_regular_non_reparse_handle(data.get(), file, "private-stage-data-invalid", exit_category::preserved_state);
+        const DWORD error = SetSecurityInfo(data.get(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, label);
+        if (error != ERROR_SUCCESS) {SetLastError(error);throw_windows("private-stage-data-label-failed", "Unable to set the bounded diagnostics label.", exit_category::io_failure);}
+        PACL actual = nullptr; PSECURITY_DESCRIPTOR actual_descriptor = nullptr;
+        const DWORD query = GetSecurityInfo(data.get(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, &actual, &actual_descriptor);
+        descriptor_guard actual_scope{actual_descriptor};
+        if (query != ERROR_SUCCESS) {SetLastError(query);throw_windows("private-stage-data-label-failed", "Unable to verify the diagnostics label.", exit_category::io_failure);}
+        void *raw_ace = nullptr;
+        if (!actual || actual->AceCount != 1 || !GetAce(actual, 0, &raw_ace))
+            throw manager_error("private-stage-data-label-invalid", "Unexpected diagnostics mandatory label.", exit_category::preserved_state);
+        const auto ace = static_cast<SYSTEM_MANDATORY_LABEL_ACE *>(raw_ace);
+        PSID label_sid = &ace->SidStart; const SID_IDENTIFIER_AUTHORITY authority = SECURITY_MANDATORY_LABEL_AUTHORITY;
+        if (ace->Header.AceType != SYSTEM_MANDATORY_LABEL_ACE_TYPE || ace->Header.AceFlags != 0 ||
+            ace->Mask != SYSTEM_MANDATORY_LABEL_NO_WRITE_UP || !IsValidSid(label_sid) || *GetSidSubAuthorityCount(label_sid) != 1 ||
+            std::memcmp(GetSidIdentifierAuthority(label_sid), &authority, sizeof(authority)) != 0 ||
+            *GetSidSubAuthority(label_sid, 0) != SECURITY_MANDATORY_MEDIUM_RID)
+            throw manager_error("private-stage-data-label-invalid", "The diagnostics file is not medium no-write-up.", exit_category::preserved_state);
+    }
+    std::ostringstream result;
+    result << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-private-elevated-stage\",\"ownerPid\":" << owner_pid
+           << ",\"creationTime100ns\":" << json_string(std::to_string(consumer_birth(owner.get()))) << ",\"directory\":" << json_string(directory) << "}\n";
+    return result.str();
+}
+
+// Read-only verification before any staged executable is started. Fixed leaves
+// and hashes come from the validated package, never from a target or registry.
+// This command does not relabel code, mutate caches, or enable privileges.
+std::string verify_private_elevated_stage(int argc, wchar_t **argv)
+{
+    static constexpr const wchar_t *leaves[] = {
+        L"inject.exe", L"inject32.exe", L"electron_game_overlay_reshade_manager.exe", L"electron_game_overlay_reshade_manager32.exe",
+        L"ReShade64.dll", L"ReShade32.dll", L"ReShade64.build.json", L"ReShade32.build.json",
+        L"electron_game_overlay_runtime.build.json", L"electron_game_overlay_runtime32.build.json",
+        L"electron_game_overlay.addon64", L"electron_game_overlay.addon32", L"ReShade.ini"};
+    if (argc != 18) throw manager_error("invalid-request", "Expected caller identity, stage and thirteen package hashes.", exit_category::invalid_request);
+    const std::wstring pid_text(argv[2]);
+    if (pid_text.empty() || pid_text[0] == L'0' || pid_text.size() > 10 || pid_text.find_first_not_of(L"0123456789") != std::wstring::npos || std::stoull(pid_text) > MAXDWORD)
+        throw manager_error("invalid-request", "Invalid caller PID.", exit_category::invalid_request);
+    const DWORD owner_pid = static_cast<DWORD>(std::stoull(pid_text));
+    unique_handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    PROCESSENTRY32W entry{sizeof(entry)}; DWORD parent = 0;
+    for (BOOL next = Process32FirstW(snapshot.get(), &entry); next; next = Process32NextW(snapshot.get(), &entry))
+        if (entry.th32ProcessID == GetCurrentProcessId()) {parent = entry.th32ParentProcessID;break;}
+    if (parent != owner_pid) throw manager_error("consumer-parent-mismatch", "Only the actual caller may verify a private stage.", exit_category::preserved_state);
+    unique_handle owner_process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, owner_pid));
+    if (!owner_process || WaitForSingleObject(owner_process.get(), 0) != WAIT_TIMEOUT || std::wstring(argv[3]) != std::to_wstring(consumer_birth(owner_process.get())))
+        throw manager_error("consumer-identity-mismatch", "The caller incarnation is unavailable or changed.", exit_category::preserved_state);
+    const auto context = read_consumer_token(owner_process.get(), "private-stage-owner");
+    if (!context.elevated || context.integrity != SECURITY_MANDATORY_HIGH_RID || context.session == 0)
+        throw manager_error("consumer-integrity-rejected", "Private elevated verification requires the actual interactive high caller.", exit_category::preserved_state);
+    const auto directory = open_verified_directory(argv[4], false);
+    unique_handle directory_security(CreateFileW(directory.canonical_path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!directory_security || !paths_equal(final_path_for_handle(directory_security.get(), "private-stage-invalid", exit_category::preserved_state), directory.canonical_path))
+        throw manager_error("private-stage-invalid", "The private stage directory changed.", exit_category::preserved_state);
+    auto verify_security = [&](HANDLE handle, bool is_directory, DWORD expected_integrity, const char *leaf) {
+        PSID owner = nullptr; PACL dacl = nullptr, labels = nullptr; PSECURITY_DESCRIPTOR descriptor = nullptr;
+        const DWORD error = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+            &owner, nullptr, &dacl, &labels, &descriptor);
+        struct scope {PSECURITY_DESCRIPTOR value;~scope(){LocalFree(value);}} descriptor_scope{descriptor};
+        if (error != ERROR_SUCCESS) {SetLastError(error);throw_windows("private-stage-security-failed", "Unable to read private stage security.", exit_category::io_failure);}
+        SECURITY_DESCRIPTOR_CONTROL control{}; DWORD revision = 0;
+        if (!owner || !IsValidSid(owner) || GetLengthSid(owner) != context.sid.size() || std::memcmp(owner, context.sid.data(), context.sid.size()) != 0)
+            throw manager_error("private-stage-owner-invalid", std::string("Unexpected owner for ") + leaf + (owner && IsValidSid(owner) && IsWellKnownSid(owner, WinBuiltinAdministratorsSid) ? " (Administrators group default owner)." : "."), exit_category::preserved_state);
+        if (!dacl || dacl->AceCount != 2)
+            throw manager_error("private-stage-dacl-invalid", std::string("Unexpected access-entry count for ") + leaf + ".", exit_category::preserved_state);
+        if (!labels || labels->AceCount != 1)
+            throw manager_error("private-stage-label-invalid", std::string("Unexpected mandatory-label count for ") + leaf + ".", exit_category::preserved_state);
+        if (!GetSecurityDescriptorControl(descriptor, &control, &revision) || (is_directory && !(control & SE_DACL_PROTECTED)))
+            throw manager_error("private-stage-dacl-invalid", std::string("Unprotected directory access list for ") + leaf + ".", exit_category::preserved_state);
+        unsigned owner_aces = 0, system_aces = 0;
+        for (DWORD index = 0; index < dacl->AceCount; ++index) {
+            void *raw = nullptr;
+            if (!GetAce(dacl, index, &raw)) throw_windows("private-stage-security-invalid", "Invalid private access entry.", exit_category::preserved_state);
+            const auto ace = static_cast<ACCESS_ALLOWED_ACE *>(raw); PSID sid = &ace->SidStart;
+            if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE || ace->Mask != FILE_ALL_ACCESS || !IsValidSid(sid))
+                throw manager_error("private-stage-security-invalid", "Unexpected private stage access grant.", exit_category::preserved_state);
+            if (GetLengthSid(sid) == context.sid.size() && std::memcmp(sid, context.sid.data(), context.sid.size()) == 0) ++owner_aces;
+            else if (IsWellKnownSid(sid, WinLocalSystemSid)) ++system_aces;
+            else throw manager_error("private-stage-security-invalid", "Foreign private stage access grant.", exit_category::preserved_state);
+        }
+        void *raw = nullptr;
+        if (!GetAce(labels, 0, &raw)) throw_windows("private-stage-security-invalid", "Invalid private mandatory label.", exit_category::preserved_state);
+        const auto ace = static_cast<SYSTEM_MANDATORY_LABEL_ACE *>(raw); PSID sid = &ace->SidStart;
+        const SID_IDENTIFIER_AUTHORITY authority = SECURITY_MANDATORY_LABEL_AUTHORITY;
+        if (owner_aces != 1 || system_aces != 1 || ace->Header.AceType != SYSTEM_MANDATORY_LABEL_ACE_TYPE ||
+            ace->Mask != SYSTEM_MANDATORY_LABEL_NO_WRITE_UP || !IsValidSid(sid) || *GetSidSubAuthorityCount(sid) != 1 ||
+            std::memcmp(GetSidIdentifierAuthority(sid), &authority, sizeof(authority)) != 0 || *GetSidSubAuthority(sid, 0) != expected_integrity ||
+            (is_directory && (ace->Header.AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)) != (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)))
+            throw manager_error("private-stage-security-invalid", "Unexpected private stage integrity label.", exit_category::preserved_state);
+    };
+    verify_security(directory_security.get(), true, SECURITY_MANDATORY_HIGH_RID, "stage directory");
+    std::vector<unique_handle> guards;
+    for (std::size_t index = 0; index < 13; ++index) {
+        const std::string expected = utf8_from_wide(argv[5 + index]);
+        if (expected.size() != 64 || expected.find_first_not_of("0123456789ABCDEF") != std::string::npos)
+            throw manager_error("invalid-request", "Invalid package digest.", exit_category::invalid_request);
+        const auto file = append_leaf(directory.canonical_path, leaves[index]);
+        unique_handle handle(CreateFileW(file.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        if (!handle) throw_windows("private-stage-payload-unavailable", "Unable to pin a private payload file.", exit_category::preserved_state);
+        verify_regular_non_reparse_handle(handle.get(), file, "private-stage-payload-invalid", exit_category::preserved_state);
+        const auto leaf = utf8_from_wide(leaves[index]);
+        verify_security(handle.get(), false, SECURITY_MANDATORY_HIGH_RID, leaf.c_str());
+        if (hash_handle(handle.get(), 512ull * 1024 * 1024, "private-stage-payload-invalid") != expected)
+            throw manager_error("private-stage-payload-mismatch", "A private payload differs from its trusted package hash.", exit_category::preserved_state);
+        guards.emplace_back(std::move(handle));
+    }
+    for (const wchar_t *leaf : {L"ReShade.log", L".electron-game-overlay-runtime-startup.json"}) {
+        const auto file = append_leaf(directory.canonical_path, leaf);
+        unique_handle handle(CreateFileW(file.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        if (!handle) throw_windows("private-stage-data-unavailable", "Unable to inspect private diagnostics.", exit_category::preserved_state);
+        verify_regular_non_reparse_handle(handle.get(), file, "private-stage-data-invalid", exit_category::preserved_state);
+        const auto name = utf8_from_wide(leaf);
+        verify_security(handle.get(), false, SECURITY_MANDATORY_MEDIUM_RID, name.c_str());
+    }
+    std::ostringstream result;
+    result << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-private-elevated-stage-verified\",\"ownerPid\":" << owner_pid
+           << ",\"creationTime100ns\":" << json_string(std::to_string(consumer_birth(owner_process.get()))) << ",\"directory\":" << json_string(directory.canonical_path)
+           << ",\"payloadFiles\":13,\"diagnosticsFiles\":2}\n";
+    return result.str();
+}
+
 void write_stdout(const std::string &text)
 {
     const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -4667,6 +5042,22 @@ int wmain(int argc, wchar_t **argv)
     std::optional<std::string> operation;
     try
     {
+        if (argc >= 2 && std::wstring_view(argv[1]) == L"--verify-private-elevated-stage") {
+            operation = "verify-private-elevated-stage";
+            write_stdout(verify_private_elevated_stage(argc, argv));
+            return 0;
+        }
+        if (argc >= 2 && std::wstring_view(argv[1]) == L"--create-private-elevated-stage") {
+            operation = "create-private-elevated-stage";
+            write_stdout(create_private_elevated_stage(argc, argv));
+            return static_cast<int>(exit_category::success);
+        }
+        if (argc >= 2 && (std::wstring_view(argv[1]) == L"--consumer-context" || std::wstring_view(argv[1]) == L"--consumer-relaunch")) {
+            const bool launch = std::wstring_view(argv[1]) == L"--consumer-relaunch";
+            operation = launch ? "consumer-relaunch" : "consumer-context";
+            write_stdout(consumer_execution_command(argc, argv, launch));
+            return static_cast<int>(exit_category::success);
+        }
         if (argc >= 2 &&
             std::wstring_view(argv[1]) == L"--query-process-image")
         {

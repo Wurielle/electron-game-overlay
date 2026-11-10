@@ -2,7 +2,8 @@
 param(
     [switch]$Force,
     [ValidateSet("x64", "x86")]
-    [string]$Architecture = "x64"
+    [string]$Architecture = "x64",
+    [string]$BuildCacheRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +11,11 @@ $ErrorActionPreference = "Stop"
 $RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RuntimeRoot "..\..")).Path
 $BuildRoot = Join-Path $RepoRoot "build\electron-game-overlay-runtime"
+if ($BuildCacheRoot) {
+    if (-not [IO.Path]::IsPathRooted($BuildCacheRoot)) { $BuildCacheRoot = Join-Path $RepoRoot $BuildCacheRoot }
+    $BuildCacheRoot = [IO.Path]::GetFullPath($BuildCacheRoot)
+    $BuildRoot = Join-Path $BuildCacheRoot "native"
+}
 $ReShadeSource = Join-Path $BuildRoot "_deps\reshade-src"
 $ArchitectureConfig = if ($Architecture -eq "x86") {
     [pscustomobject]@{
@@ -229,6 +235,27 @@ $ExpectedPatchedFiles = @(
     "source/runtime_gui.cpp"
     "tools/injector.cpp"
 )
+$InjectorInspectionContextPatch = Join-Path $RuntimeRoot "patches\reshade-injector-inspection-context.patch"
+$InjectorInspectionContextPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorInspectionContextPatch).Hash
+if ($InjectorInspectionContextPatchHash -cne "288C2A76AEDBC827BB00117A455FFE87ECB708CA33411449CD56E2BEA190160E") {
+    throw "The injector inspection-context patch does not match its frozen source."
+}
+$InjectorSelectionBeforeOpenPatch = Join-Path $RuntimeRoot "patches\reshade-injector-selection-before-open.patch"
+$InjectorSelectionBeforeOpenPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorSelectionBeforeOpenPatch).Hash
+if ($InjectorSelectionBeforeOpenPatchHash -cne "F83053E59EE9443E98D31A4C238B3D19D6B847D1F6F5E238E05B899FFC87E555") {
+    throw "The injector selection-before-open patch does not match its frozen source."
+}
+$InjectorMemberDiagnosticsPatch = Join-Path $RuntimeRoot "patches\reshade-injector-member-diagnostics.patch"
+$InjectorMemberDiagnosticsPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorMemberDiagnosticsPatch).Hash
+if ($InjectorMemberDiagnosticsPatchHash -cne "D56162D2EA444DB44E7F21128A5F316E124E11E08EC1B6F3328D769EA4048A57") {
+    throw "The injector member-diagnostics patch does not match its frozen source."
+}
+$InjectorStartupReadinessPatch = Join-Path $RuntimeRoot "patches\reshade-injector-startup-readiness.patch"
+$InjectorStartupReadinessPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorStartupReadinessPatch).Hash
+if ($InjectorStartupReadinessPatchHash -cne "29C8D7ACA8919189D484B2E22F83DBD564B00D344E8C860058AFCCEAFC808D9D") { throw "The startup-readiness patch differs from its frozen implementation." }
+$InjectorElevatedPrivatePatch = Join-Path $RuntimeRoot "patches\reshade-injector-elevated-private-authorization.patch"
+$InjectorElevatedPrivatePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorElevatedPrivatePatch).Hash
+if ($InjectorElevatedPrivatePatchHash -cne "DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697") { throw "The elevated-private patch differs from its frozen implementation." }
 $ExpectedPatchedContentSha256 = [ordered]@{
     "ReShade.vcxproj" = "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
@@ -248,7 +275,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
     "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
     "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
-    "tools/injector.cpp" = "B6647995D40C7EF13DD998AF9CFEAD5E5D0A1174E81EEE1121E8AA12C21CB9D1"
+    "tools/injector.cpp" = "454B5B8377548E6B99911F20A7166FAADDB10BE9FB27565E34DA0F4F5A27B62C"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -315,8 +342,10 @@ function Test-ReShadePatchedSourceState {
     # long-path injector seam, which no longer reverses independently.
     foreach ($Patch in @(
         $OwnedLateD3d11AdapterReadyLongPathPatch
-        $InjectorInitialInspectionRecoveryPatch
         $InjectorSharedAddonDirectoryPatch
+        $InjectorSelectionBeforeOpenPatch
+        $InjectorStartupReadinessPatch
+        $InjectorElevatedPrivatePatch
         $OwnedLateD3d11ForeignAddonIsolationPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -385,6 +414,11 @@ function Test-RuntimeBuildCache {
             $Stamp.ownedLateD3d11AdapterReadyLongPathPatchSha256 -eq $OwnedLateD3d11AdapterReadyLongPathPatchHash -and
             $Stamp.injectorInitialInspectionRecoveryPatchSha256 -eq $InjectorInitialInspectionRecoveryPatchHash -and
             $Stamp.injectorSharedAddonDirectoryPatchSha256 -eq $InjectorSharedAddonDirectoryPatchHash -and
+            $Stamp.injectorInspectionContextPatchSha256 -eq $InjectorInspectionContextPatchHash -and
+            $Stamp.injectorSelectionBeforeOpenPatchSha256 -eq $InjectorSelectionBeforeOpenPatchHash -and
+            $Stamp.injectorMemberDiagnosticsPatchSha256 -eq $InjectorMemberDiagnosticsPatchHash -and
+            $Stamp.injectorStartupReadinessPatchSha256 -eq $InjectorStartupReadinessPatchHash -and
+            $Stamp.injectorElevatedPrivatePatchSha256 -eq $InjectorElevatedPrivatePatchHash -and
             $Stamp.ownedLateD3d11ForeignAddonIsolationPatchSha256 -eq $OwnedLateD3d11ForeignAddonIsolationPatchHash -and
             ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
             $Stamp.addonPreloadProtocol -eq 1 -and
@@ -410,7 +444,19 @@ if ((Test-RuntimeBuildCache) -and -not $Force) {
 
 Push-Location $RuntimeRoot
 try {
-    & cmake.exe --preset vs2022-x64
+    $ConfigureOptions = @('--preset', 'vs2022-x64')
+    if ($BuildCacheRoot) {
+        $ConfigureOptions += @('-B', $BuildRoot)
+        # A clean checkout may be seeded from verified local Git objects. Once
+        # populated, never ask FetchContent to reset a patched source checkout.
+        foreach ($Dependency in @('reshade', 'imgui')) {
+            $SourceDirectory = Join-Path $BuildRoot "_deps/$Dependency-src"
+            if (Test-Path -LiteralPath (Join-Path $SourceDirectory '.git')) {
+                $ConfigureOptions += "-DFETCHCONTENT_SOURCE_DIR_$($Dependency.ToUpperInvariant())=$SourceDirectory"
+            }
+        }
+    }
+    & cmake.exe @ConfigureOptions
     if ($LASTEXITCODE -ne 0) {
         throw "CMake configure failed with exit code $LASTEXITCODE."
     }
@@ -537,6 +583,11 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     ownedLateD3d11AdapterReadyLongPathPatchSha256 = $OwnedLateD3d11AdapterReadyLongPathPatchHash
     injectorInitialInspectionRecoveryPatchSha256 = $InjectorInitialInspectionRecoveryPatchHash
     injectorSharedAddonDirectoryPatchSha256 = $InjectorSharedAddonDirectoryPatchHash
+    injectorInspectionContextPatchSha256 = $InjectorInspectionContextPatchHash
+    injectorSelectionBeforeOpenPatchSha256 = $InjectorSelectionBeforeOpenPatchHash
+    injectorMemberDiagnosticsPatchSha256 = $InjectorMemberDiagnosticsPatchHash
+    injectorStartupReadinessPatchSha256 = $InjectorStartupReadinessPatchHash
+    injectorElevatedPrivatePatchSha256 = $InjectorElevatedPrivatePatchHash
     ownedLateD3d11ForeignAddonIsolationPatchSha256 = $OwnedLateD3d11ForeignAddonIsolationPatchHash
     addonPreloadProtocol = 1
     cooperativeAddonProtocol = 1

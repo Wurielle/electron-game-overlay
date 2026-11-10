@@ -1,0 +1,267 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index b54d602..59245a6 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -4367,6 +4367,105 @@ static bool preloaded_addon_disabled(const target_effective_reshade_settings &se
+ 	return false;
+ }
+ 
++struct attachment_token_context
++{
++    bool known = false, elevated = false;
++    DWORD integrity = 0, session = 0;
++    std::vector<BYTE> user_sid;
++    const wchar_t *phase = L"not-checked";
++};
++
++static DWORD read_attachment_token(HANDLE process, attachment_token_context &result)
++{
++    result = {};
++    auto fail = [&](DWORD error, const wchar_t *phase) { result.phase = phase; return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA; };
++    scoped_handle token;
++    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) return fail(GetLastError(), L"token-open-failed");
++    auto query = [&](TOKEN_INFORMATION_CLASS kind, std::vector<BYTE> &bytes) -> DWORD {
++        // Fixed-size classes need no sizing probe (Windows may return
++        // ERROR_BAD_LENGTH for their zero-size probe). Variable records keep
++        // the ordinary bounded INSUFFICIENT_BUFFER protocol.
++        DWORD length = kind == TokenElevation ? sizeof(TOKEN_ELEVATION) : kind == TokenSessionId ? sizeof(DWORD) : 0;
++        if (length == 0) {
++            SetLastError(ERROR_SUCCESS);
++            const BOOL unexpected_success = GetTokenInformation(token, kind, nullptr, 0, &length);
++            const DWORD sizing_error = GetLastError();
++            if (unexpected_success || sizing_error != ERROR_INSUFFICIENT_BUFFER || length == 0 || length > 65536)
++                return sizing_error != ERROR_SUCCESS && sizing_error != ERROR_INSUFFICIENT_BUFFER ? sizing_error : ERROR_INVALID_DATA;
++        }
++        bytes.resize(length);
++        if (!GetTokenInformation(token, kind, bytes.data(), length, &length)) return GetLastError() != ERROR_SUCCESS ? GetLastError() : ERROR_INVALID_DATA;
++        if (length == 0 || length > bytes.size()) return ERROR_INVALID_DATA;
++        bytes.resize(length); return ERROR_SUCCESS;
++    };
++    std::vector<BYTE> elevation, integrity, user, session;
++    DWORD error = query(TokenElevation, elevation);
++    if (error != ERROR_SUCCESS) return fail(error, L"elevation-query-failed");
++    if (elevation.size() != sizeof(TOKEN_ELEVATION)) return fail(ERROR_INVALID_DATA, L"elevation-size-invalid");
++    const auto elevation_value = reinterpret_cast<const TOKEN_ELEVATION *>(elevation.data())->TokenIsElevated;
++    if (elevation_value > 1) return fail(ERROR_INVALID_DATA, L"elevation-value-invalid");
++    result.elevated = elevation_value != 0;
++    error = query(TokenIntegrityLevel, integrity);
++    if (error != ERROR_SUCCESS) return fail(error, L"integrity-query-failed");
++    error = query(TokenUser, user);
++    if (error != ERROR_SUCCESS) return fail(error, L"user-query-failed");
++    error = query(TokenSessionId, session);
++    if (error != ERROR_SUCCESS) return fail(error, L"session-query-failed");
++    if (integrity.size() < sizeof(TOKEN_MANDATORY_LABEL) || user.size() < sizeof(TOKEN_USER) || session.size() != sizeof(DWORD))
++        return fail(ERROR_INVALID_DATA, L"token-size-invalid");
++    auto bounded_sid = [](PSID sid, const std::vector<BYTE> &buffer) {
++        const auto address = reinterpret_cast<uintptr_t>(sid), start = reinterpret_cast<uintptr_t>(buffer.data());
++        if (address < start || address > start + buffer.size() || start + buffer.size() - address < 8) return false;
++        const auto value = static_cast<const SID *>(sid);
++        const size_t length = 8 + size_t(value->SubAuthorityCount) * sizeof(DWORD);
++        return length <= start + buffer.size() - address && IsValidSid(sid) && GetLengthSid(sid) == length;
++    };
++    const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(integrity.data());
++    const auto identity = reinterpret_cast<const TOKEN_USER *>(user.data());
++    if (!bounded_sid(label->Label.Sid, integrity) || !bounded_sid(identity->User.Sid, user)) return fail(ERROR_INVALID_SID, L"token-sid-invalid");
++    if (*GetSidSubAuthorityCount(label->Label.Sid) != 1) return fail(ERROR_INVALID_SID, L"integrity-sid-invalid");
++    const SID_IDENTIFIER_AUTHORITY mandatory = SECURITY_MANDATORY_LABEL_AUTHORITY;
++    if (memcmp(GetSidIdentifierAuthority(label->Label.Sid), &mandatory, sizeof(mandatory)) != 0) return fail(ERROR_INVALID_SID, L"integrity-authority-invalid");
++    result.integrity = *GetSidSubAuthority(label->Label.Sid, 0);
++    result.session = *reinterpret_cast<const DWORD *>(session.data());
++    result.user_sid.resize(GetLengthSid(identity->User.Sid));
++    if (!CopySid(static_cast<DWORD>(result.user_sid.size()), result.user_sid.data(), identity->User.Sid)) return fail(GetLastError(), L"user-sid-copy-failed");
++    result.known = true; result.phase = L"queried"; return ERROR_SUCCESS;
++}
++
++static DWORD authorize_attachment_tokens(const attachment_token_context &source, const attachment_token_context &target, const wchar_t *&phase)
++{
++    // This is authorization for the exact retained target handle, not a grant
++    // to elevate it or to run a per-user catalog with an administrator token.
++    if (!source.known || !target.known || source.user_sid.empty() || target.user_sid.empty()) { phase = L"token-context-incomplete"; return ERROR_INVALID_DATA; }
++    if (source.user_sid != target.user_sid) { phase = L"user-mismatch"; return ERROR_ACCESS_DENIED; }
++    if (source.session == 0 || target.session != source.session) { phase = L"interactive-session-mismatch"; return ERROR_ACCESS_DENIED; }
++    auto supported = [](const attachment_token_context &value) {
++        return value.elevated ? value.integrity == SECURITY_MANDATORY_HIGH_RID : value.integrity <= SECURITY_MANDATORY_MEDIUM_RID;
++    };
++    if (!supported(source) || !supported(target)) { phase = L"unsupported-integrity"; return ERROR_ACCESS_DENIED; }
++    if (target.integrity > source.integrity) { phase = L"target-integrity-above-caller"; return ERROR_ACCESS_DENIED; }
++    phase = source.elevated ? L"allowed-private-elevated" : L"allowed"; return ERROR_SUCCESS;
++}
++
++static bool write_attachment_authorization(DWORD pid, HANDLE process, const attachment_token_context &source,
++    const attachment_token_context &target, DWORD error, const wchar_t *phase)
++{
++    std::wstring line = L"EGO_TARGET_AUTHORIZATION_V1 {\"pid\":" + std::to_wstring(pid);
++    line.append(L",\"targetHandlePid\":" + std::to_wstring(GetProcessId(process)));
++    line.append(L",\"injectorPid\":" + std::to_wstring(GetCurrentProcessId()));
++    line.append(L",\"phase\":"); append_json_string(line, phase);
++    line.append(L",\"windowsError\":" + std::to_wstring(error));
++    auto append = [&](const wchar_t *name, const attachment_token_context &value) {
++        line.append(L",\""); line.append(name); line.append(L"\":{\"phase\":"); append_json_string(line, value.phase);
++        line.append(L",\"elevated\":"); line.append(value.known ? value.elevated ? L"true" : L"false" : L"null");
++        line.append(L",\"integrityRid\":"); line.append(value.known ? std::to_wstring(value.integrity) : L"null");
++        line.append(L",\"sessionId\":"); line.append(value.known ? std::to_wstring(value.session) : L"null"); line.push_back(L'}');
++    };
++    append(L"injector", source); append(L"target", target); line.push_back(L'}');
++    return fwprintf(stdout, L"%ls\n", line.c_str()) >= 0 && fflush(stdout) == 0;
++}
++
+ struct preload_authorization_observation
+ {
+     const wchar_t *phase = L"not-checked";
+@@ -4954,6 +5053,110 @@ static DWORD validate_staged_participant(const std::wstring &path, char (&build)
+ 	return valid ? ERROR_SUCCESS : error != ERROR_SUCCESS ? error : ERROR_REVISION_MISMATCH;
+ }
+ 
++static bool parse_private_payload_digest(const wchar_t *text, BYTE (&digest)[32])
++{
++    if(wcslen(text)!=64)return false;
++    auto nibble=[](wchar_t value)->int {if(value>=L'0'&&value<=L'9')return value-L'0';if(value>=L'a'&&value<=L'f')return value-L'a'+10;if(value>=L'A'&&value<=L'F')return value-L'A'+10;return -1;};
++    for(size_t index=0;index<32;++index){const int high=nibble(text[index*2]),low=nibble(text[index*2+1]);if(high<0||low<0)return false;digest[index]=static_cast<BYTE>((high<<4)|low);}
++    return true;
++}
++
++struct private_elevated_stage_guard
++{
++    scoped_handle directory, configuration, addon, runtime;
++};
++
++static DWORD validate_private_elevated_stage(private_elevated_stage_guard &guard, const attachment_token_context &caller,
++    const BYTE (&expected_runtime_hash)[32], const BYTE (&expected_addon_hash)[32], const BYTE (&expected_ini_hash)[32])
++{
++    std::wstring addon;
++    DWORD error = staged_participant_path(addon);
++    if (error != ERROR_SUCCESS) return error;
++    const size_t separator = addon.find_last_of(L'\\');
++    if (separator == std::wstring::npos) return ERROR_BAD_PATHNAME;
++    const std::wstring directory = addon.substr(0, separator);
++    guard.directory.handle = CreateFileW(make_extended_length_path(directory).c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
++        FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++    if (guard.directory == INVALID_HANDLE_VALUE) return GetLastError();
++    BY_HANDLE_FILE_INFORMATION directory_info{};
++    if (!GetFileInformationByHandle(guard.directory, &directory_info)) return GetLastError();
++    if ((directory_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 || (directory_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) return ERROR_CANT_ACCESS_FILE;
++    std::wstring final_directory;
++    if (!get_final_directory_path(directory, final_directory, error)) return error;
++    if (_wcsicmp(directory.c_str(), final_directory.c_str()) != 0) return ERROR_CANT_ACCESS_FILE;
++    PSID owner = nullptr; PACL dacl = nullptr, labels = nullptr; PSECURITY_DESCRIPTOR descriptor = nullptr;
++    error = GetSecurityInfo(guard.directory, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
++        &owner, nullptr, &dacl, &labels, &descriptor);
++    if (error != ERROR_SUCCESS) return error;
++    struct descriptor_guard {PSECURITY_DESCRIPTOR value;~descriptor_guard(){LocalFree(value);}} descriptor_scope{descriptor};
++    SECURITY_DESCRIPTOR_CONTROL control{};DWORD revision=0;
++    if (!owner || !IsValidSid(owner) || caller.user_sid.size() != GetLengthSid(owner) || memcmp(caller.user_sid.data(), owner, caller.user_sid.size()) != 0 ||
++        !GetSecurityDescriptorControl(descriptor, &control, &revision) || (control & SE_DACL_PROTECTED) == 0 || !dacl || dacl->AceCount != 2 || !labels) return ERROR_ACCESS_DENIED;
++    unsigned owner_aces=0, system_aces=0, high_labels=0;
++    for (DWORD index=0;index<dacl->AceCount;++index) {
++        void *raw=nullptr;if(!GetAce(dacl,index,&raw))return GetLastError();
++        const auto ace=static_cast<ACCESS_ALLOWED_ACE *>(raw);
++        if(ace->Header.AceType!=ACCESS_ALLOWED_ACE_TYPE || ace->Mask!=FILE_ALL_ACCESS) return ERROR_ACCESS_DENIED;
++        PSID sid=const_cast<DWORD *>(&ace->SidStart);
++        if(!IsValidSid(sid))return ERROR_INVALID_SID;
++        if(GetLengthSid(sid)==caller.user_sid.size() && memcmp(sid,caller.user_sid.data(),caller.user_sid.size())==0)++owner_aces;
++        else if(IsWellKnownSid(sid,WinLocalSystemSid))++system_aces;
++        else return ERROR_ACCESS_DENIED;
++    }
++    const SID_IDENTIFIER_AUTHORITY mandatory_label_authority=SECURITY_MANDATORY_LABEL_AUTHORITY;
++    for(DWORD index=0;index<labels->AceCount;++index) {
++        void *raw=nullptr;if(!GetAce(labels,index,&raw))return GetLastError();
++        const auto ace=static_cast<SYSTEM_MANDATORY_LABEL_ACE *>(raw);
++        if(ace->Header.AceType!=SYSTEM_MANDATORY_LABEL_ACE_TYPE)continue;
++        PSID sid=const_cast<DWORD *>(&ace->SidStart);
++        if(!IsValidSid(sid) || *GetSidSubAuthorityCount(sid)!=1 || memcmp(GetSidIdentifierAuthority(sid),&mandatory_label_authority,sizeof(mandatory_label_authority))!=0 || *GetSidSubAuthority(sid,0)!=SECURITY_MANDATORY_HIGH_RID ||
++            ace->Mask!=SYSTEM_MANDATORY_LABEL_NO_WRITE_UP || (ace->Header.AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)) != (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) return ERROR_ACCESS_DENIED;
++        ++high_labels;
++    }
++    if(owner_aces!=1 || system_aces!=1 || high_labels!=1)return ERROR_ACCESS_DENIED;
++    std::vector<BYTE> marker; bool missing = false;
++    if (!read_bounded_regular_file(directory + L"\\.electron-game-overlay-run.json", 4096, marker, missing, error)) return error;
++    const size_t leaf = directory.find_last_of(L'\\');
++    std::wstring marker_text;
++    if (!decode_utf8_text(marker, marker_text, error)) return error;
++    if (missing || leaf == std::wstring::npos || !valid_owned_run_marker(marker_text, directory.substr(leaf + 1))) return ERROR_INVALID_DATA;
++    BYTE digest[32] = {};
++    error = hash_immutable_native_file(directory + L"\\ReShade.ini", guard.configuration, digest);
++    if (error != ERROR_SUCCESS) return error;
++    if(memcmp(digest,expected_ini_hash,sizeof(digest))!=0)return ERROR_REVISION_MISMATCH;
++    bool found = false; std::vector<std::wstring> values;
++    if (!read_bounded_utf8_ini_values(directory + L"\\ReShade.ini", L"ADDON", L"AddonPath", missing, found, values, error)) return error;
++    if (missing || !found || values.size() != 1 || values.front() != L".") return ERROR_ACCESS_DENIED;
++    // A private host may scan only the two sealed per-architecture EGO files.
++    // Unknown add-ons are refused, never removed, rewritten or disabled.
++    WIN32_FIND_DATAW entry{};
++    const HANDLE search = FindFirstFileW(make_extended_length_path(directory + L"\\*").c_str(), &entry);
++    if (search == INVALID_HANDLE_VALUE) return GetLastError();
++    DWORD scan_error = ERROR_SUCCESS;
++    do {
++        std::wstring name = entry.cFileName;
++        std::transform(name.begin(), name.end(), name.begin(), [](wchar_t value){return static_cast<wchar_t>(towlower(value));});
++        const size_t dot = name.find_last_of(L'.');
++        const std::wstring extension = dot == std::wstring::npos ? L"" : name.substr(dot);
++        if ((extension == L".addon" || extension == L".addon32" || extension == L".addon64") &&
++            name != L"electron_game_overlay.addon32" && name != L"electron_game_overlay.addon64") { scan_error = ERROR_ACCESS_DENIED; break; }
++    } while (FindNextFileW(search, &entry));
++    if (scan_error == ERROR_SUCCESS && GetLastError() != ERROR_NO_MORE_FILES) scan_error = GetLastError();
++    FindClose(search);
++    if (scan_error != ERROR_SUCCESS) return scan_error;
++    error = hash_immutable_native_file(addon, guard.addon, digest);
++    if (error != ERROR_SUCCESS) return error;
++    if(memcmp(digest,expected_addon_hash,sizeof(digest))!=0)return ERROR_REVISION_MISMATCH;
++    // Shared snapshot hard links remain read-only while either image is about
++    // to be consumed. All aliases are protected by these file sharing locks;
++    // the high directory label prevents inserting a new scan entry.
++    error = hash_immutable_native_file(directory + L"\\" + target_reshade_runtime_file, guard.runtime, digest);
++    if (error != ERROR_SUCCESS) return error;
++    if(memcmp(digest,expected_runtime_hash,sizeof(digest))!=0)return ERROR_REVISION_MISMATCH;
++    char build[33] = {};
++    return validate_staged_participant(addon, build);
++}
++
+ static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &ready,
+ 	bool *present = nullptr, bool *adapter_ready = nullptr,
+ 	const wchar_t **inspection_phase = nullptr, bool *ownership_observed = nullptr)
+@@ -5495,6 +5698,16 @@ static persistent_host_claim_result pin_host_claim(HANDLE process, DWORD pid, DW
+ 
+ int wmain(int argc, wchar_t *argv[])
+ {
++    bool private_payload_requested=false;
++    BYTE private_runtime_hash[32]={},private_addon_hash[32]={},private_ini_hash[32]={};
++    for(int argument=1;argument<argc;++argument){
++        if(wcscmp(argv[argument],L"--private-elevated-payload")!=0)continue;
++        if(private_payload_requested || argument+3>=argc || !parse_private_payload_digest(argv[argument+1],private_runtime_hash) || !parse_private_payload_digest(argv[argument+2],private_addon_hash) || !parse_private_payload_digest(argv[argument+3],private_ini_hash)){
++            print_injection_not_started();return ERROR_INVALID_PARAMETER;
++        }
++        private_payload_requested=true;
++        for(int move=argument;move+4<argc;++move)argv[move]=argv[move+4];argc-=4;--argument;
++    }
+ 	std::wstring preloaded_addon_leaf;
+ 	for (int argument = 1; argument < argc; ++argument)
+ 	{
+@@ -5792,6 +6005,28 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		print_injection_not_started();
+ 		return session_error;
+ 	}
++    attachment_token_context caller_token, target_token;
++    const wchar_t *authorization_phase = L"caller-token-query";
++    DWORD authorization_error = read_attachment_token(GetCurrentProcess(), caller_token);
++    if (authorization_error == ERROR_SUCCESS) {
++        authorization_phase = L"target-token-query";
++        authorization_error = read_attachment_token(remote_process, target_token);
++    }
++    if (authorization_error == ERROR_SUCCESS) authorization_error = authorize_attachment_tokens(caller_token, target_token, authorization_phase);
++    private_elevated_stage_guard elevated_stage;
++    if (authorization_error == ERROR_SUCCESS && caller_token.elevated) {
++        authorization_phase = L"private-elevated-stage";
++        authorization_error = preloaded_addon_leaf.empty() && private_payload_requested ? validate_private_elevated_stage(elevated_stage, caller_token, private_runtime_hash, private_addon_hash, private_ini_hash) : ERROR_ACCESS_DENIED;
++        if (authorization_error == ERROR_SUCCESS) authorization_phase = L"allowed-private-elevated";
++    } else if (authorization_error == ERROR_SUCCESS && private_payload_requested) {
++        authorization_phase = L"private-elevated-request-for-medium";
++        authorization_error = ERROR_ACCESS_DENIED;
++    }
++    if (!write_attachment_authorization(pid, remote_process, caller_token, target_token, authorization_error, authorization_phase)) return ERROR_WRITE_FAULT;
++    if (authorization_error != ERROR_SUCCESS) {
++        write_injector_diagnostic(L"target-authorization-rejected", pid, std::wstring(), authorization_error, selected_image_path);
++        print_injection_not_started(); return authorization_error;
++    }
+ 	scoped_handle preloaded_staged_guard;
+ 	if (!preloaded_addon_leaf.empty())
+ 	{

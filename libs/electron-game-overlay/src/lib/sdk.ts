@@ -1,4 +1,7 @@
 export { ElectronGameOverlay } from './electron-game-overlay.js';
+export { inspectOverlayConsumerExecutionContext, launchUnelevatedOverlayConsumer,
+  type OverlayConsumerExecutionContext, type OverlayConsumerContextOptions,
+  type OverlayConsumerRelaunchOptions, type OverlayConsumerRelaunchResult } from './overlay-consumer-context.js';
 export {
   defaultOverlayAddonStorageRoot,
   registerOverlayAddonInstallation,

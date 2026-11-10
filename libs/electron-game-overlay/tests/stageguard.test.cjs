@@ -36,7 +36,7 @@ test('portable source contract: staging mirrors bound cooperative native and pac
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 37);
+  assert.equal(patches(stage).length, 42);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorFirstHostResultPatchSha256'), [['injectorFirstHostResultPatchSha256', 'reshade-injector-first-host-result.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorAddonPreloadPatchSha256'), [['injectorAddonPreloadPatchSha256', 'reshade-injector-preloaded-addon.patch']]);
@@ -160,9 +160,9 @@ test('current source cache binds the complete nineteen-file stack and terminal p
   assert.match(reshadeProducer, /addonPreloadProtocol = 1/);
   assert.match(producer, /addonPreloadProtocol = 1/);
   const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
-  // The shared-directory tail replaces the old snapshot path hunk, so the
-  // superseded long-path tail is checked during ordered migration instead.
-  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$OwnedLateD3d11AdapterReadyLongPathPatch', '$InjectorInitialInspectionRecoveryPatch', '$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch'].sort());
+  // Context/readiness replace the initial-inspection hunk. Superseded seams
+  // are validated by the exact complete vector and ordered migration tests.
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$OwnedLateD3d11AdapterReadyLongPathPatch', '$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch', '$InjectorSelectionBeforeOpenPatch', '$InjectorStartupReadinessPatch', '$InjectorElevatedPrivatePatch'].sort());
   assert.ok(reshadeProducer.indexOf('foreach ($Patch in @(') > reshadeProducer.indexOf('foreach ($Entry in $ExpectedPatchedContentSha256.GetEnumerator())'), 'Terminal patch reversal check follows the complete source inventory/hash proof');
   for (const source of [reshadeProducer, producer, stage]) {
     assert.ok(source.includes(ownedLatePatchSha256), 'Frozen owned-late production patch is pinned before packaging/cache acceptance');
@@ -277,6 +277,7 @@ foreach ($SourcePath in $InputData.sources) {
             $Fields.schemaVersion = 4; $Fields.kind = 'electron-game-overlay-runtime-build'; $Fields.platform = 'win32-x64'; $Fields.configuration = 'RelWithDebInfo'
             $Fields.addonBuildId = $ExpectedAddonBuildId; $Fields.cooperativeAddonProtocol = 1; $Fields.injectorProcessInstanceBinding = 1; $Fields.injectorFutureTargets = 2
             $Fields.managerProtocolSchemaVersion = 1; $Fields.runtimeGeneration = $ExpectedRuntimeGeneration; $Fields.targetTransportMin = 1; $Fields.targetTransportMax = 1
+            $Fields.privateElevatedAuthorization = 2
             if ($Case.present) { $Fields.addonPreloadProtocol = $Case.value } else { $Fields.Remove('addonPreloadProtocol') }
             if ($Case.forceType -eq 'int32') { $Fields.addonPreloadProtocol = [int]$Case.value }
             if ($Case.forceType -eq 'int64') { $Fields.addonPreloadProtocol = [long]$Case.value }

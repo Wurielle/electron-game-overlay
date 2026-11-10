@@ -1,0 +1,7 @@
+EGO_POLICY_BASELINE_V1	134387355370799928
+ReShade path watcher armed.
+Matched executable path: D:\SteamLibrary\steamapps\common\Gun Frog\UnityCrashHandler64.exe
+EGO_TARGET_SELECTED_V2	20860	134387359218644144	D:\SteamLibrary\steamapps\common\Gun Frog\UnityCrashHandler64.exe
+EGO_TARGET_SELECTED	20860
+ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {"schemaVersion":1,"stage":"target-preflight","code":"target-preloaded-member-elevation-rejected","pid":20860,"targetExecutablePath":"D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\UnityCrashHandler64.exe","injectionStarted":false,"windowsErrorCode":5}
+ReShade injection not started.

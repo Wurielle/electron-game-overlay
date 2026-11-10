@@ -2,6 +2,54 @@ cmake_minimum_required(VERSION 3.24)
 
 project(electron_game_overlay_runtime LANGUAGES CXX)
 
+set(RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256
+    "454B5B8377548E6B99911F20A7166FAADDB10BE9FB27565E34DA0F4F5A27B62C"
+)
+set(RESHAPE_ELEVATED_PRIVATE_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-elevated-private-authorization.patch"
+)
+set(RESHAPE_ELEVATED_PRIVATE_PATCH_SHA256
+    "DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697"
+)
+
+set(RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256
+    "534882EA54EF994ADBF6BA45F9F7D99EB91D74B0EDA65646736E924B3515E6F8"
+)
+set(RESHAPE_STARTUP_READINESS_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-startup-readiness.patch"
+)
+set(RESHAPE_STARTUP_READINESS_PATCH_SHA256
+    "29C8D7ACA8919189D484B2E22F83DBD564B00D344E8C860058AFCCEAFC808D9D"
+)
+
+set(RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256
+    "243F064C81A96D2140337100ECAF9FFA44BB955127E068D80EA64835005CB517"
+)
+set(RESHAPE_MEMBER_DIAGNOSTICS_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-member-diagnostics.patch"
+)
+set(RESHAPE_MEMBER_DIAGNOSTICS_PATCH_SHA256
+    "D56162D2EA444DB44E7F21128A5F316E124E11E08EC1B6F3328D769EA4048A57"
+)
+set(RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256
+    "DA86B38F4E02B00AF0BD89E29AB348EE17D61C6908172B799F782ACA0C953EE9"
+)
+set(RESHAPE_SELECTION_BEFORE_OPEN_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-selection-before-open.patch"
+)
+set(RESHAPE_SELECTION_BEFORE_OPEN_PATCH_SHA256
+    "F83053E59EE9443E98D31A4C238B3D19D6B847D1F6F5E238E05B899FFC87E555"
+)
+set(RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256
+    "06787C1B21AEE7268F0B4584A16D499872ABB426687882A350D22643924F0DF0"
+)
+set(RESHAPE_INSPECTION_CONTEXT_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/reshade-injector-inspection-context.patch"
+)
+set(RESHAPE_INSPECTION_CONTEXT_PATCH_SHA256
+    "288C2A76AEDBC827BB00117A455FFE87ECB708CA33411449CD56E2BEA190160E"
+)
+
 set(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
     "CCE20935ADD44EF6A5A7973014B2E07F"
 )
@@ -388,6 +436,26 @@ string(REPLACE "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_ADAPT
     "source/ego_owned_late_d3d11/owned_late_d3d11.inl=${RESHAPE_FOREIGN_ADDON_ISOLATION_INL_CONTENT_SHA256}"
     RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256
     "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCHED_CONTENT_SHA256}")
+string(REPLACE "tools/injector.cpp=${RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_INSPECTION_CONTEXT_PATCHED_CONTENT_SHA256
+    "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256}")
+string(REPLACE "tools/injector.cpp=${RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_SELECTION_BEFORE_OPEN_PATCHED_CONTENT_SHA256
+    "${RESHAPE_INSPECTION_CONTEXT_PATCHED_CONTENT_SHA256}")
+string(REPLACE "tools/injector.cpp=${RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_MEMBER_DIAGNOSTICS_PATCHED_CONTENT_SHA256
+    "${RESHAPE_SELECTION_BEFORE_OPEN_PATCHED_CONTENT_SHA256}")
+string(REPLACE "tools/injector.cpp=${RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_STARTUP_READINESS_PATCHED_CONTENT_SHA256
+    "${RESHAPE_MEMBER_DIAGNOSTICS_PATCHED_CONTENT_SHA256}")
+string(REPLACE "tools/injector.cpp=${RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=${RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256}"
+    RESHAPE_ELEVATED_PRIVATE_PATCHED_CONTENT_SHA256
+    "${RESHAPE_STARTUP_READINESS_PATCHED_CONTENT_SHA256}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${RESHAPE_SOURCE_PATCHES}
     "${RESHAPE_RAW_INPUT_NORMALIZATION_PATCH}"
@@ -424,6 +492,11 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${RESHAPE_ADAPTER_READY_LONG_PATH_PATCH}"
     "${RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH}"
     "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH}"
+    "${RESHAPE_INSPECTION_CONTEXT_PATCH}"
+    "${RESHAPE_SELECTION_BEFORE_OPEN_PATCH}"
+    "${RESHAPE_MEMBER_DIAGNOSTICS_PATCH}"
+    "${RESHAPE_STARTUP_READINESS_PATCH}"
+    "${RESHAPE_ELEVATED_PRIVATE_PATCH}"
     "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH}"
 )
 
@@ -999,6 +1072,66 @@ function(ego_prepare_owned_late_source_cache source_dir)
             message(FATAL_ERROR "The foreign add-on isolation patch hash is not the frozen implementation.")
         endif()
     endif()
+    if(DEFINED RESHAPE_INSPECTION_CONTEXT_PATCH)
+        get_filename_component(context_patch_dir "${RESHAPE_INSPECTION_CONTEXT_PATCH}" DIRECTORY)
+        get_filename_component(context_patch_name "${RESHAPE_INSPECTION_CONTEXT_PATCH}" NAME)
+        ego_read_source_cache_file("${context_patch_dir}" "${context_patch_name}" context_patch_hash ignored_text)
+        if(NOT context_patch_hash STREQUAL RESHAPE_INSPECTION_CONTEXT_PATCH_SHA256)
+            message(FATAL_ERROR "The inspection-context patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    if(DEFINED RESHAPE_SELECTION_BEFORE_OPEN_PATCH)
+        get_filename_component(selection_patch_dir "${RESHAPE_SELECTION_BEFORE_OPEN_PATCH}" DIRECTORY)
+        get_filename_component(selection_patch_name "${RESHAPE_SELECTION_BEFORE_OPEN_PATCH}" NAME)
+        ego_read_source_cache_file("${selection_patch_dir}" "${selection_patch_name}" selection_patch_hash ignored_text)
+        if(NOT selection_patch_hash STREQUAL RESHAPE_SELECTION_BEFORE_OPEN_PATCH_SHA256)
+            message(FATAL_ERROR "The selection-before-open patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    if(DEFINED RESHAPE_MEMBER_DIAGNOSTICS_PATCH)
+        get_filename_component(member_patch_dir "${RESHAPE_MEMBER_DIAGNOSTICS_PATCH}" DIRECTORY)
+        get_filename_component(member_patch_name "${RESHAPE_MEMBER_DIAGNOSTICS_PATCH}" NAME)
+        ego_read_source_cache_file("${member_patch_dir}" "${member_patch_name}" member_patch_hash ignored_text)
+        if(NOT member_patch_hash STREQUAL RESHAPE_MEMBER_DIAGNOSTICS_PATCH_SHA256)
+            message(FATAL_ERROR "The member-diagnostics patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    if(DEFINED RESHAPE_STARTUP_READINESS_PATCH)
+        get_filename_component(startup_patch_dir "${RESHAPE_STARTUP_READINESS_PATCH}" DIRECTORY)
+        get_filename_component(startup_patch_name "${RESHAPE_STARTUP_READINESS_PATCH}" NAME)
+        ego_read_source_cache_file("${startup_patch_dir}" "${startup_patch_name}" startup_patch_hash ignored_text)
+        if(NOT startup_patch_hash STREQUAL RESHAPE_STARTUP_READINESS_PATCH_SHA256)
+            message(FATAL_ERROR "The startup-readiness patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    if(DEFINED RESHAPE_ELEVATED_PRIVATE_PATCH)
+        get_filename_component(elevated_patch_dir "${RESHAPE_ELEVATED_PRIVATE_PATCH}" DIRECTORY)
+        get_filename_component(elevated_patch_name "${RESHAPE_ELEVATED_PRIVATE_PATCH}" NAME)
+        ego_read_source_cache_file("${elevated_patch_dir}" "${elevated_patch_name}" elevated_patch_hash ignored_text)
+        if(NOT elevated_patch_hash STREQUAL RESHAPE_ELEVATED_PRIVATE_PATCH_SHA256)
+            message(FATAL_ERROR "The elevated-private patch hash is not the frozen implementation.")
+        endif()
+    endif()
+    if(injector_hash STREQUAL RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256)
+        ego_apply_elevated_private_source_tail("${source_root}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
+    if(injector_hash STREQUAL RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256)
+        ego_apply_startup_readiness_source_tail("${source_root}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
+    if(injector_hash STREQUAL RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256)
+        ego_apply_member_diagnostics_source_tail("${source_root}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
+    if(injector_hash STREQUAL RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256)
+        ego_apply_selection_before_open_source_tail("${source_root}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
+    if(injector_hash STREQUAL RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256)
+        ego_apply_inspection_context_source_tail("${source_root}" REVERSE)
+        ego_read_source_cache_file("${source_root}" "tools/injector.cpp" injector_hash ignored_text)
+    endif()
     # Restore generation 22 in reverse publication order. Each helper proves
     # every source file and Git entry before its one atomic rename. All supplied
     # patch hashes above are checked before the first publication.
@@ -1559,6 +1692,111 @@ function(ego_apply_shared_addon_directory_source_tail source_dir)
     endif()
     ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
         "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH}" "${RESHAPE_SHARED_ADDON_DIRECTORY_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_elevated_private_source_tail source_dir)
+    set(before_hash "${RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_STARTUP_READINESS_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown elevated-private patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_ELEVATED_PRIVATE_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${RESHAPE_ELEVATED_PRIVATE_PATCH}" "${RESHAPE_ELEVATED_PRIVATE_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_startup_readiness_source_tail source_dir)
+    set(before_hash "${RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_MEMBER_DIAGNOSTICS_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown startup-readiness patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_STARTUP_READINESS_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${RESHAPE_STARTUP_READINESS_PATCH}" "${RESHAPE_STARTUP_READINESS_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_member_diagnostics_source_tail source_dir)
+    set(before_hash "${RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_SELECTION_BEFORE_OPEN_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown member-diagnostics patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_MEMBER_DIAGNOSTICS_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${RESHAPE_MEMBER_DIAGNOSTICS_PATCH}" "${RESHAPE_MEMBER_DIAGNOSTICS_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_selection_before_open_source_tail source_dir)
+    set(before_hash "${RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_INSPECTION_CONTEXT_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown selection-before-open patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_SELECTION_BEFORE_OPEN_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${RESHAPE_SELECTION_BEFORE_OPEN_PATCH}" "${RESHAPE_SELECTION_BEFORE_OPEN_PATCH_SHA256}"
+        "${before_hash}" "${after_hash}" ${apply_direction})
+endfunction()
+
+function(ego_apply_inspection_context_source_tail source_dir)
+    set(before_hash "${RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256}")
+    set(after_hash "${RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256}")
+    set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+        "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256}")
+    set(apply_direction)
+    if(ARGC GREATER 1)
+        if(NOT ARGC EQUAL 2 OR NOT ARGV1 STREQUAL "REVERSE")
+            message(FATAL_ERROR "Unknown inspection-context patch direction; no source files were changed.")
+        endif()
+        set(before_hash "${RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256}")
+        set(after_hash "${RESHAPE_SHARED_ADDON_DIRECTORY_INJECTOR_CONTENT_SHA256}")
+        set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+            "${RESHAPE_INSPECTION_CONTEXT_PATCHED_CONTENT_SHA256}")
+        set(apply_direction REVERSE)
+    endif()
+    ego_apply_terminal_source_file_tail("${source_dir}" "tools/injector.cpp"
+        "${RESHAPE_INSPECTION_CONTEXT_PATCH}" "${RESHAPE_INSPECTION_CONTEXT_PATCH_SHA256}"
         "${before_hash}" "${after_hash}" ${apply_direction})
 endfunction()
 
@@ -3431,6 +3669,25 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
 ego_apply_foreign_addon_isolation_source_tail("${reshade_SOURCE_DIR}")
 set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
     "${RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256}")
+ego_apply_inspection_context_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_INSPECTION_CONTEXT_PATCHED_CONTENT_SHA256}")
+
+ego_apply_selection_before_open_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_SELECTION_BEFORE_OPEN_PATCHED_CONTENT_SHA256}")
+
+ego_apply_member_diagnostics_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_MEMBER_DIAGNOSTICS_PATCHED_CONTENT_SHA256}")
+
+ego_apply_startup_readiness_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_STARTUP_READINESS_PATCHED_CONTENT_SHA256}")
+
+ego_apply_elevated_private_source_tail("${reshade_SOURCE_DIR}")
+set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
+    "${RESHAPE_ELEVATED_PRIVATE_PATCHED_CONTENT_SHA256}")
 
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and

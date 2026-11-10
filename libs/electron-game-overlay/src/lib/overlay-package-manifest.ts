@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 
 /** @internal Build artifact integrity, not publisher authentication. */
 export const OVERLAY_DISTRIBUTION_MANIFEST_FILE_NAME = 'overlay-manifest.json';
+const INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256 = 'DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697';
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_FILES = 8192;
 const MAX_FILE_BYTES = 512 * 1024 * 1024;
@@ -30,6 +31,14 @@ const INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256 =
   '54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125';
 const OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256 =
   '2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99';
+const INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256 =
+  '288C2A76AEDBC827BB00117A455FFE87ECB708CA33411449CD56E2BEA190160E';
+const INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256 =
+  'F83053E59EE9443E98D31A4C238B3D19D6B847D1F6F5E238E05B899FFC87E555';
+const INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256 =
+  'D56162D2EA444DB44E7F21128A5F316E124E11E08EC1B6F3328D769EA4048A57';
+const INJECTOR_STARTUP_READINESS_PATCH_SHA256 =
+  '29C8D7ACA8919189D484B2E22F83DBD564B00D344E8C860058AFCCEAFC808D9D';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -262,6 +271,43 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (requiresSharedAddonDirectoryPatch && expectedGeneration < 23)) {
     throw new Error('Compiled SDK shared add-on directory patch pin does not match its generation');
   }
+  const contextDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256\b/g)];
+  const contextPins = [...validator.matchAll(/\bconst\s+INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (contextDeclarations.length !== contextPins.length || contextDeclarations.length > 1 ||
+      (contextPins.length === 1 && contextPins[0][1].toUpperCase() !== INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256)) {
+    throw new Error('Compiled SDK inspection context patch pin is malformed or unsupported');
+  }
+  if ((contextPins.length === 1) !== (expectedGeneration >= 24)) {
+    throw new Error('Compiled SDK inspection context patch pin does not match its generation');
+  }
+  const selectionDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256\b/g)];
+  const selectionPins = [...validator.matchAll(/\bconst\s+INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (selectionDeclarations.length !== selectionPins.length || selectionDeclarations.length > 1 ||
+      (selectionPins.length === 1 && selectionPins[0][1].toUpperCase() !== INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256)) {
+    throw new Error('Compiled SDK selection before open patch pin is malformed or unsupported');
+  }
+  if ((selectionPins.length === 1) !== (expectedGeneration >= 25)) {
+    throw new Error('Compiled SDK selection before open patch pin does not match its generation');
+  }
+  const memberDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256\b/g)];
+  const memberPins = [...validator.matchAll(/\bconst\s+INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (memberDeclarations.length !== memberPins.length || memberDeclarations.length > 1 ||
+      (memberPins.length === 1 && memberPins[0][1].toUpperCase() !== INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256)) {
+    throw new Error('Compiled SDK member diagnostics patch pin is malformed or unsupported');
+  }
+  if ((memberPins.length === 1) !== (expectedGeneration >= 26)) {
+    throw new Error('Compiled SDK member diagnostics patch pin does not match its generation');
+  }
+  const startupDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_STARTUP_READINESS_PATCH_SHA256\b/g)];
+  const startupPins = [...validator.matchAll(/\bconst\s+INJECTOR_STARTUP_READINESS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (startupDeclarations.length !== startupPins.length || startupDeclarations.length > 1 ||
+      (startupPins.length === 1 && startupPins[0][1].toUpperCase() !== INJECTOR_STARTUP_READINESS_PATCH_SHA256)) throw new Error('Compiled SDK startup readiness patch pin is malformed or unsupported');
+  if ((startupPins.length === 1) !== (expectedGeneration >= 26)) throw new Error('Compiled SDK startup readiness patch pin does not match its generation');
+  const elevatedPrivateDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256\b/g)];
+  const elevatedPrivatePins = [...validator.matchAll(/\bconst\s+INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (elevatedPrivateDeclarations.length !== elevatedPrivatePins.length || elevatedPrivateDeclarations.length > 1 ||
+      (elevatedPrivatePins.length === 1 && elevatedPrivatePins[0][1].toUpperCase() !== INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256)) throw new Error('Compiled SDK elevated private patch pin is malformed or unsupported');
+  if ((elevatedPrivatePins.length === 1) !== (expectedGeneration >= 27)) throw new Error('Compiled SDK elevated private patch pin does not match its generation');
   const foreignAddonIsolationDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256\b/g)];
   const foreignAddonIsolationPins = [...validator.matchAll(/\bconst\s+OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
   if (foreignAddonIsolationDeclarations.length !== foreignAddonIsolationPins.length || foreignAddonIsolationDeclarations.length > 1) {
@@ -291,9 +337,10 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
         typeof stamp.managerSourceSha256 !== 'string' || !NATIVE_DIGEST.test(stamp.managerSourceSha256)) {
       throw new Error('Unsupported cooperative native runtime manifest: ' + stampName);
     }
-    if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol', 'addonPreloadProtocol']
+    if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol', 'addonPreloadProtocol','privateElevatedAuthorization']
       .some((key) => stamp[key] !== paired![key])) throw new Error('Native architecture manifests disagree');
     if (stamp.runtimeGeneration !== expectedGeneration) throw new Error('Native runtime generation disagrees with the compiled SDK');
+    if(expectedGeneration>=28?stamp.privateElevatedAuthorization!==2:expectedGeneration>=27?stamp.privateElevatedAuthorization!==1:stamp.privateElevatedAuthorization!==undefined)throw new Error('Native private elevated authorization capability does not match the sealed SDK implementation: '+bits);
     if (requiresAddonPreloadPatch ? stamp.addonPreloadProtocol !== 1 : stamp.addonPreloadProtocol !== undefined) {
       throw new Error('Native add-on preload capability does not match the sealed SDK implementation: ' + bits);
     }
@@ -403,6 +450,38 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
     } else if (reshade.ownedLateD3d11ForeignAddonIsolationPatchSha256 !== undefined) {
       throw new Error('Owned late D3D11 foreign add-on isolation patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
+    if (expectedGeneration >= 24) {
+      if (typeof reshade.injectorInspectionContextPatchSha256 !== 'string' ||
+          reshade.injectorInspectionContextPatchSha256.toUpperCase() !== INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256) {
+        throw new Error('Pinned injector inspection context patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorInspectionContextPatchSha256 !== undefined) {
+      throw new Error('Injector inspection context patch provenance requires runtime generation 24: ' + bits);
+    }
+    if (expectedGeneration >= 25) {
+      if (typeof reshade.injectorSelectionBeforeOpenPatchSha256 !== 'string' ||
+          reshade.injectorSelectionBeforeOpenPatchSha256.toUpperCase() !== INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256) {
+        throw new Error('Pinned injector selection before open patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorSelectionBeforeOpenPatchSha256 !== undefined) {
+      throw new Error('Injector selection before open patch provenance requires runtime generation 25: ' + bits);
+    }
+    if (expectedGeneration >= 26) {
+      if (typeof reshade.injectorMemberDiagnosticsPatchSha256 !== 'string' ||
+          reshade.injectorMemberDiagnosticsPatchSha256.toUpperCase() !== INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256) {
+        throw new Error('Pinned injector member diagnostics patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorMemberDiagnosticsPatchSha256 !== undefined) {
+      throw new Error('Injector member diagnostics patch provenance requires runtime generation 26: ' + bits);
+    }
+    if (expectedGeneration >= 26) {
+      if (typeof reshade.injectorStartupReadinessPatchSha256 !== 'string' || reshade.injectorStartupReadinessPatchSha256.toUpperCase() !== INJECTOR_STARTUP_READINESS_PATCH_SHA256)
+        throw new Error('Pinned injector startup readiness patch provenance mismatch: ' + bits);
+    } else if (reshade.injectorStartupReadinessPatchSha256 !== undefined) throw new Error('Injector startup readiness patch provenance requires runtime generation 26: ' + bits);
+    if (expectedGeneration >= 27) {
+      if (typeof reshade.injectorElevatedPrivatePatchSha256 !== 'string' || reshade.injectorElevatedPrivatePatchSha256.toUpperCase() !== INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256)
+        throw new Error('Pinned injector elevated private patch provenance mismatch: ' + bits);
+    } else if (reshade.injectorElevatedPrivatePatchSha256 !== undefined) throw new Error('Injector elevated private patch provenance requires runtime generation 27: ' + bits);
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);
   }
