@@ -23,6 +23,8 @@ export {
   isReShadeOperationError,
   parseReShadeLaunchConfig,
   createReShadeLaunchConfig,
+  inspectReShadeRuntimeStorage,
+  pruneReShadeRuntimeStorage,
 } from './reshade-launcher.js';
 export type {
   ReShadeAttachResult,
@@ -42,6 +44,8 @@ export type {
   ReShadeRuntimeMode,
   ReShadeRuntimeStartupCode,
   ReShadeTarget,
+  ReShadeRuntimeStorageEntry,
+  ReShadeRuntimeStorageReport,
 } from './reshade-launcher.js';
 export type {
   AttachElectronOverlayWindowOptions,

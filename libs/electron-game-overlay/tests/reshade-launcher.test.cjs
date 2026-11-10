@@ -1956,7 +1956,7 @@ test('pre-injection proof cannot make legacy or contradictory output retry-safe'
   }
 });
 
-test('repeated failed A-B-A attachments and launcher restart share payload bytes; upgrades preserve old sessions', async () => {
+test('failed A-B-A attempts and restart retain no per-run payloads; upgrades preserve active old sessions', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
   const originalLog = console.log;
@@ -1982,17 +1982,13 @@ test('repeated failed A-B-A attachments and launcher restart share payload bytes
       await waitFor(() => !existsSync(path.join(call.options.cwd, 'electron_game_overlay.addon64')));
       assert.equal(launcher.state, 'idle');
     }
-    for (const artifact of artifacts.filter(name => name !== 'ReShade.ini' && !name.startsWith('electron_game_overlay.addon'))) {
-      const first = statSync(path.join(sessions[0], artifact), { bigint: true });
-      assert.notEqual(first.ino, statSync(path.join(fixture.runtimeDirectory, artifact), { bigint: true }).ino);
-      for (const session of sessions) assert.equal(statSync(path.join(session, artifact), { bigint: true }).ino, first.ino);
-      assert.equal(first.nlink, BigInt(sessions.length + 1));
-    }
-    writeFileSync(path.join(sessions[0], 'ReShade.ini'), 'private configuration');
-    assert.notEqual(readFileSync(path.join(sessions[1], 'ReShade.ini'), 'utf8'), 'private configuration');
-    const store = `${fixture.runsRootDirectory}.payloads-v1`;
+    await waitFor(()=>sessions.every(session=>artifacts.every(name=>!existsSync(path.join(session,name)))));
+    const store = `${fixture.runsRootDirectory}.payloads-v2`;
     assert.equal(readdirSync(store).length, 1);
-    const oldBytes = readFileSync(path.join(sessions[0], 'ReShade64.dll'));
+    const activeOld=new ReShadeOverlayLauncher(createConfig(fixture));
+    let activeDirectory;activeOld.onEvent(event=>{if(event.type==='runtime-staged')activeDirectory=event.runDirectory;});
+    await activeOld.prepare();
+    const oldBytes=readFileSync(path.join(activeDirectory,'ReShade64.dll'));
     writeFileSync(path.join(fixture.runtimeDirectory, 'ReShade64.dll'), 'verified upgrade');
     rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, 'electron_game_overlay_runtime.build.json', stamp => {
       stamp.reshadeRuntimeSha256 = createHash('sha256').update('verified upgrade').digest('hex').toUpperCase();
@@ -2001,8 +1997,8 @@ test('repeated failed A-B-A attachments and launcher restart share payload bytes
     try {
       await upgraded.prepare();
       assert.equal(readdirSync(store).length, 2);
-      assert.deepEqual(readFileSync(path.join(sessions[0], 'ReShade64.dll')), oldBytes);
-    } finally { upgraded.dispose(); }
+      assert.deepEqual(readFileSync(path.join(activeDirectory, 'ReShade64.dll')), oldBytes);
+    } finally { upgraded.dispose(); activeOld.dispose(); }
   } finally {
     launcher.dispose(); execution.restore();
     console.log = originalLog; console.error = originalError;
@@ -2027,7 +2023,7 @@ test('successful A-B-A target exits release private images and retain one shared
       await waitFor(() => !existsSync(file));
       assert.equal(existsSync(path.join(call.options.cwd, 'inject.stdout.log')), true);
     }
-    assert.equal(readdirSync(`${fixture.runsRootDirectory}.payloads-v1`).length, 1);
+    assert.equal(readdirSync(`${fixture.runsRootDirectory}.payloads-v2`).length, 1);
     assert.equal(launcher.state, 'idle');
   } finally { launcher.dispose(); execution.restore(); console.log = originalLog; }
 });
@@ -2037,7 +2033,7 @@ test('shared payload corruption is refused without repairing a published or poss
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
   try {
     await launcher.prepare();
-    const store = `${fixture.runsRootDirectory}.payloads-v1`;
+    const store = `${fixture.runsRootDirectory}.payloads-v2`;
     const file = path.join(store, readdirSync(store)[0], 'ReShade64.dll');
     chmodSync(file, 0o600);
     writeFileSync(file, 'corrupted owned test fixture');
@@ -2055,7 +2051,7 @@ test('concurrent preparation publishes one shared payload and keeps writable ses
   const launchers = Array.from({ length: 4 }, () => new ReShadeOverlayLauncher(createConfig(fixture)));
   try {
     await Promise.all(launchers.map(launcher => launcher.prepare()));
-    const store = `${fixture.runsRootDirectory}.payloads-v1`;
+    const store = `${fixture.runsRootDirectory}.payloads-v2`;
     assert.equal(readdirSync(store).length, 1);
     const sessions = readdirSync(fixture.runsRootDirectory);
     assert.equal(sessions.length, 4);
@@ -3846,13 +3842,13 @@ test('prepare stages once without injection and the next launch consumes that ex
   }
 });
 
-test('prepare prunes reclaimable runs older than seven days and beyond the newest 64', async () => {
+test('prepare prunes compact proven runs older than seven days and beyond the newest 16', async () => {
   const fixture = createRuntime();
   const launcher = new ReShadeOverlayLauncher(createConfig(fixture));
   const originalLog = console.log;
   const originalWarn = console.warn;
   const now = Date.now();
-  const countLimitedRuns = Array.from({ length: 66 }, (_, index) =>
+  const countLimitedRuns = Array.from({ length: 18 }, (_, index) =>
     createRetainedRun(
       fixture,
       `count-limited-${String(index).padStart(2, '0')}`,
@@ -3878,9 +3874,9 @@ test('prepare prunes reclaimable runs older than seven days and beyond the newes
     for (const [index, runDirectory] of countLimitedRuns.entries()) {
       assert.equal(
         existsSync(runDirectory),
-        index < 64,
+        index < 16,
         `count-limited run ${index} should ${
-          index < 64 ? 'be retained' : 'be pruned'
+          index < 16 ? 'be retained' : 'be pruned'
         }`,
       );
     }

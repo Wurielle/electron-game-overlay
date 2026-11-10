@@ -5,6 +5,74 @@ import {
   type OverlayBrokerProcessIdentity,
 } from './overlay-process-identity.js';
 
+/** @internal Query the exact recorded incarnation. Denied, malformed or
+ * otherwise unavailable evidence is unknown. Only a different OS creation
+ * identity or the native OpenProcess ERROR_INVALID_PARAMETER proves exit. */
+export async function overlayProcessIncarnationExited(
+  identity: Readonly<{ pid: number; creationTime100ns: string }>,
+  addonManagerPath: string,
+): Promise<boolean> {
+  if (
+    !Number.isInteger(identity.pid) ||
+    identity.pid < 1 ||
+    identity.pid > 0xffffffff ||
+    !isValidProcessCreationTime100ns(identity.creationTime100ns) ||
+    !isAbsolute(addonManagerPath)
+  )
+    return false;
+  return new Promise((resolve) =>
+    execFile(
+      addonManagerPath,
+      ['--query-process-image', String(identity.pid)],
+      {
+        shell: false,
+        windowsHide: true,
+        cwd: dirname(addonManagerPath),
+        timeout: 2000,
+        maxBuffer: 16384,
+        encoding: 'utf8',
+      },
+      (error, stdout, stderr) => {
+        try {
+          if (stderr.trim() || /[\r\n]/u.test(stdout.trim()))
+            return resolve(false);
+          const r = JSON.parse(stdout);
+          if (!r || typeof r !== 'object' || Array.isArray(r))
+            return resolve(false);
+          if (error)
+            return resolve(
+              error.code === 5 &&
+                Object.keys(r).sort().join(',') ===
+                  'code,kind,message,operation,schemaVersion,status,windowsError' &&
+                r.schemaVersion === 1 &&
+                r.kind ===
+                  'electron-game-overlay-reshade-addon-manager-result' &&
+                r.operation === 'query-process-image' &&
+                r.status === 'error' &&
+                r.code === 'process-query-failed' &&
+                r.windowsError === 87 &&
+                r.message ===
+                  'Unable to open the process for read-only identity inspection.',
+            );
+          resolve(
+            Object.keys(r).sort().join(',') ===
+              'creationTime100ns,executablePath,kind,pid,schemaVersion' &&
+              r.schemaVersion === 1 &&
+              r.kind === 'electron-game-overlay-process-image' &&
+              r.pid === identity.pid &&
+              typeof r.executablePath === 'string' &&
+              win32.isAbsolute(r.executablePath) &&
+              isValidProcessCreationTime100ns(r.creationTime100ns) &&
+              r.creationTime100ns !== identity.creationTime100ns,
+          );
+        } catch {
+          resolve(false);
+        }
+      },
+    ),
+  );
+}
+
 /** @internal Read-only OS identity query through the already validated native manager. */
 export async function resolveOverlayNativeProcessIdentity(
   pid: number,

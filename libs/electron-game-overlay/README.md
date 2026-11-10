@@ -191,8 +191,8 @@ The basename-glob update fix and discovery readiness contract are documented in 
 
 ## Runtime session storage
 
-Runtime staging keeps a verified, read-only snapshot per payload content hash in
-`<runsRootDirectory>.payloads-v1`. Packaged files are copied into that store once;
+Ordinary runtime staging keeps a verified, read-only snapshot per payload content hash in
+`<runsRootDirectory>.payloads-v2`. Packaged files are copied into that store once;
 session host DLLs, tools and manifests are hard links to the snapshot. Source
 package files are never hard linked. Every reuse checks ownership, canonical
 paths, file hashes and both architecture manifests. Corrupt entries fail closed
@@ -212,32 +212,37 @@ resets transport state, so a later matching authoritative exit still releases
 the private images. Cancellation alone preserves them. Retirement marker writes
 are serialized per run when cancellation and exit arrive back-to-back.
 
-Legacy directories and indeterminate attempts without explicit unmapped proof
-are preserved, even when old. Upgrades create one new snapshot and keep old
-snapshots and live/uncertain sessions intact. There is no automatic old-cache
-deletion. Migrating old full-copy directories requires an independent proof that
-their exact target instance and owning app exited; a PID, age or old reclaimable
-marker alone is insufficient. Keep their logs as evidence when removing verified
-unused payloads. Existing ReShade installations are outside this store.
+Proven retirement now removes all thirteen payload files from the run, including
+ordinary hard-link entries. Only bounded diagnostics and ownership evidence
+remain: 64 KiB per stdout/stderr/ReShade log, a 256-byte startup record, at most
+16 diagnostic folders, seven days and 4 MiB. Unknown entries prevent whole-run
+pruning. Live or indeterminate runs never expire through this policy.
+
+Verified cache versions are collected when no stage aliases or preparation
+leases remain. At most two unused verified versions are retained, in addition
+to every referenced version. Collection quarantines and rechecks its candidate;
+both interrupted collection and preparation/collection races are recoverable.
+High stages preserve generation 28's private, single-link native verification
+and bypass the redundant medium snapshot. Their transient copies are removed
+after the same positive retirement proof.
+
+`inspectReShadeRuntimeStorage` is read-only. Explicit
+`pruneReShadeRuntimeStorage` can recover an old run only from an exact recorded
+process incarnation and authoritative OS exit evidence, or existing positive
+unmapping proof. A producer's exit proves an unattempted preparation unused;
+it does not prove an attempted target exited. Unidentifiable legacy folders,
+weak retirement markers and failed/denied queries remain preserved.
+See [runtime storage](../../doc/runtime-storage.md) for the maintenance APIs,
+legacy limitations, exact retention policy and offline allocation measurements.
 
 The storage-only gate is
 `libs/electron-game-overlay-runtime/scripts/test-cases/runtime-payload-storage.ps1`.
-On 2026-11-09 it measured retained real payloads totaling 15,600,735 content bytes:
-
-| State | Unique allocated file bytes |
-| --- | ---: |
-| One active unused preparation, including its private images | 20,205,568 |
-| One preparation after safe retirement | 15,626,240 |
-| Twelve safely retired preparations | 15,626,240 |
-| Another preparation in a separate Node process, then retirement | 15,626,240 |
-| Synthetic verified upgrade, both builds retained, after retirement | 31,252,480 |
-
-A failed stage left storage unchanged. Allocation counts `stat.blocks * 512`
-once per NTFS file identity and excludes filesystem metadata; small session
-files and directory entries still consume metadata. The gate never executes the
-retained binaries and does not establish game/graphics acceptance. SDK tests
-separately cover successful and failed A-B-A lifecycles, private image retirement,
-late exit confirmation, concurrent publication, corruption and upgrade isolation.
+It uses retained real payload sizes without executing them, includes a separate
+Node filesystem restart and checks that 32 retired preparations retain at most
+16 diagnostic folders with no payload files. Allocation counts `stat.blocks *
+512` once per file identity and excludes filesystem metadata. This gate does not
+establish game/graphics or actual-high acceptance. SDK tests separately cover
+A-B-A lifecycles, cancellation, late exact exit, corruption and version rollover.
 
 An unused native V2 policy watcher can also retire its private images after its
 complete checked output drain proves that no target was selected. A kill request

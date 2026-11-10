@@ -66,6 +66,14 @@ access list and inheritable high label. This verification changes no files.
 The configuration and selected EGO/ReShade images also stay pinned against
 writes and deletion while loading begins.
 
+The SDK's storage maintenance keeps this native contract unchanged. High
+preparation reads verified package bytes directly and skips the medium snapshot
+cache. Its single-link copies are transient: after positive non-execution or
+exact target-exit proof, all thirteen payload files are removed from that run.
+Live and uncertain attempts are retained. See [runtime storage](runtime-storage.md)
+for bounded diagnostics and explicit lifetime-based recovery; filesystem models
+do not replace actual-high acceptance of a future SDK candidate.
+
 Only two fixed data leaves are precreated with a medium label so a medium
 target can write observability data: `ReShade.log` and
 `.electron-game-overlay-runtime-startup.json`. They do not select code or grant

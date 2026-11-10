@@ -177,7 +177,7 @@ starts no watcher, broker or injection. Options are:
 | Option | Meaning |
 | --- | --- |
 | `bundledRuntimeDirectory` | Absolute directory of the complete staged native bundle; defaults to the SDK's physical runtime location, including ASAR-unpacked discovery |
-| `runsRootDirectory` | Absolute writable parent for private session state and add-on image identities; verified shared payloads use the sibling `<runsRootDirectory>.payloads-v1` store. Defaults to `defaultReShadeRunsRootDirectory()`; see [runtime session storage](../libs/electron-game-overlay/README.md#runtime-session-storage). |
+| `runsRootDirectory` | Absolute writable parent for private session state and add-on image identities; ordinary verified payloads use the sibling `<runsRootDirectory>.payloads-v2` store. Elevated stages keep private high files and bypass that medium store. Defaults to `defaultReShadeRunsRootDirectory()`; see [runtime storage](runtime-storage.md). |
 
 `defaultReShadeRuntimeDirectory()` and `defaultReShadeRunsRootDirectory()` return
 locations, not proof of an installed/healthy runtime. Use the config validator
@@ -501,3 +501,19 @@ universal startup guarantee. The early lane is still exclusive across apps;
 exact-PID broker attachment supplies the shared route. Compatible applications
 retain one runtime owner and their negotiated optional behavior; later versions
 do not replace a committed running runtime.
+
+## Runtime storage maintenance
+
+`inspectReShadeRuntimeStorage({ runsRootDirectory? })` returns a
+`ReShadeRuntimeStorageReport` with the canonical root and readonly
+`ReShadeRuntimeStorageEntry` classifications. It reads the filesystem only;
+it does not query processes or delete files.
+
+`pruneReShadeRuntimeStorage({ config?, maxRecoveryProbes? })` compacts proven
+unused/unmapped runs, bounds retained diagnostics, and collects unreferenced
+verified ordinary snapshots. It can establish exit only for an exact recorded
+process incarnation through the validated native OS query. The default recovery
+probe bound is eight (allowed range 0..32); zero uses existing proof only. Failed
+or denied queries and legacy records without exact identity remain preserved.
+It requests no UAC or token change. See [runtime storage](runtime-storage.md) for
+the high-lane boundary, allocation evidence and legacy cleanup limitations.
