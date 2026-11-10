@@ -226,7 +226,22 @@ if ($SteamLoadedModuleHookOrderPatchHash -cne "560BF8A6DB17643F7FA095F75FDBE0677
 $CompatibilitySnapshotPatch = Join-Path $RuntimeRoot "patches\reshade-compatibility-snapshot.patch"
 $CompatibilitySnapshotPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $CompatibilitySnapshotPatch).Hash
 if ($CompatibilitySnapshotPatchHash -cne "C63E22F1768770469C770FB6D4124AE1A293A6D5ACD8402E8EC86F33B1CA1C66") { throw "Compatibility snapshot patch differs from its pinned implementation." }
+$OwnedCompositionPolicyPatch = Join-Path $RuntimeRoot "patches\reshade-owned-composition-policy.patch"
+$OwnedCompositionPolicyPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedCompositionPolicyPatch).Hash
+if ($OwnedCompositionPolicyPatchHash -cne "7AF52928DCAAD1914993D2CC29D99862461F1A46AF2448A82C7F2C42E87E68CF") { throw "Owned composition policy patch differs from its pinned implementation." }
+$CompositionBindingDiagnosticsPatch = Join-Path $RuntimeRoot "patches\reshade-owned-composition-binding-diagnostics.patch"
+$CompositionBindingDiagnosticsPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $CompositionBindingDiagnosticsPatch).Hash
+if ($CompositionBindingDiagnosticsPatchHash -cne "0180A6FACEEC7FA89174F4CED311A926DC98D292FB114347813F0E29C6B150DE") { throw "Composition binding diagnostic patch differs from its pinned implementation." }
+$WindowEligibilityPatch = Join-Path $RuntimeRoot "patches\reshade-owned-composition-window-eligibility.patch"
+$WindowEligibilityPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $WindowEligibilityPatch).Hash
+if ($WindowEligibilityPatchHash -cne "080DA1FD83FE48CB782FA9268B82A386E75BE081D107F2A5013F06675107B97F") { throw "Composition window eligibility patch differs from its pinned implementation." }
+$AuxiliaryLifetimePatch = Join-Path $RuntimeRoot "patches\reshade-owned-composition-auxiliary-lifetime.patch"
+$AuxiliaryLifetimePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $AuxiliaryLifetimePatch).Hash
+if ($AuxiliaryLifetimePatchHash -cne "3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61") { throw "Composition auxiliary lifetime patch differs from its pinned implementation." }
 $ExpectedPatchedFiles = @(
+    "source/ego_owned_late_d3d11/owned_runtime_policy.hpp"
+    "source/dxgi/dxgi_swapchain.hpp"
+    "source/ini_file.cpp"
     "source/ego_owned_late_d3d11/compatibility_snapshot.hpp"
     "source/dxgi/dxgi.cpp"
     "source/hook_manager.cpp"
@@ -273,10 +288,13 @@ $InjectorElevatedPrivatePatch = Join-Path $RuntimeRoot "patches\reshade-injector
 $InjectorElevatedPrivatePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorElevatedPrivatePatch).Hash
 if ($InjectorElevatedPrivatePatchHash -cne "DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697") { throw "The elevated-private patch differs from its frozen implementation." }
 $ExpectedPatchedContentSha256 = [ordered]@{
-    "source/ego_owned_late_d3d11/compatibility_snapshot.hpp" = "B6C215B7780483A6B859759F088A565BE9F5AF023115935441F373E81A1DCDEE"
+    "source/ego_owned_late_d3d11/owned_runtime_policy.hpp" = "A06E427C7EA2AE73F3FF90E14C204719FC247B9DE02EB5F84E066B602623F524"
+    "source/dxgi/dxgi_swapchain.hpp" = "C5A155BE0321F30DB18B4FC4578A41BF728414DD0927A789D5C335041922BC55"
+    "source/ini_file.cpp" = "08ACD295DB065D11E5A8388F074CFC6C384D29896E5DA9B20227222D8A61C688"
+    "source/ego_owned_late_d3d11/compatibility_snapshot.hpp" = "EF7E0B8A483D54053E2934E936DE96F8414DEF1B725D0CA131DD2121A5EA7F32"
     "source/dxgi/dxgi.cpp" = "41A686B186910B4C0FAA1B631356C2D7FD0F4BE772EFB32D7328DAA2DC65B88F"
     "source/hook_manager.cpp" = "C62CD60C5AFD66FAFCF6F3E0659C88078685351CB20B9721742953C7D64516BB"
-    "source/dxgi/dxgi_swapchain.cpp" = "43213ED06E440CC33D854718E872934C92294A7FF7CB597AC110CFBCBD13A3E5"
+    "source/dxgi/dxgi_swapchain.cpp" = "7213F5376BBEF92909910B33BA9B9F771101DA268E2AAAAECD212F1A1CBFDD2E"
     "ReShade.vcxproj" = "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp" = "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
@@ -284,11 +302,11 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/addon.cpp" = "DF69C9E8BE88244B54D92849A183B8A149A74FA959ED49A7109824EF0D8E3D9C"
     "source/addon_manager.cpp" = "E6524902A07A0B4E2947B372503679A84CAA0FD1840329E89564559C3160349E"
     "source/addon_manager.hpp" = "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
-    "source/d3d11/d3d11_impl_swapchain.cpp" = "6F9EA10B4621F37F2D4DAFA2E3F3575973DFDB6B566725BBD8B0BC8187DB52D3"
-    "source/d3d11/d3d11_impl_swapchain.hpp" = "60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
+    "source/d3d11/d3d11_impl_swapchain.cpp" = "9CC88315C5F2A4DAAA7E4AEAEBBA6584851AE565EC5D250C28BE2AE3B4347DDF"
+    "source/d3d11/d3d11_impl_swapchain.hpp" = "D6010A43C93302C056AF62E1BBE7523E6A8D023DEDFB9D3F50DC689EAA9169B6"
     "source/ego_owned_late_d3d11/owned_config_file.hpp" = "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
     "source/ego_owned_late_d3d11/owned_late_d3d11.hpp" = "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
-    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "E9D57C1E5501DF5474EBF9AF9A9F1059489BD60AB4C4633CF6C4586DBF498D67"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "7D6DCB3C8EA776EE8A4DBFC205CF0B3380AC60F57C86C00868532F2200941595"
     "source/input_frame_consumer.hpp" = "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
     "source/input.cpp" = "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
     "source/input.hpp" = "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
@@ -366,7 +384,7 @@ function Test-ReShadePatchedSourceState {
         $InjectorSelectionBeforeOpenPatch
         $InjectorStartupReadinessPatch
         $PrivateStageDiagnosticsPatch
-        $CompatibilitySnapshotPatch
+        $AuxiliaryLifetimePatch
         $OwnedLateD3d11ForeignAddonIsolationPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -443,6 +461,10 @@ function Test-RuntimeBuildCache {
             $Stamp.d3d11SwapchainResourceIdentityPatchSha256 -eq $D3d11ResourceIdentityPatchHash -and
             $Stamp.injectorPrivateStageDiagnosticsPatchSha256 -eq $PrivateStageDiagnosticsPatchHash -and
             $Stamp.steamLoadedModuleHookOrderPatchSha256 -eq $SteamLoadedModuleHookOrderPatchHash -and
+            $Stamp.ownedCompositionAuxiliaryLifetimePatchSha256 -eq $AuxiliaryLifetimePatchHash -and
+            $Stamp.ownedCompositionWindowEligibilityPatchSha256 -eq $WindowEligibilityPatchHash -and
+            $Stamp.ownedCompositionBindingDiagnosticsPatchSha256 -eq $CompositionBindingDiagnosticsPatchHash -and
+            $Stamp.ownedCompositionPolicyPatchSha256 -eq $OwnedCompositionPolicyPatchHash -and
             $Stamp.compatibilitySnapshotPatchSha256 -eq $CompatibilitySnapshotPatchHash -and
             $Stamp.ownedLateD3d11ForeignAddonIsolationPatchSha256 -eq $OwnedLateD3d11ForeignAddonIsolationPatchHash -and
             ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
@@ -614,6 +636,10 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorStartupReadinessPatchSha256 = $InjectorStartupReadinessPatchHash
     injectorPrivateStageDiagnosticsPatchSha256 = $PrivateStageDiagnosticsPatchHash
     steamLoadedModuleHookOrderPatchSha256 = $SteamLoadedModuleHookOrderPatchHash
+    ownedCompositionAuxiliaryLifetimePatchSha256 = $AuxiliaryLifetimePatchHash
+    ownedCompositionWindowEligibilityPatchSha256 = $WindowEligibilityPatchHash
+    ownedCompositionBindingDiagnosticsPatchSha256 = $CompositionBindingDiagnosticsPatchHash
+    ownedCompositionPolicyPatchSha256 = $OwnedCompositionPolicyPatchHash
     compatibilitySnapshotPatchSha256 = $CompatibilitySnapshotPatchHash
     d3d11SwapchainResourceIdentityPatchSha256 = $D3d11ResourceIdentityPatchHash
     injectorElevatedPrivatePatchSha256 = $InjectorElevatedPrivatePatchHash

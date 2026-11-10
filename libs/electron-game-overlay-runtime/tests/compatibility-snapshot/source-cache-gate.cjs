@@ -6,9 +6,15 @@ const base=path.join(root,'build/overlay-compatibility/snapshot-source-cache-fix
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex').toUpperCase(),read=p=>fs.readFileSync(p,'utf8').replaceAll('\r\n','\n');
 const cmake=read(path.join(runtime,'CMakeLists.txt')),tail=read(path.join(runtime,'cmake/compatibility-snapshot.cmake'));
 const descriptors=[...tail.matchAll(/"([^"|]+)\|([A-Z0-9]+)\|([A-F0-9]{64})"/g)].map(([,name,before,after])=>({name,before,after}));assert.equal(descriptors.length,5);
-const producer=read(path.join(runtime,'scripts/build-reshade-runtime.ps1')),table=producer.match(/\$ExpectedPatchedContentSha256 = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
-const pins=[...table.matchAll(/"([^"]+)" = "([0-9A-F]{64})"/g)].map(([,name,digest])=>({name,digest}));assert.equal(pins.length,23);
-const post=new Map(pins.map(({name,digest})=>{const bytes=Buffer.from(read(path.join(cache,name)));assert.equal(sha(bytes),digest,name);return [name,bytes];}));
+// This launcher retains the historical gen31 migration contract after a newer
+// source tail supersedes it. Reconstruct only its small text inputs in isolated
+// scratch; never reverse the live production cache.
+const vector=tail.match(/set\(vector\n([\s\S]*?)\n    \)/)[1];
+const frozenPins=new Map([...vector.matchAll(/"([^"=]+)=([0-9A-F]{64})"/g)].map(([,name,digest])=>[name,digest]));
+for(const d of descriptors)frozenPins.set(d.name,d.after);
+const pins=[...frozenPins].map(([name,digest])=>({name,digest}));assert.equal(pins.length,23);
+const {transition,frozenInputs}=require('../frozen-source-inputs.cjs');
+const post=frozenInputs({pins,cache,scratch:path.join(base,'gen31-text-inputs'),transitions:[transition(runtime,'owned-composition-auxiliary-lifetime'),transition(runtime,'owned-composition-window-eligibility'),transition(runtime,'owned-composition-binding-diagnostics'),transition(runtime,'owned-composition-policy')]});
 function run(exe,args,cwd,ok=true){const r=cp.spawnSync(exe,args,{cwd,encoding:'utf8',windowsHide:true,timeout:120000,maxBuffer:4*1024*1024});assert.ifError(r.error);if(ok)assert.equal(r.status,0,r.stdout+'\n'+r.stderr);else assert.notEqual(r.status,0);return r;}
 const git=(args,cwd=source)=>run('git',['-c','core.autocrlf=false','-c','core.eol=lf',...args],cwd);
 const owner=path.join(base,'.fixture-owner.json');

@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.24)
+project(delayed_hook_publication LANGUAGES C CXX)
+if(NOT WIN32 OR NOT MSVC OR NOT EXISTS "${RESHAPE_SOURCE}/deps/minhook/src/hook.c")
+  message(FATAL_ERROR "Supply the pinned ReShade source and existing MinHook dependency on Windows/MSVC.")
+endif()
+set(mh "${RESHAPE_SOURCE}/deps/minhook")
+add_library(device_counter SHARED adapter.cpp)
+target_include_directories(device_counter PRIVATE "${RESHAPE_SOURCE}/include")
+add_library(owned_loader_trigger SHARED trigger.cpp)
+add_executable(delayed_hook_publication fixture.cpp "${mh}/src/hook.c" "${mh}/src/buffer.c"
+  "${mh}/src/trampoline.c" "${mh}/src/hde/hde32.c" "${mh}/src/hde/hde64.c")
+target_include_directories(delayed_hook_publication PRIVATE "${mh}/include")
+foreach(target device_counter owned_loader_trigger delayed_hook_publication)
+  target_compile_features(${target} PRIVATE cxx_std_17)
+  target_compile_definitions(${target} PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(${target} PRIVATE /W4 /EHsc /permissive-)
+  target_link_options(${target} PRIVATE /INCREMENTAL:NO)
+endforeach()
+# Deliberately no d3d11/dxgi import libraries: graphics must first load on the
+# controlled graphics thread after production ReShade registers delayed hooks.

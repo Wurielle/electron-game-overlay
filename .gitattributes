@@ -23,3 +23,11 @@ libs/electron-game-overlay-runtime/patches/reshade-d3d11-swapchain-resource-iden
 libs/electron-game-overlay-runtime/patches/reshade-injector-private-stage-diagnostics.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-steam-loaded-module-hook-order.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-compatibility-snapshot.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-policy.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-binding-diagnostics.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-window-eligibility.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-auxiliary-lifetime.patch text eol=lf

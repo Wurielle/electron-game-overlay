@@ -1,0 +1,280 @@
+diff --git a/source/ego_owned_late_d3d11/owned_runtime_policy.hpp b/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
+--- a/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
++++ b/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
+@@ -14,35 +14,83 @@ inline std::atomic<std::uintptr_t> next_cookie { 0 };
+ inline std::mutex binding_mutex;
+ inline constexpr wchar_t property_name[] = L"ElectronGameOverlay.OwnedCompositionWindowV1";
+ struct error_scope { DWORD value = GetLastError(); ~error_scope() { SetLastError(value); } };
++// Observer only: no eligibility, lifetime, return-value or reset-policy change.
++enum class binding_reason : unsigned { unique_rejected=1, enumeration_failed, identity_unavailable, window_changed, thread_changed, token_changed, cookie_exhausted, property_failed, post_bind_changed, resumed };
++struct binding_observation {
++    binding_reason reason;
++    const void *binding;
++    HWND bound, first_candidate, candidate, first_candidate_owner, candidate_owner;
++    DWORD expected_thread, candidate_thread, bound_thread, bound_pid, error;
++    HANDLE expected_token, observed_token;
++    unsigned eligible_count;
++    BOOL enumeration_complete, bound_visible, bound_root;
++    LONG_PTR first_candidate_style, first_candidate_extended_style, candidate_style, candidate_extended_style;
++};
++using binding_observer = void (*)(const binding_observation &) noexcept;
++inline std::atomic<binding_observer> observer { nullptr };
++inline std::atomic<unsigned> observation_count {0};
++inline constexpr unsigned observation_limit=24;
+ struct window_binding {
+     mutable HWND window = nullptr;
+     mutable DWORD thread = 0;
+     mutable HANDLE cookie = nullptr;
++    mutable binding_reason last_reason = binding_reason::resumed;
++    void observe(binding_reason reason, HWND candidate, unsigned count, BOOL complete, DWORD error=0, HWND first_candidate=nullptr) const noexcept {
++        // Initial no-window/ambiguity is expected admission deferral; record only
++        // failures of an existing binding, plus its recovery, under a fixed cap.
++        if (window == nullptr || reason == last_reason) return;
++        last_reason = reason;
++        const auto callback=observer.load(std::memory_order_acquire);
++        if (callback == nullptr) return;
++        auto observed=observation_count.load(std::memory_order_relaxed);
++        while (observed < observation_limit && !observation_count.compare_exchange_weak(observed, observed+1, std::memory_order_relaxed)) {}
++        if (observed >= observation_limit) return;
++        const DWORD saved=GetLastError();
++        binding_observation record {};
++        record.reason=reason;record.binding=this;record.bound=window;record.first_candidate=first_candidate!=nullptr?first_candidate:candidate;record.candidate=candidate;record.expected_thread=thread;record.expected_token=cookie;
++        record.eligible_count=count;record.enumeration_complete=complete;record.error=error;
++        record.bound_thread=GetWindowThreadProcessId(window,&record.bound_pid);
++        record.bound_visible=IsWindowVisible(window);record.bound_root=GetAncestor(window,GA_ROOT)==window;
++        record.observed_token=GetPropW(window,property_name);
++        if(candidate!=nullptr){record.candidate_thread=GetWindowThreadProcessId(candidate,nullptr);record.candidate_owner=GetWindow(candidate,GW_OWNER);record.candidate_style=GetWindowLongPtrW(candidate,GWL_STYLE);record.candidate_extended_style=GetWindowLongPtrW(candidate,GWL_EXSTYLE);}
++        if(record.first_candidate!=nullptr){record.first_candidate_owner=GetWindow(record.first_candidate,GW_OWNER);record.first_candidate_style=GetWindowLongPtrW(record.first_candidate,GWL_STYLE);record.first_candidate_extended_style=GetWindowLongPtrW(record.first_candidate,GWL_EXSTYLE);}
++        callback(record);SetLastError(saved);
++    }
+     HWND resolve() const noexcept {
+         error_scope preserve;
+         if (!active.load(std::memory_order_acquire)) return nullptr;
+         try {
+         const std::scoped_lock lock(binding_mutex);
+-        struct inventory { DWORD pid; HWND window; unsigned count; } found { GetCurrentProcessId(), nullptr, 0 };
++        struct inventory { DWORD pid; HWND window; unsigned count; HWND first; } found { GetCurrentProcessId(), nullptr, 0, nullptr };
+         const BOOL complete = EnumWindows([](HWND candidate, LPARAM opaque) -> BOOL {
+             auto &found = *reinterpret_cast<inventory *>(opaque);
+             DWORD pid = 0;
+             if (GetWindowThreadProcessId(candidate, &pid) != 0 && pid == found.pid &&
+                 IsWindowVisible(candidate) && GetAncestor(candidate, GA_ROOT) == candidate) {
++                if (found.count == 0) found.first = candidate;
+                 found.window = candidate;
+                 if (++found.count > 1) return FALSE;
+             }
+             return TRUE;
+         }, reinterpret_cast<LPARAM>(&found));
+         // No foreground, size, class-name, title or helper-name preference.
+-        if (!complete || found.count != 1) return nullptr;
++        if (!complete || found.count != 1) {
++            observe(found.count > 1 || complete ? binding_reason::unique_rejected : binding_reason::enumeration_failed, found.window, found.count, complete, !complete && found.count <= 1 ? GetLastError() : 0, found.first);
++            return nullptr;
++        }
+         DWORD pid = 0;
+         const DWORD current_thread = GetWindowThreadProcessId(found.window, &pid);
+-        if (pid != found.pid || current_thread == 0 || !IsWindowVisible(found.window)) return nullptr;
++        if (pid != found.pid || current_thread == 0 || !IsWindowVisible(found.window)) {
++            observe(binding_reason::identity_unavailable, found.window, found.count, complete, GetLastError());
++            return nullptr;
++        }
+         if (window != nullptr) {
+             // A swapchain never migrates to another window or a reused HWND.
+-            return found.window == window && current_thread == thread &&
+-                GetPropW(window, property_name) == cookie ? window : nullptr;
++            if (found.window != window) { observe(binding_reason::window_changed, found.window, found.count, complete); return nullptr; }
++            if (current_thread != thread) { observe(binding_reason::thread_changed, found.window, found.count, complete); return nullptr; }
++            if (GetPropW(window, property_name) != cookie) { observe(binding_reason::token_changed, found.window, found.count, complete); return nullptr; }
++            observe(binding_reason::resumed, found.window, found.count, complete);
++            return window;
+         }
+         HANDLE token = GetPropW(found.window, property_name);
+         if (token == nullptr) {
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -158,6 +158,28 @@ namespace ego_owned_late_d3d11
+         return ERROR_SUCCESS;
+     }
+ 
++    void observe_composition_binding(const ego_owned_runtime_policy::binding_observation &r) noexcept
++    {
++        try {
++            const char *reason = "unknown";
++            switch(r.reason) {
++            case ego_owned_runtime_policy::binding_reason::unique_rejected: reason="uniqueness-rejected";break;
++            case ego_owned_runtime_policy::binding_reason::enumeration_failed: reason="enumeration-failed";break;
++            case ego_owned_runtime_policy::binding_reason::identity_unavailable: reason="candidate-unavailable";break;
++            case ego_owned_runtime_policy::binding_reason::window_changed: reason="different-window";break;
++            case ego_owned_runtime_policy::binding_reason::thread_changed: reason="different-thread";break;
++            case ego_owned_runtime_policy::binding_reason::token_changed: reason="different-token";break;
++            case ego_owned_runtime_policy::binding_reason::resumed: reason="resumed";break;
++            default: break;
++            }
++            FILETIME utc {};GetSystemTimePreciseAsFileTime(&utc);
++            const auto ticks=(std::uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime;
++            reshade::log::message(reshade::log::level::info,
++                "EGO_OWNED_COMPOSITION_BINDING_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"bindingId\":\"%p\",\"bound\":\"%p\",\"firstCandidate\":\"%p\",\"firstCandidateOwner\":\"%p\",\"candidate\":\"%p\",\"candidateOwner\":\"%p\",\"expectedThread\":%lu,\"candidateThread\":%lu,\"boundThread\":%lu,\"boundPid\":%lu,\"eligibleCount\":%u,\"enumerationComplete\":%s,\"boundVisible\":%s,\"boundRoot\":%s,\"expectedToken\":\"%p\",\"observedToken\":\"%p\",\"firstCandidateStyle\":%llu,\"firstCandidateExtendedStyle\":%llu,\"candidateStyle\":%llu,\"candidateExtendedStyle\":%llu,\"windowsError\":%lu}",
++                GetCurrentProcessId(),GetCurrentThreadId(),static_cast<unsigned long long>(ticks),reason,r.binding,r.bound,r.first_candidate,r.first_candidate_owner,r.candidate,r.candidate_owner,r.expected_thread,r.candidate_thread,r.bound_thread,r.bound_pid,r.eligible_count,r.enumeration_complete?"true":"false",r.bound_visible?"true":"false",r.bound_root?"true":"false",r.expected_token,r.observed_token,static_cast<unsigned long long>(r.first_candidate_style),static_cast<unsigned long long>(r.first_candidate_extended_style),static_cast<unsigned long long>(r.candidate_style),static_cast<unsigned long long>(r.candidate_extended_style),r.error);
++        } catch (...) {} // A failed diagnostic never changes the binding decision.
++    }
++
+     DWORD validate_owned_stage(HMODULE own_module)
+     {
+         if (ElectronGameOverlayReShadeHostAbi != 1) return ERROR_REVISION_MISMATCH;
+@@ -185,6 +207,7 @@ namespace ego_owned_late_d3d11
+         if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return GetLastError();
+         process_creation_time = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+         owned_stage = base;
++        ego_owned_runtime_policy::observer.store(&observe_composition_binding, std::memory_order_release);
+         ego_owned_runtime_policy::active.store(true, std::memory_order_release);
+         return ERROR_SUCCESS;
+     }
+diff --git a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+--- a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
++++ b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+@@ -73,7 +73,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (!once(1u)) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), use_load_library ? "load-library" : "notification", enabled ? "true" : "false", inputs.environment ? "true" : "false", inputs.renderer ? "true" : "false"); } catch (...) {}
+     }
+     inline unsigned factory_begin(unsigned flags, bool internal) noexcept {
+@@ -81,7 +81,7 @@ namespace ego_compatibility_snapshot {
+         const unsigned ticket = discovery_depth != 0 ? 2u : internal ? 4u : 8u;
+         if (!once(ticket)) return 0;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, flags, discovery_depth != 0 ? "true" : "false", internal ? "true" : "false"); } catch (...) {}
+         return ticket;
+     }
+@@ -89,7 +89,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (ticket == 0) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, static_cast<unsigned>(result), original, returned, original_entry, owner(original_entry), returned_entry, owner(returned_entry)); } catch (...) {}
+     }
+     inline bool claim_present(bool proxy, bool extended, unsigned flags) noexcept {
+@@ -102,13 +102,13 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         const auto current_jump = observe_entry_jump(current), target_jump = observe_entry_jump(target), saved_jump = observe_entry_jump(saved);
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
+             kind, GetCurrentProcessId(), GetCurrentThreadId(), role, method, instance, downstream, device, current, owner(current), current_jump.owner, current_jump.hops, target, owner(target), target_jump.owner, target_jump.hops, saved, owner(saved), saved_jump.owner, saved_jump.hops, internal ? "true" : "false"); } catch (...) {}
+     }
+     inline void present_end(bool proxy, bool extended, HRESULT result) noexcept {
+         error_scope preserve;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
+             GetCurrentProcessId(), GetCurrentThreadId(), proxy ? "proxy" : "raw", extended ? "Present1" : "Present", static_cast<unsigned>(result)); } catch (...) {}
+     }
+ }
+diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
+--- a/source/dxgi/dxgi_swapchain.cpp
++++ b/source/dxgi/dxgi_swapchain.cpp
+@@ -112,7 +112,7 @@ DXGISwapChain::DXGISwapChain(IDXGIFactory *factory, D3D12CommandQueue *command_q
+ }
+ DXGISwapChain::~DXGISwapChain()
+ {
+-	on_reset(false);
++	on_reset(false, "destruction");
+ 	reshade::destroy_effect_runtime(_impl);
+ 
+ 	// Remove pointer to this proxy object from the private data of the swap chain (in case the swap chain unexpectedly survives)
+@@ -410,7 +410,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Wi
+ 		"Redirecting IDXGISwapChain::ResizeBuffers(this = %p, BufferCount = %u, Width = %u, Height = %u, NewFormat = %d, SwapChainFlags = %#x) ...",
+ 		this, BufferCount, Width, Height, static_cast<int>(NewFormat), SwapChainFlags);
+ 
+-	on_reset(true);
++	on_reset(true, "resize-buffers");
+ 
+ 	const bool was_in_dxgi_runtime = g_in_dxgi_runtime;
+ 
+@@ -755,7 +755,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE Co
+ 	}
+ 
+ 	if (ColorSpace != prev_color_space)
+-		on_reset(true);
++		on_reset(true, "color-space");
+ 
+ 	assert(!g_in_dxgi_runtime);
+ 	g_in_dxgi_runtime = true;
+@@ -779,7 +779,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT W
+ 		"Redirecting IDXGISwapChain3::ResizeBuffers1(this = %p, BufferCount = %u, Width = %u, Height = %u, Format = %d, SwapChainFlags = %#x, pCreationNodeMask = %p, ppPresentQueue = %p) ...",
+ 		this, BufferCount, Width, Height, static_cast<int>(NewFormat), SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+ 
+-	on_reset(true);
++	on_reset(true, "resize-buffers1");
+ 
+ 	const bool was_in_dxgi_runtime = g_in_dxgi_runtime;
+ 
+@@ -958,11 +958,32 @@ void DXGISwapChain::on_init([[maybe_unused]] bool resize)
+ 
+ 	_is_initialized = true;
+ }
+-void DXGISwapChain::on_reset([[maybe_unused]] bool resize)
++void DXGISwapChain::on_reset([[maybe_unused]] bool resize, const char *reason)
+ {
+ 	if (!_is_initialized)
+ 		return;
+ 
++
++    // Owned-host reset observer only. Cached pointers/flags; no COM calls,
++    // callbacks, eligibility changes or new lock ordering. Exhausted is cheap.
++    if (ego_owned_runtime_policy::active.load(std::memory_order_acquire))
++    {
++        static std::atomic<unsigned> reset_records {0};
++        auto count=reset_records.load(std::memory_order_relaxed);
++        while (count < 24 && !reset_records.compare_exchange_weak(count,count+1,std::memory_order_relaxed)) {}
++        if (count < 24)
++        {
++            const ego_owned_runtime_policy::error_scope preserve;
++            try {
++                FILETIME utc {};GetSystemTimePreciseAsFileTime(&utc);
++                const auto ticks=(std::uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime;
++                reshade::log::message(reshade::log::level::info,
++                    "EGO_OWNED_RUNTIME_RESET_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"proxy\":\"%p\",\"native\":\"%p\",\"implementation\":\"%p\",\"resize\":%s,\"composition\":%s}",
++                    GetCurrentProcessId(),GetCurrentThreadId(),static_cast<unsigned long long>(ticks),reason,static_cast<const void *>(this),static_cast<const void *>(_orig),static_cast<const void *>(_impl),resize?"true":"false",_owned_composition?"true":"false");
++            } catch (...) {} // Logging failure never changes reset or forwarding.
++        }
++    }
++
+ 	const unique_direct3d_device_lock lock(_direct3d_device, _direct3d_version, _direct3d_version == reshade::api::device_api::d3d12 ? static_cast<D3D12CommandQueue *>(_direct3d_command_queue)->_mutex : _impl_mutex);
+ 
+ 	reshade::reset_effect_runtime(_impl);
+@@ -990,14 +1011,14 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
+ 	{
+ 		if (!_composition_active)
+ 		{
+-			if (_is_initialized) on_reset(false);
++			if (_is_initialized) on_reset(false, "composition-activation");
+ 			_composition_active = true;
+ 			_composition_pending = true;
+ 			_composition_pending_resize = false;
+ 		}
+ 		if (_impl->get_hwnd() == nullptr)
+ 		{
+-			if (_is_initialized) { on_reset(false); _composition_pending_resize = false; }
++			if (_is_initialized) { on_reset(false, "composition-binding-unavailable"); _composition_pending_resize = false; }
+ 			_composition_pending = true;
+ 			return;
+ 		}
+diff --git a/source/dxgi/dxgi_swapchain.hpp b/source/dxgi/dxgi_swapchain.hpp
+--- a/source/dxgi/dxgi_swapchain.hpp
++++ b/source/dxgi/dxgi_swapchain.hpp
+@@ -107,7 +107,7 @@ public:
+ 
+ private:
+ 	void on_init([[maybe_unused]] bool resize);
+-	void on_reset([[maybe_unused]] bool resize);
++	void on_reset([[maybe_unused]] bool resize, const char *reason);
+ 	void on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_PARAMETERS *params = nullptr);
+ 	void on_finish_present(HRESULT hr);
+ 

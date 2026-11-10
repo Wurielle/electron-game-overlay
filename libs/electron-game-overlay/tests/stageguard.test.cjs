@@ -36,7 +36,7 @@ test('portable source contract: staging mirrors bound cooperative native and pac
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 46);
+  assert.equal(patches(stage).length, 50);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'd3d11SwapchainResourceIdentityPatchSha256'), [['d3d11SwapchainResourceIdentityPatchSha256', 'reshade-d3d11-swapchain-resource-identity.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorFirstHostResultPatchSha256'), [['injectorFirstHostResultPatchSha256', 'reshade-injector-first-host-result.patch']]);
@@ -97,10 +97,10 @@ test('portable structural guards retain all patch checks, architecture matching,
   for (const name of ['Assert-NotReparsePoint $Source', 'Assert-NotReparsePoint $Destination', 'Compare-Object $ExpectedArtifactNames $ActualSourceNames', 'Compare-Object $ExpectedDestinationNames $ActualDestinationNames', '-Expected $SourceHashes[$ArtifactName]', '-LiteralPath $Destination).Hash']) assert.ok(stage.includes(name), name);
 });
 
-test('current source cache binds the complete twenty-three-file stack and terminal patches', () => {
+test('current source cache binds the complete twenty-six-file stack and terminal patches', () => {
   const expectedFiles = [...reshadeProducer.match(/\$ExpectedPatchedFiles = @\(([\s\S]*?)\r?\n\)/)[1].matchAll(/"([^"]+)"/g)].map(match => match[1]).sort();
   const contentPins = [...reshadeProducer.match(/\$ExpectedPatchedContentSha256 = \[ordered\]@\{([\s\S]*?)\r?\n\}/)[1].matchAll(/"([^"]+)" = "([0-9A-F]{64})"/g)].map(([, name, digest]) => [name, digest]);
-  assert.equal(expectedFiles.length, 23);
+  assert.equal(expectedFiles.length, 26);
   assert.deepEqual(contentPins.map(([name]) => name).sort(), expectedFiles);
   const patch = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'));
   assert.equal(crypto.createHash('sha256').update(patch).digest('hex').toUpperCase(), ownedLatePatchSha256);
@@ -163,7 +163,7 @@ test('current source cache binds the complete twenty-three-file stack and termin
   const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
   // Context/readiness replace the initial-inspection hunk. Superseded seams
   // are validated by the exact complete vector and ordered migration tests.
-  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$OwnedLateD3d11AdapterReadyLongPathPatch', '$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch', '$InjectorSelectionBeforeOpenPatch', '$InjectorStartupReadinessPatch', '$PrivateStageDiagnosticsPatch', '$CompatibilitySnapshotPatch'].sort());
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$OwnedLateD3d11AdapterReadyLongPathPatch', '$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch', '$InjectorSelectionBeforeOpenPatch', '$InjectorStartupReadinessPatch', '$PrivateStageDiagnosticsPatch', '$AuxiliaryLifetimePatch'].sort());
   assert.ok(reshadeProducer.indexOf('foreach ($Patch in @(') > reshadeProducer.indexOf('foreach ($Entry in $ExpectedPatchedContentSha256.GetEnumerator())'), 'Terminal patch reversal check follows the complete source inventory/hash proof');
   for (const source of [reshadeProducer, producer, stage]) {
     assert.ok(source.includes(ownedLatePatchSha256), 'Frozen owned-late production patch is pinned before packaging/cache acceptance');
@@ -191,6 +191,10 @@ for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted curre
     runtimePatchRoot: path.join(root, 'libs/electron-game-overlay-runtime'),
     sources: [path.join(root, 'libs/electron-game-overlay-runtime/scripts/build.ps1'), path.join(root, 'libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1')],
     requiredPatches: [
+      { key: 'ownedCompositionAuxiliaryLifetimePatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-composition-auxiliary-lifetime.patch'), sha256: '3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61' },
+      { key: 'ownedCompositionWindowEligibilityPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-composition-window-eligibility.patch'), sha256: '080DA1FD83FE48CB782FA9268B82A386E75BE081D107F2A5013F06675107B97F' },
+      { key: 'ownedCompositionBindingDiagnosticsPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-composition-binding-diagnostics.patch'), sha256: '0180A6FACEEC7FA89174F4CED311A926DC98D292FB114347813F0E29C6B150DE' },
+      { key: 'ownedCompositionPolicyPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-composition-policy.patch'), sha256: '7AF52928DCAAD1914993D2CC29D99862461F1A46AF2448A82C7F2C42E87E68CF' },
       { key: 'compatibilitySnapshotPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-compatibility-snapshot.patch'), sha256: 'C63E22F1768770469C770FB6D4124AE1A293A6D5ACD8402E8EC86F33B1CA1C66' },
       { key: 'steamLoadedModuleHookOrderPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-steam-loaded-module-hook-order.patch'), sha256: '560BF8A6DB17643F7FA095F75FDBE0677211FC4354BEB6C869C7D4ECD7DB1241' },
       { key: 'injectorPrivateStageDiagnosticsPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-private-stage-diagnostics.patch'), sha256: 'D73FF95608079571FC6438F8B5E280BB710AD8467F19CA31B664E371929C05F1' },
@@ -248,7 +252,7 @@ foreach ($SourcePath in $InputData.sources) {
     if ((Split-Path $SourcePath -Leaf) -eq 'build.ps1') { $RuntimeRoot = $InputData.runtimePatchRoot }
     else { $RuntimeSourceRoot = $InputData.runtimePatchRoot }
     . ([scriptblock]::Create($PatchTable.Extent.Text))
-    if ($ExpectedPatchProvenance.Count -ne 46) { throw 'Production patch path table is incomplete.' }
+    if ($ExpectedPatchProvenance.Count -ne 50) { throw 'Production patch path table is incomplete.' }
     foreach ($PatchPath in $ExpectedPatchProvenance.Values) {
         if (-not (Test-Path -LiteralPath $PatchPath -PathType Leaf)) { throw ('Unresolved production patch path: ' + $PatchPath) }
     }

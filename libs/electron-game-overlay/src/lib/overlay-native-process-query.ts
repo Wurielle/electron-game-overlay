@@ -7,7 +7,8 @@ import {
 
 /** @internal Query the exact recorded incarnation. Denied, malformed or
  * otherwise unavailable evidence is unknown. Only a different OS creation
- * identity or the native OpenProcess ERROR_INVALID_PARAMETER proves exit. */
+ * identity, native OpenProcess ERROR_INVALID_PARAMETER or a signaled exact
+ * incarnation proves exit. Image-path failure alone is never exit proof. */
 export async function overlayProcessIncarnationExited(
   identity: Readonly<{ pid: number; creationTime100ns: string }>,
   addonManagerPath: string,

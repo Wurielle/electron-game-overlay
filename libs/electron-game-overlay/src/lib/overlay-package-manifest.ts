@@ -1,3 +1,11 @@
+const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 =
+  '3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61';
+const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 =
+  '080DA1FD83FE48CB782FA9268B82A386E75BE081D107F2A5013F06675107B97F';
+const OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256 =
+  '0180A6FACEEC7FA89174F4CED311A926DC98D292FB114347813F0E29C6B150DE';
+const OWNED_COMPOSITION_POLICY_PATCH_SHA256 =
+  '7AF52928DCAAD1914993D2CC29D99862461F1A46AF2448A82C7F2C42E87E68CF';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -335,6 +343,42 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
   if ((compatibilitySnapshotPins.length === 1) !== (expectedGeneration >= 31)) {
     throw new Error('Compiled SDK compatibility snapshot patch pin does not match its generation');
   }
+  const ownedCompositionPolicyDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_POLICY_PATCH_SHA256\b/g)];
+  const ownedCompositionPolicyPins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_POLICY_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionPolicyDeclarations.length !== ownedCompositionPolicyPins.length || ownedCompositionPolicyPins.length > 1 ||
+      (ownedCompositionPolicyPins.length === 1 && ownedCompositionPolicyPins[0][1].toUpperCase() !== OWNED_COMPOSITION_POLICY_PATCH_SHA256)) {
+    throw new Error('Compiled SDK owned composition policy patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionPolicyPins.length === 1) !== (expectedGeneration >= 32)) {
+    throw new Error('Compiled SDK owned composition policy patch pin does not match its generation');
+  }
+  const ownedCompositionBindingDiagnosticsDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256\b/g)];
+  const ownedCompositionBindingDiagnosticsPins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionBindingDiagnosticsDeclarations.length !== ownedCompositionBindingDiagnosticsPins.length || ownedCompositionBindingDiagnosticsPins.length > 1 ||
+      (ownedCompositionBindingDiagnosticsPins.length === 1 && ownedCompositionBindingDiagnosticsPins[0][1].toUpperCase() !== OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256)) {
+    throw new Error('Compiled SDK composition binding diagnostics patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionBindingDiagnosticsPins.length === 1) !== (expectedGeneration >= 33)) {
+    throw new Error('Compiled SDK composition binding diagnostics patch pin does not match its generation');
+  }
+  const ownedCompositionWindowEligibilityDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256\b/g)];
+  const ownedCompositionWindowEligibilityPins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionWindowEligibilityDeclarations.length !== ownedCompositionWindowEligibilityPins.length || ownedCompositionWindowEligibilityPins.length > 1 ||
+      (ownedCompositionWindowEligibilityPins.length === 1 && ownedCompositionWindowEligibilityPins[0][1].toUpperCase() !== OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256)) {
+    throw new Error('Compiled SDK composition window eligibility patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionWindowEligibilityPins.length === 1) !== (expectedGeneration >= 34)) {
+    throw new Error('Compiled SDK composition window eligibility patch pin does not match its generation');
+  }
+  const ownedCompositionAuxiliaryLifetimeDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256\b/g)];
+  const ownedCompositionAuxiliaryLifetimePins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionAuxiliaryLifetimeDeclarations.length !== ownedCompositionAuxiliaryLifetimePins.length || ownedCompositionAuxiliaryLifetimePins.length > 1 ||
+      (ownedCompositionAuxiliaryLifetimePins.length === 1 && ownedCompositionAuxiliaryLifetimePins[0][1].toUpperCase() !== OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256)) {
+    throw new Error('Compiled SDK composition auxiliary lifetime patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionAuxiliaryLifetimePins.length === 1) !== (expectedGeneration >= 35)) {
+    throw new Error('Compiled SDK composition auxiliary lifetime patch pin does not match its generation');
+  }
   const privateDiagnosticDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\b/g)];
   const privateDiagnosticPins = [...validator.matchAll(/\bconst\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
   if (privateDiagnosticDeclarations.length !== privateDiagnosticPins.length || privateDiagnosticPins.length > 1 ||
@@ -517,6 +561,38 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.compatibilitySnapshotPatchSha256 !== undefined) {
       throw new Error('Compatibility snapshot provenance requires runtime generation 31: ' + bits);
+    }
+    if (expectedGeneration >= 32) {
+      if (typeof reshade.ownedCompositionPolicyPatchSha256 !== 'string' ||
+          reshade.ownedCompositionPolicyPatchSha256.toUpperCase() !== OWNED_COMPOSITION_POLICY_PATCH_SHA256) {
+        throw new Error('Pinned owned composition policy patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionPolicyPatchSha256 !== undefined) {
+      throw new Error('Owned composition policy provenance requires runtime generation 32: ' + bits);
+    }
+    if (expectedGeneration >= 33) {
+      if (typeof reshade.ownedCompositionBindingDiagnosticsPatchSha256 !== 'string' ||
+          reshade.ownedCompositionBindingDiagnosticsPatchSha256.toUpperCase() !== OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256) {
+        throw new Error('Pinned composition binding diagnostics patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionBindingDiagnosticsPatchSha256 !== undefined) {
+      throw new Error('Composition binding diagnostics provenance requires runtime generation 33: ' + bits);
+    }
+    if (expectedGeneration >= 34) {
+      if (typeof reshade.ownedCompositionWindowEligibilityPatchSha256 !== 'string' ||
+          reshade.ownedCompositionWindowEligibilityPatchSha256.toUpperCase() !== OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256) {
+        throw new Error('Pinned composition window eligibility patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionWindowEligibilityPatchSha256 !== undefined) {
+      throw new Error('Composition window eligibility provenance requires runtime generation 34: ' + bits);
+    }
+    if (expectedGeneration >= 35) {
+      if (typeof reshade.ownedCompositionAuxiliaryLifetimePatchSha256 !== 'string' ||
+          reshade.ownedCompositionAuxiliaryLifetimePatchSha256.toUpperCase() !== OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256) {
+        throw new Error('Pinned composition auxiliary lifetime patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionAuxiliaryLifetimePatchSha256 !== undefined) {
+      throw new Error('Composition auxiliary lifetime provenance requires runtime generation 35: ' + bits);
     }
     if (expectedGeneration >= 29) {
       if (typeof reshade.d3d11SwapchainResourceIdentityPatchSha256 !== 'string' ||

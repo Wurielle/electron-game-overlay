@@ -3,6 +3,40 @@
 These patches apply only to the ReShade 6.7.3 commit pinned by this production
 runtime and are applied as an ordered stack.
 
+## `reshade-owned-composition-window-eligibility.patch`
+
+Generation 34 omits nonactivating or topmost/layered captionless tool popups that
+do not declare APPWINDOW from owned null-HWND inference. It preserves captioned
+tools, plain frameless tools, explicit application windows and ordinary peers;
+real peer ambiguity still refuses binding. Valid native HWND behavior is intact.
+This addresses the exact tooltip/uniqueness/reset chain captured in actual
+high-PAGER 1010. No class/game preference, sleep, retry or permission change is
+introduced. See `doc/composition-window-eligibility.md` for native controls and
+the paired composition-host popup/marker contract for actual input/pixel tests.
+
+## `reshade-owned-composition-binding-diagnostics.patch`
+
+Generation 33 adds bounded exact binding-rejection and reset call-site records to
+the owned generation-32 host. It changes no window eligibility, lifetime/reset
+policy or forwarding behavior. The five-file tail preserves the full 26-file
+inventory and all preceding raw patch pins. Each observer has a 24-attempt budget,
+preserves `GetLastError`, catches log failures and performs no COM calls or input.
+See `doc/composition-binding-reset-diagnostics.md`. This is a diagnostic candidate
+for the unresolved intermittent high-PAGER reset, not an asserted behavior fix.
+
+## `reshade-owned-composition-policy.patch`
+
+Generation 32 adds an owned-host-only D3D11 null-HWND fallback to the single
+visible top-level window in the exact process, with lifetime-token validation
+and ambiguity refusal. Deferred initialization and normal reset/reinitialization
+retain surface/input lifecycle boundaries. Valid native HWND paths remain intact.
+Reserved configuration in the validated owned stage stays in memory, including
+the global INI dirtied by a secondary runtime. The patch never changes stage
+permissions or foreign installations. Its eight-file tail validates the complete
+26-file stack before each atomic publication. See
+`doc/owned-composition-and-exit-recovery.md` for scope and separate console and
+actual graphics acceptance. The feature add-on bytes/build ID are unchanged.
+
 ## `reshade-d3d11-swapchain-resource-identity.patch`
 
 Generation 29 installs the existing D3D11 resource `GetDevice` compatibility
@@ -527,6 +561,17 @@ compares it with `QueryFullProcessImageNameW` before architecture handoff,
 native claim acquisition, or target mutation. Basename-only exact-PID requests
 remain supported, but SDK process-watcher lanes use the full path so PID reuse
 cannot silently select a different executable at another location.
+
+## `reshade-owned-composition-auxiliary-lifetime.patch`
+
+Generation 35 remembers an already-excluded layered/topmost popup-tool lifetime
+across removal/restoration of only WS_EX_LAYERED. A bounded host-owned table and
+separate window-property token validate the same HWND/PID/thread/owner/style.
+Previously unseen unlayered tools stay eligible; caption/APPWINDOW and token
+changes revoke remembered state. This corrects the observed Windows tooltip
+fade transition without a blanket exclusion of interactive topmost tools.
+See `doc/composition-auxiliary-lifetime.md` for limits, native gates and the
+paired real-renderer fixture contract. Actual PAGER acceptance remains required.
 
 CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then

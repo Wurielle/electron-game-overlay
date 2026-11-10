@@ -11,6 +11,14 @@ function writeCooperativeDistribution(dist, {
   addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
   runtimeGeneration = 23,
   resourceIdentityPatch = runtimeGeneration >= 29,
+  ownedCompositionAuxiliaryLifetimePatch = runtimeGeneration >= 35,
+  ownedCompositionAuxiliaryLifetimePatchSha256 = '3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61',
+  ownedCompositionWindowEligibilityPatch = runtimeGeneration >= 34,
+  ownedCompositionWindowEligibilityPatchSha256 = '080DA1FD83FE48CB782FA9268B82A386E75BE081D107F2A5013F06675107B97F',
+  ownedCompositionBindingDiagnosticsPatch = runtimeGeneration >= 33,
+  ownedCompositionBindingDiagnosticsPatchSha256 = '0180A6FACEEC7FA89174F4CED311A926DC98D292FB114347813F0E29C6B150DE',
+  ownedCompositionPolicyPatch = runtimeGeneration >= 32,
+  ownedCompositionPolicyPatchSha256 = '7AF52928DCAAD1914993D2CC29D99862461F1A46AF2448A82C7F2C42E87E68CF',
   compatibilitySnapshotPatch = runtimeGeneration >= 31,
   compatibilitySnapshotPatchSha256 = 'C63E22F1768770469C770FB6D4124AE1A293A6D5ACD8402E8EC86F33B1CA1C66',
   steamLoadedModulePatch = runtimeGeneration >= 30,
@@ -69,7 +77,7 @@ function writeCooperativeDistribution(dist, {
   write('lib/module.js', '// controlled compiled SDK module\n');
   write('lib/reshade-launcher.js', `const OFFICIAL_ADDON_BUILD_ID = '${addonBuildId}';\n`);
   write('lib/overlay-broker-protocol.js', `exports.OVERLAY_BROKER_RUNTIME_GENERATION = ${runtimeGeneration};\n`);
-  write('lib/overlay-package-manifest.js', (compatibilitySnapshotPatch
+  write('lib/overlay-package-manifest.js', (ownedCompositionAuxiliaryLifetimePatch ? `const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 = '${ownedCompositionAuxiliaryLifetimePatchSha256}';\n` : '') + (ownedCompositionWindowEligibilityPatch ? `const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 = '${ownedCompositionWindowEligibilityPatchSha256}';\n` : '') + (ownedCompositionBindingDiagnosticsPatch ? `const OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256 = '${ownedCompositionBindingDiagnosticsPatchSha256}';\n` : '') + (ownedCompositionPolicyPatch ? `const OWNED_COMPOSITION_POLICY_PATCH_SHA256 = '${ownedCompositionPolicyPatchSha256}';\n` : '') + (compatibilitySnapshotPatch
     ? `const COMPATIBILITY_SNAPSHOT_PATCH_SHA256 = '${compatibilitySnapshotPatchSha256}';\n`
     : '') + (steamLoadedModulePatch
     ? `const STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256 = '${steamLoadedModuleHookOrderPatchSha256}';\n`
@@ -164,6 +172,10 @@ function writeCooperativeDistribution(dist, {
         ...(resourceIdentityPatch ? { d3d11SwapchainResourceIdentityPatchSha256 } : {}),
         ...(privateStageDiagnosticsPatch ? { injectorPrivateStageDiagnosticsPatchSha256 } : {}),
         ...(steamLoadedModulePatch ? { steamLoadedModuleHookOrderPatchSha256 } : {}),
+        ...(ownedCompositionAuxiliaryLifetimePatch ? { ownedCompositionAuxiliaryLifetimePatchSha256 } : {}),
+        ...(ownedCompositionWindowEligibilityPatch ? { ownedCompositionWindowEligibilityPatchSha256 } : {}),
+        ...(ownedCompositionBindingDiagnosticsPatch ? { ownedCompositionBindingDiagnosticsPatchSha256 } : {}),
+        ...(ownedCompositionPolicyPatch ? { ownedCompositionPolicyPatchSha256 } : {}),
         ...(compatibilitySnapshotPatch ? { compatibilitySnapshotPatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,

@@ -79,11 +79,15 @@ $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 31
+$ExpectedRuntimeGeneration = 35
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
 $ExpectedPatchProvenance = [ordered]@{
+    ownedCompositionAuxiliaryLifetimePatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-auxiliary-lifetime.patch"
+    ownedCompositionWindowEligibilityPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-window-eligibility.patch"
+    ownedCompositionBindingDiagnosticsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-binding-diagnostics.patch"
+    ownedCompositionPolicyPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-policy.patch"
     compatibilitySnapshotPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-compatibility-snapshot.patch"
     steamLoadedModuleHookOrderPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-steam-loaded-module-hook-order.patch"
     injectorPrivateStageDiagnosticsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-private-stage-diagnostics.patch"

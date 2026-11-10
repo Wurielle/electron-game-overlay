@@ -67,6 +67,7 @@ struct graphics_state
 struct host_options
 {
     bool composition = false;
+    bool noninteractive_tool_popup = false;
     bool multi_swapchain = false;
     bool release_primary = false;
     bool defer_secondary_present_until_primary_release = false;
@@ -76,6 +77,12 @@ struct host_options
 
 graphics_state g_graphics;
 bool g_composition = false;
+HWND g_tool_popup_window = nullptr;
+unsigned g_tool_popup_transitions = 0;
+constexpr wchar_t kToolPopupHideRequest[] = L"electron-game-overlay-tool-popup-hide.request";
+constexpr wchar_t kToolPopupShowRequest[] = L"electron-game-overlay-tool-popup-show.request";
+constexpr wchar_t kToolPopupLayeredRequest[] = L"electron-game-overlay-tool-popup-layered.request";
+constexpr wchar_t kToolPopupUnlayeredRequest[] = L"electron-game-overlay-tool-popup-unlayered.request";
 input_oracle g_input_oracle;
 
 // Controlled-host evidence only. The default path performs no extra DXGI
@@ -294,6 +301,10 @@ bool parse_host_options(host_options &options)
         else if (std::wcscmp(argument, L"--composition-swapchain") == 0)
         {
             options.composition = true;
+        }
+        else if (std::wcscmp(argument, L"--noninteractive-tool-popup") == 0)
+        {
+            options.noninteractive_tool_popup = true;
         }
         else if (std::wcscmp(
                      argument,
@@ -1077,6 +1088,79 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 }
 } // namespace
 
+bool publish_tool_popup_state(bool initial, HWND foreground_before, const char *command)
+{
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(g_tool_popup_window, GWL_STYLE));
+    const DWORD extended = static_cast<DWORD>(GetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE));
+    const bool visible = IsWindowVisible(g_tool_popup_window) != FALSE;
+    const bool unchanged = GetForegroundWindow() == foreground_before;
+    char record[1024] = {};
+    const int count = std::snprintf(record, sizeof(record),
+        "{\"schemaVersion\":1,\"pid\":%lu,\"mainHwnd\":\"0x%llx\",\"popupHwnd\":\"0x%llx\",\"visible\":%s,\"style\":%lu,\"extendedStyle\":%lu,\"transition\":%u,\"beforeFirstPresent\":%s,\"foregroundUnchanged\":%s,\"layered\":%s,\"command\":\"%s\"}\n",
+        GetCurrentProcessId(), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_tool_popup_window)), visible ? "true" : "false",
+        style, extended, g_tool_popup_transitions, initial && g_graphics.primary_present_count == 0 ? "true" : "false", unchanged ? "true" : "false",
+        (extended & WS_EX_LAYERED) != 0 ? "true" : "false", command);
+    std::wstring temporary, destination;
+    if (count <= 0 || count >= sizeof(record) || !unchanged ||
+        !module_sibling_path(L"electron-game-overlay-tool-popup-state.tmp", temporary) ||
+        !module_sibling_path(L"electron-game-overlay-tool-popup-state.json", destination) ||
+        !write_preload_test_file(L"electron-game-overlay-tool-popup-state.tmp", std::string(record, count), CREATE_ALWAYS) ||
+        !MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return false;
+    publish_stdout_marker("EGO_CONTROLLED_HOST_TOOL_POPUP_V1 pid=%lu popupHwnd=0x%llx visible=%s transition=%u beforeFirstPresent=%s foregroundUnchanged=true layered=%s extendedStyle=%lu command=%s",
+        GetCurrentProcessId(), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_tool_popup_window)),
+        visible ? "true" : "false", g_tool_popup_transitions, initial ? "true" : "false",
+        (extended & WS_EX_LAYERED) != 0 ? "true" : "false", extended, command);
+    return true;
+}
+
+bool create_tool_popup(HINSTANCE instance)
+{
+    if (!consume_marker(kToolPopupHideRequest) || !consume_marker(kToolPopupShowRequest) ||
+        !consume_marker(kToolPopupLayeredRequest) || !consume_marker(kToolPopupUnlayeredRequest)) return false;
+    // Real same-process top-level popup, kept offscreen so it cannot cover the
+    // renderer's pixel probes. WS_VISIBLE still exercises native enumeration.
+    g_tool_popup_window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
+        L"STATIC", L"Owned noninteractive tool popup", WS_POPUP | WS_BORDER | WS_CLIPSIBLINGS,
+        -32000, -32000, 160, 32, nullptr, nullptr, instance, nullptr);
+    if (g_tool_popup_window == nullptr || !SetLayeredWindowAttributes(g_tool_popup_window, 0, 255, LWA_ALPHA)) return false;
+    const HWND foreground = GetForegroundWindow();
+    ShowWindow(g_tool_popup_window, SW_SHOWNOACTIVATE);
+    return IsWindowVisible(g_tool_popup_window) && publish_tool_popup_state(true, foreground, "initial");
+}
+
+bool service_tool_popup()
+{
+    if (g_tool_popup_window == nullptr) return true;
+    const bool hide = marker_present(kToolPopupHideRequest), show = marker_present(kToolPopupShowRequest),
+        layered = marker_present(kToolPopupLayeredRequest), unlayered = marker_present(kToolPopupUnlayeredRequest);
+    const unsigned requests = unsigned(hide) + unsigned(show) + unsigned(layered) + unsigned(unlayered);
+    if (requests == 0) return true;
+    const wchar_t *request = hide ? kToolPopupHideRequest : show ? kToolPopupShowRequest :
+        layered ? kToolPopupLayeredRequest : kToolPopupUnlayeredRequest;
+    const char *command = hide ? "hide" : show ? "show" : layered ? "layered" : "unlayered";
+    if (requests != 1 || g_tool_popup_transitions >= 16 || !consume_marker(request)) return false;
+    const HWND foreground = GetForegroundWindow();
+    const bool was_visible = IsWindowVisible(g_tool_popup_window) != FALSE;
+    if (hide || show) ShowWindow(g_tool_popup_window, hide ? SW_HIDE : SW_SHOWNOACTIVATE);
+    else
+    {
+        const auto extended = GetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE);
+        SetLastError(ERROR_SUCCESS);
+        if (SetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE,
+                layered ? extended | WS_EX_LAYERED : extended & ~LONG_PTR(WS_EX_LAYERED)) == 0 && GetLastError() != ERROR_SUCCESS)
+            return false;
+        if (layered && !SetLayeredWindowAttributes(g_tool_popup_window, 0, 255, LWA_ALPHA)) return false;
+        if ((IsWindowVisible(g_tool_popup_window) != FALSE) != was_visible ||
+            ((GetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) != layered)
+            return false;
+    }
+    ++g_tool_popup_transitions;
+    return (!(hide || show) || (IsWindowVisible(g_tool_popup_window) != FALSE) == show) &&
+        publish_tool_popup_state(false, foreground, command);
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 {
     host_options options;
@@ -1285,6 +1369,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
                 reinterpret_cast<std::uintptr_t>(GetForegroundWindow())),
             primary_foreground ? "true" : "false");
     }
+    if (options.noninteractive_tool_popup && !create_tool_popup(instance))
+    {
+        report_graphics_failure(L"Unable to create the controlled nonactivating tool popup.");
+        if (g_tool_popup_window != nullptr) DestroyWindow(g_tool_popup_window);
+        destroy_graphics_device();
+        DestroyWindow(g_graphics.window);
+        return 1;
+    }
     if (!g_input_oracle.initialize(g_graphics.window))
         report_graphics_failure(L"Unable to initialize the controlled raw/pointer-input oracle.");
 
@@ -1300,6 +1392,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 
     while (message.message != WM_QUIT)
     {
+        if (!service_tool_popup())
+        {
+            report_graphics_failure(L"The controlled tool-popup request failed or exceeded its 16-transition budget.");
+            message.wParam = 1;
+            break;
+        }
         if (options.allow_surface_recreation &&
             final_surface_destroyed_for_test &&
             marker_present(kRecreateSurfacesRequestMarker))
@@ -1574,6 +1672,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
     }
 
+    if (g_tool_popup_window != nullptr) DestroyWindow(g_tool_popup_window);
+    g_tool_popup_window = nullptr;
     destroy_graphics_device();
     g_input_oracle.shutdown();
 

@@ -41,6 +41,78 @@ function mutateStamp(f, name, mutate) {
   f.payload.seal();
 }
 
+test('generation-35 binds the composition auxiliary lifetime implementation and exact architecture provenance', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 35 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.ownedCompositionAuxiliaryLifetimePatchSha256;
+        else stamp.ownedCompositionAuxiliaryLifetimePatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /composition auxiliary lifetime patch provenance mismatch/);
+    }
+  }
+  for (const options of [{ ownedCompositionAuxiliaryLifetimePatch: false }, { ownedCompositionAuxiliaryLifetimePatchSha256: 'A'.repeat(64) }]) {
+    const f = fixture(t, { runtimeGeneration: 35, ...options });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /composition auxiliary lifetime patch pin/);
+  }
+});
+
+test('generation-34 binds the composition window eligibility implementation and exact architecture provenance', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 34 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.ownedCompositionWindowEligibilityPatchSha256;
+        else stamp.ownedCompositionWindowEligibilityPatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /composition window eligibility patch provenance mismatch/);
+    }
+  }
+  for (const options of [{ ownedCompositionWindowEligibilityPatch: false }, { ownedCompositionWindowEligibilityPatchSha256: 'A'.repeat(64) }]) {
+    const f = fixture(t, { runtimeGeneration: 34, ...options });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /composition window eligibility patch pin/);
+  }
+});
+
+test('generation-33 binds the composition binding diagnostics implementation and exact architecture provenance', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 33 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.ownedCompositionBindingDiagnosticsPatchSha256;
+        else stamp.ownedCompositionBindingDiagnosticsPatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /composition binding diagnostics patch provenance mismatch/);
+    }
+  }
+  for (const options of [{ ownedCompositionBindingDiagnosticsPatch: false }, { ownedCompositionBindingDiagnosticsPatchSha256: 'A'.repeat(64) }]) {
+    const f = fixture(t, { runtimeGeneration: 33, ...options });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /composition binding diagnostics patch pin/);
+  }
+});
+
+test('generation-32 binds the owned composition policy implementation and exact architecture provenance', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 32 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.ownedCompositionPolicyPatchSha256;
+        else stamp.ownedCompositionPolicyPatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /owned composition policy patch provenance mismatch/);
+    }
+  }
+  for (const options of [{ ownedCompositionPolicyPatch: false }, { ownedCompositionPolicyPatchSha256: 'A'.repeat(64) }]) {
+    const f = fixture(t, { runtimeGeneration: 32, ...options });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /owned composition policy patch pin/);
+  }
+});
+
 test('generation-31 binds the compatibility snapshot implementation and exact architecture provenance', t => {
   for (const bits of [64, 32]) {
     for (const value of [undefined, 'A'.repeat(64), false]) {
@@ -848,7 +920,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t, { runtimeGeneration: 31 });
+  const f = fixture(t, { runtimeGeneration: 35 });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');

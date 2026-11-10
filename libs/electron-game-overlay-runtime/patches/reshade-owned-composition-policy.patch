@@ -168,7 +168,7 @@ diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
  
  	const unique_direct3d_device_lock lock(_direct3d_device, _direct3d_version, _direct3d_version == reshade::api::device_api::d3d12 ? static_cast<D3D12CommandQueue *>(_direct3d_command_queue)->_mutex : _impl_mutex);
  
-@@ -972,6 +986,26 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
+@@ -972,6 +986,25 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
  		return;
  	assert(!_was_still_drawing_last_frame);
  
@@ -183,9 +183,8 @@ diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
 +		}
 +		if (_impl->get_hwnd() == nullptr)
 +		{
-+			if (_is_initialized) on_reset(false);
++			if (_is_initialized) { on_reset(false); _composition_pending_resize = false; }
 +			_composition_pending = true;
-+			_composition_pending_resize = false;
 +			return;
 +		}
 +		if (_composition_pending) on_init(_composition_pending_resize);
