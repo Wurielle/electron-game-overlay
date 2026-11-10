@@ -41,6 +41,33 @@ function mutateStamp(f, name, mutate) {
   f.payload.seal();
 }
 
+test('generation-30 binds failure-only private stage diagnostics to both architectures and its implementation pin', t => {
+  for (const bits of [64, 32]) {
+    const f = fixture(t, { runtimeGeneration: 30 });
+    validateOverlayDistributionSync(f.dist);
+    mutateStamp(f, `ReShade${bits}.build.json`, stamp => { delete stamp.injectorPrivateStageDiagnosticsPatchSha256; });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /private stage diagnostics patch provenance mismatch/);
+  }
+  const missing = fixture(t, { runtimeGeneration: 30, privateStageDiagnosticsPatch: false });
+  assert.throws(() => validateOverlayDistributionSync(missing.dist), /private stage diagnostics patch pin does not match/);
+});
+
+test('generation-29 requires the composition resource identity implementation pin and both exact native patch digests', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 29 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.d3d11SwapchainResourceIdentityPatchSha256;
+        else stamp.d3d11SwapchainResourceIdentityPatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /D3D11 resource identity patch provenance mismatch/);
+    }
+  }
+  const missing = fixture(t, { runtimeGeneration: 29, resourceIdentityPatch: false });
+  assert.throws(() => validateOverlayDistributionSync(missing.dist), /D3D11 resource identity patch pin does not match/);
+});
+
 test('generation-24 seals require exact inspection context provenance on both architectures', t => {
   const f = fixture(t, { runtimeGeneration: 24 });
   validateOverlayDistributionSync(f.dist);
@@ -785,7 +812,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t, { runtimeGeneration: 28 });
+  const f = fixture(t, { runtimeGeneration: 30 });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');

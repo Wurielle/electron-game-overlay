@@ -36,7 +36,8 @@ test('portable source contract: staging mirrors bound cooperative native and pac
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 42);
+  assert.equal(patches(stage).length, 44);
+  assert.deepEqual(patches(stage).filter(([key]) => key === 'd3d11SwapchainResourceIdentityPatchSha256'), [['d3d11SwapchainResourceIdentityPatchSha256', 'reshade-d3d11-swapchain-resource-identity.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorFirstHostResultPatchSha256'), [['injectorFirstHostResultPatchSha256', 'reshade-injector-first-host-result.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorAddonPreloadPatchSha256'), [['injectorAddonPreloadPatchSha256', 'reshade-injector-preloaded-addon.patch']]);
@@ -96,10 +97,10 @@ test('portable structural guards retain all patch checks, architecture matching,
   for (const name of ['Assert-NotReparsePoint $Source', 'Assert-NotReparsePoint $Destination', 'Compare-Object $ExpectedArtifactNames $ActualSourceNames', 'Compare-Object $ExpectedDestinationNames $ActualDestinationNames', '-Expected $SourceHashes[$ArtifactName]', '-LiteralPath $Destination).Hash']) assert.ok(stage.includes(name), name);
 });
 
-test('current source cache binds the complete nineteen-file stack and terminal patches', () => {
+test('current source cache binds the complete twenty-file stack and terminal patches', () => {
   const expectedFiles = [...reshadeProducer.match(/\$ExpectedPatchedFiles = @\(([\s\S]*?)\r?\n\)/)[1].matchAll(/"([^"]+)"/g)].map(match => match[1]).sort();
   const contentPins = [...reshadeProducer.match(/\$ExpectedPatchedContentSha256 = \[ordered\]@\{([\s\S]*?)\r?\n\}/)[1].matchAll(/"([^"]+)" = "([0-9A-F]{64})"/g)].map(([, name, digest]) => [name, digest]);
-  assert.equal(expectedFiles.length, 19);
+  assert.equal(expectedFiles.length, 20);
   assert.deepEqual(contentPins.map(([name]) => name).sort(), expectedFiles);
   const patch = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'));
   assert.equal(crypto.createHash('sha256').update(patch).digest('hex').toUpperCase(), ownedLatePatchSha256);
@@ -162,7 +163,7 @@ test('current source cache binds the complete nineteen-file stack and terminal p
   const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
   // Context/readiness replace the initial-inspection hunk. Superseded seams
   // are validated by the exact complete vector and ordered migration tests.
-  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$OwnedLateD3d11AdapterReadyLongPathPatch', '$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch', '$InjectorSelectionBeforeOpenPatch', '$InjectorStartupReadinessPatch', '$InjectorElevatedPrivatePatch'].sort());
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$OwnedLateD3d11AdapterReadyLongPathPatch', '$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch', '$InjectorSelectionBeforeOpenPatch', '$InjectorStartupReadinessPatch', '$PrivateStageDiagnosticsPatch', '$D3d11ResourceIdentityPatch'].sort());
   assert.ok(reshadeProducer.indexOf('foreach ($Patch in @(') > reshadeProducer.indexOf('foreach ($Entry in $ExpectedPatchedContentSha256.GetEnumerator())'), 'Terminal patch reversal check follows the complete source inventory/hash proof');
   for (const source of [reshadeProducer, producer, stage]) {
     assert.ok(source.includes(ownedLatePatchSha256), 'Frozen owned-late production patch is pinned before packaging/cache acceptance');

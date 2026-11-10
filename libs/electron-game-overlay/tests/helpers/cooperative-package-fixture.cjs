@@ -10,6 +10,10 @@ function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
   addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
   runtimeGeneration = 23,
+  resourceIdentityPatch = runtimeGeneration >= 29,
+  privateStageDiagnosticsPatch = runtimeGeneration >= 30,
+  injectorPrivateStageDiagnosticsPatchSha256 = 'D73FF95608079571FC6438F8B5E280BB710AD8467F19CA31B664E371929C05F1',
+  d3d11SwapchainResourceIdentityPatchSha256 = '25DA093F15FAACF74AA16ED0BFFA233B58D10C7FC1BEA15B667C0E9F5F6AAEF2',
   addonPreloadProtocol = runtimeGeneration >= 17 ? 1 : undefined,
   reshadeSchemaVersion = runtimeGeneration >= 15 ? 30 : 29,
   ownedLateD3d11PatchSha256 = '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE',
@@ -61,7 +65,11 @@ function writeCooperativeDistribution(dist, {
   write('lib/module.js', '// controlled compiled SDK module\n');
   write('lib/reshade-launcher.js', `const OFFICIAL_ADDON_BUILD_ID = '${addonBuildId}';\n`);
   write('lib/overlay-broker-protocol.js', `exports.OVERLAY_BROKER_RUNTIME_GENERATION = ${runtimeGeneration};\n`);
-  write('lib/overlay-package-manifest.js', (firstHostResultPatch
+  write('lib/overlay-package-manifest.js', (privateStageDiagnosticsPatch
+    ? `const PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256 = '${injectorPrivateStageDiagnosticsPatchSha256}';\n`
+    : '') + (resourceIdentityPatch
+    ? `const D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256 = '${d3d11SwapchainResourceIdentityPatchSha256}';\n`
+    : '') + (firstHostResultPatch
     ? `const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 = '${injectorFirstHostResultPatchSha256}';\n`
     : '// Controlled retained validator fixture without the later CLI implementation pin\n') +
     (addonPreloadProtocol === 1
@@ -145,6 +153,8 @@ function writeCooperativeDistribution(dist, {
         ...(memberDiagnosticsPatch ? { injectorMemberDiagnosticsPatchSha256 } : {}),
         ...(startupReadinessPatch ? { injectorStartupReadinessPatchSha256 } : {}),
         ...(elevatedPrivatePatch ? { injectorElevatedPrivatePatchSha256: elevatedPrivatePatchSha256 } : {}),
+        ...(resourceIdentityPatch ? { d3d11SwapchainResourceIdentityPatchSha256 } : {}),
+        ...(privateStageDiagnosticsPatch ? { injectorPrivateStageDiagnosticsPatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
         }),

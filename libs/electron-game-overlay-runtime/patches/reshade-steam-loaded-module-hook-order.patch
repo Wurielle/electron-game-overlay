@@ -1,0 +1,18 @@
+diff --git a/source/hook_manager.cpp b/source/hook_manager.cpp
+--- a/source/hook_manager.cpp
++++ b/source/hook_manager.cpp
+@@ -527,6 +527,14 @@
+ 			// The Steam overlay is using 'LoadLibrary' hooks, so always use them too if it is used, to ensure that ReShade installs hooks after the Steam overlay already did so
+ 			// Detect whether the Steam overlay is used by checking for a 'SteamOverlayGameId' environment variable that Steam sets, instead of looking for 'GameOverlayRenderer[64].dll', since ReShade may be injected before the Steam overlay DLL
+ 			GetEnvironmentVariableW(L"SteamOverlayGameId", nullptr, 0) ||
++			// The optional key may be absent in a relaunched process even though
++			// the renderer is already loaded. Inspect this exact process as well;
++			// keep the environment check for injection before the renderer loads.
++#ifdef _WIN64
++			GetModuleHandleW(L"GameOverlayRenderer64.dll") != nullptr ||
++#else
++			GetModuleHandleW(L"GameOverlayRenderer.dll") != nullptr ||
++#endif
+ 			LdrRegisterDllNotification(0, reinterpret_cast<FARPROC>(&DllNotificationCallback), nullptr, &s_dll_notification_cookie) != 0 /* STATUS_SUCCESS */)
+ 		{
+ #if RESHADE_VERBOSE_LOG

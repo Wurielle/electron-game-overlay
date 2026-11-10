@@ -3,6 +3,21 @@
 These patches apply only to the ReShade 6.7.3 commit pinned by this production
 runtime and are applied as an ordered stack.
 
+## `reshade-d3d11-swapchain-resource-identity.patch`
+
+Generation 29 installs the existing D3D11 resource `GetDevice` compatibility
+hook before `DXGISwapChain::GetBuffer` returns a D3D11 resource. DXGI composition
+back buffers can be imported before the application creates an ordinary texture;
+without this step they expose the original device while ANGLE holds its proxy.
+The existing Media Foundation video-support exception and unwrapped device
+behavior are retained. The console/offscreen identity fixture reproduces the
+generation-28 mismatch and checks both architectures independently of consumer
+and game acceptance.
+
+The patch changes the owned ReShade host, with an exact digest in its build
+stamp and sealed SDK validator. The EGO feature add-on implementation and build
+ID are unchanged. Existing third-party ReShade installations are never replaced.
+
 ## `reshade-input-observer.patch`
 
 Advances the local full-add-on API from 18 to 19 and adds a passive

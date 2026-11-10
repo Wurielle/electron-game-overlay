@@ -214,7 +214,14 @@ if ($OwnedLateD3d11ForeignAddonIsolationPatchHash -cne
     "2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99") {
     throw "The owned late D3D11 foreign add-on isolation patch does not match its frozen source."
 }
+$D3d11ResourceIdentityPatch = Join-Path $RuntimeRoot "patches\reshade-d3d11-swapchain-resource-identity.patch"
+$D3d11ResourceIdentityPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $D3d11ResourceIdentityPatch).Hash
+if ($D3d11ResourceIdentityPatchHash -cne "25DA093F15FAACF74AA16ED0BFFA233B58D10C7FC1BEA15B667C0E9F5F6AAEF2") { throw "The D3D11 resource identity patch differs from its pinned implementation." }
+$PrivateStageDiagnosticsPatch = Join-Path $RuntimeRoot "patches\reshade-injector-private-stage-diagnostics.patch"
+$PrivateStageDiagnosticsPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PrivateStageDiagnosticsPatch).Hash
+if ($PrivateStageDiagnosticsPatchHash -cne "D73FF95608079571FC6438F8B5E280BB710AD8467F19CA31B664E371929C05F1") { throw "The private stage diagnostics patch differs from its pinned implementation." }
 $ExpectedPatchedFiles = @(
+    "source/dxgi/dxgi_swapchain.cpp"
     "ReShade.vcxproj"
     "include/reshade.hpp"
     "include/reshade_api.hpp"
@@ -257,6 +264,7 @@ $InjectorElevatedPrivatePatch = Join-Path $RuntimeRoot "patches\reshade-injector
 $InjectorElevatedPrivatePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorElevatedPrivatePatch).Hash
 if ($InjectorElevatedPrivatePatchHash -cne "DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697") { throw "The elevated-private patch differs from its frozen implementation." }
 $ExpectedPatchedContentSha256 = [ordered]@{
+    "source/dxgi/dxgi_swapchain.cpp" = "A3152E13EF9651AF6406460AF605AD950D6A9867D2C7D4A2CC12835A32AD848A"
     "ReShade.vcxproj" = "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp" = "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
@@ -275,7 +283,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
     "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
     "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
-    "tools/injector.cpp" = "454B5B8377548E6B99911F20A7166FAADDB10BE9FB27565E34DA0F4F5A27B62C"
+    "tools/injector.cpp" = "7A6DC34363FF8EBD78484D8AEE6CE0463F22E90AB35DD1261FC9FBD9B09A3A3E"
 }
 
 function Get-NormalizedTextSha256([string]$Path) {
@@ -345,7 +353,8 @@ function Test-ReShadePatchedSourceState {
         $InjectorSharedAddonDirectoryPatch
         $InjectorSelectionBeforeOpenPatch
         $InjectorStartupReadinessPatch
-        $InjectorElevatedPrivatePatch
+        $PrivateStageDiagnosticsPatch
+        $D3d11ResourceIdentityPatch
         $OwnedLateD3d11ForeignAddonIsolationPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -419,6 +428,8 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorMemberDiagnosticsPatchSha256 -eq $InjectorMemberDiagnosticsPatchHash -and
             $Stamp.injectorStartupReadinessPatchSha256 -eq $InjectorStartupReadinessPatchHash -and
             $Stamp.injectorElevatedPrivatePatchSha256 -eq $InjectorElevatedPrivatePatchHash -and
+            $Stamp.d3d11SwapchainResourceIdentityPatchSha256 -eq $D3d11ResourceIdentityPatchHash -and
+            $Stamp.injectorPrivateStageDiagnosticsPatchSha256 -eq $PrivateStageDiagnosticsPatchHash -and
             $Stamp.ownedLateD3d11ForeignAddonIsolationPatchSha256 -eq $OwnedLateD3d11ForeignAddonIsolationPatchHash -and
             ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
             $Stamp.addonPreloadProtocol -eq 1 -and
@@ -587,6 +598,8 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorSelectionBeforeOpenPatchSha256 = $InjectorSelectionBeforeOpenPatchHash
     injectorMemberDiagnosticsPatchSha256 = $InjectorMemberDiagnosticsPatchHash
     injectorStartupReadinessPatchSha256 = $InjectorStartupReadinessPatchHash
+    injectorPrivateStageDiagnosticsPatchSha256 = $PrivateStageDiagnosticsPatchHash
+    d3d11SwapchainResourceIdentityPatchSha256 = $D3d11ResourceIdentityPatchHash
     injectorElevatedPrivatePatchSha256 = $InjectorElevatedPrivatePatchHash
     ownedLateD3d11ForeignAddonIsolationPatchSha256 = $OwnedLateD3d11ForeignAddonIsolationPatchHash
     addonPreloadProtocol = 1

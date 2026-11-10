@@ -2021,6 +2021,10 @@ function(ego_rollover_known_addon_build_id source_path)
 endfunction()
 # END EGO_SOURCE_CACHE_MIGRATION_HELPERS
 ego_normalize_reshade_patch_inputs()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/d3d11-resource-identity.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/private-stage-diagnostics.cmake")
+ego_private_stage_diagnostics_tail("${reshade_SOURCE_DIR}" REVERSE)
+ego_d3d11_identity_source_tail("${reshade_SOURCE_DIR}" REVERSE)
 ego_prepare_owned_late_source_cache("${reshade_SOURCE_DIR}")
 ego_rollover_known_addon_build_id("${reshade_SOURCE_DIR}/tools/injector.cpp")
 
@@ -3692,6 +3696,13 @@ set(RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256
 # Fail configuration unless this FetchContent tree is exactly the pinned
 # ordered patch stack. This runs independently for the regular and
 # native-host and production presets, before CMake generates build targets.
+ego_d3d11_identity_source_tail("${reshade_SOURCE_DIR}" FORWARD)
+list(APPEND RESHAPE_EXPECTED_PATCHED_FILES "source/dxgi/dxgi_swapchain.cpp")
+list(APPEND RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "source/dxgi/dxgi_swapchain.cpp=A3152E13EF9651AF6406460AF605AD950D6A9867D2C7D4A2CC12835A32AD848A")
+ego_private_stage_diagnostics_tail("${reshade_SOURCE_DIR}" FORWARD)
+string(REPLACE "tools/injector.cpp=${RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256}"
+    "tools/injector.cpp=7A6DC34363FF8EBD78484D8AEE6CE0463F22E90AB35DD1261FC9FBD9B09A3A3E"
+    RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
 verify_reshade_patched_source("${reshade_SOURCE_DIR}")
 
 add_library(native_input_gate_addon SHARED

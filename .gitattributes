@@ -19,3 +19,6 @@ libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/owned-host-prototyp
 # Stock ReShade ends the final INI section with an empty CRLF separator.
 libs/electron-game-overlay-runtime/config/ReShade.ini text eol=crlf whitespace=-blank-at-eof
 libs/electron-game-overlay-runtime/patches/reshade-injector-elevated-private-authorization.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-d3d11-swapchain-resource-identity.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-private-stage-diagnostics.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-steam-loaded-module-hook-order.patch text eol=lf
