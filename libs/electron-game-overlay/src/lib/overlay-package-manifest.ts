@@ -41,6 +41,10 @@ const INJECTOR_STARTUP_READINESS_PATCH_SHA256 =
   '29C8D7ACA8919189D484B2E22F83DBD564B00D344E8C860058AFCCEAFC808D9D';
 const D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256 =
   '25DA093F15FAACF74AA16ED0BFFA233B58D10C7FC1BEA15B667C0E9F5F6AAEF2';
+const STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256 =
+    '560BF8A6DB17643F7FA095F75FDBE0677211FC4354BEB6C869C7D4ECD7DB1241';
+const COMPATIBILITY_SNAPSHOT_PATCH_SHA256 =
+    'C63E22F1768770469C770FB6D4124AE1A293A6D5ACD8402E8EC86F33B1CA1C66';
 const PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256 =
   'D73FF95608079571FC6438F8B5E280BB710AD8467F19CA31B664E371929C05F1';
 
@@ -313,6 +317,24 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (elevatedPrivatePins.length === 1 && elevatedPrivatePins[0][1].toUpperCase() !== INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256)) throw new Error('Compiled SDK elevated private patch pin is malformed or unsupported');
   if ((elevatedPrivatePins.length === 1) !== (expectedGeneration >= 27)) throw new Error('Compiled SDK elevated private patch pin does not match its generation');
   const foreignAddonIsolationDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256\b/g)];
+  const steamLoadedModuleDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256\b/g)];
+  const steamLoadedModulePins = [...validator.matchAll(/\bconst\s+STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (steamLoadedModuleDeclarations.length !== steamLoadedModulePins.length || steamLoadedModulePins.length > 1 ||
+      (steamLoadedModulePins.length === 1 && steamLoadedModulePins[0][1].toUpperCase() !== STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256)) {
+    throw new Error('Compiled SDK Steam loaded-module hook order patch pin is malformed or unsupported');
+  }
+  if ((steamLoadedModulePins.length === 1) !== (expectedGeneration >= 30)) {
+    throw new Error('Compiled SDK Steam loaded-module hook order patch pin does not match its generation');
+  }
+  const compatibilitySnapshotDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+COMPATIBILITY_SNAPSHOT_PATCH_SHA256\b/g)];
+  const compatibilitySnapshotPins = [...validator.matchAll(/\bconst\s+COMPATIBILITY_SNAPSHOT_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (compatibilitySnapshotDeclarations.length !== compatibilitySnapshotPins.length || compatibilitySnapshotPins.length > 1 ||
+      (compatibilitySnapshotPins.length === 1 && compatibilitySnapshotPins[0][1].toUpperCase() !== COMPATIBILITY_SNAPSHOT_PATCH_SHA256)) {
+    throw new Error('Compiled SDK compatibility snapshot patch pin is malformed or unsupported');
+  }
+  if ((compatibilitySnapshotPins.length === 1) !== (expectedGeneration >= 31)) {
+    throw new Error('Compiled SDK compatibility snapshot patch pin does not match its generation');
+  }
   const privateDiagnosticDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\b/g)];
   const privateDiagnosticPins = [...validator.matchAll(/\bconst\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
   if (privateDiagnosticDeclarations.length !== privateDiagnosticPins.length || privateDiagnosticPins.length > 1 ||
@@ -479,6 +501,22 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.injectorPrivateStageDiagnosticsPatchSha256 !== undefined) {
       throw new Error('Private stage diagnostics provenance requires runtime generation 30: ' + bits);
+    }
+    if (expectedGeneration >= 30) {
+      if (typeof reshade.steamLoadedModuleHookOrderPatchSha256 !== 'string' ||
+          reshade.steamLoadedModuleHookOrderPatchSha256.toUpperCase() !== STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256) {
+        throw new Error('Pinned Steam loaded-module hook order patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.steamLoadedModuleHookOrderPatchSha256 !== undefined) {
+      throw new Error('Steam loaded-module hook order provenance requires runtime generation 30: ' + bits);
+    }
+    if (expectedGeneration >= 31) {
+      if (typeof reshade.compatibilitySnapshotPatchSha256 !== 'string' ||
+          reshade.compatibilitySnapshotPatchSha256.toUpperCase() !== COMPATIBILITY_SNAPSHOT_PATCH_SHA256) {
+        throw new Error('Pinned compatibility snapshot patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.compatibilitySnapshotPatchSha256 !== undefined) {
+      throw new Error('Compatibility snapshot provenance requires runtime generation 31: ' + bits);
     }
     if (expectedGeneration >= 29) {
       if (typeof reshade.d3d11SwapchainResourceIdentityPatchSha256 !== 'string' ||

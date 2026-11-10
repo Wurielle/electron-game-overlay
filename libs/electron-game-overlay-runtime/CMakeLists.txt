@@ -2023,6 +2023,10 @@ endfunction()
 ego_normalize_reshade_patch_inputs()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/d3d11-resource-identity.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/private-stage-diagnostics.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/steam-loaded-module.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compatibility-snapshot.cmake")
+ego_compatibility_snapshot_tail("${reshade_SOURCE_DIR}" REVERSE)
+ego_steam_loaded_module_source_tail("${reshade_SOURCE_DIR}" REVERSE)
 ego_private_stage_diagnostics_tail("${reshade_SOURCE_DIR}" REVERSE)
 ego_d3d11_identity_source_tail("${reshade_SOURCE_DIR}" REVERSE)
 ego_prepare_owned_late_source_cache("${reshade_SOURCE_DIR}")
@@ -3703,6 +3707,17 @@ ego_private_stage_diagnostics_tail("${reshade_SOURCE_DIR}" FORWARD)
 string(REPLACE "tools/injector.cpp=${RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256}"
     "tools/injector.cpp=7A6DC34363FF8EBD78484D8AEE6CE0463F22E90AB35DD1261FC9FBD9B09A3A3E"
     RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+ego_steam_loaded_module_source_tail("${reshade_SOURCE_DIR}" FORWARD)
+list(APPEND RESHAPE_EXPECTED_PATCHED_FILES "source/hook_manager.cpp")
+list(APPEND RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "source/hook_manager.cpp=D3DF8D3B7A1B5762579F9813EF90BA9087D8647BC8333CD0E786E1526A9A8126")
+ego_compatibility_snapshot_tail("${reshade_SOURCE_DIR}" FORWARD)
+string(REPLACE "source/hook_manager.cpp=D3DF8D3B7A1B5762579F9813EF90BA9087D8647BC8333CD0E786E1526A9A8126" "source/hook_manager.cpp=C62CD60C5AFD66FAFCF6F3E0659C88078685351CB20B9721742953C7D64516BB" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+list(APPEND RESHAPE_EXPECTED_PATCHED_FILES "source/dxgi/dxgi.cpp")
+list(APPEND RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "source/dxgi/dxgi.cpp=41A686B186910B4C0FAA1B631356C2D7FD0F4BE772EFB32D7328DAA2DC65B88F")
+string(REPLACE "source/dxgi/dxgi_swapchain.cpp=A3152E13EF9651AF6406460AF605AD950D6A9867D2C7D4A2CC12835A32AD848A" "source/dxgi/dxgi_swapchain.cpp=43213ED06E440CC33D854718E872934C92294A7FF7CB597AC110CFBCBD13A3E5" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+string(REPLACE "source/ego_owned_late_d3d11/owned_late_d3d11.inl=8265E994A31EEFBE806EA7775E165F1EFB556967DAA5AC5ABF428307F26A9F71" "source/ego_owned_late_d3d11/owned_late_d3d11.inl=E9D57C1E5501DF5474EBF9AF9A9F1059489BD60AB4C4633CF6C4586DBF498D67" RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "${RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256}")
+list(APPEND RESHAPE_EXPECTED_PATCHED_FILES "source/ego_owned_late_d3d11/compatibility_snapshot.hpp")
+list(APPEND RESHAPE_EXPECTED_PATCHED_CONTENT_SHA256 "source/ego_owned_late_d3d11/compatibility_snapshot.hpp=B6C215B7780483A6B859759F088A565BE9F5AF023115935441F373E81A1DCDEE")
 verify_reshade_patched_source("${reshade_SOURCE_DIR}")
 
 add_library(native_input_gate_addon SHARED
@@ -3822,6 +3837,12 @@ add_custom_command(TARGET d3d11_overlay_test_host POST_BUILD
     COMMENT "Copying the ReShade add-on next to the controlled D3D11 host"
 )
 add_dependencies(d3d11_overlay_test_host native_input_gate_addon)
+
+add_executable(d3d11_composition_overlay_test_host WIN32 src/d3d11_test_host.cpp src/input_oracle.hpp)
+target_compile_features(d3d11_composition_overlay_test_host PRIVATE cxx_std_20)
+target_compile_definitions(d3d11_composition_overlay_test_host PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE EGO_TEST_COMPOSITION_DEFAULT=1)
+target_compile_options(d3d11_composition_overlay_test_host PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(d3d11_composition_overlay_test_host PRIVATE d3d11 dxgi dcomp)
 
 add_executable(d3d12_overlay_test_host WIN32
     src/d3d12_test_host.cpp

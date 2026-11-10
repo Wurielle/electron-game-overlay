@@ -220,7 +220,16 @@ if ($D3d11ResourceIdentityPatchHash -cne "25DA093F15FAACF74AA16ED0BFFA233B58D10C
 $PrivateStageDiagnosticsPatch = Join-Path $RuntimeRoot "patches\reshade-injector-private-stage-diagnostics.patch"
 $PrivateStageDiagnosticsPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PrivateStageDiagnosticsPatch).Hash
 if ($PrivateStageDiagnosticsPatchHash -cne "D73FF95608079571FC6438F8B5E280BB710AD8467F19CA31B664E371929C05F1") { throw "The private stage diagnostics patch differs from its pinned implementation." }
+$SteamLoadedModuleHookOrderPatch = Join-Path $RuntimeRoot "patches\reshade-steam-loaded-module-hook-order.patch"
+$SteamLoadedModuleHookOrderPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SteamLoadedModuleHookOrderPatch).Hash
+if ($SteamLoadedModuleHookOrderPatchHash -cne "560BF8A6DB17643F7FA095F75FDBE0677211FC4354BEB6C869C7D4ECD7DB1241") { throw "The Steam loaded-module hook-order patch differs from its pinned implementation." }
+$CompatibilitySnapshotPatch = Join-Path $RuntimeRoot "patches\reshade-compatibility-snapshot.patch"
+$CompatibilitySnapshotPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $CompatibilitySnapshotPatch).Hash
+if ($CompatibilitySnapshotPatchHash -cne "C63E22F1768770469C770FB6D4124AE1A293A6D5ACD8402E8EC86F33B1CA1C66") { throw "Compatibility snapshot patch differs from its pinned implementation." }
 $ExpectedPatchedFiles = @(
+    "source/ego_owned_late_d3d11/compatibility_snapshot.hpp"
+    "source/dxgi/dxgi.cpp"
+    "source/hook_manager.cpp"
     "source/dxgi/dxgi_swapchain.cpp"
     "ReShade.vcxproj"
     "include/reshade.hpp"
@@ -264,7 +273,10 @@ $InjectorElevatedPrivatePatch = Join-Path $RuntimeRoot "patches\reshade-injector
 $InjectorElevatedPrivatePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorElevatedPrivatePatch).Hash
 if ($InjectorElevatedPrivatePatchHash -cne "DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697") { throw "The elevated-private patch differs from its frozen implementation." }
 $ExpectedPatchedContentSha256 = [ordered]@{
-    "source/dxgi/dxgi_swapchain.cpp" = "A3152E13EF9651AF6406460AF605AD950D6A9867D2C7D4A2CC12835A32AD848A"
+    "source/ego_owned_late_d3d11/compatibility_snapshot.hpp" = "B6C215B7780483A6B859759F088A565BE9F5AF023115935441F373E81A1DCDEE"
+    "source/dxgi/dxgi.cpp" = "41A686B186910B4C0FAA1B631356C2D7FD0F4BE772EFB32D7328DAA2DC65B88F"
+    "source/hook_manager.cpp" = "C62CD60C5AFD66FAFCF6F3E0659C88078685351CB20B9721742953C7D64516BB"
+    "source/dxgi/dxgi_swapchain.cpp" = "43213ED06E440CC33D854718E872934C92294A7FF7CB597AC110CFBCBD13A3E5"
     "ReShade.vcxproj" = "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp" = "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
@@ -276,7 +288,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/d3d11/d3d11_impl_swapchain.hpp" = "60B7409A9D8123D2092792C2C510B0B5741764A1195C332FE9949245A9B9BB70"
     "source/ego_owned_late_d3d11/owned_config_file.hpp" = "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
     "source/ego_owned_late_d3d11/owned_late_d3d11.hpp" = "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
-    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "8265E994A31EEFBE806EA7775E165F1EFB556967DAA5AC5ABF428307F26A9F71"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "E9D57C1E5501DF5474EBF9AF9A9F1059489BD60AB4C4633CF6C4586DBF498D67"
     "source/input_frame_consumer.hpp" = "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
     "source/input.cpp" = "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
     "source/input.hpp" = "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
@@ -354,7 +366,7 @@ function Test-ReShadePatchedSourceState {
         $InjectorSelectionBeforeOpenPatch
         $InjectorStartupReadinessPatch
         $PrivateStageDiagnosticsPatch
-        $D3d11ResourceIdentityPatch
+        $CompatibilitySnapshotPatch
         $OwnedLateD3d11ForeignAddonIsolationPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -430,6 +442,8 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorElevatedPrivatePatchSha256 -eq $InjectorElevatedPrivatePatchHash -and
             $Stamp.d3d11SwapchainResourceIdentityPatchSha256 -eq $D3d11ResourceIdentityPatchHash -and
             $Stamp.injectorPrivateStageDiagnosticsPatchSha256 -eq $PrivateStageDiagnosticsPatchHash -and
+            $Stamp.steamLoadedModuleHookOrderPatchSha256 -eq $SteamLoadedModuleHookOrderPatchHash -and
+            $Stamp.compatibilitySnapshotPatchSha256 -eq $CompatibilitySnapshotPatchHash -and
             $Stamp.ownedLateD3d11ForeignAddonIsolationPatchSha256 -eq $OwnedLateD3d11ForeignAddonIsolationPatchHash -and
             ($Stamp.addonPreloadProtocol -is [int] -or $Stamp.addonPreloadProtocol -is [long]) -and
             $Stamp.addonPreloadProtocol -eq 1 -and
@@ -599,6 +613,8 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorMemberDiagnosticsPatchSha256 = $InjectorMemberDiagnosticsPatchHash
     injectorStartupReadinessPatchSha256 = $InjectorStartupReadinessPatchHash
     injectorPrivateStageDiagnosticsPatchSha256 = $PrivateStageDiagnosticsPatchHash
+    steamLoadedModuleHookOrderPatchSha256 = $SteamLoadedModuleHookOrderPatchHash
+    compatibilitySnapshotPatchSha256 = $CompatibilitySnapshotPatchHash
     d3d11SwapchainResourceIdentityPatchSha256 = $D3d11ResourceIdentityPatchHash
     injectorElevatedPrivatePatchSha256 = $InjectorElevatedPrivatePatchHash
     ownedLateD3d11ForeignAddonIsolationPatchSha256 = $OwnedLateD3d11ForeignAddonIsolationPatchHash

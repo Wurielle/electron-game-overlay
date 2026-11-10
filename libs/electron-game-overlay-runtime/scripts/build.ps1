@@ -110,7 +110,7 @@ $DistributionDirectory = Join-Path `
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Bump when the runtime provider or injector implementation changes, never for package semver.
-$RuntimeGeneration = 30
+$RuntimeGeneration = 31
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -119,6 +119,8 @@ if ($ExpectedAddonBuildId -cnotmatch '^[0-9A-F]{32}$') {
     throw "The configured Electron Game Overlay add-on build ID is invalid."
 }
 $ExpectedPatchProvenance = [ordered]@{
+    compatibilitySnapshotPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-compatibility-snapshot.patch"
+    steamLoadedModuleHookOrderPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-steam-loaded-module-hook-order.patch"
     injectorPrivateStageDiagnosticsPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-private-stage-diagnostics.patch"
     d3d11SwapchainResourceIdentityPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-d3d11-swapchain-resource-identity.patch"
     observerPatchSha256 =

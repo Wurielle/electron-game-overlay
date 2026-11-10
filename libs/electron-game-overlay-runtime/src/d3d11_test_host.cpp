@@ -3,6 +3,8 @@
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
+#include <dcomp.h>
 #include <wrl/client.h>
 
 #include <cstdarg>
@@ -23,6 +25,7 @@ namespace
 using Microsoft::WRL::ComPtr;
 
 #pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "dcomp.lib")
 
 constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D11TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D11 overlay test host";
@@ -54,12 +57,16 @@ struct graphics_state
     ComPtr<ID3D11RenderTargetView> render_target;
     ComPtr<IDXGISwapChain> secondary_swap_chain;
     ComPtr<ID3D11RenderTargetView> secondary_render_target;
+    ComPtr<IDCompositionDevice> composition_device;
+    ComPtr<IDCompositionTarget> composition_target, secondary_composition_target;
+    ComPtr<IDCompositionVisual> composition_visual, secondary_composition_visual;
     std::uint64_t primary_present_count = 0;
     std::uint64_t secondary_present_count = 0;
 };
 
 struct host_options
 {
+    bool composition = false;
     bool multi_swapchain = false;
     bool release_primary = false;
     bool defer_secondary_present_until_primary_release = false;
@@ -68,6 +75,7 @@ struct host_options
 };
 
 graphics_state g_graphics;
+bool g_composition = false;
 input_oracle g_input_oracle;
 
 // Controlled-host evidence only. The default path performs no extra DXGI
@@ -282,6 +290,10 @@ bool parse_host_options(host_options &options)
         if (std::wcscmp(argument, L"--multi-swapchain") == 0)
         {
             options.multi_swapchain = true;
+        }
+        else if (std::wcscmp(argument, L"--composition-swapchain") == 0)
+        {
+            options.composition = true;
         }
         else if (std::wcscmp(
                      argument,
@@ -762,12 +774,55 @@ bool create_render_target(
         &render_target));
 }
 
+HRESULT create_composition_swap_chain(HWND window, ComPtr<IDXGISwapChain> &chain,
+    ComPtr<IDCompositionTarget> &target, ComPtr<IDCompositionVisual> &visual)
+{
+    ComPtr<IDXGIDevice> dxgi_device;
+    HRESULT result = g_graphics.device.As(&dxgi_device);
+    if (FAILED(result)) return result;
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(result = dxgi_device->GetAdapter(&adapter))) return result;
+    ComPtr<IDXGIFactory2> factory;
+    if (FAILED(result = adapter->GetParent(IID_PPV_ARGS(&factory)))) return result;
+    RECT client {};
+    if (!GetClientRect(window, &client) || client.right <= client.left || client.bottom <= client.top) return E_INVALIDARG;
+    DXGI_SWAP_CHAIN_DESC1 desc {};
+    desc.Width = static_cast<UINT>(client.right - client.left); desc.Height = static_cast<UINT>(client.bottom - client.top);
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount = 2;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    ComPtr<IDXGISwapChain1> composition;
+    if (FAILED(result = factory->CreateSwapChainForComposition(g_graphics.device.Get(), &desc, nullptr, &composition))) return result;
+    DXGI_SWAP_CHAIN_DESC observed {}; HWND queried_window = nullptr;
+    if (FAILED(composition->GetDesc(&observed)) || observed.OutputWindow != nullptr ||
+        SUCCEEDED(composition->GetHwnd(&queried_window))) return E_UNEXPECTED;
+    if (FAILED(result = composition.As(&chain))) return result;
+    if (!g_graphics.composition_device && FAILED(result = DCompositionCreateDevice(dxgi_device.Get(), IID_PPV_ARGS(&g_graphics.composition_device)))) return result;
+    if (FAILED(result = g_graphics.composition_device->CreateTargetForHwnd(window, TRUE, &target)) ||
+        FAILED(result = g_graphics.composition_device->CreateVisual(&visual)) ||
+        FAILED(result = visual->SetContent(chain.Get())) || FAILED(result = target->SetRoot(visual.Get())) ||
+        FAILED(result = g_graphics.composition_device->Commit())) return result;
+    write_preload_test_file(L"electron-game-overlay-composition-host.log",
+        "EGO_CONTROLLED_COMPOSITION_HOST_V1\noutputWindowNull=true\ngetHwndUnsupported=true\nactualDCompositionTarget=true\n", CREATE_ALWAYS);
+    return S_OK;
+}
+
 HRESULT create_device_with_driver(D3D_DRIVER_TYPE driver_type)
 {
     DXGI_SWAP_CHAIN_DESC swap_chain_desc =
         swap_chain_description(g_graphics.window);
 
     D3D_FEATURE_LEVEL feature_level = {};
+    if (g_composition)
+    {
+        const HRESULT result = D3D11CreateDevice(nullptr, driver_type, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+            &g_graphics.device, &feature_level, &g_graphics.context);
+        if (FAILED(result)) return result;
+        return create_composition_swap_chain(g_graphics.window, g_graphics.swap_chain,
+            g_graphics.composition_target, g_graphics.composition_visual);
+    }
     return D3D11CreateDeviceAndSwapChain(
         nullptr,
         driver_type,
@@ -791,6 +846,9 @@ bool create_graphics_device()
     if (FAILED(result))
     {
         warp_attempted = true;
+        g_graphics.composition_visual.Reset(); g_graphics.secondary_composition_visual.Reset();
+        g_graphics.composition_target.Reset(); g_graphics.secondary_composition_target.Reset();
+        g_graphics.composition_device.Reset();
         g_graphics.swap_chain.Reset();
         g_graphics.context.Reset();
         g_graphics.device.Reset();
@@ -825,6 +883,11 @@ bool create_secondary_swap_chain()
     {
         return false;
     }
+    if (g_composition)
+        return SUCCEEDED(create_composition_swap_chain(g_graphics.secondary_window,
+            g_graphics.secondary_swap_chain, g_graphics.secondary_composition_target,
+            g_graphics.secondary_composition_visual)) &&
+            create_render_target(g_graphics.secondary_swap_chain.Get(), g_graphics.secondary_render_target);
 
     ComPtr<IDXGIDevice> dxgi_device;
     if (FAILED(g_graphics.device.As(&dxgi_device)))
@@ -855,6 +918,13 @@ bool create_secondary_swap_chain()
 
 void destroy_primary_graphics()
 {
+    if (g_graphics.composition_visual)
+    {
+        g_graphics.composition_visual->SetContent(nullptr);
+        g_graphics.composition_device->Commit();
+        g_graphics.composition_device->WaitForCommitCompletion();
+        g_graphics.composition_visual.Reset(); g_graphics.composition_target.Reset();
+    }
     if (g_graphics.context != nullptr)
     {
         g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -866,6 +936,16 @@ void destroy_primary_graphics()
 
 void destroy_graphics_device()
 {
+    if (g_graphics.composition_device)
+    {
+        if (g_graphics.composition_visual) g_graphics.composition_visual->SetContent(nullptr);
+        if (g_graphics.secondary_composition_visual) g_graphics.secondary_composition_visual->SetContent(nullptr);
+        g_graphics.composition_device->Commit();
+        g_graphics.composition_device->WaitForCommitCompletion();
+        g_graphics.composition_visual.Reset(); g_graphics.secondary_composition_visual.Reset();
+        g_graphics.composition_target.Reset(); g_graphics.secondary_composition_target.Reset();
+        g_graphics.composition_device.Reset();
+    }
     if (g_graphics.context != nullptr)
     {
         g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -1013,6 +1093,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     }
     if (!enable_per_monitor_v2_awareness())
         return 1;
+#ifdef EGO_TEST_COMPOSITION_DEFAULT
+    options.composition = true;
+#endif
+    g_composition = options.composition;
     configure_present_diagnostic();
     if (!load_test_external_runtime())
         return 1;

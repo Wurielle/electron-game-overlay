@@ -39,6 +39,31 @@ export async function overlayProcessIncarnationExited(
           const r = JSON.parse(stdout);
           if (!r || typeof r !== 'object' || Array.isArray(r))
             return resolve(false);
+          if (error && error.code === 5 &&
+              Object.keys(r).sort().join(',') === 'code,kind,message,operation,schemaVersion,status,windowsError' &&
+              r.schemaVersion === 1 && r.kind === 'electron-game-overlay-reshade-addon-manager-result' &&
+              r.operation === 'query-process-image' && r.status === 'error' && r.code === 'process-query-failed' &&
+              r.windowsError === 31 && r.message === 'Unable to query the process executable path.') {
+            // A retained handle can keep an exited process object queryable after
+            // its image path is unavailable. Ask a distinct read-only native
+            // signal/incarnation query; the image-query failure alone proves nothing.
+            execFile(addonManagerPath, ['--query-process-incarnation', String(identity.pid), identity.creationTime100ns],
+              {shell:false,windowsHide:true,cwd:dirname(addonManagerPath),timeout:2000,maxBuffer:16384,encoding:'utf8'},
+              (signalError, signalOutput, signalStderr) => {
+                try {
+                  if (signalError || signalStderr.trim() || /[\r\n]/u.test(signalOutput.trim())) return resolve(false);
+                  const s = JSON.parse(signalOutput);
+                  if (!s || typeof s !== 'object' || Array.isArray(s) ||
+                      Object.keys(s).sort().join(',') !== 'creationTime100ns,kind,pid,requestedCreationTime100ns,schemaVersion,state' ||
+                      s.schemaVersion !== 1 || s.kind !== 'electron-game-overlay-process-incarnation' ||
+                      s.pid !== identity.pid || s.requestedCreationTime100ns !== identity.creationTime100ns) return resolve(false);
+                  resolve((s.state === 'absent' && s.creationTime100ns === '0') ||
+                    (s.state === 'exited' && s.creationTime100ns === identity.creationTime100ns) ||
+                    (s.state === 'reused' && isValidProcessCreationTime100ns(s.creationTime100ns) && s.creationTime100ns !== identity.creationTime100ns));
+                } catch { resolve(false); }
+              });
+            return;
+          }
           if (error)
             return resolve(
               error.code === 5 &&

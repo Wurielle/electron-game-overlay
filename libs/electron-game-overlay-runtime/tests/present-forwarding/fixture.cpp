@@ -8,6 +8,11 @@
 #include <cstdio>
 #include <stdexcept>
 #include <type_traits>
+namespace ego_compatibility_snapshot {
+inline bool claim_present(bool, bool, unsigned) { return false; }
+template<class... T> void callbacks(T...) {}
+inline void present_end(bool, bool, HRESULT) {}
+}
 namespace contract {
 enum class chain_phase { ready, reset, quarantined, rejected };
 struct fake_runtime { bool acquire = true; bool acquire_owned_late_d3d11_back_buffer_views() { return acquire; } };
@@ -38,6 +43,7 @@ void ReShadeUpdateAndPresentEffectRuntime(void *) { ++rendered; if (throw_render
 HRESULT STDMETHODCALLTYPE downstream(IDXGISwapChain *, UINT interval, UINT flags) { ++native_calls; observed_interval = interval; observed_flags = flags; return native_result; }
 HRESULT STDMETHODCALLTYPE downstream1(IDXGISwapChain1 *, UINT interval, UINT flags, const DXGI_PRESENT_PARAMETERS *p) { ++native_calls; observed_interval = interval; observed_flags = flags; observed_parameters = p; return native_result; }
 namespace reshade { using runtime = fake_runtime; namespace hooks {
+template<class T> void **vtable_from_instance(T *) { static void *table[23] {}; return table; }
 template<class T> T call(T) { ++resolved; if constexpr(std::is_same_v<T, decltype(&downstream)>) return &downstream; else return &downstream1; }
 }}
 #include GENERATED_PRESENT_SOURCE

@@ -22,3 +22,4 @@ libs/electron-game-overlay-runtime/patches/reshade-injector-elevated-private-aut
 libs/electron-game-overlay-runtime/patches/reshade-d3d11-swapchain-resource-identity.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-injector-private-stage-diagnostics.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-steam-loaded-module-hook-order.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-compatibility-snapshot.patch text eol=lf

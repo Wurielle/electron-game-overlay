@@ -18,6 +18,44 @@ The patch changes the owned ReShade host, with an exact digest in its build
 stamp and sealed SDK validator. The EGO feature add-on implementation and build
 ID are unchanged. Existing third-party ReShade installations are never replaced.
 
+## `reshade-injector-private-stage-diagnostics.patch`
+
+Generation 30 adds failure-only fixed artifact/operation diagnostics around the
+existing private elevated stage checks. It preserves the original Windows error,
+`GetLastError`, restrictive read guards, authorization and refusal decisions.
+The console helper fixture forces actual owned file and directory sharing
+conflicts; it does not establish the cause or resolution of the consumer's
+particular high x86 failure.
+
+## `reshade-steam-loaded-module-hook-order.patch`
+
+Generation 30 retains ReShade's environment-based Steam loader-hook selection
+and also recognizes the architecture's already-loaded renderer DLL in the exact
+current process. Missing optional environment metadata must not select the DLL
+notification path when that renderer is already present. No renderer is loaded
+by this check, and it adds no delay, executable heuristic or game exclusion.
+
+The dedicated owned console factory model retains the generation-29 missing-key
+failure and exact-name/environment/no-model controls. It is not Valve code or
+actual Steam/Overwatch acceptance. Later-renderer ordering remains a separate
+limitation; this narrow correction does not claim to fix every load order.
+
+## `reshade-compatibility-snapshot.patch`
+
+Generation 31 adds at most 17 read-only records for the actual loader selection,
+early factory discovery scope, native callback registration and first non-TEST
+proxy/raw Present/Present1. Callback address ownership and at most two recognized
+entry jumps are observed without executing them or dumping bytes. Unsupported or
+unreadable entries remain unknown. Records contain no paths, tokens or environment
+values. Logging failures and GetLastError are isolated from forwarding.
+
+The exact 23-file source inventory includes five restartable diagnostic tail
+files. The source-cache gate tests every partial publication boundary and unknown
+edit/file/patch refusals. Real owned foreign-hook fixtures verify module/jump
+roles, saved trampolines, once-only records, native forwarding and unchanged
+references on both architectures. These are diagnostics, not an Overwatch fix
+or evidence of actual Steam frames. See `doc/bounded-compatibility-snapshot.md`.
+
 ## `reshade-input-observer.patch`
 
 Advances the local full-add-on API from 18 to 19 and adds a passive

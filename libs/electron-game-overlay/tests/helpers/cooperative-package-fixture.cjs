@@ -11,6 +11,10 @@ function writeCooperativeDistribution(dist, {
   addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
   runtimeGeneration = 23,
   resourceIdentityPatch = runtimeGeneration >= 29,
+  compatibilitySnapshotPatch = runtimeGeneration >= 31,
+  compatibilitySnapshotPatchSha256 = 'C63E22F1768770469C770FB6D4124AE1A293A6D5ACD8402E8EC86F33B1CA1C66',
+  steamLoadedModulePatch = runtimeGeneration >= 30,
+  steamLoadedModuleHookOrderPatchSha256 = '560BF8A6DB17643F7FA095F75FDBE0677211FC4354BEB6C869C7D4ECD7DB1241',
   privateStageDiagnosticsPatch = runtimeGeneration >= 30,
   injectorPrivateStageDiagnosticsPatchSha256 = 'D73FF95608079571FC6438F8B5E280BB710AD8467F19CA31B664E371929C05F1',
   d3d11SwapchainResourceIdentityPatchSha256 = '25DA093F15FAACF74AA16ED0BFFA233B58D10C7FC1BEA15B667C0E9F5F6AAEF2',
@@ -65,7 +69,11 @@ function writeCooperativeDistribution(dist, {
   write('lib/module.js', '// controlled compiled SDK module\n');
   write('lib/reshade-launcher.js', `const OFFICIAL_ADDON_BUILD_ID = '${addonBuildId}';\n`);
   write('lib/overlay-broker-protocol.js', `exports.OVERLAY_BROKER_RUNTIME_GENERATION = ${runtimeGeneration};\n`);
-  write('lib/overlay-package-manifest.js', (privateStageDiagnosticsPatch
+  write('lib/overlay-package-manifest.js', (compatibilitySnapshotPatch
+    ? `const COMPATIBILITY_SNAPSHOT_PATCH_SHA256 = '${compatibilitySnapshotPatchSha256}';\n`
+    : '') + (steamLoadedModulePatch
+    ? `const STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256 = '${steamLoadedModuleHookOrderPatchSha256}';\n`
+    : '') + (privateStageDiagnosticsPatch
     ? `const PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256 = '${injectorPrivateStageDiagnosticsPatchSha256}';\n`
     : '') + (resourceIdentityPatch
     ? `const D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256 = '${d3d11SwapchainResourceIdentityPatchSha256}';\n`
@@ -155,6 +163,8 @@ function writeCooperativeDistribution(dist, {
         ...(elevatedPrivatePatch ? { injectorElevatedPrivatePatchSha256: elevatedPrivatePatchSha256 } : {}),
         ...(resourceIdentityPatch ? { d3d11SwapchainResourceIdentityPatchSha256 } : {}),
         ...(privateStageDiagnosticsPatch ? { injectorPrivateStageDiagnosticsPatchSha256 } : {}),
+        ...(steamLoadedModulePatch ? { steamLoadedModuleHookOrderPatchSha256 } : {}),
+        ...(compatibilitySnapshotPatch ? { compatibilitySnapshotPatchSha256 } : {}),
         cooperativeAddonProtocol: 1, injectorProcessInstanceBinding: 1, injectorFutureTargets: 2,
         configuration: 'Release', platform: bits === 64 ? '64-bit' : '32-bit', addonLevel: 2,
         }),

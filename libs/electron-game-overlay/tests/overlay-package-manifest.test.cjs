@@ -41,6 +41,42 @@ function mutateStamp(f, name, mutate) {
   f.payload.seal();
 }
 
+test('generation-31 binds the compatibility snapshot implementation and exact architecture provenance', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 31 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.compatibilitySnapshotPatchSha256;
+        else stamp.compatibilitySnapshotPatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /compatibility snapshot patch provenance mismatch/);
+    }
+  }
+  for (const options of [{ compatibilitySnapshotPatch: false }, { compatibilitySnapshotPatchSha256: 'A'.repeat(64) }]) {
+    const f = fixture(t, { runtimeGeneration: 31, ...options });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /compatibility snapshot patch pin/);
+  }
+});
+
+test('generation-30 binds the Steam loaded-module implementation and exact architecture provenance', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 30 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.steamLoadedModuleHookOrderPatchSha256;
+        else stamp.steamLoadedModuleHookOrderPatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /Steam loaded-module hook order patch provenance mismatch/);
+    }
+  }
+  for (const options of [{ steamLoadedModulePatch: false }, { steamLoadedModuleHookOrderPatchSha256: 'A'.repeat(64) }]) {
+    const f = fixture(t, { runtimeGeneration: 30, ...options });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /Steam loaded-module hook order patch pin/);
+  }
+});
+
 test('generation-30 binds failure-only private stage diagnostics to both architectures and its implementation pin', t => {
   for (const bits of [64, 32]) {
     const f = fixture(t, { runtimeGeneration: 30 });
@@ -812,7 +848,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t, { runtimeGeneration: 30 });
+  const f = fixture(t, { runtimeGeneration: 31 });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');

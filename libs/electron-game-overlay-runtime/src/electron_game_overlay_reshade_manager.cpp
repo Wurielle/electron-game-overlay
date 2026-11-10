@@ -4541,6 +4541,46 @@ std::string serialize_error(
     return stream.str();
 }
 
+std::string query_process_incarnation(int argc, wchar_t **argv)
+{
+    if (argc != 4) throw manager_error("invalid-request", "Expected an exact PID and creation time.", exit_category::invalid_request);
+    const auto parse = [](const wchar_t *text, std::uint64_t maximum) {
+        const std::wstring_view value(text);
+        if (value.empty() || value.front() < L'1' || value.front() > L'9')
+            throw manager_error("invalid-request", "Expected canonical positive decimal identity.", exit_category::invalid_request);
+        std::uint64_t result = 0;
+        for (const wchar_t digit : value) {
+            if (digit < L'0' || digit > L'9' || result > (maximum - unsigned(digit - L'0')) / 10)
+                throw manager_error("invalid-request", "Process identity is out of range.", exit_category::invalid_request);
+            result = result * 10 + unsigned(digit - L'0');
+        }
+        return result;
+    };
+    const DWORD pid = static_cast<DWORD>(parse(argv[2], MAXDWORD));
+    const auto requested = parse(argv[3], (std::numeric_limits<std::uint64_t>::max)());
+    unique_handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid));
+    const char *state = nullptr;
+    std::uint64_t actual = 0;
+    if (!process) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_INVALID_PARAMETER) throw_windows("process-query-failed", "Unable to open the process for read-only incarnation inspection.", exit_category::io_failure, error);
+        state = "absent";
+    } else {
+        FILETIME creation {}, exited {}, kernel {}, user {};
+        if (!GetProcessTimes(process.get(), &creation, &exited, &kernel, &user))
+            throw_windows("process-query-failed", "Unable to read process incarnation.", exit_category::io_failure);
+        actual = (std::uint64_t(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+        const DWORD wait = WaitForSingleObject(process.get(), 0);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT)
+            throw_windows("process-query-failed", "Unable to inspect the process exit signal.", exit_category::io_failure);
+        state = actual != requested ? "reused" : wait == WAIT_OBJECT_0 ? "exited" : "alive";
+    }
+    std::ostringstream output;
+    output << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-process-incarnation\",\"pid\":" << pid
+           << ",\"requestedCreationTime100ns\":\"" << requested << "\",\"creationTime100ns\":\"" << actual << "\",\"state\":\"" << state << "\"}\n";
+    return output.str();
+}
+
 std::string query_process_image(int argc, wchar_t **argv)
 {
     if (argc != 3)
@@ -5063,6 +5103,12 @@ int wmain(int argc, wchar_t **argv)
         {
             operation = "query-process-image";
             write_stdout(query_process_image(argc, argv));
+            return static_cast<int>(exit_category::success);
+        }
+        if (argc >= 2 && std::wstring_view(argv[1]) == L"--query-process-incarnation")
+        {
+            operation = "query-process-incarnation";
+            write_stdout(query_process_incarnation(argc, argv));
             return static_cast<int>(exit_category::success);
         }
         request input = parse_request(argc, argv);
