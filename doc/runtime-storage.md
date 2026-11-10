@@ -67,6 +67,23 @@ bundles are eligible for whole-directory pruning. A foreign entry prevents it.
 Interrupted diagnostic-only quarantines resume after the same ownership and
 unmapping evidence is checked again.
 
+Each run is maintained independently. A medium caller can read an elevated
+run's exit proof while lacking permission to remove its protected metadata.
+That run is preserved with a per-directory warning and retried by a later
+authorized sweep; it cannot stop compaction or retention of eligible peer runs.
+The count, age and byte bounds apply to accessible, recognized diagnostic
+bundles. Inaccessible stages and foreign entries can remain outside those
+bounds. Maintenance never changes their labels, permissions or ownership.
+The synchronous unused-watcher drain removes its fixed private policy,
+ownership and transport leaves as well as payloads and cache leases, so its
+completed stages become eligible diagnostic bundles without a later API call.
+Both consumed-target retirement and unused-watcher drain remove known control
+files before deleting payloads. Observing all thirteen payload entries gone
+therefore leaves no pending control-file cleanup that early Electron shutdown
+could interrupt. A denied or temporarily shared control preserves the payloads
+and persisted exit proof for a later authorized sweep; it never changes access
+permissions, releases ownership early or treats an incomplete stage as complete.
+
 These bounds cover completed SDK-owned storage. They do not impose an unsafe
 expiry on possibly mapped images or unrecognized data.
 
@@ -126,12 +143,12 @@ The storage-only launcher remains
 It hashes real payload files without executing them and includes a separate Node
 filesystem restart. Its 2026-11-10 measurement used 19,802,976 payload bytes:
 
-| State | Unique allocated file bytes |
-| --- | ---: |
-| One positively unused preparation after retirement | 19,836,928 |
-| Twelve retired preparations | 19,881,984 |
-| Separate Node restart and retirement | 19,886,080 |
-| Thirty-two retirements, with 16 diagnostic folders retained | 19,898,368 |
+| State                                                       | Unique allocated file bytes |
+| ----------------------------------------------------------- | --------------------------: |
+| One positively unused preparation after retirement          |                  19,836,928 |
+| Twelve retired preparations                                 |                  19,881,984 |
+| Separate Node restart and retirement                        |                  19,886,080 |
+| Thirty-two retirements, with 16 diagnostic folders retained |                  19,898,368 |
 
 Allocation is `stat.blocks * 512` counted once per file identity within the gate's
 owned roots. It excludes filesystem metadata. The small increase is bounded

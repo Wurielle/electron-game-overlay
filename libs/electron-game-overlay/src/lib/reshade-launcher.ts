@@ -1,6 +1,6 @@
 import { StringDecoder } from 'node:string_decoder';
-import { stageRuntimePayload, pruneRuntimePayloadCache } from './runtime-payload-store.js';
-import { compactRuntimeStorageRun, createRuntimeStorageRecord, inspectRuntimeStorageRun, recordRuntimeStorageArtifacts, recordRuntimeStorageAttempt, recoverRuntimeStorageRun, runtimeStorageDiagnosticBytes } from './runtime-stage-storage.js';
+import { stageRuntimePayload, pruneRuntimePayloadCache, RUNTIME_PAYLOAD_LEASE_NAME, RUNTIME_PUBLISHING_LEASE_NAME } from './runtime-payload-store.js';
+import { compactRuntimeStorageRun, createRuntimeStorageRecord, inspectRuntimeStorageRun, recordRuntimeStorageArtifacts, recordRuntimeStorageAttempt, recoverRuntimeStorageRun, runtimeStorageDiagnosticBytes, RUNTIME_STORAGE_TRANSIENT_NAMES } from './runtime-stage-storage.js';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
 import { createPrivateElevatedOverlayStage, inspectOverlayConsumerExecutionContext, verifyPrivateElevatedOverlayStage } from './overlay-consumer-context.js';
 import {
@@ -5144,7 +5144,11 @@ export async function pruneReShadeRuntimeStorage(options:Readonly<{config?:ReSha
     if(probes>=limit)break;
     if(entry.state!=='exact-target-recorded'&&entry.state!=='prepared-owner-recorded')continue;
     probes++;
-    await recoverRuntimeStorageRun(entry.directory,identity=>overlayProcessIncarnationExited(identity,config.addonManagerPath));
+    try {
+      await recoverRuntimeStorageRun(entry.directory,identity=>overlayProcessIncarnationExited(identity,config.addonManagerPath));
+    } catch (error) {
+      warnRuntimeStorageEntry(entry.directory, error);
+    }
   }
   const context=config.privateElevatedAuthorization!==undefined?await inspectOverlayConsumerExecutionContext({config}):undefined;
   await scheduleRunRetentionSweep(before.runsRootDirectory,context?.elevated!==true);
@@ -5284,6 +5288,17 @@ function retireUnusedDrainedRuntimeSync(staged: StagedRuntime): void {
   } finally {
     try { unlinkSync(temporary); } catch (error) { if (!isErrnoException(error, 'ENOENT')) throw error; }
   }
+  // No control-file tail may follow the final payload deletion, including
+  // when Electron exits immediately after the completed-retirement checkpoint.
+  for (const name of RUNTIME_STORAGE_TRANSIENT_NAMES) {
+    const file = path.join(staged.runDirectory, name);
+    try {
+      const info = lstatSync(file);
+      if (!info.isFile() || info.isSymbolicLink() ||
+          (name !== RUNTIME_PAYLOAD_LEASE_NAME && name !== RUNTIME_PUBLISHING_LEASE_NAME && info.nlink !== 1)) return;
+      unlinkSync(file);
+    } catch (error) { if (!isErrnoException(error, 'ENOENT')) throw error; }
+  }
   for (const [addon, stamp, hashKey] of PRIVATE_IMAGE_ARTIFACTS) {
     const file = path.join(staged.runDirectory, addon);
     try {
@@ -5299,7 +5314,9 @@ function retireUnusedDrainedRuntimeSync(staged: StagedRuntime): void {
     for(const name of RUNTIME_ARTIFACTS){
       if(PRIVATE_IMAGE_ARTIFACTS.some(([image])=>image===name))continue;
       const file=path.join(staged.runDirectory,name);
-      try{const info=lstatSync(file);if(info.isFile()&&!info.isSymbolicLink()&&info.size<=MAX_RUNTIME_PACKAGE_BUILD_STAMP_BYTES)unlinkSync(file);}
+      try{const info=lstatSync(file);if(info.isFile()&&!info.isSymbolicLink()&&
+        ((name==='ReShade.ini'||staged.privateElevatedPayload!==undefined)?info.nlink===1:true)&&
+        (name==='ReShade.ini'||info.size<=MAX_RUNTIME_PACKAGE_BUILD_STAMP_BYTES))unlinkSync(file);}
       catch(error){if(!isErrnoException(error,'ENOENT'))throw error;}
     }
   }
@@ -5370,6 +5387,7 @@ async function pruneReclaimableRunDirectories(
     if (!entry.isDirectory() || entry.isSymbolicLink()) {
       continue;
     }
+    try {
     // Resume a previously committed diagnostic-only quarantine after a crash.
     if(/^\.electron-game-overlay-retired-[a-f0-9-]{36}$/u.test(entry.name)){
       const directory=path.join(runsRootDirectory,entry.name);
@@ -5389,6 +5407,11 @@ async function pruneReclaimableRunDirectories(
       if(await runtimeStorageDiagnosticBytes(candidate.runDirectory)===undefined)continue;
       candidates.push(candidate);
     }
+    } catch (error) {
+      // A medium caller can inspect the ownership proof but lack write access
+      // to a high stage's metadata. Preserve that entry and maintain its peers.
+      warnRuntimeStorageEntry(path.join(runsRootDirectory, entry.name), error);
+    }
   }
 
   candidates.sort(
@@ -5402,10 +5425,14 @@ async function pruneReclaimableRunDirectories(
   const directoriesToRemove:ReclaimableRunDirectory[]=[];
   let retainedBytes=0,retainedCount=0;
   for(const candidate of candidates){
+    try {
     const bytes=await runtimeStorageDiagnosticBytes(candidate.runDirectory);
     if(bytes===undefined)continue;
     if(now-candidate.retiredAtMs>=RUN_RETENTION_MAX_AGE_MS||retainedCount>=RUN_RETENTION_MAX_DIRECTORIES||retainedBytes+bytes>RUN_RETENTION_MAX_BYTES)directoriesToRemove.push(candidate);
     else{retainedBytes+=bytes;retainedCount++;}
+    } catch (error) {
+      warnRuntimeStorageEntry(candidate.runDirectory, error);
+    }
   }
 
   for (const candidate of directoriesToRemove) {
@@ -5470,6 +5497,10 @@ async function pruneReclaimableRunDirectories(
       );
     }
   }
+}
+
+function warnRuntimeStorageEntry(directory: string, error: unknown): void {
+  console.warn(`Unable to maintain ReShade run directory ${JSON.stringify(directory)}; preserved for a later authorized sweep: ${formatUnknownError(error)}`);
 }
 
 async function readReclaimableRunDirectory(

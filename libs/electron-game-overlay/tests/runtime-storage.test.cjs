@@ -1000,6 +1000,306 @@ test('retired diagnostic data is bounded by stream, directory count and total by
   );
 });
 
+test('public maintenance isolates inaccessible stages throughout compaction, quarantine and budget scans', async (t) => {
+  for (const phase of ['compact-EPERM', 'quarantine-EACCES', 'budget-EPERM']) {
+    await t.test(phase, async (t) => {
+      const f = fixture(t),
+        now = Date.now(),
+        warnings = [];
+      for (let i = 0; i < 20; i++) {
+        const directory = path.join(
+          f.runs,
+          'medium-' + String(i).padStart(2, '0'),
+        );
+        fs.mkdirSync(directory);
+        const id = marker(directory);
+        unmapped(directory, id, new Date(now - (20 - i) * 1000).toISOString());
+      }
+      const protectedName = phase.startsWith('quarantine')
+        ? '.electron-game-overlay-retired-' + crypto.randomUUID()
+        : '000-protected';
+      const protectedDirectory = path.join(f.runs, protectedName);
+      fs.mkdirSync(protectedDirectory);
+      const id = marker(protectedDirectory);
+      unmapped(protectedDirectory, id, new Date(now).toISOString());
+      await storage.createRuntimeStorageRecord(protectedDirectory, id, null);
+      const protectedLeaf = path.join(
+        protectedDirectory,
+        phase.startsWith('compact')
+          ? 'electron-game-overlay-owned-runtime-v1.marker'
+          : 'inject.stdout.log',
+      );
+      fs.writeFileSync(protectedLeaf, 'protected bytes');
+      const foreign = path.join(f.runs, 'foreign');
+      fs.mkdirSync(foreign);
+      fs.writeFileSync(path.join(foreign, 'data'), 'foreign bytes');
+      const before = fs.statSync(protectedLeaf, { bigint: true });
+      const method = phase.startsWith('compact') ? 'unlink' : 'lstat';
+      const original = fsp[method],
+        originalWarn = console.warn;
+      let denied = 0,
+        stats = 0;
+      fsp[method] = async (file, ...args) => {
+        if (
+          String(file) === protectedLeaf &&
+          (!phase.startsWith('budget') || (!args[0]?.bigint && ++stats >= 2))
+        ) {
+          denied++;
+          throw Object.assign(new Error('inaccessible owned test stage'), {
+            code: phase.includes('EACCES') ? 'EACCES' : 'EPERM',
+            path: String(file),
+          });
+        }
+        return original(file, ...args);
+      };
+      console.warn = (value) => warnings.push(String(value));
+      try {
+        await pruneReShadeRuntimeStorage({
+          config: f.config(),
+          maxRecoveryProbes: 0,
+        });
+        assert.ok(denied > 0, 'the inaccessible entry must be exercised');
+        assert.ok(
+          warnings.some((w) => w.includes(JSON.stringify(protectedDirectory))),
+        );
+        assert.ok(
+          !warnings.some((w) => w.includes('Unable to scan completed')),
+        );
+        assert.equal(
+          fs.readdirSync(f.runs).filter((n) => n.startsWith('medium-')).length,
+          16,
+        );
+        assert.equal(fs.readFileSync(protectedLeaf, 'utf8'), 'protected bytes');
+        const after = fs.statSync(protectedLeaf, { bigint: true });
+        assert.equal(after.ino, before.ino);
+        assert.equal(after.mode, before.mode);
+        assert.equal(after.mtimeNs, before.mtimeNs);
+        assert.equal(
+          fs.readFileSync(path.join(foreign, 'data'), 'utf8'),
+          'foreign bytes',
+        );
+      } finally {
+        fsp[method] = original;
+        console.warn = originalWarn;
+      }
+      // An authorized later sweep can resume the preserved entry.
+      await pruneReShadeRuntimeStorage({
+        config: f.config(),
+        maxRecoveryProbes: 0,
+      });
+      assert.equal(
+        fs.readdirSync(f.runs).filter((n) => n !== 'foreign').length,
+        16,
+      );
+      assert.equal(
+        fs.readFileSync(path.join(foreign, 'data'), 'utf8'),
+        'foreign bytes',
+      );
+    });
+  }
+});
+
+test('a denied recovery proof publication preserves that attempt and still recovers its peer', async (t) => {
+  const f = fixture(t),
+    first = await staged(f, '000-denied'),
+    second = await staged(f, 'later');
+  const identity = { pid: 4242, creationTime100ns: '134387773076910574' };
+  for (const s of [first, second])
+    await storage.recordRuntimeStorageAttempt(s.directory, s.runId, identity);
+  const originalExec = cp.execFile,
+    originalRename = fsp.rename,
+    originalWarn = console.warn;
+  const warnings = [];
+  let probes = 0,
+    denied = 0;
+  cp.execFile = (file, args, options, cb) => {
+    probes++;
+    assert.deepEqual(args, ['--query-process-image', '4242']);
+    queueMicrotask(() =>
+      cb(
+        null,
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: 'electron-game-overlay-process-image',
+          pid: 4242,
+          executablePath: 'C:\\owned\\game.exe',
+          creationTime100ns: '134387773076910575',
+        }),
+        '',
+      ),
+    );
+  };
+  fsp.rename = async (from, to) => {
+    if (
+      to ===
+      path.join(first.directory, '.electron-game-overlay-run-reclaimable.json')
+    ) {
+      denied++;
+      throw Object.assign(new Error('proof publication denied'), {
+        code: 'EPERM',
+      });
+    }
+    return originalRename(from, to);
+  };
+  console.warn = (value) => warnings.push(String(value));
+  try {
+    const report = await pruneReShadeRuntimeStorage({
+      config: f.config(),
+      maxRecoveryProbes: 2,
+    });
+    assert.equal(probes, 2);
+    assert.equal(denied, 1);
+    assert.ok(
+      warnings.some((w) => w.includes(JSON.stringify(first.directory))),
+    );
+    assert.equal(
+      report.entries.find((e) => e.directory === first.directory).state,
+      'exact-target-recorded',
+    );
+    assert.ok(names.every((n) => fs.existsSync(path.join(first.directory, n))));
+    assert.ok(
+      names.every((n) => !fs.existsSync(path.join(second.directory, n))),
+    );
+  } finally {
+    cp.execFile = originalExec;
+    fsp.rename = originalRename;
+    console.warn = originalWarn;
+  }
+});
+
+test('retirement preserves unexpected aliases of private policy and transport metadata', async (t) => {
+  const f = fixture(t),
+    s = await staged(f, 'aliased-metadata');
+  for (const name of [
+    'ego-process-policy.txt',
+    'electron-game-overlay-owned-runtime-v1.marker',
+    'electron-overlay-transport-v1.json',
+  ]) {
+    const external = path.join(f.root, name);
+    fs.writeFileSync(external, 'private metadata alias');
+    fs.linkSync(external, path.join(s.directory, name));
+  }
+  unmapped(s.directory, s.runId);
+  await storage.compactRuntimeStorageRun(s.directory);
+  for (const name of [
+    'ego-process-policy.txt',
+    'electron-game-overlay-owned-runtime-v1.marker',
+    'electron-overlay-transport-v1.json',
+  ]) {
+    assert.equal(fs.statSync(path.join(f.root, name)).nlink, 2);
+    assert.equal(
+      fs.readFileSync(path.join(s.directory, name), 'utf8'),
+      'private metadata alias',
+    );
+  }
+  assert.equal(
+    await storage.runtimeStorageDiagnosticBytes(s.directory),
+    undefined,
+  );
+});
+
+test('immediate filesystem-process exit at the final payload deletion leaves no staging controls', async (t) => {
+  for (const high of [false, true]) {
+    await t.test(
+      high ? 'passive high layout' : 'ordinary snapshot layout',
+      async (t) => {
+        const f = fixture(t),
+          s = await staged(f, 'early-exit', { high });
+        for (const name of storage.RUNTIME_STORAGE_TRANSIENT_NAMES) {
+          const file = path.join(s.directory, name);
+          if (!fs.existsSync(file)) fs.writeFileSync(file, 'owned control');
+        }
+        // A live or indeterminate run cannot enter the cleanup transaction.
+        await storage.compactRuntimeStorageRun(s.directory);
+        assert.ok(names.every((n) => fs.existsSync(path.join(s.directory, n))));
+        assert.ok(
+          storage.RUNTIME_STORAGE_TRANSIENT_NAMES.every((n) =>
+            fs.existsSync(path.join(s.directory, n)),
+          ),
+        );
+        unmapped(s.directory, s.runId);
+        const script = `
+        const fs=require('node:fs'),fsp=require('node:fs/promises'),path=require('node:path');
+        const directory=process.argv[1], names=${JSON.stringify(names)};
+        const original=fsp.unlink;
+        fsp.unlink=async(file)=>{
+          await original(file);
+          if(names.every(n=>!fs.existsSync(path.join(directory,n))))process.exit(0);
+        };
+        require(${JSON.stringify(path.resolve(__dirname, '../dist/lib/runtime-stage-storage.js'))})
+          .compactRuntimeStorageRun(directory).then(()=>process.exit(2),e=>{console.error(e);process.exit(3)});
+      `;
+        const child = cp.spawnSync(
+          process.execPath,
+          ['-e', script, s.directory],
+          { encoding: 'utf8', windowsHide: true, timeout: 10000 },
+        );
+        assert.ifError(child.error);
+        assert.equal(child.status, 0, child.stderr);
+        assert.ok(
+          names.every((n) => !fs.existsSync(path.join(s.directory, n))),
+        );
+        for (const name of storage.RUNTIME_STORAGE_TRANSIENT_NAMES)
+          assert.equal(
+            fs.existsSync(path.join(s.directory, name)),
+            false,
+            `early exit retained ${name}`,
+          );
+        assert.equal(
+          (await storage.inspectRuntimeStorageRun(s.directory)).unmapped,
+          true,
+        );
+        assert.equal(
+          typeof (await storage.runtimeStorageDiagnosticBytes(s.directory)),
+          'number',
+        );
+      },
+    );
+  }
+});
+
+test('a temporarily shared control pauses payload retirement and resumes from persisted proof', async (t) => {
+  const f = fixture(t),
+    s = await staged(f, 'busy-control');
+  const policy = path.join(s.directory, 'ego-process-policy.txt');
+  fs.writeFileSync(policy, 'original policy');
+  unmapped(s.directory, s.runId);
+  const original = fsp.unlink;
+  fsp.unlink = async (file) => {
+    if (file === policy)
+      throw Object.assign(new Error('owned test sharing violation'), {
+        code: 'EBUSY',
+      });
+    return original(file);
+  };
+  try {
+    await assert.rejects(storage.compactRuntimeStorageRun(s.directory), {
+      code: 'EBUSY',
+    });
+    assert.ok(
+      names.every((n) => fs.existsSync(path.join(s.directory, n))),
+      'no payload checkpoint may precede the blocked control',
+    );
+    assert.equal(fs.readFileSync(policy, 'utf8'), 'original policy');
+    assert.equal(
+      (await storage.inspectRuntimeStorageRun(s.directory)).unmapped,
+      true,
+    );
+  } finally {
+    fsp.unlink = original;
+  }
+  await pruneReShadeRuntimeStorage({
+    config: f.config(),
+    maxRecoveryProbes: 0,
+  });
+  assert.ok(names.every((n) => !fs.existsSync(path.join(s.directory, n))));
+  assert.equal(fs.existsSync(policy), false);
+  assert.equal(
+    typeof (await storage.runtimeStorageDiagnosticBytes(s.directory)),
+    'number',
+  );
+});
+
 test('identical payload bytes share one snapshot regardless of source-map insertion order', async (t) => {
   const f = fixture(t),
     first = await staged(f, 'forward'),

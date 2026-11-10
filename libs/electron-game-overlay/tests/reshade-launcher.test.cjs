@@ -6842,6 +6842,12 @@ for (const outcome of ['complete-unused', 'selected-after-dispose', 'not-drained
       const request = launcher.attach(harness.session, nativePolicyTarget).catch(() => undefined);
       await waitFor(() => execution.calls.length === 1);
       const call = execution.calls[0], image = path.join(call.options.cwd, 'electron_game_overlay.addon64');
+      if (outcome === 'complete-unused') {
+        assert.equal(existsSync(path.join(call.options.cwd, 'ego-process-policy.txt')), true);
+        assert.equal(existsSync(path.join(call.options.cwd, 'electron-game-overlay-owned-runtime-v1.marker')), true);
+        writeFileSync(path.join(call.options.cwd, 'electron-overlay-transport-v1.json'), '{}');
+        writeFileSync(path.join(call.options.cwd, 'ReShade.ini'), Buffer.alloc(256 * 1024, 65));
+      }
       launcher.dispose();
       assert.equal(existsSync(image), true, 'Kill alone cannot establish no mapping');
       call.child.exitCode = 1; call.child.stdout.readableEnded = outcome !== 'not-drained';
@@ -6850,7 +6856,14 @@ for (const outcome of ['complete-unused', 'selected-after-dispose', 'not-drained
         : outcome === 'malformed-selection' ? 'EGO_TARGET_SELECTED_V2\tbroken' : '';
       call.callback(Object.assign(new Error('stopped'), { killed: true, code: 1 }), output, '');
       await request;
-      if (outcome === 'complete-unused') await waitFor(() => !existsSync(image));
+      if (outcome === 'complete-unused') {
+        await waitFor(() => !existsSync(image));
+        for (const name of [
+          ...require('../dist/lib/runtime-payload-store.js').RUNTIME_PAYLOAD_NAMES,
+          ...require('../dist/lib/runtime-stage-storage.js').RUNTIME_STORAGE_TRANSIENT_NAMES,
+        ]) assert.equal(existsSync(path.join(call.options.cwd, name)), false, `drained stage retained ${name}`);
+        assert.equal(typeof await require('../dist/lib/runtime-stage-storage.js').runtimeStorageDiagnosticBytes(call.options.cwd), 'number');
+      }
       else { await tickForQuiescence(); assert.equal(existsSync(image), true); }
       assert.equal(execution.calls.length, 1);
     } finally { launcher.dispose(); execution.restore(); }

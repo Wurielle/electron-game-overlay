@@ -31,6 +31,14 @@ const diagnostics = [
   'ReShade.log',
   '.electron-game-overlay-runtime-startup.json',
 ];
+/** @internal Fixed stage-owned metadata; leases intentionally alias cache receipts. */
+export const RUNTIME_STORAGE_TRANSIENT_NAMES = Object.freeze([
+  RUNTIME_PAYLOAD_LEASE_NAME,
+  RUNTIME_PUBLISHING_LEASE_NAME,
+  'electron-game-overlay-owned-runtime-v1.marker',
+  'ego-process-policy.txt',
+  'electron-overlay-transport-v1.json',
+]);
 const imageRules = [
   ['electron_game_overlay.addon64', 64, 'addonSha256'],
   ['electron_game_overlay.addon32', 32, 'addonSha256'],
@@ -371,6 +379,27 @@ export async function compactRuntimeStorageRun(
 ): Promise<void> {
   const state = await inspectRuntimeStorageRun(directory);
   if (!state?.unmapped) return;
+  // Retire controls before the payload checkpoint. Consumers may stop Electron
+  // as soon as all payload entries disappear; no asynchronous control cleanup
+  // may remain after that observation. A denied/shared control keeps this run
+  // incomplete and available for a later authorized sweep, without new proof.
+  for (const name of RUNTIME_STORAGE_TRANSIENT_NAMES) {
+    try {
+      const file = path.join(directory, name),
+        info = await lstat(file);
+      if (
+        !info.isFile() ||
+        info.isSymbolicLink() ||
+        (name !== RUNTIME_PAYLOAD_LEASE_NAME &&
+          name !== RUNTIME_PUBLISHING_LEASE_NAME &&
+          info.nlink !== 1)
+      )
+        return;
+      await unlink(file);
+    } catch (error) {
+      if (!code(error, 'ENOENT')) throw error;
+    }
+  }
   const privateHigh =
     (state.storage?.artifacts.length === 13 && !state.storage.payloadId) ||
     /-[a-f0-9]{32}$/u.test(path.basename(directory));
@@ -445,21 +474,6 @@ export async function compactRuntimeStorageRun(
         )
           continue;
         await unlink(file);
-      } catch (error) {
-        if (!code(error, 'ENOENT')) throw error;
-      }
-    }
-    for (const name of [
-      RUNTIME_PAYLOAD_LEASE_NAME,
-      RUNTIME_PUBLISHING_LEASE_NAME,
-      'electron-game-overlay-owned-runtime-v1.marker',
-      'ego-process-policy.txt',
-      'electron-overlay-transport-v1.json',
-    ]) {
-      try {
-        const file = path.join(directory, name),
-          info = await lstat(file);
-        if (info.isFile() && !info.isSymbolicLink()) await unlink(file);
       } catch (error) {
         if (!code(error, 'ENOENT')) throw error;
       }
