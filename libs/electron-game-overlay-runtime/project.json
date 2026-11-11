@@ -10,7 +10,9 @@
       "executor": "nx:run-commands",
       "cache": false,
       "parallelism": false,
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        { "projects": ["electron-overlay-transport"], "target": "build" }
+      ],
       "inputs": ["default", "^default"],
       "outputs": [
         "{projectRoot}/dist",
