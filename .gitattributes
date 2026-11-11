@@ -33,6 +33,3 @@ libs/electron-game-overlay-runtime/patches/reshade-owned-composition-window-elig
 libs/electron-game-overlay-runtime/patches/reshade-owned-composition-auxiliary-lifetime.patch text eol=lf
 
 libs/electron-game-overlay-runtime/patches/reshade-owned-deferred-d3d11.patch text eol=lf
-
-libs/electron-game-overlay-runtime/patches/reshade-present-destinations.patch text eol=lf
-libs/electron-game-overlay-runtime/tests/snapshot-destinations/proposal.patch text eol=lf

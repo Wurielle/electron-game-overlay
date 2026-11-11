@@ -316,6 +316,17 @@ indeterminate B and a fresh successful A, including out-of-order exits. See the
 and the `owned-target-access-refusal.ps1` and
 `unopened-target-selection-console.ps1` launchers under runtime `scripts/test-cases`.
 
+## Troubleshooting
+
+### Steam overlay missing when RTSS is running
+
+RTSS's default hooking mode can prevent the Steam overlay from appearing when
+Electron Game Overlay is active. Close the game, select the affected game's
+profile in RTSS, and enable **Use Microsoft Detours API hooking**. Restart the
+game for the change to take effect.
+
+Alternatively, close RTSS before launching the game again.
+
 ## Public helper reference
 
 The [complete SDK API guide](https://github.com/Wurielle/electron-game-overlay/blob/dev/doc/sdk-api.md)

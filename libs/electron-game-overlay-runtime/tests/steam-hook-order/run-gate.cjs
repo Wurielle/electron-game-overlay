@@ -43,7 +43,7 @@ for(const [name,dll,ownedModel,order,expectation,key] of cases){
   if(!name.startsWith('baseline-')){
     const snapshots=fs.readFileSync(path.join(directory,'ReShade.log'),'utf8').split(/\r?\n/).filter(s=>s.includes('EGO_COMPATIBILITY_SNAPSHOT_V1 ')).map(s=>JSON.parse(s.slice(s.indexOf('{'))));
     const loaders=snapshots.filter(s=>s.kind==='loader');assert.equal(loaders.length,1);loaderSnapshot=loaders[0];
-    assert.equal(loaderSnapshot.runtimeGeneration,37);assert.equal(loaderSnapshot.enabled,true);assert.equal(loaderSnapshot.steamEnvironment,key==='present');
+    assert.equal(loaderSnapshot.runtimeGeneration,36);assert.equal(loaderSnapshot.enabled,true);assert.equal(loaderSnapshot.steamEnvironment,key==='present');
     const exactRenderer=order==='steam-first'&&ownedModel===model;assert.equal(loaderSnapshot.steamRenderer,exactRenderer);
     assert.equal(loaderSnapshot.strategy,key==='present'||exactRenderer?'load-library':'notification');
   }

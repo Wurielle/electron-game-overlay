@@ -1,4 +1,0 @@
-param([ValidateSet("x64", "x86")][string]$Architecture = "x64")
-$ErrorActionPreference = "Stop"
-& node (Join-Path $PSScriptRoot "..\..\tests\foreign-present\run-gate.cjs") $Architecture all gen36
-if ($LASTEXITCODE -ne 0) { throw "Generation-36 late foreign Present GPU-readback gate failed." }

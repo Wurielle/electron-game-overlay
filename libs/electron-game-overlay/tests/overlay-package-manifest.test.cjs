@@ -41,24 +41,6 @@ function mutateStamp(f, name, mutate) {
   f.payload.seal();
 }
 
-test('generation-37 binds the Present destinations implementation and exact architecture provenance', t => {
-  for (const bits of [64, 32]) {
-    for (const value of [undefined, 'A'.repeat(64), false]) {
-      const f = fixture(t, { runtimeGeneration: 37 });
-      validateOverlayDistributionSync(f.dist);
-      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
-        if (value === undefined) delete stamp.presentDestinationsPatchSha256;
-        else stamp.presentDestinationsPatchSha256 = value;
-      });
-      assert.throws(() => validateOverlayDistributionSync(f.dist), /Present destinations patch provenance mismatch/);
-    }
-  }
-  for (const options of [{ presentDestinationsPatch: false }, { presentDestinationsPatchSha256: 'A'.repeat(64) }]) {
-    const f = fixture(t, { runtimeGeneration: 37, ...options });
-    assert.throws(() => validateOverlayDistributionSync(f.dist), /Present destinations patch pin/);
-  }
-});
-
 test('generation-36 binds the owned deferred D3D11 implementation and exact architecture provenance', t => {
   for (const bits of [64, 32]) {
     for (const value of [undefined, 'A'.repeat(64), false]) {
@@ -956,7 +938,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t, { runtimeGeneration: 37 });
+  const f = fixture(t, { runtimeGeneration: 36 });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');

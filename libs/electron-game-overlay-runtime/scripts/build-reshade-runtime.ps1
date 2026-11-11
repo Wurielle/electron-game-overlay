@@ -235,9 +235,6 @@ if ($CompositionBindingDiagnosticsPatchHash -cne "0180A6FACEEC7FA89174F4CED311A9
 $WindowEligibilityPatch = Join-Path $RuntimeRoot "patches\reshade-owned-composition-window-eligibility.patch"
 $WindowEligibilityPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $WindowEligibilityPatch).Hash
 if ($WindowEligibilityPatchHash -cne "080DA1FD83FE48CB782FA9268B82A386E75BE081D107F2A5013F06675107B97F") { throw "Composition window eligibility patch differs from its pinned implementation." }
-$PresentDestinationsPatch = Join-Path $RuntimeRoot "patches\reshade-present-destinations.patch"
-$PresentDestinationsPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PresentDestinationsPatch).Hash
-if ($PresentDestinationsPatchHash -cne "6CB46B131E4FDEBB06A7EC48DC3BF78C4714F3DD644D5033785FED87B3240236") { throw "Present destinations patch differs from its pinned implementation." }
 $DeferredD3d11Patch = Join-Path $RuntimeRoot "patches\reshade-owned-deferred-d3d11.patch"
 $DeferredD3d11PatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $DeferredD3d11Patch).Hash
 if ($DeferredD3d11PatchHash -cne "779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB") { throw "Owned deferred D3D11 patch differs from its pinned implementation." }
@@ -297,10 +294,10 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/ego_owned_late_d3d11/owned_runtime_policy.hpp" = "A06E427C7EA2AE73F3FF90E14C204719FC247B9DE02EB5F84E066B602623F524"
     "source/dxgi/dxgi_swapchain.hpp" = "C5A155BE0321F30DB18B4FC4578A41BF728414DD0927A789D5C335041922BC55"
     "source/ini_file.cpp" = "08ACD295DB065D11E5A8388F074CFC6C384D29896E5DA9B20227222D8A61C688"
-    "source/ego_owned_late_d3d11/compatibility_snapshot.hpp" = "EACB961FE958E695324BE9474D3B05F8A729C50F61BA1E2D4A8C7D225C9E7155"
+    "source/ego_owned_late_d3d11/compatibility_snapshot.hpp" = "C0FE868ED8B0FA7FE7688DB19252BE427316DFC1D73C5F4AF5BBD299A8662F50"
     "source/dxgi/dxgi.cpp" = "41A686B186910B4C0FAA1B631356C2D7FD0F4BE772EFB32D7328DAA2DC65B88F"
     "source/hook_manager.cpp" = "355E78AC03E71D2101585EC8C8C64A458978A17BA6E20F0D218D7E6ED312A49E"
-    "source/dxgi/dxgi_swapchain.cpp" = "90717547DD953AFAB5A2596CB0950DBEDF16E206392D6E565DC3043137CD3ECA"
+    "source/dxgi/dxgi_swapchain.cpp" = "C064C8BBE74B659C423516FB9F7F9A663D5A7A42CCCC6F43354A14AA8F11CC21"
     "ReShade.vcxproj" = "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
     "include/reshade.hpp" = "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
     "include/reshade_api.hpp" = "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
@@ -312,7 +309,7 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/d3d11/d3d11_impl_swapchain.hpp" = "D6010A43C93302C056AF62E1BBE7523E6A8D023DEDFB9D3F50DC689EAA9169B6"
     "source/ego_owned_late_d3d11/owned_config_file.hpp" = "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
     "source/ego_owned_late_d3d11/owned_late_d3d11.hpp" = "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
-    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "00593142BDA98E4A2D5212D58A050698FEDDFFBC83882A266E48FA384F4CBBA3"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "2E89DBEED170BD1D5C2247D7373F89D82544CD217951826EE5F953F8B1567080"
     "source/input_frame_consumer.hpp" = "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
     "source/input.cpp" = "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
     "source/input.hpp" = "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
@@ -382,14 +379,14 @@ function Test-ReShadePatchedSourceState {
         }
     }
     # Check independent terminal seams after the exact file/content proof.
-    # Present destination labels supersede deferred diagnostic contexts. Earlier
-    # seams remain covered by the complete vector and independent patch pins.
+    # Deferred adoption supersedes the old inl include-context and composition
+    # seams; their bytes remain covered by the complete vector and patch pins.
     foreach ($Patch in @(
         $InjectorSharedAddonDirectoryPatch
         $InjectorSelectionBeforeOpenPatch
         $InjectorStartupReadinessPatch
         $PrivateStageDiagnosticsPatch
-        $PresentDestinationsPatch
+        $DeferredD3d11Patch
         $OwnedLateD3d11ForeignAddonIsolationPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -466,7 +463,6 @@ function Test-RuntimeBuildCache {
             $Stamp.d3d11SwapchainResourceIdentityPatchSha256 -eq $D3d11ResourceIdentityPatchHash -and
             $Stamp.injectorPrivateStageDiagnosticsPatchSha256 -eq $PrivateStageDiagnosticsPatchHash -and
             $Stamp.steamLoadedModuleHookOrderPatchSha256 -eq $SteamLoadedModuleHookOrderPatchHash -and
-            $Stamp.presentDestinationsPatchSha256 -eq $PresentDestinationsPatchHash -and
             $Stamp.ownedDeferredD3d11PatchSha256 -eq $DeferredD3d11PatchHash -and
             $Stamp.ownedCompositionAuxiliaryLifetimePatchSha256 -eq $AuxiliaryLifetimePatchHash -and
             $Stamp.ownedCompositionWindowEligibilityPatchSha256 -eq $WindowEligibilityPatchHash -and
@@ -643,7 +639,6 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorStartupReadinessPatchSha256 = $InjectorStartupReadinessPatchHash
     injectorPrivateStageDiagnosticsPatchSha256 = $PrivateStageDiagnosticsPatchHash
     steamLoadedModuleHookOrderPatchSha256 = $SteamLoadedModuleHookOrderPatchHash
-    presentDestinationsPatchSha256 = $PresentDestinationsPatchHash
     ownedDeferredD3d11PatchSha256 = $DeferredD3d11PatchHash
     ownedCompositionAuxiliaryLifetimePatchSha256 = $AuxiliaryLifetimePatchHash
     ownedCompositionWindowEligibilityPatchSha256 = $WindowEligibilityPatchHash

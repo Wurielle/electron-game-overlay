@@ -79,12 +79,11 @@ $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 37
+$ExpectedRuntimeGeneration = 36
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
 $ExpectedPatchProvenance = [ordered]@{
-    presentDestinationsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-present-destinations.patch"
     ownedDeferredD3d11PatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-deferred-d3d11.patch"
     ownedCompositionAuxiliaryLifetimePatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-auxiliary-lifetime.patch"
     ownedCompositionWindowEligibilityPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-window-eligibility.patch"

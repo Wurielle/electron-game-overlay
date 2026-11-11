@@ -11,8 +11,6 @@ function writeCooperativeDistribution(dist, {
   addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
   runtimeGeneration = 23,
   resourceIdentityPatch = runtimeGeneration >= 29,
-  presentDestinationsPatch = runtimeGeneration >= 37,
-  presentDestinationsPatchSha256 = '6CB46B131E4FDEBB06A7EC48DC3BF78C4714F3DD644D5033785FED87B3240236',
   ownedDeferredD3d11Patch = runtimeGeneration >= 36,
   ownedDeferredD3d11PatchSha256 = '779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB',
   ownedCompositionAuxiliaryLifetimePatch = runtimeGeneration >= 35,
@@ -81,7 +79,7 @@ function writeCooperativeDistribution(dist, {
   write('lib/module.js', '// controlled compiled SDK module\n');
   write('lib/reshade-launcher.js', `const OFFICIAL_ADDON_BUILD_ID = '${addonBuildId}';\n`);
   write('lib/overlay-broker-protocol.js', `exports.OVERLAY_BROKER_RUNTIME_GENERATION = ${runtimeGeneration};\n`);
-  write('lib/overlay-package-manifest.js', (presentDestinationsPatch ? `const PRESENT_DESTINATIONS_PATCH_SHA256 = '${presentDestinationsPatchSha256}';\n` : '') + (ownedDeferredD3d11Patch ? `const OWNED_DEFERRED_D3D11_PATCH_SHA256 = '${ownedDeferredD3d11PatchSha256}';\n` : '') + (ownedCompositionAuxiliaryLifetimePatch ? `const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 = '${ownedCompositionAuxiliaryLifetimePatchSha256}';\n` : '') + (ownedCompositionWindowEligibilityPatch ? `const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 = '${ownedCompositionWindowEligibilityPatchSha256}';\n` : '') + (ownedCompositionBindingDiagnosticsPatch ? `const OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256 = '${ownedCompositionBindingDiagnosticsPatchSha256}';\n` : '') + (ownedCompositionPolicyPatch ? `const OWNED_COMPOSITION_POLICY_PATCH_SHA256 = '${ownedCompositionPolicyPatchSha256}';\n` : '') + (compatibilitySnapshotPatch
+  write('lib/overlay-package-manifest.js', (ownedDeferredD3d11Patch ? `const OWNED_DEFERRED_D3D11_PATCH_SHA256 = '${ownedDeferredD3d11PatchSha256}';\n` : '') + (ownedCompositionAuxiliaryLifetimePatch ? `const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 = '${ownedCompositionAuxiliaryLifetimePatchSha256}';\n` : '') + (ownedCompositionWindowEligibilityPatch ? `const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 = '${ownedCompositionWindowEligibilityPatchSha256}';\n` : '') + (ownedCompositionBindingDiagnosticsPatch ? `const OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256 = '${ownedCompositionBindingDiagnosticsPatchSha256}';\n` : '') + (ownedCompositionPolicyPatch ? `const OWNED_COMPOSITION_POLICY_PATCH_SHA256 = '${ownedCompositionPolicyPatchSha256}';\n` : '') + (compatibilitySnapshotPatch
     ? `const COMPATIBILITY_SNAPSHOT_PATCH_SHA256 = '${compatibilitySnapshotPatchSha256}';\n`
     : '') + (steamLoadedModulePatch
     ? `const STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256 = '${steamLoadedModuleHookOrderPatchSha256}';\n`
@@ -176,7 +174,6 @@ function writeCooperativeDistribution(dist, {
         ...(resourceIdentityPatch ? { d3d11SwapchainResourceIdentityPatchSha256 } : {}),
         ...(privateStageDiagnosticsPatch ? { injectorPrivateStageDiagnosticsPatchSha256 } : {}),
         ...(steamLoadedModulePatch ? { steamLoadedModuleHookOrderPatchSha256 } : {}),
-        ...(presentDestinationsPatch ? { presentDestinationsPatchSha256 } : {}),
         ...(ownedDeferredD3d11Patch ? { ownedDeferredD3d11PatchSha256 } : {}),
         ...(ownedCompositionAuxiliaryLifetimePatch ? { ownedCompositionAuxiliaryLifetimePatchSha256 } : {}),
         ...(ownedCompositionWindowEligibilityPatch ? { ownedCompositionWindowEligibilityPatchSha256 } : {}),
