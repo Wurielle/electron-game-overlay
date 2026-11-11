@@ -1,10 +1,13 @@
 import { StringDecoder } from 'node:string_decoder';
+import { stageRuntimePayload, pruneRuntimePayloadCache, RUNTIME_PAYLOAD_LEASE_NAME, RUNTIME_PUBLISHING_LEASE_NAME } from './runtime-payload-store.js';
+import { compactRuntimeStorageRun, createRuntimeStorageRecord, inspectRuntimeStorageRun, recordRuntimeStorageArtifacts, recordRuntimeStorageAttempt, recoverRuntimeStorageRun, runtimeStorageDiagnosticBytes, RUNTIME_STORAGE_TRANSIENT_NAMES } from './runtime-stage-storage.js';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
+import { createPrivateElevatedOverlayStage, inspectOverlayConsumerExecutionContext, verifyPrivateElevatedOverlayStage } from './overlay-consumer-context.js';
 import {
   resolveAddonPreloadSelection,
   type OverlayAddonPreloadOptions,
 } from './overlay-addon-preload.js';
-import { resolveOverlayNativeProcessIdentity } from './overlay-native-process-query.js';
+import { overlayProcessIncarnationExited, resolveOverlayNativeProcessIdentity } from './overlay-native-process-query.js';
 import {
   createOverlayProcessPolicy,
   overlayProcessPolicyAllows,
@@ -13,9 +16,8 @@ import {
 } from './process-policy.js';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import {
-  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -67,6 +69,16 @@ const X86_PACKAGE_BUILD_STAMP_FILE_NAME =
 const ADDON_FILE_NAME = 'electron_game_overlay.addon64';
 const X86_ADDON_FILE_NAME = 'electron_game_overlay.addon32';
 const CONFIG_FILE_NAME = 'ReShade.ini';
+const PRIVATE_IMAGE_ARTIFACTS = [
+  [ADDON_FILE_NAME, PACKAGE_BUILD_STAMP_FILE_NAME, 'addonSha256'],
+  [X86_ADDON_FILE_NAME, X86_PACKAGE_BUILD_STAMP_FILE_NAME, 'addonSha256'],
+  [INJECTOR_FILE_NAME, PACKAGE_BUILD_STAMP_FILE_NAME, 'injectorSha256'],
+  [X86_INJECTOR_FILE_NAME, X86_PACKAGE_BUILD_STAMP_FILE_NAME, 'injectorSha256'],
+  [ADDON_MANAGER_FILE_NAME, PACKAGE_BUILD_STAMP_FILE_NAME, 'managerSha256'],
+  [X86_ADDON_MANAGER_FILE_NAME, X86_PACKAGE_BUILD_STAMP_FILE_NAME, 'managerSha256'],
+  [RUNTIME_FILE_NAME, PACKAGE_BUILD_STAMP_FILE_NAME, 'reshadeRuntimeSha256'],
+  [X86_RUNTIME_FILE_NAME, X86_PACKAGE_BUILD_STAMP_FILE_NAME, 'reshadeRuntimeSha256'],
+] as const;
 const INJECTOR_STDOUT_FILE_NAME = 'inject.stdout.log';
 const INJECTOR_STDERR_FILE_NAME = 'inject.stderr.log';
 const RESHADE_LOG_FILE_NAME = 'ReShade.log';
@@ -108,7 +120,8 @@ const RUN_RECLAIMABLE_MARKER_KIND =
   'electron-game-overlay-reshade-run-reclaimable';
 const RUN_MARKER_SCHEMA_VERSION = 1;
 const RUN_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
-const RUN_RETENTION_MAX_DIRECTORIES = 64;
+const RUN_RETENTION_MAX_DIRECTORIES = 16;
+const RUN_RETENTION_MAX_BYTES = 4 * 1024 * 1024;
 
 const RUNTIME_STARTUP_RECORD_CODES = Object.freeze([
   'bridge-thread-create-failed',
@@ -220,6 +233,7 @@ type RuntimePackageBuildStamp =
         injectorFutureTargets?: 1 | 2;
         cooperativeAddonProtocol?: 1;
         addonPreloadProtocol?: 1;
+        privateElevatedAuthorization?: 1 | 2;
         runtimeGeneration: number;
         targetTransportMin: number;
         targetTransportMax: number;
@@ -353,9 +367,11 @@ export type ReShadeLaunchConfig = Readonly<{
   /** Binding support derived from both validated native package stamps. */
   injectorProcessInstanceBinding?: 1;
   injectorFutureTargets?: 1 | 2;
+  /** @internal Explicit native capability; a generation number alone is not proof. */
+  privateElevatedAuthorization?: 1 | 2;
   /** Canonical directory containing the packaged runtime artifacts. */
   runtimeDirectory: string;
-  /** Writable parent directory for isolated per-attachment runs. */
+  /** Writable parent for private session state; shared payloads use a sibling `.payloads-v1` store. */
   runsRootDirectory: string;
   /** Canonical x64 injector path. */
   injectorPath: string;
@@ -397,7 +413,7 @@ export type ReShadeLaunchConfigOptions = Readonly<{
   addonPreload?: OverlayAddonPreloadOptions;
   /** Absolute packaged-runtime directory used when argv has no override. */
   bundledRuntimeDirectory?: string;
-  /** Absolute writable directory used for isolated attachment runs. */
+  /** Absolute writable directory used for private attachment session state. */
   runsRootDirectory?: string;
 }>;
 
@@ -474,6 +490,8 @@ export type ReShadeAttachResult = ReShadeLaunchResult &
 type StagedRuntime = Readonly<{
   preloadedAddonName?: string;
   x86PreloadedAddonName?: string;
+  privateElevatedPayload?: Readonly<{runtimeSha256:string;addonSha256:string;configSha256:string}>;
+  x86PrivateElevatedPayload?: Readonly<{runtimeSha256:string;addonSha256:string;configSha256:string}>;
   cooperativeAddonProtocol?: 1;
   expectedCreationTime100ns?: string;
   injectorProcessInstanceBinding?: 1;
@@ -529,6 +547,7 @@ type RunReclaimableMarker = Readonly<{
   runId: string;
   directoryName: string;
   retiredAt: string;
+  privateImagesUnmapped?: true;
 }>;
 
 type ReclaimableRunDirectory = Readonly<{
@@ -541,6 +560,7 @@ type ReclaimableRunDirectory = Readonly<{
 
 type RunRetentionSweepState = {
   rescanRequested: boolean;
+  collectPayloads: boolean;
   promise: Promise<void>;
 };
 
@@ -672,6 +692,17 @@ export type ReShadeDiagnosticCode =
   | 'target-runtime-reuse-too-late'
   | 'target-runtime-reuse-raced'
   | 'target-module-inspection-failed'
+  | 'target-startup-readiness-failed'
+  | 'target-authorization-rejected'
+  | 'target-member-payload-invalid'
+  | 'target-preloaded-member-selection-invalid'
+  | 'target-member-host-unavailable'
+  | 'target-member-disabled'
+  | 'target-preloaded-member-invalid'
+  | 'target-first-host-preload-invalid'
+  | 'target-preloaded-member-elevation-rejected'
+  | 'target-host-claim-failed'
+  | 'target-member-host-inspection-failed'
   | 'existing-runtime-addon-load-failed'
   | 'injector-start-failed'
   | 'injector-evidence-write-failed'
@@ -897,7 +928,16 @@ type InjectorPreflightDiagnostic = Readonly<{
     | 'target-runtime-incompatible'
     | 'target-runtime-reuse-too-late'
     | 'target-runtime-reuse-raced'
-    | 'target-module-inspection-failed';
+    | 'target-module-inspection-failed'
+    | 'target-startup-readiness-failed'
+    | 'target-authorization-rejected'
+    | 'target-member-payload-invalid'
+    | 'target-preloaded-member-selection-invalid'
+    | 'target-member-host-unavailable'
+    | 'target-member-disabled'
+    | 'target-preloaded-member-invalid'
+    | 'target-preloaded-member-elevation-rejected'
+    | 'target-host-claim-failed';
   pid: number;
   targetExecutablePath: string;
   injectionStarted: false;
@@ -920,7 +960,26 @@ type InjectorExistingRuntimeAddonLoadDiagnostic = Readonly<{
 }>;
 
 type InjectorDiagnostic =
-  InjectorPreflightDiagnostic | InjectorExistingRuntimeAddonLoadDiagnostic;
+  InjectorPreflightDiagnostic | InjectorExistingRuntimeAddonLoadDiagnostic | InjectorParticipantAddonLoadDiagnostic;
+
+type InjectorParticipantAddonLoadDiagnostic = Omit<InjectorPreflightDiagnostic, 'stage' | 'code' | 'injectionStarted'> & Readonly<{
+  stage: 'participant-addon-load';
+  injectionStarted: true;
+  code: 'target-member-payload-invalid' | 'target-preloaded-member-selection-invalid' |
+    'target-member-host-unavailable' | 'target-member-disabled' | 'target-preloaded-member-invalid' |
+    'target-first-host-preload-invalid' | 'target-member-host-inspection-failed' | 'target-module-inspection-failed';
+}>;
+
+const memberPreflightCodes = new Set([
+  'target-member-payload-invalid', 'target-preloaded-member-selection-invalid',
+  'target-member-host-unavailable', 'target-member-disabled', 'target-preloaded-member-invalid',
+  'target-preloaded-member-elevation-rejected', 'target-host-claim-failed',
+]);
+const memberPostloadCodes = new Set([
+  'target-member-payload-invalid', 'target-preloaded-member-selection-invalid',
+  'target-member-host-unavailable', 'target-member-disabled', 'target-preloaded-member-invalid',
+  'target-first-host-preload-invalid', 'target-member-host-inspection-failed', 'target-module-inspection-failed',
+]);
 
 type InjectorResult =
   | Readonly<{
@@ -989,7 +1048,7 @@ export function defaultReShadeRuntimeDirectory(): string {
     .replace(/([\\/])([^\\/]+\.asar)(?=[\\/])/i, '$1$2.unpacked');
 }
 
-/** Returns the writable root used for isolated per-attachment runtime copies. */
+/** Returns the writable root for private session state and add-on image identities. */
 export function defaultReShadeRunsRootDirectory(): string {
   return path.join(tmpdir(), 'electron-game-overlay', 'reshade-runs');
 }
@@ -1191,6 +1250,7 @@ export function createReShadeLaunchConfig(
           addonDirectory: addonPreload.directory,
         }) }),
     runtimeProvider: providerMetadataOnly(runtimeProvider),
+    ...(runtimeProvider.privateElevatedAuthorization===undefined?{}:{privateElevatedAuthorization:runtimeProvider.privateElevatedAuthorization}),
     ...(runtimeProvider.injectorProcessInstanceBinding === undefined
       ? {}
       : {
@@ -1226,9 +1286,12 @@ export function buildReShadeInvocation(
   context: Readonly<{
     expectedCreationTime100ns?: string;
     preloadedAddonName?: string;
+    /** @internal Hashes captured from the validated calling SDK, not a writable shared cache. */
+    privateElevatedPayload?: Readonly<{runtimeSha256:string;addonSha256:string;configSha256:string}>;
   }> = {},
 ): ReShadeInvocation {
   validateTarget(target);
+  if(context.privateElevatedPayload!==undefined && ![context.privateElevatedPayload.runtimeSha256,context.privateElevatedPayload.addonSha256,context.privateElevatedPayload.configSha256].every(value=>/^[0-9A-Fa-f]{64}$/u.test(value))) throw new Error('Invalid private elevated payload digests');
   if (!path.isAbsolute(runDirectory)) {
     throw new Error('the ReShade run directory must be absolute');
   }
@@ -1276,6 +1339,7 @@ export function buildReShadeInvocation(
     executable: path.join(runDirectory, INJECTOR_FILE_NAME),
     arguments: Object.freeze([
       ...arguments_,
+      ...(context.privateElevatedPayload===undefined?[]:['--private-elevated-payload',context.privateElevatedPayload.runtimeSha256,context.privateElevatedPayload.addonSha256,context.privateElevatedPayload.configSha256]),
       ...(context.preloadedAddonName === undefined
         ? []
         : ['--preloaded-addon-name', context.preloadedAddonName]),
@@ -1437,6 +1501,7 @@ export class ReShadeOverlayLauncher {
     number,
     StagedRuntime
   >();
+  private readonly retiredRuntimeByPid = new Map<number, Set<StagedRuntime>>();
   private releaseTargetAuthorization: (() => void) | null = null;
   private releaseGlobalTargetAuthorization: (() => void) | null = null;
   private launchGeneration = 0;
@@ -1528,7 +1593,7 @@ export class ReShadeOverlayLauncher {
 
   /**
    * Applies an external, authoritative process-exit observation to a connected
-   * attachment or an attaching exact-PID target. This closes the ordering gap
+   * attachment or an attaching/blocked selected target. This closes the ordering gap
    * when a process watcher observes termination before the overlay transport.
    * Returns whether the observation changed launcher or deferred-maintenance
    * state.
@@ -1537,10 +1602,17 @@ export class ReShadeOverlayLauncher {
     if (!isValidProcessPid(pid)) {
       return false;
     }
+    const retired = this.retiredRuntimeByPid.get(pid);
+    this.retiredRuntimeByPid.delete(pid);
+    for (const staged of retired ?? []) {
+      void markRunDirectoryReclaimable(staged, true)
+        .then(() => scheduleRunRetentionSweep(staged.runsRootDirectory,staged.privateElevatedPayload===undefined))
+        .catch(() => undefined);
+    }
     const current = this.currentRuntime;
     if (
       current !== null &&
-      this.attachmentExpectedTargetPid === pid &&
+      (this.attachmentExpectedTargetPid === pid || this.connectedTarget?.pid === pid) &&
       current.targetLabel === this.attachmentTargetLabel
     ) {
       this.confirmedTargetExitRuntimeByPid.set(pid, current.staged);
@@ -1553,7 +1625,7 @@ export class ReShadeOverlayLauncher {
     }
     const targetLabel = this.attachmentTargetLabel;
     if (
-      this.attachmentState !== 'attaching' ||
+      (this.attachmentState !== 'attaching' && this.attachmentState !== 'blocked') ||
       this.attachmentExpectedTargetPid !== pid ||
       targetLabel === null
     ) {
@@ -1580,7 +1652,7 @@ export class ReShadeOverlayLauncher {
     );
     this.activeAttach?.cancel(error);
     this.invalidateActiveLaunch();
-    this.retireCurrentRuntime(targetLabel, current?.launchGeneration);
+    this.retireCurrentRuntime(targetLabel, current?.launchGeneration, true);
     this.resetTargetState(targetLabel);
     return true;
   }
@@ -1891,7 +1963,33 @@ export class ReShadeOverlayLauncher {
       return;
     }
     const requestAtDisposal = this.activeRequest;
+    const runtimeAtDisposal = this.currentRuntime;
+    const drain = this.policyWatcherDrain;
+    if (runtimeAtDisposal && drain && !drain.selected &&
+        this.config.injectorFutureTargets === 2 && this.futureWatcherRequested &&
+        this.attachmentExpectedTargetPid === undefined && this.connectedTarget === null) {
+      drain.stopRequested = true;
+      // A kill request is insufficient. Only the existing complete, checked
+      // V2 output-drain proof can establish that these images were never mapped.
+      void drain.done.then(safe => {
+        if (!safe || drain.selected) return;
+        // App quit may discard pending asynchronous fs work after this native
+        // close callback. Finish the small owned retirement transaction here.
+        retireUnusedDrainedRuntimeSync(runtimeAtDisposal.staged);
+        void scheduleRunRetentionSweep(runtimeAtDisposal.staged.runsRootDirectory,runtimeAtDisposal.staged.privateElevatedPayload===undefined);
+      }).catch(async error => {
+        if (await pathIsMissing(runtimeAtDisposal.staged.runDirectory)) return;
+        console.warn(`Unable to retire a drained unused ReShade watcher: ${formatUnknownError(error)}`);
+      });
+    }
     this.disposed = true;
+    if (runtimeAtDisposal &&
+        (this.connectedTarget !== null || this.attachmentExpectedTargetPid !== undefined)) {
+      // Policy cancellation resets transport state, not the target's lifetime.
+      // Preserve its stage/PID association before reset so the retained
+      // controller can apply a later authoritative exit to this disposed launcher.
+      this.retireCurrentRuntime(runtimeAtDisposal.targetLabel, runtimeAtDisposal.launchGeneration);
+    }
     this.activeAttach?.cancel(
       new Error(
         'the ReShade launcher was disposed before attachment completed',
@@ -2402,6 +2500,8 @@ export class ReShadeOverlayLauncher {
     let installedTargetAuthorization = false;
     let expectedCreationTime100ns: string | undefined;
     try {
+      await recordRuntimeStorageAttempt(staged.runDirectory,staged.runId,
+        expectedTargetPid!==undefined&&expectedCreationTime100ns!==undefined?{pid:expectedTargetPid,creationTime100ns:expectedCreationTime100ns}:null);
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
       if (requiresCooperativeAddon && staged.cooperativeAddonProtocol !== 1) {
         throw this.createInjectorFailure({
@@ -2550,8 +2650,10 @@ export class ReShadeOverlayLauncher {
     const invocation = buildReShadeInvocation(target, staged.runDirectory, {
       expectedCreationTime100ns,
       preloadedAddonName: staged.preloadedAddonName,
+      privateElevatedPayload: staged.privateElevatedPayload,
     });
     try {
+      if(expectedTargetPid!==undefined&&expectedCreationTime100ns!==undefined)await recordRuntimeStorageAttempt(staged.runDirectory,staged.runId,{pid:expectedTargetPid,creationTime100ns:expectedCreationTime100ns});
       this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     } catch (error) {
       this.clearTargetAuthorization();
@@ -2644,6 +2746,7 @@ export class ReShadeOverlayLauncher {
         let readyTimer: ReturnType<typeof setTimeout> | undefined;
         let selectedTimer: ReturnType<typeof setTimeout> | undefined;
         let detachSelectionObserver = () => undefined;
+        let detachStorageIdentityObserver = () => undefined;
         let resolveDrain: (safe: boolean) => void = () => undefined;
         const policyDrain =
           currentExpectedTargetPid === undefined &&
@@ -2672,6 +2775,7 @@ export class ReShadeOverlayLauncher {
           (error, stdout, stderr) => {
             detachWatcherReadyObserver();
             detachSelectionObserver();
+            detachStorageIdentityObserver();
             clearTimeout(readyTimer);
             clearTimeout(selectedTimer);
             if (this.activeChild === child) {
@@ -2737,7 +2841,7 @@ export class ReShadeOverlayLauncher {
                   const fallbackInvocation = buildReShadeInvocation(
                     fallbackTarget,
                     staged.runDirectory,
-                    { expectedCreationTime100ns, preloadedAddonName: staged.x86PreloadedAddonName },
+                    { expectedCreationTime100ns, preloadedAddonName: staged.x86PreloadedAddonName, privateElevatedPayload:staged.x86PrivateElevatedPayload },
                   );
                   executeInvocation(
                     Object.freeze({
@@ -2885,6 +2989,20 @@ export class ReShadeOverlayLauncher {
             stdout.removeListener('data', onData);
           };
         }
+        if(currentExpectedTargetPid!==undefined&&child.stdout!==null){
+          let output='';const decoder=new StringDecoder('utf8');
+          const onIdentity=(chunk:unknown)=>{
+            output=(output+(Buffer.isBuffer(chunk)?decoder.write(chunk):String(chunk))).slice(-MAX_OUTPUT_BYTES);
+            const selected=/(?:^|\n)EGO_TARGET_SELECTED_V2\t([1-9][0-9]*)\t([1-9][0-9]*)\t([^\t\r\n]+)\r?\n/u.exec(output);
+            if(!selected||Number(selected[1])!==currentExpectedTargetPid||!isValidProcessCreationTime100ns(selected[2])||!targetPathMatches(selected[3],executionTarget))return;
+            detachStorageIdentityObserver();
+            void recordRuntimeStorageAttempt(staged.runDirectory,staged.runId,{pid:currentExpectedTargetPid,creationTime100ns:selected[2]}).catch(error=>{
+              console.warn(`Unable to persist runtime storage target identity: ${formatUnknownError(error)}`);
+            });
+          };
+          child.stdout.on('data',onIdentity);
+          detachStorageIdentityObserver=()=>{child.stdout?.removeListener('data',onIdentity);};
+        }
         if (currentExpectedTargetPid === undefined && child.stdout !== null) {
           let selectionOutput = '';
           const selectedDecoder = new StringDecoder('utf8');
@@ -2925,6 +3043,12 @@ export class ReShadeOverlayLauncher {
               staged = Object.freeze({
                 ...staged,
                 expectedCreationTime100ns: created,
+              });
+              // V2 is already an exact selected instance. Publish its PID
+              // before callbacks can deliver an authoritative early exit.
+              this.attachmentExpectedTargetPid = pid;
+              void recordRuntimeStorageAttempt(staged.runDirectory,staged.runId,{pid,creationTime100ns:created}).catch(error=>{
+                console.warn(`Unable to persist runtime storage target identity: ${formatUnknownError(error)}`);
               });
               this.emitEvent(
                 Object.freeze({
@@ -2989,9 +3113,14 @@ export class ReShadeOverlayLauncher {
       await mkdir(this.config.runsRootDirectory, { recursive: true });
       const runsRootDirectory = await realpath(this.config.runsRootDirectory);
       const safeProcessName = processName.replace(/[^a-zA-Z0-9._-]/g, '-');
-      const createdRunDirectory = await mkdtemp(
-        path.join(runsRootDirectory, `${safeProcessName}-`),
-      );
+      const consumerContext = this.config.privateElevatedAuthorization !== undefined
+        ? await inspectOverlayConsumerExecutionContext({config:this.config}) : undefined;
+      if (consumerContext !== undefined && !consumerContext.overlaySupported) throw new Error('Unsupported interactive caller integrity policy');
+      const privateElevatedLane = consumerContext?.elevated === true;
+      if (privateElevatedLane && this.config.privateElevatedAuthorization !== 2) throw new Error('The selected runtime lacks verified private high staging; update the runtime package');
+      const createdRunDirectory = privateElevatedLane
+        ? await createPrivateElevatedOverlayStage(this.config, consumerContext!, runsRootDirectory, safeProcessName.slice(0,128))
+        : await mkdtemp(path.join(runsRootDirectory, `${safeProcessName}-`));
       runDirectory = createdRunDirectory;
       assertDirectChild(
         runsRootDirectory,
@@ -3011,6 +3140,7 @@ export class ReShadeOverlayLauncher {
         `${JSON.stringify(ownership)}\n`,
         { encoding: 'utf8', flag: 'wx' },
       );
+      await createRuntimeStorageRecord(createdRunDirectory,runId,consumerContext?{pid:consumerContext.ownerPid,creationTime100ns:consumerContext.creationTime100ns}:null);
 
       const sourceByName = new Map<string, string>([
         [INJECTOR_FILE_NAME, this.config.injectorPath],
@@ -3030,21 +3160,17 @@ export class ReShadeOverlayLauncher {
         [X86_ADDON_FILE_NAME, this.config.x86AddonPath],
         [CONFIG_FILE_NAME, this.config.configPath],
       ]);
-      const stagingResults = await Promise.allSettled(
-        RUNTIME_ARTIFACTS.map((fileName) =>
-          stageRuntimeArtifact(
-            sourceByName.get(fileName)!,
-            path.join(createdRunDirectory, fileName),
-          ),
-        ),
+      const privateStageHashes=privateElevatedLane?await Promise.all([...sourceByName.values()].map(async file=>sha256(await readFile(file)))):undefined;
+      const privatePayloadDigests=privateStageHashes===undefined?undefined:[privateStageHashes[4],privateStageHashes[10],privateStageHashes[5],privateStageHashes[11],privateStageHashes[12]];
+      const payloadStage = await stageRuntimePayload(
+        sourceByName,
+        runsRootDirectory,
+        createdRunDirectory,
+        validateRuntimePackageBuildStamps,
+        privateElevatedLane,
+        runId,
       );
-      const failedStaging = stagingResults.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === 'rejected',
-      );
-      if (failedStaging) {
-        throw failedStaging.reason;
-      }
+      await recordRuntimeStorageArtifacts(createdRunDirectory,runId,payloadStage);
 
       const runtimeProvider = await validateRuntimePackageBuildStamps(
         new Map<string, string>(
@@ -3057,7 +3183,9 @@ export class ReShadeOverlayLauncher {
 
       // Registered add-ons stay at their installed paths across host launches.
       // Only this host's configuration and disabled inventory are staged.
-      const preloadSelection = this.config.addonPreload === undefined
+      // A high consumer keeps its token. It uses only its own sealed private
+      // payload, never the shared per-user add-on scan/activation lane.
+      const preloadSelection = this.config.addonPreload === undefined || privateElevatedLane
         ? undefined
         : resolveAddonPreloadSelection(this.config.addonPreload, {
             addonBuildId: OFFICIAL_ADDON_BUILD_ID,
@@ -3084,8 +3212,9 @@ export class ReShadeOverlayLauncher {
         OWNED_RUNTIME_STAGE_MARKER_CONTENT,
         { encoding: 'ascii', flag: 'wx' },
       );
+      if (privateStageHashes !== undefined) await verifyPrivateElevatedOverlayStage(this.config, consumerContext!, createdRunDirectory, privateStageHashes);
 
-      scheduleRunRetentionSweepAfterCurrentTurn(runsRootDirectory);
+      scheduleRunRetentionSweepAfterCurrentTurn(runsRootDirectory,!privateElevatedLane);
       this.emitEvent(
         Object.freeze({
           type: 'runtime-staged',
@@ -3093,6 +3222,7 @@ export class ReShadeOverlayLauncher {
         }),
       );
       return Object.freeze({
+        ...(privatePayloadDigests===undefined?{}:{privateElevatedPayload:Object.freeze({runtimeSha256:privatePayloadDigests[0],addonSha256:privatePayloadDigests[1],configSha256:privatePayloadDigests[4]}),x86PrivateElevatedPayload:Object.freeze({runtimeSha256:privatePayloadDigests[2],addonSha256:privatePayloadDigests[3],configSha256:privatePayloadDigests[4]})}),
         ...(preloadSelection === undefined ? {} : {
           preloadedAddonName: preloadSelection.addonFileName,
           x86PreloadedAddonName: preloadSelection.x86AddonFileName,
@@ -3532,6 +3662,31 @@ export class ReShadeOverlayLauncher {
           break;
         case 'target-module-inspection-failed':
           detail = `loaded-module inspection failed for target pid=${diagnostic.pid}${windowsErrorDetail}`;
+          break;
+        case 'target-authorization-rejected':
+          detail = `target authorization refused for pid=${diagnostic.pid}${windowsErrorDetail}; require the same account and interactive session, a target no higher than the caller, and an isolated private payload for an elevated caller. See EGO_TARGET_AUTHORIZATION_V1 in injector stdout`;
+          break;
+        case 'target-startup-readiness-failed':
+          detail = `the bounded read-only startup-readiness phase ended for target pid=${diagnostic.pid}${windowsErrorDetail}; no injection was started`;
+          break;
+        case 'target-preloaded-member-elevation-rejected':
+          detail = `preloaded add-on authorization refused for pid=${diagnostic.pid}${windowsErrorDetail}; the injector and target must both be unelevated with at most medium integrity. Token-query failures also refuse attachment; see EGO_PRELOAD_AUTHORIZATION_CONTEXT_V1 in the injector stdout log for the checked actor and phase`;
+          break;
+        case 'target-member-payload-invalid':
+        case 'target-preloaded-member-selection-invalid':
+        case 'target-preloaded-member-invalid':
+        case 'target-first-host-preload-invalid':
+          detail = `the exact overlay member payload or preload selection was refused for pid=${diagnostic.pid} (${diagnostic.code})${windowsErrorDetail}`;
+          break;
+        case 'target-member-disabled':
+          detail = `the target's effective ReShade configuration disables the selected overlay member for pid=${diagnostic.pid}${windowsErrorDetail}; its configuration was preserved`;
+          break;
+        case 'target-member-host-unavailable':
+        case 'target-member-host-inspection-failed':
+          detail = `the overlay member host could not be verified for pid=${diagnostic.pid} (${diagnostic.code})${windowsErrorDetail}`;
+          break;
+        case 'target-host-claim-failed':
+          detail = `the persistent overlay host claim failed for pid=${diagnostic.pid}${windowsErrorDetail}`;
           break;
         case 'existing-runtime-addon-load-failed':
           detail = `the overlay add-on could not be loaded into the existing ReShade runtime for target pid=${diagnostic.pid}${
@@ -4038,7 +4193,7 @@ export class ReShadeOverlayLauncher {
     this.assertLaunchCanSpawn(targetLabel, launchGeneration);
     const invocation = buildReShadeInvocation({
       processName: path.win32.basename(executablePath), executablePath, pid,
-    }, staged.runDirectory, { expectedCreationTime100ns: staged.expectedCreationTime100ns, preloadedAddonName: staged.preloadedAddonName });
+    }, staged.runDirectory, { expectedCreationTime100ns: staged.expectedCreationTime100ns, preloadedAddonName: staged.preloadedAddonName, privateElevatedPayload:staged.privateElevatedPayload });
     const memberInvocation = Object.freeze({ ...invocation,
       arguments: Object.freeze([...invocation.arguments, '--addon-only']),
     });
@@ -4139,8 +4294,8 @@ export class ReShadeOverlayLauncher {
         );
       } finally {
         try {
-          await markRunDirectoryReclaimable(pending.staged);
-          scheduleRunRetentionSweep(pending.staged.runsRootDirectory);
+          await markRunDirectoryReclaimable(pending.staged, true);
+          scheduleRunRetentionSweep(pending.staged.runsRootDirectory,pending.staged.privateElevatedPayload===undefined);
         } catch (error) {
           if (!(await pathIsMissing(pending.staged.runDirectory))) {
             console.warn(
@@ -4168,7 +4323,7 @@ export class ReShadeOverlayLauncher {
     }
     for (const staged of stagedRuntimes) {
       void markRunDirectoryReclaimable(staged)
-        .then(() => scheduleRunRetentionSweep(staged.runsRootDirectory))
+        .then(() => scheduleRunRetentionSweep(staged.runsRootDirectory,staged.privateElevatedPayload===undefined))
         .catch(async (error) => {
           if (!(await pathIsMissing(staged.runDirectory))) {
             console.warn(
@@ -4208,7 +4363,9 @@ export class ReShadeOverlayLauncher {
         path: target.path,
       }),
     );
-    this.retireCurrentRuntime(target.targetLabel);
+    const exited = this.currentRuntime !== null &&
+      this.confirmedTargetExitRuntimeByPid.get(target.pid) === this.currentRuntime.staged;
+    this.retireCurrentRuntime(target.targetLabel, undefined, exited);
     this.resetTargetState(target.targetLabel);
   }
 
@@ -4226,7 +4383,8 @@ export class ReShadeOverlayLauncher {
         launchGeneration,
       )
     ) {
-      this.retireCurrentRuntime(targetLabel, launchGeneration);
+      this.retireCurrentRuntime(targetLabel, launchGeneration,
+        error.stage === 'target-preflight' && error.code === 'target-module-inspection-failed');
     }
     if (
       this.attachmentState === 'blocked' ||
@@ -4242,6 +4400,7 @@ export class ReShadeOverlayLauncher {
   private retireCurrentRuntime(
     targetLabel: string,
     launchGeneration?: number,
+    privateImagesUnmapped = false,
   ): void {
     const current = this.currentRuntime;
     if (
@@ -4254,8 +4413,16 @@ export class ReShadeOverlayLauncher {
     }
     this.currentRuntime = null;
     const { staged } = current;
-    void markRunDirectoryReclaimable(staged)
-      .then(() => scheduleRunRetentionSweep(staged.runsRootDirectory))
+    if (!privateImagesUnmapped) {
+      const pid = this.connectedTarget?.pid ?? this.attachmentExpectedTargetPid;
+      if (pid !== undefined) {
+        const retired = this.retiredRuntimeByPid.get(pid) ?? new Set<StagedRuntime>();
+        retired.add(staged);
+        this.retiredRuntimeByPid.set(pid, retired);
+      }
+    }
+    void markRunDirectoryReclaimable(staged, privateImagesUnmapped)
+      .then(() => scheduleRunRetentionSweep(staged.runsRootDirectory,staged.privateElevatedPayload===undefined))
       .catch(async (error) => {
         if (await pathIsMissing(staged.runDirectory)) {
           return;
@@ -4663,6 +4830,7 @@ type ValidatedRuntimeProvider = NativeRuntimeProviderMetadata &
   Readonly<{
     cooperativeAddonProtocol?: 1;
     addonPreloadProtocol?: 1;
+    privateElevatedAuthorization?: 1 | 2;
     injectorProcessInstanceBinding?: 1;
     injectorFutureTargets?: 1 | 2;
   }>;
@@ -4750,6 +4918,7 @@ function runtimeProviderForBuildStamp(
         ...(manifest.addonPreloadProtocol === 1
           ? { addonPreloadProtocol: 1 as const }
           : {}),
+        ...(manifest.privateElevatedAuthorization===undefined?{}:{privateElevatedAuthorization:manifest.privateElevatedAuthorization}),
       });
 }
 
@@ -4770,7 +4939,8 @@ function commonRuntimeProviderMetadata(
           first.injectorProcessInstanceBinding ||
         provider.injectorFutureTargets !== first.injectorFutureTargets ||
         provider.cooperativeAddonProtocol !== first.cooperativeAddonProtocol ||
-        provider.addonPreloadProtocol !== first.addonPreloadProtocol,
+        provider.addonPreloadProtocol !== first.addonPreloadProtocol ||
+        provider.privateElevatedAuthorization !== first.privateElevatedAuthorization,
     )
   ) {
     throw new Error(
@@ -4837,6 +5007,7 @@ function parseRuntimePackageBuildStamp(
               ...(candidate.addonPreloadProtocol === undefined
                 ? []
                 : ['addonPreloadProtocol']),
+              ...(candidate.privateElevatedAuthorization===undefined?[]:['privateElevatedAuthorization']),
             ]
           : undefined;
   if (
@@ -4869,6 +5040,7 @@ function parseRuntimePackageBuildStamp(
       candidate.injectorFutureTargets !== 2) ||
     (candidate.cooperativeAddonProtocol !== undefined && candidate.cooperativeAddonProtocol !== 1) ||
     (candidate.addonPreloadProtocol !== undefined && candidate.addonPreloadProtocol !== 1) ||
+    (candidate.privateElevatedAuthorization !== undefined && !((candidate.privateElevatedAuthorization === 1 && Number(candidate.runtimeGeneration)>=27) || (candidate.privateElevatedAuthorization === 2 && Number(candidate.runtimeGeneration)>=28))) ||
     ((candidate.schemaVersion === RUNTIME_PACKAGE_BUILD_STAMP_SCHEMA_VERSION ||
       candidate.schemaVersion === 4) &&
       (!isPositiveUint32(candidate.runtimeGeneration) ||
@@ -4938,14 +5110,49 @@ function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex').toUpperCase();
 }
 
-async function stageRuntimeArtifact(
-  sourcePath: string,
-  destinationPath: string,
-): Promise<void> {
-  // Every validated artifact is an isolated snapshot. In particular, the
-  // executables and manifests must not remain hard-linked to a mutable package
-  // source after their hashes have been accepted.
-  await copyFile(sourcePath, destinationPath);
+/** Ownership/lifetime classification for one private SDK runtime directory. */
+export type ReShadeRuntimeStorageEntry = Readonly<{
+  directory:string;
+  state:'unrecognized'|'proven-unmapped'|'exact-target-recorded'|'prepared-owner-recorded'|'exit-proof-missing';
+}>;
+/** Filesystem-only runtime storage inventory; unknown data is not cleanup permission. */
+export type ReShadeRuntimeStorageReport=Readonly<{runsRootDirectory:string;payloadStoreDirectory:string;legacyPayloadStoreDirectory?:string;entries:readonly ReShadeRuntimeStorageEntry[]}>;
+/** Inspect SDK ownership and available lifetime evidence without querying any
+ * process or deleting files. Unrecognized and uncertain runs are preserved. */
+export async function inspectReShadeRuntimeStorage(options:Readonly<{runsRootDirectory?:string}>={}):Promise<ReShadeRuntimeStorageReport>{
+  const requested=path.resolve(options.runsRootDirectory??defaultReShadeRunsRootDirectory());
+  const missing=await pathIsMissing(requested),root=missing?requested:await realpath(requested),entries:ReShadeRuntimeStorageEntry[]=[];
+  const legacy=await lstat(`${root}.payloads-v1`).catch(()=>undefined);
+  const report=()=>Object.freeze({runsRootDirectory:root,payloadStoreDirectory:`${root}.payloads-v2`,...(legacy?.isDirectory()?{legacyPayloadStoreDirectory:`${root}.payloads-v1`}:{}),entries:Object.freeze(entries)});
+  if(missing)return report();
+  for(const entry of await readdir(root,{withFileTypes:true})){
+    if(!entry.isDirectory()||entry.isSymbolicLink())continue;
+    const directory=path.join(root,entry.name),state=await inspectRuntimeStorageRun(directory);
+    entries.push(Object.freeze({directory,state:!state?'unrecognized':state.unmapped?'proven-unmapped':state.storage?.phase==='prepared'&&state.storage.consumer?'prepared-owner-recorded':state.storage?.target||state.legacyTarget?'exact-target-recorded':'exit-proof-missing'}));
+  }
+  return report();
+}
+/** Explicit maintenance: recover only exact recorded process incarnations
+ * whose exit is established by the validated read-only native OS query. Age,
+ * app restart, a missing socket and failed/denied queries never prove exit.
+ * The probe bound limits native work; unidentifiable legacy runs stay intact. */
+export async function pruneReShadeRuntimeStorage(options:Readonly<{config?:ReShadeLaunchConfig;maxRecoveryProbes?:number}>={}):Promise<ReShadeRuntimeStorageReport>{
+  const config=options.config??createReShadeLaunchConfig(),limit=options.maxRecoveryProbes??8;
+  if(!Number.isInteger(limit)||limit<0||limit>32)throw new RangeError('maxRecoveryProbes must be between 0 and 32');
+  const before=await inspectReShadeRuntimeStorage({runsRootDirectory:config.runsRootDirectory});let probes=0;
+  for(const entry of before.entries){
+    if(probes>=limit)break;
+    if(entry.state!=='exact-target-recorded'&&entry.state!=='prepared-owner-recorded')continue;
+    probes++;
+    try {
+      await recoverRuntimeStorageRun(entry.directory,identity=>overlayProcessIncarnationExited(identity,config.addonManagerPath));
+    } catch (error) {
+      warnRuntimeStorageEntry(entry.directory, error);
+    }
+  }
+  const context=config.privateElevatedAuthorization!==undefined?await inspectOverlayConsumerExecutionContext({config}):undefined;
+  await scheduleRunRetentionSweep(before.runsRootDirectory,context?.elevated!==true);
+  return inspectReShadeRuntimeStorage({runsRootDirectory:before.runsRootDirectory});
 }
 
 async function removeStagedRuntime(staged: StagedRuntime): Promise<void> {
@@ -4957,8 +5164,28 @@ async function removeStagedRuntime(staged: StagedRuntime): Promise<void> {
   await rm(staged.runDirectory, { recursive: true, force: true });
 }
 
-async function markRunDirectoryReclaimable(
+const runRetirementTransactions = new Map<string, Promise<void>>();
+
+function markRunDirectoryReclaimable(
   staged: StagedRuntime,
+  privateImagesUnmapped = false,
+): Promise<void> {
+  const directoryKey = path.resolve(staged.runDirectory).toLowerCase();
+  const previous = runRetirementTransactions.get(directoryKey) ?? Promise.resolve();
+  // Cancellation and the matching OS exit can arrive back-to-back. Publish the
+  // weaker marker completely before upgrading it; never read a partial write.
+  const pending = previous.catch(() => undefined).then(() =>
+    markRunDirectoryReclaimableOnce(staged, privateImagesUnmapped));
+  runRetirementTransactions.set(directoryKey, pending);
+  void pending.finally(() => {
+    if (runRetirementTransactions.get(directoryKey) === pending) runRetirementTransactions.delete(directoryKey);
+  }).catch(() => undefined);
+  return pending;
+}
+
+async function markRunDirectoryReclaimableOnce(
+  staged: StagedRuntime,
+  privateImagesUnmapped = false,
 ): Promise<void> {
   await assertCanonicalDirectChildDirectory(
     staged.runsRootDirectory,
@@ -4982,6 +5209,7 @@ async function markRunDirectoryReclaimable(
     runId: staged.runId,
     directoryName,
     retiredAt: new Date().toISOString(),
+    ...(privateImagesUnmapped ? { privateImagesUnmapped: true as const } : {}),
   });
   const markerPath = path.join(
     staged.runDirectory,
@@ -5005,19 +5233,115 @@ async function markRunDirectoryReclaimable(
         'the ReShade run reclaimable marker already exists with unexpected contents',
       );
     }
+    if (privateImagesUnmapped && !existing.privateImagesUnmapped) {
+      const temporary = path.join(staged.runDirectory, `.retiring-${staged.runId}-${randomUUID()}.json`);
+      try {
+        await writeFile(temporary, `${JSON.stringify(reclaimable)}\n`, { flag: 'wx' });
+        await rename(temporary, markerPath);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    }
+  }
+  if (privateImagesUnmapped) {
+    await releaseUnmappedPrivateImages(staged.runDirectory);
   }
 }
 
-function scheduleRunRetentionSweep(runsRootDirectory: string): Promise<void> {
+function retireUnusedDrainedRuntimeSync(staged: StagedRuntime): void {
+  assertDirectChild(staged.runsRootDirectory, staged.runDirectory, 'ReShade run directory');
+  const directory = lstatSync(staged.runDirectory);
+  if (!directory.isDirectory() || directory.isSymbolicLink() ||
+      realpathSync(staged.runDirectory).toLowerCase() !== path.resolve(staged.runDirectory).toLowerCase()) {
+    throw new Error('the drained runtime directory is no longer canonical');
+  }
+  const readRecord = (name: string, singleLink: boolean): unknown => {
+    const file = path.join(staged.runDirectory, name), info = lstatSync(file);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_RUNTIME_PACKAGE_BUILD_STAMP_BYTES ||
+        (singleLink && info.nlink !== 1)) throw new Error('the drained runtime record is not an owned regular file');
+    return JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/u, ''));
+  };
+  const ownership = readRecord(RUN_OWNERSHIP_MARKER_FILE_NAME, true);
+  const directoryName = path.basename(staged.runDirectory);
+  if (!isJsonRecord(ownership) || ownership.schemaVersion !== RUN_MARKER_SCHEMA_VERSION ||
+      ownership.kind !== RUN_OWNERSHIP_MARKER_KIND || ownership.runId !== staged.runId ||
+      ownership.directoryName !== directoryName || !isCanonicalIsoTimestamp(ownership.createdAt)) {
+    throw new Error('the drained runtime ownership marker changed');
+  }
+  const markerPath = path.join(staged.runDirectory, RUN_RECLAIMABLE_MARKER_FILE_NAME);
+  let retiredAt = new Date().toISOString();
+  try {
+    const previous = readRecord(RUN_RECLAIMABLE_MARKER_FILE_NAME, true);
+    if (!isJsonRecord(previous) || previous.schemaVersion !== RUN_MARKER_SCHEMA_VERSION ||
+        previous.kind !== RUN_RECLAIMABLE_MARKER_KIND || previous.runId !== staged.runId ||
+        previous.directoryName !== directoryName || !isCanonicalIsoTimestamp(previous.retiredAt) ||
+        (previous.privateImagesUnmapped !== undefined && previous.privateImagesUnmapped !== true)) {
+      throw new Error('the drained runtime retirement marker changed');
+    }
+    retiredAt = previous.retiredAt;
+  } catch (error) { if (!isErrnoException(error, 'ENOENT')) throw error; }
+  const temporary = path.join(staged.runDirectory, `.retiring-${staged.runId}-${randomUUID()}.json`);
+  try {
+    writeFileSync(temporary, `${JSON.stringify({ schemaVersion: RUN_MARKER_SCHEMA_VERSION,
+      kind: RUN_RECLAIMABLE_MARKER_KIND, runId: staged.runId, directoryName, retiredAt, privateImagesUnmapped: true })}\n`, { flag: 'wx' });
+    renameSync(temporary, markerPath);
+  } finally {
+    try { unlinkSync(temporary); } catch (error) { if (!isErrnoException(error, 'ENOENT')) throw error; }
+  }
+  // No control-file tail may follow the final payload deletion, including
+  // when Electron exits immediately after the completed-retirement checkpoint.
+  for (const name of RUNTIME_STORAGE_TRANSIENT_NAMES) {
+    const file = path.join(staged.runDirectory, name);
+    try {
+      const info = lstatSync(file);
+      if (!info.isFile() || info.isSymbolicLink() ||
+          (name !== RUNTIME_PAYLOAD_LEASE_NAME && name !== RUNTIME_PUBLISHING_LEASE_NAME && info.nlink !== 1)) return;
+      unlinkSync(file);
+    } catch (error) { if (!isErrnoException(error, 'ENOENT')) throw error; }
+  }
+  for (const [addon, stamp, hashKey] of PRIVATE_IMAGE_ARTIFACTS) {
+    const file = path.join(staged.runDirectory, addon);
+    try {
+      const info = lstatSync(file), manifest = readRecord(stamp, false);
+      if (info.isFile() && !info.isSymbolicLink() &&
+          ((hashKey!=='addonSha256'&&staged.privateElevatedPayload===undefined)||info.nlink===1) && isJsonRecord(manifest) &&
+          manifest[hashKey] === sha256(readFileSync(file))) unlinkSync(file);
+    } catch (error) { if (!isErrnoException(error, 'ENOENT')) throw error; }
+  }
+  // A complete unused drain is positive non-execution proof. Remove the
+  // remaining metadata/INI aliases too, without altering cache attributes.
+  if(PRIVATE_IMAGE_ARTIFACTS.every(([name])=>!existsStorageFileSync(path.join(staged.runDirectory,name)))){
+    for(const name of RUNTIME_ARTIFACTS){
+      if(PRIVATE_IMAGE_ARTIFACTS.some(([image])=>image===name))continue;
+      const file=path.join(staged.runDirectory,name);
+      try{const info=lstatSync(file);if(info.isFile()&&!info.isSymbolicLink()&&
+        ((name==='ReShade.ini'||staged.privateElevatedPayload!==undefined)?info.nlink===1:true)&&
+        (name==='ReShade.ini'||info.size<=MAX_RUNTIME_PACKAGE_BUILD_STAMP_BYTES))unlinkSync(file);}
+      catch(error){if(!isErrnoException(error,'ENOENT'))throw error;}
+    }
+  }
+}
+
+function existsStorageFileSync(file:string):boolean{
+  try{lstatSync(file);return true;}catch(error){if(isErrnoException(error,'ENOENT'))return false;throw error;}
+}
+
+async function releaseUnmappedPrivateImages(runDirectory: string): Promise<void> {
+  await compactRuntimeStorageRun(runDirectory);
+}
+
+function scheduleRunRetentionSweep(runsRootDirectory: string, collectPayloads=false): Promise<void> {
   const retentionKey = path.resolve(runsRootDirectory).toLowerCase();
   const existing = runRetentionSweeps.get(retentionKey);
   if (existing) {
     existing.rescanRequested = true;
+    existing.collectPayloads ||= collectPayloads;
     return existing.promise;
   }
 
   const state: RunRetentionSweepState = {
     rescanRequested: false,
+    collectPayloads,
     promise: Promise.resolve(),
   };
   const sweep = (async () => {
@@ -5025,6 +5349,7 @@ function scheduleRunRetentionSweep(runsRootDirectory: string): Promise<void> {
       state.rescanRequested = false;
       try {
         await pruneReclaimableRunDirectories(runsRootDirectory);
+        if(state.collectPayloads)await pruneRuntimePayloadCache(runsRootDirectory);
       } catch (error) {
         if (!(await pathIsMissing(runsRootDirectory))) {
           console.warn(
@@ -5045,9 +5370,10 @@ function scheduleRunRetentionSweep(runsRootDirectory: string): Promise<void> {
 
 function scheduleRunRetentionSweepAfterCurrentTurn(
   runsRootDirectory: string,
+  collectPayloads=false,
 ): void {
   const scheduledSweep = setImmediate(() => {
-    void scheduleRunRetentionSweep(runsRootDirectory);
+    void scheduleRunRetentionSweep(runsRootDirectory,collectPayloads);
   });
   scheduledSweep.unref();
 }
@@ -5061,12 +5387,30 @@ async function pruneReclaimableRunDirectories(
     if (!entry.isDirectory() || entry.isSymbolicLink()) {
       continue;
     }
+    try {
+    // Resume a previously committed diagnostic-only quarantine after a crash.
+    if(/^\.electron-game-overlay-retired-[a-f0-9-]{36}$/u.test(entry.name)){
+      const directory=path.join(runsRootDirectory,entry.name);
+      const marker=await readJsonFile(path.join(directory,RUN_OWNERSHIP_MARKER_FILE_NAME));
+      if(isJsonRecord(marker)&&typeof marker.directoryName==='string'&&marker.directoryName!=='.'&&marker.directoryName!=='..'&&path.win32.basename(marker.directoryName)===marker.directoryName){
+        const retained=await readReclaimableRunDirectoryAt(runsRootDirectory,directory,marker.directoryName);
+        if(retained?.reclaimable.privateImagesUnmapped&&await runtimeStorageDiagnosticBytes(directory)!==undefined)await rm(directory,{recursive:true,force:false});
+      }
+      continue;
+    }
     const candidate = await readReclaimableRunDirectory(
       runsRootDirectory,
       entry.name,
     );
-    if (candidate) {
+    if (candidate?.reclaimable.privateImagesUnmapped) {
+      await releaseUnmappedPrivateImages(candidate.runDirectory);
+      if(await runtimeStorageDiagnosticBytes(candidate.runDirectory)===undefined)continue;
       candidates.push(candidate);
+    }
+    } catch (error) {
+      // A medium caller can inspect the ownership proof but lack write access
+      // to a high stage's metadata. Preserve that entry and maintain its peers.
+      warnRuntimeStorageEntry(path.join(runsRootDirectory, entry.name), error);
     }
   }
 
@@ -5078,11 +5422,18 @@ async function pruneReclaimableRunDirectories(
       ),
   );
   const now = Date.now();
-  const directoriesToRemove = candidates.filter(
-    (candidate, index) =>
-      now - candidate.retiredAtMs >= RUN_RETENTION_MAX_AGE_MS ||
-      index >= RUN_RETENTION_MAX_DIRECTORIES,
-  );
+  const directoriesToRemove:ReclaimableRunDirectory[]=[];
+  let retainedBytes=0,retainedCount=0;
+  for(const candidate of candidates){
+    try {
+    const bytes=await runtimeStorageDiagnosticBytes(candidate.runDirectory);
+    if(bytes===undefined)continue;
+    if(now-candidate.retiredAtMs>=RUN_RETENTION_MAX_AGE_MS||retainedCount>=RUN_RETENTION_MAX_DIRECTORIES||retainedBytes+bytes>RUN_RETENTION_MAX_BYTES)directoriesToRemove.push(candidate);
+    else{retainedBytes+=bytes;retainedCount++;}
+    } catch (error) {
+      warnRuntimeStorageEntry(candidate.runDirectory, error);
+    }
+  }
 
   for (const candidate of directoriesToRemove) {
     const quarantineDirectory = path.join(
@@ -5122,7 +5473,8 @@ async function pruneReclaimableRunDirectories(
       if (
         !quarantined ||
         quarantined.ownership.runId !== candidate.ownership.runId ||
-        quarantined.reclaimable.retiredAt !== candidate.reclaimable.retiredAt
+        quarantined.reclaimable.retiredAt !== candidate.reclaimable.retiredAt ||
+        await runtimeStorageDiagnosticBytes(quarantineDirectory)===undefined
       ) {
         await restoreQuarantinedRunDirectory(
           quarantineDirectory,
@@ -5145,6 +5497,10 @@ async function pruneReclaimableRunDirectories(
       );
     }
   }
+}
+
+function warnRuntimeStorageEntry(directory: string, error: unknown): void {
+  console.warn(`Unable to maintain ReShade run directory ${JSON.stringify(directory)}; preserved for a later authorized sweep: ${formatUnknownError(error)}`);
 }
 
 async function readReclaimableRunDirectory(
@@ -5240,7 +5596,8 @@ async function readRunReclaimableMarker(
     value.kind !== RUN_RECLAIMABLE_MARKER_KIND ||
     !isRunId(value.runId) ||
     value.directoryName !== directoryName ||
-    !isCanonicalIsoTimestamp(value.retiredAt)
+    !isCanonicalIsoTimestamp(value.retiredAt) ||
+    (value.privateImagesUnmapped !== undefined && value.privateImagesUnmapped !== true)
   ) {
     return undefined;
   }
@@ -5250,15 +5607,23 @@ async function readRunReclaimableMarker(
     runId: value.runId,
     directoryName: value.directoryName,
     retiredAt: value.retiredAt,
+    ...(value.privateImagesUnmapped ? { privateImagesUnmapped: true as const } : {}),
   });
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {
+  let handle;
   try {
-    return JSON.parse(await readFile(filePath, 'utf8')) as unknown;
+    const before=await lstat(filePath,{bigint:true});
+    if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||before.size>BigInt(MAX_RUNTIME_PACKAGE_BUILD_STAMP_BYTES))return;
+    handle=await open(filePath,'r');const actual=await handle.stat({bigint:true});
+    if(actual.dev!==before.dev||actual.ino!==before.ino)return;
+    const buffer=Buffer.alloc(MAX_RUNTIME_PACKAGE_BUILD_STAMP_BYTES+1),read=await handle.read(buffer,0,buffer.length,0);
+    if(read.bytesRead>MAX_RUNTIME_PACKAGE_BUILD_STAMP_BYTES)return;
+    return JSON.parse(buffer.subarray(0,read.bytesRead).toString('utf8').replace(/^\uFEFF/u,'')) as unknown;
   } catch {
     return undefined;
-  }
+  } finally {await handle?.close();}
 }
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
@@ -5732,8 +6097,11 @@ function parseInjectorDiagnostic(
       code === 'target-runtime-incompatible' ||
       code === 'target-runtime-reuse-too-late' ||
       code === 'target-runtime-reuse-raced' ||
-      code === 'target-module-inspection-failed') &&
+      code === 'target-module-inspection-failed' || code === 'target-startup-readiness-failed' || code === 'target-authorization-rejected' ||
+      (typeof code === 'string' && memberPreflightCodes.has(code))) &&
     candidate.injectionStarted === false;
+  const isParticipantAddonLoadDiagnostic = candidate.stage === 'participant-addon-load' &&
+    typeof code === 'string' && memberPostloadCodes.has(code) && candidate.injectionStarted === true;
   const isExistingRuntimeAddonLoadDiagnostic =
     candidate.stage === 'existing-runtime-addon-load' &&
     code === 'existing-runtime-addon-load-failed' &&
@@ -5759,7 +6127,7 @@ function parseInjectorDiagnostic(
     code === 'target-runtime-conflict' ||
     code === 'target-runtime-incompatible' ||
     code === 'target-runtime-reuse-too-late' ||
-    code === 'target-runtime-reuse-raced';
+    code === 'target-runtime-reuse-raced' || code === 'target-member-host-unavailable' || code === 'target-member-disabled';
   const preflightRequiresWindowsError =
     code === 'target-process-instance-mismatch' ||
     code === 'target-process-instance-query-failed' ||
@@ -5774,18 +6142,19 @@ function parseInjectorDiagnostic(
     code === 'target-runtime-incompatible' ||
     code === 'target-runtime-reuse-too-late' ||
     code === 'target-runtime-reuse-raced' ||
-    code === 'target-module-inspection-failed';
+    code === 'target-module-inspection-failed' || code === 'target-startup-readiness-failed' || code === 'target-authorization-rejected' ||
+    (typeof code === 'string' && (memberPreflightCodes.has(code) || memberPostloadCodes.has(code)));
   const preflightRequiresEffectiveSettings =
     code === 'target-existing-reshade-installation' ||
     code === 'target-existing-reshade-global-layer' ||
-    code === 'target-runtime-incompatible';
+    code === 'target-runtime-incompatible' || code === 'target-member-disabled';
   const hasAnyEffectiveSetting =
     reshadeBasePath !== undefined ||
     addonDirectoryPath !== undefined ||
     electronGameOverlayAddonDisabled !== undefined;
   if (
     candidate.schemaVersion !== 1 ||
-    (!isPreflightDiagnostic && !isExistingRuntimeAddonLoadDiagnostic) ||
+    (!isPreflightDiagnostic && !isExistingRuntimeAddonLoadDiagnostic && !isParticipantAddonLoadDiagnostic) ||
     !hasExactObjectKeys(candidate, exactKeys) ||
     !isValidProcessPid(candidate.pid) ||
     typeof targetExecutablePath !== 'string' ||
@@ -5807,7 +6176,7 @@ function parseInjectorDiagnostic(
       (!Number.isSafeInteger(windowsErrorCode) ||
         (windowsErrorCode as number) <= 0 ||
         (windowsErrorCode as number) > 0xffffffff)) ||
-    (isPreflightDiagnostic &&
+    ((isPreflightDiagnostic || isParticipantAddonLoadDiagnostic) &&
       ((preflightRequiresModule && modulePath === undefined) ||
         (preflightRequiresWindowsError && windowsErrorCode === undefined) ||
         (code === 'target-process-instance-mismatch' &&
@@ -5815,6 +6184,9 @@ function parseInjectorDiagnostic(
         (code === 'target-session-mismatch' && windowsErrorCode !== 5) ||
         (code === 'target-architecture-mismatch' &&
           windowsErrorCode !== WINDOWS_ERROR_IMAGE_MACHINE_TYPE_MISMATCH) ||
+        (code === 'target-member-disabled' && windowsErrorCode !== 1260) ||
+        ((code === 'target-preloaded-member-elevation-rejected' || code === 'target-host-claim-failed' || code === 'target-member-host-inspection-failed' || code === 'target-startup-readiness-failed' || code === 'target-authorization-rejected') && modulePath !== undefined) ||
+        (isParticipantAddonLoadDiagnostic && code === 'target-module-inspection-failed' && modulePath === undefined) ||
         preflightRequiresEffectiveSettings !== hasAnyEffectiveSetting)) ||
     (isExistingRuntimeAddonLoadDiagnostic &&
       (modulePath === undefined ||
@@ -5827,6 +6199,15 @@ function parseInjectorDiagnostic(
     });
   }
 
+  if (isParticipantAddonLoadDiagnostic) {
+    return Object.freeze({kind:'valid',diagnostic:Object.freeze({
+      schemaVersion:1,stage:'participant-addon-load',code:code as InjectorParticipantAddonLoadDiagnostic['code'],
+      pid:candidate.pid as number,targetExecutablePath:targetExecutablePath as string,injectionStarted:true,
+      ...(modulePath === undefined ? {} : {modulePath:modulePath as string}),
+      ...(windowsErrorCode === undefined ? {} : {windowsErrorCode:windowsErrorCode as number}),
+      ...(reshadeBasePath === undefined ? {} : {reshadeBasePath:reshadeBasePath as string,addonDirectoryPath:addonDirectoryPath as string,electronGameOverlayAddonDisabled:electronGameOverlayAddonDisabled as boolean}),
+    })});
+  }
   if (isExistingRuntimeAddonLoadDiagnostic) {
     return Object.freeze({
       kind: 'valid',
@@ -5996,8 +6377,19 @@ function injectorDiagnosticExitMatches(
       case 'target-session-mismatch':
       case 'target-session-query-failed':
       case 'target-module-inspection-failed':
+      case 'target-startup-readiness-failed':
+      case 'target-authorization-rejected':
       case 'target-global-reshade-layer-inspection-failed':
       case 'existing-runtime-addon-load-failed':
+      case 'target-member-payload-invalid':
+      case 'target-preloaded-member-selection-invalid':
+      case 'target-member-host-unavailable':
+      case 'target-member-disabled':
+      case 'target-preloaded-member-invalid':
+      case 'target-first-host-preload-invalid':
+      case 'target-preloaded-member-elevation-rejected':
+      case 'target-host-claim-failed':
+      case 'target-member-host-inspection-failed':
         return diagnostic.windowsErrorCode;
     }
   })();

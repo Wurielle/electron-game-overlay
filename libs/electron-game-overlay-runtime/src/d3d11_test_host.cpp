@@ -3,6 +3,8 @@
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
+#include <dcomp.h>
 #include <wrl/client.h>
 
 #include <cstdarg>
@@ -23,6 +25,7 @@ namespace
 using Microsoft::WRL::ComPtr;
 
 #pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "dcomp.lib")
 
 constexpr wchar_t kWindowClassName[] = L"ElectronGameOverlayD3D11TestHost";
 constexpr wchar_t kWindowTitle[] = L"Controlled D3D11 overlay test host";
@@ -54,12 +57,17 @@ struct graphics_state
     ComPtr<ID3D11RenderTargetView> render_target;
     ComPtr<IDXGISwapChain> secondary_swap_chain;
     ComPtr<ID3D11RenderTargetView> secondary_render_target;
+    ComPtr<IDCompositionDevice> composition_device;
+    ComPtr<IDCompositionTarget> composition_target, secondary_composition_target;
+    ComPtr<IDCompositionVisual> composition_visual, secondary_composition_visual;
     std::uint64_t primary_present_count = 0;
     std::uint64_t secondary_present_count = 0;
 };
 
 struct host_options
 {
+    bool composition = false;
+    bool noninteractive_tool_popup = false;
     bool multi_swapchain = false;
     bool release_primary = false;
     bool defer_secondary_present_until_primary_release = false;
@@ -68,6 +76,13 @@ struct host_options
 };
 
 graphics_state g_graphics;
+bool g_composition = false;
+HWND g_tool_popup_window = nullptr;
+unsigned g_tool_popup_transitions = 0;
+constexpr wchar_t kToolPopupHideRequest[] = L"electron-game-overlay-tool-popup-hide.request";
+constexpr wchar_t kToolPopupShowRequest[] = L"electron-game-overlay-tool-popup-show.request";
+constexpr wchar_t kToolPopupLayeredRequest[] = L"electron-game-overlay-tool-popup-layered.request";
+constexpr wchar_t kToolPopupUnlayeredRequest[] = L"electron-game-overlay-tool-popup-unlayered.request";
 input_oracle g_input_oracle;
 
 // Controlled-host evidence only. The default path performs no extra DXGI
@@ -282,6 +297,14 @@ bool parse_host_options(host_options &options)
         if (std::wcscmp(argument, L"--multi-swapchain") == 0)
         {
             options.multi_swapchain = true;
+        }
+        else if (std::wcscmp(argument, L"--composition-swapchain") == 0)
+        {
+            options.composition = true;
+        }
+        else if (std::wcscmp(argument, L"--noninteractive-tool-popup") == 0)
+        {
+            options.noninteractive_tool_popup = true;
         }
         else if (std::wcscmp(
                      argument,
@@ -762,12 +785,55 @@ bool create_render_target(
         &render_target));
 }
 
+HRESULT create_composition_swap_chain(HWND window, ComPtr<IDXGISwapChain> &chain,
+    ComPtr<IDCompositionTarget> &target, ComPtr<IDCompositionVisual> &visual)
+{
+    ComPtr<IDXGIDevice> dxgi_device;
+    HRESULT result = g_graphics.device.As(&dxgi_device);
+    if (FAILED(result)) return result;
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(result = dxgi_device->GetAdapter(&adapter))) return result;
+    ComPtr<IDXGIFactory2> factory;
+    if (FAILED(result = adapter->GetParent(IID_PPV_ARGS(&factory)))) return result;
+    RECT client {};
+    if (!GetClientRect(window, &client) || client.right <= client.left || client.bottom <= client.top) return E_INVALIDARG;
+    DXGI_SWAP_CHAIN_DESC1 desc {};
+    desc.Width = static_cast<UINT>(client.right - client.left); desc.Height = static_cast<UINT>(client.bottom - client.top);
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount = 2;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    ComPtr<IDXGISwapChain1> composition;
+    if (FAILED(result = factory->CreateSwapChainForComposition(g_graphics.device.Get(), &desc, nullptr, &composition))) return result;
+    DXGI_SWAP_CHAIN_DESC observed {}; HWND queried_window = nullptr;
+    if (FAILED(composition->GetDesc(&observed)) || observed.OutputWindow != nullptr ||
+        SUCCEEDED(composition->GetHwnd(&queried_window))) return E_UNEXPECTED;
+    if (FAILED(result = composition.As(&chain))) return result;
+    if (!g_graphics.composition_device && FAILED(result = DCompositionCreateDevice(dxgi_device.Get(), IID_PPV_ARGS(&g_graphics.composition_device)))) return result;
+    if (FAILED(result = g_graphics.composition_device->CreateTargetForHwnd(window, TRUE, &target)) ||
+        FAILED(result = g_graphics.composition_device->CreateVisual(&visual)) ||
+        FAILED(result = visual->SetContent(chain.Get())) || FAILED(result = target->SetRoot(visual.Get())) ||
+        FAILED(result = g_graphics.composition_device->Commit())) return result;
+    write_preload_test_file(L"electron-game-overlay-composition-host.log",
+        "EGO_CONTROLLED_COMPOSITION_HOST_V1\noutputWindowNull=true\ngetHwndUnsupported=true\nactualDCompositionTarget=true\n", CREATE_ALWAYS);
+    return S_OK;
+}
+
 HRESULT create_device_with_driver(D3D_DRIVER_TYPE driver_type)
 {
     DXGI_SWAP_CHAIN_DESC swap_chain_desc =
         swap_chain_description(g_graphics.window);
 
     D3D_FEATURE_LEVEL feature_level = {};
+    if (g_composition)
+    {
+        const HRESULT result = D3D11CreateDevice(nullptr, driver_type, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+            &g_graphics.device, &feature_level, &g_graphics.context);
+        if (FAILED(result)) return result;
+        return create_composition_swap_chain(g_graphics.window, g_graphics.swap_chain,
+            g_graphics.composition_target, g_graphics.composition_visual);
+    }
     return D3D11CreateDeviceAndSwapChain(
         nullptr,
         driver_type,
@@ -791,6 +857,9 @@ bool create_graphics_device()
     if (FAILED(result))
     {
         warp_attempted = true;
+        g_graphics.composition_visual.Reset(); g_graphics.secondary_composition_visual.Reset();
+        g_graphics.composition_target.Reset(); g_graphics.secondary_composition_target.Reset();
+        g_graphics.composition_device.Reset();
         g_graphics.swap_chain.Reset();
         g_graphics.context.Reset();
         g_graphics.device.Reset();
@@ -825,6 +894,11 @@ bool create_secondary_swap_chain()
     {
         return false;
     }
+    if (g_composition)
+        return SUCCEEDED(create_composition_swap_chain(g_graphics.secondary_window,
+            g_graphics.secondary_swap_chain, g_graphics.secondary_composition_target,
+            g_graphics.secondary_composition_visual)) &&
+            create_render_target(g_graphics.secondary_swap_chain.Get(), g_graphics.secondary_render_target);
 
     ComPtr<IDXGIDevice> dxgi_device;
     if (FAILED(g_graphics.device.As(&dxgi_device)))
@@ -855,6 +929,13 @@ bool create_secondary_swap_chain()
 
 void destroy_primary_graphics()
 {
+    if (g_graphics.composition_visual)
+    {
+        g_graphics.composition_visual->SetContent(nullptr);
+        g_graphics.composition_device->Commit();
+        g_graphics.composition_device->WaitForCommitCompletion();
+        g_graphics.composition_visual.Reset(); g_graphics.composition_target.Reset();
+    }
     if (g_graphics.context != nullptr)
     {
         g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -866,6 +947,16 @@ void destroy_primary_graphics()
 
 void destroy_graphics_device()
 {
+    if (g_graphics.composition_device)
+    {
+        if (g_graphics.composition_visual) g_graphics.composition_visual->SetContent(nullptr);
+        if (g_graphics.secondary_composition_visual) g_graphics.secondary_composition_visual->SetContent(nullptr);
+        g_graphics.composition_device->Commit();
+        g_graphics.composition_device->WaitForCommitCompletion();
+        g_graphics.composition_visual.Reset(); g_graphics.secondary_composition_visual.Reset();
+        g_graphics.composition_target.Reset(); g_graphics.secondary_composition_target.Reset();
+        g_graphics.composition_device.Reset();
+    }
     if (g_graphics.context != nullptr)
     {
         g_graphics.context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -997,6 +1088,79 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l
 }
 } // namespace
 
+bool publish_tool_popup_state(bool initial, HWND foreground_before, const char *command)
+{
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(g_tool_popup_window, GWL_STYLE));
+    const DWORD extended = static_cast<DWORD>(GetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE));
+    const bool visible = IsWindowVisible(g_tool_popup_window) != FALSE;
+    const bool unchanged = GetForegroundWindow() == foreground_before;
+    char record[1024] = {};
+    const int count = std::snprintf(record, sizeof(record),
+        "{\"schemaVersion\":1,\"pid\":%lu,\"mainHwnd\":\"0x%llx\",\"popupHwnd\":\"0x%llx\",\"visible\":%s,\"style\":%lu,\"extendedStyle\":%lu,\"transition\":%u,\"beforeFirstPresent\":%s,\"foregroundUnchanged\":%s,\"layered\":%s,\"command\":\"%s\"}\n",
+        GetCurrentProcessId(), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_graphics.window)),
+        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_tool_popup_window)), visible ? "true" : "false",
+        style, extended, g_tool_popup_transitions, initial && g_graphics.primary_present_count == 0 ? "true" : "false", unchanged ? "true" : "false",
+        (extended & WS_EX_LAYERED) != 0 ? "true" : "false", command);
+    std::wstring temporary, destination;
+    if (count <= 0 || count >= sizeof(record) || !unchanged ||
+        !module_sibling_path(L"electron-game-overlay-tool-popup-state.tmp", temporary) ||
+        !module_sibling_path(L"electron-game-overlay-tool-popup-state.json", destination) ||
+        !write_preload_test_file(L"electron-game-overlay-tool-popup-state.tmp", std::string(record, count), CREATE_ALWAYS) ||
+        !MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return false;
+    publish_stdout_marker("EGO_CONTROLLED_HOST_TOOL_POPUP_V1 pid=%lu popupHwnd=0x%llx visible=%s transition=%u beforeFirstPresent=%s foregroundUnchanged=true layered=%s extendedStyle=%lu command=%s",
+        GetCurrentProcessId(), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_tool_popup_window)),
+        visible ? "true" : "false", g_tool_popup_transitions, initial ? "true" : "false",
+        (extended & WS_EX_LAYERED) != 0 ? "true" : "false", extended, command);
+    return true;
+}
+
+bool create_tool_popup(HINSTANCE instance)
+{
+    if (!consume_marker(kToolPopupHideRequest) || !consume_marker(kToolPopupShowRequest) ||
+        !consume_marker(kToolPopupLayeredRequest) || !consume_marker(kToolPopupUnlayeredRequest)) return false;
+    // Real same-process top-level popup, kept offscreen so it cannot cover the
+    // renderer's pixel probes. WS_VISIBLE still exercises native enumeration.
+    g_tool_popup_window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
+        L"STATIC", L"Owned noninteractive tool popup", WS_POPUP | WS_BORDER | WS_CLIPSIBLINGS,
+        -32000, -32000, 160, 32, nullptr, nullptr, instance, nullptr);
+    if (g_tool_popup_window == nullptr || !SetLayeredWindowAttributes(g_tool_popup_window, 0, 255, LWA_ALPHA)) return false;
+    const HWND foreground = GetForegroundWindow();
+    ShowWindow(g_tool_popup_window, SW_SHOWNOACTIVATE);
+    return IsWindowVisible(g_tool_popup_window) && publish_tool_popup_state(true, foreground, "initial");
+}
+
+bool service_tool_popup()
+{
+    if (g_tool_popup_window == nullptr) return true;
+    const bool hide = marker_present(kToolPopupHideRequest), show = marker_present(kToolPopupShowRequest),
+        layered = marker_present(kToolPopupLayeredRequest), unlayered = marker_present(kToolPopupUnlayeredRequest);
+    const unsigned requests = unsigned(hide) + unsigned(show) + unsigned(layered) + unsigned(unlayered);
+    if (requests == 0) return true;
+    const wchar_t *request = hide ? kToolPopupHideRequest : show ? kToolPopupShowRequest :
+        layered ? kToolPopupLayeredRequest : kToolPopupUnlayeredRequest;
+    const char *command = hide ? "hide" : show ? "show" : layered ? "layered" : "unlayered";
+    if (requests != 1 || g_tool_popup_transitions >= 16 || !consume_marker(request)) return false;
+    const HWND foreground = GetForegroundWindow();
+    const bool was_visible = IsWindowVisible(g_tool_popup_window) != FALSE;
+    if (hide || show) ShowWindow(g_tool_popup_window, hide ? SW_HIDE : SW_SHOWNOACTIVATE);
+    else
+    {
+        const auto extended = GetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE);
+        SetLastError(ERROR_SUCCESS);
+        if (SetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE,
+                layered ? extended | WS_EX_LAYERED : extended & ~LONG_PTR(WS_EX_LAYERED)) == 0 && GetLastError() != ERROR_SUCCESS)
+            return false;
+        if (layered && !SetLayeredWindowAttributes(g_tool_popup_window, 0, 255, LWA_ALPHA)) return false;
+        if ((IsWindowVisible(g_tool_popup_window) != FALSE) != was_visible ||
+            ((GetWindowLongPtrW(g_tool_popup_window, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) != layered)
+            return false;
+    }
+    ++g_tool_popup_transitions;
+    return (!(hide || show) || (IsWindowVisible(g_tool_popup_window) != FALSE) == show) &&
+        publish_tool_popup_state(false, foreground, command);
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 {
     host_options options;
@@ -1013,6 +1177,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
     }
     if (!enable_per_monitor_v2_awareness())
         return 1;
+#ifdef EGO_TEST_COMPOSITION_DEFAULT
+    options.composition = true;
+#endif
+    g_composition = options.composition;
     configure_present_diagnostic();
     if (!load_test_external_runtime())
         return 1;
@@ -1201,6 +1369,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
                 reinterpret_cast<std::uintptr_t>(GetForegroundWindow())),
             primary_foreground ? "true" : "false");
     }
+    if (options.noninteractive_tool_popup && !create_tool_popup(instance))
+    {
+        report_graphics_failure(L"Unable to create the controlled nonactivating tool popup.");
+        if (g_tool_popup_window != nullptr) DestroyWindow(g_tool_popup_window);
+        destroy_graphics_device();
+        DestroyWindow(g_graphics.window);
+        return 1;
+    }
     if (!g_input_oracle.initialize(g_graphics.window))
         report_graphics_failure(L"Unable to initialize the controlled raw/pointer-input oracle.");
 
@@ -1216,6 +1392,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
 
     while (message.message != WM_QUIT)
     {
+        if (!service_tool_popup())
+        {
+            report_graphics_failure(L"The controlled tool-popup request failed or exceeded its 16-transition budget.");
+            message.wParam = 1;
+            break;
+        }
         if (options.allow_surface_recreation &&
             final_surface_destroyed_for_test &&
             marker_present(kRecreateSurfacesRequestMarker))
@@ -1490,6 +1672,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command)
         g_input_oracle.sample_and_publish(g_graphics.window, kWindowTitle);
     }
 
+    if (g_tool_popup_window != nullptr) DestroyWindow(g_tool_popup_window);
+    g_tool_popup_window = nullptr;
     destroy_graphics_device();
     g_input_oracle.shutdown();
 

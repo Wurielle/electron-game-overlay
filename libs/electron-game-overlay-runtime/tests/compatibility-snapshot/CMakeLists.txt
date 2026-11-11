@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.24)
+project(compatibility_snapshot LANGUAGES C CXX)
+if(NOT WIN32 OR NOT MSVC)
+    message(FATAL_ERROR "The owned console callback-chain fixture requires Windows/MSVC.")
+endif()
+if(NOT EXISTS "${MINHOOK_SOURCE_DIR}/src/hook.c" OR NOT EXISTS "${SNAPSHOT_HEADER}")
+    message(FATAL_ERROR "Supply the existing pinned MinHook source and production snapshot header.")
+endif()
+add_library(snapshot_foreign SHARED foreign.cpp)
+add_executable(compatibility_snapshot fixture.cpp
+    "${MINHOOK_SOURCE_DIR}/src/hook.c" "${MINHOOK_SOURCE_DIR}/src/buffer.c"
+    "${MINHOOK_SOURCE_DIR}/src/trampoline.c" "${MINHOOK_SOURCE_DIR}/src/hde/hde32.c"
+    "${MINHOOK_SOURCE_DIR}/src/hde/hde64.c")
+target_include_directories(compatibility_snapshot PRIVATE "${MINHOOK_SOURCE_DIR}/include")
+target_compile_definitions(compatibility_snapshot PRIVATE "EGO_SNAPSHOT_HEADER=\"${SNAPSHOT_HEADER}\"")
+foreach(target snapshot_foreign compatibility_snapshot)
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    target_compile_definitions(${target} PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(${target} PRIVATE /W4)
+    target_link_options(${target} PRIVATE /INCREMENTAL:NO)
+endforeach()

@@ -1,0 +1,142 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -4535,8 +4535,9 @@
+ }
+ 
+ static DWORD hash_immutable_native_file(const std::wstring &path, scoped_handle &guard,
+-	BYTE (&digest)[32])
+-{
++	BYTE (&digest)[32], const wchar_t **failed_operation = nullptr)
++{
++	if (failed_operation != nullptr) *failed_operation = L"open-native-read-guard";
+ 	// Keep this exact regular file open through activation. A mapped module
+ 	// whose file vanished or changed is not permission to use a different DLL.
+ 	guard.handle = CreateFileW(make_extended_length_path(path).c_str(), GENERIC_READ,
+@@ -4544,7 +4545,10 @@
+ 	if (guard == INVALID_HANDLE_VALUE) return GetLastError();
+ 	BY_HANDLE_FILE_INFORMATION info{};
+ 	LARGE_INTEGER length{};
+-	if (!GetFileInformationByHandle(guard, &info) || !GetFileSizeEx(guard, &length)) return GetLastError();
++	if (failed_operation != nullptr) *failed_operation = L"query-native-file-information";
++	if (!GetFileInformationByHandle(guard, &info)) return GetLastError();
++	if (failed_operation != nullptr) *failed_operation = L"query-native-file-size";
++	if (!GetFileSizeEx(guard, &length)) return GetLastError();
+ 	if ((info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+ 		return ERROR_CANT_ACCESS_FILE;
+ 	if (length.QuadPart <= 0 || length.QuadPart > 512 * 1024 * 1024) return ERROR_FILE_TOO_LARGE;
+@@ -4559,6 +4563,7 @@
+ 	{
+ 		DWORD read = 0;
+ 		const DWORD requested = static_cast<DWORD>(std::min<ULONGLONG>(remaining, sizeof(buffer)));
++		if (failed_operation != nullptr) *failed_operation = L"read-native-file-bytes";
+ 		if (!ReadFile(guard, buffer, requested, &read, nullptr)) error = GetLastError();
+ 		else if (read == 0 || read > requested) error = ERROR_HANDLE_EOF;
+ 		else if (BCryptHashData(hash, buffer, read, 0) < 0) error = ERROR_INVALID_DATA;
+@@ -5061,6 +5066,21 @@
+     return true;
+ }
+ 
++// Optional failure-only diagnostic. Fixed artifact/operation names reveal no
++// user paths or tokens and preserve the original refusal code and sharing rules.
++static DWORD report_private_elevated_stage_failure(const wchar_t *artifact, const wchar_t *operation, DWORD error)
++{
++    if (error == ERROR_SUCCESS) return error;
++    std::wstring line = L"EGO_PRIVATE_ELEVATED_STAGE_DIAGNOSTIC_V1 {\"schemaVersion\":1,\"injectorPid\":";
++    line += std::to_wstring(GetCurrentProcessId());
++    line += L",\"artifact\":\""; line += artifact;
++    line += L"\",\"operation\":\""; line += operation;
++    line += L"\",\"windowsError\":"; line += std::to_wstring(error); line += L"}";
++    write_utf8_stdout_line(line);
++    SetLastError(error);
++    return error;
++}
++
+ struct private_elevated_stage_guard
+ {
+     scoped_handle directory, configuration, addon, runtime;
+@@ -5071,23 +5091,23 @@
+ {
+     std::wstring addon;
+     DWORD error = staged_participant_path(addon);
+-    if (error != ERROR_SUCCESS) return error;
++    if (error != ERROR_SUCCESS) return report_private_elevated_stage_failure(L"stage-directory", L"locate-stage-path", error);
+     const size_t separator = addon.find_last_of(L'\\');
+     if (separator == std::wstring::npos) return ERROR_BAD_PATHNAME;
+     const std::wstring directory = addon.substr(0, separator);
+     guard.directory.handle = CreateFileW(make_extended_length_path(directory).c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
+         FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+-    if (guard.directory == INVALID_HANDLE_VALUE) return GetLastError();
++    if (guard.directory == INVALID_HANDLE_VALUE) return report_private_elevated_stage_failure(L"stage-directory", L"open-directory-read-guard", GetLastError());
+     BY_HANDLE_FILE_INFORMATION directory_info{};
+-    if (!GetFileInformationByHandle(guard.directory, &directory_info)) return GetLastError();
++    if (!GetFileInformationByHandle(guard.directory, &directory_info)) return report_private_elevated_stage_failure(L"stage-directory", L"query-directory-information", GetLastError());
+     if ((directory_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 || (directory_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) return ERROR_CANT_ACCESS_FILE;
+     std::wstring final_directory;
+-    if (!get_final_directory_path(directory, final_directory, error)) return error;
++    if (!get_final_directory_path(directory, final_directory, error)) return report_private_elevated_stage_failure(L"stage-directory", L"query-canonical-directory", error);
+     if (_wcsicmp(directory.c_str(), final_directory.c_str()) != 0) return ERROR_CANT_ACCESS_FILE;
+     PSID owner = nullptr; PACL dacl = nullptr, labels = nullptr; PSECURITY_DESCRIPTOR descriptor = nullptr;
+     error = GetSecurityInfo(guard.directory, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+         &owner, nullptr, &dacl, &labels, &descriptor);
+-    if (error != ERROR_SUCCESS) return error;
++    if (error != ERROR_SUCCESS) return report_private_elevated_stage_failure(L"stage-directory", L"query-directory-security", error);
+     struct descriptor_guard {PSECURITY_DESCRIPTOR value;~descriptor_guard(){LocalFree(value);}} descriptor_scope{descriptor};
+     SECURITY_DESCRIPTOR_CONTROL control{};DWORD revision=0;
+     if (!owner || !IsValidSid(owner) || caller.user_sid.size() != GetLengthSid(owner) || memcmp(caller.user_sid.data(), owner, caller.user_sid.size()) != 0 ||
+@@ -5115,23 +5135,24 @@
+     }
+     if(owner_aces!=1 || system_aces!=1 || high_labels!=1)return ERROR_ACCESS_DENIED;
+     std::vector<BYTE> marker; bool missing = false;
+-    if (!read_bounded_regular_file(directory + L"\\.electron-game-overlay-run.json", 4096, marker, missing, error)) return error;
++    if (!read_bounded_regular_file(directory + L"\\.electron-game-overlay-run.json", 4096, marker, missing, error)) return report_private_elevated_stage_failure(L".electron-game-overlay-run.json", L"read-ownership-marker", error);
+     const size_t leaf = directory.find_last_of(L'\\');
+     std::wstring marker_text;
+     if (!decode_utf8_text(marker, marker_text, error)) return error;
+     if (missing || leaf == std::wstring::npos || !valid_owned_run_marker(marker_text, directory.substr(leaf + 1))) return ERROR_INVALID_DATA;
+     BYTE digest[32] = {};
+-    error = hash_immutable_native_file(directory + L"\\ReShade.ini", guard.configuration, digest);
+-    if (error != ERROR_SUCCESS) return error;
++    const wchar_t *failed_operation = L"not-started";
++    error = hash_immutable_native_file(directory + L"\\ReShade.ini", guard.configuration, digest, &failed_operation);
++    if (error != ERROR_SUCCESS) return report_private_elevated_stage_failure(L"ReShade.ini", failed_operation, error);
+     if(memcmp(digest,expected_ini_hash,sizeof(digest))!=0)return ERROR_REVISION_MISMATCH;
+     bool found = false; std::vector<std::wstring> values;
+-    if (!read_bounded_utf8_ini_values(directory + L"\\ReShade.ini", L"ADDON", L"AddonPath", missing, found, values, error)) return error;
++    if (!read_bounded_utf8_ini_values(directory + L"\\ReShade.ini", L"ADDON", L"AddonPath", missing, found, values, error)) return report_private_elevated_stage_failure(L"ReShade.ini", L"read-addon-path", error);
+     if (missing || !found || values.size() != 1 || values.front() != L".") return ERROR_ACCESS_DENIED;
+     // A private host may scan only the two sealed per-architecture EGO files.
+     // Unknown add-ons are refused, never removed, rewritten or disabled.
+     WIN32_FIND_DATAW entry{};
+     const HANDLE search = FindFirstFileW(make_extended_length_path(directory + L"\\*").c_str(), &entry);
+-    if (search == INVALID_HANDLE_VALUE) return GetLastError();
++    if (search == INVALID_HANDLE_VALUE) return report_private_elevated_stage_failure(L"stage-directory", L"open-addon-scan", GetLastError());
+     DWORD scan_error = ERROR_SUCCESS;
+     do {
+         std::wstring name = entry.cFileName;
+@@ -5143,18 +5164,19 @@
+     } while (FindNextFileW(search, &entry));
+     if (scan_error == ERROR_SUCCESS && GetLastError() != ERROR_NO_MORE_FILES) scan_error = GetLastError();
+     FindClose(search);
+-    if (scan_error != ERROR_SUCCESS) return scan_error;
+-    error = hash_immutable_native_file(addon, guard.addon, digest);
+-    if (error != ERROR_SUCCESS) return error;
++    if (scan_error != ERROR_SUCCESS) return report_private_elevated_stage_failure(L"stage-directory", L"scan-addon-entries", scan_error);
++    error = hash_immutable_native_file(addon, guard.addon, digest, &failed_operation);
++    if (error != ERROR_SUCCESS) return report_private_elevated_stage_failure(target_electron_overlay_addon_file, failed_operation, error);
+     if(memcmp(digest,expected_addon_hash,sizeof(digest))!=0)return ERROR_REVISION_MISMATCH;
+     // Shared snapshot hard links remain read-only while either image is about
+     // to be consumed. All aliases are protected by these file sharing locks;
+     // the high directory label prevents inserting a new scan entry.
+-    error = hash_immutable_native_file(directory + L"\\" + target_reshade_runtime_file, guard.runtime, digest);
+-    if (error != ERROR_SUCCESS) return error;
++    error = hash_immutable_native_file(directory + L"\\" + target_reshade_runtime_file, guard.runtime, digest, &failed_operation);
++    if (error != ERROR_SUCCESS) return report_private_elevated_stage_failure(target_reshade_runtime_file, failed_operation, error);
+     if(memcmp(digest,expected_runtime_hash,sizeof(digest))!=0)return ERROR_REVISION_MISMATCH;
+     char build[33] = {};
+-    return validate_staged_participant(addon, build);
++    error = validate_staged_participant(addon, build);
++    return error == ERROR_SUCCESS ? error : report_private_elevated_stage_failure(target_electron_overlay_addon_file, L"map-addon-for-pe-inspection", error);
+ }
+ 
+ static DWORD inspect_cooperative_host(HANDLE process, HMODULE &runtime, bool &ready,

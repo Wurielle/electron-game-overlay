@@ -45,6 +45,13 @@ Use `new ElectronGameOverlay()` with the cooperative candidate. The retained
 
 ## Run the minimal consumer
 
+The local generation-28 candidate retains an elevated consumer's token and
+administrator preference. Its [private elevated lane](../../doc/elevated-consumers.md)
+requires the same target user/session and a target no higher than its caller;
+it does not scan shared registered add-ons in an elevated attachment. The
+optional whole-consumer replacement API is separate and is never called by
+overlay preparation.
+
 Copy [`examples/basic-overlay`](https://github.com/Wurielle/electron-game-overlay/tree/feat/sdk-release-candidate/examples/basic-overlay)
 from the matching candidate source checkout into a directory outside that checkout.
 Its README gives local-tarball installation and verification instructions.
@@ -86,8 +93,9 @@ start a broker.
   `46.0.0-alpha.2` prerelease is also accepted and tested; this does not imply
   support for other Electron 46 versions.
 - Direct3D 9/10/11/12, not OpenGL, Vulkan or VR.
-- Anti-cheat and elevated targets are unsupported. Do not elevate the consumer,
-  disable antivirus, or create security exceptions to make attachment work.
+- Anti-cheat remains unsupported. Elevated consumers use the bounded
+  [same-user private lane](../../doc/elevated-consumers.md); they retain their
+  administrator feature and saved preference.
 - Candidate installation, type checking and noninjecting smoke do not establish
   Windows native/game acceptance. Review the matching build's verification record.
 
@@ -180,6 +188,144 @@ Current process-policy behavior and fast-start limitations: [rc.6 guide](https:/
 
 The basename-glob update fix and discovery readiness contract are documented in [rc.7](https://github.com/Wurielle/electron-game-overlay/blob/feat/sdk-release-candidate/doc/sdk-rc7-discovery-policy.md).
 
+
+## Runtime session storage
+
+Ordinary runtime staging keeps a verified, read-only snapshot per payload content hash in
+`<runsRootDirectory>.payloads-v2`. Packaged files are copied into that store once;
+session host DLLs, tools and manifests are hard links to the snapshot. Source
+package files are never hard linked. Every reuse checks ownership, canonical
+paths, file hashes and both architecture manifests. Corrupt entries fail closed
+and are never repaired over a possibly mapped image. A filesystem without hard
+link support fails explicitly instead of reverting to full copies per launch.
+
+Each attachment still needs private credentials, policy, configuration and logs.
+Its add-on images also require private file identities: Windows coalesces two
+hard-linked DLL paths into one module and shares their globals. The SDK therefore
+copies those images and releases the verified private copies after the native
+initial module-inspection refusal or an authoritative target-exit observation.
+A socket disconnect or app restart cannot prove the images are unmapped. An exit
+that arrives after disconnect still completes retirement while the launcher is
+retained. Diagnostics remain available under the existing retention policy.
+Policy cancellation preserves the selected stage/PID association before disposal
+resets transport state, so a later matching authoritative exit still releases
+the private images. Cancellation alone preserves them. Retirement marker writes
+are serialized per run when cancellation and exit arrive back-to-back.
+
+Proven retirement now removes all thirteen payload files from the run, including
+ordinary hard-link entries. Only bounded diagnostics and ownership evidence
+remain: 64 KiB per stdout/stderr/ReShade log, a 256-byte startup record, at most
+16 diagnostic folders, seven days and 4 MiB. Unknown entries prevent whole-run
+pruning. Live or indeterminate runs never expire through this policy.
+
+Verified cache versions are collected when no stage aliases or preparation
+leases remain. At most two unused verified versions are retained, in addition
+to every referenced version. Collection quarantines and rechecks its candidate;
+both interrupted collection and preparation/collection races are recoverable.
+High stages preserve generation 28's private, single-link native verification
+and bypass the redundant medium snapshot. Their transient copies are removed
+after the same positive retirement proof.
+
+`inspectReShadeRuntimeStorage` is read-only. Explicit
+`pruneReShadeRuntimeStorage` can recover an old run only from an exact recorded
+process incarnation and authoritative OS exit evidence, or existing positive
+unmapping proof. A producer's exit proves an unattempted preparation unused;
+it does not prove an attempted target exited. Unidentifiable legacy folders,
+weak retirement markers and failed/denied queries remain preserved.
+See [runtime storage](../../doc/runtime-storage.md) for the maintenance APIs,
+legacy limitations, exact retention policy and offline allocation measurements.
+
+The storage-only gate is
+`libs/electron-game-overlay-runtime/scripts/test-cases/runtime-payload-storage.ps1`.
+It uses retained real payload sizes without executing them, includes a separate
+Node filesystem restart and checks that 32 retired preparations retain at most
+16 diagnostic folders with no payload files. Allocation counts `stat.blocks *
+512` once per file identity and excludes filesystem metadata. This gate does not
+establish game/graphics or actual-high acceptance. SDK tests separately cover
+A-B-A lifecycles, cancellation, late exact exit, corruption and version rollover.
+
+An unused native V2 policy watcher can also retire its private images after its
+complete checked output drain proves that no target was selected. A kill request
+alone is insufficient. That bounded retirement finishes synchronously during
+shutdown so an immediate Electron quit does not strand another pair of copies.
+
+## Target failure isolation and recovery
+
+Target errors carry their `target` or `selector`; consumers that stop their
+backend for an unscoped `error` must preserve this distinction. Preparing the
+successor of a selected native policy watcher can block future discovery without
+cancelling the selected attachment. Duplicate creation notifications for the same
+PID, creation time and executable are idempotent. Delayed exits and native results
+for an older instance cannot retire a newer instance or stop the whole watcher.
+
+An indeterminate injector or runtime-initialization failure retains that exact
+live instance without retry. Its authoritative exit releases its reservation and
+verified private images, including when the launcher is blocked or the exit
+arrives inside the V2 selection callback before the legacy PID line. Tests cover
+both failure-before-exit and exit-before-late-result ordering, PID reuse, an
+independent successful target while an uncertain target remains live, and
+successor preparation failures during startup.
+
+Owned D3D11 recovery launchers:
+
+- `libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-mixed-watcher-recovery.ps1`
+  includes immediate virtual-key acceptance after focus/interception acknowledgement.
+- `libs/electron-game-overlay-runtime/scripts/test-cases/d3d11-mixed-watcher-protocol-recovery.ps1`
+  checks authenticated attachment and first transported scene without input or
+  pixel acceptance.
+
+These use the current SDK with the unmodified native generation-23 release
+`v1.0.0-nightly.1`, an owned D3D11 target A and an inert owned target B. First place
+the release archive `electron-game-overlay-1.0.0-nightly.1.tgz` in
+`build/mixed-watcher-recovery/` and extract its
+`package/dist/runtime/win32-x64/reshade` subtree under that directory's
+`published/` cache. The launcher checks archive SHA-256
+`437526E5DA73130E995AABC2E9C890DAB0CAA6F110016CD409483765DFF12871`
+and SDK configuration verifies the extracted manifests and payload hashes.
+
+The 2026-11-09 protocol capture passed A → suspended B (preflight 299) → new A →
+console B (indeterminate runtime-initialization timeout) → new A in one app and
+watcher, then A in a fresh app using the same writable roots. Every B exited
+through its owner's retained process handle before the next sequential A. The
+capture retained one verified payload build and zero private add-on images after
+both app shutdowns; its local report is
+`build/mixed-watcher-recovery/20261109-183630-1e82caa6.report.json`.
+The visual gate stopped before target startup because the display reported off,
+so neither first-key nor pixel acceptance was established. These controlled
+results do not diagnose another machine's failure after app restart: in-memory
+watcher state cannot persist across a fresh app process. No user game was run.
+
+The subsequent generation-25 candidate addresses a separate broad-policy lane
+exhaustion. A generation-24 native watcher could match a short-lived or
+access-refused process and terminate before emitting its V2 identity. Without
+that identity the SDK could not safely exclude the refused instance and arm a
+successor. Generation 25 emits V2 selection from the retained read-only handle
+before the full-access open. Full-handle path and creation-time validation still
+precede every mutation; V2 is selection evidence, not injection success. A live
+refused instance stays reserved without retry while a successor discovers other
+authorized targets. A legacy/unidentified terminal failure now also emits
+`discovery-blocked`, rather than silently leaving discovery unavailable.
+
+Owned headless gates reproduce the missing V2 with the original generation-24
+injector and validate generation 25 against a process DACL that permits limited
+identity queries but refuses injection access. Separate compiled production
+entrypoint cases cover live denial and exit before the full open on x64 and x86.
+SDK mixed regressions include this unrelated refused target alongside an
+indeterminate B and a fresh successful A, including out-of-order exits. See the
+[fixture protocol](../electron-game-overlay-runtime/tests/unopened-target-selection/README.md)
+and the `owned-target-access-refusal.ps1` and
+`unopened-target-selection-console.ps1` launchers under runtime `scripts/test-cases`.
+
+## Troubleshooting
+
+### Steam overlay missing when RTSS is running
+
+RTSS's default hooking mode can prevent the Steam overlay from appearing when
+Electron Game Overlay is active. Close the game, select the affected game's
+profile in RTSS, and enable **Use Microsoft Detours API hooking**. Restart the
+game for the change to take effect.
+
+Alternatively, close RTSS before launching the game again.
 
 ## Public helper reference
 

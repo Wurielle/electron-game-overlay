@@ -1,0 +1,113 @@
+{
+  "kind": "immutable-gen35-reproduction-source-pins",
+  "runtimeGeneration": 35,
+  "producerFile": "libs/electron-game-overlay-runtime/scripts/build-reshade-runtime.ps1",
+  "producerSha256": "19f61546a38d489b05ea6437b3f5db2fcef59302a45a57c5e2f4d8732835dd36",
+  "sourceZipSha256": "b279e64a6c9772fac54930ed0b4e1719d964374ac7bb76c1e9fc353684a3a59f",
+  "pins": [
+    {
+      "name": "source/ego_owned_late_d3d11/owned_runtime_policy.hpp",
+      "digest": "A06E427C7EA2AE73F3FF90E14C204719FC247B9DE02EB5F84E066B602623F524"
+    },
+    {
+      "name": "source/dxgi/dxgi_swapchain.hpp",
+      "digest": "C5A155BE0321F30DB18B4FC4578A41BF728414DD0927A789D5C335041922BC55"
+    },
+    {
+      "name": "source/ini_file.cpp",
+      "digest": "08ACD295DB065D11E5A8388F074CFC6C384D29896E5DA9B20227222D8A61C688"
+    },
+    {
+      "name": "source/ego_owned_late_d3d11/compatibility_snapshot.hpp",
+      "digest": "EF7E0B8A483D54053E2934E936DE96F8414DEF1B725D0CA131DD2121A5EA7F32"
+    },
+    {
+      "name": "source/dxgi/dxgi.cpp",
+      "digest": "41A686B186910B4C0FAA1B631356C2D7FD0F4BE772EFB32D7328DAA2DC65B88F"
+    },
+    {
+      "name": "source/hook_manager.cpp",
+      "digest": "C62CD60C5AFD66FAFCF6F3E0659C88078685351CB20B9721742953C7D64516BB"
+    },
+    {
+      "name": "source/dxgi/dxgi_swapchain.cpp",
+      "digest": "7213F5376BBEF92909910B33BA9B9F771101DA268E2AAAAECD212F1A1CBFDD2E"
+    },
+    {
+      "name": "ReShade.vcxproj",
+      "digest": "9FC55C36B9B4E55E8FE9D87401CEFE69858B5FA5110023840BEAF2FC5B8D2A9C"
+    },
+    {
+      "name": "include/reshade.hpp",
+      "digest": "CC102FA21D311B85713ED167F0E182A4EECCD40CDF3FBE360AD9F83A0CF40767"
+    },
+    {
+      "name": "include/reshade_api.hpp",
+      "digest": "80E9F0CBC06BF96943DC79CA2D133DB5D8E69D3A4CD516B6D89D675B8B965218"
+    },
+    {
+      "name": "include/reshade_events.hpp",
+      "digest": "8090912CD69854818C294F7C0F848EBAB7C712AB6D601E6889E62514249EE6A7"
+    },
+    {
+      "name": "source/addon.cpp",
+      "digest": "DF69C9E8BE88244B54D92849A183B8A149A74FA959ED49A7109824EF0D8E3D9C"
+    },
+    {
+      "name": "source/addon_manager.cpp",
+      "digest": "E6524902A07A0B4E2947B372503679A84CAA0FD1840329E89564559C3160349E"
+    },
+    {
+      "name": "source/addon_manager.hpp",
+      "digest": "C1D27EA4C9996F1EAD408FAD0D0DB3AEEAE16A4BEFEB4A0F71EC6C616116989B"
+    },
+    {
+      "name": "source/d3d11/d3d11_impl_swapchain.cpp",
+      "digest": "9CC88315C5F2A4DAAA7E4AEAEBBA6584851AE565EC5D250C28BE2AE3B4347DDF"
+    },
+    {
+      "name": "source/d3d11/d3d11_impl_swapchain.hpp",
+      "digest": "D6010A43C93302C056AF62E1BBE7523E6A8D023DEDFB9D3F50DC689EAA9169B6"
+    },
+    {
+      "name": "source/ego_owned_late_d3d11/owned_config_file.hpp",
+      "digest": "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
+    },
+    {
+      "name": "source/ego_owned_late_d3d11/owned_late_d3d11.hpp",
+      "digest": "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
+    },
+    {
+      "name": "source/ego_owned_late_d3d11/owned_late_d3d11.inl",
+      "digest": "7D6DCB3C8EA776EE8A4DBFC205CF0B3380AC60F57C86C00868532F2200941595"
+    },
+    {
+      "name": "source/input_frame_consumer.hpp",
+      "digest": "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
+    },
+    {
+      "name": "source/input.cpp",
+      "digest": "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
+    },
+    {
+      "name": "source/input.hpp",
+      "digest": "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
+    },
+    {
+      "name": "source/runtime.cpp",
+      "digest": "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
+    },
+    {
+      "name": "source/runtime.hpp",
+      "digest": "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
+    },
+    {
+      "name": "source/runtime_gui.cpp",
+      "digest": "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
+    },
+    {
+      "name": "tools/injector.cpp",
+      "digest": "7A6DC34363FF8EBD78484D8AEE6CE0463F22E90AB35DD1261FC9FBD9B09A3A3E"
+    }
+  ]
+}

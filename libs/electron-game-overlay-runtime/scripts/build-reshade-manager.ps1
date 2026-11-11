@@ -35,7 +35,7 @@ try {
     & cl.exe /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MD `
         /DUNICODE /D_UNICODE $sourcePath `
         "/Fo:$(Join-Path $outputPath 'electron_game_overlay_reshade_manager.obj')" `
-        "/Fe:$managerPath" /link /INCREMENTAL:NO
+        "/Fe:$managerPath" /link /INCREMENTAL:NO user32.lib
     if ($LASTEXITCODE -ne 0) { throw 'Native manager compilation failed.' }
     if (-not (Test-Path -LiteralPath $managerPath -PathType Leaf)) {
         throw 'Native manager compiler did not produce the requested executable.'

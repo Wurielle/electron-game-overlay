@@ -85,6 +85,7 @@ type Slot = {
   creationCutoff100ns?: string;
   quiescence?: Promise<boolean>;
   attachStarted?: boolean;
+  selectedPredecessor?: boolean;
 };
 type MutableTarget = {
   pid: number;
@@ -315,6 +316,7 @@ export class OverlayTargetWatcher {
       throw new Error('Target watcher is stopped');
     let error: Error | undefined;
     let blocked = false;
+    let failedSlot: Slot | undefined;
     for (const selector of selectors) {
       if (revision !== this.policyRevision) return;
       if (
@@ -351,7 +353,10 @@ export class OverlayTargetWatcher {
         const spare = this.spare;
         const slots = this.slots.filter((slot) => slot.enabled);
         await Promise.race([
-          Promise.all([spareReady, ...slots.map((slot) => this.arm(slot))]),
+          Promise.all([spareReady, ...slots.map((slot) => this.arm(slot).catch(cause => {
+            failedSlot ??= slot;
+            throw cause;
+          }))]),
           changed,
           this.stopped,
         ]);
@@ -366,7 +371,12 @@ export class OverlayTargetWatcher {
       if (revision !== this.policyRevision) return;
       if (this.disposed || this.failed) throw cause;
       error = asError(cause);
-      this.emit({ type: 'discovery-blocked', error });
+      // A selected target owns a distinct attempt. Failure to prepare its
+      // successor blocks future discovery, not that target or the controller.
+      blocked ||= failedSlot?.selectedPredecessor === true;
+      this.emit({ type: 'discovery-blocked', error,
+        ...(failedSlot ? { selector: failedSlot.selector } : {}),
+      });
     }
     if (revision !== this.policyRevision) return;
     this.discoveryOutcome = { revision, error, blocked };
@@ -547,11 +557,11 @@ export class OverlayTargetWatcher {
     if (!target && slot) {
       // Never associate an ambiguous recycled PID with an earlier native attempt.
       if (this.reused.has(pid) || !matches(slot.selector, file)) {
-        this.fail(
-          new Error(
+        this.emit({ type: 'error', selector: slot.selector,
+          error: new Error(
             'Native target identity is ambiguous; attachment retained without retry',
           ),
-        );
+        });
         return;
       }
       target = {
@@ -593,6 +603,7 @@ export class OverlayTargetWatcher {
         selector: slot.selector,
         enabled: true,
         creationCutoff100ns: slot.creationCutoff100ns,
+        selectedPredecessor: true,
       };
       slot.successor = next;
       this.slots.push(next);
@@ -665,7 +676,10 @@ export class OverlayTargetWatcher {
       (!reserved && !accepted)
     )
       return;
-    if (this.observed.has(identity.pid) || this.exited.has(identity.pid))
+    const existingIdentity = this.observed.get(identity.pid);
+    if (existingIdentity?.creationTime100ns === identity.creationTime100ns &&
+        key(existingIdentity.executablePath) === key(identity.executablePath)) return;
+    if (existingIdentity || this.exited.has(identity.pid))
       this.reused.add(identity.pid);
     this.observed.set(identity.pid, identity);
     if (this.observed.size + this.exited.size > 4096) {
@@ -683,9 +697,6 @@ export class OverlayTargetWatcher {
     const launcher = this.spare ?? new ReShadeOverlayLauncher(this.config);
     this.spare = undefined;
     this.spareReady = undefined;
-    void this.prepareSpare().catch((error) =>
-      this.emit({ type: 'error', error: asError(error) }),
-    );
     const target: MutableTarget = {
       pid: identity.pid,
       executablePath: identity.executablePath,
@@ -696,6 +707,9 @@ export class OverlayTargetWatcher {
       launcher,
     };
     this.attempts.set(identity.pid, target);
+    void this.prepareSpare().catch((error) =>
+      this.emit({ type: 'error', error: asError(error), target: view(target) }),
+    );
     target.stop = launcher.onEvent((event) =>
       this.launcherEvent(launcher, undefined, event),
     );
@@ -721,8 +735,14 @@ export class OverlayTargetWatcher {
       known.creationTime100ns !== identity.creationTime100ns ||
       key(known.executablePath) !== key(identity.executablePath)
     ) {
-      // The production observer already verifies this; keep this layer fail-closed too.
-      this.fail(new Error('Managed target exit identity mismatch'));
+      // Delayed old-instance notifications cannot retire the current instance
+      // or turn a target-local mismatch into a global consumer stop signal.
+      const target = this.attempts.get(identity.pid);
+      const selector = this.slots.find(slot => matches(slot.selector, known.executablePath))?.selector;
+      this.emit({ type: selector || target ? 'error' : 'discovery-blocked',
+        error: new Error('Ignored managed target exit identity mismatch'),
+        ...(selector ? { selector } : target ? { target: view(target) } : {}),
+      });
       return;
     }
     this.observed.delete(identity.pid);
@@ -799,6 +819,11 @@ export class OverlayTargetWatcher {
       ...(slot ? { selector: slot.selector } : {}),
       ...(target ? { target: view(target) } : {}),
     });
+    if (!target && slot && 'pathContains' in slot.selector && slot.selector.processPolicy) {
+      // Without a native instance identity, replacing the watcher could retry
+      // the same live process. Make the lost discovery lane explicit instead.
+      this.emit({ type: 'discovery-blocked', selector: slot.selector, error: asError(error) });
+    }
     // Do not dispose/replace an uncertain attempt or erase its reservation.
   }
 

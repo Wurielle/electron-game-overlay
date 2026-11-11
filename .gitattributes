@@ -9,8 +9,27 @@ libs/electron-game-overlay-runtime/patches/reshade-injector-preload-long-path.pa
 libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11-adapter-ready-long-path.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-injector-initial-inspection-recovery.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-injector-shared-addon-directory.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-inspection-context.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-selection-before-open.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-member-diagnostics.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-startup-readiness.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11-addon-failure-isolation.patch text eol=lf
 libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/owned-host-prototype/* text eol=lf
 libs/electron-game-overlay-runtime/tests/late-d3d11-adoption/owned-host-prototype/*.patch whitespace=-trailing-space,-space-before-tab
 # Stock ReShade ends the final INI section with an empty CRLF separator.
 libs/electron-game-overlay-runtime/config/ReShade.ini text eol=crlf whitespace=-blank-at-eof
+libs/electron-game-overlay-runtime/patches/reshade-injector-elevated-private-authorization.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-d3d11-swapchain-resource-identity.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-private-stage-diagnostics.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-steam-loaded-module-hook-order.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-compatibility-snapshot.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-policy.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-binding-diagnostics.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-window-eligibility.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-composition-auxiliary-lifetime.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-deferred-d3d11.patch text eol=lf

@@ -1,0 +1,218 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index e7cd83e..fd7759a 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -3662,11 +3662,14 @@ static bool write_injector_diagnostic(
+ 	const std::wstring &module_path,
+ 	DWORD windows_error,
+ 	const std::wstring &target_executable_path,
+-	const target_effective_reshade_settings *effective_settings = nullptr)
++	const target_effective_reshade_settings *effective_settings = nullptr,
++	bool injection_started = false)
+ {
+ 	std::wstring diagnostic =
+ 		L"ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {\"schemaVersion\":1,"
+-		L"\"stage\":\"target-preflight\",\"code\":\"";
++		L"\"stage\":\"";
++	diagnostic.append(injection_started ? L"participant-addon-load" : L"target-preflight");
++	diagnostic.append(L"\",\"code\":\"");
+ 	diagnostic.append(code);
+ 	diagnostic.append(L"\",\"pid\":");
+ 	diagnostic.append(std::to_wstring(pid));
+@@ -3675,7 +3678,7 @@ static bool write_injector_diagnostic(
+ 		diagnostic.append(L",\"targetExecutablePath\":");
+ 		append_json_string(diagnostic, target_executable_path);
+ 	}
+-	diagnostic.append(L",\"injectionStarted\":false");
++	diagnostic.append(injection_started ? L",\"injectionStarted\":true" : L",\"injectionStarted\":false");
+ 	if (!module_path.empty())
+ 	{
+ 		diagnostic.append(L",\"modulePath\":");
+@@ -4282,35 +4285,72 @@ static bool preloaded_addon_disabled(const target_effective_reshade_settings &se
+ 	return false;
+ }
+ 
+-static DWORD require_unelevated_process(HANDLE process)
++struct preload_authorization_observation
+ {
+-	scoped_handle token;
+-	if (!OpenProcessToken(process, TOKEN_QUERY, &token))
+-	{
+-		const DWORD error = GetLastError();
+-		return error != ERROR_SUCCESS ? error : ERROR_ACCESS_DENIED;
+-	}
+-	TOKEN_ELEVATION elevation{};
+-	DWORD size = 0;
+-	if (!GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size))
+-	{
+-		const DWORD error = GetLastError();
+-		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
+-	}
+-	if (size != sizeof(elevation) || elevation.TokenIsElevated != 0) return ERROR_ACCESS_DENIED;
+-	alignas(TOKEN_MANDATORY_LABEL) BYTE integrity_buffer[SECURITY_MAX_SID_SIZE + sizeof(TOKEN_MANDATORY_LABEL)] = {};
+-	if (!GetTokenInformation(token, TokenIntegrityLevel, integrity_buffer, sizeof(integrity_buffer), &size))
+-	{
+-		const DWORD error = GetLastError();
+-		return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
+-	}
+-	if (size < sizeof(TOKEN_MANDATORY_LABEL)) return ERROR_INVALID_DATA;
+-	const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(integrity_buffer);
+-	if (!IsValidSid(label->Label.Sid)) return ERROR_INVALID_SID;
+-	const UCHAR count = *GetSidSubAuthorityCount(label->Label.Sid);
+-	if (count == 0) return ERROR_INVALID_SID;
+-	return *GetSidSubAuthority(label->Label.Sid, count - 1) <= SECURITY_MANDATORY_MEDIUM_RID
+-		? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
++    const wchar_t *phase = L"not-checked";
++    DWORD windows_error = ERROR_SUCCESS;
++    DWORD returned_size = 0;
++    bool elevation_known = false;
++    bool elevated = false;
++    bool integrity_known = false;
++    DWORD integrity_rid = 0;
++};
++
++static DWORD require_unelevated_process(HANDLE process, preload_authorization_observation *observation = nullptr)
++{
++    preload_authorization_observation local;
++    auto &result = observation != nullptr ? *observation : local;
++    result = {};
++    auto finish = [&result](DWORD error, const wchar_t *phase) {
++        result.phase = phase; result.windows_error = error; return error;
++    };
++    scoped_handle token;
++    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
++        const DWORD error = GetLastError();
++        return finish(error != ERROR_SUCCESS ? error : ERROR_ACCESS_DENIED, L"token-open-failed");
++    }
++    TOKEN_ELEVATION elevation{};
++    DWORD size = 0;
++    if (!GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size)) {
++        const DWORD error = GetLastError(); result.returned_size = size;
++        return finish(error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA, L"elevation-query-failed");
++    }
++    result.returned_size = size;
++    if (size != sizeof(elevation)) return finish(ERROR_ACCESS_DENIED, L"elevation-size-invalid");
++    result.elevation_known = true; result.elevated = elevation.TokenIsElevated != 0;
++    if (result.elevated) return finish(ERROR_ACCESS_DENIED, L"elevated");
++    alignas(TOKEN_MANDATORY_LABEL) BYTE integrity_buffer[SECURITY_MAX_SID_SIZE + sizeof(TOKEN_MANDATORY_LABEL)] = {};
++    if (!GetTokenInformation(token, TokenIntegrityLevel, integrity_buffer, sizeof(integrity_buffer), &size)) {
++        const DWORD error = GetLastError(); result.returned_size = size;
++        return finish(error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA, L"integrity-query-failed");
++    }
++    result.returned_size = size;
++    if (size < sizeof(TOKEN_MANDATORY_LABEL)) return finish(ERROR_INVALID_DATA, L"integrity-size-invalid");
++    const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(integrity_buffer);
++    if (!IsValidSid(label->Label.Sid)) return finish(ERROR_INVALID_SID, L"integrity-sid-invalid");
++    const UCHAR count = *GetSidSubAuthorityCount(label->Label.Sid);
++    if (count == 0) return finish(ERROR_INVALID_SID, L"integrity-sid-empty");
++    result.integrity_known = true; result.integrity_rid = *GetSidSubAuthority(label->Label.Sid, count - 1);
++    return finish(result.integrity_rid <= SECURITY_MANDATORY_MEDIUM_RID ? ERROR_SUCCESS : ERROR_ACCESS_DENIED,
++        result.integrity_rid <= SECURITY_MANDATORY_MEDIUM_RID ? L"allowed" : L"integrity-above-medium");
++}
++
++static bool write_preload_authorization_context(DWORD pid, HANDLE process,
++    const preload_authorization_observation &injector, const preload_authorization_observation &target)
++{
++    std::wstring line = L"EGO_PRELOAD_AUTHORIZATION_CONTEXT_V1 {\"pid\":" + std::to_wstring(pid);
++    line.append(L",\"targetHandlePid\":" + std::to_wstring(GetProcessId(process)));
++    line.append(L",\"injectorPid\":" + std::to_wstring(GetCurrentProcessId()));
++    auto append = [&line](const wchar_t *actor, const preload_authorization_observation &value) {
++        line.append(L",\""); line.append(actor); line.append(L"\":{\"phase\":"); append_json_string(line, value.phase);
++        line.append(L",\"windowsError\":" + std::to_wstring(value.windows_error));
++        line.append(L",\"returnedSize\":" + std::to_wstring(value.returned_size));
++        line.append(L",\"elevated\":"); line.append(value.elevation_known ? value.elevated ? L"true" : L"false" : L"null");
++        line.append(L",\"integrityRid\":"); line.append(value.integrity_known ? std::to_wstring(value.integrity_rid) : L"null");
++        line.push_back(L'}');
++    };
++    append(L"injector", injector); append(L"target", target); line.push_back(L'}');
++    return fwprintf(stdout, L"%ls\n", line.c_str()) >= 0 && fflush(stdout) == 0;
+ }
+ 
+ static DWORD hash_immutable_native_file(const std::wstring &path, scoped_handle &guard,
+@@ -5039,7 +5079,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		error = validate_staged_participant(addon_path, validated_build_id);
+ 	if (error != ERROR_SUCCESS)
+ 	{
+-		write_injector_diagnostic(L"target-member-payload-invalid", pid, addon_path, error, image_path);
++		write_injector_diagnostic(L"target-member-payload-invalid", pid, addon_path, error, image_path, nullptr, earlier_load_consumed);
+ 		if (!earlier_load_consumed) print_injection_not_started();
+ 		return error;
+ 	}
+@@ -5049,7 +5089,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			error = ERROR_REVISION_MISMATCH;
+ 		if (error != ERROR_SUCCESS)
+ 		{
+-			write_injector_diagnostic(L"target-preloaded-member-selection-invalid", pid, addon_path, error, image_path);
++			write_injector_diagnostic(L"target-preloaded-member-selection-invalid", pid, addon_path, error, image_path, nullptr, earlier_load_consumed);
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return error;
+ 		}
+@@ -5108,7 +5148,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		}
+ 		if (error != ERROR_SUCCESS)
+ 		{
+-			write_injector_diagnostic(L"target-member-host-unavailable", pid, addon_path, error, image_path);
++			write_injector_diagnostic(L"target-member-host-unavailable", pid, addon_path, error, image_path, nullptr, earlier_load_consumed);
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return error;
+ 		}
+@@ -5126,14 +5166,15 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			!inspect_target_effective_reshade_settings(image_path, runtime_path, process,
+ 				environment, configuration, settings, error))
+ 		{
+-			write_injector_diagnostic(L"target-module-inspection-failed", pid, runtime_path, error, image_path);
++			error = error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
++			write_injector_diagnostic(L"target-module-inspection-failed", pid, runtime_path, error, image_path, nullptr, earlier_load_consumed);
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
+ 		}
+ 		if (settings.electron_game_overlay_addon_disabled ||
+ 			(!preloaded_addon_leaf.empty() && preloaded_addon_disabled(settings, preloaded_addon_leaf)))
+ 		{
+-			write_injector_diagnostic(L"target-member-disabled", pid, runtime_path, ERROR_ACCESS_DISABLED_BY_POLICY, image_path, &settings);
++			write_injector_diagnostic(L"target-member-disabled", pid, runtime_path, ERROR_ACCESS_DISABLED_BY_POLICY, image_path, &settings, earlier_load_consumed);
+ 			if (!earlier_load_consumed) print_injection_not_started();
+ 			return ERROR_ACCESS_DISABLED_BY_POLICY;
+ 		}
+@@ -5147,7 +5188,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 				validated_build_id, staged_hash, selected_path, preload_file_guard);
+ 			if (error != ERROR_SUCCESS)
+ 			{
+-				write_injector_diagnostic(L"target-preloaded-member-invalid", pid, selected_path, error, image_path);
++				write_injector_diagnostic(L"target-preloaded-member-invalid", pid, selected_path, error, image_path, nullptr, earlier_load_consumed);
+ 				if (!earlier_load_consumed) print_injection_not_started();
+ 				return error;
+ 			}
+@@ -5161,7 +5202,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 				runtime_path, settings, preloaded_addon_leaf, staged_hash, selected_path, snapshot_guard);
+ 			if (error != ERROR_SUCCESS)
+ 			{
+-				write_injector_diagnostic(L"target-first-host-preload-invalid", pid, selected_path, error, image_path);
++				write_injector_diagnostic(L"target-first-host-preload-invalid", pid, selected_path, error, image_path, nullptr, true);
+ 				return error; // This request's full ReShade initialization is already consumed.
+ 			}
+ 		}
+@@ -5672,10 +5713,12 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 	scoped_handle preloaded_staged_guard;
+ 	if (!preloaded_addon_leaf.empty())
+ 	{
+-		DWORD preload_error = require_unelevated_process(GetCurrentProcess());
+-		if (preload_error == ERROR_SUCCESS) preload_error = require_unelevated_process(remote_process);
++		preload_authorization_observation injector_authorization, target_authorization;
++		DWORD preload_error = require_unelevated_process(GetCurrentProcess(), &injector_authorization);
++		if (preload_error == ERROR_SUCCESS) preload_error = require_unelevated_process(remote_process, &target_authorization);
+ 		if (preload_error != ERROR_SUCCESS)
+ 		{
++			write_preload_authorization_context(pid, remote_process, injector_authorization, target_authorization);
+ 			write_injector_diagnostic(L"target-preloaded-member-elevation-rejected", pid,
+ 				std::wstring(), preload_error, selected_image_path);
+ 			print_injection_not_started();
+@@ -6428,7 +6471,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		if (member_error != ERROR_SUCCESS)
+ 		{
+ 			write_injector_diagnostic(L"target-member-host-inspection-failed", pid,
+-				std::wstring(), member_error, selected_image_path);
++				std::wstring(), member_error, selected_image_path, nullptr, true);
+ 			return member_error;
+ 		}
+ 		if (owned_late.initializer != 0)

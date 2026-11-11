@@ -1,0 +1,297 @@
+diff --git a/source/hook_manager.cpp b/source/hook_manager.cpp
+--- a/source/hook_manager.cpp
++++ b/source/hook_manager.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include "dll_log.hpp"
+ #include "hook_manager.hpp"
++#include "ego_owned_late_d3d11/compatibility_snapshot.hpp"
+ #include <vector>
+ #include <shared_mutex>
+ #include <cstring> // std::strcmp
+@@ -523,18 +524,10 @@ void reshade::hooks::register_module(const std::filesystem::path &target_path)
+ 		assert(ntdll_module != nullptr);
+ 
+ 		const auto LdrRegisterDllNotification = reinterpret_cast<LONG (NTAPI *)(ULONG Flags, FARPROC NotificationFunction, PVOID Context, PVOID *Cookie)>(GetProcAddress(ntdll_module, "LdrRegisterDllNotification"));
+-		if (LdrRegisterDllNotification == nullptr ||
+-			// The Steam overlay is using 'LoadLibrary' hooks, so always use them too if it is used, to ensure that ReShade installs hooks after the Steam overlay already did so
+-			// Keep the environment check for injection before the Steam renderer DLL loads.
+-			GetEnvironmentVariableW(L"SteamOverlayGameId", nullptr, 0) ||
+-			// Also detect an already-loaded renderer in this exact process when
+-			// the optional Steam environment key is absent.
+-#ifdef _WIN64
+-			GetModuleHandleW(L"GameOverlayRenderer64.dll") != nullptr ||
+-#else
+-			GetModuleHandleW(L"GameOverlayRenderer.dll") != nullptr ||
+-#endif
+-			LdrRegisterDllNotification(0, reinterpret_cast<FARPROC>(&DllNotificationCallback), nullptr, &s_dll_notification_cookie) != 0 /* STATUS_SUCCESS */)
++		const auto snapshot_inputs = ego_compatibility_snapshot::observe_loader_inputs();
++		const bool use_load_library = LdrRegisterDllNotification == nullptr || snapshot_inputs.environment || snapshot_inputs.renderer ||
++			LdrRegisterDllNotification(0, reinterpret_cast<FARPROC>(&DllNotificationCallback), nullptr, &s_dll_notification_cookie) != 0;
++		if (use_load_library)
+ 		{
+ #if RESHADE_VERBOSE_LOG
+ 			log::message(log::level::debug, "Using LoadLibrary hooks.");
+@@ -553,6 +546,7 @@ void reshade::hooks::register_module(const std::filesystem::path &target_path)
+ 			else
+ 				log::message(log::level::error, "Failed to install LoadLibrary hooks!");
+ 		}
++		ego_compatibility_snapshot::loader(use_load_library, use_load_library ? s_dll_notification_cookie == reinterpret_cast<PVOID>(-1) : s_dll_notification_cookie != nullptr, snapshot_inputs);
+ 	}
+ #endif
+ 
+diff --git a/source/dxgi/dxgi.cpp b/source/dxgi/dxgi.cpp
+--- a/source/dxgi/dxgi.cpp
++++ b/source/dxgi/dxgi.cpp
+@@ -12,6 +12,7 @@
+ #include "com_utils.hpp"
+ #include "hook_manager.hpp"
+ #include "addon_manager.hpp"
++#include "../ego_owned_late_d3d11/compatibility_snapshot.hpp"
+ 
+ extern bool is_windows7();
+ 
+@@ -675,6 +676,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory)
+ }
+ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory)
+ {
++	const unsigned snapshot_ticket = ego_compatibility_snapshot::factory_begin(Flags, g_in_dxgi_runtime);
+ 	reshade::log::message(
+ 		reshade::log::level::info,
+ 		"Redirecting CreateDXGIFactory2(Flags = %#x, riid = %s, ppFactory = %p) ...",
+@@ -720,6 +722,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppF
+ 	if (FAILED(hr))
+ 	{
+ 		reshade::log::message(reshade::log::level::warning, "CreateDXGIFactory2 failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
++		ego_compatibility_snapshot::factory_result(snapshot_ticket, hr, nullptr, nullptr, nullptr, nullptr);
+ 		return hr;
+ 	}
+ 
+@@ -758,6 +761,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppF
+ 				factory_proxy->_interface_version, factory_proxy, factory_proxy->_orig);
+ #endif
+ 			*ppFactory = factory_proxy;
++			if (snapshot_ticket) ego_compatibility_snapshot::factory_result(snapshot_ticket, hr, factory, factory_proxy, reshade::hooks::vtable_from_instance(factory)[10], reshade::hooks::vtable_from_instance(factory_proxy)[10]);
+ 
+ 			return hr;
+ 		}
+@@ -773,6 +777,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppF
+ 	reshade::log::message(reshade::log::level::debug, "Returning IDXGIFactory object %p.", factory);
+ #endif
+ 
++	if (snapshot_ticket) ego_compatibility_snapshot::factory_result(snapshot_ticket, hr, factory, *ppFactory, reshade::hooks::vtable_from_instance(factory)[10], reshade::hooks::vtable_from_instance(static_cast<IDXGIFactory2 *>(*ppFactory))[10]);
+ 	return hr;
+ }
+ 
+diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
+--- a/source/dxgi/dxgi_swapchain.cpp
++++ b/source/dxgi/dxgi_swapchain.cpp
+@@ -18,6 +18,7 @@
+ #include "hook_manager.hpp"
+ #include "addon_manager.hpp"
+ #include "runtime_manager.hpp"
++#include "../ego_owned_late_d3d11/compatibility_snapshot.hpp"
+ 
+ #if RESHADE_ADDON
+ extern bool modify_swapchain_desc(reshade::api::device_api api, DXGI_SWAP_CHAIN_DESC &desc, UINT &sync_interval);
+@@ -259,6 +260,8 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::GetDevice(REFIID riid, void **ppDevice)
+ 
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
+ {
++	const bool snapshot_present = ego_compatibility_snapshot::claim_present(true, false, Flags);
++	if (snapshot_present) ego_compatibility_snapshot::callbacks("present-entry", "proxy", "Present", this, _orig, _direct3d_device, reshade::hooks::vtable_from_instance(this)[8], reshade::hooks::vtable_from_instance(_orig)[8], nullptr, g_in_dxgi_runtime);
+ 	on_present(Flags);
+ 
+ 	assert(!g_in_dxgi_runtime);
+@@ -287,6 +290,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
+ #endif
+ 
+ 	const HRESULT hr = _orig->Present(SyncInterval, Flags);
++	if (snapshot_present) ego_compatibility_snapshot::present_end(true, false, hr);
+ 	g_in_dxgi_runtime = false;
+ 
+ 	on_finish_present(hr);
+@@ -560,6 +564,8 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::GetCoreWindow(REFIID refiid, void **ppU
+ }
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters)
+ {
++	const bool snapshot_present = ego_compatibility_snapshot::claim_present(true, true, PresentFlags);
++	if (snapshot_present) ego_compatibility_snapshot::callbacks("present-entry", "proxy", "Present1", this, _orig, _direct3d_device, reshade::hooks::vtable_from_instance(this)[22], reshade::hooks::vtable_from_instance(_orig)[22], nullptr, g_in_dxgi_runtime);
+ 	assert(_interface_version >= 1);
+ 
+ 	on_present(PresentFlags, pPresentParameters);
+@@ -590,6 +596,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT Presen
+ #endif
+ 
+ 	const HRESULT hr = static_cast<IDXGISwapChain1 *>(_orig)->Present1(SyncInterval, PresentFlags, pPresentParameters);
++	if (snapshot_present) ego_compatibility_snapshot::present_end(true, true, hr);
+ 	g_in_dxgi_runtime = false;
+ 
+ 	on_finish_present(hr);
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -1,3 +1,4 @@
++#include "compatibility_snapshot.hpp"
+ // Owned ReShade baseline. Foreign/official hosts never activate this path.
+ #include "reshade.hpp"
+ #include "runtime.hpp"
+@@ -710,12 +711,20 @@ namespace ego_owned_late_d3d11
+     HRESULT STDMETHODCALLTYPE raw_present(IDXGISwapChain *chain, UINT interval, UINT flags)
+     {
+         const auto original = reshade::hooks::call(raw_present);
+-        return present(chain, flags, [&] { return original(chain, interval, flags); });
++        const bool snapshot_present = chain != nullptr && status.load(std::memory_order_acquire) == 2 && ego_compatibility_snapshot::claim_present(false, false, flags);
++        if (snapshot_present) ego_compatibility_snapshot::callbacks("present-entry", "raw", "Present", chain, chain, nullptr, reshade::hooks::vtable_from_instance(chain)[8], reinterpret_cast<void *>(original), reinterpret_cast<void *>(original), g_in_dxgi_runtime);
++        const HRESULT result = present(chain, flags, [&] { return original(chain, interval, flags); });
++        if (snapshot_present) ego_compatibility_snapshot::present_end(false, false, result);
++        return result;
+     }
+     HRESULT STDMETHODCALLTYPE raw_present1(IDXGISwapChain1 *chain, UINT interval, UINT flags, const DXGI_PRESENT_PARAMETERS *parameters)
+     {
+         const auto original = reshade::hooks::call(raw_present1);
+-        return present(chain, flags, [&] { return original(chain, interval, flags, parameters); });
++        const bool snapshot_present = chain != nullptr && status.load(std::memory_order_acquire) == 2 && ego_compatibility_snapshot::claim_present(false, true, flags);
++        if (snapshot_present) ego_compatibility_snapshot::callbacks("present-entry", "raw", "Present1", chain, chain, nullptr, reshade::hooks::vtable_from_instance(chain)[22], reinterpret_cast<void *>(original), reinterpret_cast<void *>(original), g_in_dxgi_runtime);
++        const HRESULT result = present(chain, flags, [&] { return original(chain, interval, flags, parameters); });
++        if (snapshot_present) ego_compatibility_snapshot::present_end(false, true, result);
++        return result;
+     }
+     HRESULT STDMETHODCALLTYPE raw_resize(IDXGISwapChain *chain, UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags)
+     {
+@@ -744,6 +753,7 @@ namespace ego_owned_late_d3d11
+ 
+     DWORD discover_native_methods(HMODULE own_module, HMODULE d3d11, std::array<void *, 4> &targets)
+     {
++        const ego_compatibility_snapshot::discovery_scope snapshot_discovery;
+         // The only scratch window is owned by this initializer and never shown.
+         WNDCLASSW wc = {};
+         wc.hInstance = own_module;
+@@ -809,6 +819,8 @@ namespace ego_owned_late_d3d11
+             reshade::hooks::install("EGO owned raw D3D11 ResizeBuffers", targets[2], reinterpret_cast<void *>(&raw_resize), true) &&
+             reshade::hooks::install("EGO owned raw D3D11 ResizeBuffers1", targets[3], reinterpret_cast<void *>(&raw_resize1), true);
+         if (!installed || !reshade::hook::apply_queued_actions()) return ERROR_FUNCTION_FAILED;
++        ego_compatibility_snapshot::callbacks("native-registration", "raw", "Present", nullptr, nullptr, nullptr, reinterpret_cast<void *>(raw_present), targets[0], reinterpret_cast<void *>(reshade::hooks::call(raw_present)), false);
++        ego_compatibility_snapshot::callbacks("native-registration", "raw", "Present1", nullptr, nullptr, nullptr, reinterpret_cast<void *>(raw_present1), targets[1], reinterpret_cast<void *>(reshade::hooks::call(raw_present1)), false);
+         return ERROR_SUCCESS;
+     }
+ }
+diff --git a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+new file mode 100644
+--- /dev/null
++++ b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+@@ -0,0 +1,114 @@
++// Bounded observation only. Include after dll_log.hpp; never calls a callback or COM method.
++#pragma once
++#include <Windows.h>
++#include <atomic>
++#include <cstdint>
++#include <cstring>
++extern HMODULE g_module_handle;
++namespace ego_compatibility_snapshot {
++    struct error_scope { DWORD value = GetLastError(); ~error_scope() { SetLastError(value); } };
++    inline std::atomic<unsigned> emitted { 0 };
++    inline thread_local unsigned discovery_depth = 0;
++    struct discovery_scope { discovery_scope() { ++discovery_depth; } ~discovery_scope() { --discovery_depth; } };
++    inline bool once(unsigned bit) noexcept { return (emitted.load(std::memory_order_relaxed) & bit) == 0 && (emitted.fetch_or(bit, std::memory_order_relaxed) & bit) == 0; }
++    inline const char *owner(const void *address) noexcept {
++        error_scope preserve;
++        if (address == nullptr) return "absent";
++        MEMORY_BASIC_INFORMATION memory {};
++        if (VirtualQuery(address, &memory, sizeof(memory)) != sizeof(memory)) return "unknown";
++        if (memory.Type == MEM_PRIVATE) return "private-code";
++        if (memory.Type != MEM_IMAGE) return "other-memory";
++        const auto module = static_cast<HMODULE>(memory.AllocationBase);
++        if (module == g_module_handle) return "reshade-host";
++        if (module == GetModuleHandleW(L"dxgi.dll")) return "dxgi";
++        if (module == GetModuleHandleW(L"d3d11.dll")) return "d3d11";
++#ifdef _WIN64
++        if (module == GetModuleHandleW(L"GameOverlayRenderer64.dll")) return "steam-renderer";
++#else
++        if (module == GetModuleHandleW(L"GameOverlayRenderer.dll")) return "steam-renderer";
++#endif
++        return "other-image";
++    }
++    struct entry_jump { const char *owner; unsigned hops; };
++    inline entry_jump observe_entry_jump(const void *address) noexcept {
++        error_scope preserve;
++        unsigned hops = 0;
++        // Read only six instruction bytes and at most one pointer per hop.
++        // ReadProcessMemory safely refuses inaccessible/racing mappings. Never execute or dump them.
++        for (; hops != 2 && address != nullptr;) {
++            unsigned char code[6] {}; SIZE_T copied = 0;
++            if (!ReadProcessMemory(GetCurrentProcess(), address, code, sizeof(code), &copied) || copied != sizeof(code))
++                return { "unreadable", hops };
++            const auto origin = reinterpret_cast<std::uintptr_t>(address);
++            if (code[0] == 0xE9) {
++                std::int32_t offset; std::memcpy(&offset, code + 1, sizeof(offset));
++                address = reinterpret_cast<const void *>(origin + 5 + offset);
++            } else if (code[0] == 0xFF && code[1] == 0x25) {
++                std::uintptr_t slot;
++#ifdef _WIN64
++                std::int32_t offset; std::memcpy(&offset, code + 2, sizeof(offset)); slot = origin + 6 + offset;
++#else
++                std::uint32_t absolute; std::memcpy(&absolute, code + 2, sizeof(absolute)); slot = absolute;
++#endif
++                const void *destination = nullptr;
++                if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(slot), &destination, sizeof(destination), &copied) || copied != sizeof(destination))
++                    return { "unreadable", hops };
++                address = destination;
++            } else break;
++            ++hops;
++        }
++        return { hops != 0 ? owner(address) : "unknown-entry", hops };
++    }
++    struct loader_inputs { bool environment; bool renderer; };
++    inline loader_inputs observe_loader_inputs() noexcept {
++        error_scope preserve;
++        return { GetEnvironmentVariableW(L"SteamOverlayGameId", nullptr, 0) != 0,
++#ifdef _WIN64
++            GetModuleHandleW(L"GameOverlayRenderer64.dll") != nullptr };
++#else
++            GetModuleHandleW(L"GameOverlayRenderer.dll") != nullptr };
++#endif
++    }
++    inline void loader(bool use_load_library, bool enabled, loader_inputs inputs) noexcept {
++        error_scope preserve;
++        if (!once(1u)) return;
++        try { reshade::log::message(reshade::log::level::info,
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
++            GetCurrentProcessId(), GetCurrentThreadId(), use_load_library ? "load-library" : "notification", enabled ? "true" : "false", inputs.environment ? "true" : "false", inputs.renderer ? "true" : "false"); } catch (...) {}
++    }
++    inline unsigned factory_begin(unsigned flags, bool internal) noexcept {
++        error_scope preserve;
++        const unsigned ticket = discovery_depth != 0 ? 2u : internal ? 4u : 8u;
++        if (!once(ticket)) return 0;
++        try { reshade::log::message(reshade::log::level::info,
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
++            GetCurrentProcessId(), GetCurrentThreadId(), ticket, flags, discovery_depth != 0 ? "true" : "false", internal ? "true" : "false"); } catch (...) {}
++        return ticket;
++    }
++    inline void factory_result(unsigned ticket, HRESULT result, const void *original, const void *returned, const void *original_entry, const void *returned_entry) noexcept {
++        error_scope preserve;
++        if (ticket == 0) return;
++        try { reshade::log::message(reshade::log::level::info,
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
++            GetCurrentProcessId(), GetCurrentThreadId(), ticket, static_cast<unsigned>(result), original, returned, original_entry, owner(original_entry), returned_entry, owner(returned_entry)); } catch (...) {}
++    }
++    inline bool claim_present(bool proxy, bool extended, unsigned flags) noexcept {
++        // Four first non-TEST entries per host: proxy/raw times Present/Present1.
++        // This performs no observation or allocation after a role was emitted.
++        return (flags & 1u /* DXGI_PRESENT_TEST */) == 0 && discovery_depth == 0 && once(16u << ((proxy ? 0 : 2) + (extended ? 1 : 0)));
++    }
++    inline void callbacks(const char *kind, const char *role, const char *method, const void *instance, const void *downstream,
++        const void *device, const void *current, const void *target, const void *saved, bool internal) noexcept {
++        error_scope preserve;
++        const auto current_jump = observe_entry_jump(current), target_jump = observe_entry_jump(target), saved_jump = observe_entry_jump(saved);
++        try { reshade::log::message(reshade::log::level::info,
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
++            kind, GetCurrentProcessId(), GetCurrentThreadId(), role, method, instance, downstream, device, current, owner(current), current_jump.owner, current_jump.hops, target, owner(target), target_jump.owner, target_jump.hops, saved, owner(saved), saved_jump.owner, saved_jump.hops, internal ? "true" : "false"); } catch (...) {}
++    }
++    inline void present_end(bool proxy, bool extended, HRESULT result) noexcept {
++        error_scope preserve;
++        try { reshade::log::message(reshade::log::level::info,
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
++            GetCurrentProcessId(), GetCurrentThreadId(), proxy ? "proxy" : "raw", extended ? "Present1" : "Present", static_cast<unsigned>(result)); } catch (...) {}
++    }
++}

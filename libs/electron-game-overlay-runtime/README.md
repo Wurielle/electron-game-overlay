@@ -1,5 +1,14 @@
 # Electron game overlay Windows runtime
 
+The local generation-28 candidate preserves elevated consumer startup and its
+administrator preference through a bounded [private elevated lane](../../doc/elevated-consumers.md).
+Native authorization requires the same user/interactive session and a target no
+higher than the caller. A high caller uses a securely created private stage and
+its own hash-bound payload, with no shared registered add-on scan. Existing
+ReShade preservation and possibly consumed ownership rules remain mandatory.
+The prior bounded loader-readiness fix is retained. The explicit optional
+whole-consumer medium replacement API is separate from elevated overlay support.
+
 This production Windows package builds x64 and x86 ReShade 6.7.3 full add-on
 runtimes as the native process-entry, graphics-hook, swap-chain, input, logging,
 and Dear ImGui layer. It builds architecture-specific injectors, controlled hosts,
@@ -126,7 +135,23 @@ npx nx build electron-game-overlay-runtime
 
 That target builds the transport dependency, pinned ReShade runtime/injector,
 production add-on, native target-local ReShade add-on manager, and ABI smoke.
-Each architecture distribution contains a schema-3
+
+To preserve an unrecognized source cache, use a separate reusable cache instead
+of resetting it. Both architectures share one pinned, validated dependency
+checkout and retain separate production build outputs:
+
+```powershell
+./libs/electron-game-overlay-runtime/scripts/build.ps1 -Architecture x64 -BuildCacheRoot build/candidate-gen24-cache
+./libs/electron-game-overlay-runtime/scripts/build.ps1 -Architecture x86 -BuildCacheRoot build/candidate-gen24-cache
+```
+
+The optional cache root accepts an absolute or repository-relative path. The
+usual architecture distributions under this runtime's `dist` are still generated
+and verified. `build-reshade-runtime.ps1` accepts the same option. Existing
+checkouts in the chosen cache must pass the full source and patch checks; this
+option does not relax those checks or overwrite unknown source.
+
+Each architecture distribution contains a schema-4
 `electron_game_overlay_runtime.build.json` that binds its artifacts to their
 source and content hashes and declares its runtime generation plus target
 transport range. Composite SDK staging retains the x64 manifest under that name

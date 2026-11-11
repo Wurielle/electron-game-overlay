@@ -1,0 +1,208 @@
+diff --git a/source/hook_manager.cpp b/source/hook_manager.cpp
+--- a/source/hook_manager.cpp
++++ b/source/hook_manager.cpp
+@@ -310,6 +310,11 @@ static T call_unchecked(T replacement)
+ 	return reinterpret_cast<T>(find_internal(nullptr, reinterpret_cast<reshade::hook::address>(replacement)).call());
+ }
+ 
++#if defined(RESHADE_OWNED_LATE_D3D11)
++void ego_owned_deferred_d3d11_note(HMODULE module) noexcept;
++void ego_owned_deferred_d3d11_kick() noexcept;
++#endif
++
+ static void install_delayed_hooks(const std::filesystem::path &loaded_path, bool check_all = false)
+ {
+ 	if (s_is_loading_export_module)
+@@ -331,12 +336,16 @@ static void install_delayed_hooks(const std::filesystem::path &loaded_path, bool
+ 
+ 		return delayed_handle;
+ 	};
+-	const auto install_delayed_hook_path = [&loaded_path](const std::filesystem::path &path, HMODULE delayed_handle) {
++	const auto install_delayed_hook_path = [&loaded_path, check_all](const std::filesystem::path &path, HMODULE delayed_handle) {
+ 		reshade::log::message(reshade::log::level::info, "Installing delayed hooks for '%s' (Just loaded via LoadLibrary('%s')) ...", path.u8string().c_str(), loaded_path.u8string().c_str());
+ 
+ 		install_internal(delayed_handle, g_module_handle, hook_method::function_hook);
+ 		if (!reshade::hook::apply_queued_actions())
+ 			reshade::log::message(reshade::log::level::error, "Failed to install hooks for '%s'!", path.u8string().c_str());
++		#if defined(RESHADE_OWNED_LATE_D3D11)
++		else if (check_all && _wcsicmp(path.filename().c_str(), L"d3d11.dll") == 0)
++			ego_owned_deferred_d3d11_note(delayed_handle);
++		#endif
+ 	};
+ 
+ 	if (const auto it = std::find_if(s_delayed_hook_paths.begin(), s_delayed_hook_paths.end(),
+@@ -373,6 +382,12 @@ static void install_delayed_hooks(const std::filesystem::path &loaded_path, bool
+ 
+ 		s_delayed_hook_paths.erase(remove, s_delayed_hook_paths.end());
+ 	}
++	#if defined(RESHADE_OWNED_LATE_D3D11)
++	// The original try-lock and early-return behavior is unchanged. Native
++	// owned work may only be queued after this scan releases its own mutex.
++	if (lock.owns_lock()) lock.unlock();
++	if (check_all) ego_owned_deferred_d3d11_kick();
++	#endif
+ }
+ 
+ struct UNICODE_STRING
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -25,6 +25,8 @@
+ #include <string>
+ #include <vector>
+ 
++void ego_owned_deferred_d3d11_note(HMODULE module) noexcept;
++void ego_owned_deferred_d3d11_kick() noexcept;
+ extern thread_local bool g_in_dxgi_runtime;
+ extern "C" const unsigned int ElectronGameOverlayReShadeHostAbi;
+ extern "C" volatile LONG ElectronGameOverlayReShadeAddonGate;
+@@ -37,6 +39,9 @@ namespace ego_owned_late_d3d11
+     constexpr char marker_contents[] = "ELECTRON_GAME_OVERLAY_OWNED_RUNTIME_STAGE_V1\n";
+     constexpr LONG addon_gate_registered = 2, addon_gate_closed = 3;
+ 
++    // Missing-backend deferral belongs to this pinned owned host only.
++    std::atomic<HMODULE> deferred_module { nullptr };
++    std::atomic<bool> deferred_pending { false }, deferred_queued { false };
+     std::mutex install_mutex;
+     std::mutex registry_mutex;
+     std::atomic<std::uint32_t> status { 0 }, last_error { ERROR_SUCCESS }, last_hresult { S_OK };
+@@ -175,7 +180,7 @@ namespace ego_owned_late_d3d11
+             FILETIME utc {};GetSystemTimePreciseAsFileTime(&utc);
+             const auto ticks=(std::uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime;
+             reshade::log::message(reshade::log::level::info,
+-                "EGO_OWNED_COMPOSITION_BINDING_V1 {\"schemaVersion\":1,\"runtimeGeneration\":35,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"bindingId\":\"%p\",\"bound\":\"%p\",\"firstCandidate\":\"%p\",\"firstCandidateOwner\":\"%p\",\"candidate\":\"%p\",\"candidateOwner\":\"%p\",\"expectedThread\":%lu,\"candidateThread\":%lu,\"boundThread\":%lu,\"boundPid\":%lu,\"eligibleCount\":%u,\"enumerationComplete\":%s,\"boundVisible\":%s,\"boundRoot\":%s,\"expectedToken\":\"%p\",\"observedToken\":\"%p\",\"firstCandidateStyle\":%llu,\"firstCandidateExtendedStyle\":%llu,\"candidateStyle\":%llu,\"candidateExtendedStyle\":%llu,\"windowsError\":%lu}",
++                "EGO_OWNED_COMPOSITION_BINDING_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"bindingId\":\"%p\",\"bound\":\"%p\",\"firstCandidate\":\"%p\",\"firstCandidateOwner\":\"%p\",\"candidate\":\"%p\",\"candidateOwner\":\"%p\",\"expectedThread\":%lu,\"candidateThread\":%lu,\"boundThread\":%lu,\"boundPid\":%lu,\"eligibleCount\":%u,\"enumerationComplete\":%s,\"boundVisible\":%s,\"boundRoot\":%s,\"expectedToken\":\"%p\",\"observedToken\":\"%p\",\"firstCandidateStyle\":%llu,\"firstCandidateExtendedStyle\":%llu,\"candidateStyle\":%llu,\"candidateExtendedStyle\":%llu,\"windowsError\":%lu}",
+                 GetCurrentProcessId(),GetCurrentThreadId(),static_cast<unsigned long long>(ticks),reason,r.binding,r.bound,r.first_candidate,r.first_candidate_owner,r.candidate,r.candidate_owner,r.expected_thread,r.candidate_thread,r.bound_thread,r.bound_pid,r.eligible_count,r.enumeration_complete?"true":"false",r.bound_visible?"true":"false",r.bound_root?"true":"false",r.expected_token,r.observed_token,static_cast<unsigned long long>(r.first_candidate_style),static_cast<unsigned long long>(r.first_candidate_extended_style),static_cast<unsigned long long>(r.candidate_style),static_cast<unsigned long long>(r.candidate_extended_style),r.error);
+         } catch (...) {} // A failed diagnostic never changes the binding decision.
+     }
+@@ -882,6 +887,11 @@ extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeOwned
+         {
+             last_error.store(error);
+             status.store(4, std::memory_order_release);
++            if (error == ERROR_MOD_NOT_FOUND)
++            {
++                deferred_pending.store(true, std::memory_order_release);
++                ego_owned_deferred_d3d11_kick();
++            }
+             return ERROR_SUCCESS;
+         }
+         status.store(1, std::memory_order_release);
+@@ -943,3 +953,60 @@ extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayQueryOwnedLateD
+     *result = snapshot;
+     return ERROR_SUCCESS;
+ }
++
++namespace ego_owned_late_d3d11
++{
++    DWORD WINAPI deferred_worker(void *) noexcept
++    {
++        DWORD result = ERROR_INVALID_STATE;
++        try
++        {
++            bool eligible = false;
++            {
++                const std::lock_guard<std::mutex> lock(install_mutex);
++                // Only a validated owned-stage initializer's exact missing-
++                // module outcome may reopen. Unsupported discovery and other
++                // failures stay terminal, as do foreign/unready hosts.
++                if (deferred_pending.load() && status.load() == 4 && last_error.load() == ERROR_MOD_NOT_FOUND)
++                {
++                    deferred_pending.store(false);
++                    status.store(0, std::memory_order_release);
++                    eligible = true;
++                }
++            }
++            if (eligible) result = ElectronGameOverlayInitializeOwnedLateD3D11V1(nullptr);
++        }
++        catch (...) { result = ERROR_UNHANDLED_EXCEPTION; }
++        if (result != ERROR_SUCCESS)
++        {
++            const std::lock_guard<std::mutex> lock(install_mutex);
++            if (status.load() == 0)
++            {
++                last_error.store(result);
++                status.store(3, std::memory_order_release);
++            }
++        }
++        return 0;
++    }
++}
++void ego_owned_deferred_d3d11_note(HMODULE module) noexcept
++{
++    if (ego_owned_runtime_policy::active.load(std::memory_order_acquire))
++        ego_owned_late_d3d11::deferred_module.store(module, std::memory_order_release);
++}
++void ego_owned_deferred_d3d11_kick() noexcept
++{
++    using namespace ego_owned_late_d3d11;
++    const ego_owned_runtime_policy::error_scope preserve;
++    if (!ego_owned_runtime_policy::active.load(std::memory_order_acquire) ||
++        !deferred_pending.load(std::memory_order_acquire) || deferred_module.load(std::memory_order_acquire) == nullptr)
++        return;
++    bool expected = false;
++    if (!deferred_queued.compare_exchange_strong(expected, true)) return;
++    if (!QueueUserWorkItem(&deferred_worker, nullptr, WT_EXECUTELONGFUNCTION))
++    {
++        const DWORD error = GetLastError();
++        last_error.store(error ? error : ERROR_GEN_FAILURE);
++        // Queue failure is terminal: never retry or substitute another worker.
++    }
++}
+diff --git a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+--- a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
++++ b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+@@ -73,7 +73,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (!once(1u)) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":35,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), use_load_library ? "load-library" : "notification", enabled ? "true" : "false", inputs.environment ? "true" : "false", inputs.renderer ? "true" : "false"); } catch (...) {}
+     }
+     inline unsigned factory_begin(unsigned flags, bool internal) noexcept {
+@@ -81,7 +81,7 @@ namespace ego_compatibility_snapshot {
+         const unsigned ticket = discovery_depth != 0 ? 2u : internal ? 4u : 8u;
+         if (!once(ticket)) return 0;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":35,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, flags, discovery_depth != 0 ? "true" : "false", internal ? "true" : "false"); } catch (...) {}
+         return ticket;
+     }
+@@ -89,7 +89,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (ticket == 0) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":35,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, static_cast<unsigned>(result), original, returned, original_entry, owner(original_entry), returned_entry, owner(returned_entry)); } catch (...) {}
+     }
+     inline bool claim_present(bool proxy, bool extended, unsigned flags) noexcept {
+@@ -102,13 +102,13 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         const auto current_jump = observe_entry_jump(current), target_jump = observe_entry_jump(target), saved_jump = observe_entry_jump(saved);
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":35,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
+             kind, GetCurrentProcessId(), GetCurrentThreadId(), role, method, instance, downstream, device, current, owner(current), current_jump.owner, current_jump.hops, target, owner(target), target_jump.owner, target_jump.hops, saved, owner(saved), saved_jump.owner, saved_jump.hops, internal ? "true" : "false"); } catch (...) {}
+     }
+     inline void present_end(bool proxy, bool extended, HRESULT result) noexcept {
+         error_scope preserve;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":35,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
+             GetCurrentProcessId(), GetCurrentThreadId(), proxy ? "proxy" : "raw", extended ? "Present1" : "Present", static_cast<unsigned>(result)); } catch (...) {}
+     }
+ }
+diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
+--- a/source/dxgi/dxgi_swapchain.cpp
++++ b/source/dxgi/dxgi_swapchain.cpp
+@@ -978,7 +978,7 @@ void DXGISwapChain::on_reset([[maybe_unused]] bool resize, const char *reason)
+                 FILETIME utc {};GetSystemTimePreciseAsFileTime(&utc);
+                 const auto ticks=(std::uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime;
+                 reshade::log::message(reshade::log::level::info,
+-                    "EGO_OWNED_RUNTIME_RESET_V1 {\"schemaVersion\":1,\"runtimeGeneration\":35,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"proxy\":\"%p\",\"native\":\"%p\",\"implementation\":\"%p\",\"resize\":%s,\"composition\":%s}",
++                    "EGO_OWNED_RUNTIME_RESET_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"proxy\":\"%p\",\"native\":\"%p\",\"implementation\":\"%p\",\"resize\":%s,\"composition\":%s}",
+                     GetCurrentProcessId(),GetCurrentThreadId(),static_cast<unsigned long long>(ticks),reason,static_cast<const void *>(this),static_cast<const void *>(_orig),static_cast<const void *>(_impl),resize?"true":"false",_owned_composition?"true":"false");
+             } catch (...) {} // Logging failure never changes reset or forwarding.
+         }

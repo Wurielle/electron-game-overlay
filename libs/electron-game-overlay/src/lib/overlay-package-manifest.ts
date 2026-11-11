@@ -1,9 +1,20 @@
+const OWNED_DEFERRED_D3D11_PATCH_SHA256 =
+  '779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB';
+const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 =
+  '3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61';
+const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 =
+  '080DA1FD83FE48CB782FA9268B82A386E75BE081D107F2A5013F06675107B97F';
+const OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256 =
+  '0180A6FACEEC7FA89174F4CED311A926DC98D292FB114347813F0E29C6B150DE';
+const OWNED_COMPOSITION_POLICY_PATCH_SHA256 =
+  '7AF52928DCAAD1914993D2CC29D99862461F1A46AF2448A82C7F2C42E87E68CF';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
 /** @internal Build artifact integrity, not publisher authentication. */
 export const OVERLAY_DISTRIBUTION_MANIFEST_FILE_NAME = 'overlay-manifest.json';
+const INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256 = 'DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697';
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_FILES = 8192;
 const MAX_FILE_BYTES = 512 * 1024 * 1024;
@@ -30,6 +41,22 @@ const INJECTOR_SHARED_ADDON_DIRECTORY_PATCH_SHA256 =
   '54AE1F9ABCE02CBB66481C7C2AB30E4D3E7925CD83F27F31D8551D76DEF85125';
 const OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256 =
   '2A1FF13D7F76258ECF9D5CFB565D68C2522BEE772053A5373A3645823D310F99';
+const INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256 =
+  '288C2A76AEDBC827BB00117A455FFE87ECB708CA33411449CD56E2BEA190160E';
+const INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256 =
+  'F83053E59EE9443E98D31A4C238B3D19D6B847D1F6F5E238E05B899FFC87E555';
+const INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256 =
+  'D56162D2EA444DB44E7F21128A5F316E124E11E08EC1B6F3328D769EA4048A57';
+const INJECTOR_STARTUP_READINESS_PATCH_SHA256 =
+  '29C8D7ACA8919189D484B2E22F83DBD564B00D344E8C860058AFCCEAFC808D9D';
+const D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256 =
+  '25DA093F15FAACF74AA16ED0BFFA233B58D10C7FC1BEA15B667C0E9F5F6AAEF2';
+const STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256 =
+    '560BF8A6DB17643F7FA095F75FDBE0677211FC4354BEB6C869C7D4ECD7DB1241';
+const COMPATIBILITY_SNAPSHOT_PATCH_SHA256 =
+    'C63E22F1768770469C770FB6D4124AE1A293A6D5ACD8402E8EC86F33B1CA1C66';
+const PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256 =
+  'D73FF95608079571FC6438F8B5E280BB710AD8467F19CA31B664E371929C05F1';
 
 /** @internal */
 export interface OverlayDistributionManifest {
@@ -262,7 +289,125 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       (requiresSharedAddonDirectoryPatch && expectedGeneration < 23)) {
     throw new Error('Compiled SDK shared add-on directory patch pin does not match its generation');
   }
+  const contextDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256\b/g)];
+  const contextPins = [...validator.matchAll(/\bconst\s+INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (contextDeclarations.length !== contextPins.length || contextDeclarations.length > 1 ||
+      (contextPins.length === 1 && contextPins[0][1].toUpperCase() !== INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256)) {
+    throw new Error('Compiled SDK inspection context patch pin is malformed or unsupported');
+  }
+  if ((contextPins.length === 1) !== (expectedGeneration >= 24)) {
+    throw new Error('Compiled SDK inspection context patch pin does not match its generation');
+  }
+  const selectionDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256\b/g)];
+  const selectionPins = [...validator.matchAll(/\bconst\s+INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (selectionDeclarations.length !== selectionPins.length || selectionDeclarations.length > 1 ||
+      (selectionPins.length === 1 && selectionPins[0][1].toUpperCase() !== INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256)) {
+    throw new Error('Compiled SDK selection before open patch pin is malformed or unsupported');
+  }
+  if ((selectionPins.length === 1) !== (expectedGeneration >= 25)) {
+    throw new Error('Compiled SDK selection before open patch pin does not match its generation');
+  }
+  const memberDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256\b/g)];
+  const memberPins = [...validator.matchAll(/\bconst\s+INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (memberDeclarations.length !== memberPins.length || memberDeclarations.length > 1 ||
+      (memberPins.length === 1 && memberPins[0][1].toUpperCase() !== INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256)) {
+    throw new Error('Compiled SDK member diagnostics patch pin is malformed or unsupported');
+  }
+  if ((memberPins.length === 1) !== (expectedGeneration >= 26)) {
+    throw new Error('Compiled SDK member diagnostics patch pin does not match its generation');
+  }
+  const startupDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_STARTUP_READINESS_PATCH_SHA256\b/g)];
+  const startupPins = [...validator.matchAll(/\bconst\s+INJECTOR_STARTUP_READINESS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (startupDeclarations.length !== startupPins.length || startupDeclarations.length > 1 ||
+      (startupPins.length === 1 && startupPins[0][1].toUpperCase() !== INJECTOR_STARTUP_READINESS_PATCH_SHA256)) throw new Error('Compiled SDK startup readiness patch pin is malformed or unsupported');
+  if ((startupPins.length === 1) !== (expectedGeneration >= 26)) throw new Error('Compiled SDK startup readiness patch pin does not match its generation');
+  const elevatedPrivateDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256\b/g)];
+  const elevatedPrivatePins = [...validator.matchAll(/\bconst\s+INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (elevatedPrivateDeclarations.length !== elevatedPrivatePins.length || elevatedPrivateDeclarations.length > 1 ||
+      (elevatedPrivatePins.length === 1 && elevatedPrivatePins[0][1].toUpperCase() !== INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256)) throw new Error('Compiled SDK elevated private patch pin is malformed or unsupported');
+  if ((elevatedPrivatePins.length === 1) !== (expectedGeneration >= 27)) throw new Error('Compiled SDK elevated private patch pin does not match its generation');
   const foreignAddonIsolationDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256\b/g)];
+  const steamLoadedModuleDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256\b/g)];
+  const steamLoadedModulePins = [...validator.matchAll(/\bconst\s+STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (steamLoadedModuleDeclarations.length !== steamLoadedModulePins.length || steamLoadedModulePins.length > 1 ||
+      (steamLoadedModulePins.length === 1 && steamLoadedModulePins[0][1].toUpperCase() !== STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256)) {
+    throw new Error('Compiled SDK Steam loaded-module hook order patch pin is malformed or unsupported');
+  }
+  if ((steamLoadedModulePins.length === 1) !== (expectedGeneration >= 30)) {
+    throw new Error('Compiled SDK Steam loaded-module hook order patch pin does not match its generation');
+  }
+  const compatibilitySnapshotDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+COMPATIBILITY_SNAPSHOT_PATCH_SHA256\b/g)];
+  const compatibilitySnapshotPins = [...validator.matchAll(/\bconst\s+COMPATIBILITY_SNAPSHOT_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (compatibilitySnapshotDeclarations.length !== compatibilitySnapshotPins.length || compatibilitySnapshotPins.length > 1 ||
+      (compatibilitySnapshotPins.length === 1 && compatibilitySnapshotPins[0][1].toUpperCase() !== COMPATIBILITY_SNAPSHOT_PATCH_SHA256)) {
+    throw new Error('Compiled SDK compatibility snapshot patch pin is malformed or unsupported');
+  }
+  if ((compatibilitySnapshotPins.length === 1) !== (expectedGeneration >= 31)) {
+    throw new Error('Compiled SDK compatibility snapshot patch pin does not match its generation');
+  }
+  const ownedCompositionPolicyDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_POLICY_PATCH_SHA256\b/g)];
+  const ownedCompositionPolicyPins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_POLICY_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionPolicyDeclarations.length !== ownedCompositionPolicyPins.length || ownedCompositionPolicyPins.length > 1 ||
+      (ownedCompositionPolicyPins.length === 1 && ownedCompositionPolicyPins[0][1].toUpperCase() !== OWNED_COMPOSITION_POLICY_PATCH_SHA256)) {
+    throw new Error('Compiled SDK owned composition policy patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionPolicyPins.length === 1) !== (expectedGeneration >= 32)) {
+    throw new Error('Compiled SDK owned composition policy patch pin does not match its generation');
+  }
+  const ownedCompositionBindingDiagnosticsDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256\b/g)];
+  const ownedCompositionBindingDiagnosticsPins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionBindingDiagnosticsDeclarations.length !== ownedCompositionBindingDiagnosticsPins.length || ownedCompositionBindingDiagnosticsPins.length > 1 ||
+      (ownedCompositionBindingDiagnosticsPins.length === 1 && ownedCompositionBindingDiagnosticsPins[0][1].toUpperCase() !== OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256)) {
+    throw new Error('Compiled SDK composition binding diagnostics patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionBindingDiagnosticsPins.length === 1) !== (expectedGeneration >= 33)) {
+    throw new Error('Compiled SDK composition binding diagnostics patch pin does not match its generation');
+  }
+  const ownedCompositionWindowEligibilityDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256\b/g)];
+  const ownedCompositionWindowEligibilityPins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionWindowEligibilityDeclarations.length !== ownedCompositionWindowEligibilityPins.length || ownedCompositionWindowEligibilityPins.length > 1 ||
+      (ownedCompositionWindowEligibilityPins.length === 1 && ownedCompositionWindowEligibilityPins[0][1].toUpperCase() !== OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256)) {
+    throw new Error('Compiled SDK composition window eligibility patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionWindowEligibilityPins.length === 1) !== (expectedGeneration >= 34)) {
+    throw new Error('Compiled SDK composition window eligibility patch pin does not match its generation');
+  }
+  const ownedCompositionAuxiliaryLifetimeDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256\b/g)];
+  const ownedCompositionAuxiliaryLifetimePins = [...validator.matchAll(/\bconst\s+OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedCompositionAuxiliaryLifetimeDeclarations.length !== ownedCompositionAuxiliaryLifetimePins.length || ownedCompositionAuxiliaryLifetimePins.length > 1 ||
+      (ownedCompositionAuxiliaryLifetimePins.length === 1 && ownedCompositionAuxiliaryLifetimePins[0][1].toUpperCase() !== OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256)) {
+    throw new Error('Compiled SDK composition auxiliary lifetime patch pin is malformed or unsupported');
+  }
+  if ((ownedCompositionAuxiliaryLifetimePins.length === 1) !== (expectedGeneration >= 35)) {
+    throw new Error('Compiled SDK composition auxiliary lifetime patch pin does not match its generation');
+  }
+  const ownedDeferredD3d11Declarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_DEFERRED_D3D11_PATCH_SHA256\b/g)];
+  const ownedDeferredD3d11Pins = [...validator.matchAll(/\bconst\s+OWNED_DEFERRED_D3D11_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedDeferredD3d11Declarations.length !== ownedDeferredD3d11Pins.length || ownedDeferredD3d11Pins.length > 1 ||
+      (ownedDeferredD3d11Pins.length === 1 && ownedDeferredD3d11Pins[0][1].toUpperCase() !== OWNED_DEFERRED_D3D11_PATCH_SHA256)) {
+    throw new Error('Compiled SDK owned deferred D3D11 patch pin is malformed or unsupported');
+  }
+  if ((ownedDeferredD3d11Pins.length === 1) !== (expectedGeneration >= 36)) {
+    throw new Error('Compiled SDK owned deferred D3D11 patch pin does not match its generation');
+  }
+  const privateDiagnosticDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\b/g)];
+  const privateDiagnosticPins = [...validator.matchAll(/\bconst\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (privateDiagnosticDeclarations.length !== privateDiagnosticPins.length || privateDiagnosticPins.length > 1 ||
+      (privateDiagnosticPins.length === 1 && privateDiagnosticPins[0][1].toUpperCase() !== PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256)) {
+    throw new Error('Compiled SDK private stage diagnostics patch pin is malformed or unsupported');
+  }
+  if ((privateDiagnosticPins.length === 1) !== (expectedGeneration >= 30)) {
+    throw new Error('Compiled SDK private stage diagnostics patch pin does not match its generation');
+  }
+  const identityDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256\b/g)];
+  const identityPins = [...validator.matchAll(/\bconst\s+D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (identityDeclarations.length !== identityPins.length || identityPins.length > 1 ||
+      (identityPins.length === 1 && identityPins[0][1].toUpperCase() !== D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256)) {
+    throw new Error('Compiled SDK D3D11 resource identity patch pin is malformed or unsupported');
+  }
+  if ((identityPins.length === 1) !== (expectedGeneration >= 29)) {
+    throw new Error('Compiled SDK D3D11 resource identity patch pin does not match its generation');
+  }
   const foreignAddonIsolationPins = [...validator.matchAll(/\bconst\s+OWNED_LATE_D3D11_FOREIGN_ADDON_ISOLATION_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
   if (foreignAddonIsolationDeclarations.length !== foreignAddonIsolationPins.length || foreignAddonIsolationDeclarations.length > 1) {
     throw new Error('Compiled SDK foreign add-on isolation patch pin is malformed or ambiguous');
@@ -291,9 +436,10 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
         typeof stamp.managerSourceSha256 !== 'string' || !NATIVE_DIGEST.test(stamp.managerSourceSha256)) {
       throw new Error('Unsupported cooperative native runtime manifest: ' + stampName);
     }
-    if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol', 'addonPreloadProtocol']
+    if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol', 'addonPreloadProtocol','privateElevatedAuthorization']
       .some((key) => stamp[key] !== paired![key])) throw new Error('Native architecture manifests disagree');
     if (stamp.runtimeGeneration !== expectedGeneration) throw new Error('Native runtime generation disagrees with the compiled SDK');
+    if(expectedGeneration>=28?stamp.privateElevatedAuthorization!==2:expectedGeneration>=27?stamp.privateElevatedAuthorization!==1:stamp.privateElevatedAuthorization!==undefined)throw new Error('Native private elevated authorization capability does not match the sealed SDK implementation: '+bits);
     if (requiresAddonPreloadPatch ? stamp.addonPreloadProtocol !== 1 : stamp.addonPreloadProtocol !== undefined) {
       throw new Error('Native add-on preload capability does not match the sealed SDK implementation: ' + bits);
     }
@@ -403,6 +549,110 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
     } else if (reshade.ownedLateD3d11ForeignAddonIsolationPatchSha256 !== undefined) {
       throw new Error('Owned late D3D11 foreign add-on isolation patch provenance requires the sealed SDK implementation pin: ' + bits);
     }
+    if (expectedGeneration >= 30) {
+      if (typeof reshade.injectorPrivateStageDiagnosticsPatchSha256 !== 'string' ||
+          reshade.injectorPrivateStageDiagnosticsPatchSha256.toUpperCase() !== PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256) {
+        throw new Error('Pinned private stage diagnostics patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorPrivateStageDiagnosticsPatchSha256 !== undefined) {
+      throw new Error('Private stage diagnostics provenance requires runtime generation 30: ' + bits);
+    }
+    if (expectedGeneration >= 30) {
+      if (typeof reshade.steamLoadedModuleHookOrderPatchSha256 !== 'string' ||
+          reshade.steamLoadedModuleHookOrderPatchSha256.toUpperCase() !== STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256) {
+        throw new Error('Pinned Steam loaded-module hook order patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.steamLoadedModuleHookOrderPatchSha256 !== undefined) {
+      throw new Error('Steam loaded-module hook order provenance requires runtime generation 30: ' + bits);
+    }
+    if (expectedGeneration >= 31) {
+      if (typeof reshade.compatibilitySnapshotPatchSha256 !== 'string' ||
+          reshade.compatibilitySnapshotPatchSha256.toUpperCase() !== COMPATIBILITY_SNAPSHOT_PATCH_SHA256) {
+        throw new Error('Pinned compatibility snapshot patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.compatibilitySnapshotPatchSha256 !== undefined) {
+      throw new Error('Compatibility snapshot provenance requires runtime generation 31: ' + bits);
+    }
+    if (expectedGeneration >= 32) {
+      if (typeof reshade.ownedCompositionPolicyPatchSha256 !== 'string' ||
+          reshade.ownedCompositionPolicyPatchSha256.toUpperCase() !== OWNED_COMPOSITION_POLICY_PATCH_SHA256) {
+        throw new Error('Pinned owned composition policy patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionPolicyPatchSha256 !== undefined) {
+      throw new Error('Owned composition policy provenance requires runtime generation 32: ' + bits);
+    }
+    if (expectedGeneration >= 33) {
+      if (typeof reshade.ownedCompositionBindingDiagnosticsPatchSha256 !== 'string' ||
+          reshade.ownedCompositionBindingDiagnosticsPatchSha256.toUpperCase() !== OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256) {
+        throw new Error('Pinned composition binding diagnostics patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionBindingDiagnosticsPatchSha256 !== undefined) {
+      throw new Error('Composition binding diagnostics provenance requires runtime generation 33: ' + bits);
+    }
+    if (expectedGeneration >= 34) {
+      if (typeof reshade.ownedCompositionWindowEligibilityPatchSha256 !== 'string' ||
+          reshade.ownedCompositionWindowEligibilityPatchSha256.toUpperCase() !== OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256) {
+        throw new Error('Pinned composition window eligibility patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionWindowEligibilityPatchSha256 !== undefined) {
+      throw new Error('Composition window eligibility provenance requires runtime generation 34: ' + bits);
+    }
+    if (expectedGeneration >= 35) {
+      if (typeof reshade.ownedCompositionAuxiliaryLifetimePatchSha256 !== 'string' ||
+          reshade.ownedCompositionAuxiliaryLifetimePatchSha256.toUpperCase() !== OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256) {
+        throw new Error('Pinned composition auxiliary lifetime patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedCompositionAuxiliaryLifetimePatchSha256 !== undefined) {
+      throw new Error('Composition auxiliary lifetime provenance requires runtime generation 35: ' + bits);
+    }
+    if (expectedGeneration >= 36) {
+      if (typeof reshade.ownedDeferredD3d11PatchSha256 !== 'string' ||
+          reshade.ownedDeferredD3d11PatchSha256.toUpperCase() !== OWNED_DEFERRED_D3D11_PATCH_SHA256) {
+        throw new Error('Pinned owned deferred D3D11 patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedDeferredD3d11PatchSha256 !== undefined) {
+      throw new Error('Owned deferred D3D11 provenance requires runtime generation 36: ' + bits);
+    }
+    if (expectedGeneration >= 29) {
+      if (typeof reshade.d3d11SwapchainResourceIdentityPatchSha256 !== 'string' ||
+          reshade.d3d11SwapchainResourceIdentityPatchSha256.toUpperCase() !== D3D11_SWAPCHAIN_RESOURCE_IDENTITY_PATCH_SHA256) {
+        throw new Error('Pinned D3D11 resource identity patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.d3d11SwapchainResourceIdentityPatchSha256 !== undefined) {
+      throw new Error('D3D11 resource identity patch provenance requires runtime generation 29: ' + bits);
+    }
+    if (expectedGeneration >= 24) {
+      if (typeof reshade.injectorInspectionContextPatchSha256 !== 'string' ||
+          reshade.injectorInspectionContextPatchSha256.toUpperCase() !== INJECTOR_INSPECTION_CONTEXT_PATCH_SHA256) {
+        throw new Error('Pinned injector inspection context patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorInspectionContextPatchSha256 !== undefined) {
+      throw new Error('Injector inspection context patch provenance requires runtime generation 24: ' + bits);
+    }
+    if (expectedGeneration >= 25) {
+      if (typeof reshade.injectorSelectionBeforeOpenPatchSha256 !== 'string' ||
+          reshade.injectorSelectionBeforeOpenPatchSha256.toUpperCase() !== INJECTOR_SELECTION_BEFORE_OPEN_PATCH_SHA256) {
+        throw new Error('Pinned injector selection before open patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorSelectionBeforeOpenPatchSha256 !== undefined) {
+      throw new Error('Injector selection before open patch provenance requires runtime generation 25: ' + bits);
+    }
+    if (expectedGeneration >= 26) {
+      if (typeof reshade.injectorMemberDiagnosticsPatchSha256 !== 'string' ||
+          reshade.injectorMemberDiagnosticsPatchSha256.toUpperCase() !== INJECTOR_MEMBER_DIAGNOSTICS_PATCH_SHA256) {
+        throw new Error('Pinned injector member diagnostics patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.injectorMemberDiagnosticsPatchSha256 !== undefined) {
+      throw new Error('Injector member diagnostics patch provenance requires runtime generation 26: ' + bits);
+    }
+    if (expectedGeneration >= 26) {
+      if (typeof reshade.injectorStartupReadinessPatchSha256 !== 'string' || reshade.injectorStartupReadinessPatchSha256.toUpperCase() !== INJECTOR_STARTUP_READINESS_PATCH_SHA256)
+        throw new Error('Pinned injector startup readiness patch provenance mismatch: ' + bits);
+    } else if (reshade.injectorStartupReadinessPatchSha256 !== undefined) throw new Error('Injector startup readiness patch provenance requires runtime generation 26: ' + bits);
+    if (expectedGeneration >= 27) {
+      if (typeof reshade.injectorElevatedPrivatePatchSha256 !== 'string' || reshade.injectorElevatedPrivatePatchSha256.toUpperCase() !== INJECTOR_ELEVATED_PRIVATE_PATCH_SHA256)
+        throw new Error('Pinned injector elevated private patch provenance mismatch: ' + bits);
+    } else if (reshade.injectorElevatedPrivatePatchSha256 !== undefined) throw new Error('Injector elevated private patch provenance requires runtime generation 27: ' + bits);
     verifyHash(native, `ReShade${bits}.dll`, reshade.runtimeSha256);
     verifyHash(native, `inject${suffix}.exe`, reshade.injectorSha256);
   }

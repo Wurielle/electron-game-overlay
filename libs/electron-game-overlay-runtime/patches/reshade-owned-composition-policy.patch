@@ -1,0 +1,293 @@
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -1,3 +1,4 @@
++#include "owned_runtime_policy.hpp"
+ #include "compatibility_snapshot.hpp"
+ // Owned ReShade baseline. Foreign/official hosts never activate this path.
+ #include "reshade.hpp"
+@@ -184,6 +185,7 @@ namespace ego_owned_late_d3d11
+         if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return GetLastError();
+         process_creation_time = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+         owned_stage = base;
++        ego_owned_runtime_policy::active.store(true, std::memory_order_release);
+         return ERROR_SUCCESS;
+     }
+ 
+diff --git a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+--- a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
++++ b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+@@ -73,7 +73,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (!once(1u)) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), use_load_library ? "load-library" : "notification", enabled ? "true" : "false", inputs.environment ? "true" : "false", inputs.renderer ? "true" : "false"); } catch (...) {}
+     }
+     inline unsigned factory_begin(unsigned flags, bool internal) noexcept {
+@@ -81,7 +81,7 @@ namespace ego_compatibility_snapshot {
+         const unsigned ticket = discovery_depth != 0 ? 2u : internal ? 4u : 8u;
+         if (!once(ticket)) return 0;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, flags, discovery_depth != 0 ? "true" : "false", internal ? "true" : "false"); } catch (...) {}
+         return ticket;
+     }
+@@ -89,7 +89,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (ticket == 0) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, static_cast<unsigned>(result), original, returned, original_entry, owner(original_entry), returned_entry, owner(returned_entry)); } catch (...) {}
+     }
+     inline bool claim_present(bool proxy, bool extended, unsigned flags) noexcept {
+@@ -102,13 +102,13 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         const auto current_jump = observe_entry_jump(current), target_jump = observe_entry_jump(target), saved_jump = observe_entry_jump(saved);
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
+             kind, GetCurrentProcessId(), GetCurrentThreadId(), role, method, instance, downstream, device, current, owner(current), current_jump.owner, current_jump.hops, target, owner(target), target_jump.owner, target_jump.hops, saved, owner(saved), saved_jump.owner, saved_jump.hops, internal ? "true" : "false"); } catch (...) {}
+     }
+     inline void present_end(bool proxy, bool extended, HRESULT result) noexcept {
+         error_scope preserve;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":31,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":32,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
+             GetCurrentProcessId(), GetCurrentThreadId(), proxy ? "proxy" : "raw", extended ? "Present1" : "Present", static_cast<unsigned>(result)); } catch (...) {}
+     }
+ }
+diff --git a/source/ini_file.cpp b/source/ini_file.cpp
+--- a/source/ini_file.cpp
++++ b/source/ini_file.cpp
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "ini_file.hpp"
++#include "ego_owned_late_d3d11/owned_runtime_policy.hpp"
+ #include <mutex>
+ #include <shared_mutex>
+ #include <cctype> // std::toupper
+@@ -125,6 +126,14 @@ bool reshade::ini_file::save()
+ 	if (!_modified)
+ 		return true;
+ 
++	// SDK-owned reserved configuration is immutable on disk, including the high
++	// stage read by a medium target. Keep transient GUI settings in this cache.
++	if (ego_owned_runtime_policy::immutable_configuration(_path, g_reshade_base_path))
++	{
++		_modified = false;
++		return true;
++	}
++
+ 	// Reset state even on failure to avoid 'flush_cache' repeatedly trying and failing to save
+ 	_modified = false;
+ 
+diff --git a/source/d3d11/d3d11_impl_swapchain.hpp b/source/d3d11/d3d11_impl_swapchain.hpp
+--- a/source/d3d11/d3d11_impl_swapchain.hpp
++++ b/source/d3d11/d3d11_impl_swapchain.hpp
+@@ -4,6 +4,7 @@
+  */
+ 
+ #pragma once
++#include "../ego_owned_late_d3d11/owned_runtime_policy.hpp"
+ 
+ namespace reshade::d3d11
+ {
+@@ -33,5 +34,6 @@ namespace reshade::d3d11
+ 		// available allows owned late-runtime teardown without calling into a
+ 		// chain whose destruction notifier has already begun.
+ 		HWND _window = nullptr;
++		mutable ego_owned_runtime_policy::window_binding _composition_window;
+ 	};
+ }
+diff --git a/source/d3d11/d3d11_impl_swapchain.cpp b/source/d3d11/d3d11_impl_swapchain.cpp
+--- a/source/d3d11/d3d11_impl_swapchain.cpp
++++ b/source/d3d11/d3d11_impl_swapchain.cpp
+@@ -23,7 +23,7 @@ reshade::api::device *reshade::d3d11::swapchain_impl::get_device()
+ 
+ void *reshade::d3d11::swapchain_impl::get_hwnd() const
+ {
+-	return _window;
++	return _window != nullptr ? _window : _composition_window.resolve();
+ }
+ 
+ reshade::api::resource reshade::d3d11::swapchain_impl::get_back_buffer(uint32_t index)
+diff --git a/source/dxgi/dxgi_swapchain.hpp b/source/dxgi/dxgi_swapchain.hpp
+--- a/source/dxgi/dxgi_swapchain.hpp
++++ b/source/dxgi/dxgi_swapchain.hpp
+@@ -125,6 +125,10 @@ private:
+ 	std::recursive_mutex _impl_mutex;
+ 	reshade::api::swapchain *const _impl;
+ 	bool _is_initialized = false;
++	bool _owned_composition = false;
++	bool _composition_active = false;
++	bool _composition_pending = false;
++	bool _composition_pending_resize = false;
+ 	bool _was_still_drawing_last_frame = false;
+ 
+ #if RESHADE_ADDON
+diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
+--- a/source/dxgi/dxgi_swapchain.cpp
++++ b/source/dxgi/dxgi_swapchain.cpp
+@@ -19,6 +19,7 @@
+ #include "addon_manager.hpp"
+ #include "runtime_manager.hpp"
+ #include "../ego_owned_late_d3d11/compatibility_snapshot.hpp"
++#include "../ego_owned_late_d3d11/owned_runtime_policy.hpp"
+ 
+ #if RESHADE_ADDON
+ extern bool modify_swapchain_desc(reshade::api::device_api api, DXGI_SWAP_CHAIN_DESC &desc, UINT &sync_interval);
+@@ -75,6 +76,8 @@ DXGISwapChain::DXGISwapChain(IDXGIFactory *factory, D3D11Device *device, IDXGISw
+ 	DXGISwapChain *const swapchain_proxy = this;
+ 	_orig->SetPrivateData(__uuidof(DXGISwapChain), sizeof(swapchain_proxy), &swapchain_proxy);
+ 
++	DXGI_SWAP_CHAIN_DESC native_description {};
++	_owned_composition = SUCCEEDED(_orig->GetDesc(&native_description)) && native_description.OutputWindow == nullptr;
+ 	reshade::create_effect_runtime(_impl, device->_immediate_context);
+ 	on_init(false);
+ }
+@@ -918,6 +921,17 @@ private:
+ void DXGISwapChain::on_init([[maybe_unused]] bool resize)
+ {
+ 	assert(!_is_initialized);
++	if (_owned_composition && ego_owned_runtime_policy::active.load(std::memory_order_acquire))
++	{
++		_composition_active = true;
++		if (_impl->get_hwnd() == nullptr)
++		{
++			_composition_pending = true;
++			_composition_pending_resize = resize;
++			return;
++		}
++	}
++	_composition_pending = false;
+ 
+ 	const unique_direct3d_device_lock lock(_direct3d_device, _direct3d_version, _direct3d_version == reshade::api::device_api::d3d12 ? static_cast<D3D12CommandQueue *>(_direct3d_command_queue)->_mutex : _impl_mutex);
+ 
+@@ -972,6 +986,25 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
+ 		return;
+ 	assert(!_was_still_drawing_last_frame);
+ 
++	if (_owned_composition && ego_owned_runtime_policy::active.load(std::memory_order_acquire))
++	{
++		if (!_composition_active)
++		{
++			if (_is_initialized) on_reset(false);
++			_composition_active = true;
++			_composition_pending = true;
++			_composition_pending_resize = false;
++		}
++		if (_impl->get_hwnd() == nullptr)
++		{
++			if (_is_initialized) { on_reset(false); _composition_pending_resize = false; }
++			_composition_pending = true;
++			return;
++		}
++		if (_composition_pending) on_init(_composition_pending_resize);
++		if (!_is_initialized) return;
++	}
++
+ 	assert(_is_initialized);
+ 
+ 	// Synchronize access to effect runtime to avoid race conditions between 'load_effects' and 'destroy_effects' causing crashes
+diff --git a/source/ego_owned_late_d3d11/owned_runtime_policy.hpp b/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
+new file mode 100644
+--- /dev/null
++++ b/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
+@@ -0,0 +1,92 @@
++#pragma once
++#include <Windows.h>
++#include <atomic>
++#include <filesystem>
++#include <cwchar>
++#include <cstdint>
++#include <limits>
++#include <mutex>
++// Enabled only after the native owned-stage marker, canonical module/base path,
++// exact target context and seed have passed the existing validation boundary.
++namespace ego_owned_runtime_policy {
++inline std::atomic<bool> active { false };
++inline std::atomic<std::uintptr_t> next_cookie { 0 };
++inline std::mutex binding_mutex;
++inline constexpr wchar_t property_name[] = L"ElectronGameOverlay.OwnedCompositionWindowV1";
++struct error_scope { DWORD value = GetLastError(); ~error_scope() { SetLastError(value); } };
++struct window_binding {
++    mutable HWND window = nullptr;
++    mutable DWORD thread = 0;
++    mutable HANDLE cookie = nullptr;
++    HWND resolve() const noexcept {
++        error_scope preserve;
++        if (!active.load(std::memory_order_acquire)) return nullptr;
++        try {
++        const std::scoped_lock lock(binding_mutex);
++        struct inventory { DWORD pid; HWND window; unsigned count; } found { GetCurrentProcessId(), nullptr, 0 };
++        const BOOL complete = EnumWindows([](HWND candidate, LPARAM opaque) -> BOOL {
++            auto &found = *reinterpret_cast<inventory *>(opaque);
++            DWORD pid = 0;
++            if (GetWindowThreadProcessId(candidate, &pid) != 0 && pid == found.pid &&
++                IsWindowVisible(candidate) && GetAncestor(candidate, GA_ROOT) == candidate) {
++                found.window = candidate;
++                if (++found.count > 1) return FALSE;
++            }
++            return TRUE;
++        }, reinterpret_cast<LPARAM>(&found));
++        // No foreground, size, class-name, title or helper-name preference.
++        if (!complete || found.count != 1) return nullptr;
++        DWORD pid = 0;
++        const DWORD current_thread = GetWindowThreadProcessId(found.window, &pid);
++        if (pid != found.pid || current_thread == 0 || !IsWindowVisible(found.window)) return nullptr;
++        if (window != nullptr) {
++            // A swapchain never migrates to another window or a reused HWND.
++            return found.window == window && current_thread == thread &&
++                GetPropW(window, property_name) == cookie ? window : nullptr;
++        }
++        HANDLE token = GetPropW(found.window, property_name);
++        if (token == nullptr) {
++            auto value = next_cookie.load(std::memory_order_relaxed);
++            while (value != (std::numeric_limits<std::uintptr_t>::max)() &&
++                !next_cookie.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) {}
++            if (value == (std::numeric_limits<std::uintptr_t>::max)()) return nullptr;
++            token = reinterpret_cast<HANDLE>(value + 1);
++            if (!SetPropW(found.window, property_name, token)) return nullptr;
++        }
++        DWORD again_pid = 0;
++        if (GetWindowThreadProcessId(found.window, &again_pid) != current_thread || again_pid != found.pid ||
++            !IsWindowVisible(found.window) || GetPropW(found.window, property_name) != token) return nullptr;
++        window = found.window; thread = current_thread; cookie = token;
++        return window;
++        } catch (...) { return nullptr; }
++    }
++};
++inline bool immutable_configuration(const std::filesystem::path &file, const std::filesystem::path &stage) {
++    if (!active.load(std::memory_order_acquire) ||
++        _wcsicmp(file.parent_path().lexically_normal().c_str(), stage.lexically_normal().c_str()) != 0 ||
++        _wcsicmp(file.extension().c_str(), L".ini") != 0) return false;
++    const auto name = file.stem().wstring();
++    if (_wcsicmp(name.c_str(), L"ReShadePreset") == 0) return true;
++    size_t offset = 0;
++    if (_wcsnicmp(name.c_str(), L"ReShade", 7) == 0) {
++        offset = 7;
++        if (_wcsnicmp(name.c_str() + offset, L"VR", 2) == 0) offset += 2;
++        if (offset == name.size()) return true;
++        if (name.size() - offset > 3 || name[offset] == L'0') return false;
++        unsigned ordinal = 0;
++        for (; offset < name.size(); ++offset) {
++            if (name[offset] < L'0' || name[offset] > L'9') return false;
++            ordinal = ordinal * 10 + unsigned(name[offset] - L'0');
++        }
++        return ordinal >= 2 && ordinal <= 100;
++    }
++    if (name.size() == 26 && name.compare(0, 9, L"ego-late-") == 0 && name[17] == L'-') {
++        for (size_t i = 9; i < name.size(); ++i) {
++            if (i == 17) continue;
++            if (!((name[i] >= L'0' && name[i] <= L'9') || (name[i] >= L'a' && name[i] <= L'f'))) return false;
++        }
++        return true;
++    }
++    return false;
++}
++}

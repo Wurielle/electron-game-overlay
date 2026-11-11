@@ -1,0 +1,30 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 84824f9..e7cd83e 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -5560,6 +5560,14 @@ int wmain(int argc, wchar_t *argv[])
+         process_instance_binding_requested = true;
+     }
+ 
++    // Publish the selected incarnation from the retained read-only handle,
++    // even when the later full-access open refuses it. This is selection proof,
++    // not injection success. Mutation still requires the full handle path and
++    // creation-time checks below. A successor must exclude this exact instance.
++    if (retained_selected_identity != nullptr && retained_selected_identity != INVALID_HANDLE_VALUE && !write_utf8_stdout_line(
++        L"EGO_TARGET_SELECTED_V2\t" + std::to_wstring(pid) + L"\t" +
++        std::to_wstring(expected_creation_time) + L"\t" + matched_image_path)) return ERROR_WRITE_FAULT;
++
+ 	// Open target application process
+ 	DWORD desired_process_access =
+ 		PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | SYNCHRONIZE;
+@@ -5650,10 +5658,6 @@ int wmain(int argc, wchar_t *argv[])
+ 		}
+ 	}
+ 
+-	    if (retained_selected_identity != nullptr && retained_selected_identity != INVALID_HANDLE_VALUE && !write_utf8_stdout_line(
+-        L"EGO_TARGET_SELECTED_V2\t" + std::to_wstring(pid) + L"\t" +
+-        std::to_wstring(expected_creation_time) + L"\t" + selected_image_path)) return ERROR_WRITE_FAULT;
+-
+ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) return ERROR_WRITE_FAULT;
+ 
+ 	bool session_mismatch = false;

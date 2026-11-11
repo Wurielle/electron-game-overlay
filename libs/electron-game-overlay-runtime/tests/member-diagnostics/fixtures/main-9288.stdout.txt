@@ -1,0 +1,7 @@
+EGO_POLICY_BASELINE_V1	134387355370799928
+ReShade path watcher armed.
+Matched executable path: D:\SteamLibrary\steamapps\common\Gun Frog\Gun Frog.exe
+EGO_TARGET_SELECTED_V2	9288	134387359135642586	D:\SteamLibrary\steamapps\common\Gun Frog\Gun Frog.exe
+EGO_TARGET_SELECTED	9288
+ELECTRON_GAME_OVERLAY_INJECTOR_DIAGNOSTIC {"schemaVersion":1,"stage":"target-preflight","code":"target-preloaded-member-elevation-rejected","pid":9288,"targetExecutablePath":"D:\\SteamLibrary\\steamapps\\common\\Gun Frog\\Gun Frog.exe","injectionStarted":false,"windowsErrorCode":5}
+ReShade injection not started.

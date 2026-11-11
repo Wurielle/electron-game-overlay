@@ -1,0 +1,110 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index fd7759a..b54d602 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -3572,6 +3572,88 @@ static void append_json_string(std::wstring &json, const std::wstring &value)
+ 
+ // Diagnostic reads use the exact identity-bound handle. They never reopen by
+ // PID, infer absence of a host, resume a thread or authorize an injection.
++enum class initial_loader_state { ready, not_created, not_initialized, unavailable };
++struct initial_loader_readiness_observation
++{
++    initial_loader_state state = initial_loader_state::unavailable;
++    DWORD windows_error = ERROR_SUCCESS;
++    unsigned attempts = 0;
++    ULONGLONG elapsed_ms = 0;
++    bool waited = false;
++};
++
++// Caller has already validated architecture and the retained handle's exact
++// process incarnation. This reads only that handle; it never resumes a thread.
++static initial_loader_state inspect_initial_loader(HANDLE process, DWORD &error)
++{
++    error = ERROR_SUCCESS;
++    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
++    const auto query = reinterpret_cast<decltype(&NtQueryInformationProcess)>(GetProcAddress(ntdll, "NtQueryInformationProcess"));
++    const auto to_error = reinterpret_cast<decltype(&RtlNtStatusToDosError)>(GetProcAddress(ntdll, "RtlNtStatusToDosError"));
++    if (query == nullptr) { error = ERROR_PROC_NOT_FOUND; return initial_loader_state::unavailable; }
++    PROCESS_BASIC_INFORMATION basic{};
++    const NTSTATUS status = query(process, ProcessBasicInformation, &basic, sizeof(basic), nullptr);
++    if (status < 0) { error = to_error != nullptr ? to_error(status) : ERROR_GEN_FAILURE; return initial_loader_state::unavailable; }
++    if (basic.PebBaseAddress == nullptr) { error = ERROR_INVALID_ADDRESS; return initial_loader_state::unavailable; }
++    uintptr_t loader = 0;
++    if (!read_remote_bytes(process, reinterpret_cast<uintptr_t>(basic.PebBaseAddress) + offsetof(PEB, Ldr), &loader, sizeof(loader), error))
++        return initial_loader_state::unavailable;
++    if (loader == 0) return initial_loader_state::not_created;
++    BYTE initialized = 0;
++    if (!read_remote_bytes(process, loader + sizeof(ULONG), &initialized, sizeof(initialized), error))
++        return initial_loader_state::unavailable;
++    return initialized != 0 ? initial_loader_state::ready : initial_loader_state::not_initialized;
++}
++
++static DWORD wait_for_initial_loader(HANDLE process, initial_loader_readiness_observation &observation)
++{
++    constexpr ULONGLONG readiness_budget_ms = 3000;
++    constexpr unsigned maximum_attempts = 320;
++    observation = {};
++    const ULONGLONG started = GetTickCount64();
++    auto finish = [&](DWORD error) {
++        observation.windows_error = error;
++        observation.elapsed_ms = GetTickCount64() - started;
++        return error;
++    };
++    for (;;) {
++        const DWORD liveness = WaitForSingleObject(process, 0);
++        if (liveness == WAIT_OBJECT_0) return finish(ERROR_PROCESS_ABORTED);
++        if (liveness != WAIT_TIMEOUT) { const DWORD error = GetLastError(); return finish(error != ERROR_SUCCESS ? error : ERROR_GEN_FAILURE); }
++        DWORD query_error = ERROR_SUCCESS;
++        ++observation.attempts;
++        observation.state = inspect_initial_loader(process, query_error);
++        if (observation.state == initial_loader_state::ready) return finish(ERROR_SUCCESS);
++        if (observation.state == initial_loader_state::unavailable) {
++            // No positive startup observation: preserve normal strict module
++            // inspection and its existing budget. Unknown never means ready.
++            if (!observation.waited) { observation.windows_error = query_error; observation.elapsed_ms = GetTickCount64() - started; return ERROR_SUCCESS; }
++            return finish(query_error != ERROR_SUCCESS ? query_error : ERROR_GEN_FAILURE);
++        }
++        observation.waited = true;
++        const ULONGLONG elapsed = GetTickCount64() - started;
++        if (elapsed >= readiness_budget_ms || observation.attempts >= maximum_attempts) return finish(ERROR_TIMEOUT);
++        const DWORD remaining = static_cast<DWORD>(readiness_budget_ms - elapsed);
++        const DWORD wait = WaitForSingleObject(process, (std::min)(DWORD(10), remaining));
++        if (wait == WAIT_OBJECT_0) return finish(ERROR_PROCESS_ABORTED);
++        if (wait != WAIT_TIMEOUT) { const DWORD error = GetLastError(); return finish(error != ERROR_SUCCESS ? error : ERROR_GEN_FAILURE); }
++    }
++}
++
++static bool write_initial_loader_readiness(DWORD pid, const initial_loader_readiness_observation &value)
++{
++    const wchar_t *state = value.state == initial_loader_state::ready ? L"initialized" :
++        value.state == initial_loader_state::not_created ? L"not-created" :
++        value.state == initial_loader_state::not_initialized ? L"not-initialized" : L"unavailable";
++    std::wstring line = L"EGO_TARGET_STARTUP_READINESS_V1 {\"pid\":" + std::to_wstring(pid) + L",\"loaderState\":";
++    append_json_string(line, state);
++    line.append(L",\"waited\":"); line.append(value.waited ? L"true" : L"false");
++    line.append(L",\"attempts\":" + std::to_wstring(value.attempts));
++    line.append(L",\"elapsedMs\":" + std::to_wstring(value.elapsed_ms));
++    line.append(L",\"windowsError\":" + std::to_wstring(value.windows_error) + L"}");
++    return fwprintf(stdout, L"%ls\n", line.c_str()) >= 0 && fflush(stdout) == 0;
++}
++
+ static bool write_target_inspection_context(HANDLE process, DWORD pid)
+ {
+ 	DWORD architecture_error = ERROR_SUCCESS, loader_error = ERROR_SUCCESS;
+@@ -5771,6 +5853,16 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
+ 	}
+ 
++    initial_loader_readiness_observation startup_readiness;
++    const DWORD startup_error = wait_for_initial_loader(remote_process, startup_readiness);
++    if (!write_initial_loader_readiness(pid, startup_readiness)) return ERROR_WRITE_FAULT;
++    if (startup_error != ERROR_SUCCESS) {
++        write_target_inspection_context(remote_process, pid);
++        write_injector_diagnostic(L"target-startup-readiness-failed", pid, std::wstring(), startup_error, selected_image_path);
++        print_injection_not_started();
++        return startup_error;
++    }
++
+ 	scoped_injection_claim injection_claim;
+ 	DWORD claim_error = ERROR_SUCCESS;
+ 	injection_claim_result claim_result = injection_claim_result::failed;

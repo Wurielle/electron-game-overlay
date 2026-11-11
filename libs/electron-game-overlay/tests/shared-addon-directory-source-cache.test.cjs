@@ -57,6 +57,11 @@ const patches = {
   RESHAPE_INITIAL_INSPECTION_RECOVERY_PATCH: recoveryPatch,
   RESHAPE_SHARED_ADDON_DIRECTORY_PATCH: sharedDirectoryPatch,
   RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH: foreignIsolationPatch,
+  RESHAPE_INSPECTION_CONTEXT_PATCH: patch('reshade-injector-inspection-context.patch'),
+  RESHAPE_SELECTION_BEFORE_OPEN_PATCH: patch('reshade-injector-selection-before-open.patch'),
+  RESHAPE_MEMBER_DIAGNOSTICS_PATCH: patch('reshade-injector-member-diagnostics.patch'),
+  RESHAPE_STARTUP_READINESS_PATCH: patch('reshade-injector-startup-readiness.patch'),
+  RESHAPE_ELEVATED_PRIVATE_PATCH: patch('reshade-injector-elevated-private-authorization.patch'),
 };
 const unavailable = spawnSync('cmake', ['--version'], { windowsHide: true }).status !== 0 ? 'CMake unavailable' :
   spawnSync('git', ['--version'], { windowsHide: true }).status !== 0 ? 'Git unavailable' : false;
@@ -137,6 +142,16 @@ function vector(f) { return manifest.entries.map(entry => [entry.path, sourceSha
 function run(f, action, overrides = {}) {
   assert.ok(tables && helpers && derivedVectors.includes('RESHAPE_FOREIGN_ADDON_ISOLATION_PATCHED_CONTENT_SHA256'));
   const calls = {
+    elevated: [`ego_apply_elevated_private_source_tail(${q(f.source)})`],
+    reverseElevated: [`ego_apply_elevated_private_source_tail(${q(f.source)} REVERSE)`],
+    member: [`ego_apply_member_diagnostics_source_tail(${q(f.source)})`],
+    reverseMember: [`ego_apply_member_diagnostics_source_tail(${q(f.source)} REVERSE)`],
+    startup: [`ego_apply_startup_readiness_source_tail(${q(f.source)})`],
+    reverseStartup: [`ego_apply_startup_readiness_source_tail(${q(f.source)} REVERSE)`],
+    context: [`ego_apply_inspection_context_source_tail(${q(f.source)})`],
+    reverseContext: [`ego_apply_inspection_context_source_tail(${q(f.source)} REVERSE)`],
+    selection: [`ego_apply_selection_before_open_source_tail(${q(f.source)})`],
+    reverseSelection: [`ego_apply_selection_before_open_source_tail(${q(f.source)} REVERSE)`],
     injector: [`ego_apply_shared_addon_directory_source_tail(${q(f.source)})`],
     host: [`ego_apply_foreign_addon_isolation_source_tail(${q(f.source)})`],
     reverseInjector: [`ego_apply_shared_addon_directory_source_tail(${q(f.source)} REVERSE)`],
@@ -190,6 +205,77 @@ test('shared directory tails retain every frozen generation-19 through22 impleme
     [foreignIsolationPatch, GEN23_HOST_PATCH_SHA]]) assert.equal(sha(fs.readFileSync(file)), expected, file);
   assert.ok(tables.includes(`"${inlRelative}=${GEN20_INL}"`));
   assert.doesNotMatch(tables, /SHARED_ADDON_DIRECTORY|FOREIGN_ADDON_ISOLATION/);
+});
+
+test('generation-24 context tail reuses, reverses and migrates without changing the mapped add-on or host', options, t => {
+  const f = fixture(t, 'complete'), before = snapshot(f.source);
+  const expected = pin('RESHAPE_INSPECTION_CONTEXT_INJECTOR_CONTENT_SHA256');
+  const contextPatch = patches.RESHAPE_INSPECTION_CONTEXT_PATCH;
+  assert.equal(sha(fs.readFileSync(contextPatch)), pin('RESHAPE_INSPECTION_CONTEXT_PATCH_SHA256'));
+  accepted(run(f, 'context'));
+  assert.equal(sourceSha(f.injector), expected);
+  const others = files => files.filter(file => file.path !== 'tools/injector.cpp');
+  assert.deepEqual(others(snapshot(f.source)), others(before));
+  const published = snapshot(f.source);
+  const publishedVector = vector(f);
+  accepted(run(f, 'context')); assert.deepEqual(snapshot(f.source), published);
+  accepted(run(f, 'reverseContext')); assert.deepEqual(snapshot(f.source), before);
+  accepted(run(f, 'context')); accepted(run(f, 'prepare'));
+  accepted(run(f, 'forward')); accepted(run(f, 'context'));
+  assert.deepEqual(vector(f), publishedVector);
+  write(f.injector, fs.readFileSync(f.injector, 'utf8') + '\n// unrecognized edit\n');
+  rejected(f, 'prepare'); rejected(f, 'context');
+});
+
+test('generation-26 diagnostic and startup tails exactly replay and reverse without changing mapped code', options, t => {
+  const f = fixture(t, 'complete'); accepted(run(f, 'context')); accepted(run(f, 'selection'));
+  const before = snapshot(f.source);
+  accepted(run(f, 'member')); assert.equal(sourceSha(f.injector), pin('RESHAPE_MEMBER_DIAGNOSTICS_INJECTOR_CONTENT_SHA256'));
+  const intermediate = snapshot(f.source);
+  accepted(run(f, 'startup')); assert.equal(sourceSha(f.injector), pin('RESHAPE_STARTUP_READINESS_INJECTOR_CONTENT_SHA256'));
+  const published = snapshot(f.source);
+  const publishedVector = vector(f);
+  assert.deepEqual(published.filter(file => file.path !== 'tools/injector.cpp'), before.filter(file => file.path !== 'tools/injector.cpp'));
+  accepted(run(f, 'startup')); assert.deepEqual(snapshot(f.source), published);
+  accepted(run(f, 'reverseStartup')); assert.deepEqual(snapshot(f.source), intermediate);
+  accepted(run(f, 'reverseMember')); assert.deepEqual(snapshot(f.source), before);
+  accepted(run(f, 'member')); accepted(run(f, 'startup')); accepted(run(f, 'prepare'));
+  accepted(run(f, 'forward')); accepted(run(f, 'context')); accepted(run(f, 'selection')); accepted(run(f, 'member')); accepted(run(f, 'startup'));
+  assert.deepEqual(vector(f), publishedVector);
+  write(f.injector, fs.readFileSync(f.injector, 'utf8') + '\n// unknown edit\n');
+  rejected(f, 'prepare'); rejected(f, 'startup');
+});
+
+test('generation-27 private elevated authorization exactly replays, reverses and preserves all mapped code', options, t=>{
+  const f=fixture(t,'complete');
+  for(const action of ['context','selection','member','startup'])accepted(run(f,action));
+  const before=snapshot(f.source);
+  accepted(run(f,'elevated'));assert.equal(sourceSha(f.injector),pin('RESHAPE_ELEVATED_PRIVATE_INJECTOR_CONTENT_SHA256'));
+  const published=snapshot(f.source),publishedVector=vector(f);
+  assert.deepEqual(published.filter(file=>file.path!=='tools/injector.cpp'),before.filter(file=>file.path!=='tools/injector.cpp'));
+  accepted(run(f,'elevated'));assert.deepEqual(snapshot(f.source),published);
+  accepted(run(f,'reverseElevated'));assert.deepEqual(snapshot(f.source),before);
+  accepted(run(f,'elevated'));accepted(run(f,'prepare'));accepted(run(f,'forward'));
+  for(const action of ['context','selection','member','startup','elevated'])accepted(run(f,action));
+  assert.deepEqual(vector(f),publishedVector);
+  write(f.injector,fs.readFileSync(f.injector,'utf8')+'\n// unknown edit\n');rejected(f,'prepare');rejected(f,'elevated');
+});
+
+test('generation-25 selection tail reverses before context and preserves every mapped implementation', options, t => {
+  const f = fixture(t, 'complete'); accepted(run(f, 'context'));
+  const before = snapshot(f.source);
+  accepted(run(f, 'selection'));
+  assert.equal(sourceSha(f.injector), pin('RESHAPE_SELECTION_BEFORE_OPEN_INJECTOR_CONTENT_SHA256'));
+  const published = snapshot(f.source);
+  const publishedVector = vector(f);
+  assert.deepEqual(published.filter(file => file.path !== 'tools/injector.cpp'), before.filter(file => file.path !== 'tools/injector.cpp'));
+  accepted(run(f, 'selection')); assert.deepEqual(snapshot(f.source), published);
+  accepted(run(f, 'reverseSelection')); assert.deepEqual(snapshot(f.source), before);
+  accepted(run(f, 'selection')); accepted(run(f, 'prepare'));
+  accepted(run(f, 'forward')); accepted(run(f, 'context')); accepted(run(f, 'selection'));
+  assert.deepEqual(vector(f), publishedVector);
+  write(f.injector, fs.readFileSync(f.injector, 'utf8') + '\n// unknown edit\n');
+  rejected(f, 'prepare'); rejected(f, 'selection');
 });
 
 test('shared directory injector publishes one source file and leaves the generation-22 host byte-identical', options, t => {
@@ -264,6 +350,11 @@ for (const unknown of ['injector', 'host', 'other implementation', 'extra file']
 for (const [name, file, action, shape] of [
   ['RESHAPE_SHARED_ADDON_DIRECTORY_PATCH', sharedDirectoryPatch, 'injector', 'base'],
   ['RESHAPE_FOREIGN_ADDON_ISOLATION_PATCH', foreignIsolationPatch, 'host', 'injector'],
+  ['RESHAPE_INSPECTION_CONTEXT_PATCH', patches.RESHAPE_INSPECTION_CONTEXT_PATCH, 'context', 'complete'],
+  ['RESHAPE_SELECTION_BEFORE_OPEN_PATCH', patches.RESHAPE_SELECTION_BEFORE_OPEN_PATCH, 'selection', 'complete'],
+  ['RESHAPE_MEMBER_DIAGNOSTICS_PATCH', patches.RESHAPE_MEMBER_DIAGNOSTICS_PATCH, 'member', 'complete'],
+  ['RESHAPE_STARTUP_READINESS_PATCH', patches.RESHAPE_STARTUP_READINESS_PATCH, 'startup', 'complete'],
+  ['RESHAPE_ELEVATED_PRIVATE_PATCH', patches.RESHAPE_ELEVATED_PRIVATE_PATCH, 'elevated', 'complete'],
 ]) test(`changed ${name} fails before its direct publication and before any cache peel`, options, t => {
   const f = fixture(t, shape), changed = path.join(f.directory, 'changed.patch');
   write(changed, fs.readFileSync(file, 'utf8') + '\n# unknown patch edit\n');

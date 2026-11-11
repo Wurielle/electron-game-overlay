@@ -1,4 +1,7 @@
 export { ElectronGameOverlay } from './electron-game-overlay.js';
+export { inspectOverlayConsumerExecutionContext, launchUnelevatedOverlayConsumer,
+  type OverlayConsumerExecutionContext, type OverlayConsumerContextOptions,
+  type OverlayConsumerRelaunchOptions, type OverlayConsumerRelaunchResult } from './overlay-consumer-context.js';
 export {
   defaultOverlayAddonStorageRoot,
   registerOverlayAddonInstallation,
@@ -20,6 +23,8 @@ export {
   isReShadeOperationError,
   parseReShadeLaunchConfig,
   createReShadeLaunchConfig,
+  inspectReShadeRuntimeStorage,
+  pruneReShadeRuntimeStorage,
 } from './reshade-launcher.js';
 export type {
   ReShadeAttachResult,
@@ -39,6 +44,8 @@ export type {
   ReShadeRuntimeMode,
   ReShadeRuntimeStartupCode,
   ReShadeTarget,
+  ReShadeRuntimeStorageEntry,
+  ReShadeRuntimeStorageReport,
 } from './reshade-launcher.js';
 export type {
   AttachElectronOverlayWindowOptions,

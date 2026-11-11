@@ -79,11 +79,20 @@ $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
 $ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
 # Keep these exact mirrors of the runtime build manifest. Protocol-family v1
 # must retain literal target transport v1 as its advertised minimum.
-$ExpectedRuntimeGeneration = 23
+$ExpectedRuntimeGeneration = 36
 $ExpectedTargetTransportMin = 1
 $ExpectedTargetTransportMax = 1
 $RuntimeSourceRoot = Join-Path $RepoRoot "libs\electron-game-overlay-runtime"
 $ExpectedPatchProvenance = [ordered]@{
+    ownedDeferredD3d11PatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-deferred-d3d11.patch"
+    ownedCompositionAuxiliaryLifetimePatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-auxiliary-lifetime.patch"
+    ownedCompositionWindowEligibilityPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-window-eligibility.patch"
+    ownedCompositionBindingDiagnosticsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-binding-diagnostics.patch"
+    ownedCompositionPolicyPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-owned-composition-policy.patch"
+    compatibilitySnapshotPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-compatibility-snapshot.patch"
+    steamLoadedModuleHookOrderPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-steam-loaded-module-hook-order.patch"
+    injectorPrivateStageDiagnosticsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-private-stage-diagnostics.patch"
+    d3d11SwapchainResourceIdentityPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-d3d11-swapchain-resource-identity.patch"
     observerPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-input-observer.patch"
     injectorBasePathPatchSha256 =
@@ -151,6 +160,16 @@ $ExpectedPatchProvenance = [ordered]@{
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-initial-inspection-recovery.patch"
     injectorSharedAddonDirectoryPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-injector-shared-addon-directory.patch"
+    injectorInspectionContextPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-inspection-context.patch"
+    injectorSelectionBeforeOpenPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-selection-before-open.patch"
+    injectorMemberDiagnosticsPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-member-diagnostics.patch"
+    injectorStartupReadinessPatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-startup-readiness.patch"
+    injectorElevatedPrivatePatchSha256 =
+        Join-Path $RuntimeSourceRoot "patches\reshade-injector-elevated-private-authorization.patch"
     ownedLateD3d11ForeignAddonIsolationPatchSha256 =
         Join-Path $RuntimeSourceRoot "patches\reshade-owned-late-d3d11-addon-failure-isolation.patch"
     injectorFutureTargetsPatchSha256 = Join-Path $RuntimeSourceRoot "patches\reshade-injector-future-targets.patch"
@@ -322,6 +341,7 @@ catch {
 $ExpectedPackageBuildStampProperties = @(
     "addonBuildId"
     "addonPreloadProtocol"
+    "privateElevatedAuthorization"
     "addonSha256"
     "configuration"
     "cooperativeAddonProtocol"
@@ -357,6 +377,8 @@ if (@(
     $PackageBuildStamp.injectorFutureTargets -ne 2 -or
     ($PackageBuildStamp.addonPreloadProtocol -isnot [int] -and $PackageBuildStamp.addonPreloadProtocol -isnot [long]) -or
     $PackageBuildStamp.addonPreloadProtocol -ne 1 -or
+    $PackageBuildStamp.privateElevatedAuthorization -ne 2 -or
+    ($PackageBuildStamp.privateElevatedAuthorization -isnot [int] -and $PackageBuildStamp.privateElevatedAuthorization -isnot [long]) -or
     $PackageBuildStamp.kind -ne "electron-game-overlay-runtime-build" -or
     $PackageBuildStamp.platform -ne $ArchitectureConfig.PackagePlatform -or
     $PackageBuildStamp.configuration -ne "RelWithDebInfo" -or

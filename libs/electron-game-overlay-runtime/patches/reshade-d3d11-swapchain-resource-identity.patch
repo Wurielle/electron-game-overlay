@@ -1,0 +1,38 @@
+diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
+--- a/source/dxgi/dxgi_swapchain.cpp
++++ b/source/dxgi/dxgi_swapchain.cpp
+@@ -7,6 +7,7 @@
+ #include "d3d10/d3d10_device.hpp"
+ #include "d3d10/d3d10_impl_swapchain.hpp"
+ #include "d3d11/d3d11_device.hpp"
++#include "d3d11/d3d11_resource.hpp"
+ #include "d3d11/d3d11_device_context.hpp"
+ #include "d3d11/d3d11_impl_swapchain.hpp"
+ #include "d3d12/d3d12_device.hpp"
+@@ -14,6 +15,7 @@
+ #include "d3d12/d3d12_impl_swapchain.hpp"
+ #include "dll_log.hpp" // Include late to get 'hr_to_string' helper function
+ #include "com_utils.hpp"
++#include "hook_manager.hpp"
+ #include "addon_manager.hpp"
+ #include "runtime_manager.hpp"
+ 
+@@ -293,7 +295,17 @@
+ }
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::GetBuffer(UINT Buffer, REFIID riid, void **ppSurface)
+ {
+-	return _orig->GetBuffer(Buffer, riid, ppSurface);
++	const HRESULT hr = _orig->GetBuffer(Buffer, riid, ppSurface);
++	if (SUCCEEDED(hr) && _direct3d_version == reshade::api::device_api::d3d11)
++	{
++		// DXGI creates composition back buffers without calling our device's
++		// CreateTexture2D. Install the existing ANGLE/Media Foundation identity
++		// hook before exposing any requested resource interface to the caller.
++		com_ptr<ID3D11Resource> resource;
++		if (SUCCEEDED(static_cast<IUnknown *>(*ppSurface)->QueryInterface(&resource)))
++			reshade::hooks::install("ID3D11Resource::GetDevice (swapchain)", reshade::hooks::vtable_from_instance(resource.get()), 3, &ID3D11Resource_GetDevice);
++	}
++	return hr;
+ }
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::SetFullscreenState(BOOL Fullscreen, IDXGIOutput *pTarget)
+ {

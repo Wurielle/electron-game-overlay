@@ -3,6 +3,93 @@
 These patches apply only to the ReShade 6.7.3 commit pinned by this production
 runtime and are applied as an ordered stack.
 
+## `reshade-owned-composition-window-eligibility.patch`
+
+Generation 34 omits nonactivating or topmost/layered captionless tool popups that
+do not declare APPWINDOW from owned null-HWND inference. It preserves captioned
+tools, plain frameless tools, explicit application windows and ordinary peers;
+real peer ambiguity still refuses binding. Valid native HWND behavior is intact.
+This addresses the exact tooltip/uniqueness/reset chain captured in actual
+high-PAGER 1010. No class/game preference, sleep, retry or permission change is
+introduced. See `doc/composition-window-eligibility.md` for native controls and
+the paired composition-host popup/marker contract for actual input/pixel tests.
+
+## `reshade-owned-composition-binding-diagnostics.patch`
+
+Generation 33 adds bounded exact binding-rejection and reset call-site records to
+the owned generation-32 host. It changes no window eligibility, lifetime/reset
+policy or forwarding behavior. The five-file tail preserves the full 26-file
+inventory and all preceding raw patch pins. Each observer has a 24-attempt budget,
+preserves `GetLastError`, catches log failures and performs no COM calls or input.
+See `doc/composition-binding-reset-diagnostics.md`. This is a diagnostic candidate
+for the unresolved intermittent high-PAGER reset, not an asserted behavior fix.
+
+## `reshade-owned-composition-policy.patch`
+
+Generation 32 adds an owned-host-only D3D11 null-HWND fallback to the single
+visible top-level window in the exact process, with lifetime-token validation
+and ambiguity refusal. Deferred initialization and normal reset/reinitialization
+retain surface/input lifecycle boundaries. Valid native HWND paths remain intact.
+Reserved configuration in the validated owned stage stays in memory, including
+the global INI dirtied by a secondary runtime. The patch never changes stage
+permissions or foreign installations. Its eight-file tail validates the complete
+26-file stack before each atomic publication. See
+`doc/owned-composition-and-exit-recovery.md` for scope and separate console and
+actual graphics acceptance. The feature add-on bytes/build ID are unchanged.
+
+## `reshade-d3d11-swapchain-resource-identity.patch`
+
+Generation 29 installs the existing D3D11 resource `GetDevice` compatibility
+hook before `DXGISwapChain::GetBuffer` returns a D3D11 resource. DXGI composition
+back buffers can be imported before the application creates an ordinary texture;
+without this step they expose the original device while ANGLE holds its proxy.
+The existing Media Foundation video-support exception and unwrapped device
+behavior are retained. The console/offscreen identity fixture reproduces the
+generation-28 mismatch and checks both architectures independently of consumer
+and game acceptance.
+
+The patch changes the owned ReShade host, with an exact digest in its build
+stamp and sealed SDK validator. The EGO feature add-on implementation and build
+ID are unchanged. Existing third-party ReShade installations are never replaced.
+
+## `reshade-injector-private-stage-diagnostics.patch`
+
+Generation 30 adds failure-only fixed artifact/operation diagnostics around the
+existing private elevated stage checks. It preserves the original Windows error,
+`GetLastError`, restrictive read guards, authorization and refusal decisions.
+The console helper fixture forces actual owned file and directory sharing
+conflicts; it does not establish the cause or resolution of the consumer's
+particular high x86 failure.
+
+## `reshade-steam-loaded-module-hook-order.patch`
+
+Generation 30 retains ReShade's environment-based Steam loader-hook selection
+and also recognizes the architecture's already-loaded renderer DLL in the exact
+current process. Missing optional environment metadata must not select the DLL
+notification path when that renderer is already present. No renderer is loaded
+by this check, and it adds no delay, executable heuristic or game exclusion.
+
+The dedicated owned console factory model retains the generation-29 missing-key
+failure and exact-name/environment/no-model controls. It is not Valve code or
+actual Steam/Overwatch acceptance. Later-renderer ordering remains a separate
+limitation; this narrow correction does not claim to fix every load order.
+
+## `reshade-compatibility-snapshot.patch`
+
+Generation 31 adds at most 17 read-only records for the actual loader selection,
+early factory discovery scope, native callback registration and first non-TEST
+proxy/raw Present/Present1. Callback address ownership and at most two recognized
+entry jumps are observed without executing them or dumping bytes. Unsupported or
+unreadable entries remain unknown. Records contain no paths, tokens or environment
+values. Logging failures and GetLastError are isolated from forwarding.
+
+The exact 23-file source inventory includes five restartable diagnostic tail
+files. The source-cache gate tests every partial publication boundary and unknown
+edit/file/patch refusals. Real owned foreign-hook fixtures verify module/jump
+roles, saved trampolines, once-only records, native forwarding and unchanged
+references on both architectures. These are diagnostics, not an Overwatch fix
+or evidence of actual Steam frames. See `doc/bounded-compatibility-snapshot.md`.
+
 ## `reshade-input-observer.patch`
 
 Advances the local full-add-on API from 18 to 19 and adds a passive
@@ -315,6 +402,149 @@ environment layout. The Win32 build targets `ReShade32.dll` and
 loader with an ordered code-section end marker because x86 images do not carry
 the x64 unwind metadata used to measure that thunk.
 
+## `reshade-injector-inspection-context.patch`
+
+Generation 24 adds optional `EGO_TARGET_INSPECTION_CONTEXT_V1` stdout telemetry
+after transient module-inspection failures, using the exact retained target
+handle. It reports selected/handle PIDs, process creation time, injector/process/
+native machine values, architecture-query error, diagnostic loader state/error
+and process liveness. PEB loader fields are observations only and never authorize
+injection, bypass a host check, resume a thread or extend the 250 ms inspection
+budget. The existing strict diagnostic/result schemas remain unchanged.
+
+The patch also checks the previously ignored `IsWow64Process` return value and
+refuses before module inspection or injection if that query fails. Its failure
+emits context before the diagnostic without a module-inspection summary. Mapped
+host/add-on implementations are unchanged, so their exact add-on build ID stays
+`CCE20935ADD44EF6A5A7973014B2E07F`. Injector source, patch provenance and runtime
+generation change together; generation-24 seals require that provenance in both
+architectures. Source-cache migration reverses this tail before generation 23.
+
+The remote report for PID 24224 proves exhausted module enumeration at 250 ms
+with error 299 before injection. It does not establish the underlying cause.
+The separate warnings for PIDs 12028 (preflight), 27116 (runtime initialization)
+and 27592 (injector) cannot be joined into the same attempt. A controlled suspended
+console target reproduced 17 attempts/250 ms/299 on both x64 and x86, then passed
+read-only inspection through the same handle after its owner resumed it. This
+proves one possible cause; it does not diagnose the remote game.
+
+For the next remote investigation, collect one complete attempt's native stdout
+and stderr, its SDK diagnostic with stage/PID/retry safety, selected V2 creation
+identity, SDK version, both package/build manifests and Windows version/machine.
+With this candidate's diagnostics, compare the context creation identity and
+handle PID to that selection. `not-created`/`not-initialized` identifies observed
+loader startup; `initialized` excludes that particular observation but does not
+prove a stable module list. `unavailable` must retain its query/read error instead
+of being treated as an empty list. Machine 34404 is AMD64, 332 is I386; a process
+machine of zero means the native machine. A launcher holding the primary thread
+suspended is additional evidence to record, not an inference from 299. No consumer
+retry or longer timeout is prescribed. Do not combine evidence across launches.
+
+Validation launchers:
+`scripts/test-cases/initial-module-inspection-console.ps1 -Architecture x64`
+and `-Architecture x86`; they launch owned inert console fixtures only. Each also
+checks distinct private image globals and the merged-hard-link control. The
+existing deterministic fixture still covers all 54 ownership/failure cases and
+20,982 assertions on each architecture against the exact candidate source.
+
+The separate mixed-watcher recovery launchers described in the SDK README use
+unmodified released generation-23 native binaries with the current SDK; they do
+not validate a complete generation-24 graphics build. On 2026-11-09, configuring
+the existing canonical native cache refused an unrecognized complete source-cache
+state without changing files. That cache was preserved. Generation-24 injector
+console and deterministic checks instead compiled isolated verified source
+reconstructions on x64 and x86. A subsequent complete generation-24 build on both
+architectures passed using `-BuildCacheRoot build/candidate-gen24-cache`, seeded
+with clean checkouts from the pinned Git objects. The original unrecognized cache
+was not reset or overwritten. Headless ABI, native policy and installed-package
+checks accompany the local candidate under
+`build/candidates/attachment-recovery-gen24`; its validation report identifies
+the exact artifact and dirty source provenance. Generation-24 consumer graphics
+and input acceptance belong to the separate consumer test run.
+
+## `reshade-injector-selection-before-open.patch`
+
+Generation 25 moves future-target V2 selection publication ahead of the
+full-access `OpenProcess`, using the exact retained limited-access identity and
+path already verified by the native selector. Previously a matched process could
+be refused before V2, leaving an armed SDK policy slot with no identity to
+exclude or retire and no safe way to discover a successor. The original
+generation-24 injector reproduces that path on an owned process with a DACL
+supplied atomically to `CreateProcessW`; generation 25 emits its exact PID/path/
+creation identity before the same refusal. No injection access is granted.
+
+V2 identifies selection only. A full-access handle must still independently
+match the path and creation time before architecture/module inspection, claims
+or VM work. The legacy selection line remains after those checks. Failed or
+unavailable identity queries do not synthesize V2 or authorize a blind retry.
+Mapped host/add-on code and build ID remain unchanged. This frozen one-file
+tail reverses before generation 24 and validates the complete source vector
+before publication; both runtime manifests bind its exact provenance.
+
+The owned headless launchers are
+`scripts/test-cases/unopened-target-selection-console.ps1` and
+`scripts/test-cases/owned-target-access-refusal.ps1`, each accepting x64/x86. The
+former compiles the complete production entrypoint with a targeted API seam for
+live refusal and a fast-exit race. The latter runs the actual built injector
+against the owned DACL fixture and verifies retained-handle cleanup. The separate
+`owned-target-access-refusal-negative-control.ps1` preserves generation-24
+reproduction. Its [fixture protocol](../tests/unopened-target-selection/README.md)
+also documents consumer integration. No graphics, external target or system
+security configuration is involved in these gates.
+
+## Generation-27 private elevated authorization
+
+`reshade-injector-elevated-private-authorization.patch` adds a same-account,
+same-interactive-session token gate on the exact retained target handle.
+It permits high-to-high and high-to-medium attachment only through the isolated
+private lane, with no shared registered add-on scan. Normal-to-high, system,
+cross-user/session and unknown token evidence remain refused before mutation.
+The SDK supplies expected hashes for the runtime, engine and private INI;
+native code compares the write-pinned files against those hashes and validates
+the newly created high-labelled directory, its owner/protected DACL and scan
+inventory. The native manager creates only new project-owned directories;
+it never changes a saved administrator preference or existing ReShade assets.
+
+See the [elevated consumer contract](../../../doc/elevated-consumers.md) for
+the token matrix, diagnostic-only medium-writable files and verification limits.
+The new human-facing headless gate is
+`scripts/test-cases/elevated-private-authorization-console.ps1`.
+Injector/helper changes do not alter the mapped EGO feature engine, whose exact
+build ID remains `CCE20935ADD44EF6A5A7973014B2E07F`.
+
+## Generation-26 diagnostics and initial loader readiness
+
+`reshade-injector-member-diagnostics.patch` preserves the authorization policy
+and reports each actor's token-query phase through
+`EGO_PRELOAD_AUTHORIZATION_CONTEXT_V1`. Windows error 5 alone does not identify
+the elevated actor. Structured member failures distinguish preflight from an
+already consumed participant load; the SDK keeps mutation uncertainty terminal.
+
+`reshade-injector-startup-readiness.patch` adds a separate 3000 ms bounded wait
+only after the identity-bound handle positively reports a missing or
+uninitialized loader. It checks liveness on that same handle and never resumes
+or suspends a target, reopens a PID, or retries an uncertain injection. Unknown
+initial state delegates to strict inspection; losing a known pending state
+fails closed. The existing strict module inspection retains its 250 ms budget
+after startup readiness. Readiness neither proves module absence nor authorizes
+injection. Timeout/exit emits `target-startup-readiness-failed` before mutation.
+Successor selection still publishes its own V2 identity independently.
+
+Both tails are frozen, reversible source-cache phases with exact SDK/native
+provenance on x64 and x86. They do not change mapped host/add-on implementation;
+the add-on ID stays `CCE20935ADD44EF6A5A7973014B2E07F`.
+
+Human-facing headless gates have separate launchers:
+`startup-readiness-console.ps1` (owned paused child, 800 ms owner resume,
+unchanged 299 negative control, timeout and exit),
+`member-diagnostics-console.ps1` (real token observations and deterministic
+failure/formatter seams), `consumer-execution-context-console.ps1` (real caller
+binding and fail-closed identity checks), and `consumer-parent-launch-console.ps1`
+(actual medium desktop-parent launch with a test-only early-return seam).
+The latter proves the real process creation, environment and argv path at medium
+integrity; it does not establish an elevated-to-medium consumer round trip.
+None starts graphics, a game or a UAC prompt.
+
 ## `reshade-x86-target-architecture-diagnostic.patch`
 
 Emits the existing strict pre-mutation injector diagnostic with
@@ -332,6 +562,17 @@ native claim acquisition, or target mutation. Basename-only exact-PID requests
 remain supported, but SDK process-watcher lanes use the full path so PID reuse
 cannot silently select a different executable at another location.
 
+## `reshade-owned-composition-auxiliary-lifetime.patch`
+
+Generation 35 remembers an already-excluded layered/topmost popup-tool lifetime
+across removal/restoration of only WS_EX_LAYERED. A bounded host-owned table and
+separate window-property token validate the same HWND/PID/thread/owner/style.
+Previously unseen unlayered tools stay eligible; caption/APPWINDOW and token
+changes revoke remembered state. This corrects the observed Windows tooltip
+fade transition without a blanket exclusion of interactive topmost tools.
+See `doc/composition-auxiliary-lifetime.md` for limits, native gates and the
+paired real-renderer fixture contract. Actual PAGER acceptance remains required.
+
 CMake applies the ordered patch stack idempotently to ignored fetched source,
 including migrating prior patch stacks without resetting them, and then
 validates the pinned commit, exact nine-file change set, and normalized SHA-256
@@ -341,3 +582,16 @@ production-patch hash, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache. Raw-input normalization reuses the existing
 normalized Win32 input path; it changes no published transport C ABI, transport
 wire schema, or public Node SDK API.
+
+## Owned deferred D3D11, generation 36
+
+`reshade-owned-deferred-d3d11.patch` queues one pinned owned-host worker only
+after successful D3D11 publication on the existing LoadLibrary path and release
+of the delayed-path mutex. Only an already validated missing-backend outcome
+may reopen, and the worker revalidates stage/adapter readiness before using the
+existing raw-adoption path. Existing try-lock, notification, official/foreign,
+target-exit, public ABI and per-app feature boundaries remain unchanged.
+It provides later Present adoption, not retroactive device wrapping or a
+first-frame guarantee. See `doc/owned-deferred-d3d11.md` and the separate
+production, loader, negative and source-cache gate launchers. Actual game
+acceptance remains separate; candidate 1012 stays immutable.

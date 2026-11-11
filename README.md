@@ -757,6 +757,17 @@ signatures instead of copying type definitions from this README.
 See [`doc/known-issues.md`](doc/known-issues.md) for detailed compatibility and
 hardening boundaries.
 
+## Troubleshooting
+
+### Steam overlay missing when RTSS is running
+
+RTSS's default hooking mode can prevent the Steam overlay from appearing when
+Electron Game Overlay is active. Close the game, select the affected game's
+profile in RTSS, and enable **Use Microsoft Detours API hooking**. Restart the
+game for the change to take effect.
+
+Alternatively, close RTSS before launching the game again.
+
 ## Build and test
 
 Repository tooling accepts Node.js `^20.19.0 || >=22.12.0`. The normal SDK build

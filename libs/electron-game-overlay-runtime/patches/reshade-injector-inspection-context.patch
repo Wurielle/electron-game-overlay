@@ -1,0 +1,115 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index ab49adc..84824f9 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -3570,6 +3570,73 @@ static void append_json_string(std::wstring &json, const std::wstring &value)
+ 	json.push_back(L'"');
+ }
+ 
++// Diagnostic reads use the exact identity-bound handle. They never reopen by
++// PID, infer absence of a host, resume a thread or authorize an injection.
++static bool write_target_inspection_context(HANDLE process, DWORD pid)
++{
++	DWORD architecture_error = ERROR_SUCCESS, loader_error = ERROR_SUCCESS;
++	USHORT process_machine = IMAGE_FILE_MACHINE_UNKNOWN, native_machine = IMAGE_FILE_MACHINE_UNKNOWN;
++	using query_machine_function = BOOL (WINAPI *)(HANDLE, USHORT *, USHORT *);
++	const auto query_machine = reinterpret_cast<query_machine_function>(
++		GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2"));
++	if (query_machine == nullptr) architecture_error = ERROR_PROC_NOT_FOUND;
++	else if (!query_machine(process, &process_machine, &native_machine))
++		architecture_error = GetLastError();
++	const USHORT effective_machine = process_machine != IMAGE_FILE_MACHINE_UNKNOWN ? process_machine : native_machine;
++	const wchar_t *loader_state = L"unavailable";
++	if (architecture_error == ERROR_SUCCESS && effective_machine == target_machine)
++	{
++		const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
++		const auto query = reinterpret_cast<decltype(&NtQueryInformationProcess)>(GetProcAddress(ntdll, "NtQueryInformationProcess"));
++		const auto to_error = reinterpret_cast<decltype(&RtlNtStatusToDosError)>(GetProcAddress(ntdll, "RtlNtStatusToDosError"));
++		PROCESS_BASIC_INFORMATION basic = {};
++		if (query == nullptr) loader_error = ERROR_PROC_NOT_FOUND;
++		else
++		{
++			const NTSTATUS status = query(process, ProcessBasicInformation, &basic, sizeof(basic), nullptr);
++			if (status < 0) loader_error = to_error != nullptr ? to_error(status) : ERROR_GEN_FAILURE;
++			else if (basic.PebBaseAddress == nullptr) loader_error = ERROR_INVALID_ADDRESS;
++			else
++			{
++				uintptr_t loader = 0;
++				if (read_remote_bytes(process, reinterpret_cast<uintptr_t>(basic.PebBaseAddress) + offsetof(PEB, Ldr), &loader, sizeof(loader), loader_error))
++				{
++					if (loader == 0) loader_state = L"not-created";
++					else
++					{
++						// PEB_LDR_DATA's leading ULONG Length and BOOLEAN Initialized.
++						// This observational field never changes preflight decisions.
++						BYTE initialized = 0;
++						if (read_remote_bytes(process, loader + sizeof(ULONG), &initialized, sizeof(initialized), loader_error))
++							loader_state = initialized != 0 ? L"initialized" : L"not-initialized";
++					}
++				}
++			}
++		}
++	}
++	else loader_error = architecture_error != ERROR_SUCCESS ? architecture_error : ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
++	FILETIME creation = {}, exit = {}, kernel = {}, user = {};
++	DWORD identity_error = ERROR_SUCCESS;
++	ULONGLONG created = 0;
++	if (GetProcessTimes(process, &creation, &exit, &kernel, &user))
++		created = (static_cast<ULONGLONG>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
++	else identity_error = GetLastError();
++	const DWORD liveness = WaitForSingleObject(process, 0);
++	std::wstring line = L"EGO_TARGET_INSPECTION_CONTEXT_V1 {\"pid\":" + std::to_wstring(pid);
++	line.append(L",\"handlePid\":" + std::to_wstring(GetProcessId(process)));
++	line.append(L",\"creationTime100ns\":\"" + std::to_wstring(created) + L"\"");
++	line.append(L",\"identityWindowsError\":" + std::to_wstring(identity_error));
++	line.append(L",\"injectorMachine\":" + std::to_wstring(target_machine));
++	line.append(L",\"processMachine\":" + std::to_wstring(process_machine));
++	line.append(L",\"nativeMachine\":" + std::to_wstring(native_machine));
++	line.append(L",\"architectureWindowsError\":" + std::to_wstring(architecture_error));
++	line.append(L",\"loaderState\":"); append_json_string(line, loader_state);
++	line.append(L",\"loaderWindowsError\":" + std::to_wstring(loader_error));
++	line.append(L",\"processWaitResult\":" + std::to_wstring(liveness));
++	line.push_back(L'}');
++	return fwprintf(stdout, L"%ls\n", line.c_str()) >= 0 && fflush(stdout) == 0;
++}
++
+ static bool write_initial_module_inspection_summary(
+ 	const initial_module_inspection_observation &observation)
+ {
+@@ -5629,7 +5696,15 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 
+ 	// Check process architecture
+ 	BOOL remote_is_wow64 = FALSE;
+-	IsWow64Process(remote_process, &remote_is_wow64);
++	if (!IsWow64Process(remote_process, &remote_is_wow64))
++	{
++		const DWORD architecture_error = GetLastError();
++		write_target_inspection_context(remote_process, pid);
++		write_injector_diagnostic(L"target-module-inspection-failed", pid, std::wstring(),
++			architecture_error != ERROR_SUCCESS ? architecture_error : ERROR_GEN_FAILURE, selected_image_path);
++		print_injection_not_started();
++		return architecture_error != ERROR_SUCCESS ? architecture_error : ERROR_GEN_FAILURE;
++	}
+ #ifndef _WIN64
+ 	if (remote_is_wow64 == FALSE)
+ #else
+@@ -5704,7 +5779,8 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		DWORD member_error = inspect_initial_host_readonly(remote_process, pid,
+ 			pinned, host, ready, cooperative_present, owned_late, initial_inspection);
+ 		if (initial_inspection.first_error != ERROR_SUCCESS &&
+-			!write_initial_module_inspection_summary(initial_inspection))
++			(!write_initial_module_inspection_summary(initial_inspection) ||
++			 !write_target_inspection_context(remote_process, pid)))
+ 		{
+ 			print_injection_not_started();
+ 			return ERROR_WRITE_FAULT;
+@@ -5733,7 +5809,8 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 			&preflight_inspection,
+ 			initial_host_observed);
+ 	if (preflight_inspection.first_error != ERROR_SUCCESS &&
+-		!write_initial_module_inspection_summary(preflight_inspection))
++		(!write_initial_module_inspection_summary(preflight_inspection) ||
++		 !write_target_inspection_context(remote_process, pid)))
+ 	{
+ 		print_injection_not_started();
+ 		return ERROR_WRITE_FAULT;

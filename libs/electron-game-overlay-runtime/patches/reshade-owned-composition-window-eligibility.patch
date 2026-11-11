@@ -1,0 +1,125 @@
+diff --git a/source/ego_owned_late_d3d11/owned_runtime_policy.hpp b/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
+--- a/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
++++ b/source/ego_owned_late_d3d11/owned_runtime_policy.hpp
+@@ -30,6 +30,24 @@ using binding_observer = void (*)(const binding_observation &) noexcept;
+ inline std::atomic<binding_observer> observer { nullptr };
+ inline std::atomic<unsigned> observation_count {0};
+ inline constexpr unsigned observation_limit=24;
++// Null-HWND inference only. A tooltip/tool popup must not displace the game's
++// input/presentation window. Preserve captioned tools, ordinary frameless tools
++// and an explicit APPWINDOW declaration; no class, title, size or owner guesses.
++inline bool presentation_candidate(HWND window) noexcept {
++    const error_scope preserve;
++    SetLastError(ERROR_SUCCESS);
++    const auto style=static_cast<DWORD>(GetWindowLongPtrW(window,GWL_STYLE));
++    if(style==0 && GetLastError()!=ERROR_SUCCESS) return false;
++    SetLastError(ERROR_SUCCESS);
++    const auto extended=static_cast<DWORD>(GetWindowLongPtrW(window,GWL_EXSTYLE));
++    if(extended==0 && GetLastError()!=ERROR_SUCCESS) return false;
++    const bool caption=(style & WS_CAPTION)==WS_CAPTION;
++    const bool tool_popup=(style & WS_POPUP)!=0 && (extended & WS_EX_TOOLWINDOW)!=0;
++    const bool explicitly_nonactivating=(extended & WS_EX_NOACTIVATE)!=0;
++    const bool layered_topmost=(extended & (WS_EX_LAYERED|WS_EX_TOPMOST))==(WS_EX_LAYERED|WS_EX_TOPMOST);
++    return !(tool_popup && !caption && (extended & WS_EX_APPWINDOW)==0 &&
++        (explicitly_nonactivating || layered_topmost));
++}
+ struct window_binding {
+     mutable HWND window = nullptr;
+     mutable DWORD thread = 0;
+@@ -66,7 +84,7 @@ struct window_binding {
+             auto &found = *reinterpret_cast<inventory *>(opaque);
+             DWORD pid = 0;
+             if (GetWindowThreadProcessId(candidate, &pid) != 0 && pid == found.pid &&
+-                IsWindowVisible(candidate) && GetAncestor(candidate, GA_ROOT) == candidate) {
++                IsWindowVisible(candidate) && GetAncestor(candidate, GA_ROOT) == candidate && presentation_candidate(candidate)) {
+                 if (found.count == 0) found.first = candidate;
+                 found.window = candidate;
+                 if (++found.count > 1) return FALSE;
+@@ -80,7 +98,7 @@ struct window_binding {
+         }
+         DWORD pid = 0;
+         const DWORD current_thread = GetWindowThreadProcessId(found.window, &pid);
+-        if (pid != found.pid || current_thread == 0 || !IsWindowVisible(found.window)) {
++        if (pid != found.pid || current_thread == 0 || !IsWindowVisible(found.window) || !presentation_candidate(found.window)) {
+             observe(binding_reason::identity_unavailable, found.window, found.count, complete, GetLastError());
+             return nullptr;
+         }
+@@ -103,7 +121,7 @@ struct window_binding {
+         }
+         DWORD again_pid = 0;
+         if (GetWindowThreadProcessId(found.window, &again_pid) != current_thread || again_pid != found.pid ||
+-            !IsWindowVisible(found.window) || GetPropW(found.window, property_name) != token) return nullptr;
++            !IsWindowVisible(found.window) || !presentation_candidate(found.window) || GetPropW(found.window, property_name) != token) return nullptr;
+         window = found.window; thread = current_thread; cookie = token;
+         return window;
+         } catch (...) { return nullptr; }
+diff --git a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+--- a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
++++ b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+@@ -73,7 +73,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (!once(1u)) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":34,\"kind\":\"loader\",\"pid\":%lu,\"tid\":%lu,\"strategy\":\"%s\",\"enabled\":%s,\"steamEnvironment\":%s,\"steamRenderer\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), use_load_library ? "load-library" : "notification", enabled ? "true" : "false", inputs.environment ? "true" : "false", inputs.renderer ? "true" : "false"); } catch (...) {}
+     }
+     inline unsigned factory_begin(unsigned flags, bool internal) noexcept {
+@@ -81,7 +81,7 @@ namespace ego_compatibility_snapshot {
+         const unsigned ticket = discovery_depth != 0 ? 2u : internal ? 4u : 8u;
+         if (!once(ticket)) return 0;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":34,\"kind\":\"factory-entry\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"flags\":%u,\"methodDiscovery\":%s,\"dxgiInternal\":%s}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, flags, discovery_depth != 0 ? "true" : "false", internal ? "true" : "false"); } catch (...) {}
+         return ticket;
+     }
+@@ -89,7 +89,7 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         if (ticket == 0) return;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":34,\"kind\":\"factory-return\",\"pid\":%lu,\"tid\":%lu,\"ticket\":%u,\"hresult\":%u,\"original\":\"%p\",\"returned\":\"%p\",\"originalCreateSwapChain\":\"%p\",\"originalOwner\":\"%s\",\"returnedCreateSwapChain\":\"%p\",\"returnedOwner\":\"%s\"}",
+             GetCurrentProcessId(), GetCurrentThreadId(), ticket, static_cast<unsigned>(result), original, returned, original_entry, owner(original_entry), returned_entry, owner(returned_entry)); } catch (...) {}
+     }
+     inline bool claim_present(bool proxy, bool extended, unsigned flags) noexcept {
+@@ -102,13 +102,13 @@ namespace ego_compatibility_snapshot {
+         error_scope preserve;
+         const auto current_jump = observe_entry_jump(current), target_jump = observe_entry_jump(target), saved_jump = observe_entry_jump(saved);
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":34,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
+             kind, GetCurrentProcessId(), GetCurrentThreadId(), role, method, instance, downstream, device, current, owner(current), current_jump.owner, current_jump.hops, target, owner(target), target_jump.owner, target_jump.hops, saved, owner(saved), saved_jump.owner, saved_jump.hops, internal ? "true" : "false"); } catch (...) {}
+     }
+     inline void present_end(bool proxy, bool extended, HRESULT result) noexcept {
+         error_scope preserve;
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":34,\"kind\":\"present-return\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"hresult\":%u}",
+             GetCurrentProcessId(), GetCurrentThreadId(), proxy ? "proxy" : "raw", extended ? "Present1" : "Present", static_cast<unsigned>(result)); } catch (...) {}
+     }
+ }
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -175,7 +175,7 @@ namespace ego_owned_late_d3d11
+             FILETIME utc {};GetSystemTimePreciseAsFileTime(&utc);
+             const auto ticks=(std::uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime;
+             reshade::log::message(reshade::log::level::info,
+-                "EGO_OWNED_COMPOSITION_BINDING_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"bindingId\":\"%p\",\"bound\":\"%p\",\"firstCandidate\":\"%p\",\"firstCandidateOwner\":\"%p\",\"candidate\":\"%p\",\"candidateOwner\":\"%p\",\"expectedThread\":%lu,\"candidateThread\":%lu,\"boundThread\":%lu,\"boundPid\":%lu,\"eligibleCount\":%u,\"enumerationComplete\":%s,\"boundVisible\":%s,\"boundRoot\":%s,\"expectedToken\":\"%p\",\"observedToken\":\"%p\",\"firstCandidateStyle\":%llu,\"firstCandidateExtendedStyle\":%llu,\"candidateStyle\":%llu,\"candidateExtendedStyle\":%llu,\"windowsError\":%lu}",
++                "EGO_OWNED_COMPOSITION_BINDING_V1 {\"schemaVersion\":1,\"runtimeGeneration\":34,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"bindingId\":\"%p\",\"bound\":\"%p\",\"firstCandidate\":\"%p\",\"firstCandidateOwner\":\"%p\",\"candidate\":\"%p\",\"candidateOwner\":\"%p\",\"expectedThread\":%lu,\"candidateThread\":%lu,\"boundThread\":%lu,\"boundPid\":%lu,\"eligibleCount\":%u,\"enumerationComplete\":%s,\"boundVisible\":%s,\"boundRoot\":%s,\"expectedToken\":\"%p\",\"observedToken\":\"%p\",\"firstCandidateStyle\":%llu,\"firstCandidateExtendedStyle\":%llu,\"candidateStyle\":%llu,\"candidateExtendedStyle\":%llu,\"windowsError\":%lu}",
+                 GetCurrentProcessId(),GetCurrentThreadId(),static_cast<unsigned long long>(ticks),reason,r.binding,r.bound,r.first_candidate,r.first_candidate_owner,r.candidate,r.candidate_owner,r.expected_thread,r.candidate_thread,r.bound_thread,r.bound_pid,r.eligible_count,r.enumeration_complete?"true":"false",r.bound_visible?"true":"false",r.bound_root?"true":"false",r.expected_token,r.observed_token,static_cast<unsigned long long>(r.first_candidate_style),static_cast<unsigned long long>(r.first_candidate_extended_style),static_cast<unsigned long long>(r.candidate_style),static_cast<unsigned long long>(r.candidate_extended_style),r.error);
+         } catch (...) {} // A failed diagnostic never changes the binding decision.
+     }
+diff --git a/source/dxgi/dxgi_swapchain.cpp b/source/dxgi/dxgi_swapchain.cpp
+--- a/source/dxgi/dxgi_swapchain.cpp
++++ b/source/dxgi/dxgi_swapchain.cpp
+@@ -978,7 +978,7 @@ void DXGISwapChain::on_reset([[maybe_unused]] bool resize, const char *reason)
+                 FILETIME utc {};GetSystemTimePreciseAsFileTime(&utc);
+                 const auto ticks=(std::uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime;
+                 reshade::log::message(reshade::log::level::info,
+-                    "EGO_OWNED_RUNTIME_RESET_V1 {\"schemaVersion\":1,\"runtimeGeneration\":33,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"proxy\":\"%p\",\"native\":\"%p\",\"implementation\":\"%p\",\"resize\":%s,\"composition\":%s}",
++                    "EGO_OWNED_RUNTIME_RESET_V1 {\"schemaVersion\":1,\"runtimeGeneration\":34,\"pid\":%lu,\"tid\":%lu,\"utcTime100ns\":\"%llu\",\"reason\":\"%s\",\"proxy\":\"%p\",\"native\":\"%p\",\"implementation\":\"%p\",\"resize\":%s,\"composition\":%s}",
+                     GetCurrentProcessId(),GetCurrentThreadId(),static_cast<unsigned long long>(ticks),reason,static_cast<const void *>(this),static_cast<const void *>(_orig),static_cast<const void *>(_impl),resize?"true":"false",_owned_composition?"true":"false");
+             } catch (...) {} // Logging failure never changes reset or forwarding.
+         }
