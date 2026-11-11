@@ -3,7 +3,7 @@ const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_pro
 const root=path.resolve(__dirname,'../../../..'),architecture=process.argv[2]??'x64';assert.ok(['x64','x86'].includes(architecture));
 const source=path.join(root,'build/candidate-gen24-cache/native/_deps/reshade-src/source/ego_owned_late_d3d11/owned_late_d3d11.inl');
 const text=fs.readFileSync(source,'utf8').replaceAll('\r\n','\n'),sha=s=>crypto.createHash('sha256').update(s).digest('hex');
-assert.equal(sha(text),'2e89dbeed170bd1d5c2247d7373f89d82544cd217951826ee5f953f8b1567080');
+assert.equal(sha(text),'00593142bda98e4a2d5212d58a050698feddffbc83882a266e48fa384f4cbba3');
 function extract(signature){const start=text.indexOf(signature);assert.ok(start>=0);let end=text.indexOf('{',start),depth=0;for(;end<text.length;end++){if(text[end]==='{')depth++;else if(text[end]==='}'&&--depth===0)break;}assert.equal(depth,0);return text.slice(start,end+1)+'\n';}
 const body=['template <typename Native>\n    HRESULT present(', 'HRESULT STDMETHODCALLTYPE raw_present(', 'HRESULT STDMETHODCALLTYPE raw_present1('].map(extract).join('\n');
 const base=path.join(root,'build/overlay-compatibility/present-forwarding'),build=path.join(base,architecture),header=path.join(base,'production-present.hpp');fs.mkdirSync(base,{recursive:true});fs.writeFileSync(header,body);

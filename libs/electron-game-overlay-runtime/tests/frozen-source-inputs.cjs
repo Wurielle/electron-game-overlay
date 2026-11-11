@@ -7,6 +7,8 @@ function transition(runtime,name){const tail=read(path.join(runtime,'cmake',name
 function frozenInputs({pins,cache,scratch,transitions}){
  const terminal=transition(path.resolve(__dirname,'..'),'owned-deferred-d3d11');
  if(!transitions.some(t=>t.patch===terminal.patch))transitions=[terminal,...transitions];
+ const destinations=transition(path.resolve(__dirname,'..'),'present-destinations');
+ if(!transitions.some(t=>t.patch===destinations.patch))transitions=[destinations,...transitions];
  fs.mkdirSync(scratch,{recursive:true});
  return new Map(pins.map(({name,digest})=>{
   let bytes=Buffer.from(read(path.join(cache,name)));

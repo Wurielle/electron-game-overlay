@@ -1,5 +1,13 @@
 # SDK-first, late foreign Present GPU contract
 
+`scripts/test-cases/late-foreign-present-readback-gen36.ps1` runs this same
+32-case matrix against immutable candidate 1013, with separate generation-36
+stage, build, logs and reports. The original launcher retains candidate 1009.
+On 2026-11-11 both architectures passed the generation-36 matrix: 2,820
+assertions, 96 green and 32 red GPU readbacks each. This does not reproduce the
+remote Steam failure; see `../snapshot-destinations/README.md` for the bounded,
+unapplied diagnostic proposal and remaining evidence gap.
+
 `scripts/test-cases/late-foreign-present-readback.ps1` runs 32 bounded cases per
 architecture using immutable production candidate 1009. The host DLL is linked
 once into a fixed owned fixture stage, not copied for each case. All fixture

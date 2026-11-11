@@ -8,7 +8,9 @@ const cmake=read(path.join(runtime,'CMakeLists.txt')),tail=read(path.join(runtim
 const descriptors=[...tail.matchAll(/"([^"|]+)\|([A-Z0-9]+)\|([A-F0-9]{64})"/g)].map(([,name,before,after])=>({name,before,after}));assert.equal(descriptors.length,4);
 const producer=read(path.join(runtime,'scripts/build-reshade-runtime.ps1')),table=producer.match(/\$ExpectedPatchedContentSha256 = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
 const pins=[...table.matchAll(/"([^"]+)" = "([0-9A-F]{64})"/g)].map(([,name,digest])=>({name,digest}));assert.equal(pins.length,26);
-const post=new Map(pins.map(({name,digest})=>{const bytes=Buffer.from(read(path.join(cache,name)));assert.equal(sha(bytes),digest,name);return [name,bytes];}));
+const {transition,frozenInputs}=require('../frozen-source-inputs.cjs');
+const destinations=transition(runtime,'present-destinations');for(const p of pins){const d=destinations.files.get(p.name);if(d)p.digest=d.before;}
+const post=frozenInputs({pins,cache,scratch:path.join(base,'gen36-inputs'),transitions:[]});
 function run(exe,args,cwd,ok=true){const r=cp.spawnSync(exe,args,{cwd,encoding:'utf8',windowsHide:true,timeout:120000,maxBuffer:4*1024*1024});assert.ifError(r.error);if(ok)assert.equal(r.status,0,r.stdout+'\n'+r.stderr);else assert.notEqual(r.status,0);return r;}
 const git=(args,cwd=source)=>run('git',['-c','core.autocrlf=false','-c','core.eol=lf',...args],cwd);
 const owner=path.join(base,'.fixture-owner.json');

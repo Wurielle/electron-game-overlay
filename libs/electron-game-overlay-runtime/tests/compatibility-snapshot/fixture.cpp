@@ -18,7 +18,7 @@ enum class level { info };
 void message(level, const char *format, ...) {
     if (allocation_fails) throw std::bad_alloc();
     if (log_throws) throw std::runtime_error("owned log failure");
-    char output[2048] {}; va_list args; va_start(args, format);
+    char output[4096] {}; va_list args; va_start(args, format);
     const int count = vsnprintf(output, sizeof(output), format, args); va_end(args);
     if (count <= 0 || count >= sizeof(output)) throw std::runtime_error("diagnostic overflow");
     records.emplace_back(output);
@@ -69,6 +69,45 @@ int wmain(int argc, wchar_t **argv) {
         const unsigned char unsupported[6] { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
         const auto unknown_entry = observe_entry_jump(unsupported);
         check(unknown_entry.hops == 0 && std::strcmp(unknown_entry.owner, "unknown-entry") == 0);
+#ifdef EGO_SNAPSHOT_DESTINATIONS
+        // Proposed address-only diagnostic: independently known module/range and
+        // deliberately malformed jump controls. None of these bytes are executed.
+        check(detour.destination == replacement && detour.first != nullptr);
+        check(detour.hops == 1 ? detour.second == nullptr : detour.second == replacement);
+        const auto foreign_range = observe_allocation(detour.destination);
+        check(foreign_range.base == foreign);
+        check(foreign_range.offset == reinterpret_cast<std::uintptr_t>(replacement) - reinterpret_cast<std::uintptr_t>(foreign));
+        MEMORY_BASIC_INFORMATION saved_memory {};
+        check(VirtualQuery(saved, &saved_memory, sizeof(saved_memory)) == sizeof(saved_memory));
+        check(observe_allocation(saved).base == saved_memory.AllocationBase);
+        const auto absent = observe_entry_jump(nullptr), inaccessible = observe_entry_jump(reinterpret_cast<void *>(1));
+        check(absent.destination == nullptr && absent.first == nullptr && absent.second == nullptr);
+        check(inaccessible.destination == reinterpret_cast<void *>(1) && inaccessible.hops == 0);
+        check(observe_allocation(nullptr).base == nullptr && observe_allocation(reinterpret_cast<void *>(1)).base == nullptr);
+        check(unknown_entry.destination == unsupported && unknown_entry.first == nullptr && unknown_entry.second == nullptr);
+        auto *bytes = static_cast<unsigned char *>(VirtualAlloc(nullptr, 8192, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        check(bytes != nullptr);
+        bytes[0] = bytes[16] = 0xE9;
+        const std::int32_t forward = 11, backward = -21;
+        std::memcpy(bytes + 1, &forward, 4); std::memcpy(bytes + 17, &backward, 4);
+        const auto cycle = observe_entry_jump(bytes);
+        check(cycle.hops == 2 && cycle.first == bytes + 16 && cycle.second == bytes && cycle.destination == bytes);
+        check(observe_allocation(cycle.destination).base == bytes && observe_allocation(cycle.destination).offset == 0);
+        bytes[32] = 0xFF; bytes[33] = 0x25;
+#ifdef _WIN64
+        const std::int32_t displacement = 26; std::memcpy(bytes + 34, &displacement, 4);
+#else
+        const auto absolute = reinterpret_cast<std::uintptr_t>(bytes + 64); std::memcpy(bytes + 34, &absolute, 4);
+#endif
+        std::memcpy(bytes + 64, &replacement, sizeof(replacement));
+        const auto indirect = observe_entry_jump(bytes + 32);
+        check(indirect.hops == 1 && indirect.first == replacement && indirect.destination == replacement && indirect.second == nullptr);
+        DWORD old = 0; check(VirtualProtect(bytes + 4096, 4096, PAGE_NOACCESS, &old) != FALSE);
+        const auto boundary = observe_entry_jump(bytes + 4093);
+        check(boundary.hops == 0 && boundary.destination == bytes + 4093 && std::strcmp(boundary.owner, "unreadable") == 0);
+        check(VirtualFree(bytes, 0, MEM_RELEASE) != FALSE);
+        check(native_calls == 0 && foreign_calls() == 0);
+#endif
         SetLastError(0x2468); loader(true, true, {true, false}); check(GetLastError() == 0x2468);
         loader(false, true, {false, false}); check(records.size() == 1);
         for (unsigned scenario = 0; scenario != 3; ++scenario) {

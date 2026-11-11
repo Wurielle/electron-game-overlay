@@ -1,0 +1,60 @@
+diff --git a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+--- a/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
++++ b/source/ego_owned_late_d3d11/compatibility_snapshot.hpp
+@@ -29,16 +29,25 @@ namespace ego_compatibility_snapshot {
+ #endif
+         return "other-image";
+     }
+-    struct entry_jump { const char *owner; unsigned hops; };
++    struct entry_jump { const char *owner; unsigned hops; const void *destination; const void *first; const void *second; };
++    struct allocation_range { const void *base; std::uintptr_t offset; };
++    inline allocation_range observe_allocation(const void *address) noexcept {
++        error_scope preserve;
++        MEMORY_BASIC_INFORMATION memory {};
++        if (address == nullptr || VirtualQuery(address, &memory, sizeof(memory)) != sizeof(memory) || memory.State != MEM_COMMIT)
++            return { nullptr, 0 };
++        return { memory.AllocationBase, reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(memory.AllocationBase) };
++    }
+     inline entry_jump observe_entry_jump(const void *address) noexcept {
+         error_scope preserve;
+         unsigned hops = 0;
++        const void *first = nullptr, *second = nullptr;
+         // Read only six instruction bytes and at most one pointer per hop.
+         // ReadProcessMemory safely refuses inaccessible/racing mappings. Never execute or dump them.
+         for (; hops != 2 && address != nullptr;) {
+             unsigned char code[6] {}; SIZE_T copied = 0;
+             if (!ReadProcessMemory(GetCurrentProcess(), address, code, sizeof(code), &copied) || copied != sizeof(code))
+-                return { "unreadable", hops };
++                return { "unreadable", hops, address, first, second };
+             const auto origin = reinterpret_cast<std::uintptr_t>(address);
+             if (code[0] == 0xE9) {
+                 std::int32_t offset; std::memcpy(&offset, code + 1, sizeof(offset));
+@@ -52,12 +61,13 @@ namespace ego_compatibility_snapshot {
+ #endif
+                 const void *destination = nullptr;
+                 if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(slot), &destination, sizeof(destination), &copied) || copied != sizeof(destination))
+-                    return { "unreadable", hops };
++                    return { "unreadable", hops, address, first, second };
+                 address = destination;
+             } else break;
++            if (hops == 0) first = address; else second = address;
+             ++hops;
+         }
+-        return { hops != 0 ? owner(address) : "unknown-entry", hops };
++        return { hops != 0 ? owner(address) : "unknown-entry", hops, address, first, second };
+     }
+     struct loader_inputs { bool environment; bool renderer; };
+     inline loader_inputs observe_loader_inputs() noexcept {
+@@ -101,9 +111,10 @@ namespace ego_compatibility_snapshot {
+         const void *device, const void *current, const void *target, const void *saved, bool internal) noexcept {
+         error_scope preserve;
+         const auto current_jump = observe_entry_jump(current), target_jump = observe_entry_jump(target), saved_jump = observe_entry_jump(saved);
++        const auto current_range = observe_allocation(current_jump.destination), target_range = observe_allocation(target_jump.destination), saved_range = observe_allocation(saved_jump.destination);
+         try { reshade::log::message(reshade::log::level::info,
+-            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"dxgiInternal\":%s}",
+-            kind, GetCurrentProcessId(), GetCurrentThreadId(), role, method, instance, downstream, device, current, owner(current), current_jump.owner, current_jump.hops, target, owner(target), target_jump.owner, target_jump.hops, saved, owner(saved), saved_jump.owner, saved_jump.hops, internal ? "true" : "false"); } catch (...) {}
++            "EGO_COMPATIBILITY_SNAPSHOT_V1 {\"schemaVersion\":1,\"runtimeGeneration\":36,\"kind\":\"%s\",\"pid\":%lu,\"tid\":%lu,\"role\":\"%s\",\"method\":\"%s\",\"instance\":\"%p\",\"downstreamInstance\":\"%p\",\"device\":\"%p\",\"current\":\"%p\",\"currentOwner\":\"%s\",\"currentJumpOwner\":\"%s\",\"currentJumpHops\":%u,\"target\":\"%p\",\"targetOwner\":\"%s\",\"targetJumpOwner\":\"%s\",\"targetJumpHops\":%u,\"saved\":\"%p\",\"savedOwner\":\"%s\",\"savedJumpOwner\":\"%s\",\"savedJumpHops\":%u,\"addressDetailsVersion\":1,\"currentJumpFirst\":\"%p\",\"currentJumpSecond\":\"%p\",\"currentJumpDestination\":\"%p\",\"currentJumpAllocationBase\":\"%p\",\"currentJumpAllocationOffset\":\"%llX\",\"targetJumpFirst\":\"%p\",\"targetJumpSecond\":\"%p\",\"targetJumpDestination\":\"%p\",\"targetJumpAllocationBase\":\"%p\",\"targetJumpAllocationOffset\":\"%llX\",\"savedJumpFirst\":\"%p\",\"savedJumpSecond\":\"%p\",\"savedJumpDestination\":\"%p\",\"savedJumpAllocationBase\":\"%p\",\"savedJumpAllocationOffset\":\"%llX\",\"dxgiInternal\":%s}",
++            kind, GetCurrentProcessId(), GetCurrentThreadId(), role, method, instance, downstream, device, current, owner(current), current_jump.owner, current_jump.hops, target, owner(target), target_jump.owner, target_jump.hops, saved, owner(saved), saved_jump.owner, saved_jump.hops, current_jump.first, current_jump.second, current_jump.destination, current_range.base, static_cast<unsigned long long>(current_range.offset), target_jump.first, target_jump.second, target_jump.destination, target_range.base, static_cast<unsigned long long>(target_range.offset), saved_jump.first, saved_jump.second, saved_jump.destination, saved_range.base, static_cast<unsigned long long>(saved_range.offset), internal ? "true" : "false"); } catch (...) {}
+     }
+     inline void present_end(bool proxy, bool extended, HRESULT result) noexcept {
+         error_scope preserve;
