@@ -1,0 +1,21 @@
+diff --git a/source/d2d1/d2d1.cpp b/source/d2d1/d2d1.cpp
+--- a/source/d2d1/d2d1.cpp
++++ b/source/d2d1/d2d1.cpp
+@@ -36,6 +36,7 @@ ID2D1Factory_CreateDevice_Impl(29, 4, 3)
+ ID2D1Factory_CreateDevice_Impl(30, 5, 4)
+ ID2D1Factory_CreateDevice_Impl(31, 6, 5)
+ ID2D1Factory_CreateDevice_Impl(32, 7, 6)
++ID2D1Factory_CreateDevice_Impl(33, 8, 7)
+ 
+ extern "C" HRESULT WINAPI D2D1CreateDevice(IDXGIDevice *dxgiDevice, CONST D2D1_CREATION_PROPERTIES *creationProperties, ID2D1Device **d2dDevice)
+ {
+@@ -101,6 +102,9 @@ extern "C" HRESULT WINAPI D2D1CreateFactory(D2D1_FACTORY_TYPE factoryType, REFIID r
+ 	if (com_ptr<ID2D1Factory7> factory7;
+ 		SUCCEEDED(factory->QueryInterface(&factory7)))
+ 		reshade::hooks::install("ID2D1Factory7::CreateDevice", reshade::hooks::vtable_from_instance(factory7.get()), 32, &ID2D1Factory7_CreateDevice);
++	if (com_ptr<ID2D1Factory8> factory8;
++		SUCCEEDED(factory->QueryInterface(&factory8)))
++		reshade::hooks::install("ID2D1Factory8::CreateDevice", reshade::hooks::vtable_from_instance(factory8.get()), 33, &ID2D1Factory8_CreateDevice);
+ 
+ 	return hr;
+ }
