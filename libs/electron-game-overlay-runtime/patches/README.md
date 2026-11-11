@@ -582,3 +582,16 @@ production-patch hash, the full-add-on configuration, and runtime/injector
 hashes before accepting its cache. Raw-input normalization reuses the existing
 normalized Win32 input path; it changes no published transport C ABI, transport
 wire schema, or public Node SDK API.
+
+## Owned deferred D3D11, generation 36
+
+`reshade-owned-deferred-d3d11.patch` queues one pinned owned-host worker only
+after successful D3D11 publication on the existing LoadLibrary path and release
+of the delayed-path mutex. Only an already validated missing-backend outcome
+may reopen, and the worker revalidates stage/adapter readiness before using the
+existing raw-adoption path. Existing try-lock, notification, official/foreign,
+target-exit, public ABI and per-app feature boundaries remain unchanged.
+It provides later Present adoption, not retroactive device wrapping or a
+first-frame guarantee. See `doc/owned-deferred-d3d11.md` and the separate
+production, loader, negative and source-cache gate launchers. Actual game
+acceptance remains separate; candidate 1012 stays immutable.

@@ -11,6 +11,8 @@ const eligibility=read(path.join(root,'libs/electron-game-overlay-runtime/cmake/
 for(const match of eligibility.matchAll(/"([^"|]+)\|([A-Z0-9]+)\|([A-F0-9]{64})"/g)){const existing=pins.find(p=>p[1]===match[1]);if(existing)existing[3]=match[3];}
 const lifetime=read(path.join(root,'libs/electron-game-overlay-runtime/cmake/owned-composition-auxiliary-lifetime.cmake'));
 for(const match of lifetime.matchAll(/"([^"|]+)\|([A-Z0-9]+)\|([A-F0-9]{64})"/g)){const existing=pins.find(p=>p[1]===match[1]);if(existing)existing[3]=match[3];}
+const deferred=read(path.join(root,'libs/electron-game-overlay-runtime/cmake/owned-deferred-d3d11.cmake'));
+for(const match of deferred.matchAll(/"([^"|]+)\|([A-Z0-9]+)\|([A-F0-9]{64})"/g)){const existing=pins.find(p=>p[1]===match[1]);if(existing)existing[3]=match[3];}
 for(const [,name,,after]of pins)assert.equal(sha(read(path.join(source,name))),after,name);
 const cpp=read(path.join(source,'source/dxgi/dxgi_swapchain.cpp'));
 const init=cpp.slice(cpp.indexOf('void DXGISwapChain::on_init('),cpp.indexOf('void DXGISwapChain::on_reset('));

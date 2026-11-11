@@ -31,3 +31,5 @@ libs/electron-game-overlay-runtime/patches/reshade-owned-composition-binding-dia
 libs/electron-game-overlay-runtime/patches/reshade-owned-composition-window-eligibility.patch text eol=lf
 
 libs/electron-game-overlay-runtime/patches/reshade-owned-composition-auxiliary-lifetime.patch text eol=lf
+
+libs/electron-game-overlay-runtime/patches/reshade-owned-deferred-d3d11.patch text eol=lf

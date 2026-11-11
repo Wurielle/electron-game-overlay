@@ -41,6 +41,24 @@ function mutateStamp(f, name, mutate) {
   f.payload.seal();
 }
 
+test('generation-36 binds the owned deferred D3D11 implementation and exact architecture provenance', t => {
+  for (const bits of [64, 32]) {
+    for (const value of [undefined, 'A'.repeat(64), false]) {
+      const f = fixture(t, { runtimeGeneration: 36 });
+      validateOverlayDistributionSync(f.dist);
+      mutateStamp(f, `ReShade${bits}.build.json`, stamp => {
+        if (value === undefined) delete stamp.ownedDeferredD3d11PatchSha256;
+        else stamp.ownedDeferredD3d11PatchSha256 = value;
+      });
+      assert.throws(() => validateOverlayDistributionSync(f.dist), /owned deferred D3D11 patch provenance mismatch/);
+    }
+  }
+  for (const options of [{ ownedDeferredD3d11Patch: false }, { ownedDeferredD3d11PatchSha256: 'A'.repeat(64) }]) {
+    const f = fixture(t, { runtimeGeneration: 36, ...options });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /owned deferred D3D11 patch pin/);
+  }
+});
+
 test('generation-35 binds the composition auxiliary lifetime implementation and exact architecture provenance', t => {
   for (const bits of [64, 32]) {
     for (const value of [undefined, 'A'.repeat(64), false]) {
@@ -920,7 +938,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t, { runtimeGeneration: 35 });
+  const f = fixture(t, { runtimeGeneration: 36 });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');

@@ -5,6 +5,8 @@ const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_pro
 const read=p=>fs.readFileSync(p,'utf8').replaceAll('\r\n','\n'),sha=b=>crypto.createHash('sha256').update(b).digest('hex').toUpperCase();
 function transition(runtime,name){const tail=read(path.join(runtime,'cmake',name+'.cmake'));return {patch:path.join(runtime,'patches','reshade-'+name+'.patch'),files:new Map([...tail.matchAll(/"([^"|]+)\|([A-Z0-9]+)\|([A-F0-9]{64})"/g)].map(([,file,before,after])=>[file,{before,after}]))};}
 function frozenInputs({pins,cache,scratch,transitions}){
+ const terminal=transition(path.resolve(__dirname,'..'),'owned-deferred-d3d11');
+ if(!transitions.some(t=>t.patch===terminal.patch))transitions=[terminal,...transitions];
  fs.mkdirSync(scratch,{recursive:true});
  return new Map(pins.map(({name,digest})=>{
   let bytes=Buffer.from(read(path.join(cache,name)));

@@ -8,7 +8,7 @@ const architecture=options['--architecture']??'x64';assert.ok(['x64','x86'].incl
 const bits=architecture==='x64'?64:32,cache=path.join(root,'build/candidate-gen24-cache/native/_deps/reshade-src');
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
 const sourceHash=sha(fs.readFileSync(path.join(cache,'source/hook_manager.cpp'),'utf8').replaceAll('\r\n','\n'));
-assert.equal(sourceHash,'c62cd60c5afd66fafcf6f3e0659c88078685351cb20b9721742953c7d64516bb');
+assert.equal(sourceHash,'355e78ac03e71d2101585ec8c8c64a458978a17ba6e20f0d218d7e6ed312a49e');
 const runtime=path.resolve(options['--runtime']??path.join(root,'libs/electron-game-overlay-runtime/dist',architecture==='x64'?'win32-x64':'win32-ia32',`ReShade${bits}.dll`));
 const baseline=path.resolve(options['--baseline-runtime']??path.join(root,'build/candidates/d3d11-identity-gen29/sdk-stage/dist/runtime/win32-x64/reshade',`ReShade${bits}.dll`));
 assert.ok(fs.existsSync(baseline),'Supply a preserved generation-29 baseline runtime');
@@ -43,7 +43,7 @@ for(const [name,dll,ownedModel,order,expectation,key] of cases){
   if(!name.startsWith('baseline-')){
     const snapshots=fs.readFileSync(path.join(directory,'ReShade.log'),'utf8').split(/\r?\n/).filter(s=>s.includes('EGO_COMPATIBILITY_SNAPSHOT_V1 ')).map(s=>JSON.parse(s.slice(s.indexOf('{'))));
     const loaders=snapshots.filter(s=>s.kind==='loader');assert.equal(loaders.length,1);loaderSnapshot=loaders[0];
-    assert.equal(loaderSnapshot.runtimeGeneration,35);assert.equal(loaderSnapshot.enabled,true);assert.equal(loaderSnapshot.steamEnvironment,key==='present');
+    assert.equal(loaderSnapshot.runtimeGeneration,36);assert.equal(loaderSnapshot.enabled,true);assert.equal(loaderSnapshot.steamEnvironment,key==='present');
     const exactRenderer=order==='steam-first'&&ownedModel===model;assert.equal(loaderSnapshot.steamRenderer,exactRenderer);
     assert.equal(loaderSnapshot.strategy,key==='present'||exactRenderer?'load-library':'notification');
   }

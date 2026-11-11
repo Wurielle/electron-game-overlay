@@ -1,7 +1,8 @@
 # Runtime checkpoint, 2026-11-10
 
 This draft source checkpoint integrates the owned composition corrections
-through generation 35. It also retains diagnostic fixtures for separate startup
+through generation 36 locally, after the generation-35 draft PR checkpoint. It
+also retains diagnostic fixtures for separate startup
 and Steam investigations. It is not a release or a claim that every actual-game
 failure is resolved. Generated artifacts and machine-specific evidence remain
 outside Git.
@@ -71,17 +72,48 @@ second device, but the original usable device remains native. This demonstrates
 the mechanism without attributing the actual PAGER timeout to it.
 See [the reproduction boundary](delayed-hook-publication-reproduction.md).
 
-An owned deferred-adoption bootstrap is experimental work outside the production
-patch pipeline. This checkpoint includes only its test observation POD header;
-no production bootstrap correction, changed loader locking or new sealed
-package is included. A later Present adoption would not retroactively wrap a
-missed device or guarantee first-frame observation. Reentrancy, loader liveness,
-forwarding and negative gates remain required before such a proposal can ship.
+Generation 36 integrates the narrow owned deferred-adoption bootstrap into the
+normal production patch pipeline. A validated missing-backend result may queue
+one worker after successful D3D11 publication on the existing LoadLibrary path
+and release of its delayed-path mutex. The worker revalidates stage/readiness.
+The notification path, original try-lock and early returns remain unchanged.
+It introduces no timer, loader wait, retry, reinjection or public ABI change.
+A later Present adoption does not retroactively wrap the missed device or
+guarantee first-frame observation. See [the correction and gates](owned-deferred-d3d11.md).
 
-Actual Overwatch's missing Steam overlay remains unresolved. Owned foreign
-Present controls validate forwarding, callbacks and GPU readbacks, but do not
-execute Valve's wrapper or establish rendered Steam frames. Successful Present
-forwarding and loaded-module diagnostics alone do not prove Steam acceptance.
+Both normal production architectures passed 24 deferred-startup cases with
+four immutable 1012 failures retained. The 28-case cohort contains 2,744
+assertions, 78 green hardware readbacks and 80 red runtime-callback readbacks.
+It includes missed original HWND and null-HWND BGRA composition chains,
+automatic proxy controls, DllMain/nested loads, exact forwarding and HRESULTs,
+resize/resume/retirement, and foreign/readiness/queue-error negatives. The
+composition presentation HWND stays outside all monitors without activation;
+no DirectComposition visual or actual game is exercised. The original failed
+window-setup attempt is preserved separately. Notification rendering passes
+with zero deferred work items. These controls are distinct from actual startup,
+application scene/input and mixed-application acceptance still owned by the
+consumer test coordinator. Candidate 1013 binds the local changes to a fresh
+paired source capture; candidate 1012 is not rewritten.
+
+Local offline Overwatch testing observed the Steam performance HUD in both its
+baseline and the authenticated high-to-medium 1012 launch. First-key/native
+glyph acceptance passed in that separate launch. Full Shift+Tab menu acceptance
+is inconclusive because it opened in neither baseline nor injected trial.
+The earlier remote missing-overlay report remains separate. Owned foreign
+Present controls validate forwarding, callbacks and GPU readbacks but do not
+execute Valve's wrapper or establish rendered Steam frames on their own.
+
+A separate normal-integrity Overwatch attempt (PID 4012, creation time
+134388197973881950) failed in the injector before consumer authentication.
+Its retained stdout ends at the injection prefix, stderr is empty, and no
+structured result/startup file was retained. The exact game nevertheless loaded
+ReShade, later registered its add-on and returned successful proxy Present
+downstream to the Steam renderer. Those facts neither authenticate the consumer
+nor identify why the injector exited. No crash/security cause is established;
+generation 36's validated-initializer precondition is not proven in that failed
+lifetime, so this candidate does not claim to fix it. Any repeat must retain
+the injector's numeric exit status/signal alongside exact process identity and
+the existing logs, without reopening possibly consumed ownership.
 See [the Steam investigation controls](steam-overlay-investigation-controls.md).
 
 The delayed-hook fixture, its documentation and the experimental test header

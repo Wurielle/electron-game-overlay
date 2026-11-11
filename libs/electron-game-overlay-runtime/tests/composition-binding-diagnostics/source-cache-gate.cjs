@@ -8,6 +8,8 @@ const cmake=read(path.join(runtime,'CMakeLists.txt')),tail=read(path.join(runtim
 const descriptors=[...tail.matchAll(/"([^"|]+)\|([A-Z0-9]+)\|([A-F0-9]{64})"/g)].map(([,name,before,after])=>({name,before,after}));assert.equal(descriptors.length,5);
 const producer=read(path.join(runtime,'scripts/build-reshade-runtime.ps1')),table=producer.match(/\$ExpectedPatchedContentSha256 = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
 const pins=[...table.matchAll(/"([^"]+)" = "([0-9A-F]{64})"/g)].map(([,name,digest])=>({name,digest}));assert.equal(pins.length,26);
+const deferredTerminal=require('../frozen-source-inputs.cjs').transition(runtime,'owned-deferred-d3d11');
+for(const p of pins){const change=deferredTerminal.files.get(p.name);if(change)p.digest=change.before;}
 const {transition,frozenInputs}=require('../frozen-source-inputs.cjs');
 const newest=transition(runtime,'owned-composition-auxiliary-lifetime'),successor=transition(runtime,'owned-composition-window-eligibility');
 for(const p of pins){const latest=newest.files.get(p.name);if(latest)p.digest=latest.before;const change=successor.files.get(p.name);if(change)p.digest=change.before;}

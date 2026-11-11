@@ -1,3 +1,5 @@
+const OWNED_DEFERRED_D3D11_PATCH_SHA256 =
+  '779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB';
 const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 =
   '3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61';
 const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 =
@@ -379,6 +381,15 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
   if ((ownedCompositionAuxiliaryLifetimePins.length === 1) !== (expectedGeneration >= 35)) {
     throw new Error('Compiled SDK composition auxiliary lifetime patch pin does not match its generation');
   }
+  const ownedDeferredD3d11Declarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_DEFERRED_D3D11_PATCH_SHA256\b/g)];
+  const ownedDeferredD3d11Pins = [...validator.matchAll(/\bconst\s+OWNED_DEFERRED_D3D11_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedDeferredD3d11Declarations.length !== ownedDeferredD3d11Pins.length || ownedDeferredD3d11Pins.length > 1 ||
+      (ownedDeferredD3d11Pins.length === 1 && ownedDeferredD3d11Pins[0][1].toUpperCase() !== OWNED_DEFERRED_D3D11_PATCH_SHA256)) {
+    throw new Error('Compiled SDK owned deferred D3D11 patch pin is malformed or unsupported');
+  }
+  if ((ownedDeferredD3d11Pins.length === 1) !== (expectedGeneration >= 36)) {
+    throw new Error('Compiled SDK owned deferred D3D11 patch pin does not match its generation');
+  }
   const privateDiagnosticDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\b/g)];
   const privateDiagnosticPins = [...validator.matchAll(/\bconst\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
   if (privateDiagnosticDeclarations.length !== privateDiagnosticPins.length || privateDiagnosticPins.length > 1 ||
@@ -593,6 +604,14 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.ownedCompositionAuxiliaryLifetimePatchSha256 !== undefined) {
       throw new Error('Composition auxiliary lifetime provenance requires runtime generation 35: ' + bits);
+    }
+    if (expectedGeneration >= 36) {
+      if (typeof reshade.ownedDeferredD3d11PatchSha256 !== 'string' ||
+          reshade.ownedDeferredD3d11PatchSha256.toUpperCase() !== OWNED_DEFERRED_D3D11_PATCH_SHA256) {
+        throw new Error('Pinned owned deferred D3D11 patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedDeferredD3d11PatchSha256 !== undefined) {
+      throw new Error('Owned deferred D3D11 provenance requires runtime generation 36: ' + bits);
     }
     if (expectedGeneration >= 29) {
       if (typeof reshade.d3d11SwapchainResourceIdentityPatchSha256 !== 'string' ||
