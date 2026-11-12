@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { validatorSource } = require('./helpers/source-packaging-loader.cjs');
+const { OVERLAY_BROKER_RUNTIME_GENERATION } = require('../dist/lib/overlay-broker-protocol.js');
 const {
   createOverlayDistributionManifestSync,
   validateOverlayDistributionSync,
@@ -995,7 +996,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t, { runtimeGeneration: 44 });
+  const f = fixture(t, { runtimeGeneration: OVERLAY_BROKER_RUNTIME_GENERATION });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');
