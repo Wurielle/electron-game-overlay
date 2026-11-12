@@ -33,7 +33,7 @@ const {
   createReShadeLaunchConfig,
 } = require('../dist/lib/reshade-launcher.js');
 const existingReShadeInstallation = require('../dist/lib/existing-reshade-installation.js');
-const { targetIdentityRequirements } = require('../dist/lib/overlay-session-authorization.js');
+const { memoryTargetAuthorizers, targetIdentityRequirements } = require('../dist/lib/overlay-session-authorization.js');
 
 const artifacts = [
   'inject.exe',
@@ -3526,6 +3526,63 @@ test('a user-disabled official add-on is preserved and reported without a restar
   }
 });
 
+test('cached exact-target refusal for a disabled official add-on creates no run directory', async () => {
+  const fixture = await createAddonPreloadRuntime({ runtimeGeneration: 44 });
+  const runsRootDirectory = path.join(fixture.root, 'cached-disabled-runs');
+  const config = createReShadeLaunchConfig({ bundledRuntimeDirectory: fixture.runtimeDirectory, runsRootDirectory });
+  const launcher = new ReShadeOverlayLauncher(config);
+  const execution = stubExecFile();
+  const { session } = createSessionHarness();
+  const pid = 4256, birth = '134387657907132585';
+  const targetExecutablePath = 'D:\\Games\\Official\\game.exe';
+  const hostRuntimePath = 'D:\\Games\\Official\\dxgi.dll';
+  let releases = 0;
+  memoryTargetAuthorizers.set(session, async () => ({ port: 51234, token: 'a'.repeat(64), release: () => { releases++; } }));
+  const preparationCalls = [];
+  const preparation = stubExistingReShadePreparation(async (options) => {
+    preparationCalls.push(options);
+    return officialPreparedAddonResult({ status: 'disabled-by-user', targetExecutablePath, reshadeModulePath: hostRuntimePath });
+  });
+  const identity = (id, executablePath) => JSON.stringify({ schemaVersion: 1,
+    kind: 'electron-game-overlay-process-image', pid: id, executablePath, creationTime100ns: birth });
+  try {
+    const attach = launcher.attach(session, { processName: 'game.exe', pid, executablePath: targetExecutablePath });
+    const rejected = assert.rejects(attach, (error) => {
+      assert.equal(error.code, 'existing-reshade-addon-disabled');
+      assert.equal(error.retrySafety, 'definite-safe');
+      assert.equal(error.diagnostic.targetExecutablePath, targetExecutablePath);
+      assert.equal(error.diagnostic.evidence, undefined);
+      return true;
+    });
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, JSON.stringify(consumerTokenRecord(false)), '');
+    await waitFor(() => execution.calls.length === 2);
+    execution.calls[1].callback(null, identity(process.pid, process.execPath), '');
+    await waitFor(() => execution.calls.length === 3);
+    execution.calls[2].callback(null, identity(pid, targetExecutablePath), '');
+    await waitFor(() => execution.calls.length === 4);
+    await flushMicrotasks();
+    const cached = execution.calls[3];
+    assert.ok(cached.arguments.includes('--cache-bootstrap-stdin'));
+    cached.callback(Object.assign(new Error('existing installation'), { code: 183 }), injectorPreflightDiagnostic({
+      code: 'target-existing-reshade-installation', pid, targetExecutablePath, modulePath: hostRuntimePath,
+      electronGameOverlayAddonDisabled: true,
+    }) + 'ReShade injection not started.\n', '');
+    await rejected;
+    assert.equal(execution.calls.length, 4);
+    assert.equal(preparationCalls.length, 1);
+    assert.equal(preparationCalls[0].addonSourcePath, path.join(cached.options.cwd, 'electron_game_overlay.addon64'));
+    assert.equal(preparationCalls[0].targetEffectiveSettings.electronGameOverlayAddonDisabled, true);
+    assert.equal(existsSync(runsRootDirectory), false);
+    assert.equal(releases, 1);
+    assert.equal(launcher.state, 'idle');
+  } finally {
+    await launcher.disposeAsync();
+    preparation.restore();
+    execution.restore();
+  }
+});
+
 test('an arbitrary existing ReShade identity is prepared and requires one restart', async () => {
   const fixture = createRuntime();
   const execution = stubExecFile();
@@ -5941,7 +5998,7 @@ test('timeout, session close, and dispose cannot spawn after delayed staging', a
     } finally {
       staging.release();
       staging.restore();
-      launcher.dispose();
+      await launcher.disposeAsync();
       global.setTimeout = originalSetTimeout;
       global.clearTimeout = originalClearTimeout;
       execution.restore();
@@ -6353,7 +6410,10 @@ test('future rendezvous denial and cancellation during authorization remove list
 test('future-target features require explicit validated injector capability on both architectures', async () => {
   const fixture = createBindingRuntime();
   for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
-    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, stamp => { stamp.runtimeGeneration = 99; });
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, stamp => {
+      stamp.runtimeGeneration = 42;
+      stamp.addonBuildId = 'D61AF72954C64C77A5FA6FF30F57AF13';
+    });
   }
   assert.equal(createConfig(fixture).injectorFutureTargets, undefined, 'generation is not executable feature proof');
   const execution = stubExecFile(), harness = createSessionHarness(), launcher = new ReShadeOverlayLauncher(createConfig(fixture));
@@ -6848,16 +6908,19 @@ for (const outcome of ['complete-unused', 'selected-after-dispose', 'not-drained
         writeFileSync(path.join(call.options.cwd, 'electron-overlay-transport-v1.json'), '{}');
         writeFileSync(path.join(call.options.cwd, 'ReShade.ini'), Buffer.alloc(256 * 1024, 65));
       }
-      launcher.dispose();
+      let shutdownFinished = false;
+      const shutdown = launcher.disposeAsync().then(() => { shutdownFinished = true; });
+      await flushMicrotasks();
+      assert.equal(shutdownFinished, false, 'shutdown waits for the owned child to close');
       assert.equal(existsSync(image), true, 'Kill alone cannot establish no mapping');
       call.child.exitCode = 1; call.child.stdout.readableEnded = outcome !== 'not-drained';
       const output = outcome === 'selected-after-dispose'
         ? 'EGO_TARGET_SELECTED_V2\t4242\t100\tC:\\steamapps\\game.exe\n'
         : outcome === 'malformed-selection' ? 'EGO_TARGET_SELECTED_V2\tbroken' : '';
       call.callback(Object.assign(new Error('stopped'), { killed: true, code: 1 }), output, '');
-      await request;
+      await Promise.all([shutdown, request]);
       if (outcome === 'complete-unused') {
-        await waitFor(() => !existsSync(image));
+        assert.equal(existsSync(image), false);
         for (const name of [
           ...require('../dist/lib/runtime-payload-store.js').RUNTIME_PAYLOAD_NAMES,
           ...require('../dist/lib/runtime-stage-storage.js').RUNTIME_STORAGE_TRANSIENT_NAMES,
@@ -6869,6 +6932,59 @@ for (const outcome of ['complete-unused', 'selected-after-dispose', 'not-drained
     } finally { launcher.dispose(); execution.restore(); }
   });
 }
+
+test('a complete unused watcher exit records proof without waiting for launcher disposal', async () => {
+  const execution = stubExecFile(), harness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(policyRuntime()));
+  try {
+    const request = launcher.attach(harness.session, nativePolicyTarget).catch(() => undefined);
+    await waitFor(() => execution.calls.length === 1);
+    const call = execution.calls[0];
+    const ownedMarker = path.join(call.options.cwd, runOwnershipMarkerFileName);
+    const retiredMarker = path.join(call.options.cwd, runReclaimableMarkerFileName);
+    assert.equal(existsSync(retiredMarker), false);
+    call.child.exitCode = 0;
+    call.child.stdout.readableEnded = true;
+    call.callback(null, 'ReShade path watcher armed.\n', '');
+    const proof = JSON.parse(readFileSync(retiredMarker, 'utf8'));
+    assert.equal(proof.privateImagesUnmapped, true);
+    assert.equal(proof.runId, JSON.parse(readFileSync(ownedMarker, 'utf8')).runId);
+    await request;
+    assert.equal(existsSync(path.join(call.options.cwd, 'electron_game_overlay.addon64')), false);
+  } finally {
+    await launcher.disposeAsync();
+    execution.restore();
+  }
+});
+
+test('async disposal returns at its deadline and preserves an undrained watcher', async (t) => {
+  const execution = stubExecFile({ autoSpawn: false }), harness = createSessionHarness();
+  const launcher = new ReShadeOverlayLauncher(createConfig(policyRuntime()));
+  try {
+    const request = launcher.attach(harness.session, nativePolicyTarget).catch(() => undefined);
+    await waitFor(() => execution.calls.length === 1);
+    const call = execution.calls[0];
+    const retiredMarker = path.join(call.options.cwd, runReclaimableMarkerFileName);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let finished = false;
+    const shutdown = launcher.disposeAsync().then(() => { finished = true; });
+    t.mock.timers.tick(4999);
+    await flushMicrotasks();
+    assert.equal(finished, false);
+    t.mock.timers.tick(1);
+    await shutdown;
+    assert.equal(existsSync(retiredMarker), false);
+    assert.equal(existsSync(path.join(call.options.cwd, 'electron_game_overlay.addon64')), true);
+    call.child.exitCode = 1;
+    call.child.stdout.readableEnded = false;
+    call.callback(Object.assign(new Error('undrained exit'), { killed: true }), '', '');
+    await request;
+    assert.equal(existsSync(retiredMarker), false);
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
 
 for (const changed of ['ownership', 'aliased-image', 'changed-image']) {
   test(`drained shutdown preserves changed private ownership: ${changed}`, async () => {
@@ -7281,6 +7397,35 @@ test('preload staging refuses a changed sealed INI before publishing its folder 
   } finally { launcher.dispose(); execution.restore(); }
 });
 
+test('generation-41 enables native logging only on the owned copy when requested', async () => {
+  const fixture = createRuntime();
+  const source = path.join(fixture.runtimeDirectory, 'ReShade.ini');
+  const template = '[ADDON]\r\nAddonPath=.\r\nDisabledAddons=\r\n\r\n[INSTALL]\r\nLogging=0\r\n';
+  writeFileSync(source, template);
+  for (const name of ['electron_game_overlay_runtime.build.json', 'electron_game_overlay_runtime32.build.json']) {
+    rewriteRuntimePackageBuildStamp(fixture.runtimeDirectory, name, stamp => {
+      stamp.runtimeGeneration = 41;
+      stamp.addonBuildId = 'D61AF72954C64C77A5FA6FF30F57AF13';
+      stamp.reshadeConfigSha256 = createHash('sha256').update(template).digest('hex').toUpperCase();
+    });
+  }
+  for (const logging of [undefined, true]) {
+    const launcher = new ReShadeOverlayLauncher(createConfig(fixture, { logging }));
+    let runDirectory;
+    launcher.onEvent(event => {
+      if (event.type === 'runtime-staged') runDirectory = event.runDirectory;
+    });
+    try {
+      await launcher.prepare();
+      assert.equal(readFileSync(path.join(runDirectory, 'ReShade.ini'), 'utf8'),
+        logging ? template.replace('Logging=0', 'Logging=1') : template);
+      assert.equal(readFileSync(source, 'utf8'), template);
+    } finally {
+      await launcher.disposeAsync();
+    }
+  }
+});
+
 test('preload staging preserves long registered filenames in the stable external scan directory', async () => {
   const fixture = await createAddonPreloadRuntime({ addonSubdirectory: path.join(...Array(11).fill('long-profile-segment')) });
   const registeredName = path.basename(fixture.installation.addonPath);
@@ -7536,6 +7681,114 @@ test('generation28 normal caller retains shared preloading and creates no elevat
   }finally{launcher.dispose();execution.restore();}
 });
 
+test('cache-capable runtime prepares a private stage for an elevated consumer', async () => {
+  const fixture = await createAddonPreloadRuntime({ runtimeGeneration: 42 });
+  const config = createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory: fixture.runsRootDirectory,
+  });
+  assert.equal(config.injectorCacheBootstrap, 1);
+  const execution = stubExecFile();
+  const launcher = new ReShadeOverlayLauncher(config);
+  let stagedDirectory;
+  launcher.onEvent(event => {
+    if (event.type === 'runtime-staged') stagedDirectory = event.runDirectory;
+  });
+  try {
+    const preparation = launcher.prepare();
+    await waitFor(() => execution.calls.length === 1);
+    assert.deepEqual(execution.calls[0].arguments, ['--consumer-context', String(process.pid)]);
+    execution.calls[0].callback(null, JSON.stringify(consumerTokenRecord(true)), '');
+    await waitFor(() => execution.calls.length === 2);
+    assert.deepEqual(execution.calls[1].arguments, ['--consumer-context', String(process.pid)]);
+    execution.calls[1].callback(null, JSON.stringify(consumerTokenRecord(true)), '');
+    await waitFor(() => execution.calls.length === 3);
+    assert.equal(execution.calls[2].arguments[0], '--create-private-elevated-stage');
+    const directory = path.join(fixture.runsRootDirectory, 'prepared-' + 'b'.repeat(32));
+    mkdirSync(directory);
+    reservePrivatePayloadFixture(fixture.runtimeDirectory, directory);
+    execution.calls[2].callback(null, JSON.stringify({
+      schemaVersion: 1, kind: 'electron-game-overlay-private-elevated-stage',
+      ownerPid: process.pid, creationTime100ns: '134387657907132585', directory,
+    }), '');
+    await waitFor(() => execution.calls.length === 4);
+    assert.equal(execution.calls[3].arguments[0], '--verify-private-elevated-stage');
+    assert.equal(execution.calls[3].arguments[3], directory);
+    execution.calls[3].callback(null, JSON.stringify({
+      schemaVersion: 1, kind: 'electron-game-overlay-private-elevated-stage-verified',
+      ownerPid: process.pid, creationTime100ns: '134387657907132585', directory,
+      payloadFiles: 13, diagnosticsFiles: 2,
+    }), '');
+    await preparation;
+    assert.equal(stagedDirectory, directory);
+    assert.equal(lstatSync(path.join(directory, 'ReShade64.dll')).nlink, 1);
+    assert.equal(existsSync(`${fixture.runsRootDirectory}.sdk-versions-v1`), false);
+  } finally {
+    launcher.dispose();
+    execution.restore();
+  }
+});
+
+test('protected cache capability uses the native lease for high preparation with registration configured', async () => {
+  const fixture = await createAddonPreloadRuntime({ runtimeGeneration: 44 });
+  const runsRootDirectory = path.join(fixture.root, 'protected-cache-runs');
+  const config = createReShadeLaunchConfig({
+    bundledRuntimeDirectory: fixture.runtimeDirectory,
+    runsRootDirectory,
+    addonPreload: { applicationId: fixture.applicationId, addonDirectory: fixture.addonDirectory },
+  });
+  assert.equal(config.elevatedCacheBootstrap, 1);
+  assert.equal(config.cachePreloadBootstrap, 1);
+  const { PassThrough } = require('node:stream');
+  const { RUNTIME_PAYLOAD_NAMES, sdkRuntimeCacheDirectory } = require('../dist/lib/runtime-payload-store.js');
+  const execution = stubExecFile();
+  const originalSpawn = childProcess.spawn;
+  const launcher = new ReShadeOverlayLauncher(config);
+  let verifiedDirectory, leaseReleased = false;
+  childProcess.spawn = (executable, args) => {
+    assert.equal(executable, config.addonManagerPath);
+    assert.deepEqual(args.slice(0, 4), ['--hold-private-elevated-cache', String(process.pid),
+      '134387657907132585', runsRootDirectory]);
+    assert.equal(args[6], fixture.runtimeDirectory);
+    assert.equal(args.length, 20);
+    const [,,, runsRoot, key, marker, source, ...hashes] = args;
+    const logs = path.join(`${runsRoot}.elevated`, 'runs');
+    verifiedDirectory = path.join(sdkRuntimeCacheDirectory(logs), key);
+    mkdirSync(verifiedDirectory, { recursive: true });
+    for (const [index, name] of RUNTIME_PAYLOAD_NAMES.entries()) {
+      const bytes = readFileSync(path.join(source, name));
+      assert.equal(hashes[index], createHash('sha256').update(bytes).digest('hex').toUpperCase());
+      writeFileSync(path.join(verifiedDirectory, name), bytes);
+    }
+    writeFileSync(path.join(verifiedDirectory, '.electron-game-overlay-payload.json'), marker);
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      exitCode: null, signalCode: null,
+    });
+    child.stdin.once('finish', () => { leaseReleased = true; child.exitCode = 0; child.emit('close', 0); });
+    queueMicrotask(() => child.stdout.write(JSON.stringify({
+      schemaVersion: 1, kind: 'electron-game-overlay-private-elevated-cache', ownerPid: process.pid,
+      creationTime100ns: '134387657907132585', runsDirectory: logs, directory: verifiedDirectory,
+    }) + '\n'));
+    return child;
+  };
+  try {
+    const preparation = launcher.prepare();
+    await waitFor(() => execution.calls.length === 1);
+    execution.calls[0].callback(null, JSON.stringify(consumerTokenRecord(true)), '');
+    await preparation;
+    assert.equal(execution.calls.length, 1, 'only the real-context query uses the stage command channel');
+    assert.equal(readdirSync(verifiedDirectory).length, 14);
+    assert.equal(existsSync(runsRootDirectory), false);
+    assert.equal(existsSync(sdkRuntimeCacheDirectory(runsRootDirectory)), false);
+    assert.equal(leaseReleased, true);
+  } finally {
+    await launcher.disposeAsync();
+    execution.restore();
+    childProcess.spawn = originalSpawn;
+  }
+});
+
 test('generation28 refuses unsupported caller integrity before stage creation or injection',async()=>{
   const f=await createAddonPreloadRuntime({runtimeGeneration:28}),execution=stubExecFile(),launcher=new ReShadeOverlayLauncher(createAddonPreloadConfig(f));
   try{
@@ -7556,7 +7809,10 @@ async function createAddonPreloadRuntime({ runtimeGeneration = 23, addonSubdirec
     name: 'electron-game-overlay', version: '0.1.0-rc.7',
   }));
   const { writeCooperativeDistribution } = require('./helpers/cooperative-package-fixture.cjs');
-  const distribution = writeCooperativeDistribution(path.join(packageRoot, 'dist'), { addonBuildId, runtimeGeneration });
+  const distribution = writeCooperativeDistribution(path.join(packageRoot, 'dist'), {
+    addonBuildId: runtimeGeneration >= 41 ? undefined : addonBuildId,
+    runtimeGeneration,
+  });
   const runtimeDirectory = path.join(packageRoot, 'dist', 'runtime', 'win32-x64', 'reshade');
   distribution.write('runtime/win32-x64/reshade/ReShade.ini',
     '[GENERAL]\r\nPerformanceMode=1\r\n\r\n[ADDON]\r\nAddonPath=.\r\nDisabledAddons=@user-disabled.addon64\r\n\r\n[INPUT]\r\nKeyOverlay=0,0,0,0\r\n\r\n');

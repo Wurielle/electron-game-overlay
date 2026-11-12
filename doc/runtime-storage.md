@@ -8,11 +8,58 @@ add-ons are outside this storage policy.
 
 ## Active payloads
 
+Generation 40 passes watcher policy over the injector's stdin pipe. The SDK
+sends a bounded, length-prefixed UTF-8 document and closes stdin. The injector
+checks the entire frame before arming. Earlier validated runtimes still use a
+private policy file. The streamed policy removes that file from the stage.
+The native member's rendezvous and owned host configuration still use the
+stage directory.
+
+Generation 41 keeps the owned late D3D11 configuration for each swap chain in
+memory. The initial owned host reads the staged `ReShade.ini` template and
+validates the stage marker. Its directory-based transport still writes the
+startup record. Injector and owned ReShade file logging default to off for
+this generation. `createReShadeLaunchConfig({ logging: true })` enables them.
+
+Generation 42 uses the version cache directly for managed ordinary attachments
+without registered add-on preloading. The watcher holds the version while
+armed. The injector hands the exact process a cache handle before loading and
+sends the producer route over its stdin pipe. The target keeps that handle until
+Windows ends the process. With logging enabled, the launcher creates a separate
+directory containing only injector logs and the owned host's ReShade log when
+it initializes a host. A cache preflight that proves the exact target disabled
+the official add-on can return the disabled status after read-only path
+validation. Other official installation cases that require the native add-on
+transaction still enter the legacy stage after a verified preflight rejection.
+That flow uses the stage for the restart or startup-wait decision, deferred
+maintenance, and directory-based member authorization when needed.
+
+Generation 44 also uses the cache for managed ordinary callers with
+`addonPreload` configured. The SDK resolves the exact registered application
+and sends the current shared path and retired-filename disable list in a
+bounded INI frame after exact target selection. The cached INI stays sealed.
+The owned host uses the in-memory settings for its startup scan and the
+injector activates the exact registered image through the private memory route.
+
 Ordinary preparation uses a verified content-addressed sibling store,
 `<runsRootDirectory>.payloads-v2`. Helpers, ReShade and immutable manifests are
 hard links to that snapshot. Package files are never linked directly. Each
 participant add-on DLL and each mutable INI has a distinct file identity;
 Windows can merge hard-linked DLL paths into one module with shared globals.
+
+Starting with generation 40, ordinary SDK launches publish one verified binary snapshot
+per package version in `<runsRootDirectory>.sdk-versions-v1`. The directory key
+is the SHA-256 of the exact package version so case-sensitive version identifiers
+cannot collide on Windows. The SDK checks the version and all payload hashes
+before reusing it. Two different payloads declaring the same version cannot
+replace each other. Active stages continue to retain hard-link aliases until
+their lifetime evidence permits retirement.
+
+`clearOldReShadeRuntimeCache({ runsRootDirectory })` removes verified unused
+snapshots that have strictly lower SemVer precedence than the running SDK. It
+returns the versions removed. Active aliases, current and newer versions, and
+versions with equal precedence are preserved. Earlier content-addressed stores
+lack SDK version ownership and remain outside this operation.
 
 An in-progress preparation holds a hard link to the snapshot's ownership marker.
 That lease closes the gap before all stage links have been established. Cache
@@ -38,16 +85,23 @@ lease after exact owner-exit proof. Unleased, never-published copies can then be
 removed even when incomplete. Live publication leases and foreign contents are
 preserved. Completed publications also recover stale publication receipts.
 
-The elevated lane retains generation 28's native security contract: all thirteen
-payload files are private, single-link, explicitly caller-owned and high at
-birth. The native manager verifies their labels, ownership and expected hashes
-before preparation completes. Elevated staging reads verified package bytes
-directly and does not create or read a redundant medium snapshot. The two fixed
-diagnostics leaves remain the only medium-label exceptions. No protected high
-cache, new aliases, relaxed verifier, label changes or privilege changes are
-introduced by this storage change. Sharing high payloads would require a new
-native capability and separate actual-high acceptance. These copies are
-transient; completed runs retain none of the thirteen payload files.
+Generation 43 adds a protected version cache for managed elevated attachment
+to the owned host. The native manager creates the directory, thirteen payloads,
+and ownership record at high integrity with the caller and System access list.
+It verifies the canonical paths, single-link files, labels, and sealed hashes,
+then keeps the namespace and files pinned through injector launch. The injector
+keeps the existing exact user, session, token, and selected payload checks.
+The high cache uses `<runsRootDirectory>.elevated\runs.sdk-versions-v1`.
+Explicit logging creates a `logs-*` directory under the protected sibling
+`runs`. The host receives a write handle for its log without opening a path
+for write from the target token.
+
+The medium and high stores each have one folder per version. High publication
+uses the verified package and leaves any existing medium copy in place.
+Changing permissions on a medium snapshot would leave previously granted
+handles and mapped aliases in use. Medium callers publish and collect in
+their own store. The protected store requires a high caller for publication
+and collection. Legacy private stages retain their earlier security contract.
 
 ## Retirement and diagnostics
 
@@ -84,6 +138,16 @@ could interrupt. A denied or temporarily shared control preserves the payloads
 and persisted exit proof for a later authorized sweep; it never changes access
 permissions, releases ownership early or treats an incomplete stage as complete.
 
+On normal Electron shutdown, await `OverlayTargetWatcher.disposeAsync()` before
+exiting the application. It stops discovery immediately and gives owned launchers
+up to five seconds to finish their pending shutdown work. The watcher child must
+exit and drain its output without selection or contradictory records before the
+SDK publishes unused-run proof. A forced application exit before that callback
+can still leave an attempted run without proof. An already elevated consumer can
+complete retention of protected diagnostics in its own shutdown or maintenance
+sweep. A caller denied write access leaves protected diagnostics at their original
+paths for a later authorized sweep.
+
 These bounds cover completed SDK-owned storage. They do not impose an unsafe
 expiry on possibly mapped images or unrecognized data.
 
@@ -118,7 +182,8 @@ New runs persist a storage journal before execution. The attempted state is
 durable before spawning; native V2 selection records retain the exact target
 identity. If the exact producer of an unattempted preparation has exited,
 maintenance can establish non-execution. An attempted run needs target-exit
-proof. A missing journal update leaves the attempt uncertain. Legacy V2 stdout
+proof or a persisted complete unused-watcher drain. A missing journal update
+leaves the attempt uncertain. Legacy V2 stdout
 can supply an exact target identity when no newer target record is available.
 Maintenance does not release possibly consumed initialization claims early.
 

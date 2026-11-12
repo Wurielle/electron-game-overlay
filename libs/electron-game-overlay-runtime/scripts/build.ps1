@@ -108,9 +108,9 @@ $DistributionDirectory = Join-Path `
     $RuntimeRoot `
     ("dist\" + $ArchitectureConfig.PackagePlatform)
 $ExpectedReShadeCommit = "4a50d1eddace85734871d91792ff214f13f66c01"
-$ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
+$ExpectedAddonBuildId = "3A0626A7F5C84324A83A20F4D9D0B8B1"
 # Bump when the runtime provider or injector implementation changes, never for package semver.
-$RuntimeGeneration = 36
+$RuntimeGeneration = 45
 # Protocol-family v1 providers must always retain literal transport v1 in their
 # advertised range; backwards-compatible releases may raise only the maximum.
 $TargetTransportMin = 1
@@ -119,6 +119,12 @@ if ($ExpectedAddonBuildId -cnotmatch '^[0-9A-F]{32}$') {
     throw "The configured Electron Game Overlay add-on build ID is invalid."
 }
 $ExpectedPatchProvenance = [ordered]@{
+    ownedCacheBootstrapPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-owned-cache-bootstrap.patch"
+    injectorCacheBootstrapPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-cache-bootstrap.patch"
+    injectorElevatedCachePatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-elevated-cache.patch"
+    injectorCachePreloadPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-cache-preload.patch"
+    injectorCacheOfficialPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-cache-official.patch"
+    ownedMemoryConfigurationPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-owned-memory-configuration.patch"
     ownedDeferredD3d11PatchSha256 = Join-Path $RuntimeRoot "patches\reshade-owned-deferred-d3d11.patch"
     ownedCompositionAuxiliaryLifetimePatchSha256 = Join-Path $RuntimeRoot "patches\reshade-owned-composition-auxiliary-lifetime.patch"
     ownedCompositionWindowEligibilityPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-owned-composition-window-eligibility.patch"
@@ -177,6 +183,7 @@ $ExpectedPatchProvenance = [ordered]@{
     injectorNameWatcherReadyPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-name-watcher-ready.patch"
     injectorProcessPolicyPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-process-policy.patch"
+    injectorPolicyStdinPatchSha256 = Join-Path $RuntimeRoot "patches\reshade-injector-policy-stdin.patch"
     injectorCooperativeMembersPatchSha256 =
         Join-Path $RuntimeRoot "patches\reshade-injector-cooperative-members.patch"
     ownedLateD3d11PatchSha256 =
@@ -344,6 +351,8 @@ if ($BuildStamp.schemaVersion -ne 30 -or
     $BuildStamp.cooperativeAddonProtocol -ne 1 -or
     $BuildStamp.injectorProcessInstanceBinding -ne 1 -or
     $BuildStamp.injectorFutureTargets -ne 2 -or
+    $BuildStamp.injectorPolicyStdin -ne 1 -or
+    $BuildStamp.injectorCacheBootstrap -ne 1 -or
     ($BuildStamp.addonPreloadProtocol -isnot [int] -and $BuildStamp.addonPreloadProtocol -isnot [long]) -or
     $BuildStamp.addonPreloadProtocol -ne 1 -or
     $BuildStamp.commit -ne $ExpectedReShadeCommit -or
@@ -380,6 +389,11 @@ $PackageBuildStamp = [ordered]@{
     cooperativeAddonProtocol = 1
     injectorProcessInstanceBinding = 1
     injectorFutureTargets = 2
+    injectorPolicyStdin = 1
+    injectorCacheBootstrap = 1
+    elevatedCacheBootstrap = 1
+    cachePreloadBootstrap = 1
+    cacheOfficialBootstrap = 1
     addonPreloadProtocol = 1
     privateElevatedAuthorization = 2
     managerProtocolSchemaVersion = 1

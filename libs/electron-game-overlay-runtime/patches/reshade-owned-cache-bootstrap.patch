@@ -1,0 +1,312 @@
+diff --git a/source/ego_owned_late_d3d11/ego_runtime_cache_bootstrap.hpp b/source/ego_owned_late_d3d11/ego_runtime_cache_bootstrap.hpp
+new file mode 100644
+index 0000000..ce21cc6
+--- /dev/null
++++ b/source/ego_owned_late_d3d11/ego_runtime_cache_bootstrap.hpp
+@@ -0,0 +1,138 @@
++#pragma once
++
++#include <Windows.h>
++#include <algorithm>
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <string>
++#include <string_view>
++
++namespace ego::runtime_cache
++{
++    std::string_view owned_configuration_seed() noexcept;
++
++    inline constexpr DWORD max_config_bytes = 64 * 1024;
++    inline constexpr std::uint32_t bootstrap_magic = 0x31434745; // EGC1
++    inline constexpr std::wstring_view version_store_suffix = L".sdk-versions-v1";
++
++    inline std::wstring_view dos_path(std::wstring_view path) noexcept
++    {
++        if (path.substr(0, 4) == L"\\\\?\\") path.remove_prefix(4);
++        return path;
++    }
++
++    inline bool is_version_directory(std::wstring_view path) noexcept
++    {
++        constexpr auto suffix = version_store_suffix;
++        path = dos_path(path);
++        if (path.size() < 4 + suffix.size() + 65 || path[1] != L':' || path[2] != L'\\')
++            return false;
++        const auto separator = path.find_last_of(L'\\');
++        if (path.size() - separator != 65 || separator < suffix.size() ||
++            path.substr(separator - suffix.size(), suffix.size()) != suffix)
++            return false;
++        const auto version_key = path.substr(separator + 1);
++        return version_key.find_first_not_of(L"0123456789abcdef") == std::wstring_view::npos;
++    }
++
++    struct file_identity
++    {
++        std::uint32_t volume = 0;
++        std::uint32_t index_high = 0;
++        std::uint32_t index_low = 0;
++    };
++
++    struct bootstrap_header
++    {
++        std::uint32_t magic = bootstrap_magic;
++        std::uint32_t version = 2;
++        std::uint32_t struct_size = sizeof(bootstrap_header);
++        std::uint32_t target_pid = 0;
++        std::uint64_t target_creation_time = 0;
++        file_identity runtime{};
++        std::uint32_t config_bytes = 0;
++        std::uint64_t log_handle = 0;
++        file_identity log_file{};
++        std::uint32_t reserved = 0;
++    };
++    static_assert(sizeof(bootstrap_header) == 64);
++    static_assert(offsetof(bootstrap_header, target_creation_time) == 16);
++
++    inline DWORD creation_time(HANDLE process, std::uint64_t &time) noexcept
++    {
++        FILETIME created{}, exited{}, kernel{}, user{};
++        if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) return GetLastError();
++        time = (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
++        return time == 0 ? ERROR_INVALID_DATA : ERROR_SUCCESS;
++    }
++
++    inline std::wstring host_claim_name(DWORD pid, std::uint64_t birth)
++    {
++        return L"Local\\electron-game-overlay-host-v1-" + std::to_wstring(pid) + L"-" + std::to_wstring(birth);
++    }
++
++    inline DWORD read_identity(HANDLE file, file_identity &identity) noexcept
++    {
++        BY_HANDLE_FILE_INFORMATION info{};
++        if (!GetFileInformationByHandle(file, &info)) return GetLastError();
++        if ((info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
++            return ERROR_CANT_ACCESS_FILE;
++        identity = { info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow };
++        return ERROR_SUCCESS;
++    }
++
++    inline bool same_file(const file_identity &a, const file_identity &b) noexcept
++    {
++        return a.volume == b.volume && a.index_high == b.index_high && a.index_low == b.index_low;
++    }
++
++    inline bool valid_seed(std::string_view seed) noexcept
++    {
++        return !seed.empty() && seed.size() <= max_config_bytes && seed.find('\0') == std::string_view::npos;
++    }
++
++    inline DWORD write_bootstrap(HANDLE mapping, const bootstrap_header &header, std::string_view seed) noexcept
++    {
++        if (!valid_seed(seed) || header.config_bytes != seed.size()) return ERROR_INVALID_DATA;
++        void *const view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(header) + seed.size());
++        if (view == nullptr) return GetLastError();
++        memcpy(view, &header, sizeof(header));
++        memcpy(static_cast<char *>(view) + sizeof(header), seed.data(), seed.size());
++        UnmapViewOfFile(view);
++        return ERROR_SUCCESS;
++    }
++
++    inline DWORD read_bootstrap(HANDLE mapping, DWORD pid, std::uint64_t birth,
++        const file_identity &runtime, std::string &seed, HANDLE &log)
++    {
++        struct mapped_view
++        {
++            const void *value;
++            ~mapped_view() { if (value != nullptr) UnmapViewOfFile(value); }
++        };
++        const mapped_view view { MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
++            sizeof(bootstrap_header) + max_config_bytes) };
++        if (view.value == nullptr) return GetLastError();
++        bootstrap_header header;
++        memcpy(&header, view.value, sizeof(header));
++        if (header.magic != bootstrap_magic || header.version != 2 || header.struct_size != sizeof(header) ||
++            header.target_pid != pid || header.target_creation_time != birth ||
++            !same_file(header.runtime, runtime) || header.config_bytes == 0 || header.config_bytes > max_config_bytes ||
++            header.log_handle > UINTPTR_MAX || header.reserved != 0)
++            return ERROR_INVALID_DATA;
++        const auto bytes = std::string_view(static_cast<const char *>(view.value) + sizeof(header), header.config_bytes);
++        if (!valid_seed(bytes)) return ERROR_INVALID_DATA;
++        const auto log_handle = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(header.log_handle));
++        if (log_handle != nullptr)
++        {
++            file_identity log_identity;
++            if (GetFileType(log_handle) != FILE_TYPE_DISK || read_identity(log_handle, log_identity) != ERROR_SUCCESS ||
++                !same_file(log_identity, header.log_file)) return ERROR_INVALID_DATA;
++        }
++        seed.assign(bytes);
++        log = log_handle;
++        return ERROR_SUCCESS;
++    }
++}
+diff --git a/source/dll_main.cpp b/source/dll_main.cpp
+index b246178..a51f9ad 100644
+--- a/source/dll_main.cpp
++++ b/source/dll_main.cpp
+@@ -6,6 +6,7 @@
+ #include "version.h"
+ #include "dll_log.hpp"
+ #include "ini_file.hpp"
++#include "ego_owned_late_d3d11/ego_runtime_cache_bootstrap.hpp"
+ #include "hook_manager.hpp"
+ #include "addon_manager.hpp"
+ #include <Windows.h>
+@@ -19,6 +20,43 @@ HANDLE g_exit_event = nullptr;
+ HMODULE g_module_handle = nullptr;
+ std::filesystem::path g_reshade_dll_path;
+ std::filesystem::path g_reshade_base_path;
++
++namespace
++{
++	std::string owned_cache_configuration;
++
++	bool configure_owned_cache()
++	{
++		using namespace ego::runtime_cache;
++		const auto runtime_path = L"\\\\?\\" + std::wstring(dos_path(g_reshade_dll_path.native()));
++		const HANDLE runtime = CreateFileW(runtime_path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
++			nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++		if (runtime == INVALID_HANDLE_VALUE) return false;
++		file_identity identity;
++		const auto identity_error = read_identity(runtime, identity);
++		CloseHandle(runtime);
++		if (identity_error != ERROR_SUCCESS) return false;
++
++		const DWORD pid = GetCurrentProcessId();
++		std::uint64_t birth = 0;
++		if (creation_time(GetCurrentProcess(), birth) != ERROR_SUCCESS) return false;
++		const HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, host_claim_name(pid, birth).c_str());
++		if (mapping == nullptr) return false;
++		HANDLE log = nullptr;
++		const auto bootstrap_error = read_bootstrap(mapping, pid, birth, identity, owned_cache_configuration, log);
++		CloseHandle(mapping);
++		if (bootstrap_error != ERROR_SUCCESS) return false;
++		g_reshade_base_path = g_reshade_dll_path.parent_path();
++		if (!reshade::ini_file::reserve_memory_cache(g_reshade_base_path / L"ReShade.ini", owned_cache_configuration)) return false;
++		if (log != nullptr) reshade::log::adopt_log_file(log);
++		return true;
++	}
++}
++
++std::string_view ego::runtime_cache::owned_configuration_seed() noexcept
++{
++	return owned_cache_configuration;
++}
+ std::filesystem::path g_target_executable_path;
+ 
+ /// <summary>
+@@ -137,13 +175,23 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
+ 			// UWP apps do not have write access to the application directory, so never default the base path to it for them
+ 			const bool default_base_to_target_executable_path = !is_d3d && !is_dxgi && !is_opengl && !is_dinput && !is_asi && !is_uwp_app();
+ 
+-			g_reshade_base_path = get_base_path(default_base_to_target_executable_path);
++			const bool owned_cache = ego::runtime_cache::is_version_directory(g_reshade_dll_path.parent_path().native());
++			if (owned_cache)
++			{
++				// A version cache never falls through to target settings or disk
++				// configuration if its exact-process startup claim is absent.
++				if (!configure_owned_cache()) return FALSE;
++			}
++			else
++			{
++				g_reshade_base_path = get_base_path(default_base_to_target_executable_path);
++			}
+ 
+ 			const reshade::ini_file &config = reshade::global_config();
+ 
+ 			// When ReShade is not loaded by proxy, only actually load when a configuration file exists for the target executable
+ 			// This e.g. prevents loading the implicit Vulkan layer when not explicitly enabled for an application
+-			if (default_base_to_target_executable_path && !GetEnvironmentVariableW(L"RESHADE_DISABLE_LOADING_CHECK", nullptr, 0))
++			if (!owned_cache && default_base_to_target_executable_path && !GetEnvironmentVariableW(L"RESHADE_DISABLE_LOADING_CHECK", nullptr, 0))
+ 			{
+ #ifndef NDEBUG
+ 				// Avoid loading in the ReShade test application
+@@ -170,7 +218,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
+ 				}
+ 			}
+ 
+-			if (config.get("INSTALL", "Logging") || (!config.has("INSTALL", "Logging") && !GetEnvironmentVariableW(L"RESHADE_DISABLE_LOGGING", nullptr, 0)))
++			if (!owned_cache && (config.get("INSTALL", "Logging") || (!config.has("INSTALL", "Logging") && !GetEnvironmentVariableW(L"RESHADE_DISABLE_LOGGING", nullptr, 0))))
+ 			{
+ 				std::filesystem::path log_path = config.path();
+ 				log_path.replace_extension(L".log");
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+index 67d98c7..eea81e3 100644
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -1,4 +1,5 @@
+ #include "owned_runtime_policy.hpp"
++#include "ego_runtime_cache_bootstrap.hpp"
+ #include "compatibility_snapshot.hpp"
+ // Owned ReShade baseline. Foreign/official hosts never activate this path.
+ #include "reshade.hpp"
+@@ -198,15 +199,26 @@ namespace ego_owned_late_d3d11
+         if (ec || _wcsicmp(base.c_str(), dll_parent.c_str()) != 0) return ERROR_ACCESS_DENIED;
+         const fs::path game_parent = fs::canonical(executable.parent_path(), ec);
+         if (ec || beneath(base, game_parent)) return ERROR_ACCESS_DENIED;
+-        std::string marker;
+-        error = read_regular_file(base / marker_name, marker, sizeof(marker_contents));
+-        if (error != ERROR_SUCCESS) return error;
+-        if (marker != marker_contents) return ERROR_ACCESS_DENIED;
+-        if (!regular_file(base / L"ReShade.ini") || !regular_file(base / L".electron-game-overlay-run.json"))
+-            return ERROR_ACCESS_DENIED;
+-        error = read_regular_file(base / L"ReShade.ini", config_seed, 4 * 1024 * 1024);
+-        if (error != ERROR_SUCCESS) return error;
+-        if (config_seed.find('\0') != std::string::npos) return ERROR_INVALID_DATA;
++        const auto memory_seed = ego::runtime_cache::owned_configuration_seed();
++        if (!memory_seed.empty())
++        {
++            if (!ego::runtime_cache::is_version_directory(base.native()) ||
++                !reshade::ini_file::has_memory_cache(g_reshade_base_path / L"ReShade.ini"))
++                return ERROR_ACCESS_DENIED;
++            config_seed.assign(memory_seed);
++        }
++        else
++        {
++            std::string marker;
++            error = read_regular_file(base / marker_name, marker, sizeof(marker_contents));
++            if (error != ERROR_SUCCESS) return error;
++            if (marker != marker_contents) return ERROR_ACCESS_DENIED;
++            if (!regular_file(base / L"ReShade.ini") || !regular_file(base / L".electron-game-overlay-run.json"))
++                return ERROR_ACCESS_DENIED;
++            error = read_regular_file(base / L"ReShade.ini", config_seed, 4 * 1024 * 1024);
++            if (error != ERROR_SUCCESS) return error;
++            if (config_seed.find('\0') != std::string::npos) return ERROR_INVALID_DATA;
++        }
+         FILETIME creation = {}, exit = {}, kernel = {}, user = {};
+         if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return GetLastError();
+         process_creation_time = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+diff --git a/source/dll_log.hpp b/source/dll_log.hpp
+index 911cf4d..1cb68fa 100644
+--- a/source/dll_log.hpp
++++ b/source/dll_log.hpp
+@@ -40,6 +40,8 @@ namespace reshade::log
+ 	/// </summary>
+ 	/// <param name="path">Path to the log file.</param>
+ 	/// <param name="ec">Error code that is set on failure.</param>
++	// Takes ownership of the exact file handle reserved by the owned injector.
++	void adopt_log_file(void *file);
+ 	bool open_log_file(const std::filesystem::path &path, std::error_code &ec);
+ 
+ 	/// <summary>
+diff --git a/source/dll_log.cpp b/source/dll_log.cpp
+index f2dbf84..21f13c5 100644
+--- a/source/dll_log.cpp
++++ b/source/dll_log.cpp
+@@ -29,6 +29,13 @@ private:
+ 
+ static scoped_file_handle s_log_file_handle;
+ 
++void reshade::log::adopt_log_file(void *file)
++{
++	if (s_log_file_handle != INVALID_HANDLE_VALUE)
++		CloseHandle(s_log_file_handle);
++	s_log_file_handle = file;
++}
++
+ bool reshade::log::open_log_file(const std::filesystem::path &path, std::error_code &ec)
+ {
+ 	// Close the previous file first

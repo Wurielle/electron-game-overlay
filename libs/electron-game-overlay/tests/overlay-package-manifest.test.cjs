@@ -41,6 +41,63 @@ function mutateStamp(f, name, mutate) {
   f.payload.seal();
 }
 
+test('generation-42 binds the cache bootstrap capability and native patches on both architectures', t => {
+  for (const [bits, suffix] of [[64, ''], [32, '32']]) {
+    const f = fixture(t, { runtimeGeneration: 42 });
+    validateOverlayDistributionSync(f.dist);
+    mutateStamp(f, `ReShade${bits}.build.json`, stamp => { delete stamp.ownedCacheBootstrapPatchSha256; });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /cache bootstrap patch provenance mismatch/);
+    const downgraded = fixture(t, { runtimeGeneration: 42 });
+    mutateStamp(downgraded, `electron_game_overlay_runtime${suffix}.build.json`, stamp => { delete stamp.injectorCacheBootstrap; });
+    assert.throws(() => validateOverlayDistributionSync(downgraded.dist), /cache bootstrap capability disagrees/);
+  }
+});
+
+test('generation-43 requires the protected cache capability and exact native injector patch', t => {
+  for (const [bits, suffix] of [[64, ''], [32, '32']]) {
+    const alteredPatch = fixture(t, { runtimeGeneration: 43 });
+    validateOverlayDistributionSync(alteredPatch.dist);
+    mutateStamp(alteredPatch, `ReShade${bits}.build.json`, stamp => { delete stamp.injectorElevatedCachePatchSha256; });
+    assert.throws(() => validateOverlayDistributionSync(alteredPatch.dist), /protected cache patch provenance mismatch/);
+    const alteredCapability = fixture(t, { runtimeGeneration: 43 });
+    mutateStamp(alteredCapability, `electron_game_overlay_runtime${suffix}.build.json`, stamp => { delete stamp.elevatedCacheBootstrap; });
+    assert.throws(() => validateOverlayDistributionSync(alteredCapability.dist), /protected cache capability disagrees/);
+  }
+});
+
+test('generation-44 binds the registered preload cache capability and exact native injector patch', t => {
+  for (const [bits, suffix] of [[64, ''], [32, '32']]) {
+    const alteredPatch = fixture(t, { runtimeGeneration: 44 });
+    validateOverlayDistributionSync(alteredPatch.dist);
+    mutateStamp(alteredPatch, `ReShade${bits}.build.json`, stamp => { delete stamp.injectorCachePreloadPatchSha256; });
+    assert.throws(() => validateOverlayDistributionSync(alteredPatch.dist), /registered preload cache patch provenance mismatch/);
+    const alteredCapability = fixture(t, { runtimeGeneration: 44 });
+    mutateStamp(alteredCapability, `electron_game_overlay_runtime${suffix}.build.json`, stamp => { delete stamp.cachePreloadBootstrap; });
+    assert.throws(() => validateOverlayDistributionSync(alteredCapability.dist), /registered preload cache capability disagrees/);
+  }
+});
+
+test('generation-41 binds owned memory configuration on both architectures', t => {
+  for (const bits of [64, 32]) {
+    const f = fixture(t, { runtimeGeneration: 41 });
+    validateOverlayDistributionSync(f.dist);
+    mutateStamp(f, `ReShade${bits}.build.json`, stamp => { delete stamp.ownedMemoryConfigurationPatchSha256; });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /owned memory configuration patch provenance mismatch/);
+  }
+});
+
+test('generation-40 binds the stdin policy capability and exact native patch on both architectures', t => {
+  for (const [bits, suffix] of [[64, ''], [32, '32']]) {
+    const f = fixture(t, { runtimeGeneration: 40 });
+    validateOverlayDistributionSync(f.dist);
+    mutateStamp(f, `ReShade${bits}.build.json`, stamp => { delete stamp.injectorPolicyStdinPatchSha256; });
+    assert.throws(() => validateOverlayDistributionSync(f.dist), /stdin policy patch provenance mismatch/);
+    const downgraded = fixture(t, { runtimeGeneration: 40 });
+    mutateStamp(downgraded, `electron_game_overlay_runtime${suffix}.build.json`, stamp => { delete stamp.injectorPolicyStdin; });
+    assert.throws(() => validateOverlayDistributionSync(downgraded.dist), /stdin policy capability disagrees/);
+  }
+});
+
 test('generation-36 binds the owned deferred D3D11 implementation and exact architecture provenance', t => {
   for (const bits of [64, 32]) {
     for (const value of [undefined, 'A'.repeat(64), false]) {
@@ -938,7 +995,7 @@ test('payload junctions cannot redirect integrity reads outside the SDK', t => {
 });
 
 test('actual seal script builds a self-contained SDK manifest on the supported build Node version', t => {
-  const f = fixture(t, { runtimeGeneration: 36 });
+  const f = fixture(t, { runtimeGeneration: 44 });
   const scripts = path.join(f.root, 'scripts'); fs.mkdirSync(scripts);
   fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'electron-game-overlay', version: '0.1.0-rc.7' }));
   const dependencyOutput = path.join(f.dist, 'node_modules');

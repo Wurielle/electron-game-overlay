@@ -165,6 +165,29 @@ ego_status EGO_CALL ego_transport_create_for_directory_with_input_capabilities(
     uint64_t directory_utf8_len,
     uint64_t input_capabilities,
     ego_transport **out_transport);
+
+#ifdef EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE
+#define EGO_PRIVATE_ROUTE_VERSION 2u
+typedef struct ego_private_route_v2 {
+    uint32_t struct_size;
+    uint32_t version;
+    uint64_t target_creation_time_100ns;
+    uint64_t producer_creation_time_100ns;
+    uint64_t input_capabilities;
+    uint32_t producer_pid;
+    uint32_t target_pid;
+    uint16_t port;
+    uint16_t reserved;
+    uint32_t reserved2;
+    uint8_t token_ascii[64];
+} ego_private_route_v2;
+/* Route contents are copied synchronously. Both process instances must match.
+ * The bridge verifies the producer's socket before sending the token. */
+ego_status EGO_CALL ego_transport_create_for_private_route_v2(
+    uint32_t abi_version,
+    const ego_private_route_v2 *route,
+    ego_transport **out_transport);
+#endif
 ego_status EGO_CALL ego_transport_destroy(ego_transport *transport);
 /*
  * Waits until packets published before this call are written to the current

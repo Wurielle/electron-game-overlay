@@ -4854,6 +4854,96 @@ std::string consumer_execution_command(int argc, wchar_t **argv, bool launch)
     return result.str();
 }
 
+struct private_storage_caller
+{
+    DWORD pid;
+    unique_handle process;
+    consumer_token_context token;
+};
+
+constexpr std::array<const wchar_t *, 13> private_runtime_payloads = {
+    L"inject.exe", L"inject32.exe", L"electron_game_overlay_reshade_manager.exe", L"electron_game_overlay_reshade_manager32.exe",
+    L"ReShade64.dll", L"ReShade32.dll", L"ReShade64.build.json", L"ReShade32.build.json",
+    L"electron_game_overlay_runtime.build.json", L"electron_game_overlay_runtime32.build.json",
+    L"electron_game_overlay.addon64", L"electron_game_overlay.addon32", L"ReShade.ini",
+};
+
+using local_security_descriptor = std::unique_ptr<void, decltype(&LocalFree)>;
+
+local_security_descriptor private_storage_descriptor(const consumer_token_context &context, bool directory)
+{
+    LPWSTR raw_sid = nullptr;
+    if (!ConvertSidToStringSidW(const_cast<BYTE *>(context.sid.data()), &raw_sid))
+        throw_windows("private-stage-security-failed", "Unable to encode the caller SID.", exit_category::io_failure);
+    const std::unique_ptr<wchar_t, decltype(&LocalFree)> sid_owner(raw_sid, LocalFree);
+    const std::wstring sid(raw_sid), inheritance = directory ? L"OICI" : L"";
+    const std::wstring sddl = L"O:" + sid + L"D:P(A;" + inheritance + L";FA;;;SY)(A;" + inheritance +
+        L";FA;;;" + sid + L")S:(ML;" + inheritance + L";NW;;;HI)";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+        throw_windows("private-stage-security-failed", "Unable to create the private high security descriptor.", exit_category::io_failure);
+    return local_security_descriptor(descriptor, LocalFree);
+}
+
+private_storage_caller require_private_storage_caller(const wchar_t *pid, std::wstring_view birth)
+{
+    const std::wstring pid_text(pid);
+    if (pid_text.empty() || pid_text[0] == L'0' || pid_text.size() > 10 || pid_text.find_first_not_of(L"0123456789") != std::wstring::npos || std::stoull(pid_text) > MAXDWORD)
+        throw manager_error("invalid-request", "Invalid caller PID.", exit_category::invalid_request);
+    const DWORD owner_pid = static_cast<DWORD>(std::stoull(pid_text));
+    unique_handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    PROCESSENTRY32W entry{sizeof(entry)}; DWORD parent = 0;
+    for (BOOL next = Process32FirstW(snapshot.get(), &entry); next; next = Process32NextW(snapshot.get(), &entry))
+        if (entry.th32ProcessID == GetCurrentProcessId()) {parent = entry.th32ParentProcessID;break;}
+    if (parent != owner_pid) throw manager_error("consumer-parent-mismatch", "Only the actual calling process may authorize private storage.", exit_category::preserved_state);
+    unique_handle owner_process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, owner_pid));
+    if (!owner_process || WaitForSingleObject(owner_process.get(), 0) != WAIT_TIMEOUT || birth != std::to_wstring(consumer_birth(owner_process.get())))
+        throw manager_error("consumer-identity-mismatch", "The caller incarnation is unavailable or changed.", exit_category::preserved_state);
+    const auto context = read_consumer_token(owner_process.get(), "private-stage-owner");
+    if (!context.elevated || context.integrity != SECURITY_MANDATORY_HIGH_RID || context.session == 0)
+        throw manager_error("consumer-integrity-rejected", "Private storage requires the actual interactive high caller.", exit_category::preserved_state);
+    return {owner_pid, std::move(owner_process), context};
+}
+
+void verify_private_storage_security(HANDLE handle, const consumer_token_context &context,
+    bool is_directory, DWORD expected_integrity, const char *leaf)
+{
+    PSID owner = nullptr; PACL dacl = nullptr, labels = nullptr; PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD error = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+        &owner, nullptr, &dacl, &labels, &descriptor);
+    struct scope {PSECURITY_DESCRIPTOR value;~scope(){LocalFree(value);}} descriptor_scope{descriptor};
+    if (error != ERROR_SUCCESS) {SetLastError(error);throw_windows("private-stage-security-failed", "Unable to read private stage security.", exit_category::io_failure);}
+    SECURITY_DESCRIPTOR_CONTROL control{}; DWORD revision = 0;
+    if (!owner || !IsValidSid(owner) || GetLengthSid(owner) != context.sid.size() || std::memcmp(owner, context.sid.data(), context.sid.size()) != 0)
+        throw manager_error("private-stage-owner-invalid", std::string("Unexpected owner for ") + leaf + (owner && IsValidSid(owner) && IsWellKnownSid(owner, WinBuiltinAdministratorsSid) ? " (Administrators group default owner)." : "."), exit_category::preserved_state);
+    if (!dacl || dacl->AceCount != 2)
+        throw manager_error("private-stage-dacl-invalid", std::string("Unexpected access-entry count for ") + leaf + ".", exit_category::preserved_state);
+    if (!labels || labels->AceCount != 1)
+        throw manager_error("private-stage-label-invalid", std::string("Unexpected mandatory-label count for ") + leaf + ".", exit_category::preserved_state);
+    if (!GetSecurityDescriptorControl(descriptor, &control, &revision) || (is_directory && !(control & SE_DACL_PROTECTED)))
+        throw manager_error("private-stage-dacl-invalid", std::string("Unprotected directory access list for ") + leaf + ".", exit_category::preserved_state);
+    unsigned owner_aces = 0, system_aces = 0;
+    for (DWORD index = 0; index < dacl->AceCount; ++index) {
+        void *raw = nullptr;
+        if (!GetAce(dacl, index, &raw)) throw_windows("private-stage-security-invalid", "Invalid private access entry.", exit_category::preserved_state);
+        const auto ace = static_cast<ACCESS_ALLOWED_ACE *>(raw); PSID sid = &ace->SidStart;
+        if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE || ace->Mask != FILE_ALL_ACCESS || !IsValidSid(sid))
+            throw manager_error("private-stage-security-invalid", "Unexpected private stage access grant.", exit_category::preserved_state);
+        if (GetLengthSid(sid) == context.sid.size() && std::memcmp(sid, context.sid.data(), context.sid.size()) == 0) ++owner_aces;
+        else if (IsWellKnownSid(sid, WinLocalSystemSid)) ++system_aces;
+        else throw manager_error("private-stage-security-invalid", "Foreign private stage access grant.", exit_category::preserved_state);
+    }
+    void *raw = nullptr;
+    if (!GetAce(labels, 0, &raw)) throw_windows("private-stage-security-invalid", "Invalid private mandatory label.", exit_category::preserved_state);
+    const auto ace = static_cast<SYSTEM_MANDATORY_LABEL_ACE *>(raw); PSID sid = &ace->SidStart;
+    const SID_IDENTIFIER_AUTHORITY authority = SECURITY_MANDATORY_LABEL_AUTHORITY;
+    if (owner_aces != 1 || system_aces != 1 || ace->Header.AceType != SYSTEM_MANDATORY_LABEL_ACE_TYPE ||
+        ace->Mask != SYSTEM_MANDATORY_LABEL_NO_WRITE_UP || !IsValidSid(sid) || *GetSidSubAuthorityCount(sid) != 1 ||
+        std::memcmp(GetSidIdentifierAuthority(sid), &authority, sizeof(authority)) != 0 || *GetSidSubAuthority(sid, 0) != expected_integrity ||
+        (is_directory && (ace->Header.AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)) != (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)))
+        throw manager_error("private-stage-security-invalid", "Unexpected private stage integrity label.", exit_category::preserved_state);
+}
+
 std::string create_private_elevated_stage(int argc, wchar_t **argv)
 {
     if (argc != 6) throw manager_error("invalid-request", "Expected caller identity, runs root and safe prefix.", exit_category::invalid_request);
@@ -4861,29 +4951,9 @@ std::string create_private_elevated_stage(int argc, wchar_t **argv)
     if (pid_text.empty() || pid_text[0] == L'0' || pid_text.size() > 10 || pid_text.find_first_not_of(L"0123456789") != std::wstring::npos ||
         prefix.empty() || prefix.size() > 128 || prefix.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != std::wstring::npos)
         throw manager_error("invalid-request", "Invalid caller PID or stage prefix.", exit_category::invalid_request);
-    const auto numeric_pid = std::stoull(pid_text);
-    if (numeric_pid > MAXDWORD) throw manager_error("invalid-request", "Invalid caller PID.", exit_category::invalid_request);
-    const DWORD owner_pid = static_cast<DWORD>(numeric_pid);
-    unique_handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
-    PROCESSENTRY32W entry{sizeof(entry)}; DWORD parent = 0;
-    for (BOOL next = Process32FirstW(snapshot.get(), &entry); next; next = Process32NextW(snapshot.get(), &entry))
-        if (entry.th32ProcessID == GetCurrentProcessId()) {parent = entry.th32ParentProcessID;break;}
-    if (parent != owner_pid) throw manager_error("consumer-parent-mismatch", "Only the actual calling process may create a private stage.", exit_category::preserved_state);
-    unique_handle owner(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, owner_pid));
-    if (!owner || WaitForSingleObject(owner.get(), 0) != WAIT_TIMEOUT || std::wstring(argv[3]) != std::to_wstring(consumer_birth(owner.get())))
-        throw manager_error("consumer-identity-mismatch", "The caller incarnation is unavailable or changed.", exit_category::preserved_state);
-    const auto context = read_consumer_token(owner.get(), "private-stage-owner");
-    if (!context.elevated || context.integrity != SECURITY_MANDATORY_HIGH_RID || context.session == 0)
-        throw manager_error("consumer-integrity-rejected", "Private elevated stages require the actual interactive high caller.", exit_category::preserved_state);
+    const auto caller = require_private_storage_caller(argv[2], argv[3]);
     const auto root = open_verified_directory(argv[4], true);
-    LPWSTR raw_sid = nullptr;
-    if (!ConvertSidToStringSidW(const_cast<BYTE *>(context.sid.data()), &raw_sid)) throw_windows("private-stage-security-failed", "Unable to encode the caller SID.", exit_category::io_failure);
-    const std::wstring sid(raw_sid); LocalFree(raw_sid);
-    const std::wstring sddl = L"O:" + sid + L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;" + sid + L")S:(ML;OICI;NW;;;HI)";
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
-        throw_windows("private-stage-security-failed", "Unable to create the private high security descriptor.", exit_category::io_failure);
-    struct descriptor_guard {PSECURITY_DESCRIPTOR value;~descriptor_guard(){LocalFree(value);}} descriptor_scope{descriptor};
+    const auto descriptor = private_storage_descriptor(caller.token, true);
     BYTE random[16]{};
     if (BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
         throw manager_error("private-stage-random-failed", "Unable to generate a private stage identity.", exit_category::io_failure);
@@ -4891,22 +4961,16 @@ std::string create_private_elevated_stage(int argc, wchar_t **argv)
     std::wstring leaf = prefix + L"-";
     for (BYTE value : random) {leaf += digits[value >> 4];leaf += digits[value & 15];}
     const auto directory = append_leaf(root.canonical_path, leaf);
-    SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
+    SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor.get(), FALSE};
     // Never create permissively and then tighten: medium processes must not
     // acquire a writable directory handle before the high label exists.
     if (!CreateDirectoryW(directory.c_str(), &attributes)) throw_windows("private-stage-create-failed", "Unable to reserve the private elevated stage.", exit_category::io_failure);
     // A high administrator's default file owner may be the Administrators
     // group. Reserve all fixed leaves with the exact caller SID at birth;
     // never repair ownership of an existing or cache-linked file later.
-    const std::wstring file_sddl = L"O:" + sid + L"D:P(A;;FA;;;SY)(A;;FA;;;" + sid + L")S:(ML;;NW;;;HI)";
-    PSECURITY_DESCRIPTOR file_descriptor = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(file_sddl.c_str(), SDDL_REVISION_1, &file_descriptor, nullptr))
-        throw_windows("private-stage-security-failed", "Unable to reserve private payload security.", exit_category::io_failure);
-    descriptor_guard file_descriptor_scope{file_descriptor};
-    SECURITY_ATTRIBUTES file_attributes{sizeof(file_attributes), file_descriptor, FALSE};
-    for (const wchar_t *name : {L"inject.exe", L"inject32.exe", L"electron_game_overlay_reshade_manager.exe", L"electron_game_overlay_reshade_manager32.exe",
-        L"ReShade64.dll", L"ReShade32.dll", L"ReShade64.build.json", L"ReShade32.build.json", L"electron_game_overlay_runtime.build.json",
-        L"electron_game_overlay_runtime32.build.json", L"electron_game_overlay.addon64", L"electron_game_overlay.addon32", L"ReShade.ini"}) {
+    const auto file_descriptor = private_storage_descriptor(caller.token, false);
+    SECURITY_ATTRIBUTES file_attributes{sizeof(file_attributes), file_descriptor.get(), FALSE};
+    for (const wchar_t *name : private_runtime_payloads) {
         unique_handle payload(CreateFileW(append_leaf(directory, name).c_str(), GENERIC_WRITE, FILE_SHARE_READ, &file_attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!payload) throw_windows("private-stage-payload-create-failed", "Unable to reserve a private payload file.", exit_category::io_failure);
     }
@@ -4921,7 +4985,7 @@ std::string create_private_elevated_stage(int argc, wchar_t **argv)
     PSECURITY_DESCRIPTOR data_descriptor = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(data_sddl.c_str(), SDDL_REVISION_1, &data_descriptor, nullptr))
         throw_windows("private-stage-security-failed", "Unable to reserve the bounded diagnostics files.", exit_category::io_failure);
-    descriptor_guard data_descriptor_scope{data_descriptor};
+    const local_security_descriptor data_descriptor_scope(data_descriptor, LocalFree);
     PACL label = nullptr; BOOL present = FALSE, defaulted = FALSE;
     if (!GetSecurityDescriptorSacl(data_descriptor, &present, &label, &defaulted) || !present || !label)
         throw_windows("private-stage-security-failed", "Unable to obtain the diagnostics label.", exit_category::io_failure);
@@ -4934,7 +4998,7 @@ std::string create_private_elevated_stage(int argc, wchar_t **argv)
         if (error != ERROR_SUCCESS) {SetLastError(error);throw_windows("private-stage-data-label-failed", "Unable to set the bounded diagnostics label.", exit_category::io_failure);}
         PACL actual = nullptr; PSECURITY_DESCRIPTOR actual_descriptor = nullptr;
         const DWORD query = GetSecurityInfo(data.get(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, &actual, &actual_descriptor);
-        descriptor_guard actual_scope{actual_descriptor};
+        const local_security_descriptor actual_scope(actual_descriptor, LocalFree);
         if (query != ERROR_SUCCESS) {SetLastError(query);throw_windows("private-stage-data-label-failed", "Unable to verify the diagnostics label.", exit_category::io_failure);}
         void *raw_ace = nullptr;
         if (!actual || actual->AceCount != 1 || !GetAce(actual, 0, &raw_ace))
@@ -4948,8 +5012,8 @@ std::string create_private_elevated_stage(int argc, wchar_t **argv)
             throw manager_error("private-stage-data-label-invalid", "The diagnostics file is not medium no-write-up.", exit_category::preserved_state);
     }
     std::ostringstream result;
-    result << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-private-elevated-stage\",\"ownerPid\":" << owner_pid
-           << ",\"creationTime100ns\":" << json_string(std::to_string(consumer_birth(owner.get()))) << ",\"directory\":" << json_string(directory) << "}\n";
+    result << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-private-elevated-stage\",\"ownerPid\":" << caller.pid
+           << ",\"creationTime100ns\":" << json_string(std::to_string(consumer_birth(caller.process.get()))) << ",\"directory\":" << json_string(directory) << "}\n";
     return result.str();
 }
 
@@ -4958,80 +5022,25 @@ std::string create_private_elevated_stage(int argc, wchar_t **argv)
 // This command does not relabel code, mutate caches, or enable privileges.
 std::string verify_private_elevated_stage(int argc, wchar_t **argv)
 {
-    static constexpr const wchar_t *leaves[] = {
-        L"inject.exe", L"inject32.exe", L"electron_game_overlay_reshade_manager.exe", L"electron_game_overlay_reshade_manager32.exe",
-        L"ReShade64.dll", L"ReShade32.dll", L"ReShade64.build.json", L"ReShade32.build.json",
-        L"electron_game_overlay_runtime.build.json", L"electron_game_overlay_runtime32.build.json",
-        L"electron_game_overlay.addon64", L"electron_game_overlay.addon32", L"ReShade.ini"};
     if (argc != 18) throw manager_error("invalid-request", "Expected caller identity, stage and thirteen package hashes.", exit_category::invalid_request);
-    const std::wstring pid_text(argv[2]);
-    if (pid_text.empty() || pid_text[0] == L'0' || pid_text.size() > 10 || pid_text.find_first_not_of(L"0123456789") != std::wstring::npos || std::stoull(pid_text) > MAXDWORD)
-        throw manager_error("invalid-request", "Invalid caller PID.", exit_category::invalid_request);
-    const DWORD owner_pid = static_cast<DWORD>(std::stoull(pid_text));
-    unique_handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
-    PROCESSENTRY32W entry{sizeof(entry)}; DWORD parent = 0;
-    for (BOOL next = Process32FirstW(snapshot.get(), &entry); next; next = Process32NextW(snapshot.get(), &entry))
-        if (entry.th32ProcessID == GetCurrentProcessId()) {parent = entry.th32ParentProcessID;break;}
-    if (parent != owner_pid) throw manager_error("consumer-parent-mismatch", "Only the actual caller may verify a private stage.", exit_category::preserved_state);
-    unique_handle owner_process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, owner_pid));
-    if (!owner_process || WaitForSingleObject(owner_process.get(), 0) != WAIT_TIMEOUT || std::wstring(argv[3]) != std::to_wstring(consumer_birth(owner_process.get())))
-        throw manager_error("consumer-identity-mismatch", "The caller incarnation is unavailable or changed.", exit_category::preserved_state);
-    const auto context = read_consumer_token(owner_process.get(), "private-stage-owner");
-    if (!context.elevated || context.integrity != SECURITY_MANDATORY_HIGH_RID || context.session == 0)
-        throw manager_error("consumer-integrity-rejected", "Private elevated verification requires the actual interactive high caller.", exit_category::preserved_state);
+    const auto caller = require_private_storage_caller(argv[2], argv[3]);
     const auto directory = open_verified_directory(argv[4], false);
     unique_handle directory_security(CreateFileW(directory.canonical_path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!directory_security || !paths_equal(final_path_for_handle(directory_security.get(), "private-stage-invalid", exit_category::preserved_state), directory.canonical_path))
         throw manager_error("private-stage-invalid", "The private stage directory changed.", exit_category::preserved_state);
-    auto verify_security = [&](HANDLE handle, bool is_directory, DWORD expected_integrity, const char *leaf) {
-        PSID owner = nullptr; PACL dacl = nullptr, labels = nullptr; PSECURITY_DESCRIPTOR descriptor = nullptr;
-        const DWORD error = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
-            &owner, nullptr, &dacl, &labels, &descriptor);
-        struct scope {PSECURITY_DESCRIPTOR value;~scope(){LocalFree(value);}} descriptor_scope{descriptor};
-        if (error != ERROR_SUCCESS) {SetLastError(error);throw_windows("private-stage-security-failed", "Unable to read private stage security.", exit_category::io_failure);}
-        SECURITY_DESCRIPTOR_CONTROL control{}; DWORD revision = 0;
-        if (!owner || !IsValidSid(owner) || GetLengthSid(owner) != context.sid.size() || std::memcmp(owner, context.sid.data(), context.sid.size()) != 0)
-            throw manager_error("private-stage-owner-invalid", std::string("Unexpected owner for ") + leaf + (owner && IsValidSid(owner) && IsWellKnownSid(owner, WinBuiltinAdministratorsSid) ? " (Administrators group default owner)." : "."), exit_category::preserved_state);
-        if (!dacl || dacl->AceCount != 2)
-            throw manager_error("private-stage-dacl-invalid", std::string("Unexpected access-entry count for ") + leaf + ".", exit_category::preserved_state);
-        if (!labels || labels->AceCount != 1)
-            throw manager_error("private-stage-label-invalid", std::string("Unexpected mandatory-label count for ") + leaf + ".", exit_category::preserved_state);
-        if (!GetSecurityDescriptorControl(descriptor, &control, &revision) || (is_directory && !(control & SE_DACL_PROTECTED)))
-            throw manager_error("private-stage-dacl-invalid", std::string("Unprotected directory access list for ") + leaf + ".", exit_category::preserved_state);
-        unsigned owner_aces = 0, system_aces = 0;
-        for (DWORD index = 0; index < dacl->AceCount; ++index) {
-            void *raw = nullptr;
-            if (!GetAce(dacl, index, &raw)) throw_windows("private-stage-security-invalid", "Invalid private access entry.", exit_category::preserved_state);
-            const auto ace = static_cast<ACCESS_ALLOWED_ACE *>(raw); PSID sid = &ace->SidStart;
-            if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE || ace->Mask != FILE_ALL_ACCESS || !IsValidSid(sid))
-                throw manager_error("private-stage-security-invalid", "Unexpected private stage access grant.", exit_category::preserved_state);
-            if (GetLengthSid(sid) == context.sid.size() && std::memcmp(sid, context.sid.data(), context.sid.size()) == 0) ++owner_aces;
-            else if (IsWellKnownSid(sid, WinLocalSystemSid)) ++system_aces;
-            else throw manager_error("private-stage-security-invalid", "Foreign private stage access grant.", exit_category::preserved_state);
-        }
-        void *raw = nullptr;
-        if (!GetAce(labels, 0, &raw)) throw_windows("private-stage-security-invalid", "Invalid private mandatory label.", exit_category::preserved_state);
-        const auto ace = static_cast<SYSTEM_MANDATORY_LABEL_ACE *>(raw); PSID sid = &ace->SidStart;
-        const SID_IDENTIFIER_AUTHORITY authority = SECURITY_MANDATORY_LABEL_AUTHORITY;
-        if (owner_aces != 1 || system_aces != 1 || ace->Header.AceType != SYSTEM_MANDATORY_LABEL_ACE_TYPE ||
-            ace->Mask != SYSTEM_MANDATORY_LABEL_NO_WRITE_UP || !IsValidSid(sid) || *GetSidSubAuthorityCount(sid) != 1 ||
-            std::memcmp(GetSidIdentifierAuthority(sid), &authority, sizeof(authority)) != 0 || *GetSidSubAuthority(sid, 0) != expected_integrity ||
-            (is_directory && (ace->Header.AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)) != (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)))
-            throw manager_error("private-stage-security-invalid", "Unexpected private stage integrity label.", exit_category::preserved_state);
-    };
-    verify_security(directory_security.get(), true, SECURITY_MANDATORY_HIGH_RID, "stage directory");
+    verify_private_storage_security(directory_security.get(), caller.token, true, SECURITY_MANDATORY_HIGH_RID, "stage directory");
     std::vector<unique_handle> guards;
-    for (std::size_t index = 0; index < 13; ++index) {
+    for (std::size_t index = 0; index < private_runtime_payloads.size(); ++index) {
         const std::string expected = utf8_from_wide(argv[5 + index]);
         if (expected.size() != 64 || expected.find_first_not_of("0123456789ABCDEF") != std::string::npos)
             throw manager_error("invalid-request", "Invalid package digest.", exit_category::invalid_request);
-        const auto file = append_leaf(directory.canonical_path, leaves[index]);
+        const auto file = append_leaf(directory.canonical_path, private_runtime_payloads[index]);
         unique_handle handle(CreateFileW(file.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
         if (!handle) throw_windows("private-stage-payload-unavailable", "Unable to pin a private payload file.", exit_category::preserved_state);
         verify_regular_non_reparse_handle(handle.get(), file, "private-stage-payload-invalid", exit_category::preserved_state);
-        const auto leaf = utf8_from_wide(leaves[index]);
-        verify_security(handle.get(), false, SECURITY_MANDATORY_HIGH_RID, leaf.c_str());
+        const auto leaf = utf8_from_wide(private_runtime_payloads[index]);
+        verify_private_storage_security(handle.get(), caller.token, false, SECURITY_MANDATORY_HIGH_RID, leaf.c_str());
         if (hash_handle(handle.get(), 512ull * 1024 * 1024, "private-stage-payload-invalid") != expected)
             throw manager_error("private-stage-payload-mismatch", "A private payload differs from its trusted package hash.", exit_category::preserved_state);
         guards.emplace_back(std::move(handle));
@@ -5042,11 +5051,11 @@ std::string verify_private_elevated_stage(int argc, wchar_t **argv)
         if (!handle) throw_windows("private-stage-data-unavailable", "Unable to inspect private diagnostics.", exit_category::preserved_state);
         verify_regular_non_reparse_handle(handle.get(), file, "private-stage-data-invalid", exit_category::preserved_state);
         const auto name = utf8_from_wide(leaf);
-        verify_security(handle.get(), false, SECURITY_MANDATORY_MEDIUM_RID, name.c_str());
+        verify_private_storage_security(handle.get(), caller.token, false, SECURITY_MANDATORY_MEDIUM_RID, name.c_str());
     }
     std::ostringstream result;
-    result << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-private-elevated-stage-verified\",\"ownerPid\":" << owner_pid
-           << ",\"creationTime100ns\":" << json_string(std::to_string(consumer_birth(owner_process.get()))) << ",\"directory\":" << json_string(directory.canonical_path)
+    result << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-private-elevated-stage-verified\",\"ownerPid\":" << caller.pid
+           << ",\"creationTime100ns\":" << json_string(std::to_string(consumer_birth(caller.process.get()))) << ",\"directory\":" << json_string(directory.canonical_path)
            << ",\"payloadFiles\":13,\"diagnosticsFiles\":2}\n";
     return result.str();
 }
@@ -5075,6 +5084,221 @@ void write_stdout(const std::string &text)
         remaining -= written;
     }
 }
+
+constexpr wchar_t private_cache_marker[] = L".electron-game-overlay-payload.json";
+constexpr std::uint64_t private_cache_max_file = 512ull * 1024 * 1024;
+
+struct private_cache_directory
+{
+    open_directory directory;
+    unique_handle security;
+};
+
+private_cache_directory open_private_cache_directory(const std::wstring &path,
+    const consumer_token_context &caller, const local_security_descriptor *create)
+{
+    if (create != nullptr)
+    {
+        SECURITY_ATTRIBUTES security{sizeof(security), create->get(), FALSE};
+        if (!CreateDirectoryW(path.c_str(), &security) && GetLastError() != ERROR_ALREADY_EXISTS)
+            throw_windows("private-cache-create-failed", "Unable to create protected cache storage.", exit_category::io_failure);
+    }
+    auto directory = open_verified_directory(path, false);
+    unique_handle security(CreateFileW(directory.canonical_path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!security || !paths_equal(final_path_for_handle(security.get(), "private-cache-invalid", exit_category::preserved_state), directory.canonical_path))
+        throw manager_error("private-cache-invalid", "The protected directory changed.", exit_category::preserved_state);
+    verify_private_storage_security(security.get(), caller, true, SECURITY_MANDATORY_HIGH_RID, "cache directory");
+    return {std::move(directory), std::move(security)};
+}
+
+void verify_private_cache_inventory(const std::wstring &directory)
+{
+    WIN32_FIND_DATAW entry{};
+    const auto search = FindFirstFileW(append_leaf(directory, L"*").c_str(), &entry);
+    if (search == INVALID_HANDLE_VALUE)
+        throw_windows("private-cache-inventory-failed", "Unable to inspect the protected cache contents.", exit_category::preserved_state);
+    bool valid = true;
+    std::size_t count = 0;
+    do {
+        const std::wstring_view leaf(entry.cFileName);
+        if (leaf == L"." || leaf == L"..") continue;
+        const bool fixed = leaf == private_cache_marker ||
+            std::any_of(private_runtime_payloads.begin(), private_runtime_payloads.end(), [&](const wchar_t *name) { return leaf == name; });
+        valid = valid && fixed && (entry.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
+        ++count;
+    } while (FindNextFileW(search, &entry));
+    const DWORD error = GetLastError();
+    FindClose(search);
+    if (!valid || count != private_runtime_payloads.size() + 1 || error != ERROR_NO_MORE_FILES)
+        throw manager_error("private-cache-inventory-invalid", "The protected cache contains unexpected entries.", exit_category::preserved_state);
+}
+
+unique_handle pin_private_cache_file(const std::wstring &file, const consumer_token_context &caller)
+{
+    unique_handle handle(CreateFileW(file.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!handle)
+        throw_windows("private-cache-payload-unavailable", "Unable to pin a protected cache file.", exit_category::preserved_state);
+    verify_regular_non_reparse_handle(handle.get(), file, "private-cache-payload-invalid", exit_category::preserved_state);
+    verify_private_storage_security(handle.get(), caller, false, SECURITY_MANDATORY_HIGH_RID, "cache payload");
+    FILE_BASIC_INFO attributes{};
+    if (!GetFileInformationByHandleEx(handle.get(), FileBasicInfo, &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_READONLY) == 0)
+        throw manager_error("private-cache-payload-mutable", "A protected cache file lost its read-only attribute.", exit_category::preserved_state);
+    return handle;
+}
+
+void publish_private_cache(const std::wstring &store, const std::wstring &version,
+    const std::wstring &source, const std::array<std::string, private_runtime_payloads.size()> &hashes,
+    std::string_view marker, const consumer_token_context &caller, const local_security_descriptor &directory_descriptor)
+{
+    BYTE random[16]{};
+    if (BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+        throw manager_error("private-cache-random-failed", "Unable to generate the publication directory name.", exit_category::io_failure);
+    std::wstring leaf = L".publishing-";
+    constexpr wchar_t digits[] = L"0123456789abcdef";
+    for (const BYTE byte : random) { leaf.push_back(digits[byte >> 4]); leaf.push_back(digits[byte & 15]); }
+    const auto temporary = append_leaf(store, leaf);
+    SECURITY_ATTRIBUTES directory_security{sizeof(directory_security), directory_descriptor.get(), FALSE};
+    if (!CreateDirectoryW(temporary.c_str(), &directory_security))
+        throw_windows("private-cache-publication-failed", "Unable to reserve a unique publication directory.", exit_category::io_failure);
+    const auto cleanup = [&] {
+        const auto remove = [&](const wchar_t *name) {
+            const auto path = append_leaf(temporary, name);
+            SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+            DeleteFileW(path.c_str());
+        };
+        for (const auto *name : private_runtime_payloads) remove(name);
+        remove(private_cache_marker);
+        RemoveDirectoryW(temporary.c_str());
+    };
+    try {
+        {
+            const auto pinned = open_private_cache_directory(temporary, caller, nullptr);
+            const auto file_descriptor = private_storage_descriptor(caller, false);
+            SECURITY_ATTRIBUTES security{sizeof(security), file_descriptor.get(), FALSE};
+            const auto write_protected = [&](const wchar_t *name, const auto &write) {
+                const auto destination = append_leaf(pinned.directory.canonical_path, name);
+                unique_handle output(CreateFileW(destination.c_str(), GENERIC_WRITE | READ_CONTROL, 0, &security,
+                    CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+                if (!output)
+                    throw_windows("private-cache-publication-failed", "Unable to reserve a protected cache file.", exit_category::io_failure);
+                verify_regular_non_reparse_handle(output.get(), destination, "private-cache-payload-invalid", exit_category::preserved_state);
+                verify_private_storage_security(output.get(), caller, false, SECURITY_MANDATORY_HIGH_RID, "new cache payload");
+                write(output.get());
+                flush_handle(output.get());
+                FILE_BASIC_INFO read_only{};
+                read_only.FileAttributes = FILE_ATTRIBUTE_READONLY;
+                if (!SetFileInformationByHandle(output.get(), FileBasicInfo, &read_only, sizeof(read_only)))
+                    throw_windows("private-cache-publication-failed", "Unable to make a protected cache file read-only.", exit_category::io_failure);
+            };
+            std::array<BYTE, 64 * 1024> bytes{};
+            for (std::size_t index = 0; index != private_runtime_payloads.size(); ++index)
+            {
+                const auto *name = private_runtime_payloads[index];
+                const auto input = open_absolute_readonly_file(append_leaf(source, name), "private-cache-source-invalid",
+                    "Unable to open the sealed package payload.", true);
+                if (hash_handle(input.get(), private_cache_max_file, "private-cache-source-invalid") != hashes[index])
+                    throw manager_error("private-cache-source-mismatch", "The package payload changed before protected publication.", exit_category::preserved_state);
+                write_protected(name, [&](HANDLE output) {
+                    for (;;) {
+                        DWORD read = 0;
+                        if (!ReadFile(input.get(), bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr))
+                            throw_windows("private-cache-source-invalid", "Unable to read a sealed package payload.", exit_category::io_failure);
+                        if (read == 0) break;
+                        write_all(output, bytes.data(), read);
+                    }
+                });
+            }
+            write_protected(private_cache_marker, [&](HANDLE output) { write_all(output, marker.data(), marker.size()); });
+        }
+        if (MoveFileExW(temporary.c_str(), version.c_str(), MOVEFILE_WRITE_THROUGH)) return;
+        const DWORD error = GetLastError();
+        if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS &&
+            !(error == ERROR_ACCESS_DENIED && GetFileAttributesW(version.c_str()) != INVALID_FILE_ATTRIBUTES))
+            throw manager_error("private-cache-publication-failed", "Unable to publish the protected version without replacing it.", exit_category::preserved_state, error);
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+    cleanup();
+}
+
+void hold_private_elevated_cache(int argc, wchar_t **argv, bool root_only)
+{
+    if (argc != (root_only ? 5 : 8 + static_cast<int>(private_runtime_payloads.size())))
+        throw manager_error("invalid-request", "Expected caller identity and protected cache parameters.", exit_category::invalid_request);
+    const auto caller = require_private_storage_caller(argv[2], argv[3]);
+    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    const auto helper = read_consumer_token(GetCurrentProcess(), "private-cache-helper");
+    if (!helper.elevated || helper.integrity != SECURITY_MANDATORY_HIGH_RID ||
+        helper.session != caller.token.session || helper.sid != caller.token.sid)
+        throw manager_error("consumer-integrity-rejected", "The private cache helper must inherit the caller's high token.", exit_category::preserved_state);
+    if (GetFileType(input) != FILE_TYPE_PIPE)
+        throw manager_error("invalid-request", "A private cache lease requires a caller-owned input pipe.", exit_category::invalid_request);
+    const std::wstring_view key = root_only ? L"" : argv[5];
+    const std::string marker = root_only ? std::string() : utf8_from_wide(argv[6]);
+    std::array<std::string, private_runtime_payloads.size()> hashes;
+    if (!root_only)
+    {
+        if (key.size() != 64 || key.find_first_not_of(L"0123456789abcdef") != std::wstring_view::npos ||
+            marker.empty() || marker.size() > 4096)
+            throw manager_error("invalid-request", "Invalid protected cache version or ownership record.", exit_category::invalid_request);
+        for (std::size_t index = 0; index != hashes.size(); ++index) {
+            hashes[index] = utf8_from_wide(argv[8 + index]);
+            if (!is_upper_sha256(hashes[index]))
+                throw manager_error("invalid-request", "Invalid protected cache digest.", exit_category::invalid_request);
+        }
+    }
+    const auto runs = normalize_absolute_path(argv[4], "invalid-request", exit_category::invalid_request);
+    const auto separator = runs.find_last_of(L'\\');
+    if (runs.size() < 4 || runs[1] != L':' || separator == std::wstring::npos)
+        throw manager_error("invalid-request", "A private cache requires a local DOS directory.", exit_category::invalid_request);
+    const auto parent = open_verified_directory(runs.substr(0, (std::max)(separator, std::size_t{3})), false);
+    const auto descriptor = private_storage_descriptor(caller.token, true);
+    const auto root = open_private_cache_directory(runs + L".elevated", caller.token, root_only ? nullptr : &descriptor);
+    const auto logs = append_leaf(root.directory.canonical_path, L"runs");
+    const auto store = open_private_cache_directory(logs + L".sdk-versions-v1", caller.token, root_only ? nullptr : &descriptor);
+    std::optional<private_cache_directory> version;
+    std::vector<unique_handle> files;
+    if (!root_only)
+    {
+        const auto directory = append_leaf(store.directory.canonical_path, key);
+        const DWORD attributes = GetFileAttributesW(directory.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND) {
+            const auto source = open_verified_directory(argv[7], false);
+            publish_private_cache(store.directory.canonical_path, directory, source.canonical_path, hashes, marker, caller.token, descriptor);
+        }
+        version.emplace(open_private_cache_directory(directory, caller.token, nullptr));
+        verify_private_cache_inventory(directory);
+        for (std::size_t index = 0; index != hashes.size(); ++index) {
+            auto file = pin_private_cache_file(append_leaf(directory, private_runtime_payloads[index]), caller.token);
+            if (hash_handle(file.get(), private_cache_max_file, "private-cache-payload-invalid") != hashes[index])
+                throw manager_error("private-cache-payload-mismatch", "A protected cache file differs from the sealed package.", exit_category::preserved_state);
+            files.push_back(std::move(file));
+        }
+        auto ownership = pin_private_cache_file(append_leaf(directory, private_cache_marker), caller.token);
+        sha256_state marker_hash;
+        marker_hash.update(reinterpret_cast<const std::uint8_t *>(marker.data()), marker.size());
+        if (hash_handle(ownership.get(), 4096, "private-cache-marker-invalid") != marker_hash.finish())
+            throw manager_error("private-cache-marker-mismatch", "The protected cache belongs to a different version or package.", exit_category::preserved_state);
+        files.push_back(std::move(ownership));
+    }
+    std::ostringstream record;
+    record << "{\"schemaVersion\":1,\"kind\":\"electron-game-overlay-private-elevated-cache\",\"ownerPid\":" << caller.pid
+           << ",\"creationTime100ns\":" << json_string(std::to_string(consumer_birth(caller.process.get())))
+           << ",\"runsDirectory\":" << json_string(logs)
+           << ",\"directory\":" << json_string(version ? version->directory.canonical_path : store.directory.canonical_path) << "}\n";
+    write_stdout(record.str());
+    // Keep the verified namespace and exact files pinned before the SDK can
+    // execute an elevated cached image. EOF also releases them on caller death.
+    char unused{};
+    DWORD read = 0;
+    if (ReadFile(input, &unused, 1, &read, nullptr) && read != 0)
+        throw manager_error("invalid-request", "The cache lease input must only be closed.", exit_category::invalid_request);
+}
 } // namespace
 
 int wmain(int argc, wchar_t **argv)
@@ -5082,6 +5306,13 @@ int wmain(int argc, wchar_t **argv)
     std::optional<std::string> operation;
     try
     {
+        if (argc >= 2 && (std::wstring_view(argv[1]) == L"--hold-private-elevated-cache" ||
+                          std::wstring_view(argv[1]) == L"--hold-private-elevated-cache-root")) {
+            const bool root_only = std::wstring_view(argv[1]) == L"--hold-private-elevated-cache-root";
+            operation = "hold-private-elevated-cache";
+            hold_private_elevated_cache(argc, argv, root_only);
+            return static_cast<int>(exit_category::success);
+        }
         if (argc >= 2 && std::wstring_view(argv[1]) == L"--verify-private-elevated-stage") {
             operation = "verify-private-elevated-stage";
             write_stdout(verify_private_elevated_stage(argc, argv));

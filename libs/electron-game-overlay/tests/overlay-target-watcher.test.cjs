@@ -25,6 +25,7 @@ function fixture(t, options = {}) {
       this.handlers = new Set();
       this.prepareGate = deferred();
       this.quiesceGate = deferred();
+      this.shutdownGate = deferred();
       if (!options.holdPreparation) this.prepareGate.resolve();
       this.completion = deferred();
       this.calls = [];
@@ -55,6 +56,11 @@ function fixture(t, options = {}) {
     }
     dispose() {
       this.disposed = true;
+    }
+    disposeAsync() {
+      assert.equal(this.disposed, true);
+      this.shutdownCalls = (this.shutdownCalls ?? 0) + 1;
+      return this.shutdownGate.promise;
     }
     confirmTargetExited(pid) {
       this.confirmed.push(pid);
@@ -147,6 +153,25 @@ const returned = (l, pid = 42, file = game.executablePath) =>
   });
 const connected = (l, pid = 42, file = game.executablePath) =>
   l.emit({ type: 'target-connected', pid, path: file });
+
+test('async watcher disposal stops discovery immediately and waits for its launchers', async (t) => {
+  const f = fixture(t, { earlyTargets: [game] });
+  await f.start();
+  const launcher = f.launches[0];
+  launcher.emit({ type: 'injector-watcher-ready' });
+  await f.watcher.ready;
+
+  let finished = false;
+  const shutdown = f.watcher.disposeAsync().then(() => { finished = true; });
+  assert.equal(f.observer.disposed, true);
+  assert.equal(launcher.disposed, true);
+  assert.equal(launcher.shutdownCalls, 1);
+  await tick();
+  assert.equal(finished, false);
+  assert.deepEqual(launcher.confirmed, []);
+  launcher.shutdownGate.resolve();
+  await shutdown;
+});
 
 for (const fastExit of [false, true]) test(`mixed broad policy survives an unopened unrelated selection, fastExit=${fastExit}`, async t => {
   const root = 'C:/owned-refusal/', a = root + 'A.exe', b = root + 'B.exe', c = root + 'fast-exit.exe';

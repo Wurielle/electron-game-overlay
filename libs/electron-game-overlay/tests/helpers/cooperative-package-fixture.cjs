@@ -8,9 +8,16 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function writeCooperativeDistribution(dist, {
   packageVersion = '0.1.0-rc.7',
-  addonBuildId = 'CCE20935ADD44EF6A5A7973014B2E07F',
   runtimeGeneration = 23,
+  addonBuildId = runtimeGeneration >= 44 ? '3A0626A7F5C84324A83A20F4D9D0B8B1' :
+    runtimeGeneration >= 41 ? 'D61AF72954C64C77A5FA6FF30F57AF13' : 'CCE20935ADD44EF6A5A7973014B2E07F',
   resourceIdentityPatch = runtimeGeneration >= 29,
+  ownedCacheBootstrapPatchSha256 = '8E7DF5484F088778BABD904D6C3745396EA2F92D1358FE7274D7B8C3A454089C',
+  injectorCacheBootstrapPatchSha256 = '708EF9AA8824580E74C999131CF353B62B955421E0A93078E800D2927F74B5EF',
+  injectorElevatedCachePatchSha256 = '2169F9131F3BBC10D5D5BDC2FB7B0973E7D531B1391A65C171DE1D91544D044E',
+  injectorCachePreloadPatchSha256 = '4F24691BB837C1C84A9C919331B82C187DEA9562545414FC36D1B3F96974C67E',
+  injectorCacheOfficialPatchSha256 = '6523409BF4DF938278B217C2141619FD52836A159C132FDF93C321575A36F451',
+  ownedMemoryConfigurationPatchSha256 = 'E5D5E8D632952956518E4BD253AC0D73C4C3A7F69B5918A1768C4E364A818BC1',
   ownedDeferredD3d11Patch = runtimeGeneration >= 36,
   ownedDeferredD3d11PatchSha256 = '779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB',
   ownedCompositionAuxiliaryLifetimePatch = runtimeGeneration >= 35,
@@ -79,7 +86,7 @@ function writeCooperativeDistribution(dist, {
   write('lib/module.js', '// controlled compiled SDK module\n');
   write('lib/reshade-launcher.js', `const OFFICIAL_ADDON_BUILD_ID = '${addonBuildId}';\n`);
   write('lib/overlay-broker-protocol.js', `exports.OVERLAY_BROKER_RUNTIME_GENERATION = ${runtimeGeneration};\n`);
-  write('lib/overlay-package-manifest.js', (ownedDeferredD3d11Patch ? `const OWNED_DEFERRED_D3D11_PATCH_SHA256 = '${ownedDeferredD3d11PatchSha256}';\n` : '') + (ownedCompositionAuxiliaryLifetimePatch ? `const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 = '${ownedCompositionAuxiliaryLifetimePatchSha256}';\n` : '') + (ownedCompositionWindowEligibilityPatch ? `const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 = '${ownedCompositionWindowEligibilityPatchSha256}';\n` : '') + (ownedCompositionBindingDiagnosticsPatch ? `const OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256 = '${ownedCompositionBindingDiagnosticsPatchSha256}';\n` : '') + (ownedCompositionPolicyPatch ? `const OWNED_COMPOSITION_POLICY_PATCH_SHA256 = '${ownedCompositionPolicyPatchSha256}';\n` : '') + (compatibilitySnapshotPatch
+  write('lib/overlay-package-manifest.js', (runtimeGeneration >= 45 ? 'const INJECTOR_CACHE_OFFICIAL_PATCH_SHA256 = ' + JSON.stringify(injectorCacheOfficialPatchSha256) + ';\n' : '') + (runtimeGeneration >= 44 ? 'const INJECTOR_CACHE_PRELOAD_PATCH_SHA256 = ' + JSON.stringify(injectorCachePreloadPatchSha256) + ';\n' : '') + (runtimeGeneration >= 43 ? 'const INJECTOR_ELEVATED_CACHE_PATCH_SHA256 = ' + JSON.stringify(injectorElevatedCachePatchSha256) + ';\n' : '') + (runtimeGeneration >= 42 ? `const OWNED_CACHE_BOOTSTRAP_PATCH_SHA256 = '${ownedCacheBootstrapPatchSha256}';\nconst INJECTOR_CACHE_BOOTSTRAP_PATCH_SHA256 = '${injectorCacheBootstrapPatchSha256}';\n` : '') + (runtimeGeneration >= 41 ? `const OWNED_MEMORY_CONFIGURATION_PATCH_SHA256 = '${ownedMemoryConfigurationPatchSha256}';\n` : '') + (ownedDeferredD3d11Patch ? `const OWNED_DEFERRED_D3D11_PATCH_SHA256 = '${ownedDeferredD3d11PatchSha256}';\n` : '') + (ownedCompositionAuxiliaryLifetimePatch ? `const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 = '${ownedCompositionAuxiliaryLifetimePatchSha256}';\n` : '') + (ownedCompositionWindowEligibilityPatch ? `const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 = '${ownedCompositionWindowEligibilityPatchSha256}';\n` : '') + (ownedCompositionBindingDiagnosticsPatch ? `const OWNED_COMPOSITION_BINDING_DIAGNOSTICS_PATCH_SHA256 = '${ownedCompositionBindingDiagnosticsPatchSha256}';\n` : '') + (ownedCompositionPolicyPatch ? `const OWNED_COMPOSITION_POLICY_PATCH_SHA256 = '${ownedCompositionPolicyPatchSha256}';\n` : '') + (compatibilitySnapshotPatch
     ? `const COMPATIBILITY_SNAPSHOT_PATCH_SHA256 = '${compatibilitySnapshotPatchSha256}';\n`
     : '') + (steamLoadedModulePatch
     ? `const STEAM_LOADED_MODULE_HOOK_ORDER_PATCH_SHA256 = '${steamLoadedModuleHookOrderPatchSha256}';\n`
@@ -173,7 +180,16 @@ function writeCooperativeDistribution(dist, {
         ...(elevatedPrivatePatch ? { injectorElevatedPrivatePatchSha256: elevatedPrivatePatchSha256 } : {}),
         ...(resourceIdentityPatch ? { d3d11SwapchainResourceIdentityPatchSha256 } : {}),
         ...(privateStageDiagnosticsPatch ? { injectorPrivateStageDiagnosticsPatchSha256 } : {}),
+        ...(runtimeGeneration >= 40 ? {
+          injectorPolicyStdin: 1,
+          injectorPolicyStdinPatchSha256: '8997956192A384FE83D6E8470D63E8BFBE02D7973469E8ACFD1BE6ECB5269111',
+        } : {}),
         ...(steamLoadedModulePatch ? { steamLoadedModuleHookOrderPatchSha256 } : {}),
+        ...(runtimeGeneration >= 42 ? { injectorCacheBootstrap: 1, ownedCacheBootstrapPatchSha256, injectorCacheBootstrapPatchSha256 } : {}),
+        ...(runtimeGeneration >= 43 ? { injectorElevatedCachePatchSha256 } : {}),
+        ...(runtimeGeneration >= 44 ? { injectorCachePreloadPatchSha256 } : {}),
+        ...(runtimeGeneration >= 45 ? { injectorCacheOfficialPatchSha256 } : {}),
+        ...(runtimeGeneration >= 41 ? { ownedMemoryConfigurationPatchSha256 } : {}),
         ...(ownedDeferredD3d11Patch ? { ownedDeferredD3d11PatchSha256 } : {}),
         ...(ownedCompositionAuxiliaryLifetimePatch ? { ownedCompositionAuxiliaryLifetimePatchSha256 } : {}),
         ...(ownedCompositionWindowEligibilityPatch ? { ownedCompositionWindowEligibilityPatchSha256 } : {}),
@@ -193,6 +209,11 @@ function writeCooperativeDistribution(dist, {
         ...(runtimeGeneration>=27?{privateElevatedAuthorization:runtimeGeneration>=28?2:1}:{}),
         ...(addonPreloadProtocol === undefined ? {} : { addonPreloadProtocol }),
         injectorFutureTargets: 2, managerProtocolSchemaVersion: 1, runtimeGeneration,
+        ...(runtimeGeneration >= 40 ? { injectorPolicyStdin: 1 } : {}),
+        ...(runtimeGeneration >= 42 ? { injectorCacheBootstrap: 1 } : {}),
+        ...(runtimeGeneration >= 43 ? { elevatedCacheBootstrap: 1 } : {}),
+        ...(runtimeGeneration >= 44 ? { cachePreloadBootstrap: 1 } : {}),
+        ...(runtimeGeneration >= 45 ? { cacheOfficialBootstrap: 1 } : {}),
         targetTransportMin: 1, targetTransportMax: 1, managerSourceSha256: sha('controlled manager source'),
         }),
         addonSha256: digest(`electron_game_overlay.addon${bits}`),

@@ -21,6 +21,8 @@ libs/electron-game-overlay-runtime/config/ReShade.ini text eol=crlf whitespace=-
 libs/electron-game-overlay-runtime/patches/reshade-injector-elevated-private-authorization.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-d3d11-swapchain-resource-identity.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-injector-private-stage-diagnostics.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-policy-stdin.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-cache-bootstrap.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-steam-loaded-module-hook-order.patch text eol=lf
 libs/electron-game-overlay-runtime/patches/reshade-compatibility-snapshot.patch text eol=lf
 
@@ -33,3 +35,8 @@ libs/electron-game-overlay-runtime/patches/reshade-owned-composition-window-elig
 libs/electron-game-overlay-runtime/patches/reshade-owned-composition-auxiliary-lifetime.patch text eol=lf
 
 libs/electron-game-overlay-runtime/patches/reshade-owned-deferred-d3d11.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-owned-memory-configuration.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-owned-cache-bootstrap.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-elevated-cache.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-cache-preload.patch text eol=lf
+libs/electron-game-overlay-runtime/patches/reshade-injector-cache-official.patch text eol=lf

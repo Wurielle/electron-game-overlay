@@ -1,5 +1,10 @@
 # Elevated consumers — generation 28 candidate
 
+Managed owned-host attachment uses the protected version cache starting with
+generation 43. The token and private payload rules below still apply. The
+protected cache and its logs-only option are described in
+[runtime storage](runtime-storage.md).
+
 An application may retain its existing Run as Administrator feature and saved
 preference. The SDK does not clear that preference, relaunch the application,
 lower its token, request UAC, or elevate a game. The injector inherits the

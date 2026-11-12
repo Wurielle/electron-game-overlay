@@ -134,6 +134,8 @@ $FutureTargetsPatch = Join-Path $RuntimeRoot "patches\reshade-injector-future-ta
 $ProcessPolicyPatch = Join-Path $RuntimeRoot "patches\reshade-injector-process-policy.patch"
 $FutureTargetsPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $FutureTargetsPatch).Hash
 $ProcessPolicyPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ProcessPolicyPatch).Hash
+$PolicyStdinPatch = Join-Path $RuntimeRoot "patches\reshade-injector-policy-stdin.patch"
+$PolicyStdinPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PolicyStdinPatch).Hash
 $InjectorProcessInstanceBindingPatch =
     Join-Path $RuntimeRoot "patches\reshade-injector-process-instance-binding.patch"
 $InjectorProcessInstanceBindingPatchHash =
@@ -238,10 +240,28 @@ if ($WindowEligibilityPatchHash -cne "080DA1FD83FE48CB782FA9268B82A386E75BE081D1
 $DeferredD3d11Patch = Join-Path $RuntimeRoot "patches\reshade-owned-deferred-d3d11.patch"
 $DeferredD3d11PatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $DeferredD3d11Patch).Hash
 if ($DeferredD3d11PatchHash -cne "779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB") { throw "Owned deferred D3D11 patch differs from its pinned implementation." }
+$OwnedMemoryConfigurationPatch = Join-Path $RuntimeRoot "patches\reshade-owned-memory-configuration.patch"
+$OwnedMemoryConfigurationPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedMemoryConfigurationPatch).Hash
+if ($OwnedMemoryConfigurationPatchHash -cne "E5D5E8D632952956518E4BD253AC0D73C4C3A7F69B5918A1768C4E364A818BC1") { throw "Owned memory configuration patch differs from its pinned implementation." }
+$OwnedCacheBootstrapPatch = Join-Path $RuntimeRoot "patches\reshade-owned-cache-bootstrap.patch"
+$OwnedCacheBootstrapPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $OwnedCacheBootstrapPatch).Hash
+$InjectorCacheBootstrapPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RuntimeRoot "patches\reshade-injector-cache-bootstrap.patch")).Hash
+$InjectorElevatedCachePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RuntimeRoot 'patches\reshade-injector-elevated-cache.patch')).Hash
+$InjectorCachePreloadPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RuntimeRoot 'patches\reshade-injector-cache-preload.patch')).Hash
+$InjectorCacheOfficialPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RuntimeRoot 'patches\reshade-injector-cache-official.patch')).Hash
+if ($InjectorCacheOfficialPatchHash -cne '6523409BF4DF938278B217C2141619FD52836A159C132FDF93C321575A36F451') { throw 'Unexpected official cache inspection injector patch.' }
+if ($InjectorCachePreloadPatchHash -cne '4F24691BB837C1C84A9C919331B82C187DEA9562545414FC36D1B3F96974C67E') { throw 'Unexpected registered add-on cache injector patch.' }
+if ($InjectorElevatedCachePatchHash -cne '2169F9131F3BBC10D5D5BDC2FB7B0973E7D531B1391A65C171DE1D91544D044E') { throw 'Unexpected protected elevated cache injector patch.' }
+if ($OwnedCacheBootstrapPatchHash -cne "8E7DF5484F088778BABD904D6C3745396EA2F92D1358FE7274D7B8C3A454089C" -or $InjectorCacheBootstrapPatchHash -cne "708EF9AA8824580E74C999131CF353B62B955421E0A93078E800D2927F74B5EF") { throw "Cache bootstrap source differs from its pinned implementation." }
 $AuxiliaryLifetimePatch = Join-Path $RuntimeRoot "patches\reshade-owned-composition-auxiliary-lifetime.patch"
 $AuxiliaryLifetimePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $AuxiliaryLifetimePatch).Hash
 if ($AuxiliaryLifetimePatchHash -cne "3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61") { throw "Composition auxiliary lifetime patch differs from its pinned implementation." }
 $ExpectedPatchedFiles = @(
+    "source/dll_log.hpp"
+    "source/dll_log.cpp"
+    "source/dll_main.cpp"
+    "source/ego_owned_late_d3d11/ego_runtime_cache_bootstrap.hpp"
+    "source/ini_file.hpp"
     "source/ego_owned_late_d3d11/owned_runtime_policy.hpp"
     "source/dxgi/dxgi_swapchain.hpp"
     "source/ini_file.cpp"
@@ -291,9 +311,14 @@ $InjectorElevatedPrivatePatch = Join-Path $RuntimeRoot "patches\reshade-injector
 $InjectorElevatedPrivatePatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InjectorElevatedPrivatePatch).Hash
 if ($InjectorElevatedPrivatePatchHash -cne "DF33E210E32A3994866ECDA8F6B0461C113A3F27DEC1A79133D4D0AF347B9697") { throw "The elevated-private patch differs from its frozen implementation." }
 $ExpectedPatchedContentSha256 = [ordered]@{
+    "source/dll_log.hpp" = "B098743AD3CE5D4C4EBEC6876D4C6D338EE45066A230F9D3B28C76A1EC470703"
+    "source/dll_log.cpp" = "79B9F3292D2DAF5C48EAE6ADB2C45FA2586086AB4D5CF6390305294B4B918998"
+    "source/dll_main.cpp" = "4F7BBA798B00C461EF3F3C98C183B814904E023A1C2294B30547C3EBA3676437"
+    "source/ego_owned_late_d3d11/ego_runtime_cache_bootstrap.hpp" = "94693AE53789620814337F89353EF25E4444117D3891D808EBCF04815A429FC5"
     "source/ego_owned_late_d3d11/owned_runtime_policy.hpp" = "A06E427C7EA2AE73F3FF90E14C204719FC247B9DE02EB5F84E066B602623F524"
     "source/dxgi/dxgi_swapchain.hpp" = "C5A155BE0321F30DB18B4FC4578A41BF728414DD0927A789D5C335041922BC55"
-    "source/ini_file.cpp" = "08ACD295DB065D11E5A8388F074CFC6C384D29896E5DA9B20227222D8A61C688"
+    "source/ini_file.hpp" = "DD01C43288BA8F9DF034CF2AD58F31D0E8C4F6D2B7E195F730DF0F3BC784EFAB"
+    "source/ini_file.cpp" = "8B0B54F0C6B68D3556CEBE8E457BBF654CD94EDBBA8167F3EC55DDBC6479A776"
     "source/ego_owned_late_d3d11/compatibility_snapshot.hpp" = "C0FE868ED8B0FA7FE7688DB19252BE427316DFC1D73C5F4AF5BBD299A8662F50"
     "source/dxgi/dxgi.cpp" = "41A686B186910B4C0FAA1B631356C2D7FD0F4BE772EFB32D7328DAA2DC65B88F"
     "source/hook_manager.cpp" = "355E78AC03E71D2101585EC8C8C64A458978A17BA6E20F0D218D7E6ED312A49E"
@@ -309,11 +334,11 @@ $ExpectedPatchedContentSha256 = [ordered]@{
     "source/d3d11/d3d11_impl_swapchain.hpp" = "D6010A43C93302C056AF62E1BBE7523E6A8D023DEDFB9D3F50DC689EAA9169B6"
     "source/ego_owned_late_d3d11/owned_config_file.hpp" = "98D7B1D5D55841FDDD0320378C130D61DFF688EC42C47E6C14BAC7ADDE87C8D8"
     "source/ego_owned_late_d3d11/owned_late_d3d11.hpp" = "99C928A9D56A8A029F0E02C354C22142A95DCDEE849359B2C31E8077F3C589B6"
-    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "2E89DBEED170BD1D5C2247D7373F89D82544CD217951826EE5F953F8B1567080"
+    "source/ego_owned_late_d3d11/owned_late_d3d11.inl" = "FF31760D4825822C28DA22A30274779E38156182B928CF22EE6A6DC8F0919768"
     "source/input_frame_consumer.hpp" = "50808217A78ABD97417CA57694A5275895F8F0318AF6172658C087C26D3F8CA0"
     "source/input.cpp" = "B5778EA4DFD482F1E3E0C8A5337BCCFF351EA2CCF85AD0FDF565669CB9852D72"
     "source/input.hpp" = "6F9AF2B09AC6FF491AA2BC96A024E3B90F703985FFAD7A96C2BBB862667A4C1E"
-    "source/runtime.cpp" = "96B12143E7A13B607D101AE7FD573C86334DD1BFDEEC2CA21520C74FE0200CD7"
+    "source/runtime.cpp" = "2FAB36E3FBB57A4C9D5833AA29AA5647BD3297A451734B4B148027D2E6C9718A"
     "source/runtime.hpp" = "1F2CF88559AE52D62DC3A8B236A734093E74864CAC44A069DD54440FBCCE3D11"
     "source/runtime_gui.cpp" = "6B8A8D3ACECE1E9C687062360FABBFAC04397222973A23565B661A7505F3187A"
     "tools/injector.cpp" = "7A6DC34363FF8EBD78484D8AEE6CE0463F22E90AB35DD1261FC9FBD9B09A3A3E"
@@ -387,6 +412,7 @@ function Test-ReShadePatchedSourceState {
         $InjectorStartupReadinessPatch
         $PrivateStageDiagnosticsPatch
         $DeferredD3d11Patch
+        $OwnedCacheBootstrapPatch
         $OwnedLateD3d11ForeignAddonIsolationPatch
     )) {
         if (-not (Test-GitPatchApplied $Patch)) {
@@ -446,6 +472,7 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorProcessInstanceBindingPatchSha256 -eq $InjectorProcessInstanceBindingPatchHash -and
             $Stamp.injectorFutureTargetsPatchSha256 -eq $FutureTargetsPatchHash -and
             $Stamp.injectorProcessPolicyPatchSha256 -eq $ProcessPolicyPatchHash -and
+            $Stamp.injectorPolicyStdinPatchSha256 -eq $PolicyStdinPatchHash -and
             $Stamp.injectorCooperativeMembersPatchSha256 -eq $CooperativeMembersPatchHash -and
             $Stamp.ownedLateD3d11PatchSha256 -eq $OwnedLateD3d11PatchHash -and
             $Stamp.injectorFirstHostResultPatchSha256 -eq $InjectorFirstHostResultPatchHash -and
@@ -464,6 +491,13 @@ function Test-RuntimeBuildCache {
             $Stamp.injectorPrivateStageDiagnosticsPatchSha256 -eq $PrivateStageDiagnosticsPatchHash -and
             $Stamp.steamLoadedModuleHookOrderPatchSha256 -eq $SteamLoadedModuleHookOrderPatchHash -and
             $Stamp.ownedDeferredD3d11PatchSha256 -eq $DeferredD3d11PatchHash -and
+            $Stamp.ownedMemoryConfigurationPatchSha256 -eq $OwnedMemoryConfigurationPatchHash -and
+            $Stamp.injectorCacheBootstrap -eq 1 -and
+            $Stamp.ownedCacheBootstrapPatchSha256 -eq $OwnedCacheBootstrapPatchHash -and
+            $Stamp.injectorCacheBootstrapPatchSha256 -eq $InjectorCacheBootstrapPatchHash -and
+            $Stamp.injectorElevatedCachePatchSha256 -eq $InjectorElevatedCachePatchHash -and
+            $Stamp.injectorCachePreloadPatchSha256 -eq $InjectorCachePreloadPatchHash -and
+            $Stamp.injectorCacheOfficialPatchSha256 -eq $InjectorCacheOfficialPatchHash -and
             $Stamp.ownedCompositionAuxiliaryLifetimePatchSha256 -eq $AuxiliaryLifetimePatchHash -and
             $Stamp.ownedCompositionWindowEligibilityPatchSha256 -eq $WindowEligibilityPatchHash -and
             $Stamp.ownedCompositionBindingDiagnosticsPatchSha256 -eq $CompositionBindingDiagnosticsPatchHash -and
@@ -475,6 +509,7 @@ function Test-RuntimeBuildCache {
             $Stamp.cooperativeAddonProtocol -eq 1 -and
             $Stamp.injectorProcessInstanceBinding -eq 1 -and
             $Stamp.injectorFutureTargets -eq 2 -and
+            $Stamp.injectorPolicyStdin -eq 1 -and
             $Stamp.configuration -eq "Release" -and
             $Stamp.platform -eq $ArchitectureConfig.RuntimePlatform -and
             $Stamp.addonLevel -eq 2 -and
@@ -538,10 +573,11 @@ $ProjectText = Get-Content -Raw -LiteralPath $ReShadeProject
 if ($ProjectText -notmatch "RESHADE_ADDON=2") {
     throw "Pinned ReShade Release project no longer declares full add-on support."
 }
-$InjectorProject = Join-Path $ReShadeSource "ReShadeInject.vcxproj"
-if (-not (Test-Path -LiteralPath $InjectorProject -PathType Leaf)) {
-    throw "Pinned ReShade injector project was not found: $InjectorProject"
-}
+$InjectorStage = Join-Path $BuildRoot "injector-policy-stdin\$Architecture"
+& (Join-Path $PSScriptRoot "stage-reshade-injector-source.ps1") `
+    -SourceDirectory $ReShadeSource -OutputDirectory $InjectorStage
+$InjectorProject = Join-Path $InjectorStage "ReShadeInject.vcxproj"
+$StagedInjector = Join-Path $InjectorStage (Join-Path $ArchitectureConfig.OutputDirectory "inject.exe")
 
 $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) {
@@ -585,6 +621,7 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "ReShade injector build failed with exit code $LASTEXITCODE."
 }
+Copy-Item -LiteralPath $StagedInjector -Destination $Injector
 
 if (-not (Test-Path -LiteralPath $Runtime -PathType Leaf)) {
     throw "ReShade build completed without producing $Runtime."
@@ -624,6 +661,7 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorNameWatcherReadyPatchSha256 = $InjectorNameWatcherReadyPatchHash
     injectorFutureTargetsPatchSha256 = $FutureTargetsPatchHash
     injectorProcessPolicyPatchSha256 = $ProcessPolicyPatchHash
+    injectorPolicyStdinPatchSha256 = $PolicyStdinPatchHash
     injectorCooperativeMembersPatchSha256 = $CooperativeMembersPatchHash
     ownedLateD3d11PatchSha256 = $OwnedLateD3d11PatchHash
     injectorFirstHostResultPatchSha256 = $InjectorFirstHostResultPatchHash
@@ -640,6 +678,13 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorPrivateStageDiagnosticsPatchSha256 = $PrivateStageDiagnosticsPatchHash
     steamLoadedModuleHookOrderPatchSha256 = $SteamLoadedModuleHookOrderPatchHash
     ownedDeferredD3d11PatchSha256 = $DeferredD3d11PatchHash
+    ownedMemoryConfigurationPatchSha256 = $OwnedMemoryConfigurationPatchHash
+    injectorCacheBootstrap = 1
+    ownedCacheBootstrapPatchSha256 = $OwnedCacheBootstrapPatchHash
+    injectorCacheBootstrapPatchSha256 = $InjectorCacheBootstrapPatchHash
+    injectorElevatedCachePatchSha256 = $InjectorElevatedCachePatchHash
+    injectorCachePreloadPatchSha256 = $InjectorCachePreloadPatchHash
+    injectorCacheOfficialPatchSha256 = $InjectorCacheOfficialPatchHash
     ownedCompositionAuxiliaryLifetimePatchSha256 = $AuxiliaryLifetimePatchHash
     ownedCompositionWindowEligibilityPatchSha256 = $WindowEligibilityPatchHash
     ownedCompositionBindingDiagnosticsPatchSha256 = $CompositionBindingDiagnosticsPatchHash
@@ -653,6 +698,7 @@ $InjectorHash = (Get-FileHash -ErrorAction Stop -Algorithm SHA256 -LiteralPath $
     injectorProcessInstanceBindingPatchSha256 = $InjectorProcessInstanceBindingPatchHash
     injectorProcessInstanceBinding = 1
     injectorFutureTargets = 2
+    injectorPolicyStdin = 1
     configuration = "Release"
     platform = $ArchitectureConfig.RuntimePlatform
     addonLevel = 2

@@ -1,0 +1,384 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index d899303..19febba 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -22,6 +22,9 @@
+ #include <unordered_set>
+ #include <utility>
+ #include <vector>
++#define EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE
++#include "electron_overlay_transport.h"
++#include "ego_runtime_cache_lease.hpp"
+ 
+ #pragma comment(lib, "psapi.lib")
+ #pragma comment(lib, "advapi32.lib")
+@@ -49,6 +52,7 @@ constexpr wchar_t target_electron_overlay_addon_file[] =
+ 
+ struct loading_data
+ {
++	BOOL cache_bootstrap = FALSE;
+ 	WCHAR load_path[MAX_PATH] = L"";
+ 	decltype(&GetLastError) GetLastError = nullptr;
+ 	decltype(&LoadLibraryW) LoadLibraryW = nullptr;
+@@ -465,6 +469,59 @@ static DWORD read_process_image_policy_stdin(process_image_policy &policy)
+     return parse_process_image_policy(frame.substr(sizeof(length)), policy);
+ }
+ 
++static DWORD read_stdin_exact(HANDLE input, void *output, DWORD size)
++{
++    if (input == nullptr || input == INVALID_HANDLE_VALUE || GetFileType(input) != FILE_TYPE_PIPE)
++        return ERROR_INVALID_HANDLE;
++    auto *bytes = static_cast<BYTE *>(output);
++    while (size != 0)
++    {
++        DWORD read = 0;
++        if (!ReadFile(input, bytes, size, &read, nullptr)) return GetLastError();
++        if (read == 0) return ERROR_HANDLE_EOF;
++        bytes += read;
++        size -= read;
++    }
++    return ERROR_SUCCESS;
++}
++
++static DWORD read_cache_policy(process_image_policy &policy)
++{
++    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
++    uint32_t length = 0;
++    DWORD error = read_stdin_exact(input, &length, sizeof(length));
++    if (error != ERROR_SUCCESS) return error;
++    if (length == 0 || length > 262144) return ERROR_INVALID_DATA;
++    std::string utf8(length, '\0');
++    error = read_stdin_exact(input, utf8.data(), length);
++    return error == ERROR_SUCCESS ? parse_process_image_policy(utf8, policy) : error;
++}
++
++static DWORD read_cache_route(DWORD pid, uint64_t creation, ego_private_route_v2 &route)
++{
++    static_assert(sizeof(ego_private_route_v2) == 112);
++    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
++    DWORD error = read_stdin_exact(input, &route, sizeof(route));
++    if (error != ERROR_SUCCESS) return error;
++    // The route is the final frame. Reject trailing bytes and early closes.
++    BYTE extra = 0;
++    DWORD received = 0;
++    if (ReadFile(input, &extra, 1, &received, nullptr))
++    {
++        if (received != 0) return ERROR_INVALID_DATA;
++    }
++    else if ((error = GetLastError()) != ERROR_BROKEN_PIPE)
++        return error;
++    if (route.struct_size != sizeof(route) || route.version != EGO_PRIVATE_ROUTE_VERSION ||
++        route.target_pid != pid || route.target_creation_time_100ns != creation || creation == 0 ||
++        route.producer_pid == 0 || route.producer_creation_time_100ns == 0 ||
++        route.input_capabilities != 0 || route.reserved != 0 || route.reserved2 != 0 || route.port == 0 ||
++        !std::all_of(std::begin(route.token_ascii), std::end(route.token_ascii), [](uint8_t value) {
++            return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
++        })) return ERROR_INVALID_DATA;
++    return ERROR_SUCCESS;
++}
++
+ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path, const wchar_t *required_name = nullptr, const wchar_t *exact_path = nullptr, scoped_handle *retained_identity = nullptr, process_image_policy *policy = nullptr)
+ {
+ 	FILETIME cutoff{}; GetSystemTimeAsFileTime(&cutoff);
+@@ -4221,11 +4278,11 @@ static DWORD WINAPI loading_thread_func(loading_data *arg)
+ 			addon_gate_open) != addon_gate_open)
+ 		return ERROR_RETRY;
+ 
+-	if (!arg->SetEnvironmentVariableW(
++	if (!arg->cache_bootstrap && (!arg->SetEnvironmentVariableW(
+ 			arg->routing_env_var_name,
+ 			arg->routing_env_var_value) ||
+ 		(arg->env_var_value[0] != L'\0' &&
+-		 !arg->SetEnvironmentVariableW(arg->env_var_name, arg->env_var_value)))
++		 !arg->SetEnvironmentVariableW(arg->env_var_name, arg->env_var_value))))
+ 	{
+ 		DWORD error = arg->GetLastError();
+ 		if (error == ERROR_SUCCESS)
+@@ -4859,6 +4916,7 @@ struct participant_loading_data
+ 	WCHAR load_path[32768] = L"";
+ 	WCHAR observed_module_path[32768] = L"";
+ 	participant_initialize_request request;
++	ego_private_route_v2 memory_route{};
+ 	char initializer_name[48] = "ElectronGameOverlayInitializeMember";
+ 	char can_unload_name[48] = "ElectronGameOverlayCanUnloadFailedMemberV1";
+ 	char build_id_name[48] = "ElectronGameOverlayReShadeAddonBuildId";
+@@ -5000,7 +5058,9 @@ static DWORD WINAPI participant_loading_thread(participant_loading_data *data)
+ 	}
+ 	// A dormant preload is explicitly bound to this app's private staged route;
+ 	// ordinary members continue to derive the route from their module parent.
+-	data->initialization_error = initialize(data->preloaded_module != nullptr || data->owned_preload_snapshot != 0 ? &data->request : nullptr);
++	void *const request = data->memory_route.struct_size != 0 ? static_cast<void *>(&data->memory_route) :
++		data->preloaded_module != nullptr || data->owned_preload_snapshot != 0 ? static_cast<void *>(&data->request) : nullptr;
++	data->initialization_error = initialize(request);
+ 	if (data->initialization_error != ERROR_SUCCESS)
+ 	{
+ 		// Only the exact module can prove that failed initialization published
+@@ -5404,7 +5464,8 @@ static DWORD inspect_initial_host_readonly(
+ 
+ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring &image_path,
+ 	bool earlier_load_consumed = false, bool report_first_injected_runtime = false,
+-	const std::wstring &preloaded_addon_leaf = std::wstring(), bool full_runtime_started_by_this_request = false)
++	const std::wstring &preloaded_addon_leaf = std::wstring(), bool full_runtime_started_by_this_request = false,
++	const ego_private_route_v2 *memory_route = nullptr, const ego::runtime_cache::lease *cache_lease = nullptr)
+ {
+ 	if (full_runtime_started_by_this_request && (!earlier_load_consumed || !report_first_injected_runtime))
+ 		return ERROR_INVALID_PARAMETER;
+@@ -5435,6 +5496,7 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		}
+ 	}
+ 	bool preload_already_assigned = false;
++	bool cache_retained = false;
+ 	const ULONGLONG deadline = GetTickCount64() + participant_attach_timeout_ms;
+ 	for (;;)
+ 	{
+@@ -5501,7 +5563,13 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		target_environment environment;
+ 		target_reshade_configuration configuration;
+ 		target_effective_reshade_settings settings;
+-		if (!inspect_target_environment(process, environment, error) ||
++		const auto runtime_separator = runtime_path.find_last_of(L"\\/");
++		const auto runtime_directory = runtime_path.substr(0, runtime_separator);
++		const bool cache_host = memory_route != nullptr && owned_late.initializer != 0 &&
++			runtime_separator != std::wstring::npos && ego::runtime_cache::is_version_directory(runtime_directory);
++		if (cache_host)
++			settings.reshade_base_path = runtime_directory;
++		else if (!inspect_target_environment(process, environment, error) ||
+ 			inspect_target_reshade_configuration(image_path, environment, configuration, error) == module_export_inspection::failed ||
+ 			!inspect_target_effective_reshade_settings(image_path, runtime_path, process,
+ 				environment, configuration, settings, error))
+@@ -5569,6 +5637,11 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		data.free_library = FreeLibrary;
+ 		data.get_proc_address = GetProcAddress;
+ 		data.get_last_error = GetLastError;
++		if (memory_route != nullptr)
++		{
++			data.memory_route = *memory_route;
++			strcpy_s(data.initializer_name, "ElectronGameOverlayInitializeMemoryMemberV2");
++		}
+ 		if (preloaded_module != nullptr || load_owned_snapshot)
+ 		{
+ 			const size_t slash = addon_path.find_last_of(L"\\/");
+@@ -5593,6 +5666,16 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			if (owned_late.gate == 0 && preloaded_module == nullptr)
+ 				data.initial_adapter_gate = reinterpret_cast<volatile LONG *>(owned_late.gate_address);
+ 		}
++		if (cache_lease != nullptr && !cache_retained)
++		{
++			error = cache_lease->retain_in_target(process);
++			if (error != ERROR_SUCCESS)
++			{
++				if (!earlier_load_consumed) print_injection_not_started();
++				return error;
++			}
++			cache_retained = true;
++		}
+ 		const SIZE_T allocation_size = sizeof(data) + code_size;
+ 		BYTE *const allocation = static_cast<BYTE *>(VirtualAllocEx(process, nullptr, allocation_size,
+ 			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+@@ -5723,13 +5806,17 @@ static DWORD host_claim_is_pinned(HANDLE process, DWORD pid, bool &pinned)
+ 	return error == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : error;
+ }
+ 
+-static persistent_host_claim_result pin_host_claim(HANDLE process, DWORD pid, DWORD &error)
++static persistent_host_claim_result pin_host_claim(HANDLE process, DWORD pid, DWORD &error,
++	ego::runtime_cache::bootstrap_header *bootstrap = nullptr, std::string_view seed = {},
++	const std::wstring &cache_directory = {}, const std::wstring &logs = {})
+ {
+ 	std::wstring name;
+ 	error = host_claim_name(process, pid, name);
+ 	if (error != ERROR_SUCCESS) return persistent_host_claim_result::failed;
+ 	SetLastError(ERROR_SUCCESS);
+-	const scoped_handle mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 64, name.c_str());
++	const DWORD mapping_size = bootstrap == nullptr ? 64 :
++		static_cast<DWORD>(sizeof(*bootstrap) + ego::runtime_cache::max_config_bytes);
++	const scoped_handle mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, mapping_size, name.c_str());
+ 	const DWORD created = GetLastError();
+ 	if (mapping == nullptr)
+ 	{
+@@ -5738,6 +5825,25 @@ static persistent_host_claim_result pin_host_claim(HANDLE process, DWORD pid, DW
+ 	}
+ 	if (created == ERROR_ALREADY_EXISTS)
+ 		return persistent_host_claim_result::already_pinned;
++	if (bootstrap != nullptr)
++	{
++		if (!logs.empty())
++		{
++			ego::runtime_cache::handle log;
++			error = ego::runtime_cache::create_log(cache_directory, logs, log);
++			if (error == ERROR_SUCCESS) error = ego::runtime_cache::read_identity(log.value, bootstrap->log_file);
++			if (error != ERROR_SUCCESS) return persistent_host_claim_result::failed;
++			HANDLE target_log = nullptr;
++			if (!DuplicateHandle(GetCurrentProcess(), log.value, process, &target_log, 0, FALSE, DUPLICATE_SAME_ACCESS))
++			{
++				error = GetLastError();
++				return persistent_host_claim_result::failed;
++			}
++			bootstrap->log_handle = reinterpret_cast<uintptr_t>(target_log);
++		}
++		error = ego::runtime_cache::write_bootstrap(mapping, *bootstrap, seed);
++		if (error != ERROR_SUCCESS) return persistent_host_claim_result::failed;
++	}
+ 	HANDLE target_copy = nullptr;
+ 	if (!DuplicateHandle(GetCurrentProcess(), mapping, process, &target_copy, 0, FALSE, DUPLICATE_SAME_ACCESS))
+ 	{
+@@ -5753,6 +5859,15 @@ static persistent_host_claim_result pin_host_claim(HANDLE process, DWORD pid, DW
+ 
+ int wmain(int argc, wchar_t *argv[])
+ {
++    const bool cache_bootstrap_requested = argc >= 2 && wcscmp(argv[argc - 1], L"--cache-bootstrap-stdin") == 0;
++    if (cache_bootstrap_requested) --argc;
++    std::wstring cache_logs;
++    if (cache_bootstrap_requested && argc >= 3 && wcscmp(argv[argc - 2], L"--cache-log-directory") == 0)
++    {
++        cache_logs = argv[argc - 1];
++        argc -= 2;
++        if (cache_logs.empty()) return ERROR_INVALID_PARAMETER;
++    }
+     bool private_payload_requested=false;
+     BYTE private_runtime_hash[32]={},private_addon_hash[32]={},private_ini_hash[32]={};
+     for(int argument=1;argument<argc;++argument){
+@@ -5843,7 +5958,7 @@ int wmain(int argc, wchar_t *argv[])
+                 if (has_image_policy || (policy_stdin && wcscmp(argv[argument + 1], L"1") != 0)) {
+                     print_injection_not_started(); return ERROR_INVALID_PARAMETER;
+                 }
+-                const DWORD error = policy_stdin ? read_process_image_policy_stdin(image_policy) :
++                const DWORD error = policy_stdin ? (cache_bootstrap_requested ? read_cache_policy(image_policy) : read_process_image_policy_stdin(image_policy)) :
+                     read_process_image_policy(argv[argument + 1], image_policy);
+                 if (error != ERROR_SUCCESS) { print_injection_not_started(); return error; }
+                 has_image_policy = true;
+@@ -5871,6 +5986,31 @@ int wmain(int argc, wchar_t *argv[])
+ 		parse_exact_pid_tail(argc, argv, expected_creation_time,
+ 			process_instance_binding_requested, official_addon_wait_requested,
+ 			official_addon_wait_value_index);
++	ego::runtime_cache::lease cache;
++	std::wstring cache_directory;
++	ego_private_route_v2 cache_route{};
++	const ego_private_route_v2 *const memory_route = cache_bootstrap_requested ? &cache_route : nullptr;
++	if (cache_bootstrap_requested)
++	{
++		if ((!use_path_watcher && !use_exact_pid && argc != 2) || (use_exact_pid && !process_instance_binding_requested) ||
++			official_addon_wait_requested || !preloaded_addon_leaf.empty() || private_payload_requested)
++		{
++			print_injection_not_started();
++			return ERROR_INVALID_PARAMETER;
++		}
++		std::wstring member_path;
++		DWORD error = staged_participant_path(member_path);
++		if (error == ERROR_SUCCESS)
++		{
++			cache_directory = member_path.substr(0, member_path.find_last_of(L"\\/"));
++			error = cache.acquire(cache_directory);
++		}
++		if (error != ERROR_SUCCESS)
++		{
++			print_injection_not_started();
++			return error;
++		}
++	}
+ 	if ((addon_only_requested && (!use_exact_pid || official_addon_wait_requested)) ||
+ 		(!preloaded_addon_leaf.empty() && official_addon_wait_requested))
+ 	{
+@@ -6149,6 +6289,24 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
+ 	}
+ 
++    if (cache_bootstrap_requested)
++    {
++        DWORD error = read_cache_route(pid, expected_creation_time, cache_route);
++        if (error != ERROR_SUCCESS)
++        {
++            print_injection_not_started();
++            return error;
++        }
++        const scoped_handle producer = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, cache_route.producer_pid);
++        bool mismatch = false;
++        error = producer == nullptr ? GetLastError() : check_process_creation_time(producer, cache_route.producer_creation_time_100ns, mismatch);
++        if (error != ERROR_SUCCESS || WaitForSingleObject(producer, 0) != WAIT_TIMEOUT)
++        {
++            print_injection_not_started();
++            return error == ERROR_SUCCESS ? ERROR_PROCESS_ABORTED : error;
++        }
++    }
++
+     initial_loader_readiness_observation startup_readiness;
+     const DWORD startup_error = wait_for_initial_loader(remote_process, startup_readiness);
+     if (!write_initial_loader_readiness(pid, startup_readiness)) return ERROR_WRITE_FAULT;
+@@ -6228,7 +6386,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		}
+ 		initial_host_observed = host != nullptr;
+ 		if (addon_only_requested || pinned || cooperative_present || owned_late.initializer != 0)
+-			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf);
++			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf, false, memory_route, cache_bootstrap_requested ? &cache : nullptr);
+ 	}
+ 
+ 	reusable_runtime_info reusable_runtime;
+@@ -6707,6 +6865,8 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		break;
+ 	}
+ 	case target_preflight_result::reusable_runtime:
++		if (memory_route != nullptr)
++			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf, false, memory_route, cache_bootstrap_requested ? &cache : nullptr);
+ 		reuse_existing_runtime = true;
+ 		break;
+ 	}
+@@ -6719,6 +6879,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 	fflush(stdout);
+ 
+ 	loading_data arg;
++	arg.cache_bootstrap = cache_bootstrap_requested;
+ #if 0
+ 	GetCurrentDirectoryW(MAX_PATH, arg.load_path);
+ #else
+@@ -6746,7 +6907,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 	}
+ 
+ 	// Make sure the DLL has permissions set up for 'ALL_APPLICATION_PACKAGES'
+-	update_acl_for_uwp(arg.load_path);
++	if (!cache_bootstrap_requested) update_acl_for_uwp(arg.load_path);
+ 
+ 	// This happens to work because kernel32.dll is always loaded to the same base address, so the address of 'LoadLibrary' is the same in the target application and the current one
+ 	arg.GetLastError = GetLastError;
+@@ -6781,10 +6942,32 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 			print_injection_not_started();
+ 			return member_error;
+ 		}
+-		switch (pin_host_claim(remote_process, pid, member_error))
++		ego::runtime_cache::bootstrap_header bootstrap;
++		std::string seed;
++		if (cache_bootstrap_requested)
++		{
++			bootstrap.target_pid = pid;
++			bootstrap.target_creation_time = expected_creation_time;
++			member_error = cache.runtime_identity(sizeof(void *) == 8, bootstrap.runtime);
++			if (member_error == ERROR_SUCCESS) member_error = cache.read_configuration(seed);
++			if (member_error != ERROR_SUCCESS)
++			{
++				print_injection_not_started();
++				return member_error;
++			}
++			bootstrap.config_bytes = static_cast<uint32_t>(seed.size());
++			member_error = cache.retain_in_target(remote_process);
++			if (member_error != ERROR_SUCCESS)
++			{
++				print_injection_not_started();
++				return member_error;
++			}
++		}
++		switch (pin_host_claim(remote_process, pid, member_error,
++			cache_bootstrap_requested ? &bootstrap : nullptr, seed, cache_directory, cache_logs))
+ 		{
+ 		case persistent_host_claim_result::already_pinned:
+-			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf);
++			return load_participant_only(remote_process, pid, selected_image_path, false, false, preloaded_addon_leaf, false, memory_route);
+ 		case persistent_host_claim_result::failed:
+ 			write_injector_diagnostic(L"target-host-claim-failed", pid, std::wstring(), member_error, selected_image_path);
+ 			print_injection_not_started();
+@@ -6864,7 +7047,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		}
+ 		if (owned_late.initializer != 0)
+ 			return load_participant_only(remote_process, pid, selected_image_path, true, !reuse_existing_runtime,
+-				preloaded_addon_leaf, !reuse_existing_runtime);
++				preloaded_addon_leaf, !reuse_existing_runtime, memory_route);
+ 		wprintf(L"Succeeded!\n");
+ 		if (!write_injector_result(
+ 				pid,

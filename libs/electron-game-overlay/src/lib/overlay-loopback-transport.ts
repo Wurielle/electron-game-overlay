@@ -23,6 +23,8 @@ import {
 } from './diagnostic.js';
 import type {
   NativeOverlay,
+  NativeMemoryRoute,
+  NativeMemoryTarget,
   NativeRuntimeProviderMetadata,
   NativeOverlayWindowDetails,
   NativeOverlayWindowGeometry,
@@ -121,6 +123,11 @@ export type OverlayTargetAuthorizationPublicationPhase =
 export interface OverlayLoopbackTransportOptions {
   requiredInputCapabilities?: readonly OverlayInputCapability[];
   discoveryPath?: string;
+  /** @internal Publish discovery only when a legacy launcher supplies its own path. */
+  publishGlobalDiscovery?: boolean;
+  /** @internal Exact-target route published only to its trusted native caller. */
+  privateMemoryTarget?: OverlayBrokerProcessIdentity &
+    Readonly<{ creationTime100ns: string }>;
   /**
    * @internal App-private participant routing. These route claims never grant
    * permission to initialize or replace the process's shared ReShade host.
@@ -333,6 +340,7 @@ interface ClientState {
 interface ProcessExitWatch {
   generation: number;
   authorization?: TargetAuthorization;
+  memoryAuthorization?: MemoryAuthorization;
   inFlight?: boolean;
   identityMismatchDiagnosed?: boolean;
   pid: number;
@@ -340,6 +348,8 @@ interface ProcessExitWatch {
   timer?: ReturnType<typeof setTimeout>;
   inspectionFailureDiagnosed?: boolean;
 }
+
+type MemoryAuthorization = NativeMemoryTarget & Readonly<{ token: string }>;
 
 interface TargetAuthorization {
   pid: number;
@@ -843,6 +853,8 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private readonly requiredInputCapabilities: readonly OverlayInputCapability[];
   private readonly discoveryPath: string;
   private readonly privateTargetRouteDirectory: string | undefined;
+  private readonly publishGlobalDiscovery: boolean;
+  private readonly memoryAuthorizations = new Map<number, MemoryAuthorization>();
   private readonly tokenFactory: () => string;
   private readonly isProcessAlive: (pid: number) => boolean;
   private readonly queryProcessIdentity: OverlayLoopbackTransportOptions['queryProcessIdentity'];
@@ -901,11 +913,33 @@ export class OverlayLoopbackTransport implements NativeOverlay {
   private rejectReady: ((reason: Error) => void) | undefined;
   private discoveryEndpointReservation:
     DiscoveryEndpointReservation | undefined;
+  private readonly privateMemoryTarget?: NonNullable<
+    OverlayLoopbackTransportOptions['privateMemoryTarget']
+  >;
   private generation = 0;
 
   constructor(options: OverlayLoopbackTransportOptions = {}) {
     this.requiredInputCapabilities = normalizeRequiredInputCapabilities(options.requiredInputCapabilities);
     this.discoveryPath = options.discoveryPath ?? defaultOverlayDiscoveryPath();
+    this.publishGlobalDiscovery = options.privateMemoryTarget === undefined && options.publishGlobalDiscovery !== false;
+    const memoryTarget = options.privateMemoryTarget;
+    if (memoryTarget !== undefined) {
+      assertProcessPid(memoryTarget.pid);
+      if (
+        !win32.isAbsolute(memoryTarget.executablePath) ||
+        memoryTarget.executablePath.includes('\0') ||
+        !isValidProcessCreationTime100ns(memoryTarget.creationTime100ns) ||
+        options.privateTargetRouteDirectory !== undefined
+      ) {
+        throw new TypeError(
+          'Private memory route requires an exact target identity and no file route namespace',
+        );
+      }
+      this.privateMemoryTarget = Object.freeze({
+        ...memoryTarget,
+        executablePath: normalizeExecutablePathIdentity(memoryTarget.executablePath),
+      });
+    }
     if (
       options.privateTargetRouteDirectory !== undefined &&
       (!isAbsolute(options.privateTargetRouteDirectory) ||
@@ -945,7 +979,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       return;
     }
 
-    const endpointReservation = this.reserveDiscoveryEndpoint();
+    const endpointReservation =
+      this.publishGlobalDiscovery
+        ? this.reserveDiscoveryEndpoint()
+        : undefined;
     let token: string | undefined;
     try {
       this.diagnosticRates.clear();
@@ -1044,8 +1081,34 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     return this.readyPromise;
   }
 
+  public async authorizeMemoryTarget(target: NativeMemoryTarget): Promise<NativeMemoryRoute> {
+    assertProcessPid(target.pid);
+    if (this.privateMemoryTarget !== undefined || !isValidProcessCreationTime100ns(target.creationTime100ns) ||
+        !win32.isAbsolute(target.executablePath) || target.executablePath.includes('\0')) {
+      throw new TypeError('Private member route requires an exact target identity');
+    }
+    const ready = await this.whenReady();
+    if (this.discoveryRecord !== ready || !this.server) throw new Error('Overlay transport stopped before target authorization');
+    const { pid } = target;
+    if (this.memoryAuthorizations.has(pid) || this.targetAuthorizationsByPid.has(pid) ||
+        this.pendingTargetAuthorizationsByPid.has(pid) || this.activeClientsByPid.has(pid)) {
+      throw new Error(`Overlay transport already has a route for PID ${pid}`);
+    }
+    const authorization = Object.freeze({ ...target, token: this.allocateToken(),
+      executablePath: normalizeExecutablePathIdentity(target.executablePath) });
+    this.memoryAuthorizations.set(pid, authorization);
+    return Object.freeze({ port: ready.port, token: authorization.token, release: () => {
+      if (this.memoryAuthorizations.get(pid) !== authorization) return;
+      this.memoryAuthorizations.delete(pid);
+      this.activeClientsByPid.get(pid)?.socket.destroy();
+    } });
+  }
+
   /** App-private future-target rendezvous; never authorizes host injection. */
   public async authorizeGlobalTarget(discoveryPath?: string): Promise<() => void> {
+    if (this.privateMemoryTarget !== undefined) {
+      throw new Error('An exact memory route cannot publish global discovery');
+    }
     const record = await this.whenReady();
     if (discoveryPath === undefined) return () => undefined;
     if (!isAbsolute(discoveryPath) || discoveryPath.includes('\0') ||
@@ -1086,6 +1149,9 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     runtimeProviderOrRouteContext?:
       NativeRuntimeProviderMetadata | OverlayTargetRouteAuthorizationContext,
   ): Promise<() => void> {
+    if (this.privateMemoryTarget !== undefined) {
+      throw new Error('An exact memory route cannot publish file discovery');
+    }
     assertProcessPid(pid);
     if (typeof discoveryPath !== 'string' || !isAbsolute(discoveryPath)) {
       throw new TypeError('Overlay target discovery path must be absolute');
@@ -1135,6 +1201,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       );
     }
     const readyRecord = await this.whenReady();
+    if (this.memoryAuthorizations.has(pid)) throw new Error(`Overlay transport already has a memory route for PID ${pid}`);
     const generation = this.generation;
     if (
       !this.server ||
@@ -1253,6 +1320,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.discoveryRecord = undefined;
     this.token = undefined;
     this.targetAuthorizationsByPid.clear();
+    this.memoryAuthorizations.clear();
     this.targetAuthorizationsByDiscoveryPath.clear();
     this.pendingTargetAuthorizationsByPid.clear();
     this.issuedTokens.clear();
@@ -1296,7 +1364,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     this.fallbackInputTranslator.reset();
     this.releaseDiscoveryEndpoint();
 
-    if (priorRecord) {
+    if (priorRecord && this.publishGlobalDiscovery) {
       this.removeDiscoveryIfOwnedSync(this.discoveryPath, priorRecord);
     }
     for (const authorization of priorTargetAuthorizations) {
@@ -2027,12 +2095,19 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       pid: process.pid,
       port: address.port,
       token,
+      ...(this.privateMemoryTarget === undefined
+        ? {}
+        : { targetPid: this.privateMemoryTarget.pid }),
     };
 
     try {
-      await this.publishDiscovery(this.discoveryPath, record);
+      if (this.publishGlobalDiscovery) {
+        await this.publishDiscovery(this.discoveryPath, record);
+      }
       if (this.generation !== generation || this.server !== server) {
-        await this.removeDiscoveryIfOwned(this.discoveryPath, record);
+        if (this.publishGlobalDiscovery) {
+          await this.removeDiscoveryIfOwned(this.discoveryPath, record);
+        }
         return;
       }
       this.discoveryRecord = record;
@@ -2370,8 +2445,29 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     if(supportsInstance&&!isValidProcessCreationTime100ns(hello.creationTime100ns))return false;
     const creationTime=supportsInstance ? hello.creationTime100ns as string : undefined;
     if(this.suppressedTargetPids.has(hello.pid)||this.targetAdmissionPolicy&&!this.targetAdmissionPolicy(hello.pid,hello.path,creationTime))return false;
+    const memoryTarget = this.privateMemoryTarget;
+    if (
+      memoryTarget !== undefined &&
+      (hello.pid !== memoryTarget.pid ||
+        creationTime !== memoryTarget.creationTime100ns ||
+        normalizeExecutablePathIdentity(hello.path) !== memoryTarget.executablePath)
+    ) {
+      this.publishDiagnostic({
+        code: 'target-authentication-rejected',
+        pid: hello.pid,
+        context: { scope: 'targeted' },
+      });
+      return false;
+    }
     client.creationTime100ns=creationTime;
     const targetAuthorization = this.targetAuthorizationsByPid.get(hello.pid);
+    const memoryAuthorization = this.memoryAuthorizations.get(hello.pid);
+    if (memoryAuthorization !== undefined &&
+        (creationTime !== memoryAuthorization.creationTime100ns ||
+          normalizeExecutablePathIdentity(hello.path) !== memoryAuthorization.executablePath)) {
+      this.publishDiagnostic({ code: 'target-authentication-rejected', pid: hello.pid, context: { scope: 'targeted' } });
+      return false;
+    }
     if (
       this.privateTargetRouteDirectory !== undefined &&
       targetAuthorization?.recoveryClaim.creationTime100ns !== undefined &&
@@ -2384,9 +2480,10 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       });
       return false;
     }
-    const tokenMatches = targetAuthorization
+    const tokenMatches = memoryAuthorization ? tokensEqual(hello.token, memoryAuthorization.token) : targetAuthorization
       ? tokensEqual(hello.token, targetAuthorization.record.token)
-      : this.token !== undefined && tokensEqual(hello.token, this.token);
+      : (this.publishGlobalDiscovery || this.privateMemoryTarget !== undefined || this.globalTargetCopies.size !== 0) &&
+        this.token !== undefined && tokensEqual(hello.token, this.token);
     if (!tokenMatches) {
       this.publishDiagnostic({
         code: 'target-authentication-rejected',
@@ -2613,13 +2710,29 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     targetPath: string,
   ): ProcessExitWatch {
     this.cancelProcessExitWatch(pid);
-    const watch: ProcessExitWatch = { pid, path: targetPath, generation: this.generation, authorization: this.targetAuthorizationsByPid.get(pid) };
+    const watch: ProcessExitWatch = { pid, path: targetPath, generation: this.generation,
+      authorization: this.targetAuthorizationsByPid.get(pid), memoryAuthorization: this.memoryAuthorizations.get(pid) };
     this.processExitWatchesByPid.set(pid, watch);
     return watch;
   }
 
   private pollProcessExit(watch: ProcessExitWatch): void {
-    if (this.processExitWatchesByPid.get(watch.pid) !== watch || watch.generation !== this.generation || watch.authorization !== this.targetAuthorizationsByPid.get(watch.pid) || this.activeClientsByPid.has(watch.pid) || watch.inFlight) {
+    if (!this.isProcessExitWatchCurrent(watch) || watch.inFlight) {
+      return;
+    }
+
+    if (watch.memoryAuthorization?.confirmExited) {
+      watch.inFlight = true;
+      void watch.memoryAuthorization.confirmExited().then(exited => {
+        if (exited && this.isProcessExitWatchCurrent(watch)) {
+          this.processExitWatchesByPid.delete(watch.pid);
+          this.memoryAuthorizations.delete(watch.pid);
+          this.emitLifecycleEvent('game.process.disconnected', { pid: watch.pid, path: watch.path });
+        }
+      }, () => undefined).finally(() => {
+        watch.inFlight = false;
+        if (this.isProcessExitWatchCurrent(watch)) this.scheduleProcessExitPoll(watch);
+      });
       return;
     }
 
@@ -2640,10 +2753,13 @@ export class OverlayLoopbackTransport implements NativeOverlay {
     }
     if (!alive) {
       this.processExitWatchesByPid.delete(watch.pid);
-      clearOverlayTargetRecoveryClaimForExitedPid(
-        watch.pid,
-        this.privateTargetRouteDirectory,
-      );
+      if (watch.memoryAuthorization !== undefined) this.memoryAuthorizations.delete(watch.pid);
+      else if (this.privateMemoryTarget === undefined) {
+        clearOverlayTargetRecoveryClaimForExitedPid(
+          watch.pid,
+          this.privateTargetRouteDirectory,
+        );
+      }
       this.emitLifecycleEvent('game.process.disconnected', {
         pid: watch.pid,
         path: watch.path,
@@ -2686,6 +2802,7 @@ export class OverlayLoopbackTransport implements NativeOverlay {
       this.processExitWatchesByPid.get(watch.pid) === watch &&
       watch.generation === this.generation &&
       watch.authorization === this.targetAuthorizationsByPid.get(watch.pid) &&
+      watch.memoryAuthorization === this.memoryAuthorizations.get(watch.pid) &&
       !this.activeClientsByPid.has(watch.pid)
     );
   }

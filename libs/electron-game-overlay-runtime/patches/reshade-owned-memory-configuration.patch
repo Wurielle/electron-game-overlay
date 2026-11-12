@@ -1,0 +1,390 @@
+diff --git a/source/ini_file.hpp b/source/ini_file.hpp
+index c2805cb..0d072cf 100644
+--- a/source/ini_file.hpp
++++ b/source/ini_file.hpp
+@@ -31,6 +31,12 @@ namespace reshade
+ 		/// <param name="path">Path to the INI file to access.</param>
+ 		explicit ini_file(const std::filesystem::path &path);
+ 
++		// Used only for runtime-owned virtual configuration paths. Stock cache
++		// invalidation must never evict a live virtual configuration.
++		static bool reserve_memory_cache(const std::filesystem::path &path, std::string_view bytes);
++		static bool has_memory_cache(const std::filesystem::path &path);
++		static bool retire_memory_cache(const std::filesystem::path &path);
++
+ 		/// <summary>
+ 		/// Gets the path to this INI file.
+ 		/// </summary>
+@@ -317,7 +323,11 @@ namespace reshade
+ 		/// </summary>
+ 		using section_type = std::unordered_map<std::string, value_type>;
+ 
++		ini_file(const std::filesystem::path &path, std::string_view bytes);
++		void parse_line(std::string_view line, std::string &section);
++
+ 		const std::filesystem::path _path;
++		const bool _memory_backed = false;
+ 		std::unordered_map<std::string, section_type> _sections;
+ 		bool _modified = false;
+ 		std::filesystem::file_time_type _modified_at;
+diff --git a/source/ini_file.cpp b/source/ini_file.cpp
+index c0f089b..4de813e 100644
+--- a/source/ini_file.cpp
++++ b/source/ini_file.cpp
+@@ -25,8 +25,88 @@ reshade::ini_file::ini_file(const std::filesystem::path &path) : _path(path)
+ 	load();
+ }
+ 
++reshade::ini_file::ini_file(const std::filesystem::path &path, std::string_view bytes) :
++	_path(path), _memory_backed(true)
++{
++	if (bytes.substr(0, 3) == "\xef\xbb\xbf")
++		bytes.remove_prefix(3);
++	std::string section;
++	while (!bytes.empty())
++	{
++		const size_t newline = bytes.find('\n');
++		parse_line(bytes.substr(0, newline), section);
++		if (newline == std::string_view::npos)
++			break;
++		bytes.remove_prefix(newline + 1);
++	}
++}
++
++void reshade::ini_file::parse_line(std::string_view line, std::string &section)
++{
++	line = trim(line, " \t\r\n");
++
++	if (line.empty() || line[0] == ';' || line[0] == '/' || line[0] == '#')
++		return;
++
++	// Read section name
++	if (line[0] == '[')
++	{
++		section = trim(line.substr(0, line.find(']')), " \t[]");
++		return;
++	}
++
++	// Read section content
++	const size_t assign_index = line.find('=');
++	if (assign_index != std::string::npos)
++	{
++		const std::string_view key = trim(line.substr(0, assign_index));
++		const std::string_view value = trim(line.substr(assign_index + 1));
++
++		if (value.empty())
++		{
++			_sections[section].insert({ std::string(key), {} });
++			return;
++		}
++
++		// Append to key if it already exists
++		ini_file::value_type &elements = _sections[section][std::string(key)];
++		for (size_t offset = 0, base = 0, len = value.size(); offset <= len;)
++		{
++			// Treat ",," as an escaped comma and only split on single ","
++			const size_t found = std::min(value.find(',', offset), len);
++			if (found + 1 < len && value[found + 1] == ',')
++			{
++				offset = found + 2;
++			}
++			else
++			{
++				std::string &element = elements.emplace_back();
++				element.reserve(found - base);
++
++				while (base < found)
++				{
++					const char c = value[base++];
++					element += c;
++
++					if (c == ',' && base < found && value[base] == ',')
++						base++; // Skip second comma in a ",," escape sequence
++				}
++
++				offset = base = found + 1;
++			}
++		}
++	}
++	else
++	{
++		_sections[section].insert({ std::string(line), {} });
++	}
++}
++
+ bool reshade::ini_file::load()
+ {
++	if (_memory_backed)
++		return true;
++
+ 	std::error_code ec;
+ 	const std::filesystem::file_time_type modified_at = std::filesystem::last_write_time(_path, ec);
+ 	if (!ec && _modified_at >= modified_at)
+@@ -58,63 +138,7 @@ bool reshade::ini_file::load()
+ 				break;
+ 		}
+ 
+-		const std::string_view line = trim(std::string_view(line_data.data(), line_length), " \t\r\n");
+-
+-		if (line.empty() || line[0] == ';' || line[0] == '/' || line[0] == '#')
+-			continue;
+-
+-		// Read section name
+-		if (line[0] == '[')
+-		{
+-			section = trim(line.substr(0, line.find(']')), " \t[]");
+-			continue;
+-		}
+-
+-		// Read section content
+-		const size_t assign_index = line.find('=');
+-		if (assign_index != std::string::npos)
+-		{
+-			const std::string_view key = trim(line.substr(0, assign_index));
+-			const std::string_view value = trim(line.substr(assign_index + 1));
+-
+-			if (value.empty())
+-			{
+-				_sections[section].insert({ std::string(key), {} });
+-				continue;
+-			}
+-
+-			// Append to key if it already exists
+-			ini_file::value_type &elements = _sections[section][std::string(key)];
+-			for (size_t offset = 0, base = 0, len = value.size(); offset <= len;)
+-			{
+-				// Treat ",," as an escaped comma and only split on single ","
+-				const size_t found = std::min(value.find(',', offset), len);
+-				if (found + 1 < len && value[found + 1] == ',')
+-				{
+-					offset = found + 2;
+-				}
+-				else
+-				{
+-					std::string &element = elements.emplace_back();
+-					element.reserve(found - base);
+-
+-					while (base < found)
+-					{
+-						const char c = value[base++];
+-						element += c;
+-
+-						if (c == ',' && base < found && value[base] == ',')
+-							base++; // Skip second comma in a ",," escape sequence
+-					}
+-
+-					offset = base = found + 1;
+-				}
+-			}
+-		}
+-		else
+-		{
+-			_sections[section].insert({ std::string(line), {} });
+-		}
++		parse_line(std::string_view(line_data.data(), line_length), section);
+ 	}
+ 
+ 	fclose(file);
+@@ -128,7 +152,7 @@ bool reshade::ini_file::save()
+ 
+ 	// SDK-owned reserved configuration is immutable on disk, including the high
+ 	// stage read by a medium target. Keep transient GUI settings in this cache.
+-	if (ego_owned_runtime_policy::immutable_configuration(_path, g_reshade_base_path))
++	if (_memory_backed || ego_owned_runtime_policy::immutable_configuration(_path, g_reshade_base_path))
+ 	{
+ 		_modified = false;
+ 		return true;
+@@ -257,7 +281,11 @@ void reshade::ini_file::clear_cache()
+ {
+ 	const std::unique_lock<std::shared_mutex> lock(s_ini_cache_mutex);
+ 
+-	s_ini_cache.clear();
++	for (auto it = s_ini_cache.begin(); it != s_ini_cache.end();)
++		if (it->second->_memory_backed)
++			++it;
++		else
++			it = s_ini_cache.erase(it);
+ }
+ void reshade::ini_file::clear_cache(const std::filesystem::path &path)
+ {
+@@ -265,7 +293,38 @@ void reshade::ini_file::clear_cache(const std::filesystem::path &path)
+ 
+ 	const std::unique_lock<std::shared_mutex> lock(s_ini_cache_mutex);
+ 
+-	s_ini_cache.erase(path);
++	const auto it = s_ini_cache.find(path);
++	if (it != s_ini_cache.end() && !it->second->_memory_backed)
++		s_ini_cache.erase(it);
++}
++
++bool reshade::ini_file::reserve_memory_cache(const std::filesystem::path &path, std::string_view bytes)
++{
++	if (!path.is_absolute() || bytes.find('\0') != std::string_view::npos)
++		return false;
++
++	const std::unique_lock<std::shared_mutex> lock(s_ini_cache_mutex);
++	if (s_ini_cache.find(path) != s_ini_cache.end())
++		return false;
++	s_ini_cache.emplace(path, std::unique_ptr<ini_file>(new ini_file(path, bytes)));
++	return true;
++}
++
++bool reshade::ini_file::has_memory_cache(const std::filesystem::path &path)
++{
++	const std::shared_lock<std::shared_mutex> lock(s_ini_cache_mutex);
++	const auto it = s_ini_cache.find(path);
++	return it != s_ini_cache.end() && it->second->_memory_backed;
++}
++
++bool reshade::ini_file::retire_memory_cache(const std::filesystem::path &path)
++{
++	const std::unique_lock<std::shared_mutex> lock(s_ini_cache_mutex);
++	const auto it = s_ini_cache.find(path);
++	if (it == s_ini_cache.end() || !it->second->_memory_backed)
++		return false;
++	s_ini_cache.erase(it);
++	return true;
+ }
+ 
+ reshade::ini_file *reshade::ini_file::find_cache(const std::filesystem::path &path)
+diff --git a/source/runtime.cpp b/source/runtime.cpp
+index 3517dfc..505122f 100644
+--- a/source/runtime.cpp
++++ b/source/runtime.cpp
+@@ -234,7 +234,8 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
+ 
+ 	// Ensure config path is absolute, in case an add-on created an effect runtime with a relative path
+ 	std::error_code ec;
+-	resolve_path(_config_path, ec);
++	if (!ini_file::has_memory_cache(_config_path))
++		resolve_path(_config_path, ec);
+ 
+ 	load_config();
+ 
+diff --git a/source/ego_owned_late_d3d11/owned_late_d3d11.inl b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+index d6a4bec..67d98c7 100644
+--- a/source/ego_owned_late_d3d11/owned_late_d3d11.inl
++++ b/source/ego_owned_late_d3d11/owned_late_d3d11.inl
+@@ -7,7 +7,6 @@
+ #include "hook_manager.hpp"
+ #include "ini_file.hpp"
+ #include "com_ptr.hpp"
+-#include "owned_config_file.hpp"
+ #include "dxgi/dxgi_swapchain.hpp"
+ #include <d3d11_4.h>
+ #include <d3dcommon.h>
+@@ -103,8 +102,7 @@ namespace ego_owned_late_d3d11
+         std::shared_ptr<std::recursive_mutex> context_operation_gate;
+         reshade::api::effect_runtime *runtime = nullptr;
+         std::string owned_config_utf8;
+-        ego_owned_config::reserved_file owned_config_file;
+-        fs::path config_cache_key;
++        fs::path owned_config_key;
+         bool runtime_creation_uncertain = false;
+         HWND window = nullptr;
+         bool swapchain_event_live = false;
+@@ -208,6 +206,7 @@ namespace ego_owned_late_d3d11
+             return ERROR_ACCESS_DENIED;
+         error = read_regular_file(base / L"ReShade.ini", config_seed, 4 * 1024 * 1024);
+         if (error != ERROR_SUCCESS) return error;
++        if (config_seed.find('\0') != std::string::npos) return ERROR_INVALID_DATA;
+         FILETIME creation = {}, exit = {}, kernel = {}, user = {};
+         if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return GetLastError();
+         process_creation_time = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+@@ -217,33 +216,33 @@ namespace ego_owned_late_d3d11
+         return ERROR_SUCCESS;
+     }
+ 
+-    DWORD reserve_seeded_config(ego_owned_config::reserved_file &file)
++    DWORD reserve_seeded_config(fs::path &key)
+     {
+         for (unsigned attempt = 0; attempt != 64; ++attempt)
+         {
+             const auto sequence = next_config.fetch_add(1) + 1;
+             if (sequence > UINT32_MAX) return ERROR_ARITHMETIC_OVERFLOW;
+-            wchar_t name[32] = {};
+-            swprintf_s(name, L"ego-late-%08lx-%08lx.ini", GetCurrentProcessId(), static_cast<unsigned long>(sequence));
+-            const DWORD error = ego_owned_config::create_seeded(file, owned_stage / name, config_seed);
+-            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
+-            return error;
++            wchar_t name[40] = {};
++            swprintf_s(name, L"ego-memory-%08lx-%08lx.ini", GetCurrentProcessId(), static_cast<unsigned long>(sequence));
++            auto candidate = owned_stage / name;
++            if (reshade::ini_file::reserve_memory_cache(candidate, config_seed))
++            {
++                key = std::move(candidate);
++                return ERROR_SUCCESS;
++            }
+         }
+-        return ERROR_FILE_EXISTS;
++        return ERROR_ALREADY_EXISTS;
+     }
+ 
+-    // The caller holds the chain lock and has proved that no runtime can still
+-    // refer to this generated config. Never evict a template or another chain.
++    // The caller holds the chain lock and has proved no runtime can still use
++    // the key. A quarantined or uncertain runtime retains its configuration.
+     DWORD retire_config(chain_state &state)
+     {
+         if (state.runtime != nullptr || state.runtime_creation_uncertain) return ERROR_BUSY;
+-        if (state.owned_config_file.guard == INVALID_HANDLE_VALUE) return ERROR_SUCCESS;
+-        return ego_owned_config::retire(state.owned_config_file, [&](const fs::path &owned_path) {
+-            if (!state.config_cache_key.empty()) reshade::ini_file::clear_cache(state.config_cache_key);
+-            // A normal failed public Create resolves the already absolute path
+-            // identically, but never succeeded far enough to publish a runtime.
+-            else reshade::ini_file::clear_cache(owned_path);
+-        });
++        if (state.owned_config_key.empty()) return ERROR_SUCCESS;
++        if (!reshade::ini_file::retire_memory_cache(state.owned_config_key)) return ERROR_FILE_INVALID;
++        state.owned_config_key.clear();
++        return ERROR_SUCCESS;
+     }
+ 
+     bool ready_word(HMODULE module, const char *name)
+@@ -387,8 +386,7 @@ namespace ego_owned_late_d3d11
+             }
+             return false;
+         }
+-        state.config_cache_key = static_cast<reshade::runtime *>(state.runtime)->get_config_path();
+-        if (state.config_cache_key != state.owned_config_file.path)
++        if (static_cast<reshade::runtime *>(state.runtime)->get_config_path() != state.owned_config_key)
+         {
+             // Never delete or evict a path unexpectedly selected by the runtime.
+             state.phase = chain_phase::quarantined;
+@@ -425,14 +423,13 @@ namespace ego_owned_late_d3d11
+             // Only our audited staged EGO adapter callbacks may run in this proof.
+             if (state->runtime != nullptr)
+             {
+-                // The runtime destructor saves its config. Keep the no-delete
+-                // read-only guard through that save and all final callbacks.
+-                const DWORD identity_error = ego_owned_config::verify_current(state->owned_config_file);
+-                if (identity_error != ERROR_SUCCESS)
++                // The cache lease stays live through the runtime destructor
++                // and all final callbacks.
++                if (!reshade::ini_file::has_memory_cache(state->owned_config_key))
+                 {
+                     state->phase = chain_phase::quarantined;
+                     ++quarantines;
+-                    last_error.store(identity_error);
++                    last_error.store(ERROR_FILE_INVALID);
+                     return;
+                 }
+                 reset_surface_events(*state, false);
+@@ -580,7 +577,7 @@ namespace ego_owned_late_d3d11
+         cookie.release(); // The exactly-once destruction callback owns this cookie.
+         creation.registered = true;
+         notifier.reset(); // Holding this QI reference would keep the chain alive.
+-        const DWORD config_error = reserve_seeded_config(state->owned_config_file);
++        const DWORD config_error = reserve_seeded_config(state->owned_config_key);
+         if (config_error != ERROR_SUCCESS)
+         {
+             state->phase = chain_phase::rejected;
+@@ -595,7 +592,7 @@ namespace ego_owned_late_d3d11
+             creation.finished = true;
+             return state;
+         }
+-        state->owned_config_utf8 = utf8(state->owned_config_file.path);
++        state->owned_config_utf8 = utf8(state->owned_config_key);
+         attempt_manual_creation(*state, chain);
+         creation.finished = true;
+         return state;

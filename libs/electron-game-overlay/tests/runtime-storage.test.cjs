@@ -11,6 +11,7 @@ const test = require('node:test'),
 const {
   stageRuntimePayload,
   pruneRuntimePayloadCache,
+  sdkRuntimeCacheDirectory,
   RUNTIME_PAYLOAD_NAMES: names,
 } = require('../dist/lib/runtime-payload-store.js');
 const storage = require('../dist/lib/runtime-stage-storage.js');
@@ -18,6 +19,7 @@ const {
   ReShadeOverlayLauncher,
   parseReShadeLaunchConfig,
   inspectReShadeRuntimeStorage,
+  clearOldReShadeRuntimeCache,
   pruneReShadeRuntimeStorage,
 } = require('../dist/lib/reshade-launcher.js');
 const {
@@ -119,7 +121,7 @@ function unmapped(directory, runId, retiredAt = new Date().toISOString()) {
     }),
   );
 }
-async function staged(f, label, { high = false, consumer = null } = {}) {
+async function staged(f, label, { high = false, consumer = null, sdkVersion } = {}) {
   const directory = path.join(f.runs, label);
   fs.mkdirSync(directory);
   const runId = marker(directory);
@@ -132,6 +134,8 @@ async function staged(f, label, { high = false, consumer = null } = {}) {
     directory,
     async () => {},
     high,
+    runId,
+    sdkVersion,
   );
   await storage.recordRuntimeStorageArtifacts(directory, runId, result);
   return { directory, runId, result };
@@ -324,6 +328,56 @@ test('version rollover bounds unused verified caches while keeping active and in
   await storage.compactRuntimeStorageRun(held.directory);
   await pruneRuntimePayloadCache(f.runs);
   assert.equal(caches(f).length, 2);
+});
+
+test('public cache clearing removes only strictly older verified SDK versions with no active aliases', async (t) => {
+  const f = fixture(t);
+  const current = require('../package.json').version;
+  const equal = `${current.split('+')[0]}+equivalent`;
+  const cache = sdkRuntimeCacheDirectory(f.runs);
+  const versionDirectory = (version) => path.join(cache, crypto.createHash('sha256').update(version).digest('hex'));
+  const held = await staged(f, 'held-older', { sdkVersion: '0.0.1' });
+  await storage.recordRuntimeStorageAttempt(held.directory, held.runId, {
+    pid: 4242, creationTime100ns: '134387773076910574',
+  });
+  for (const [label, sdkVersion] of [['old', '0.0.2'], ['current', current], ['equal', equal], ['newer', '999.0.0']]) {
+    const run = await staged(f, label, { sdkVersion });
+    unmapped(run.directory, run.runId);
+    await storage.compactRuntimeStorageRun(run.directory);
+  }
+  const currentAgain = await staged(f, 'current-again', { sdkVersion: current });
+  assert.equal(fs.readdirSync(cache).length, 5);
+  assert.equal(
+    fs.statSync(path.join(currentAgain.directory, 'inject.exe')).ino,
+    fs.statSync(path.join(versionDirectory(current), 'inject.exe')).ino,
+  );
+  const foreign = path.join(cache, 'a'.repeat(64));
+  fs.mkdirSync(foreign);
+  fs.writeFileSync(path.join(foreign, 'foreign'), 'preserve');
+  const options = { runsRootDirectory: f.runs };
+  assert.deepEqual(await clearOldReShadeRuntimeCache(options), ['0.0.2']);
+  for (const version of ['0.0.1', current, equal, '999.0.0'])
+    assert.ok(fs.existsSync(versionDirectory(version)));
+  assert.equal(fs.readFileSync(path.join(foreign, 'foreign'), 'utf8'), 'preserve');
+  unmapped(held.directory, held.runId);
+  await storage.compactRuntimeStorageRun(held.directory);
+  assert.deepEqual(await clearOldReShadeRuntimeCache(options), ['0.0.1']);
+  assert.deepEqual(await clearOldReShadeRuntimeCache(options), []);
+});
+
+test('a different native payload cannot replace the same SDK version folder', async (t) => {
+  const f = fixture(t);
+  const sdkVersion = require('../package.json').version;
+  const first = await staged(f, 'first', { sdkVersion });
+  const directory = path.join(sdkRuntimeCacheDirectory(f.runs), crypto.createHash('sha256').update(sdkVersion).digest('hex'));
+  const runtime = path.join(directory, 'ReShade64.dll');
+  const previous = fs.readFileSync(runtime);
+  fs.writeFileSync(path.join(f.source, 'ReShade64.dll'), 'different runtime');
+  f.bind();
+  await assert.rejects(staged(f, 'collision', { sdkVersion }), /cache ownership does not match its content identity/);
+  assert.deepEqual(fs.readFileSync(runtime), previous);
+  assert.deepEqual(fs.readFileSync(path.join(first.directory, 'ReShade64.dll')), previous);
+  assert.equal(fs.readdirSync(sdkRuntimeCacheDirectory(f.runs)).length, 1);
 });
 
 test('concurrent preparations lease snapshots and retain distinct participant identities', async (t) => {
@@ -1097,6 +1151,46 @@ test('public maintenance isolates inaccessible stages throughout compaction, qua
       );
     });
   }
+});
+
+test('write-protected retired metadata is left in place until an authorized sweep', async (t) => {
+  const f = fixture(t);
+  const directory = path.join(f.runs, 'protected-diagnostics');
+  const accessible = path.join(f.runs, 'accessible-diagnostics');
+  const expired = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  for (const run of [directory, accessible]) {
+    fs.mkdirSync(run);
+    unmapped(run, marker(run), expired);
+  }
+  const protectedLeaf = path.join(directory, '.electron-game-overlay-run.json');
+  const before = fs.readFileSync(protectedLeaf);
+  const originalOpen = fsp.open, originalRename = fsp.rename, originalWarn = console.warn;
+  const warnings = [];
+  const renamed = [];
+  fsp.open = async (file, flags, ...args) => {
+    if (file === protectedLeaf && flags === 'r+') {
+      throw Object.assign(new Error('fixture models a mandatory write denial'), { code: 'EPERM' });
+    }
+    return originalOpen(file, flags, ...args);
+  };
+  fsp.rename = async (from, to) => {
+    renamed.push(from);
+    return originalRename(from, to);
+  };
+  console.warn = (value) => warnings.push(String(value));
+  try {
+    await pruneReShadeRuntimeStorage({ config: f.config(), maxRecoveryProbes: 0 });
+    assert.ok(warnings.some((warning) => warning.includes(JSON.stringify(directory))));
+    assert.equal(renamed.includes(directory), false);
+    assert.equal(fs.existsSync(accessible), false);
+    assert.deepEqual(fs.readFileSync(protectedLeaf), before);
+  } finally {
+    fsp.open = originalOpen;
+    fsp.rename = originalRename;
+    console.warn = originalWarn;
+  }
+  await pruneReShadeRuntimeStorage({ config: f.config(), maxRecoveryProbes: 0 });
+  assert.equal(fs.existsSync(directory), false);
 });
 
 test('a denied recovery proof publication preserves that attempt and still recovers its peer', async (t) => {

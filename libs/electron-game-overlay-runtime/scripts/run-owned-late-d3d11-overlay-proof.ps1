@@ -8,6 +8,7 @@ param(
     [string]$ElectronPath,
     [ValidateRange(20000,120000)][int]$LifetimeMs = 30000,
     [switch]$GpuReadback,
+    [switch]$ExpectInMemoryConfiguration,
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
@@ -45,6 +46,10 @@ foreach ($Copy in @(@($Runtime,(Join-Path $Stage $RuntimeLeaf)), @($Addon,(Join-
     if ((Get-FileHash -LiteralPath $Copy[0]).Hash -ne (Get-FileHash -LiteralPath $Copy[1]).Hash) { throw 'Proof staging changed file bytes.' }
 }
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'libs\electron-game-overlay-runtime\config\ReShade.ini') -Destination (Join-Path $Stage 'ReShade.ini')
+if ($GpuReadback) {
+    $ConfigPath = Join-Path $Stage 'ReShade.ini'
+    [IO.File]::WriteAllText($ConfigPath, [IO.File]::ReadAllText($ConfigPath).Replace('Logging=0', 'Logging=1'))
+}
 [IO.File]::WriteAllText((Join-Path $Stage 'electron-game-overlay-owned-runtime-v1.marker'), "ELECTRON_GAME_OVERLAY_OWNED_RUNTIME_STAGE_V1`n", [Text.Encoding]::ASCII)
 . (Join-Path $PSScriptRoot 'owned-stage-marker.ps1')
 . (Join-Path $PSScriptRoot 'late-d3d11-child-environment.ps1')
@@ -196,6 +201,15 @@ function Assert-RedPixel([IntPtr]$Window,[string]$Name) {
     $Proof[$Name]=@{ clientX=60; clientY=80; red=$R; green=$G; blue=$B; expected='#c62828'; source='foreground desktop GetPixel'; tickMs=[Environment]::TickCount64; utc=[DateTime]::UtcNow.ToString('O'); hwnd=$Window.ToInt64(); targetPid=$TargetProcess.Id }
     if ([Math]::Abs($R-198) -gt 8 -or [Math]::Abs($G-40) -gt 8 -or [Math]::Abs($B-40) -gt 8) { throw "Transported red pixel missing at $Name`: R=$R G=$G B=$B" }
 }
+function Assert-OwnedConfigurationInventory([string]$Phase) {
+    if (-not $ExpectInMemoryConfiguration) { return }
+    $Unexpected = @(Get-ChildItem -LiteralPath $Stage -File -Force | Where-Object {
+        $_.Name -match '^ego-(late|memory)-.*\.ini$' -or
+        (-not $GpuReadback -and $_.Name -match '^ReShade\.log\d*$')
+    })
+    $Proof["ownedConfigurationInventory$Phase"] = @($Unexpected | ForEach-Object Name)
+    if ($Unexpected.Count -ne 0) { throw "Unexpected owned configuration or ReShade log on disk during $Phase." }
+}
 try {
     $ProducerChild=Start-ProofChild $Electron @($SceneProducer,"--sdk-dist=$Sdk","--stage-directory=$Stage","--evidence-directory=$ProducerEvidence",'--no-sandbox',"--user-data-dir=$(Join-Path $ProducerEvidence 'profile')") $ProducerEvidence 'producer' $false
     $Producer=$ProducerChild.Process
@@ -212,6 +226,7 @@ try {
     Send-SceneCommand 'focus'; Send-SceneCommand 'intercept'
     Wait-Proof { param($State,$HostState) $State -and $State.intercepting -and $State.focusedWindowId -eq $State.window.nativeId } 10 'Native focus/interception did not acknowledge.'
     Assert-RedPixel $Window 'pixelBeforeResize'
+    Assert-OwnedConfigurationInventory 'BeforeResize'
     $NativeBeforeInput=Read-SharedJson $HostReport
     [EgoOwnedLateD3D11ProofInput]::Key($Window,$TargetProcess.Id,0x41); [EgoOwnedLateD3D11ProofInput]::Key($Window,$TargetProcess.Id,0x5A)
     Wait-Proof { param($State,$HostState) $State -and $State.window.value -eq 'az' -and $State.window.keyDowns -ge 2 } 10 'Real foreground virtual keys did not reach the transported DOM input.'
@@ -229,6 +244,7 @@ try {
     Send-SceneCommand 'clear'; Send-SceneCommand 'focus'; Send-SceneCommand 'intercept'
     Wait-Proof { param($State,$HostState) $State -and $State.intercepting } 10 'Post-resize interception did not acknowledge.'
     Assert-RedPixel $Window 'pixelAfterResize'
+    Assert-OwnedConfigurationInventory 'AfterResize'
     [EgoOwnedLateD3D11ProofInput]::Key($Window,$TargetProcess.Id,0x42)
     Wait-Proof { param($State,$HostState) $State -and $State.window.value -eq 'b' } 10 'Post-resize key did not reach the transported DOM.'
     $AfterResize=Read-SharedJson $StateFile
@@ -242,6 +258,7 @@ try {
     if (-not $TargetProcess.WaitForExit(90000)) { throw 'Owned lifecycle host did not finish.' }
     $FinalHost=Read-SharedJson $HostReport
     if ($TargetProcess.ExitCode -ne 0 -or $FinalHost.status -ne 'passed') { throw 'Owned runtime lifecycle did not pass clean shutdown/state restoration.' }
+    Assert-OwnedConfigurationInventory 'AfterShutdown'
     if (-not $FinalHost.nativeSwapchainDiscoveryProven -or
         $FinalHost.graphicsPointersSuppliedToBootstrap -ne $false) { throw 'The production owned bootstrap did not establish native swapchain discovery without pointer handoff.' }
     if ($FinalHost.bootstrapAbi -ne 1 -or

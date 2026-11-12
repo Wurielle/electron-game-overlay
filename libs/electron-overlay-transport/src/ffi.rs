@@ -38,6 +38,8 @@ pub const EGO_STATUS_NOT_CONNECTED: i32 = -9;
 
 pub const EGO_TRANSPORT_DRAIN_MAX_TIMEOUT_MS: u32 = 1_000;
 pub const EGO_TRANSPORT_DIRECTORY_MAX_UTF8_BYTES: u64 = 4 * 32_767;
+#[cfg(feature = "private-memory-route")]
+pub const EGO_PRIVATE_ROUTE_VERSION: u32 = 2;
 pub const EGO_INPUT_CAPABILITY_COPIED_WM_INPUT: u64 = crate::INPUT_CAPABILITY_COPIED_WM_INPUT;
 pub const EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER: u64 =
     crate::INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER;
@@ -622,6 +624,89 @@ pub unsafe extern "C" fn ego_transport_create_for_directory_with_input_capabilit
         Some(input_capabilities),
         out_transport,
     )
+}
+
+/// Caller-owned, fixed-layout loopback route for one exact target incarnation.
+#[cfg(feature = "private-memory-route")]
+#[repr(C)]
+pub struct EgoPrivateRouteV2 {
+    pub struct_size: u32,
+    pub version: u32,
+    pub target_creation_time_100ns: u64,
+    pub producer_creation_time_100ns: u64,
+    pub input_capabilities: u64,
+    pub producer_pid: u32,
+    pub target_pid: u32,
+    pub port: u16,
+    pub reserved: u16,
+    pub reserved2: u32,
+    pub token_ascii: [u8; 64],
+}
+
+#[cfg(feature = "private-memory-route")]
+const _: () = {
+    assert!(std::mem::size_of::<EgoPrivateRouteV2>() == 112);
+    assert!(std::mem::offset_of!(EgoPrivateRouteV2, token_ascii) == 48);
+};
+
+/// Starts a private bridge without file discovery or a startup log. The route
+/// is copied before returning. Reconnect uses only this exact authorized route.
+///
+/// # Safety
+/// `route` must point to a readable aligned route record. `out_transport`
+/// must be writable. Destroy a successful handle exactly once.
+#[cfg(feature = "private-memory-route")]
+#[no_mangle]
+pub unsafe extern "C" fn ego_transport_create_for_private_route_v2(
+    abi_version: u32,
+    route: *const EgoPrivateRouteV2,
+    out_transport: *mut *mut EgoTransport,
+) -> i32 {
+    ffi_call(|| {
+        let out_transport = out_transport.as_mut().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "out_transport pointer is null")
+        })?;
+        *out_transport = ptr::null_mut();
+        if abi_version != EGO_ABI_VERSION {
+            return Err(FfiError::new(
+                EGO_STATUS_ABI_MISMATCH,
+                "transport ABI mismatch",
+            ));
+        }
+        let route = route.as_ref().ok_or_else(|| {
+            FfiError::new(EGO_STATUS_INVALID_ARGUMENT, "private route pointer is null")
+        })?;
+        if route.struct_size as usize != std::mem::size_of::<EgoPrivateRouteV2>()
+            || route.version != EGO_PRIVATE_ROUTE_VERSION
+            || route.reserved != 0
+            || route.reserved2 != 0
+        {
+            return Err(FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "invalid private route record",
+            ));
+        }
+        let token = std::str::from_utf8(&route.token_ascii).map_err(|_| {
+            FfiError::new(
+                EGO_STATUS_INVALID_ARGUMENT,
+                "invalid private route token encoding",
+            )
+        })?;
+        let bridge = ElectronFrameBridge::spawn_for_route(
+            crate::private_route::ProducerIdentity {
+                pid: route.producer_pid,
+                creation_time: route.producer_creation_time_100ns,
+            },
+            route.target_pid,
+            route.target_creation_time_100ns,
+            route.port,
+            token.to_owned(),
+            route.input_capabilities,
+        )
+        .map_err(|error| FfiError::new(EGO_STATUS_INITIALIZATION_FAILED, error.to_string()))?;
+        *out_transport = Box::into_raw(Box::new(EgoTransport { bridge }));
+        Ok(())
+    })
 }
 
 unsafe fn create_private_transport(
@@ -1782,30 +1867,45 @@ mod tests {
         use std::time::Instant;
 
         const CHILD_FLAG: &str = "EGO_TEST_PRIVATE_TRANSPORT_CHILD";
-        if std::env::var_os(CHILD_FLAG).is_none() {
+        let mode = std::env::var(CHILD_FLAG);
+        if mode.is_err() {
             // Run with a conflicting process-wide route in a separate process;
             // other unit tests never observe temporary global environment state.
-            let result = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "ffi::tests::private_directory_transports_keep_tokens_scenes_and_disconnects_isolated",
-                    "--nocapture",
-                ])
-                .env(CHILD_FLAG, "1")
-                .env(
-                    "ELECTRON_GAME_OVERLAY_RUN_DIRECTORY",
-                    r"C:\foreign-process-wide-route-not-used-by-private-members",
-                )
-                .output()
-                .unwrap();
-            assert!(
-                result.status.success(),
-                "private-route child failed:\n{}\n{}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr),
-            );
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root =
+                std::env::temp_dir().join(format!("ego-private-{}-{nonce}", std::process::id()));
+            fs::create_dir(&root).unwrap();
+            let modes: &[&str] = if cfg!(feature = "private-memory-route") {
+                &["directory", "memory"]
+            } else {
+                &["directory"]
+            };
+            for mode in modes {
+                let result = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "ffi::tests::private_directory_transports_keep_tokens_scenes_and_disconnects_isolated",
+                        "--nocapture",
+                    ])
+                    .env(CHILD_FLAG, mode)
+                    .env("ELECTRON_GAME_OVERLAY_RUN_DIRECTORY", &root)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "private {mode} child failed:\n{}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr),
+                );
+                assert!(fs::read_dir(&root).unwrap().next().is_none());
+            }
+            fs::remove_dir(root).unwrap();
             return;
         }
+        let memory_route = mode.unwrap() == "memory";
 
         struct OwnedTransport(*mut EgoTransport);
         impl Drop for OwnedTransport {
@@ -1868,17 +1968,17 @@ mod tests {
             }
         }
 
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir()
-            .join(format!("ego-private-native-{}-{nonce}", std::process::id(),));
+        let sentinel =
+            PathBuf::from(std::env::var_os("ELECTRON_GAME_OVERLAY_RUN_DIRECTORY").unwrap());
+        let root = sentinel.join("private-members");
         let a = root.join("a");
         let b = root.join("b");
         let listener_a = TcpListener::bind("127.0.0.1:0").unwrap();
         let listener_b = TcpListener::bind("127.0.0.1:0").unwrap();
         for (directory, listener, token) in [(&a, &listener_a, "a"), (&b, &listener_b, "b")] {
+            if memory_route {
+                continue;
+            }
             fs::create_dir_all(directory).unwrap();
             fs::write(
                 directory.join("electron-overlay-transport-v1.targeted"),
@@ -1896,25 +1996,84 @@ mod tests {
             )
             .unwrap();
         }
-        let create = |directory: &std::path::Path| {
-            let mut bytes = directory.to_str().unwrap().as_bytes().to_vec();
+        let create = |directory: &std::path::Path, listener: &TcpListener, token: u8| {
             let mut transport = ptr::null_mut();
-            assert_eq!(
-                unsafe {
-                    ego_transport_create_for_directory(
-                        EGO_ABI_VERSION,
-                        bytes.as_ptr(),
-                        bytes.len() as u64,
-                        &mut transport,
-                    )
-                },
-                EGO_STATUS_OK,
-            );
-            bytes.fill(b'?');
+            #[cfg(not(feature = "private-memory-route"))]
+            let _ = (listener, token);
+            if memory_route {
+                #[cfg(not(feature = "private-memory-route"))]
+                unreachable!("memory route fixture requires the feature");
+                #[cfg(feature = "private-memory-route")]
+                {
+                    let creation_time = crate::electron_frame::process_creation_time().unwrap();
+                    let mut route = EgoPrivateRouteV2 {
+                        struct_size: std::mem::size_of::<EgoPrivateRouteV2>() as u32,
+                        version: EGO_PRIVATE_ROUTE_VERSION,
+                        target_creation_time_100ns: creation_time + 1,
+                        producer_creation_time_100ns: creation_time + 1,
+                        input_capabilities: EGO_INPUT_CAPABILITY_COPIED_WM_INPUT,
+                        producer_pid: std::process::id(),
+                        target_pid: std::process::id(),
+                        port: listener.local_addr().unwrap().port(),
+                        reserved: 0,
+                        reserved2: 0,
+                        token_ascii: [token; 64],
+                    };
+                    assert_eq!(
+                        unsafe {
+                            ego_transport_create_for_private_route_v2(
+                                EGO_ABI_VERSION,
+                                &route,
+                                &mut transport,
+                            )
+                        },
+                        EGO_STATUS_INITIALIZATION_FAILED
+                    );
+                    assert!(transport.is_null());
+                    route.target_creation_time_100ns = creation_time;
+                    assert_eq!(
+                        unsafe {
+                            ego_transport_create_for_private_route_v2(
+                                EGO_ABI_VERSION,
+                                &route,
+                                &mut transport,
+                            )
+                        },
+                        EGO_STATUS_INITIALIZATION_FAILED
+                    );
+                    assert!(transport.is_null());
+                    route.producer_creation_time_100ns = creation_time;
+                    assert_eq!(
+                        unsafe {
+                            ego_transport_create_for_private_route_v2(
+                                EGO_ABI_VERSION,
+                                &route,
+                                &mut transport,
+                            )
+                        },
+                        EGO_STATUS_OK
+                    );
+                    route.token_ascii.fill(b'?');
+                }
+            } else {
+                let mut bytes = directory.to_str().unwrap().as_bytes().to_vec();
+                assert_eq!(
+                    unsafe {
+                        ego_transport_create_for_directory(
+                            EGO_ABI_VERSION,
+                            bytes.as_ptr(),
+                            bytes.len() as u64,
+                            &mut transport,
+                        )
+                    },
+                    EGO_STATUS_OK
+                );
+                bytes.fill(b'?');
+            }
             OwnedTransport(transport)
         };
-        let transport_a = create(&a);
-        let transport_b = create(&b);
+        let transport_a = create(&a, &listener_a, b'a');
+        let transport_b = create(&b, &listener_b, b'b');
         let mut peer_a = accept(&listener_a);
         let mut peer_b = accept(&listener_b);
         assert_eq!(hello(&mut peer_a)["token"], "a".repeat(64));
@@ -2175,6 +2334,17 @@ mod tests {
             })
         );
 
+        if memory_route {
+            peer_a.shutdown(Shutdown::Both).unwrap();
+            peer_a = accept(&listener_a);
+            let reconnect = hello(&mut peer_a);
+            assert_eq!(reconnect["token"], "a".repeat(64));
+            assert!(reconnect["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "copied-wm-input-v1"));
+        }
         drop(listener_a);
         peer_a.shutdown(Shutdown::Both).unwrap();
         wait_for(|| unsafe { (*transport_a.0).bridge.scene().windows.is_empty() });
@@ -2193,7 +2363,11 @@ mod tests {
         );
         drop(transport_a);
         drop(transport_b);
-        fs::remove_dir_all(root).unwrap();
+        if memory_route {
+            assert!(!root.exists());
+        } else {
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn valid_target_surface() -> EgoTargetSurfaceV1 {

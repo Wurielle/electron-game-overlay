@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'process-environment.ps1')
-$ExpectedAddonBuildId = "CCE20935ADD44EF6A5A7973014B2E07F"
+$ExpectedAddonBuildId = "3A0626A7F5C84324A83A20F4D9D0B8B1"
 
 # Reuse the production client gate's window, input-oracle, coordinate, and
 # process-cleanup helpers without running that gate.

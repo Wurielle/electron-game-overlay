@@ -17,6 +17,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import * as path from 'node:path';
+import { compareVersions, parseVersion } from './sdk-version.js';
 
 const markerName = '.electron-game-overlay-payload.json';
 const kind = 'electron-game-overlay-payload-v2';
@@ -44,8 +45,42 @@ export const RUNTIME_PAYLOAD_LEASE_NAME =
 export type RuntimePayloadStage = Readonly<{
   artifacts: readonly (readonly [string, string])[];
   payloadId?: string;
+  cacheDirectory?: string;
 }>;
 const maxUnusedPayloadVersions = 2;
+
+export function sdkRuntimeCacheDirectory(runsRoot: string): string {
+  return `${runsRoot}.sdk-versions-v1`;
+}
+
+async function runtimePayloadHashes(sources: ReadonlyMap<string, string>) {
+  if (sources.size !== RUNTIME_PAYLOAD_NAMES.length || RUNTIME_PAYLOAD_NAMES.some(name => !sources.has(name))) {
+    throw new Error('the runtime payload must contain exactly the fixed thirteen artifacts');
+  }
+  return Promise.all(RUNTIME_PAYLOAD_NAMES.map(async name => [name, digest(await readFile(sources.get(name)!))] as const));
+}
+
+export async function privateCacheVersion(sources: ReadonlyMap<string, string>, sdkVersion: string) {
+  if (!parseVersion(sdkVersion)) throw new Error('Invalid SDK version for the runtime cache');
+  const hashes = await runtimePayloadHashes(sources);
+  const identity = JSON.stringify(hashes);
+  return {
+    key: sdkVersionKey(sdkVersion),
+    marker: JSON.stringify({ kind, payloadId: digest(Buffer.from(identity)), identity, sdkVersion }),
+    hashes: new Map(hashes.map(([name, hash]) => [name, hash.toUpperCase()])),
+  };
+}
+
+/** Publishes or verifies one immutable version without creating a session directory. */
+export async function prepareSdkRuntimeCache(
+  sources: ReadonlyMap<string, string>,
+  runsRoot: string,
+  sdkVersion: string,
+  validate: (files: ReadonlyMap<string, string>) => Promise<unknown>,
+): Promise<string> {
+  const snapshot = await stageRuntimePayload(sources, runsRoot, undefined, validate, false, undefined, sdkVersion);
+  return snapshot.cacheDirectory!;
+}
 
 /** Cache snapshots, never package files. The INI and add-on image identities
  * are private per session. Windows merges hard-linked DLLs into one HMODULE,
@@ -57,25 +92,15 @@ const maxUnusedPayloadVersions = 2;
 export async function stageRuntimePayload(
   sources: ReadonlyMap<string, string>,
   runsRoot: string,
-  sessionDirectory: string,
+  sessionDirectory: string | undefined,
   validate: (files: ReadonlyMap<string, string>) => Promise<unknown>,
   privateHighCopies = false,
   runId = randomUUID(),
+  sdkVersion?: string,
 ): Promise<RuntimePayloadStage> {
-  if (
-    sources.size !== RUNTIME_PAYLOAD_NAMES.length ||
-    [...sources.keys()].some((name) => !RUNTIME_PAYLOAD_NAMES.includes(name))
-  ) {
-    throw new Error(
-      'the runtime payload must contain exactly the fixed thirteen artifacts',
-    );
-  }
-  const hashes = await Promise.all(
-    RUNTIME_PAYLOAD_NAMES.map(
-      async (name) =>
-        [name, digest(await readFile(sources.get(name)!))] as const,
-    ),
-  );
+  if (sessionDirectory === undefined && (privateHighCopies || sdkVersion === undefined))
+    throw new Error('Direct cache publication requires a versioned ordinary payload');
+  const hashes = await runtimePayloadHashes(sources);
   if (privateHighCopies) {
     // The native helper reserved these explicit-owner high files at birth.
     // Do not publish or read a redundant medium snapshot for this lane.
@@ -85,7 +110,7 @@ export async function stageRuntimePayload(
         const bytes = await readFile(sources.get(name)!);
         if (digest(bytes) !== expected)
           throw new Error(`the private payload changed while staging ${name}`);
-        const destination = path.join(sessionDirectory, name);
+        const destination = path.join(sessionDirectory!, name);
         await assertOrdinaryFile(destination);
         const target = await open(destination, 'r+');
         try {
@@ -102,11 +127,18 @@ export async function stageRuntimePayload(
   }
   const identity = JSON.stringify(hashes);
   const payloadId = digest(Buffer.from(identity));
+  if (sdkVersion !== undefined && !parseVersion(sdkVersion))
+    throw new Error('Invalid SDK version for the runtime cache');
+  const version = sdkVersion === undefined ? {} : { sdkVersion };
   // A sibling keeps the cache outside session retention and on the same volume.
-  const store = `${runsRoot}.payloads-v2`;
+  const store =
+    sdkVersion === undefined ? `${runsRoot}.payloads-v2` : sdkRuntimeCacheDirectory(runsRoot);
   await mkdir(store, { recursive: true });
   await assertOrdinaryDirectory(store);
-  const payload = path.join(store, payloadId);
+  const payload = path.join(
+    store,
+    sdkVersion === undefined ? payloadId : sdkVersionKey(sdkVersion),
+  );
   const filesAt = (directory: string) =>
     new Map(
       [...sources.keys()].map((name) => [name, path.join(directory, name)]),
@@ -119,6 +151,7 @@ export async function stageRuntimePayload(
     if (
       marker.kind !== kind ||
       marker.payloadId !== payloadId ||
+      marker.sdkVersion !== sdkVersion ||
       marker.identity !== identity
     ) {
       throw new Error(
@@ -144,31 +177,30 @@ export async function stageRuntimePayload(
     } catch (error) {
       if (!hasCode(error, 'ENOENT')) throw error;
       const temporary = path.join(store, `.publishing-${randomUUID()}`);
-      const publisherLease = path.join(
-        sessionDirectory,
-        RUNTIME_PUBLISHING_LEASE_NAME,
-      );
+      const publisherLease = sessionDirectory === undefined ? undefined : path.join(
+        sessionDirectory, RUNTIME_PUBLISHING_LEASE_NAME);
       let leaseCreated = false,
         published = false;
       try {
         // The receipt is born as a hard link to the stage's lease. There is
         // never an unleased partial publication while its producer is writing.
-        await writeFile(
+        if (publisherLease !== undefined) await writeFile(
           publisherLease,
           JSON.stringify({
             schemaVersion: 1,
             kind: 'electron-game-overlay-publishing-v1',
             payloadId,
             identity,
+            ...version,
             runId,
             temporaryName: path.basename(temporary),
-            sessionDirectoryName: path.basename(sessionDirectory),
+            sessionDirectoryName: path.basename(sessionDirectory!),
           }),
           { flag: 'wx' },
         );
-        leaseCreated = true;
+        leaseCreated = publisherLease !== undefined;
         await mkdir(temporary);
-        await link(publisherLease, path.join(temporary, publicationMarkerName));
+        if (publisherLease !== undefined) await link(publisherLease, path.join(temporary, publicationMarkerName));
         // Wait for all copies before cleanup, including failures.
         await settled(
           [...sources].map(async ([name, source]) => {
@@ -184,7 +216,7 @@ export async function stageRuntimePayload(
         await validate(filesAt(temporary));
         await writeFile(
           path.join(temporary, markerName),
-          JSON.stringify({ kind, payloadId, identity }),
+          JSON.stringify({ kind, payloadId, identity, ...version }),
           { flag: 'wx' },
         );
         // Read-only is also enforced by Windows for ordinary write opens. This is
@@ -209,16 +241,21 @@ export async function stageRuntimePayload(
         }
       } finally {
         try {
-          if (published)
+          if (published && publisherLease !== undefined)
             await unlink(path.join(payload, publicationMarkerName));
           // Only this call's unpublished UUID directory can be removed here.
           await rm(temporary, { recursive: true, force: true });
         } finally {
-          if (leaseCreated) await unlink(publisherLease);
+          if (leaseCreated) await unlink(publisherLease!);
         }
       }
     }
   };
+  if (sessionDirectory === undefined) {
+    await publish();
+    await verify();
+    return Object.freeze({ artifacts: hashes, payloadId, cacheDirectory: payload });
+  }
   // A marker hard link leases a snapshot while its individual stage links are
   // being established. It survives a producer crash; collection never treats
   // app shutdown or a timeout as permission to remove that lease.
@@ -276,16 +313,36 @@ export async function pruneRuntimePayloadCache(
   runsRoot: string,
   keepPayloadId?: string,
 ): Promise<void> {
-  const store = `${runsRoot}.payloads-v2`;
+  await collectRuntimePayloads(`${runsRoot}.payloads-v2`, keepPayloadId);
+}
+
+/** @internal Collects only strictly older, unaliased SDK version snapshots. */
+export async function clearOlderSdkRuntimePayloads(
+  runsRoot: string,
+  currentVersion: string,
+): Promise<readonly string[]> {
+  if (!parseVersion(currentVersion)) throw new Error('Invalid running SDK version');
+  return collectRuntimePayloads(sdkRuntimeCacheDirectory(runsRoot), undefined, currentVersion);
+}
+
+async function collectRuntimePayloads(
+  store: string,
+  keepPayloadId?: string,
+  currentVersion?: string,
+): Promise<readonly string[]> {
+  const versioned = currentVersion !== undefined;
+  const removed: string[] = [];
   try {
     await assertOrdinaryDirectory(store);
   } catch (error) {
-    if (hasCode(error, 'ENOENT')) return;
+    if (hasCode(error, 'ENOENT')) return Object.freeze(removed);
     throw error;
   }
   const candidates: Array<{
     directory: string;
     id: string;
+    payloadId: string;
+    sdkVersion?: string;
     time: number;
     quarantined: boolean;
   }> = [];
@@ -295,7 +352,7 @@ export async function pruneRuntimePayloadCache(
       !entry.isSymbolicLink() &&
       /^\.publishing-[a-f0-9-]{36}$/u.test(entry.name)
     ) {
-      await collectUnpublishedSnapshot(path.join(store, entry.name));
+      await collectUnpublishedSnapshot(path.join(store, entry.name), currentVersion);
       continue;
     }
     const match = /^([a-f0-9]{64})$/u.exec(entry.name),
@@ -307,14 +364,25 @@ export async function pruneRuntimePayloadCache(
     try {
       if (match) {
         const publisher = await readUnleasedPublisher(directory);
-        if (publisher?.payloadId === id)
+        if (publisher && (
+          currentVersion === undefined
+            ? publisher.sdkVersion === undefined && publisher.payloadId === id
+            : publisher.sdkVersion !== undefined &&
+              sdkVersionKey(publisher.sdkVersion) === id &&
+              compareVersions(publisher.sdkVersion, currentVersion) < 0
+        ))
           await unlink(path.join(directory, publicationMarkerName));
       }
-      const state = await inspectSnapshot(directory, id, false);
-      if (state.unused)
+      const state = await inspectSnapshot(directory, id, false, versioned);
+      if (state.unused && (
+        currentVersion === undefined ||
+        (state.sdkVersion !== undefined && compareVersions(state.sdkVersion, currentVersion) < 0)
+      ))
         candidates.push({
           directory,
           id,
+          payloadId: state.payloadId,
+          sdkVersion: state.sdkVersion,
           time: state.time,
           quarantined: !!pending,
         });
@@ -330,7 +398,7 @@ export async function pruneRuntimePayloadCache(
   );
   let retained = 0;
   for (const candidate of candidates) {
-    if (!candidate.quarantined && retained++ < maxUnusedPayloadVersions)
+    if (!versioned && !candidate.quarantined && retained++ < maxUnusedPayloadVersions)
       continue;
     const quarantine = candidate.quarantined
       ? candidate.directory
@@ -338,8 +406,11 @@ export async function pruneRuntimePayloadCache(
     let collectionStarted = candidate.quarantined;
     try {
       if (!candidate.quarantined) await rename(candidate.directory, quarantine);
-      const state = await inspectSnapshot(quarantine, candidate.id, true);
-      if (!state.unused) {
+      const state = await inspectSnapshot(quarantine, candidate.id, true, versioned);
+      if (
+        !state.unused || state.payloadId !== candidate.payloadId ||
+        state.sdkVersion !== candidate.sdkVersion
+      ) {
         if (!candidate.quarantined)
           await rename(quarantine, candidate.directory).catch(() => undefined);
         continue;
@@ -350,7 +421,8 @@ export async function pruneRuntimePayloadCache(
           collectionMarker,
           JSON.stringify({
             kind: 'electron-game-overlay-payload-collection-v1',
-            payloadId: candidate.id,
+            payloadId: state.payloadId,
+            ...(state.sdkVersion === undefined ? {} : { sdkVersion: state.sdkVersion }),
             identity: state.identity,
             directoryName: path.basename(quarantine),
           }),
@@ -372,18 +444,20 @@ export async function pruneRuntimePayloadCache(
       }
       await unlink(collectionMarker);
       await rmdir(quarantine);
+      if (state.sdkVersion !== undefined) removed.push(state.sdkVersion);
     } catch {
       if (!collectionStarted && !candidate.quarantined)
         await rename(quarantine, candidate.directory).catch(() => undefined);
       // Contention, foreign entries, aliases and denied access retain storage.
     }
   }
+  return Object.freeze(removed.sort(compareVersions));
 }
 
 async function readUnleasedPublisher(
   directory: string,
 ): Promise<
-  { payloadId: string; identity: string; temporaryName: string } | undefined
+  { payloadId: string; identity: string; temporaryName: string; sdkVersion?: string } | undefined
 > {
   const file = path.join(directory, publicationMarkerName);
   try {
@@ -398,6 +472,7 @@ async function readUnleasedPublisher(
       !/^[a-f0-9]{64}$/u.test(record.payloadId) ||
       typeof record.identity !== 'string' ||
       digest(Buffer.from(record.identity)) !== record.payloadId ||
+      (record.sdkVersion !== undefined && !parseVersion(record.sdkVersion)) ||
       typeof record.runId !== 'string' ||
       !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(
         record.runId,
@@ -430,11 +505,18 @@ async function readUnleasedPublisher(
   }
 }
 
-async function collectUnpublishedSnapshot(directory: string): Promise<void> {
+async function collectUnpublishedSnapshot(
+  directory: string,
+  currentVersion?: string,
+): Promise<void> {
   try {
     await assertOrdinaryDirectory(directory);
     const publisher = await readUnleasedPublisher(directory);
     if (!publisher || publisher.temporaryName !== path.basename(directory))
+      return;
+    if (currentVersion === undefined
+      ? publisher.sdkVersion !== undefined
+      : publisher.sdkVersion === undefined || compareVersions(publisher.sdkVersion, currentVersion) >= 0)
       return;
     const names = await readdir(directory),
       allowed = [...RUNTIME_PAYLOAD_NAMES, markerName, publicationMarkerName];
@@ -464,7 +546,14 @@ async function inspectSnapshot(
   directory: string,
   id: string,
   verifyBytes: boolean,
-): Promise<{ unused: boolean; time: number; identity: string }> {
+  versioned: boolean,
+): Promise<{
+  unused: boolean;
+  time: number;
+  identity: string;
+  payloadId: string;
+  sdkVersion?: string;
+}> {
   await assertOrdinaryDirectory(directory);
   const names = await readdir(directory);
   if (
@@ -488,9 +577,11 @@ async function inspectSnapshot(
   if (
     record.kind !==
       (partial ? 'electron-game-overlay-payload-collection-v1' : kind) ||
-    record.payloadId !== id ||
     typeof record.identity !== 'string' ||
-    digest(Buffer.from(record.identity)) !== id ||
+    digest(Buffer.from(record.identity)) !== record.payloadId ||
+    (versioned
+      ? !parseVersion(record.sdkVersion) || sdkVersionKey(record.sdkVersion) !== id
+      : record.sdkVersion !== undefined || record.payloadId !== id) ||
     (partial &&
       (record.directoryName !== path.basename(directory) ||
         !path.basename(directory).startsWith(`.collecting-${id}-`)))
@@ -525,7 +616,13 @@ async function inspectSnapshot(
     if (verifyBytes && digest(await readFile(file)) !== pair[1])
       throw new Error('changed snapshot artifact');
   }
-  return { unused, time: info.mtimeMs, identity: record.identity };
+  return {
+    unused,
+    time: info.mtimeMs,
+    identity: record.identity,
+    payloadId: record.payloadId,
+    sdkVersion: record.sdkVersion,
+  };
 }
 
 async function settled(work: Promise<unknown>[]): Promise<void> {
@@ -538,6 +635,10 @@ async function settled(work: Promise<unknown>[]): Promise<void> {
 
 function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function sdkVersionKey(version: string): string {
+  return digest(Buffer.from(version, 'utf8'));
 }
 
 function hasCode(error: unknown, code: string): boolean {
