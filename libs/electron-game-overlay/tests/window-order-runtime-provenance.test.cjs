@@ -28,14 +28,14 @@ test('order-capable runtime advances generation without changing frozen v1 defau
 
 test('changed mapped runtime has a fresh exact addon ID across injector and package pins', () => {
   const cmake = read(`${runtimeRoot}/CMakeLists.txt`);
-  const canonicalId = cmake.match(/"([A-F0-9]{32})"/u)?.[1];
+  const canonicalId = cmake.match(/set\(ELECTRON_GAME_OVERLAY_MAPPED_ADDON_BUILD_ID "([A-F0-9]{32})"\)/u)?.[1];
   assert.match(canonicalId, /^[A-F0-9]{32}$/u);
   assert.notEqual(canonicalId, previousAddonId, 'mapped runtime changes require a new addon build ID');
   const mirrors = [
     `${runtimeRoot}/scripts/build.ps1`,
     `${runtimeRoot}/scripts/run-official-reshade-addon-preflight-gate.ps1`,
     `${runtimeRoot}/scripts/run-client-sdk-process-start-injection-gate.ps1`,
-    `${runtimeRoot}/patches/reshade-injector-process-policy.patch`,
+    `${runtimeRoot}/patches/reshade-injector-cache-preload.patch`,
     'libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1',
     'libs/electron-game-overlay/src/lib/reshade-launcher.ts',
   ];
@@ -45,6 +45,7 @@ test('changed mapped runtime has a fresh exact addon ID across injector and pack
     assert.ok(source.includes(canonicalId), `${relative} must use the canonical exact addon ID`);
     assert.equal(source.includes(previousAddonId), false, `${relative} must reject the superseded addon ID`);
   }
+  assert.match(read(`${runtimeRoot}/scripts/stage-reshade-injector-source.ps1`), /reshade-injector-cache-preload\.patch/u);
 });
 
 test('runtime builder and SDK staging advertise the current source generation but retain target transport one', () => {

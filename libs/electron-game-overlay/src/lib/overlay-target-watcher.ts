@@ -435,6 +435,18 @@ export class OverlayTargetWatcher {
     this.exited.clear();
   }
 
+  /** Stops discovery immediately and awaits bounded cleanup of owned launchers.
+   * Call before exiting Electron to give unused native watchers time to drain. */
+  public async disposeAsync(): Promise<void> {
+    this.dispose();
+    const launchers = new Set([
+      this.spare,
+      ...this.slots.map((slot) => slot.launcher),
+      ...Array.from(this.attempts.values(), (target) => target.launcher),
+    ]);
+    await Promise.all(Array.from(launchers, (launcher) => launcher?.disposeAsync()));
+  }
+
   private async start(): Promise<void> {
     let discoveryBlocked = false;
     try {

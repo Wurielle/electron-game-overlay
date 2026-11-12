@@ -1,5 +1,7 @@
 import type {
   NativeRuntimeProviderMetadata,
+  NativeMemoryRoute,
+  NativeMemoryTarget,
   NativeTargetAuthorization,
   NativeTargetAuthorizationDisposition,
   NativeTargetConnection,
@@ -40,6 +42,8 @@ type GlobalTargetAuthorizer = (discoveryPath?: string) => Promise<Disposable>;
 
 /** @internal */
 export const targetAuthorizers = new WeakMap<object, TargetAuthorizer>();
+/** @internal File-free target authorization for the cache-backed native lane. */
+export const memoryTargetAuthorizers = new WeakMap<object, (target: NativeMemoryTarget, signal: AbortSignal) => Promise<NativeMemoryRoute>>();
 /** @internal Keeps host identity queries outside the Electron-free transport. */
 export const targetIdentityRequirements = new WeakMap<object, boolean>();
 /** @internal */

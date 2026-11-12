@@ -84,9 +84,12 @@ const launcher = new ReShadeOverlayLauncher(createReShadeLaunchConfig({
 Create this configuration after registration. It validates the calling app's
 exact native payload. Each new host reads the current registered inventory,
 including installations or removals made while the supplying app was running.
-Its private copied INI points `AddonPath` at the shared directory. Session
-configuration, transport and logs still have private run directories; registered
-add-ons stay in the shared directory. Packaged templates remain unchanged.
+Generation 44 sends the shared `AddonPath` and retired-filename disable list in
+the in-memory startup configuration for managed ordinary attachment. The
+registered files stay in the shared directory and the version cache retains its
+sealed template. The route is private and memory-backed. Explicit logging uses
+the logs-only directory. Earlier runtimes provide the same configuration through
+their private staged INI.
 
 Generation 23 permits the stable shared directory while retaining native
 validation of the owned host, canonical paths, reparse-point rejection and the
@@ -149,7 +152,8 @@ elevated targets.
 
 Generation 27 preserves that shared-preload restriction while supporting an
 elevated consumer through its [private elevated lane](elevated-consumers.md).
-It keeps the app elevated, leaves registration unchanged, and stages only the
-calling app's own sealed engine with `AddonPath=.`. A high same-user target may
-use that private engine; the shared registered inventory is not scanned or
-activated by this lane.
+It keeps the app elevated, leaves registration unchanged, and uses only the
+calling app's own sealed engine with `AddonPath=.`. Generation 43 provides
+that engine through the protected cache for managed attachment. A high
+same-user target may use the private engine. Shared registration is used by
+the ordinary lane.

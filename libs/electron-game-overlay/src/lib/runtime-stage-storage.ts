@@ -560,6 +560,7 @@ async function boundDiagnostic(file: string, limit: number): Promise<void> {
  * count or byte-budget pruning. Unknown entries always prevent whole-run GC. */
 export async function runtimeStorageDiagnosticBytes(
   directory: string,
+  requireWriteAccess = false,
 ): Promise<number | undefined> {
   const allowed = [
     ...diagnostics,
@@ -570,8 +571,22 @@ export async function runtimeStorageDiagnosticBytes(
   let bytes = 0;
   for (const name of await readdir(directory)) {
     if (!allowed.includes(name)) return;
-    const info = await lstat(path.join(directory, name));
+    const file = path.join(directory, name);
+    const info = await lstat(file);
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) return;
+    if (requireWriteAccess) {
+      // A medium Windows caller may be able to rename the directory via its
+      // parent but cannot write high-labeled leaves. Probe without changing
+      // bytes, attributes or labels before making any quarantine change.
+      const handle = await open(file, 'r+');
+      try {
+        const actual = await handle.stat();
+        if (!actual.isFile() || actual.dev !== info.dev || actual.ino !== info.ino || actual.nlink !== 1)
+          return;
+      } finally {
+        await handle.close();
+      }
+    }
     bytes += info.size;
   }
   return bytes;

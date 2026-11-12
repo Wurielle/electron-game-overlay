@@ -379,6 +379,10 @@ test('bundled discovery resolves physical asarUnpacked assets without reading or
   const loaded = new Module(virtualModule, module);
   loaded.filename = virtualModule;
   loaded.paths = module.paths;
+  const load = loaded.require.bind(loaded);
+  loaded.require = (id) => id === './sdk-version.js'
+    ? require('../dist/lib/sdk-version.js')
+    : load(id);
   loaded._compile(
     await fs.readFile(
       require.resolve('../dist/lib/overlay-broker-installation.js'),

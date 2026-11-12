@@ -1,0 +1,380 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 9513ed4..2b193c0 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -497,13 +497,24 @@ static DWORD read_cache_policy(process_image_policy &policy)
+     return error == ERROR_SUCCESS ? parse_process_image_policy(utf8, policy) : error;
+ }
+ 
+-static DWORD read_cache_route(DWORD pid, uint64_t creation, ego_private_route_v2 &route)
++static DWORD read_cache_route(DWORD pid, uint64_t creation, ego_private_route_v2 &route, std::string *preload_seed)
+ {
+     static_assert(sizeof(ego_private_route_v2) == 112);
+     const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+     DWORD error = read_stdin_exact(input, &route, sizeof(route));
+     if (error != ERROR_SUCCESS) return error;
+-    // The route is the final frame. Reject trailing bytes and early closes.
++    if (preload_seed != nullptr)
++    {
++        uint32_t length = 0;
++        error = read_stdin_exact(input, &length, sizeof(length));
++        if (error != ERROR_SUCCESS) return error;
++        if (length == 0 || length > ego::runtime_cache::max_config_bytes) return ERROR_INVALID_DATA;
++        preload_seed->resize(length);
++        error = read_stdin_exact(input, preload_seed->data(), length);
++        if (error != ERROR_SUCCESS) return error;
++        if (!ego::runtime_cache::valid_seed(*preload_seed)) return ERROR_INVALID_DATA;
++    }
++    // Reject trailing bytes after the route and optional preload seed.
+     BYTE extra = 0;
+     DWORD received = 0;
+     if (ReadFile(input, &extra, 1, &received, nullptr))
+@@ -2270,6 +2281,113 @@ static bool runtime_defaults_base_to_target_executable_path(
+ 	return false;
+ }
+ 
++static bool inspect_reshade_config_text(const std::wstring &config_text,
++	target_effective_reshade_settings &settings, DWORD &error)
++{
++	bool addon_path_found = false;
++	std::vector<std::wstring> addon_path_values;
++	if (!find_ini_values(
++			config_text,
++			L"ADDON",
++			L"AddonPath",
++			addon_path_found,
++			addon_path_values,
++			error))
++		return false;
++
++	std::wstring addon_directory = settings.reshade_base_path;
++	if (addon_path_found &&
++		!addon_path_values.empty() &&
++		!addon_path_values.front().empty())
++	{
++		addon_directory = addon_path_values.front();
++		if (!is_absolute_windows_path(addon_directory))
++			addon_directory =
++				settings.reshade_base_path +
++				L"\\" +
++				addon_directory;
++	}
++	if (!get_full_path(
++		addon_directory,
++		settings.addon_directory_path,
++		error))
++		return false;
++
++	bool disabled_addons_found = false;
++	std::vector<std::wstring> disabled_addons;
++	if (!find_ini_values(
++			config_text,
++			L"ADDON",
++			L"DisabledAddons",
++			disabled_addons_found,
++			disabled_addons,
++			error))
++		return false;
++	if (disabled_addons_found)
++	{
++		settings.disabled_addons = disabled_addons;
++		constexpr wchar_t addon_name[] =
++			L"Electron Game Overlay Runtime";
++		constexpr const wchar_t *addon_file =
++			target_electron_overlay_addon_file;
++		const std::wstring name_and_file =
++			std::wstring(addon_name) + L"@" + addon_file;
++		const std::wstring file_only =
++			std::wstring(L"@") + addon_file;
++		for (const std::wstring &disabled_addon : disabled_addons)
++		{
++			if (disabled_addon == addon_name ||
++				disabled_addon == file_only ||
++				disabled_addon == name_and_file)
++			{
++				settings.electron_game_overlay_addon_disabled = true;
++				break;
++			}
++		}
++	}
++
++	return true;
++}
++
++static bool inspect_cache_seed(std::string_view seed, const std::wstring &directory,
++	target_effective_reshade_settings &settings, DWORD &error)
++{
++	std::wstring text;
++	const std::vector<BYTE> bytes(seed.begin(), seed.end());
++	settings = {};
++	settings.reshade_base_path = directory;
++	return decode_utf8_text(bytes, text, error) && inspect_reshade_config_text(text, settings, error);
++}
++
++static bool inspect_mapped_cache_config(HANDLE process, const std::wstring &runtime,
++	const std::wstring &directory, target_effective_reshade_settings &settings, DWORD &error)
++{
++	using namespace ego::runtime_cache;
++	uint64_t birth = 0;
++	const DWORD pid = GetProcessId(process);
++	error = creation_time(process, birth);
++	if (error != ERROR_SUCCESS || pid == 0) return false;
++	handle image;
++	file_identity identity;
++	error = open_pinned(std::wstring(dos_path(runtime)), false, image);
++	if (error == ERROR_SUCCESS) error = read_identity(image.value, identity);
++	if (error != ERROR_SUCCESS) return false;
++	const scoped_handle mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, ego::runtime_cache::host_claim_name(pid, birth).c_str());
++	if (mapping == nullptr) { error = GetLastError(); return false; }
++	const void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(bootstrap_header) + max_config_bytes);
++	if (view == nullptr) { error = GetLastError(); return false; }
++	bootstrap_header header;
++	memcpy(&header, view, sizeof(header));
++	const bool matches = header.magic == bootstrap_magic && header.version == 2 && header.struct_size == sizeof(header) &&
++		header.target_pid == pid && header.target_creation_time == birth && header.reserved == 0 && same_file(header.runtime, identity) &&
++		header.config_bytes > 0 && header.config_bytes <= max_config_bytes;
++	std::string seed;
++	if (matches) seed.assign(static_cast<const char *>(view) + sizeof(header), header.config_bytes);
++	UnmapViewOfFile(view);
++	if (!matches || !valid_seed(seed)) { error = ERROR_INVALID_DATA; return false; }
++	return inspect_cache_seed(seed, std::wstring(dos_path(directory)), settings, error);
++}
++
+ static bool inspect_target_effective_reshade_settings(
+ 	const std::wstring &target_image_path,
+ 	const std::wstring &runtime_module_path,
+@@ -2296,6 +2414,9 @@ static bool inspect_target_effective_reshade_settings(
+ 			error))
+ 		return false;
+ 
++	if (ego::runtime_cache::is_version_directory(module_directory))
++		return inspect_mapped_cache_config(target_process, runtime_module_path, module_directory, settings, error);
++
+ 	if (configuration.has_base_path)
+ 	{
+ 		settings.reshade_base_path =
+@@ -2361,69 +2482,7 @@ static bool inspect_target_effective_reshade_settings(
+ 	if (!decode_utf8_text(config_bytes, config_text, error))
+ 		return false;
+ 
+-	bool addon_path_found = false;
+-	std::vector<std::wstring> addon_path_values;
+-	if (!find_ini_values(
+-			config_text,
+-			L"ADDON",
+-			L"AddonPath",
+-			addon_path_found,
+-			addon_path_values,
+-			error))
+-		return false;
+-
+-	std::wstring addon_directory = settings.reshade_base_path;
+-	if (addon_path_found &&
+-		!addon_path_values.empty() &&
+-		!addon_path_values.front().empty())
+-	{
+-		addon_directory = addon_path_values.front();
+-		if (!is_absolute_windows_path(addon_directory))
+-			addon_directory =
+-				settings.reshade_base_path +
+-				L"\\" +
+-				addon_directory;
+-	}
+-	if (!get_full_path(
+-		addon_directory,
+-		settings.addon_directory_path,
+-		error))
+-		return false;
+-
+-	bool disabled_addons_found = false;
+-	std::vector<std::wstring> disabled_addons;
+-	if (!find_ini_values(
+-			config_text,
+-			L"ADDON",
+-			L"DisabledAddons",
+-			disabled_addons_found,
+-			disabled_addons,
+-			error))
+-		return false;
+-	if (disabled_addons_found)
+-	{
+-		settings.disabled_addons = disabled_addons;
+-		constexpr wchar_t addon_name[] =
+-			L"Electron Game Overlay Runtime";
+-		constexpr const wchar_t *addon_file =
+-			target_electron_overlay_addon_file;
+-		const std::wstring name_and_file =
+-			std::wstring(addon_name) + L"@" + addon_file;
+-		const std::wstring file_only =
+-			std::wstring(L"@") + addon_file;
+-		for (const std::wstring &disabled_addon : disabled_addons)
+-		{
+-			if (disabled_addon == addon_name ||
+-				disabled_addon == file_only ||
+-				disabled_addon == name_and_file)
+-			{
+-				settings.electron_game_overlay_addon_disabled = true;
+-				break;
+-			}
+-		}
+-	}
+-
+-	return true;
++	return inspect_reshade_config_text(config_text, settings, error);
+ }
+ 
+ static bool compact_json_text(
+@@ -3262,7 +3321,7 @@ static target_preflight_result inspect_target_for_official_addon(
+ 		"ElectronGameOverlayReShadeAddonBuildId";
+ 	constexpr unsigned int supported_addon_abi = 1;
+ 	constexpr char expected_addon_build_id[] =
+-		"D61AF72954C64C77A5FA6FF30F57AF13";
++		"3A0626A7F5C84324A83A20F4D9D0B8B1";
+ 	static_assert(sizeof(expected_addon_build_id) == 33);
+ 	bool found_addon = false;
+ 
+@@ -4872,25 +4931,28 @@ static DWORD validate_first_host_preload_snapshot(const std::wstring &stage,
+ 	if (path_is_same_or_descendant(target_directory, stage) ||
+ 		path_is_same_or_descendant(target_directory, addon_directory)) return ERROR_ACCESS_DENIED;
+ 
+-	bool missing = false;
+-	std::vector<BYTE> bytes;
+-	constexpr char owned_marker[] = "ELECTRON_GAME_OVERLAY_OWNED_RUNTIME_STAGE_V1\n";
+-	if (!read_bounded_regular_file(stage + L"\\electron-game-overlay-owned-runtime-v1.marker",
+-		4096, bytes, missing, error)) return error;
+-	if (missing || bytes.size() != sizeof(owned_marker) - 1 ||
+-		memcmp(bytes.data(), owned_marker, sizeof(owned_marker) - 1) != 0) return ERROR_INVALID_DATA;
+-	if (!read_bounded_regular_file(stage + L"\\.electron-game-overlay-run.json",
+-		4096, bytes, missing, error)) return error;
+-	if (missing) return ERROR_INVALID_DATA;
+-	if (bytes.size() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+-		return ERROR_INVALID_DATA; // The native ownership parser requires the same BOM-free record.
+-	std::wstring marker;
+-	if (!decode_utf8_text(bytes, marker, error)) return error;
+-	const size_t stage_separator = stage.find_last_of(L"\\/");
+-	if (stage_separator == std::wstring::npos || !valid_owned_run_marker(marker, stage.substr(stage_separator + 1)))
+-		return ERROR_INVALID_DATA;
+-	if (!read_bounded_regular_file(stage + L"\\ReShade.ini", 1024 * 1024, bytes, missing, error)) return error;
+-	if (missing) return ERROR_FILE_NOT_FOUND;
++	if (!ego::runtime_cache::is_version_directory(stage))
++	{
++		bool missing = false;
++		std::vector<BYTE> bytes;
++		constexpr char owned_marker[] = "ELECTRON_GAME_OVERLAY_OWNED_RUNTIME_STAGE_V1\n";
++		if (!read_bounded_regular_file(stage + L"\\electron-game-overlay-owned-runtime-v1.marker",
++			4096, bytes, missing, error)) return error;
++		if (missing || bytes.size() != sizeof(owned_marker) - 1 ||
++			memcmp(bytes.data(), owned_marker, sizeof(owned_marker) - 1) != 0) return ERROR_INVALID_DATA;
++		if (!read_bounded_regular_file(stage + L"\\.electron-game-overlay-run.json",
++			4096, bytes, missing, error)) return error;
++		if (missing) return ERROR_INVALID_DATA;
++		if (bytes.size() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
++			return ERROR_INVALID_DATA; // The native ownership parser requires the same BOM-free record.
++		std::wstring marker;
++		if (!decode_utf8_text(bytes, marker, error)) return error;
++		const size_t stage_separator = stage.find_last_of(L"\\/");
++		if (stage_separator == std::wstring::npos || !valid_owned_run_marker(marker, stage.substr(stage_separator + 1)))
++			return ERROR_INVALID_DATA;
++		if (!read_bounded_regular_file(stage + L"\\ReShade.ini", 1024 * 1024, bytes, missing, error)) return error;
++		if (missing) return ERROR_FILE_NOT_FOUND;
++	}
+ 
+ 	selected_path = addon_directory + L"\\" + leaf;
+ 	BYTE hash[32] = {};
+@@ -5576,12 +5638,12 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 		const auto runtime_directory = runtime_path.substr(0, runtime_separator);
+ 		const bool cache_host = memory_route != nullptr && owned_late.initializer != 0 &&
+ 			runtime_separator != std::wstring::npos && ego::runtime_cache::is_version_directory(runtime_directory);
+-		if (cache_host)
+-			settings.reshade_base_path = runtime_directory;
+-		else if (!inspect_target_environment(process, environment, error) ||
+-			inspect_target_reshade_configuration(image_path, environment, configuration, error) == module_export_inspection::failed ||
+-			!inspect_target_effective_reshade_settings(image_path, runtime_path, process,
+-				environment, configuration, settings, error))
++		const bool configured = cache_host
++			? inspect_mapped_cache_config(process, runtime_path, runtime_directory, settings, error)
++			: inspect_target_environment(process, environment, error) &&
++				inspect_target_reshade_configuration(image_path, environment, configuration, error) != module_export_inspection::failed &&
++				inspect_target_effective_reshade_settings(image_path, runtime_path, process, environment, configuration, settings, error);
++		if (!configured)
+ 		{
+ 			error = error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
+ 			write_injector_diagnostic(L"target-module-inspection-failed", pid, runtime_path, error, image_path, nullptr, earlier_load_consumed);
+@@ -5656,7 +5718,8 @@ static DWORD load_participant_only(HANDLE process, DWORD pid, const std::wstring
+ 			const size_t slash = addon_path.find_last_of(L"\\/");
+ 			if (slash == std::wstring::npos || wcscpy_s(data.request.run_directory, addon_path.substr(0, slash).c_str()) != 0)
+ 				return ERROR_BAD_PATHNAME;
+-			strcpy_s(data.initializer_name, "ElectronGameOverlayActivatePreloadedMemberV1");
++			if (memory_route == nullptr)
++				strcpy_s(data.initializer_name, "ElectronGameOverlayActivatePreloadedMemberV1");
+ 			const size_t selected_slash = selected_path.find_last_of(L"\\/");
+ 			std::string public_name = "Electron Game Overlay Runtime ";
+ 			for (const wchar_t character : selected_path.substr(selected_slash == std::wstring::npos ? 0 : selected_slash + 1))
+@@ -5998,11 +6061,12 @@ int wmain(int argc, wchar_t *argv[])
+ 	ego::runtime_cache::lease cache;
+ 	std::wstring cache_directory;
+ 	ego_private_route_v2 cache_route{};
++	std::string cache_preload_seed;
+ 	const ego_private_route_v2 *const memory_route = cache_bootstrap_requested ? &cache_route : nullptr;
+ 	if (cache_bootstrap_requested)
+ 	{
+ 		if ((!use_path_watcher && !use_exact_pid && argc != 2) || (use_exact_pid && !process_instance_binding_requested) ||
+-			official_addon_wait_requested || !preloaded_addon_leaf.empty())
++			official_addon_wait_requested || (private_payload_requested && !preloaded_addon_leaf.empty()))
+ 		{
+ 			print_injection_not_started();
+ 			return ERROR_INVALID_PARAMETER;
+@@ -6305,7 +6369,8 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 
+     if (cache_bootstrap_requested)
+     {
+-        DWORD error = read_cache_route(pid, expected_creation_time, cache_route);
++        DWORD error = read_cache_route(pid, expected_creation_time, cache_route,
++            preloaded_addon_leaf.empty() ? nullptr : &cache_preload_seed);
+         if (error != ERROR_SUCCESS)
+         {
+             print_injection_not_started();
+@@ -6943,6 +7008,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ #else
+ 	const auto loading_thread_func_size = 0;
+ #endif
++	owned_preload_snapshot_guard cache_preload_guard;
+ 	if (!reuse_existing_runtime)
+ 	{
+ 		std::wstring member_path;
+@@ -6963,7 +7029,34 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 			bootstrap.target_pid = pid;
+ 			bootstrap.target_creation_time = expected_creation_time;
+ 			member_error = cache.runtime_identity(sizeof(void *) == 8, bootstrap.runtime);
+-			if (member_error == ERROR_SUCCESS) member_error = cache.read_configuration(seed);
++			if (member_error == ERROR_SUCCESS && preloaded_addon_leaf.empty())
++				member_error = cache.read_configuration(seed);
++			if (member_error == ERROR_SUCCESS && !preloaded_addon_leaf.empty())
++			{
++				seed = std::move(cache_preload_seed);
++				target_effective_reshade_settings settings;
++				DWORD config_error = ERROR_SUCCESS;
++				if (!inspect_cache_seed(seed, cache_directory, settings, config_error))
++					member_error = config_error != ERROR_SUCCESS ? config_error : ERROR_INVALID_DATA;
++				else if (settings.electron_game_overlay_addon_disabled || preloaded_addon_disabled(settings, preloaded_addon_leaf))
++				{
++					write_injector_diagnostic(L"target-member-disabled", pid, cache_directory + L"\\" + target_reshade_runtime_file,
++						ERROR_ACCESS_DISABLED_BY_POLICY, selected_image_path, &settings, false);
++					print_injection_not_started();
++					return ERROR_ACCESS_DISABLED_BY_POLICY;
++				}
++				if (member_error == ERROR_SUCCESS)
++				{
++					BYTE expected_hash[32]{};
++					scoped_handle sealed_addon;
++					member_error = hash_immutable_native_file(member_path, sealed_addon, expected_hash);
++					std::wstring selected_path;
++					if (member_error == ERROR_SUCCESS)
++						member_error = validate_first_host_preload_snapshot(cache_directory, selected_image_path,
++							cache_directory + L"\\" + target_reshade_runtime_file, settings, preloaded_addon_leaf,
++							expected_hash, selected_path, cache_preload_guard);
++				}
++			}
+ 			if (member_error != ERROR_SUCCESS)
+ 			{
+ 				print_injection_not_started();

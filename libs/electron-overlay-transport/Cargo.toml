@@ -8,6 +8,13 @@ publish = false
 [lib]
 crate-type = ["rlib", "staticlib"]
 
+[features]
+private-memory-route = ["windows/Win32_NetworkManagement_IpHelper", "windows/Win32_Networking_WinSock"]
+
+[[example]]
+name = "private-route-fixture"
+required-features = ["private-memory-route"]
+
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"

@@ -49,6 +49,19 @@ export type NativeTargetAuthorization = Readonly<{
   target?: NativeTargetConnection;
 }>;
 
+/** @internal An exact native member route delivered over the injector pipe. */
+export type NativeMemoryTarget = Readonly<{
+  pid: number;
+  executablePath: string;
+  creationTime100ns: string;
+  confirmExited?: () => Promise<boolean>;
+}>;
+export type NativeMemoryRoute = Readonly<{
+  port: number;
+  token: string;
+  release: Disposable;
+}>;
+
 /** Metadata for the exact runtime artifacts offered by one target lease. */
 export type NativeRuntimeProviderMetadata = Readonly<{
   runtimeGeneration: number;
@@ -69,6 +82,7 @@ export interface NativeOverlay {
     signal?: AbortSignal,
     expectedCreationTime100ns?: string,
   ): Promise<Disposable | NativeTargetAuthorization>;
+  authorizeMemoryTarget?(target: NativeMemoryTarget): Promise<NativeMemoryRoute>;
   /** @internal Legacy untargeted rendezvous for pre-creation name/path watchers. */
   authorizeGlobalTarget?(discoveryPath?: string): Promise<Disposable>;
   /** Application-local policy gate; does not establish process exit or injection permission. */
@@ -100,5 +114,5 @@ export function createNativeOverlay(
   _allowPrereleaseBroker = false,
   options: Readonly<{ requiredInputCapabilities?: readonly OverlayInputCapability[] }> = {},
 ): NativeOverlay {
-  return new CooperativeOverlayTransport(options);
+  return new CooperativeOverlayTransport({ ...options, publishGlobalDiscovery: false });
 }

@@ -1,0 +1,71 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 19febba..9513ed4 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -5180,7 +5180,8 @@ struct private_elevated_stage_guard
+ };
+ 
+ static DWORD validate_private_elevated_stage(private_elevated_stage_guard &guard, const attachment_token_context &caller,
+-    const BYTE (&expected_runtime_hash)[32], const BYTE (&expected_addon_hash)[32], const BYTE (&expected_ini_hash)[32])
++    const BYTE (&expected_runtime_hash)[32], const BYTE (&expected_addon_hash)[32], const BYTE (&expected_ini_hash)[32],
++    bool protected_cache = false)
+ {
+     std::wstring addon;
+     DWORD error = staged_participant_path(addon);
+@@ -5227,12 +5228,20 @@ static DWORD validate_private_elevated_stage(private_elevated_stage_guard &guard
+         ++high_labels;
+     }
+     if(owner_aces!=1 || system_aces!=1 || high_labels!=1)return ERROR_ACCESS_DENIED;
+-    std::vector<BYTE> marker; bool missing = false;
+-    if (!read_bounded_regular_file(directory + L"\\.electron-game-overlay-run.json", 4096, marker, missing, error)) return report_private_elevated_stage_failure(L".electron-game-overlay-run.json", L"read-ownership-marker", error);
+-    const size_t leaf = directory.find_last_of(L'\\');
+-    std::wstring marker_text;
+-    if (!decode_utf8_text(marker, marker_text, error)) return error;
+-    if (missing || leaf == std::wstring::npos || !valid_owned_run_marker(marker_text, directory.substr(leaf + 1))) return ERROR_INVALID_DATA;
++    bool missing = false;
++    if (protected_cache) {
++        const std::wstring parent = directory.substr(0, directory.find_last_of(L'\\'));
++        constexpr std::wstring_view store = L".elevated\\runs.sdk-versions-v1";
++        if (!ego::runtime_cache::is_version_directory(directory) || parent.size() <= store.size() ||
++            parent.compare(parent.size() - store.size(), store.size(), store) != 0) return ERROR_ACCESS_DENIED;
++    } else {
++        std::vector<BYTE> marker;
++        if (!read_bounded_regular_file(directory + L"\\.electron-game-overlay-run.json", 4096, marker, missing, error)) return report_private_elevated_stage_failure(L".electron-game-overlay-run.json", L"read-ownership-marker", error);
++        const size_t leaf = directory.find_last_of(L'\\');
++        std::wstring marker_text;
++        if (!decode_utf8_text(marker, marker_text, error)) return error;
++        if (missing || leaf == std::wstring::npos || !valid_owned_run_marker(marker_text, directory.substr(leaf + 1))) return ERROR_INVALID_DATA;
++    }
+     BYTE digest[32] = {};
+     const wchar_t *failed_operation = L"not-started";
+     error = hash_immutable_native_file(directory + L"\\ReShade.ini", guard.configuration, digest, &failed_operation);
+@@ -5993,13 +6002,18 @@ int wmain(int argc, wchar_t *argv[])
+ 	if (cache_bootstrap_requested)
+ 	{
+ 		if ((!use_path_watcher && !use_exact_pid && argc != 2) || (use_exact_pid && !process_instance_binding_requested) ||
+-			official_addon_wait_requested || !preloaded_addon_leaf.empty() || private_payload_requested)
++			official_addon_wait_requested || !preloaded_addon_leaf.empty())
+ 		{
+ 			print_injection_not_started();
+ 			return ERROR_INVALID_PARAMETER;
+ 		}
++		attachment_token_context watcher_token;
++		DWORD error = read_attachment_token(GetCurrentProcess(), watcher_token);
++		if (error == ERROR_SUCCESS && (watcher_token.elevated != private_payload_requested ||
++			(watcher_token.elevated && watcher_token.integrity != SECURITY_MANDATORY_HIGH_RID)))
++			error = ERROR_ACCESS_DENIED;
+ 		std::wstring member_path;
+-		DWORD error = staged_participant_path(member_path);
++		if (error == ERROR_SUCCESS) error = staged_participant_path(member_path);
+ 		if (error == ERROR_SUCCESS)
+ 		{
+ 			cache_directory = member_path.substr(0, member_path.find_last_of(L"\\/"));
+@@ -6217,7 +6231,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+     private_elevated_stage_guard elevated_stage;
+     if (authorization_error == ERROR_SUCCESS && caller_token.elevated) {
+         authorization_phase = L"private-elevated-stage";
+-        authorization_error = preloaded_addon_leaf.empty() && private_payload_requested ? validate_private_elevated_stage(elevated_stage, caller_token, private_runtime_hash, private_addon_hash, private_ini_hash) : ERROR_ACCESS_DENIED;
++        authorization_error = preloaded_addon_leaf.empty() && private_payload_requested ? validate_private_elevated_stage(elevated_stage, caller_token, private_runtime_hash, private_addon_hash, private_ini_hash, cache_bootstrap_requested) : ERROR_ACCESS_DENIED;
+         if (authorization_error == ERROR_SUCCESS) authorization_phase = L"allowed-private-elevated";
+     } else if (authorization_error == ERROR_SUCCESS && private_payload_requested) {
+         authorization_phase = L"private-elevated-request-for-medium";

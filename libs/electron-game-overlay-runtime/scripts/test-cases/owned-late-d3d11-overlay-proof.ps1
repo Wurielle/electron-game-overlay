@@ -7,6 +7,7 @@ param(
     [string]$ElectronPath,
     [ValidateRange(20000,120000)][int]$LifetimeMs = 30000,
     [switch]$GpuReadback,
+    [switch]$ExpectInMemoryConfiguration,
     [switch]$SkipBuild
 )
 & (Join-Path $PSScriptRoot '..\run-owned-late-d3d11-overlay-proof.ps1') @PSBoundParameters

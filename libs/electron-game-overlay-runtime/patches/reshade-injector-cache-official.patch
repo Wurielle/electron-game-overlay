@@ -1,0 +1,28 @@
+diff --git a/tools/injector.cpp b/tools/injector.cpp
+index 2b193c0..6754678 100644
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -6062,11 +6062,12 @@ int wmain(int argc, wchar_t *argv[])
+ 	std::wstring cache_directory;
+ 	ego_private_route_v2 cache_route{};
+ 	std::string cache_preload_seed;
+-	const ego_private_route_v2 *const memory_route = cache_bootstrap_requested ? &cache_route : nullptr;
++	const ego_private_route_v2 *const memory_route = cache_bootstrap_requested && !official_addon_wait_requested ? &cache_route : nullptr;
+ 	if (cache_bootstrap_requested)
+ 	{
+ 		if ((!use_path_watcher && !use_exact_pid && argc != 2) || (use_exact_pid && !process_instance_binding_requested) ||
+-			official_addon_wait_requested || (private_payload_requested && !preloaded_addon_leaf.empty()))
++			((official_addon_wait_requested || private_payload_requested) && !preloaded_addon_leaf.empty()) ||
++			(official_addon_wait_requested && !cache_logs.empty()))
+ 		{
+ 			print_injection_not_started();
+ 			return ERROR_INVALID_PARAMETER;
+@@ -6367,7 +6368,7 @@ if (!write_utf8_stdout_line(L"EGO_TARGET_SELECTED\t" + std::to_wstring(pid))) re
+ 		return ERROR_IMAGE_MACHINE_TYPE_MISMATCH;
+ 	}
+ 
+-    if (cache_bootstrap_requested)
++    if (memory_route != nullptr)
+     {
+         DWORD error = read_cache_route(pid, expected_creation_time, cache_route,
+             preloaded_addon_leaf.empty() ? nullptr : &cache_preload_seed);

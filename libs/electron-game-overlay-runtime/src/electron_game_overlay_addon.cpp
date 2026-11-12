@@ -23,10 +23,13 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "Comctl32.lib")
@@ -57,25 +60,19 @@ HMODULE g_addon_module = nullptr;
 bool g_has_private_input_observer = false;
 ego::cooperative::registry g_cooperative;
 ego::render_readback_diagnostic::probe g_render_readback;
-std::atomic<std::uint64_t> g_participant_id = 0;
 std::atomic<bool> g_module_pinned = false;
-std::atomic<std::uint64_t> g_input_source_cutoff = 0;
 std::mutex g_member_initialization_mutex;
 bool g_cooperative_dispatcher = false;
 bool g_public_registered = false;
 bool g_dispatcher_events_registered = false;
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+std::atomic<bool> g_memory_dispatcher = false;
+#endif
 ego::preloaded_addon::filename_identity g_preload_identity;
 std::wstring g_preload_bound_directory;
-std::string g_private_run_directory;
-bool g_private_route_present = false;
-std::uint64_t g_cooperative_focus_revision = 0;
-std::vector<ego::cooperative::window_key> g_producer_registration_order;
-ego::cooperative::logical_epoch_tracker g_logical_session_epoch;
-ego::cooperative::presentation_driver g_member_input_driver;
 ego::cooperative::presentation_driver g_adapter_input_driver;
 ego::cooperative::logical_control g_logical_control;
 std::atomic<bool> g_adapter_window_ready = false;
-std::uint64_t g_logical_fps_publication_tick = 0;
 DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer,
     bool preloaded_activation = false);
 DWORD initialize_automatic_member() noexcept;
@@ -86,6 +83,10 @@ bool is_preloaded_member() noexcept
 
 bool can_drive_dormant_adapter() noexcept
 {
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+    if (g_memory_dispatcher.load(std::memory_order_acquire))
+        return g_cooperative_dispatcher;
+#endif
     return is_preloaded_member() && g_cooperative_dispatcher;
 }
 thread_local bool g_cooperative_owned_record = false;
@@ -203,29 +204,10 @@ private:
     std::uint64_t dequeue_position_ = 0;
 };
 
-bounded_input_queue<input_queue_capacity> g_input_queue;
 bounded_input_queue<input_queue_capacity> g_source_input_queue;
 std::atomic<bool> g_source_input_overflow = false;
 std::atomic<bool> g_source_final_reset_pending = false;
-std::array<queued_input_message, input_queue_capacity> g_input_batch = {};
-std::atomic_flag g_input_consumer = ATOMIC_FLAG_INIT;
-std::atomic<std::uint64_t> g_input_generation = 1;
-std::atomic<std::uint64_t> g_dropped_input_messages = 0;
-std::atomic<bool> g_input_recovery_pending = false;
-std::atomic_flag g_overflow_logged = ATOMIC_FLAG_INIT;
-std::atomic_flag g_order_fault_logged = ATOMIC_FLAG_INIT;
-std::atomic_flag g_raw_rejected_logged = ATOMIC_FLAG_INIT;
-std::atomic_flag g_route_error_logged = ATOMIC_FLAG_INIT;
-std::atomic_flag g_target_surface_logged = ATOMIC_FLAG_INIT;
-std::atomic_flag g_fps_logged = ATOMIC_FLAG_INIT;
-std::atomic_flag g_diagnostic_publication_logged = ATOMIC_FLAG_INIT;
 constexpr std::uint64_t runtime_diagnostic_failure_interval_ms = 7500;
-std::array<std::atomic<std::uint64_t>, 9>
-    g_runtime_diagnostic_failure_publication_ticks = {};
-std::atomic<std::uint64_t> g_target_surface_revision_sequence = 0;
-std::uint64_t g_last_input_sequence = 0;
-bool g_has_last_input_sequence = false;
-std::atomic<bool> g_pointer_route_reset_pending = false;
 
 struct ordered_pointer_state
 {
@@ -234,7 +216,6 @@ struct ordered_pointer_state
     bool primary_down = false;
 };
 
-ordered_pointer_state g_ordered_pointer_state = {};
 
 struct ordered_raw_input_state
 {
@@ -249,7 +230,86 @@ struct ordered_raw_input_state
     bool has_last_os_point = false;
 };
 
-ordered_raw_input_state g_ordered_raw_input_state = {};
+
+enum class input_phase : std::uint8_t
+{
+    disabled,
+    arming,
+    enabled,
+    disarming,
+};
+struct swapchain_data;
+
+// Each published callback context owns its transport, frame resources and
+// input state. Contexts stay alive for the lifetime of the pinned module.
+struct participant_state
+{
+    std::atomic<std::uint64_t> participant_id = 0;
+    std::atomic<std::uint64_t> input_source_cutoff = 0;
+    std::string private_run_directory;
+    bool private_route_present = false;
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+    std::optional<ego_private_route_v2> private_memory_route;
+#endif
+    std::uint64_t cooperative_focus_revision = 0;
+    std::vector<ego::cooperative::window_key> producer_registration_order;
+    ego::cooperative::logical_epoch_tracker logical_session_epoch;
+    ego::cooperative::presentation_driver member_input_driver;
+    std::uint64_t logical_fps_publication_tick = 0;
+    bounded_input_queue<input_queue_capacity> input_queue;
+    std::array<queued_input_message, input_queue_capacity> input_batch = {};
+    std::atomic_flag input_consumer = ATOMIC_FLAG_INIT;
+    std::atomic<std::uint64_t> input_generation = 1;
+    std::atomic<std::uint64_t> dropped_input_messages = 0;
+    std::atomic<bool> input_recovery_pending = false;
+    std::atomic_flag overflow_logged = ATOMIC_FLAG_INIT;
+    std::atomic_flag order_fault_logged = ATOMIC_FLAG_INIT;
+    std::atomic_flag raw_rejected_logged = ATOMIC_FLAG_INIT;
+    std::atomic_flag route_error_logged = ATOMIC_FLAG_INIT;
+    std::atomic_flag target_surface_logged = ATOMIC_FLAG_INIT;
+    std::atomic_flag fps_logged = ATOMIC_FLAG_INIT;
+    std::atomic_flag diagnostic_publication_logged = ATOMIC_FLAG_INIT;
+    std::array<std::atomic<std::uint64_t>, 9>
+        runtime_diagnostic_failure_publication_ticks = {};
+    std::atomic<std::uint64_t> target_surface_revision_sequence = 0;
+    std::uint64_t last_input_sequence = 0;
+    bool has_last_input_sequence = false;
+    std::atomic<bool> pointer_route_reset_pending = false;
+    ordered_pointer_state pointer_state = {};
+    ordered_raw_input_state raw_input_state = {};
+    input_phase cooperative_member_phase = input_phase::disabled;
+    std::mutex swapchain_states_mutex;
+    std::unordered_map<std::uint64_t, std::unique_ptr<swapchain_data>> swapchain_states;
+    std::mutex transport_lifecycle_mutex;
+    std::mutex transport_mutex;
+    ego_transport *transport = nullptr;
+    std::uint32_t transport_references = 0;
+    std::atomic<std::uint64_t> swapchain_ownership_token_sequence = 0;
+    std::atomic<std::uint64_t> primary_swapchain_token = 0;
+
+    ~participant_state();
+};
+
+thread_local participant_state *g_callback_member = nullptr;
+participant_state &member() noexcept;
+
+class participant_callback_scope
+{
+public:
+    explicit participant_callback_scope(void *context) noexcept :
+        previous_(std::exchange(g_callback_member, static_cast<participant_state *>(context))) {}
+    ~participant_callback_scope() { g_callback_member = previous_; }
+    participant_callback_scope(const participant_callback_scope &) = delete;
+    participant_callback_scope &operator=(const participant_callback_scope &) = delete;
+
+private:
+    participant_state *previous_;
+};
+
+bool owns_dispatcher_surface() noexcept
+{
+    return g_cooperative_dispatcher && g_callback_member == nullptr;
+}
 
 bool is_pointer_mouse_message(std::uint32_t message) noexcept
 {
@@ -319,12 +379,12 @@ void capture_pointer_metadata(queued_input_message &queued) noexcept
 
 void reset_ordered_pointer_state() noexcept
 {
-    g_ordered_pointer_state = {};
+    member().pointer_state = {};
 }
 
 void reset_ordered_raw_input_state() noexcept
 {
-    g_ordered_raw_input_state = {};
+    member().raw_input_state = {};
 }
 
 bool translate_pointer_mouse_message(
@@ -379,9 +439,9 @@ bool translate_pointer_mouse_message(
             return false;
         message.message = WM_MOUSEMOVE;
         message.wparam = mouse_modifiers;
-        if (g_ordered_pointer_state.primary_down &&
-            g_ordered_pointer_state.pointer_id == queued.pointer_id &&
-            g_ordered_pointer_state.target_window == target_window)
+        if (member().pointer_state.primary_down &&
+            member().pointer_state.pointer_id == queued.pointer_id &&
+            member().pointer_state.target_window == target_window)
         {
             message.wparam |= MK_LBUTTON;
         }
@@ -395,7 +455,7 @@ bool translate_pointer_mouse_message(
         {
             return false;
         }
-        g_ordered_pointer_state = {
+        member().pointer_state = {
             target_window,
             queued.pointer_id,
             true,
@@ -407,9 +467,9 @@ bool translate_pointer_mouse_message(
 
     case WM_POINTERUP:
         if (!client_point_valid ||
-            !g_ordered_pointer_state.primary_down ||
-            g_ordered_pointer_state.pointer_id != queued.pointer_id ||
-            g_ordered_pointer_state.target_window != target_window)
+            !member().pointer_state.primary_down ||
+            member().pointer_state.pointer_id != queued.pointer_id ||
+            member().pointer_state.target_window != target_window)
         {
             return false;
         }
@@ -427,19 +487,20 @@ bool translate_pointer_mouse_message(
     }
 }
 
-void queue_cooperative_input(void *, const void *record, std::uint32_t bytes) noexcept
+void queue_cooperative_input(void *context, const void *record, std::uint32_t bytes) noexcept
 {
+    const participant_callback_scope scope(context);
     // Read the private generation before the cutoff. A reset publishes its
     // cutoff before advancing this generation, so an in-flight receiver can
     // never stamp an old physical record with a replacement session's epoch.
-    const auto receiver_generation = g_input_generation.load(std::memory_order_acquire);
+    const auto receiver_generation = member().input_generation.load(std::memory_order_acquire);
     if (record == nullptr || bytes < sizeof(ego::cooperative::input_record_v1))
         return;
     const auto &source = *static_cast<const ego::cooperative::input_record_v1 *>(record);
     if (source.struct_size < sizeof(source) || source.struct_size > bytes || source.version != 1 || source.text_length > 4 ||
         source.target_window > UINTPTR_MAX || source.source_window > UINTPTR_MAX || source.device_handle > UINTPTR_MAX)
         return;
-    if (source.sequence <= g_input_source_cutoff.load(std::memory_order_acquire))
+    if (source.sequence <= member().input_source_cutoff.load(std::memory_order_acquire))
         return;
     queued_input_message queued = {};
     queued.generation = receiver_generation;
@@ -470,11 +531,11 @@ void queue_cooperative_input(void *, const void *record, std::uint32_t bytes) no
     queued.focus = {source.focus_participant, source.focus_window, 0, source.focus_incarnation};
     queued.canonical_x = source.canonical_x; queued.canonical_y = source.canonical_y;
     queued.canonical_point_valid = source.canonical_point_valid != 0;
-    if (g_input_queue.try_push(queued))
+    if (member().input_queue.try_push(queued))
         return;
 
-    g_dropped_input_messages.fetch_add(1, std::memory_order_relaxed);
-    g_input_recovery_pending.store(true, std::memory_order_release);
+    member().dropped_input_messages.fetch_add(1, std::memory_order_relaxed);
+    member().input_recovery_pending.store(true, std::memory_order_release);
 }
 
 ego::cooperative::input_record_v1 freeze_source_input(const queued_input_message &queued) noexcept
@@ -522,15 +583,7 @@ void on_input_message(const input_message &message) noexcept
         g_source_input_overflow.store(true, std::memory_order_release);
 }
 
-enum class input_phase : std::uint8_t
-{
-    disabled,
-    arming,
-    enabled,
-    disarming,
-};
 input_phase g_cooperative_adapter_phase = input_phase::disabled;
-input_phase g_cooperative_member_phase = input_phase::disabled;
 
 constexpr std::size_t official_hook_owner_capacity = 32;
 constexpr std::size_t official_thread_hook_capacity = 16;
@@ -1353,28 +1406,25 @@ struct swapchain_data
     bool cooperative_requested_interception = false;
 };
 
-// Module-local ownership is essential: two independently compiled add-ons must
-// never reinterpret each other's private C++ swap-chain state through one UUID.
-std::mutex g_swapchain_states_mutex;
-std::unordered_map<std::uint64_t, std::unique_ptr<swapchain_data>> g_swapchain_states;
+participant_state::~participant_state() = default;
+participant_state g_directory_member;
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+std::vector<std::unique_ptr<participant_state>> g_memory_members;
+std::optional<ego_private_route_v2> g_preloaded_memory_binding;
+#endif
+
+participant_state &member() noexcept
+{
+    return g_callback_member == nullptr ? g_directory_member : *g_callback_member;
+}
 
 swapchain_data *find_swapchain_data(device_object *surface)
 {
-    const std::scoped_lock lock(g_swapchain_states_mutex);
-    const auto found = g_swapchain_states.find(surface->get_native());
-    return found == g_swapchain_states.end() ? nullptr : found->second.get();
+    const std::scoped_lock lock(member().swapchain_states_mutex);
+    const auto found = member().swapchain_states.find(surface->get_native());
+    return found == member().swapchain_states.end() ? nullptr : found->second.get();
 }
 
-// Serializes the zero-to-one and one-to-zero transport transitions without
-// holding the transport registry lock while the final socket drain waits.
-// A replacement swap chain therefore cannot connect a second same-process
-// bridge before the retiring bridge has delivered its final lifecycle state.
-std::mutex g_transport_lifecycle_mutex;
-std::mutex g_transport_mutex;
-ego_transport *g_transport = nullptr;
-std::uint32_t g_transport_references = 0;
-std::atomic<std::uint64_t> g_swapchain_ownership_token_sequence = 0;
-std::atomic<std::uint64_t> g_primary_swapchain_token = 0;
 
 void log_transport_failure(
     reshade::log::level level,
@@ -1432,12 +1482,12 @@ bool take_runtime_diagnostic_failure_publication(std::uint32_t code) noexcept
         return true;
     }
 
-    if (code >= g_runtime_diagnostic_failure_publication_ticks.size())
+    if (code >= member().runtime_diagnostic_failure_publication_ticks.size())
         return false;
 
     const std::uint64_t now = GetTickCount64();
     auto &last_publication =
-        g_runtime_diagnostic_failure_publication_ticks[code];
+        member().runtime_diagnostic_failure_publication_ticks[code];
     std::uint64_t observed =
         last_publication.load(std::memory_order_relaxed);
     for (;;)
@@ -1480,7 +1530,7 @@ void publish_runtime_diagnostic(
     const ego_status status =
         ego_transport_publish_diagnostic(transport, &diagnostic);
     if (status != EGO_STATUS_OK &&
-        !g_diagnostic_publication_logged.test_and_set(std::memory_order_relaxed))
+        !member().diagnostic_publication_logged.test_and_set(std::memory_order_relaxed))
     {
         log_transport_error("runtime diagnostic publication", status);
     }
@@ -2067,79 +2117,90 @@ ego_transport *retain_transport()
     // A manager-installed official-host adapter is intentionally routeless.
     // Its installation directory is never a private producer workspace and
     // must not receive Rust startup diagnostics or discovery output.
-    if (g_private_run_directory.empty() || !g_private_route_present)
+#if !defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+    if (member().private_run_directory.empty() || !member().private_route_present)
         return nullptr;
-    const std::scoped_lock lifecycle_lock(g_transport_lifecycle_mutex);
-    const std::scoped_lock lock(g_transport_mutex);
-    if (g_transport == nullptr)
+#endif
+    const std::scoped_lock lifecycle_lock(member().transport_lifecycle_mutex);
+    const std::scoped_lock lock(member().transport_mutex);
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+    if (!member().private_memory_route && (member().private_run_directory.empty() || !member().private_route_present))
+        return nullptr;
+#endif
+    if (member().transport == nullptr)
     {
         // A new Rust bridge has a new ordered focus-command stream.
-        g_cooperative_focus_revision = 0;
-        g_logical_session_epoch.reset();
-        g_member_input_driver.reset();
-        g_cooperative_member_phase = input_phase::disabled;
-        g_logical_fps_publication_tick = 0;
+        member().cooperative_focus_revision = 0;
+        member().logical_session_epoch.reset();
+        member().member_input_driver.reset();
+        member().cooperative_member_phase = input_phase::disabled;
+        member().logical_fps_publication_tick = 0;
         // Capabilities describe this mapped host's input seam, not the app's
         // package version. Stock ReShade exposes WM_INPUT through our message
         // hook, but only the validated private observer copies buffered reads.
         const std::uint64_t input_capabilities = EGO_INPUT_CAPABILITY_COPIED_WM_INPUT |
             (g_has_private_input_observer ? EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER : 0);
-        const ego_status status = ego_transport_create_for_directory_with_input_capabilities(
+        const ego_status status =
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+            member().private_memory_route ? ego_transport_create_for_private_route_v2(
+                EGO_ABI_VERSION, &*member().private_memory_route, &member().transport) :
+#endif
+            ego_transport_create_for_directory_with_input_capabilities(
                 EGO_ABI_VERSION,
-                reinterpret_cast<const std::uint8_t *>(g_private_run_directory.data()),
-                g_private_run_directory.size(),
+                reinterpret_cast<const std::uint8_t *>(member().private_run_directory.data()),
+                member().private_run_directory.size(),
                 input_capabilities,
-                &g_transport);
+                &member().transport);
         if (status != EGO_STATUS_OK)
         {
             log_transport_error("transport initialization", status);
-            g_transport = nullptr;
+            member().transport = nullptr;
             return nullptr;
         }
         reshade::log::message(
             reshade::log::level::info,
             "Electron game overlay runtime initialized its transport and input router.");
         publish_runtime_diagnostic(
-            g_transport,
+            member().transport,
             EGO_RUNTIME_DIAGNOSTIC_RUNTIME_READY);
     }
 
-    ++g_transport_references;
-    return g_transport;
+    ++member().transport_references;
+    return member().transport;
 }
 
 void release_transport(ego_transport *transport, bool release_reference = true)
 {
     // Keep a new zero-to-one transition behind the bounded drain/destroy, but
     // release the registry lock before waiting on the Rust/network workers.
-    const std::scoped_lock lifecycle_lock(g_transport_lifecycle_mutex);
+    const std::scoped_lock lifecycle_lock(member().transport_lifecycle_mutex);
     ego_transport *destroy = nullptr;
     {
-        const std::scoped_lock lock(g_transport_mutex);
+        const std::scoped_lock lock(member().transport_mutex);
         if (!release_reference && transport == nullptr)
-            transport = g_transport;
-        if (transport == nullptr || transport != g_transport ||
-            (release_reference && g_transport_references == 0))
+            transport = member().transport;
+        if (transport == nullptr || transport != member().transport ||
+            (release_reference && member().transport_references == 0))
             return;
 
         if (release_reference)
-            --g_transport_references;
-        if (g_transport_references == 0 && !g_cooperative.has_live_surfaces())
+            --member().transport_references;
+        if (member().transport_references == 0 && !g_cooperative.has_live_surfaces())
         {
-            destroy = g_transport;
-            g_transport = nullptr;
+            destroy = member().transport;
+            member().transport = nullptr;
             // A true zero-surface retirement is a fresh private bridge on the
             // next graphics lifecycle. Do not revive old focus/rank merely
             // because the new decoder allocates the same local IDs again.
-            g_cooperative.cancel_owned_input(g_participant_id);
-            static_cast<void>(g_cooperative.publish_windows(g_participant_id, nullptr, 0, true));
-            static_cast<void>(g_cooperative.reconcile_registrations(g_participant_id, nullptr, 0));
-            g_producer_registration_order.clear();
-            g_cooperative_focus_revision = 0;
-            g_logical_session_epoch.reset();
-            g_member_input_driver.reset();
-            g_cooperative_member_phase = input_phase::disabled;
-            g_logical_fps_publication_tick = 0;
+            g_cooperative.cancel_owned_input(member().participant_id);
+            static_cast<void>(g_cooperative.publish_windows(member().participant_id, nullptr, 0, true));
+            static_cast<void>(g_cooperative.reconcile_registrations(member().participant_id, nullptr, 0));
+            member().producer_registration_order.clear();
+            member().cooperative_focus_revision = 0;
+            member().logical_session_epoch.reset();
+            member().member_input_driver.reset();
+            member().cooperative_member_phase = input_phase::disabled;
+            member().logical_fps_publication_tick = 0;
         }
     }
 
@@ -2184,7 +2245,7 @@ bool route_normalized_input(
     std::int64_t lparam) noexcept
 {
     ego_status status = EGO_STATUS_OK;
-    if (g_participant_id != 0 && g_cooperative_owned_record)
+    if (member().participant_id != 0 && g_cooperative_owned_record)
     {
         if (g_cooperative_raw_point_valid &&
             (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
@@ -2199,9 +2260,9 @@ bool route_normalized_input(
         const auto owner = g_cooperative_record_owner;
         const auto focus = g_cooperative_record_focus;
         static_cast<void>(ego_transport_set_cooperative_focus(
-            transport, focus.participant == g_participant_id ? focus.window_id : 0,
-            focus.participant == g_participant_id ? focus.incarnation : 0));
-        if (owner.participant != g_participant_id)
+            transport, focus.participant == member().participant_id ? focus.window_id : 0,
+            focus.participant == member().participant_id ? focus.incarnation : 0));
+        if (owner.participant != member().participant_id)
             return true;
         status = ego_transport_route_owned_window_message(
             transport, owner.window_id, owner.incarnation,
@@ -2215,7 +2276,7 @@ bool route_normalized_input(
     if (status == EGO_STATUS_OK)
         return true;
 
-    if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
+    if (!member().route_error_logged.test_and_set(std::memory_order_relaxed))
         log_transport_error("normalized raw input delivery", status);
     publish_input_routing_failure(transport, status);
     return false;
@@ -2268,13 +2329,13 @@ void clamp_raw_client_point(
 
 bool ordered_raw_key_down(std::uint32_t key) noexcept
 {
-    return key < g_ordered_raw_input_state.keys_down.size() &&
-        g_ordered_raw_input_state.keys_down[key];
+    return key < member().raw_input_state.keys_down.size() &&
+        member().raw_input_state.keys_down[key];
 }
 
 std::uint32_t ordered_raw_mouse_key_state() noexcept
 {
-    std::uint32_t state = g_ordered_raw_input_state.mouse_buttons;
+    std::uint32_t state = member().raw_input_state.mouse_buttons;
     if (ordered_raw_key_down(VK_SHIFT) ||
         ordered_raw_key_down(VK_LSHIFT) ||
         ordered_raw_key_down(VK_RSHIFT))
@@ -2295,7 +2356,7 @@ raw_projection_result project_raw_mouse(
     const input_message &message,
     HWND target) noexcept
 {
-    ordered_raw_input_state &state = g_ordered_raw_input_state;
+    ordered_raw_input_state &state = member().raw_input_state;
     const bool absolute =
         (message.mouse.flags & MOUSE_MOVE_ABSOLUTE) != 0;
     std::int32_t x = message.client_x;
@@ -2459,7 +2520,7 @@ raw_projection_result project_raw_keyboard(
     if (down == ((message.keyboard.flags & RI_KEY_BREAK) != 0))
         return raw_projection_result::ignored;
 
-    ordered_raw_input_state &state = g_ordered_raw_input_state;
+    ordered_raw_input_state &state = member().raw_input_state;
     const bool repeated = down && state.keys_down[virtual_key];
     state.keys_down[virtual_key] = down;
 
@@ -2521,7 +2582,7 @@ raw_projection_result project_raw_input(
     if (!no_legacy)
     {
         if (message.source == input_message_source::raw_input_buffer &&
-            !g_raw_rejected_logged.test_and_set(std::memory_order_relaxed))
+            !member().raw_rejected_logged.test_and_set(std::memory_order_relaxed))
         {
             char diagnostic[256] = {};
             sprintf_s(
@@ -2550,7 +2611,7 @@ raw_projection_result project_raw_input(
         (message.device_type == input_device_type::mouse &&
          !client_point_valid))
     {
-        if (!g_raw_rejected_logged.test_and_set(std::memory_order_relaxed))
+        if (!member().raw_rejected_logged.test_and_set(std::memory_order_relaxed))
         {
             char diagnostic[256] = {};
             sprintf_s(
@@ -2571,10 +2632,10 @@ raw_projection_result project_raw_input(
 
     const std::uintptr_t target_identity =
         reinterpret_cast<std::uintptr_t>(target);
-    if (g_ordered_raw_input_state.target_window != target_identity)
+    if (member().raw_input_state.target_window != target_identity)
     {
         reset_ordered_raw_input_state();
-        g_ordered_raw_input_state.target_window = target_identity;
+        member().raw_input_state.target_window = target_identity;
     }
 
     switch (message.device_type)
@@ -2655,11 +2716,11 @@ void drain_cooperative_sources(HWND primary_target)
             bool accepted = true;
             if (is_pointer_mouse_message(message.message))
             {
-                const auto own_state = g_ordered_pointer_state;
-                g_ordered_pointer_state = promoted_pointer;
+                const auto own_state = member().pointer_state;
+                member().pointer_state = promoted_pointer;
                 accepted = translate_pointer_mouse_message(queued, routed);
-                promoted_pointer = g_ordered_pointer_state;
-                g_ordered_pointer_state = own_state;
+                promoted_pointer = member().pointer_state;
+                member().pointer_state = own_state;
             }
             POINT point = {static_cast<short>(LOWORD(static_cast<DWORD_PTR>(routed.lparam))),
                 static_cast<short>(HIWORD(static_cast<DWORD_PTR>(routed.lparam)))};
@@ -2728,13 +2789,13 @@ struct input_consumer_release
 {
     ~input_consumer_release()
     {
-        g_input_consumer.clear(std::memory_order_release);
+        member().input_consumer.clear(std::memory_order_release);
     }
 };
 
 bool log_input_overflow_once(std::uint64_t dropped)
 {
-    if (g_overflow_logged.test_and_set(std::memory_order_relaxed))
+    if (member().overflow_logged.test_and_set(std::memory_order_relaxed))
         return false;
 
     char message[256] = {};
@@ -2750,22 +2811,22 @@ bool log_input_overflow_once(std::uint64_t dropped)
 void discard_queued_input()
 {
     queued_input_message discarded = {};
-    while (g_input_queue.try_pop(discarded))
+    while (member().input_queue.try_pop(discarded))
     {
     }
 }
 
 bool reset_input_router(ego_transport *transport, HWND target_window)
 {
-    if (g_participant_id != 0)
-        g_cooperative.cancel_owned_input(g_participant_id, true);
+    if (member().participant_id != 0)
+        g_cooperative.cancel_owned_input(member().participant_id, true);
     // Advancing the generation makes a producer that was preempted before this
     // reset harmless: its late publication is recognized and discarded.
-    g_input_source_cutoff.store(g_cooperative.latest_source_sequence(), std::memory_order_release);
-    g_input_generation.fetch_add(1, std::memory_order_acq_rel);
+    member().input_source_cutoff.store(g_cooperative.latest_source_sequence(), std::memory_order_release);
+    member().input_generation.fetch_add(1, std::memory_order_acq_rel);
     reset_ordered_pointer_state();
     reset_ordered_raw_input_state();
-    g_pointer_route_reset_pending.store(false, std::memory_order_release);
+    member().pointer_route_reset_pending.store(false, std::memory_order_release);
     discard_queued_input();
 
     const ego_status blur_status = ego_transport_set_target_focused(transport, 0);
@@ -2773,7 +2834,7 @@ bool reset_input_router(ego_transport *transport, HWND target_window)
     {
         log_transport_error("input-loss blur reset", blur_status);
         publish_input_routing_failure(transport, blur_status);
-        g_input_recovery_pending.store(true, std::memory_order_release);
+        member().input_recovery_pending.store(true, std::memory_order_release);
         return false;
     }
 
@@ -2784,21 +2845,21 @@ bool reset_input_router(ego_transport *transport, HWND target_window)
     {
         log_transport_error("input-loss focus restore", focus_status);
         publish_input_routing_failure(transport, focus_status);
-        g_input_recovery_pending.store(true, std::memory_order_release);
+        member().input_recovery_pending.store(true, std::memory_order_release);
         return false;
     }
 
-    g_last_input_sequence = 0;
-    g_has_last_input_sequence = false;
+    member().last_input_sequence = 0;
+    member().has_last_input_sequence = false;
     return true;
 }
 
 bool recover_dropped_input(ego_transport *transport, HWND target_window)
 {
     const bool recovery_requested =
-        g_input_recovery_pending.exchange(false, std::memory_order_acq_rel);
+        member().input_recovery_pending.exchange(false, std::memory_order_acq_rel);
     const std::uint64_t dropped =
-        g_dropped_input_messages.exchange(0, std::memory_order_acq_rel);
+        member().dropped_input_messages.exchange(0, std::memory_order_acq_rel);
     if (!recovery_requested && dropped == 0)
         return true;
 
@@ -2813,20 +2874,20 @@ bool recover_dropped_input(ego_transport *transport, HWND target_window)
 
     // An overflow that raced the reset belongs to a newer generation. Leave it
     // for the next render callback and do not route anything in this one.
-    return !g_input_recovery_pending.load(std::memory_order_acquire) &&
-        g_dropped_input_messages.load(std::memory_order_acquire) == 0;
+    return !member().input_recovery_pending.load(std::memory_order_acquire) &&
+        member().dropped_input_messages.load(std::memory_order_acquire) == 0;
 }
 
 void drain_input_messages(ego_transport *transport, HWND target_window)
 {
     if (transport == nullptr ||
-        g_input_consumer.test_and_set(std::memory_order_acquire))
+        member().input_consumer.test_and_set(std::memory_order_acquire))
     {
         return;
     }
     const input_consumer_release release_consumer;
 
-    if (g_pointer_route_reset_pending.exchange(false, std::memory_order_acq_rel))
+    if (member().pointer_route_reset_pending.exchange(false, std::memory_order_acq_rel))
     {
         reset_ordered_pointer_state();
         reset_ordered_raw_input_state();
@@ -2836,36 +2897,36 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
         return;
 
     std::size_t count = 0;
-    while (count < g_input_batch.size() &&
-           g_input_queue.try_pop(g_input_batch[count]))
+    while (count < member().input_batch.size() &&
+           member().input_queue.try_pop(member().input_batch[count]))
     {
         ++count;
     }
     if (count == 0)
         return;
 
-    if (g_input_recovery_pending.load(std::memory_order_acquire) ||
-        g_dropped_input_messages.load(std::memory_order_acquire) != 0)
+    if (member().input_recovery_pending.load(std::memory_order_acquire) ||
+        member().dropped_input_messages.load(std::memory_order_acquire) != 0)
     {
         static_cast<void>(recover_dropped_input(transport, target_window));
         return;
     }
 
     std::sort(
-        g_input_batch.begin(),
-        g_input_batch.begin() + count,
+        member().input_batch.begin(),
+        member().input_batch.begin() + count,
         [](const queued_input_message &left, const queued_input_message &right) {
             return left.message.sequence < right.message.sequence;
         });
 
     const std::uint64_t generation =
-        g_input_generation.load(std::memory_order_acquire);
-    std::uint64_t previous_sequence = g_last_input_sequence;
-    bool has_previous_sequence = g_has_last_input_sequence;
+        member().input_generation.load(std::memory_order_acquire);
+    std::uint64_t previous_sequence = member().last_input_sequence;
+    bool has_previous_sequence = member().has_last_input_sequence;
     bool ordering_fault = false;
     for (std::size_t index = 0; index < count; ++index)
     {
-        const queued_input_message &queued = g_input_batch[index];
+        const queued_input_message &queued = member().input_batch[index];
         if (queued.generation != generation)
             continue;
         if (has_previous_sequence &&
@@ -2880,7 +2941,7 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
 
     if (ordering_fault)
     {
-        if (!g_order_fault_logged.test_and_set(std::memory_order_relaxed))
+        if (!member().order_fault_logged.test_and_set(std::memory_order_relaxed))
         {
             reshade::log::message(
                 reshade::log::level::warning,
@@ -2896,11 +2957,11 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
 
     for (std::size_t index = 0; index < count; ++index)
     {
-        const queued_input_message &queued = g_input_batch[index];
+        const queued_input_message &queued = member().input_batch[index];
         if (queued.generation != generation)
             continue;
-        if (g_input_recovery_pending.load(std::memory_order_acquire) ||
-            g_dropped_input_messages.load(std::memory_order_acquire) != 0)
+        if (member().input_recovery_pending.load(std::memory_order_acquire) ||
+            member().dropped_input_messages.load(std::memory_order_acquire) != 0)
         {
             static_cast<void>(recover_dropped_input(transport, target_window));
             return;
@@ -2915,8 +2976,8 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
         if (routed_message.source == input_message_source::window_message &&
             !translate_pointer_mouse_message(queued, routed_message))
         {
-            g_last_input_sequence = queued.message.sequence;
-            g_has_last_input_sequence = true;
+            member().last_input_sequence = queued.message.sequence;
+            member().has_last_input_sequence = true;
             continue;
         }
 
@@ -2934,7 +2995,7 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
                     transport, static_cast<HWND>(message.target_window),
                     message.message, message.wparam, message.lparam))
                 {
-                    if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
+                    if (!member().route_error_logged.test_and_set(std::memory_order_relaxed))
                         log_transport_error("copied input delivery", EGO_STATUS_INTERNAL_ERROR);
                     publish_input_routing_failure(transport, EGO_STATUS_INTERNAL_ERROR);
                     static_cast<void>(reset_input_router(transport, target_window));
@@ -2963,8 +3024,8 @@ void drain_input_messages(ego_transport *transport, HWND target_window)
             return;
         }
 
-        g_last_input_sequence = message.sequence;
-        g_has_last_input_sequence = true;
+        member().last_input_sequence = message.sequence;
+        member().has_last_input_sequence = true;
     }
 }
 
@@ -2972,10 +3033,10 @@ void discard_dormant_input()
 {
     // Invalidate every in-flight producer/batch even if another render
     // callback currently owns the destructive queue reset below.
-    g_input_source_cutoff.store(g_cooperative.latest_source_sequence(), std::memory_order_release);
-    g_input_generation.fetch_add(1, std::memory_order_acq_rel);
+    member().input_source_cutoff.store(g_cooperative.latest_source_sequence(), std::memory_order_release);
+    member().input_generation.fetch_add(1, std::memory_order_acq_rel);
 
-    if (g_input_consumer.test_and_set(std::memory_order_acquire))
+    if (member().input_consumer.test_and_set(std::memory_order_acquire))
         return;
     const input_consumer_release release_consumer;
 
@@ -2984,12 +3045,12 @@ void discard_dormant_input()
     // cannot republish a stale event into a later producer session.
     reset_ordered_pointer_state();
     reset_ordered_raw_input_state();
-    g_pointer_route_reset_pending.store(false, std::memory_order_release);
+    member().pointer_route_reset_pending.store(false, std::memory_order_release);
     discard_queued_input();
-    g_dropped_input_messages.store(0, std::memory_order_release);
-    g_input_recovery_pending.store(false, std::memory_order_release);
-    g_last_input_sequence = 0;
-    g_has_last_input_sequence = false;
+    member().dropped_input_messages.store(0, std::memory_order_release);
+    member().input_recovery_pending.store(false, std::memory_order_release);
+    member().last_input_sequence = 0;
+    member().has_last_input_sequence = false;
 }
 
 input_phase next_phase(input_phase current, bool desired)
@@ -3280,11 +3341,11 @@ private:
 std::uint64_t next_swapchain_ownership_token() noexcept
 {
     std::uint64_t current =
-        g_swapchain_ownership_token_sequence.load(std::memory_order_relaxed);
+        member().swapchain_ownership_token_sequence.load(std::memory_order_relaxed);
     while (current != std::numeric_limits<std::uint64_t>::max())
     {
         const std::uint64_t next = current + 1;
-        if (g_swapchain_ownership_token_sequence.compare_exchange_weak(
+        if (member().swapchain_ownership_token_sequence.compare_exchange_weak(
                 current,
                 next,
                 std::memory_order_relaxed,
@@ -3299,7 +3360,7 @@ std::uint64_t next_swapchain_ownership_token() noexcept
 bool owns_primary_swapchain(const swapchain_data &data) noexcept
 {
     return data.ownership_token != 0 &&
-        g_primary_swapchain_token.load(std::memory_order_acquire) ==
+        member().primary_swapchain_token.load(std::memory_order_acquire) ==
             data.ownership_token;
 }
 
@@ -3309,7 +3370,7 @@ bool claim_primary_swapchain(const swapchain_data &data) noexcept
         return false;
 
     std::uint64_t expected = 0;
-    if (g_primary_swapchain_token.compare_exchange_strong(
+    if (member().primary_swapchain_token.compare_exchange_strong(
             expected,
             data.ownership_token,
             std::memory_order_acq_rel,
@@ -3326,7 +3387,7 @@ void release_primary_swapchain(const swapchain_data &data) noexcept
         return;
 
     std::uint64_t expected = data.ownership_token;
-    static_cast<void>(g_primary_swapchain_token.compare_exchange_strong(
+    static_cast<void>(member().primary_swapchain_token.compare_exchange_strong(
         expected,
         0,
         std::memory_order_release,
@@ -3336,11 +3397,11 @@ void release_primary_swapchain(const swapchain_data &data) noexcept
 std::uint64_t next_target_surface_revision() noexcept
 {
     std::uint64_t current =
-        g_target_surface_revision_sequence.load(std::memory_order_relaxed);
+        member().target_surface_revision_sequence.load(std::memory_order_relaxed);
     while (current != std::numeric_limits<std::uint64_t>::max())
     {
         const std::uint64_t next = current + 1;
-        if (g_target_surface_revision_sequence.compare_exchange_weak(
+        if (member().target_surface_revision_sequence.compare_exchange_weak(
                 current,
                 next,
                 std::memory_order_relaxed,
@@ -3550,7 +3611,7 @@ void publish_target_surface(
     data.target_surface_id = surface.surface_id;
     data.has_target_surface = true;
 
-    if (!g_target_surface_logged.test_and_set(std::memory_order_relaxed))
+    if (!member().target_surface_logged.test_and_set(std::memory_order_relaxed))
     {
         char message[256] = {};
         sprintf_s(
@@ -3629,8 +3690,8 @@ void publish_render_fps(swapchain_data &data)
 
     constexpr std::uint64_t publication_interval_ms = 1000;
     const std::uint64_t now = GetTickCount64();
-    if (g_logical_fps_publication_tick != 0 &&
-        now - g_logical_fps_publication_tick < publication_interval_ms)
+    if (member().logical_fps_publication_tick != 0 &&
+        now - member().logical_fps_publication_tick < publication_interval_ms)
     {
         return;
     }
@@ -3646,7 +3707,7 @@ void publish_render_fps(swapchain_data &data)
     if (fps_milli == 0)
         return;
 
-    g_logical_fps_publication_tick = now;
+    member().logical_fps_publication_tick = now;
     const ego_status status = ego_transport_publish_fps(data.transport, fps_milli);
     if (status != EGO_STATUS_OK)
     {
@@ -3659,7 +3720,7 @@ void publish_render_fps(swapchain_data &data)
     }
 
     data.last_fps_error = EGO_STATUS_OK;
-    if (!g_fps_logged.test_and_set(std::memory_order_relaxed))
+    if (!member().fps_logged.test_and_set(std::memory_order_relaxed))
     {
         char message[192] = {};
         sprintf_s(
@@ -3677,7 +3738,8 @@ void initialize_own_surface_transport(swapchain_data &data, bool publish_ready =
     // A folder-loaded module is only an adapter until its owning application
     // explicitly binds a private stage. Preserve the deferred initialization
     // state so that activation can retain its transport on a later frame.
-    if (is_preloaded_member() && g_participant_id.load(std::memory_order_acquire) == 0)
+    if ((is_preloaded_member() || can_drive_dormant_adapter()) &&
+        member().participant_id.load(std::memory_order_acquire) == 0)
         return;
     if (!data.transport_initialization_complete)
     {
@@ -3693,7 +3755,7 @@ void initialize_own_surface_transport(swapchain_data &data, bool publish_ready =
 
 bool advance_own_surface_startup(swapchain_data &data)
 {
-    if (!g_cooperative_dispatcher)
+    if (!owns_dispatcher_surface())
     {
         initialize_own_surface_transport(data);
         return true;
@@ -3727,14 +3789,14 @@ bool advance_own_surface_startup(swapchain_data &data)
 
 void initialize_own_surface(device_object *surface, HWND window)
 {
-    if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS &&
+    if (member().participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS &&
         !can_drive_dormant_adapter())
         return;
 
     swapchain_data *data = nullptr;
     {
-        const std::scoped_lock lock(g_swapchain_states_mutex);
-        auto [entry, inserted] = g_swapchain_states.try_emplace(surface->get_native());
+        const std::scoped_lock lock(member().swapchain_states_mutex);
+        auto [entry, inserted] = member().swapchain_states.try_emplace(surface->get_native());
         if (!inserted)
             return;
         entry->second = std::make_unique<swapchain_data>();
@@ -3742,7 +3804,7 @@ void initialize_own_surface(device_object *surface, HWND window)
     }
     data->window = window;
     data->ownership_token = next_swapchain_ownership_token();
-    if (g_cooperative_dispatcher)
+    if (owns_dispatcher_surface())
         static_cast<void>(retain_official_hook_owner(*data));
     static_cast<void>(advance_own_surface_startup(*data));
 }
@@ -3775,8 +3837,8 @@ void destroy_own_swapchain(swapchain *swapchain, bool resize)
     // presenter cannot promote during teardown.
     release_primary_swapchain(*data);
     {
-        const std::scoped_lock lock(g_swapchain_states_mutex);
-        g_swapchain_states.erase(swapchain->get_native());
+        const std::scoped_lock lock(member().swapchain_states_mutex);
+        member().swapchain_states.erase(swapchain->get_native());
     }
     release_transport(transport);
 }
@@ -3800,7 +3862,7 @@ bool route_official_input_message(
     if (status == EGO_STATUS_OK)
         return true;
 
-    if (!g_route_error_logged.test_and_set(std::memory_order_relaxed))
+    if (!member().route_error_logged.test_and_set(std::memory_order_relaxed))
         log_transport_error("official ReShade input delivery", status);
     publish_input_routing_failure(data.transport, status);
     static_cast<void>(reset_input_router(data.transport));
@@ -4097,7 +4159,7 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
     if (data.transport == nullptr)
         return;
 
-    if (!g_has_private_input_observer && g_participant_id == 0)
+    if (!g_has_private_input_observer && member().participant_id == 0)
     {
         official_hook_owner *const owner = get_official_hook_owner(data);
         if (owner == nullptr ||
@@ -4153,14 +4215,14 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
     }
 
     data.phase = next_phase(data.phase, desired != 0);
-    if (!g_has_private_input_observer && g_participant_id == 0)
+    if (!g_has_private_input_observer && member().participant_id == 0)
         publish_official_hook_phase(data, data.phase);
     if (data.phase != input_phase::disabled)
         runtime->block_input_next_frame();
 
     const bool routing_enabled = data.phase == input_phase::enabled;
     if (!routing_enabled)
-        g_pointer_route_reset_pending.store(true, std::memory_order_release);
+        member().pointer_route_reset_pending.store(true, std::memory_order_release);
     const bool acknowledge =
         data.phase == input_phase::disabled || data.phase == input_phase::enabled;
     status = ego_transport_apply_input_filter(
@@ -4180,7 +4242,7 @@ void update_input_ownership(effect_runtime *runtime, swapchain_data &data)
 
     // Participant callbacks never own the process cursor or suppression hook.
     // The event adapter applies the aggregate state once after all members.
-    if (g_participant_id != 0)
+    if (member().participant_id != 0)
         return;
 
     std::int32_t cursor_code = -1;
@@ -4257,15 +4319,15 @@ bool producer_session_active(std::uint64_t epoch)
 
 void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknowledge)
 {
-    if (auto *owner = g_participant_id == 0 ? get_official_hook_owner(data) : nullptr)
+    if (auto *owner = member().participant_id == 0 ? get_official_hook_owner(data) : nullptr)
     {
         owner->cursor_code.store(-1, std::memory_order_release);
         PostMessageW(reinterpret_cast<HWND>(owner->root_window.load(std::memory_order_acquire)),
             g_official_control_message.load(std::memory_order_acquire), official_cursor_update, 0);
     }
     data.phase = input_phase::disabled;
-    g_cooperative_member_phase = input_phase::disabled;
-    if (!g_has_private_input_observer && g_participant_id == 0)
+    member().cooperative_member_phase = input_phase::disabled;
+    if (!g_has_private_input_observer && member().participant_id == 0)
         publish_official_hook_phase(data, input_phase::disabled);
 
     discard_dormant_input();
@@ -4306,7 +4368,7 @@ void deactivate_input(swapchain_data &data, bool reset_imgui_cursor, bool acknow
             data.last_focus_error = EGO_STATUS_OK;
     }
 
-    if (reset_imgui_cursor && g_participant_id == 0)
+    if (reset_imgui_cursor && member().participant_id == 0)
         ImGui::GetIO().MouseDrawCursor = false;
 }
 
@@ -4329,7 +4391,7 @@ void destroy_own_effect_runtime(effect_runtime *runtime)
         return;
 
     g_logical_control.run([&] {
-        if (g_member_input_driver.release(runtime->get_native()))
+        if (member().member_input_driver.release(runtime->get_native()))
             deactivate_destroyed_runtime_input(*data);
     });
 
@@ -4434,14 +4496,14 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
             ego_scene_snapshot_release(snapshot);
             return;
         }
-        registrations.push_back({g_participant_id, window_id, 0, incarnation});
+        registrations.push_back({member().participant_id, window_id, 0, incarnation});
         incarnations.emplace(window_id, incarnation);
     }
     g_logical_control.run([&] {
-        const bool reconciled = g_cooperative.reconcile_registrations(g_participant_id, registrations.data(), registrations.size());
-        if (reconciled && registrations != g_producer_registration_order &&
-            g_cooperative.reorder_registrations(g_participant_id, registrations.data(), registrations.size()))
-            g_producer_registration_order = registrations;
+        const bool reconciled = g_cooperative.reconcile_registrations(member().participant_id, registrations.data(), registrations.size());
+        if (reconciled && registrations != member().producer_registration_order &&
+            g_cooperative.reorder_registrations(member().participant_id, registrations.data(), registrations.size()))
+            member().producer_registration_order = registrations;
     });
     swapchain_state.cooperative_incarnations.swap(incarnations);
 
@@ -4519,7 +4581,7 @@ void compose_electron_scene(effect_runtime *runtime, swapchain_data &swapchain_s
         const ImVec2 bottom_right(
             static_cast<float>(frame.rect_x) + static_cast<float>(frame.rect_width),
             static_cast<float>(frame.rect_y) + static_cast<float>(frame.rect_height));
-        if (g_participant_id == 0)
+        if (member().participant_id == 0)
             draw_list->AddImage(texture.view.handle, top_left, bottom_right);
         frame.name_utf8 = nullptr;
         frame.rgba = nullptr;
@@ -4622,20 +4684,20 @@ bool prepare_own_frame(effect_runtime *runtime, bool anchor_owner)
         if (anchor_owner && !owns_primary_swapchain(*data) &&
             (!captured || !claim_primary_swapchain(*data)))
             return false;
-        const auto logical_epoch = g_logical_session_epoch.observe(session_epoch);
+        const auto logical_epoch = member().logical_session_epoch.observe(session_epoch);
         if (logical_epoch.stale)
             return false;
         if (anchor_owner && !update_primary_target_surface(*data, surface, captured))
             return false;
         if (!anchor_owner && captured)
             publish_target_surface(*data, surface);
-        g_member_input_driver.activate(runtime->get_native());
+        member().member_input_driver.activate(runtime->get_native());
         if (logical_epoch.changed)
         {
             deactivate_dormant_input(*data);
             // An epoch ends registrations; an ordinary raster gap does not.
-            static_cast<void>(g_cooperative.reconcile_registrations(g_participant_id, nullptr, 0));
-            g_producer_registration_order.clear();
+            static_cast<void>(g_cooperative.reconcile_registrations(member().participant_id, nullptr, 0));
+            member().producer_registration_order.clear();
         }
         return true;
     });
@@ -4718,9 +4780,10 @@ bool prepare_own_frame(effect_runtime *runtime, bool anchor_owner)
     return true;
 }
 
-void cooperative_prepare_frame(void *, void *opaque_runtime)
+void cooperative_prepare_frame(void *context, void *opaque_runtime)
 {
-    if (g_participant_id.load(std::memory_order_acquire) == 0)
+    const participant_callback_scope scope(context);
+    if (member().participant_id.load(std::memory_order_acquire) == 0)
         return;
     auto *const runtime = static_cast<effect_runtime *>(opaque_runtime);
     if (find_swapchain_data(runtime) == nullptr)
@@ -4753,8 +4816,8 @@ void cooperative_prepare_frame(void *, void *opaque_runtime)
         }
     }
     g_logical_control.run([&] {
-        static_cast<void>(g_cooperative.publish_windows(g_participant_id, windows.data(), windows.size(), true));
-        static_cast<void>(g_cooperative.set_interception(g_participant_id,
+        static_cast<void>(g_cooperative.publish_windows(member().participant_id, windows.data(), windows.size(), true));
+        static_cast<void>(g_cooperative.set_interception(member().participant_id,
             data != nullptr && data->cooperative_frame_active && data->cooperative_requested_interception &&
             target_window_focused(data->window)));
         if (data == nullptr || data->transport == nullptr)
@@ -4763,59 +4826,61 @@ void cooperative_prepare_frame(void *, void *opaque_runtime)
         {
             std::uint64_t focus_revision = 0, focus_incarnation = 0;
             std::uint32_t focus_window = 0, focused = 0;
-            if (ego_transport_cooperative_focus_request(data->transport, g_cooperative_focus_revision,
+            if (ego_transport_cooperative_focus_request(data->transport, member().cooperative_focus_revision,
                 &focus_revision, &focus_window, &focus_incarnation, &focused) != EGO_STATUS_OK || focus_revision == 0)
                 break;
             const auto found = data->cooperative_incarnations.find(focus_window);
             if (focused != 0 && found != data->cooperative_incarnations.end() && found->second == focus_incarnation)
             {
-                if (g_cooperative.set_focus({g_participant_id, focus_window, 0, focus_incarnation}))
-                    g_cooperative_focus_revision = focus_revision;
+                if (g_cooperative.set_focus({member().participant_id, focus_window, 0, focus_incarnation}))
+                    member().cooperative_focus_revision = focus_revision;
                 else
                     break;
             }
             else if (focused == 0)
             {
                 const auto current = g_cooperative.focus();
-                if (current.participant == g_participant_id && current.window_id == focus_window && current.incarnation == focus_incarnation)
+                if (current.participant == member().participant_id && current.window_id == focus_window && current.incarnation == focus_incarnation)
                     static_cast<void>(g_cooperative.set_focus({}));
-                g_cooperative_focus_revision = focus_revision;
+                member().cooperative_focus_revision = focus_revision;
             }
             else break;
         }
         const auto focus = g_cooperative.focus();
         static_cast<void>(ego_transport_set_cooperative_focus(
-            data->transport, focus.participant == g_participant_id ? focus.window_id : 0,
-            focus.participant == g_participant_id ? focus.incarnation : 0));
+            data->transport, focus.participant == member().participant_id ? focus.window_id : 0,
+            focus.participant == member().participant_id ? focus.incarnation : 0));
     });
 }
 
-void cooperative_flush_input(void *, void *opaque_runtime)
+void cooperative_flush_input(void *context, void *opaque_runtime)
 {
+    const participant_callback_scope scope(context);
     auto *const runtime = static_cast<effect_runtime *>(opaque_runtime);
     auto *const data = find_swapchain_data(runtime);
     if (data == nullptr || !data->cooperative_frame_active ||
-        g_member_input_driver.native_id() != runtime->get_native())
+        member().member_input_driver.native_id() != runtime->get_native())
         return;
     g_logical_control.run([&] {
-        if (g_member_input_driver.native_id() != runtime->get_native())
+        if (member().member_input_driver.native_id() != runtime->get_native())
             return;
         const auto focus = g_cooperative.focus();
         static_cast<void>(ego_transport_set_cooperative_focus(data->transport,
-            focus.participant == g_participant_id ? focus.window_id : 0,
-            focus.participant == g_participant_id ? focus.incarnation : 0));
+            focus.participant == member().participant_id ? focus.window_id : 0,
+            focus.participant == member().participant_id ? focus.incarnation : 0));
         static_cast<void>(ego_transport_set_cooperative_interception_checked(data->transport,
             g_cooperative.interception_requested() && !g_cooperative.snapshot_windows().empty() ? 1U : 0U,
             data->cooperative_input_revision));
-        data->phase = g_cooperative_member_phase;
+        data->phase = member().cooperative_member_phase;
         update_input_ownership(runtime, *data);
-        g_cooperative_member_phase = data->phase;
+        member().cooperative_member_phase = data->phase;
         drain_input_messages(data->transport, primary_target_window(*data));
     });
 }
 
-void cooperative_render_window(void *, void *opaque_runtime, std::uint32_t window_id, std::uint64_t incarnation)
+void cooperative_render_window(void *context, void *opaque_runtime, std::uint32_t window_id, std::uint64_t incarnation)
 {
+    const participant_callback_scope scope(context);
     auto *const data = find_swapchain_data(static_cast<effect_runtime *>(opaque_runtime));
     if (data == nullptr || !data->cooperative_frame_active)
         return;
@@ -4830,7 +4895,7 @@ void cooperative_render_window(void *, void *opaque_runtime, std::uint32_t windo
         [window_id](const auto &value) { return value.window_id == window_id; });
     if (frame == data->cooperative_frames.end())
         return;
-    if (g_cooperative_dispatcher && g_render_readback.enabled())
+    if (owns_dispatcher_surface() && g_render_readback.enabled())
     {
         ego::render_readback_diagnostic::own_window_note note;
         note.runtime = static_cast<effect_runtime *>(opaque_runtime);
@@ -4850,35 +4915,41 @@ void cooperative_render_window(void *, void *opaque_runtime, std::uint32_t windo
             static_cast<float>(frame->rect_y) + frame->rect_height));
 }
 
-std::uint32_t cooperative_hit_test(void *, std::uint32_t window_id, std::uint64_t incarnation,
+std::uint32_t cooperative_hit_test(void *context, std::uint32_t window_id, std::uint64_t incarnation,
     std::int32_t x, std::int32_t y)
 {
+    const participant_callback_scope scope(context);
+    const std::scoped_lock lock(member().transport_mutex);
     std::uint32_t hit = 0;
-    if (g_transport != nullptr)
-        static_cast<void>(ego_transport_hit_test_window(g_transport, window_id, incarnation, x, y, &hit));
+    if (member().transport != nullptr)
+        static_cast<void>(ego_transport_hit_test_window(member().transport, window_id, incarnation, x, y, &hit));
     return hit ? ego::cooperative::hit_body : 0;
 }
 
-std::int32_t cooperative_cursor_at(void *, std::uint32_t window_id, std::uint64_t incarnation,
+std::int32_t cooperative_cursor_at(void *context, std::uint32_t window_id, std::uint64_t incarnation,
     std::int32_t, std::int32_t)
 {
+    const participant_callback_scope scope(context);
+    const std::scoped_lock lock(member().transport_mutex);
     std::int32_t cursor = -1;
-    if (g_transport != nullptr)
-        static_cast<void>(ego_transport_cursor_for_window(g_transport, window_id, incarnation, &cursor));
+    if (member().transport != nullptr)
+        static_cast<void>(ego_transport_cursor_for_window(member().transport, window_id, incarnation, &cursor));
     return cursor;
 }
 
-void cooperative_release_input(void *)
+void cooperative_release_input(void *context)
 {
+    const participant_callback_scope scope(context);
     g_logical_control.run([&] {
-        if (g_transport != nullptr)
-            static_cast<void>(ego_transport_release_cooperative_ownership(g_transport));
+        if (member().transport != nullptr)
+            static_cast<void>(ego_transport_release_cooperative_ownership(member().transport));
         discard_dormant_input();
     });
 }
 
-void cooperative_destroy_surface(void *, void *surface, std::uint32_t final_swapchain)
+void cooperative_destroy_surface(void *context, void *surface, std::uint32_t final_swapchain)
 {
+    const participant_callback_scope scope(context);
     if (final_swapchain != 0)
     {
         destroy_own_swapchain(static_cast<swapchain *>(surface), false);
@@ -4923,7 +4994,7 @@ void on_destroy_swapchain(swapchain *surface, bool resize)
         if (participant.callbacks.destroy_surface != nullptr)
         {
             own_surface_destroyed = own_surface_destroyed ||
-                participant.callbacks.destroy_surface == cooperative_destroy_surface;
+                (participant.callbacks.destroy_surface == cooperative_destroy_surface && participant.context == nullptr);
             participant.callbacks.destroy_surface(participant.context, surface, 1);
         }
     // The dormant first adapter deliberately has no participant entry. Compare
@@ -4966,7 +5037,7 @@ void on_destroy_effect_runtime(effect_runtime *runtime)
         if (participant.callbacks.destroy_surface != nullptr)
         {
             own_surface_destroyed = own_surface_destroyed ||
-                participant.callbacks.destroy_surface == cooperative_destroy_surface;
+                (participant.callbacks.destroy_surface == cooperative_destroy_surface && participant.context == nullptr);
             participant.callbacks.destroy_surface(participant.context, runtime, 0);
         }
     if (!own_surface_destroyed)
@@ -5043,7 +5114,7 @@ void apply_cooperative_presentation_cursor(effect_runtime *runtime)
 
 void on_reshade_overlay(effect_runtime *runtime)
 {
-    if (g_participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS &&
+    if (member().participant_id == 0 && initialize_automatic_member() != ERROR_SUCCESS &&
         !can_drive_dormant_adapter())
         return;
     const bool logical_owner = g_cooperative.claim_primary_surface(runtime->get_native());
@@ -5269,10 +5340,54 @@ DWORD pin_cooperative_modules()
     return ERROR_SUCCESS;
 }
 
+DWORD publish_cooperative_member(participant_state *context = nullptr)
+{
+    const participant_callback_scope scope(context);
+    ego::cooperative::callbacks_v1 callbacks;
+    callbacks.prepare_frame = cooperative_prepare_frame;
+    callbacks.render_window = cooperative_render_window;
+    callbacks.hit_test = cooperative_hit_test;
+    callbacks.route_message = queue_cooperative_input;
+    callbacks.release_input = cooperative_release_input;
+    callbacks.cursor_at = cooperative_cursor_at;
+    callbacks.destroy_surface = cooperative_destroy_surface;
+    callbacks.flush_input = cooperative_flush_input;
+    auto admission = g_cooperative.reserve_participant();
+    if (!admission)
+        return ERROR_TOO_MANY_SESS;
+    // No callback/context is visible and no registry lock is held while
+    // acquiring the loader lock. Rejected admission must not pin this module.
+    const auto pin_error = pin_cooperative_modules();
+    if (pin_error != ERROR_SUCCESS)
+        return pin_error;
+    // PIN is irreversible. If publication fails, consume the invisible slot
+    // rather than admitting an unbounded number of other pinned modules.
+    admission.retain_if_unpublished();
+    member().input_source_cutoff.store(g_cooperative.latest_source_sequence(), std::memory_order_release);
+    // Callback snapshots may begin as soon as publish releases the registry.
+    if (context != nullptr)
+        context->participant_id.store(admission.id(), std::memory_order_release);
+    const auto participant = admission.publish(callbacks, context);
+    if (participant == 0)
+    {
+        if (context != nullptr)
+            context->participant_id.store(0, std::memory_order_release);
+        return ERROR_TOO_MANY_SESS;
+    }
+    if (context == nullptr)
+        member().participant_id.store(participant, std::memory_order_release);
+    InterlockedExchange(&ElectronGameOverlayCooperativeReadyV1, 1);
+    return ERROR_SUCCESS;
+}
+
 DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initializer,
     bool preloaded_activation)
 {
     const std::scoped_lock lock(g_member_initialization_mutex);
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+    if (g_memory_dispatcher.load(std::memory_order_acquire) || g_preloaded_memory_binding)
+        return ERROR_ALREADY_ASSIGNED;
+#endif
     std::wstring directory;
     if (preloaded_activation)
     {
@@ -5305,7 +5420,7 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
     }
     else if (is_preloaded_member())
         return ERROR_INVALID_FUNCTION;
-    if (g_participant_id.load(std::memory_order_acquire) != 0)
+    if (member().participant_id.load(std::memory_order_acquire) != 0)
         return ERROR_SUCCESS;
     if (!preloaded_activation && opaque_request != nullptr)
     {
@@ -5328,44 +5443,91 @@ DWORD initialize_cooperative_member(void *opaque_request, bool explicit_initiali
     if (!std::filesystem::path(directory).is_absolute())
         return ERROR_BAD_PATHNAME;
     const auto route_directory = std::filesystem::path(directory);
-    g_private_route_present = explicit_initializer || has_owned_stage_marker(route_directory);
+    member().private_route_present = explicit_initializer || has_owned_stage_marker(route_directory);
     g_render_readback.configure(route_directory, g_cooperative_dispatcher && has_owned_stage_marker(route_directory));
     const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
         directory.data(), static_cast<int>(directory.size()), nullptr, 0, nullptr, nullptr);
     if (bytes <= 0)
         return ERROR_NO_UNICODE_TRANSLATION;
-    g_private_run_directory.assign(static_cast<std::size_t>(bytes), '\0');
+    member().private_run_directory.assign(static_cast<std::size_t>(bytes), '\0');
     if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, directory.data(),
-        static_cast<int>(directory.size()), g_private_run_directory.data(), bytes, nullptr, nullptr) != bytes)
+        static_cast<int>(directory.size()), member().private_run_directory.data(), bytes, nullptr, nullptr) != bytes)
         return ERROR_NO_UNICODE_TRANSLATION;
-    ego::cooperative::callbacks_v1 callbacks;
-    callbacks.prepare_frame = cooperative_prepare_frame;
-    callbacks.render_window = cooperative_render_window;
-    callbacks.hit_test = cooperative_hit_test;
-    callbacks.route_message = queue_cooperative_input;
-    callbacks.release_input = cooperative_release_input;
-    callbacks.cursor_at = cooperative_cursor_at;
-    callbacks.destroy_surface = cooperative_destroy_surface;
-    callbacks.flush_input = cooperative_flush_input;
-    auto admission = g_cooperative.reserve_participant();
-    if (!admission)
-        return ERROR_TOO_MANY_SESS;
-    // No callback/context is visible and no registry lock is held while
-    // acquiring the loader lock. Rejected admission must not pin this module.
-    const auto pin_error = pin_cooperative_modules();
-    if (pin_error != ERROR_SUCCESS)
-        return pin_error;
-    // PIN is irreversible. If publication fails, consume the invisible slot
-    // rather than admitting an unbounded number of other pinned modules.
-    admission.retain_if_unpublished();
-    g_input_source_cutoff.store(g_cooperative.latest_source_sequence(), std::memory_order_release);
-    const auto participant = admission.publish(callbacks, nullptr);
-    if (participant == 0)
-        return ERROR_TOO_MANY_SESS;
-    g_participant_id.store(participant, std::memory_order_release);
-    InterlockedExchange(&ElectronGameOverlayCooperativeReadyV1, 1);
-    return ERROR_SUCCESS;
+    return publish_cooperative_member();
 }
+
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+static_assert(sizeof(ego_private_route_v2) == 112);
+static_assert(offsetof(ego_private_route_v2, token_ascii) == 48);
+
+DWORD initialize_memory_member(const ego_private_route_v2 *route)
+{
+    if (route == nullptr || route->struct_size != sizeof(*route) ||
+        route->version != EGO_PRIVATE_ROUTE_VERSION || route->reserved != 0 || route->reserved2 != 0 ||
+        route->port == 0 || route->producer_pid == 0 || route->producer_creation_time_100ns == 0 ||
+        route->target_pid != GetCurrentProcessId() ||
+        !std::all_of(std::begin(route->token_ascii), std::end(route->token_ascii), [](std::uint8_t c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }))
+        return ERROR_INVALID_PARAMETER;
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+        return GetLastError();
+    const auto birth = (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+    if (birth == 0 || birth != route->target_creation_time_100ns)
+        return ERROR_INVALID_PARAMETER;
+
+    const HANDLE producer = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE,
+        route->producer_pid);
+    if (producer == nullptr)
+        return GetLastError();
+    const bool producer_live = GetProcessTimes(producer, &created, &exited, &kernel, &user) &&
+        WaitForSingleObject(producer, 0) == WAIT_TIMEOUT;
+    CloseHandle(producer);
+    const auto producer_birth = (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+    if (!producer_live || producer_birth != route->producer_creation_time_100ns)
+        return ERROR_INVALID_PARAMETER;
+
+    const std::scoped_lock initialization_lock(g_member_initialization_mutex);
+    if (g_reshade_host_module == nullptr)
+        return ERROR_INVALID_FUNCTION;
+    const auto same_route = [route](const ego_private_route_v2 &existing) {
+        return existing.producer_pid == route->producer_pid &&
+            existing.producer_creation_time_100ns == route->producer_creation_time_100ns &&
+            existing.port == route->port &&
+            std::equal(std::begin(existing.token_ascii), std::end(existing.token_ascii), std::begin(route->token_ascii));
+    };
+    if (is_preloaded_member())
+    {
+        if (!g_preload_bound_directory.empty() || (g_preloaded_memory_binding && !same_route(*g_preloaded_memory_binding)))
+            return ERROR_ALREADY_ASSIGNED;
+        // A dormant registry image has one lifetime binding. Reserve it before
+        // publishing callbacks, including failures with an uncertain outcome.
+        if (!g_preloaded_memory_binding) g_preloaded_memory_binding = *route;
+    }
+    for (const auto &entry : g_memory_members)
+    {
+        if (same_route(*entry->private_memory_route))
+            return ERROR_SUCCESS;
+    }
+    if (g_memory_members.size() >= ego::cooperative::max_participants)
+        return ERROR_TOO_MANY_SESS;
+    auto state = std::make_unique<participant_state>();
+    state->private_memory_route = *route;
+    state->private_memory_route->input_capabilities = EGO_INPUT_CAPABILITY_COPIED_WM_INPUT |
+        (g_has_private_input_observer ? EGO_INPUT_CAPABILITY_COPIED_RAW_INPUT_BUFFER : 0);
+    auto *const context = state.get();
+    // Own the allocation before making it visible to callbacks. Published
+    // snapshots can outlive producer shutdown and retain this stable pointer.
+    g_memory_members.push_back(std::move(state));
+    const auto result = publish_cooperative_member(context);
+    if (result == ERROR_SUCCESS)
+        g_memory_dispatcher.store(true, std::memory_order_release);
+    else
+        g_memory_members.pop_back();
+    return result;
+}
+#endif
 
 DWORD initialize_automatic_member() noexcept
 {
@@ -5405,6 +5567,16 @@ extern "C" __declspec(dllexport) __declspec(align(4)) volatile LONG ElectronGame
 #pragma comment(linker, "/EXPORT:ElectronGameOverlayActivatePreloadedMemberV1=_ElectronGameOverlayActivatePreloadedMemberV1@4")
 #pragma comment(linker, "/EXPORT:ElectronGameOverlayCanUnloadFailedMemberV1=_ElectronGameOverlayCanUnloadFailedMemberV1@0")
 #endif
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+#if defined(_M_IX86)
+#pragma comment(linker, "/EXPORT:ElectronGameOverlayInitializeMemoryMemberV2=_ElectronGameOverlayInitializeMemoryMemberV2@4")
+#endif
+extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMemoryMemberV2(const ego_private_route_v2 *route)
+{
+    try { return initialize_memory_member(route); }
+    catch (...) { return ERROR_DLL_INIT_FAILED; }
+}
+#endif
 extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayInitializeMember(void *request)
 {
     try { return initialize_cooperative_member(request, true); }
@@ -5422,17 +5594,21 @@ extern "C" __declspec(dllexport) DWORD WINAPI ElectronGameOverlayCanUnloadFailed
     try
     {
         const std::scoped_lock initialization_lock(g_member_initialization_mutex);
-        const std::scoped_lock transport_lock(g_transport_mutex);
+        const std::scoped_lock transport_lock(member().transport_mutex);
         return !g_module_pinned.load(std::memory_order_acquire) &&
-            g_participant_id.load(std::memory_order_acquire) == 0 &&
+            member().participant_id.load(std::memory_order_acquire) == 0 &&
             InterlockedCompareExchange(&ElectronGameOverlayCooperativeReadyV1, 0, 0) == 0 &&
-            !g_cooperative_dispatcher && !g_public_registered && g_transport == nullptr &&
-            g_transport_references == 0 ? 1 : 0;
+            !g_cooperative_dispatcher && !g_public_registered && member().transport == nullptr &&
+            member().transport_references == 0 ? 1 : 0;
     }
     catch (...) { return 0; }
 }
 #ifndef ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID
 #error "ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID must be provided by the build."
+#endif
+#if defined(EGO_EXPERIMENTAL_PRIVATE_MEMORY_ROUTE)
+static_assert(std::string_view(ELECTRON_GAME_OVERLAY_ADDON_BUILD_ID) != "CCE20935ADD44EF6A5A7973014B2E07F",
+    "The private-memory member must have its own mapped build identity.");
 #endif
 extern "C" __declspec(dllexport) const char
     ElectronGameOverlayReShadeAddonBuildId[] =

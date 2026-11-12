@@ -36,7 +36,7 @@ test('portable source contract: staging mirrors bound cooperative native and pac
   const produced = producer.match(/\$PackageBuildStamp = \[ordered\]@\{([\s\S]*?)\n\}/)[1];
   assert.deepEqual([...properties.matchAll(/"(\w+)"/g)].map(m => m[1]).sort(), [...produced.matchAll(/^    (\w+) =/gm)].map(m => m[1]).sort());
   assert.deepEqual(patches(stage), patches(producer));
-  assert.equal(patches(stage).length, 51);
+  assert.equal(patches(stage).length, 58);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'd3d11SwapchainResourceIdentityPatchSha256'), [['d3d11SwapchainResourceIdentityPatchSha256', 'reshade-d3d11-swapchain-resource-identity.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'ownedLateD3d11PatchSha256'), [['ownedLateD3d11PatchSha256', 'reshade-owned-late-d3d11.patch']]);
   assert.deepEqual(patches(stage).filter(([key]) => key === 'injectorFirstHostResultPatchSha256'), [['injectorFirstHostResultPatchSha256', 'reshade-injector-first-host-result.patch']]);
@@ -97,10 +97,10 @@ test('portable structural guards retain all patch checks, architecture matching,
   for (const name of ['Assert-NotReparsePoint $Source', 'Assert-NotReparsePoint $Destination', 'Compare-Object $ExpectedArtifactNames $ActualSourceNames', 'Compare-Object $ExpectedDestinationNames $ActualDestinationNames', '-Expected $SourceHashes[$ArtifactName]', '-LiteralPath $Destination).Hash']) assert.ok(stage.includes(name), name);
 });
 
-test('current source cache binds the complete twenty-six-file stack and terminal patches', () => {
+test('current source cache binds the complete source stack and terminal patches', () => {
   const expectedFiles = [...reshadeProducer.match(/\$ExpectedPatchedFiles = @\(([\s\S]*?)\r?\n\)/)[1].matchAll(/"([^"]+)"/g)].map(match => match[1]).sort();
   const contentPins = [...reshadeProducer.match(/\$ExpectedPatchedContentSha256 = \[ordered\]@\{([\s\S]*?)\r?\n\}/)[1].matchAll(/"([^"]+)" = "([0-9A-F]{64})"/g)].map(([, name, digest]) => [name, digest]);
-  assert.equal(expectedFiles.length, 26);
+  assert.equal(expectedFiles.length, 31);
   assert.deepEqual(contentPins.map(([name]) => name).sort(), expectedFiles);
   const patch = fs.readFileSync(path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-late-d3d11.patch'));
   assert.equal(crypto.createHash('sha256').update(patch).digest('hex').toUpperCase(), ownedLatePatchSha256);
@@ -163,7 +163,7 @@ test('current source cache binds the complete twenty-six-file stack and terminal
   const reverseChecks = reshadeProducer.match(/foreach \(\$Patch in @\(([\s\S]*?)\r?\n    \)\)/)[1];
   // Context/readiness replace the initial-inspection hunk. Superseded seams
   // are validated by the exact complete vector and ordered migration tests.
-  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch', '$InjectorSelectionBeforeOpenPatch', '$InjectorStartupReadinessPatch', '$PrivateStageDiagnosticsPatch', '$DeferredD3d11Patch'].sort());
+  assert.deepEqual(reverseChecks.match(/\$\w+Patch/g).sort(), ['$InjectorSharedAddonDirectoryPatch', '$OwnedLateD3d11ForeignAddonIsolationPatch', '$InjectorSelectionBeforeOpenPatch', '$InjectorStartupReadinessPatch', '$PrivateStageDiagnosticsPatch', '$DeferredD3d11Patch', '$OwnedCacheBootstrapPatch'].sort());
   assert.ok(reshadeProducer.indexOf('foreach ($Patch in @(') > reshadeProducer.indexOf('foreach ($Entry in $ExpectedPatchedContentSha256.GetEnumerator())'), 'Terminal patch reversal check follows the complete source inventory/hash proof');
   for (const source of [reshadeProducer, producer, stage]) {
     assert.ok(source.includes(ownedLatePatchSha256), 'Frozen owned-late production patch is pinned before packaging/cache acceptance');
@@ -191,6 +191,13 @@ for (const shell of ['powershell.exe', 'pwsh.exe']) test('actual extracted curre
     runtimePatchRoot: path.join(root, 'libs/electron-game-overlay-runtime'),
     sources: [path.join(root, 'libs/electron-game-overlay-runtime/scripts/build.ps1'), path.join(root, 'libs/electron-game-overlay/scripts/stage-game-overlay-runtime.ps1')],
     requiredPatches: [
+      { key: 'ownedCacheBootstrapPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-cache-bootstrap.patch'), sha256: '8E7DF5484F088778BABD904D6C3745396EA2F92D1358FE7274D7B8C3A454089C' },
+      { key: 'injectorCacheBootstrapPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-cache-bootstrap.patch'), sha256: '708EF9AA8824580E74C999131CF353B62B955421E0A93078E800D2927F74B5EF' },
+      { key: 'injectorElevatedCachePatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-elevated-cache.patch'), sha256: '2169F9131F3BBC10D5D5BDC2FB7B0973E7D531B1391A65C171DE1D91544D044E' },
+      { key: 'injectorCachePreloadPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-cache-preload.patch'), sha256: '4F24691BB837C1C84A9C919331B82C187DEA9562545414FC36D1B3F96974C67E' },
+      { key: 'injectorCacheOfficialPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-cache-official.patch'), sha256: '6523409BF4DF938278B217C2141619FD52836A159C132FDF93C321575A36F451' },
+      { key: 'ownedMemoryConfigurationPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-memory-configuration.patch'), sha256: 'E5D5E8D632952956518E4BD253AC0D73C4C3A7F69B5918A1768C4E364A818BC1' },
+      { key: 'injectorPolicyStdinPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-injector-policy-stdin.patch'), sha256: '8997956192A384FE83D6E8470D63E8BFBE02D7973469E8ACFD1BE6ECB5269111' },
       { key: 'ownedDeferredD3d11PatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-deferred-d3d11.patch'), sha256: '779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB' },
       { key: 'ownedCompositionAuxiliaryLifetimePatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-composition-auxiliary-lifetime.patch'), sha256: '3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61' },
       { key: 'ownedCompositionWindowEligibilityPatchSha256', file: path.join(root, 'libs/electron-game-overlay-runtime/patches/reshade-owned-composition-window-eligibility.patch'), sha256: '080DA1FD83FE48CB782FA9268B82A386E75BE081D107F2A5013F06675107B97F' },
@@ -253,7 +260,7 @@ foreach ($SourcePath in $InputData.sources) {
     if ((Split-Path $SourcePath -Leaf) -eq 'build.ps1') { $RuntimeRoot = $InputData.runtimePatchRoot }
     else { $RuntimeSourceRoot = $InputData.runtimePatchRoot }
     . ([scriptblock]::Create($PatchTable.Extent.Text))
-    if ($ExpectedPatchProvenance.Count -ne 51) { throw 'Production patch path table is incomplete.' }
+    if ($ExpectedPatchProvenance.Count -ne 58) { throw 'Production patch path table is incomplete.' }
     foreach ($PatchPath in $ExpectedPatchProvenance.Values) {
         if (-not (Test-Path -LiteralPath $PatchPath -PathType Leaf)) { throw ('Unresolved production patch path: ' + $PatchPath) }
     }
@@ -268,7 +275,7 @@ foreach ($SourcePath in $InputData.sources) {
     $ExpectedPatchProvenance = [ordered]@{}
     foreach ($Required in $InputData.requiredPatches) { $ExpectedPatchProvenance[$Required.key] = $Required.file }
     foreach ($Case in $InputData.cases) {
-        $Fields = [ordered]@{ schemaVersion = $Case.schema; cooperativeAddonProtocol = 1; injectorProcessInstanceBinding = 1; injectorFutureTargets = 2; addonPreloadProtocol = 1; commit = $ExpectedReShadeCommit; configuration = 'Release'; platform = '64-bit'; addonLevel = 2 }
+        $Fields = [ordered]@{ schemaVersion = $Case.schema; cooperativeAddonProtocol = 1; injectorProcessInstanceBinding = 1; injectorFutureTargets = 2; injectorPolicyStdin = 1; injectorCacheBootstrap = 1; addonPreloadProtocol = 1; commit = $ExpectedReShadeCommit; configuration = 'Release'; platform = '64-bit'; addonLevel = 2 }
         foreach ($Required in $InputData.requiredPatches) { $Fields[$Required.key] = $Required.sha256 }
         if ($Case.present) { $Fields[$Case.key] = $Case.value } else { $Fields.Remove($Case.key) }
         if ($Case.forceType -eq 'int32') { $Fields[$Case.key] = [int]$Case.value }
@@ -297,6 +304,11 @@ foreach ($SourcePath in $InputData.sources) {
             foreach ($Key in $ExpectedPackageBuildStampProperties) { $Fields[$Key] = 'A' * 64 }
             $Fields.schemaVersion = 4; $Fields.kind = 'electron-game-overlay-runtime-build'; $Fields.platform = 'win32-x64'; $Fields.configuration = 'RelWithDebInfo'
             $Fields.addonBuildId = $ExpectedAddonBuildId; $Fields.cooperativeAddonProtocol = 1; $Fields.injectorProcessInstanceBinding = 1; $Fields.injectorFutureTargets = 2
+            $Fields.injectorPolicyStdin = 1
+            $Fields.injectorCacheBootstrap = 1
+            $Fields.elevatedCacheBootstrap = 1
+            $Fields.cachePreloadBootstrap = 1
+            $Fields.cacheOfficialBootstrap = 1
             $Fields.managerProtocolSchemaVersion = 1; $Fields.runtimeGeneration = $ExpectedRuntimeGeneration; $Fields.targetTransportMin = 1; $Fields.targetTransportMax = 1
             $Fields.privateElevatedAuthorization = 2
             if ($Case.present) { $Fields.addonPreloadProtocol = $Case.value } else { $Fields.Remove('addonPreloadProtocol') }

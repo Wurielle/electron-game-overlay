@@ -233,6 +233,7 @@ public:
                 owner_->cancel_participant_reservation(slot_);
         }
         explicit operator bool() const noexcept { return owner_ != nullptr; }
+        std::uint64_t id() const noexcept { return id_; }
         void retain_if_unpublished() noexcept { irreversible_ = true; }
         std::uint64_t publish(const callbacks_v1 &callbacks, void *context)
         {

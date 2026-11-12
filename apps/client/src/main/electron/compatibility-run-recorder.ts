@@ -324,7 +324,7 @@ export class CompatibilityRunRecorder {
           'attachment.injector-returned',
           {
             attemptId: this.attemptReferenceForDirectory(
-              event.result.runDirectory,
+              event.result.runDirectory ?? event.result.runtimeCacheDirectory ?? event.result.targetLabel,
             ),
             runtimeMode: event.result.runtimeMode,
           },

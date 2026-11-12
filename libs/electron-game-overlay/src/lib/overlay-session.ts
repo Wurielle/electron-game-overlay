@@ -1,5 +1,6 @@
 import {
   targetAuthorizers,
+  memoryTargetAuthorizers,
   targetIdentityRequirements,
   targetPolicyGates,
   targetAdmissionGates,
@@ -296,6 +297,24 @@ export class OverlaySession {
         ),
     );
     targetIdentityRequirements.set(this, overlay.requiresProcessInstanceIdentity === true);
+    if (overlay.authorizeMemoryTarget) {
+      memoryTargetAuthorizers.set(this, async (target, signal) => {
+        this.ensureStarted();
+        await waitForAbortable(this.overlay.whenReady(), signal);
+        const route = await overlay.authorizeMemoryTarget!(target);
+        if (this.closed || signal.aborted) {
+          route.release();
+          signal.throwIfAborted();
+          throw new Error('the overlay session is closed');
+        }
+        const release = () => {
+          this.targetAuthorizationReleases.delete(release);
+          route.release();
+        };
+        this.targetAuthorizationReleases.add(release);
+        return Object.freeze({ ...route, release });
+      });
+    }
     globalTargetAuthorizers.set(this, (discoveryPath) => this.#authorizeGlobalTarget(discoveryPath));
     targetPolicyGates.set(this, (pid,suppressed)=>this.overlay.setTargetSuppressed?.(pid,suppressed));
     targetAdmissionGates.set(this, policy=>this.overlay.setTargetAdmissionPolicy?.(policy));

@@ -1,5 +1,12 @@
 const OWNED_DEFERRED_D3D11_PATCH_SHA256 =
   '779D9D41768FE61BC5FF3DCF69E2EE11B360DC00B5B58C24E0B1F83552A2D9BB';
+const OWNED_MEMORY_CONFIGURATION_PATCH_SHA256 =
+  'E5D5E8D632952956518E4BD253AC0D73C4C3A7F69B5918A1768C4E364A818BC1';
+const OWNED_CACHE_BOOTSTRAP_PATCH_SHA256 = '8E7DF5484F088778BABD904D6C3745396EA2F92D1358FE7274D7B8C3A454089C';
+const INJECTOR_CACHE_BOOTSTRAP_PATCH_SHA256 = '708EF9AA8824580E74C999131CF353B62B955421E0A93078E800D2927F74B5EF';
+const INJECTOR_ELEVATED_CACHE_PATCH_SHA256 = '2169F9131F3BBC10D5D5BDC2FB7B0973E7D531B1391A65C171DE1D91544D044E';
+const INJECTOR_CACHE_PRELOAD_PATCH_SHA256 = '4F24691BB837C1C84A9C919331B82C187DEA9562545414FC36D1B3F96974C67E';
+const INJECTOR_CACHE_OFFICIAL_PATCH_SHA256 = '6523409BF4DF938278B217C2141619FD52836A159C132FDF93C321575A36F451';
 const OWNED_COMPOSITION_AUXILIARY_LIFETIME_PATCH_SHA256 =
   '3E80D0D05CA9F383D9E5216034E687B93CC858334B2F61514ADE91EF18573E61';
 const OWNED_COMPOSITION_WINDOW_ELIGIBILITY_PATCH_SHA256 =
@@ -27,6 +34,8 @@ const OWNED_LATE_D3D11_PATCH_SHA256 =
   '51E1FA4ABE6CC35158DC9B347E1FF3FB29CD838FE6040A48EE108C48AD8693CE';
 const INJECTOR_FIRST_HOST_RESULT_PATCH_SHA256 =
   'B68368696902CF556A0540328E76FFFE81A0C7348504F9AA678B9DCE91B1B554';
+const INJECTOR_POLICY_STDIN_PATCH_SHA256 =
+  '8997956192A384FE83D6E8470D63E8BFBE02D7973469E8ACFD1BE6ECB5269111';
 const INJECTOR_ADDON_PRELOAD_PATCH_SHA256 =
   'E23FB34118EA5F39D1B2AD19ECAD3049099407D00F125892C6FF455EC7155F5D';
 const INJECTOR_PRELOADED_FIRST_HOST_PATCH_SHA256 =
@@ -390,6 +399,29 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
   if ((ownedDeferredD3d11Pins.length === 1) !== (expectedGeneration >= 36)) {
     throw new Error('Compiled SDK owned deferred D3D11 patch pin does not match its generation');
   }
+  const ownedMemoryDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+OWNED_MEMORY_CONFIGURATION_PATCH_SHA256\b/g)];
+  const ownedMemoryPins = [...validator.matchAll(/\bconst\s+OWNED_MEMORY_CONFIGURATION_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
+  if (ownedMemoryDeclarations.length !== ownedMemoryPins.length || ownedMemoryPins.length > 1 ||
+      (ownedMemoryPins.length === 1 && ownedMemoryPins[0][1].toUpperCase() !== OWNED_MEMORY_CONFIGURATION_PATCH_SHA256)) {
+    throw new Error('Compiled SDK owned memory configuration patch pin is malformed or unsupported');
+  }
+  if ((ownedMemoryPins.length === 1) !== (expectedGeneration >= 41)) {
+    throw new Error('Compiled SDK owned memory configuration patch pin does not match its generation');
+  }
+  for (const [name, digest, since] of [
+    ['OWNED_CACHE_BOOTSTRAP_PATCH_SHA256', OWNED_CACHE_BOOTSTRAP_PATCH_SHA256, 42],
+    ['INJECTOR_CACHE_BOOTSTRAP_PATCH_SHA256', INJECTOR_CACHE_BOOTSTRAP_PATCH_SHA256, 42],
+    ['INJECTOR_ELEVATED_CACHE_PATCH_SHA256', INJECTOR_ELEVATED_CACHE_PATCH_SHA256, 43],
+    ['INJECTOR_CACHE_PRELOAD_PATCH_SHA256', INJECTOR_CACHE_PRELOAD_PATCH_SHA256, 44],
+    ['INJECTOR_CACHE_OFFICIAL_PATCH_SHA256', INJECTOR_CACHE_OFFICIAL_PATCH_SHA256, 45],
+  ] as const) {
+    const declarations = [...validator.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${name}\\b`, 'g'))];
+    const pins = [...validator.matchAll(new RegExp(`\\bconst\\s+${name}\\s*=\\s*['"]([0-9a-fA-F]{64})['"]\\s*;`, 'g'))];
+    if (declarations.length !== pins.length || pins.length !== Number(expectedGeneration >= since) ||
+        (pins.length === 1 && pins[0][1].toUpperCase() !== digest)) {
+      throw new Error('Compiled SDK cache bootstrap pin disagrees with its generation: ' + name);
+    }
+  }
   const privateDiagnosticDeclarations = [...validator.matchAll(/\b(?:const|let|var)\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\b/g)];
   const privateDiagnosticPins = [...validator.matchAll(/\bconst\s+PRIVATE_STAGE_DIAGNOSTICS_PATCH_SHA256\s*=\s*['"]([0-9a-fA-F]{64})['"]\s*;/g)];
   if (privateDiagnosticDeclarations.length !== privateDiagnosticPins.length || privateDiagnosticPins.length > 1 ||
@@ -439,6 +471,21 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
     if (paired && ['addonBuildId', 'runtimeGeneration', 'targetTransportMin', 'targetTransportMax', 'cooperativeAddonProtocol', 'addonPreloadProtocol','privateElevatedAuthorization']
       .some((key) => stamp[key] !== paired![key])) throw new Error('Native architecture manifests disagree');
     if (stamp.runtimeGeneration !== expectedGeneration) throw new Error('Native runtime generation disagrees with the compiled SDK');
+    if (stamp.injectorPolicyStdin !== (expectedGeneration >= 40 ? 1 : undefined)) {
+      throw new Error('Native stdin policy capability disagrees with the compiled SDK: ' + bits);
+    }
+    if (stamp.injectorCacheBootstrap !== (expectedGeneration >= 42 ? 1 : undefined)) {
+      throw new Error('Native cache bootstrap capability disagrees with the compiled SDK: ' + bits);
+    }
+    if (stamp.elevatedCacheBootstrap !== (expectedGeneration >= 43 ? 1 : undefined)) {
+      throw new Error('Native protected cache capability disagrees with the compiled SDK: ' + bits);
+    }
+    if (stamp.cachePreloadBootstrap !== (expectedGeneration >= 44 ? 1 : undefined)) {
+      throw new Error('Native registered preload cache capability disagrees with the compiled SDK: ' + bits);
+    }
+    if (stamp.cacheOfficialBootstrap !== (expectedGeneration >= 45 ? 1 : undefined)) {
+      throw new Error('Native official cache capability disagrees with the compiled SDK: ' + bits);
+    }
     if(expectedGeneration>=28?stamp.privateElevatedAuthorization!==2:expectedGeneration>=27?stamp.privateElevatedAuthorization!==1:stamp.privateElevatedAuthorization!==undefined)throw new Error('Native private elevated authorization capability does not match the sealed SDK implementation: '+bits);
     if (requiresAddonPreloadPatch ? stamp.addonPreloadProtocol !== 1 : stamp.addonPreloadProtocol !== undefined) {
       throw new Error('Native add-on preload capability does not match the sealed SDK implementation: ' + bits);
@@ -464,6 +511,27 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
         reshade.injectorFutureTargets !== 2 || reshade.configuration !== 'Release' || reshade.addonLevel !== 2 ||
         reshade.platform !== (bits === 64 ? '64-bit' : '32-bit') || typeof reshade.commit !== 'string' || !/^[0-9a-f]{40}$/i.test(reshade.commit)) {
       throw new Error('Unsupported pinned ReShade build manifest: ' + bits);
+    }
+    if (
+      reshade.injectorPolicyStdin !== stamp.injectorPolicyStdin ||
+      reshade.injectorPolicyStdinPatchSha256 !==
+        (expectedGeneration >= 40 ? INJECTOR_POLICY_STDIN_PATCH_SHA256 : undefined)
+    ) {
+      throw new Error('Native stdin policy patch provenance mismatch: ' + bits);
+    }
+    if (reshade.injectorCacheBootstrap !== stamp.injectorCacheBootstrap ||
+        reshade.ownedCacheBootstrapPatchSha256 !== (expectedGeneration >= 42 ? OWNED_CACHE_BOOTSTRAP_PATCH_SHA256 : undefined) ||
+        reshade.injectorCacheBootstrapPatchSha256 !== (expectedGeneration >= 42 ? INJECTOR_CACHE_BOOTSTRAP_PATCH_SHA256 : undefined)) {
+      throw new Error('Native cache bootstrap patch provenance mismatch: ' + bits);
+    }
+    if (reshade.injectorElevatedCachePatchSha256 !== (expectedGeneration >= 43 ? INJECTOR_ELEVATED_CACHE_PATCH_SHA256 : undefined)) {
+      throw new Error('Native protected cache patch provenance mismatch: ' + bits);
+    }
+    if (reshade.injectorCachePreloadPatchSha256 !== (expectedGeneration >= 44 ? INJECTOR_CACHE_PRELOAD_PATCH_SHA256 : undefined)) {
+      throw new Error('Native registered preload cache patch provenance mismatch: ' + bits);
+    }
+    if (reshade.injectorCacheOfficialPatchSha256 !== (expectedGeneration >= 45 ? INJECTOR_CACHE_OFFICIAL_PATCH_SHA256 : undefined)) {
+      throw new Error('Native official cache patch provenance mismatch: ' + bits);
     }
     if (expectedReShadeSchema === 30) {
       if (typeof reshade.ownedLateD3d11PatchSha256 !== 'string' ||
@@ -612,6 +680,14 @@ function validateNative(dist: string, files: ReadonlySet<string>): void {
       }
     } else if (reshade.ownedDeferredD3d11PatchSha256 !== undefined) {
       throw new Error('Owned deferred D3D11 provenance requires runtime generation 36: ' + bits);
+    }
+    if (expectedGeneration >= 41) {
+      if (typeof reshade.ownedMemoryConfigurationPatchSha256 !== 'string' ||
+          reshade.ownedMemoryConfigurationPatchSha256.toUpperCase() !== OWNED_MEMORY_CONFIGURATION_PATCH_SHA256) {
+        throw new Error('Pinned owned memory configuration patch provenance mismatch: ' + bits);
+      }
+    } else if (reshade.ownedMemoryConfigurationPatchSha256 !== undefined) {
+      throw new Error('Owned memory configuration provenance requires runtime generation 41: ' + bits);
     }
     if (expectedGeneration >= 29) {
       if (typeof reshade.d3d11SwapchainResourceIdentityPatchSha256 !== 'string' ||

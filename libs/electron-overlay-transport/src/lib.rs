@@ -4,6 +4,8 @@ pub mod electron_frame;
 pub mod electron_input;
 pub mod electron_wire;
 pub mod ffi;
+#[cfg(feature = "private-memory-route")]
+mod private_route;
 mod window_order;
 
 pub use electron_frame::*;

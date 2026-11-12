@@ -17,9 +17,12 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "private-memory-route")]
+use crate::private_route::ProducerIdentity;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Storage::FileSystem::{
@@ -586,7 +589,7 @@ pub(crate) fn valid_input_capabilities(capabilities: u64) -> bool {
 impl ElectronFrameBridge {
     /// Starts the state and loopback transport worker.
     pub fn spawn() -> Result<Self, ElectronFrameBridgeError> {
-        Self::spawn_with_directory(None, None)
+        Self::spawn_with_discovery(DiscoverySource::Environment, None)
     }
 
     /// Starts a participant-private transport. Discovery and startup diagnostics
@@ -620,22 +623,66 @@ impl ElectronFrameBridge {
                 "private transport directory must be an absolute Windows path".to_owned(),
             ));
         }
-        Self::spawn_with_directory(Some(directory), input_capabilities)
+        Self::spawn_with_discovery(DiscoverySource::Directory(directory), input_capabilities)
     }
 
-    fn spawn_with_directory(
-        directory: Option<PathBuf>,
+    /// Starts an exact-target transport from an already authorized loopback
+    /// route. This source never consults disk discovery or writes startup logs.
+    #[cfg(feature = "private-memory-route")]
+    pub(crate) fn spawn_for_route(
+        producer: ProducerIdentity,
+        target_pid: u32,
+        target_creation_time: u64,
+        port: u16,
+        token: String,
+        input_capabilities: u64,
+    ) -> Result<Self, ElectronFrameBridgeError> {
+        if producer.pid == 0
+            || port == 0
+            || !is_valid_token(&token)
+            || !valid_input_capabilities(input_capabilities)
+            || target_pid != unsafe { GetCurrentProcessId() }
+            || process_creation_time().ok() != Some(target_creation_time)
+        {
+            return Err(ElectronFrameBridgeError::Initialization(
+                "invalid or mismatched private loopback route".to_owned(),
+            ));
+        }
+        producer.open_live().map_err(|error| {
+            ElectronFrameBridgeError::Initialization(format!("private route producer: {error}"))
+        })?;
+        Self::spawn_with_discovery(
+            DiscoverySource::Route(
+                DiscoveryDocument {
+                    version: TRANSPORT_VERSION,
+                    pid: producer.pid,
+                    port,
+                    token,
+                    target_pid: Some(target_pid),
+                },
+                producer,
+            ),
+            Some(input_capabilities),
+        )
+    }
+
+    fn spawn_with_discovery(
+        discovery: DiscoverySource,
         input_capabilities: Option<u64>,
     ) -> Result<Self, ElectronFrameBridgeError> {
         let pid = unsafe { GetCurrentProcessId() };
-        let startup = match &directory {
-            Some(directory) => RuntimeStartupPublisher::for_directory(directory.clone(), pid),
-            None => RuntimeStartupPublisher::from_environment(pid),
+        let startup = match &discovery {
+            DiscoverySource::Directory(directory) => {
+                RuntimeStartupPublisher::for_directory(directory.clone(), pid)
+            }
+            DiscoverySource::Environment => RuntimeStartupPublisher::from_environment(pid),
+            #[cfg(feature = "private-memory-route")]
+            DiscoverySource::Route(..) => RuntimeStartupPublisher::default(),
         };
         let scene = Arc::new(RwLock::new(Arc::new(ElectronScene::default())));
         let worker_scene = Arc::clone(&scene);
         let mut router = InputRouter::new();
-        if directory.is_some() {
+        if !matches!(&discovery, DiscoverySource::Environment) {
             router.set_cooperative_focus(None);
         }
         let input_router = Arc::new(Mutex::new(router));
@@ -682,7 +729,7 @@ impl ElectronFrameBridge {
                     worker_drag,
                     ready_tx,
                     worker_startup,
-                    directory,
+                    discovery,
                     input_capabilities,
                 )
             })
@@ -1314,7 +1361,7 @@ fn run_bridge_thread(
     drag: SharedDragState,
     ready_tx: mpsc::SyncSender<Result<usize, String>>,
     startup: RuntimeStartupPublisher,
-    directory: Option<PathBuf>,
+    discovery: DiscoverySource,
     input_capabilities: Option<u64>,
 ) {
     startup.publish(RuntimeStartupCode::BridgeThreadStarted);
@@ -1362,7 +1409,7 @@ fn run_bridge_thread(
         pending_raise,
         drag,
         startup,
-        directory,
+        discovery,
         input_capabilities,
     ));
     let state_ptr = Box::into_raw(state);
@@ -1533,7 +1580,7 @@ enum NetworkInbound {
     Closed { generation: u64, reason: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct DiscoveryDocument {
     version: u32,
     pid: u32,
@@ -1543,18 +1590,86 @@ struct DiscoveryDocument {
     target_pid: Option<u32>,
 }
 
+enum DiscoverySource {
+    Environment,
+    Directory(PathBuf),
+    #[cfg(feature = "private-memory-route")]
+    Route(DiscoveryDocument, ProducerIdentity),
+}
+
+struct DiscoveryFiles {
+    preferred: PathBuf,
+    legacy: Option<PathBuf>,
+    legacy_requires_binding: bool,
+    target_route: Option<PathBuf>,
+    pinned: bool,
+    private: bool,
+}
+
+enum BridgeDiscovery {
+    Files(DiscoveryFiles),
+    #[cfg(feature = "private-memory-route")]
+    Route(DiscoveryDocument, ProducerIdentity),
+}
+
+impl BridgeDiscovery {
+    fn new(source: DiscoverySource) -> Self {
+        let (private, (preferred, legacy, legacy_requires_binding, target_route)) = match source {
+            #[cfg(feature = "private-memory-route")]
+            DiscoverySource::Route(document, producer) => return Self::Route(document, producer),
+            DiscoverySource::Directory(directory) => (true, private_discovery_paths(directory)),
+            DiscoverySource::Environment => (false, discovery_paths()),
+        };
+        Self::Files(DiscoveryFiles {
+            preferred,
+            legacy,
+            legacy_requires_binding,
+            target_route,
+            pinned: false,
+            private,
+        })
+    }
+
+    fn select(&mut self) -> Result<(DiscoveryDocument, Option<PathBuf>, bool), DiscoveryError> {
+        let files = match self {
+            #[cfg(feature = "private-memory-route")]
+            Self::Route(document, _) => return Ok((document.clone(), None, true)),
+            Self::Files(files) => files,
+        };
+        let (document, path, requires_binding) = if files.private {
+            select_private_discovery_document(
+                &files.preferred,
+                files.target_route.as_deref(),
+                &mut files.pinned,
+            )?
+        } else {
+            select_discovery_document(
+                &files.preferred,
+                files.legacy.as_deref(),
+                files.legacy_requires_binding,
+                files.target_route.as_deref(),
+                &mut files.pinned,
+            )?
+        };
+        Ok((document, Some(path), requires_binding))
+    }
+
+    fn connect(&self, address: SocketAddrV4, timeout: Duration) -> io::Result<TcpStream> {
+        #[cfg(feature = "private-memory-route")]
+        if let Self::Route(_, producer) = self {
+            return producer.connect(address, timeout);
+        }
+        TcpStream::connect_timeout(&address.into(), timeout)
+    }
+}
+
 struct BridgeThreadState {
     hwnd: HWND,
     transport: Option<TcpTransport>,
     inbound_tx: mpsc::SyncSender<NetworkInbound>,
     inbound_rx: mpsc::Receiver<NetworkInbound>,
     connection_generation: u64,
-    discovery_path: PathBuf,
-    legacy_discovery_path: Option<PathBuf>,
-    legacy_discovery_requires_target_binding: bool,
-    target_route_path: Option<PathBuf>,
-    routed_discovery_pinned: bool,
-    private_discovery: bool,
+    discovery: BridgeDiscovery,
     input_capabilities: Option<u64>,
     scene: PublishedScene,
     input_router: SharedInputRouter,
@@ -1592,32 +1707,17 @@ impl BridgeThreadState {
         pending_raise: SharedPendingRaise,
         drag: SharedDragState,
         startup: RuntimeStartupPublisher,
-        directory: Option<PathBuf>,
+        discovery: DiscoverySource,
         input_capabilities: Option<u64>,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(NETWORK_INBOUND_CAPACITY);
-        let private_discovery = directory.is_some();
-        let (
-            discovery_path,
-            legacy_discovery_path,
-            legacy_discovery_requires_target_binding,
-            target_route_path,
-        ) = match directory {
-            Some(directory) => private_discovery_paths(directory),
-            None => discovery_paths(),
-        };
         Self {
             hwnd,
             transport: None,
             inbound_tx,
             inbound_rx,
             connection_generation: 0,
-            discovery_path,
-            legacy_discovery_path,
-            legacy_discovery_requires_target_binding,
-            target_route_path,
-            routed_discovery_pinned: false,
-            private_discovery,
+            discovery: BridgeDiscovery::new(discovery),
             input_capabilities,
             scene,
             input_router,
@@ -1646,29 +1746,19 @@ impl BridgeThreadState {
             return;
         }
 
-        let selected = if self.private_discovery {
-            select_private_discovery_document(
-                &self.discovery_path,
-                self.target_route_path.as_deref(),
-                &mut self.routed_discovery_pinned,
-            )
-        } else {
-            select_discovery_document(
-                &self.discovery_path,
-                self.legacy_discovery_path.as_deref(),
-                self.legacy_discovery_requires_target_binding,
-                self.target_route_path.as_deref(),
-                &mut self.routed_discovery_pinned,
-            )
-        };
-        let (discovery, selected_discovery_path, requires_target_binding) = match selected {
-            Ok(selection) => selection,
-            Err(error) => {
-                self.startup.publish(discovery_failure_startup_code(&error));
-                debug!(%error, "Electron overlay transport discovery is not ready");
-                return;
-            }
-        };
+        let (discovery, selected_discovery_path, requires_target_binding) =
+            match self.discovery.select() {
+                Ok(selection) => selection,
+                Err(error) => {
+                    self.startup.publish(discovery_failure_startup_code(&error));
+                    debug!(%error, "Electron overlay transport discovery is not ready");
+                    return;
+                }
+            };
+        let discovery_path = selected_discovery_path
+            .as_deref()
+            .and_then(Path::to_str)
+            .unwrap_or("private-route");
         let current_pid = GetCurrentProcessId();
         if discovery.version != TRANSPORT_VERSION {
             self.startup
@@ -1694,17 +1784,17 @@ impl BridgeThreadState {
             warn!(
                 expected_target_pid = ?discovery.target_pid,
                 actual_target_pid = current_pid,
-                discovery_path = %selected_discovery_path.display(),
+                discovery_path,
                 "Ignoring Electron overlay transport discovery for another target process"
             );
             return;
         }
 
         let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, discovery.port);
-        let stream = match TcpStream::connect_timeout(
-            &address.into(),
-            Duration::from_millis(CONNECT_TIMEOUT_MILLIS),
-        ) {
+        let stream = match self
+            .discovery
+            .connect(address, Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
+        {
             Ok(stream) => stream,
             Err(error) => {
                 self.startup
@@ -1762,7 +1852,7 @@ impl BridgeThreadState {
             host_port = discovery.port,
             producer_pid = discovery.pid,
             target_pid = current_pid,
-            discovery_path = %selected_discovery_path.display(),
+            discovery_path,
             "Electron frame bridge connected to overlay transport"
         );
         let _ = PostMessageW(
@@ -3319,6 +3409,24 @@ fn discovery_target_matches(
     }
 }
 
+pub(crate) fn process_creation_time() -> io::Result<u64> {
+    creation_time_for_process(unsafe { GetCurrentProcess() })
+}
+
+pub(crate) fn creation_time_for_process(process: HANDLE) -> io::Result<u64> {
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) }
+        .map_err(io::Error::other)?;
+    let creation_time = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+    if creation_time == 0 {
+        return Err(io::Error::other("zero creation time"));
+    }
+    Ok(creation_time)
+}
+
 fn game_process_packet(
     token: &str,
     input_capabilities: Option<u64>,
@@ -3327,26 +3435,7 @@ fn game_process_packet(
         .map_err(NetworkError::CurrentExecutable)?
         .to_string_lossy()
         .into_owned();
-    let mut created = FILETIME::default();
-    let mut exited = FILETIME::default();
-    let mut kernel = FILETIME::default();
-    let mut user = FILETIME::default();
-    unsafe {
-        GetProcessTimes(
-            GetCurrentProcess(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-    }
-    .map_err(|error| NetworkError::CurrentProcessIdentity(io::Error::other(error)))?;
-    let creation_time = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
-    if creation_time == 0 {
-        return Err(NetworkError::CurrentProcessIdentity(io::Error::other(
-            "zero creation time",
-        )));
-    }
+    let creation_time = process_creation_time().map_err(NetworkError::CurrentProcessIdentity)?;
     let mut capabilities = vec![
         "window-order-v1",
         "window-focus-v1",
@@ -4326,7 +4415,7 @@ mod tests {
             SharedPendingRaise::default(),
             SharedDragState::default(),
             RuntimeStartupPublisher::default(),
-            None,
+            DiscoverySource::Environment,
             None,
         )
     }

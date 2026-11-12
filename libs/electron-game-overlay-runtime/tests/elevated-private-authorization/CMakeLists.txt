@@ -10,3 +10,8 @@ add_executable(elevated_private_authorization fixture.cpp)
 target_compile_features(elevated_private_authorization PRIVATE cxx_std_17)
 target_compile_definitions(elevated_private_authorization PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN "EGO_INJECTOR_SOURCE=\"${INJECTOR_SOURCE}\"")
 target_link_libraries(elevated_private_authorization PRIVATE psapi advapi32 bcrypt)
+
+add_executable(elevated_cache_acl cache-acl.cpp)
+target_compile_features(elevated_cache_acl PRIVATE cxx_std_20)
+target_compile_definitions(elevated_cache_acl PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(elevated_cache_acl PRIVATE bcrypt)

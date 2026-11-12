@@ -23,6 +23,7 @@ export {
   isReShadeOperationError,
   parseReShadeLaunchConfig,
   createReShadeLaunchConfig,
+  clearOldReShadeRuntimeCache,
   inspectReShadeRuntimeStorage,
   pruneReShadeRuntimeStorage,
 } from './reshade-launcher.js';

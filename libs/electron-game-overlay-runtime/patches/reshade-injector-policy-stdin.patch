@@ -1,0 +1,103 @@
+--- a/tools/injector.cpp
++++ b/tools/injector.cpp
+@@ -389,15 +389,9 @@
+     for (const auto &pattern : policy.allow) if (policy_matches(pattern, parts)) return true;
+     return false;
+ }
+-static DWORD read_process_image_policy(const wchar_t *file, process_image_policy &policy)
+-{
+-    const scoped_handle input = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+-    if (input == INVALID_HANDLE_VALUE) return GetLastError();
+-    LARGE_INTEGER length{};
+-    if (!GetFileSizeEx(input, &length) || length.QuadPart < 1 || length.QuadPart > 262144) return ERROR_INVALID_DATA;
+-    std::string utf8(static_cast<size_t>(length.QuadPart), '\0');
+-    DWORD read = 0;
+-    if (!ReadFile(input, utf8.data(), static_cast<DWORD>(utf8.size()), &read, nullptr) || read != utf8.size()) return ERROR_READ_FAULT;
++static DWORD parse_process_image_policy(const std::string &utf8, process_image_policy &policy)
++{
++    if (utf8.empty() || utf8.size() > 262144) return ERROR_INVALID_DATA;
+     const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+     if (size <= 0) return ERROR_NO_UNICODE_TRANSLATION;
+     std::wstring document(size, L'\0');
+@@ -430,6 +424,45 @@
+         } else return ERROR_INVALID_DATA;
+     }
+     return policy.allow.empty() ? ERROR_INVALID_DATA : ERROR_SUCCESS;
++}
++
++static DWORD read_process_image_policy(const wchar_t *file, process_image_policy &policy)
++{
++    const scoped_handle input = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
++    if (input == INVALID_HANDLE_VALUE) return GetLastError();
++    LARGE_INTEGER length{};
++    if (!GetFileSizeEx(input, &length) || length.QuadPart < 1 || length.QuadPart > 262144) return ERROR_INVALID_DATA;
++    std::string utf8(static_cast<size_t>(length.QuadPart), '\0');
++    DWORD read = 0;
++    if (!ReadFile(input, utf8.data(), static_cast<DWORD>(utf8.size()), &read, nullptr) || read != utf8.size()) return ERROR_READ_FAULT;
++    return parse_process_image_policy(utf8, policy);
++}
++
++static DWORD read_process_image_policy_stdin(process_image_policy &policy)
++{
++    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
++    if (input == nullptr || input == INVALID_HANDLE_VALUE || GetFileType(input) != FILE_TYPE_PIPE)
++        return ERROR_INVALID_HANDLE;
++    // Length-prefix the policy so a broken pipe cannot be mistaken for a
++    // complete valid prefix with later deny or exclusion rules omitted.
++    std::string frame;
++    char chunk[4096];
++    for (;;) {
++        DWORD read = 0;
++        if (!ReadFile(input, chunk, sizeof(chunk), &read, nullptr)) {
++            const DWORD error = GetLastError();
++            if (error == ERROR_BROKEN_PIPE) break;
++            return error;
++        }
++        if (read == 0) break;
++        if (frame.size() + read > 262148) return ERROR_INVALID_DATA;
++        frame.append(chunk, read);
++    }
++    if (frame.size() < sizeof(uint32_t)) return ERROR_INVALID_DATA;
++    uint32_t length = 0;
++    memcpy(&length, frame.data(), sizeof(length)); // Windows targets are little endian.
++    if (length != frame.size() - sizeof(length)) return ERROR_INVALID_DATA;
++    return parse_process_image_policy(frame.substr(sizeof(length)), policy);
+ }
+ 
+ static DWORD wait_for_path_match(const wchar_t *fragment, const std::vector<std::wstring> &excluded_names, DWORD &pid, std::wstring &image_path, const wchar_t *required_name = nullptr, const wchar_t *exact_path = nullptr, scoped_handle *retained_identity = nullptr, process_image_policy *policy = nullptr)
+@@ -5786,12 +5819,14 @@
+ 		return ERROR_SUCCESS;
+ 	}
+ 
+-    if (argc >= 2 && wcscmp(argv[1], L"--check-process-policy") == 0) {
++    const bool check_policy_stdin = argc >= 2 && wcscmp(argv[1], L"--check-process-policy-stdin") == 0;
++    if (check_policy_stdin || (argc >= 2 && wcscmp(argv[1], L"--check-process-policy") == 0)) {
+         process_image_policy policy;
+-        if (argc != 4) return ERROR_INVALID_PARAMETER;
+-        const DWORD error = read_process_image_policy(argv[2], policy);
++        if (argc != (check_policy_stdin ? 3 : 4)) return ERROR_INVALID_PARAMETER;
++        const DWORD error = check_policy_stdin ? read_process_image_policy_stdin(policy) :
++            read_process_image_policy(argv[2], policy);
+         if (error != ERROR_SUCCESS) return error;
+-        wprintf(policy_allows(policy, argv[3]) ? L"EGO_PROCESS_POLICY_ALLOW\n" : L"EGO_PROCESS_POLICY_DENY\n");
++        wprintf(policy_allows(policy, argv[argc - 1]) ? L"EGO_PROCESS_POLICY_ALLOW\n" : L"EGO_PROCESS_POLICY_DENY\n");
+         return ERROR_SUCCESS;
+     }
+ 
+@@ -5803,9 +5838,13 @@
+ 	{
+ 		for (int argument = 3; argument < argc; argument += 2)
+ 		{
+-            if (argument + 1 < argc && wcscmp(argv[argument], L"--policy-file") == 0) {
+-                if (has_image_policy) { print_injection_not_started(); return ERROR_INVALID_PARAMETER; }
+-                const DWORD error = read_process_image_policy(argv[argument + 1], image_policy);
++            const bool policy_stdin = wcscmp(argv[argument], L"--policy-stdin") == 0;
++            if (argument + 1 < argc && (policy_stdin || wcscmp(argv[argument], L"--policy-file") == 0)) {
++                if (has_image_policy || (policy_stdin && wcscmp(argv[argument + 1], L"1") != 0)) {
++                    print_injection_not_started(); return ERROR_INVALID_PARAMETER;
++                }
++                const DWORD error = policy_stdin ? read_process_image_policy_stdin(image_policy) :
++                    read_process_image_policy(argv[argument + 1], image_policy);
+                 if (error != ERROR_SUCCESS) { print_injection_not_started(); return error; }
+                 has_image_policy = true;
+                 continue;

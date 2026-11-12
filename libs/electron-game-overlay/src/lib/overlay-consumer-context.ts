@@ -1,7 +1,9 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
 import { win32 as path } from 'node:path';
 import { createReShadeLaunchConfig, type ReShadeLaunchConfig } from './reshade-launcher.js';
 import { isValidProcessCreationTime100ns } from './overlay-process-identity.js';
+import { sdkRuntimeCacheDirectory, type privateCacheVersion } from './runtime-payload-store.js';
 
 /** Current caller token and availability of a verified same-user medium desktop parent. */
 export type OverlayConsumerExecutionContext = Readonly<{
@@ -109,6 +111,83 @@ export async function verifyPrivateElevatedOverlayStage(config: ReShadeLaunchCon
         resolve();
       }catch(cause){reject(cause);}
     }));
+}
+
+export function privateElevatedRunsRoot(runsRoot: string): string {
+  return path.join(`${runsRoot}.elevated`, 'runs');
+}
+
+/** Holds the verified protected namespace and files from the bundled manager
+ * through executable launch. Closing the input also drains the native lease. */
+export async function holdPrivateElevatedCache(
+  config: ReShadeLaunchConfig,
+  context: OverlayConsumerExecutionContext,
+  version?: Awaited<ReturnType<typeof privateCacheVersion>>,
+) {
+  if (context.ownerPid !== process.pid || !context.elevated || context.integrityRid !== 12288 ||
+      !isValidProcessCreationTime100ns(context.creationTime100ns) || config.elevatedCacheBootstrap !== 1) {
+    throw new Error('Protected runtime cache requires the actual supported high caller');
+  }
+  const runsRoot = config.runsRootDirectory;
+  if (version) await mkdir(path.dirname(runsRoot), { recursive: true });
+  const runsDirectory = privateElevatedRunsRoot(runsRoot);
+  const store = sdkRuntimeCacheDirectory(runsDirectory);
+  const directory = version ? path.join(store, version.key) : store;
+  const args = [version ? '--hold-private-elevated-cache' : '--hold-private-elevated-cache-root',
+    String(process.pid), context.creationTime100ns, runsRoot];
+  if (version) args.push(version.key, version.marker, config.runtimeDirectory, ...version.hashes.values());
+  const child = spawn(config.addonManagerPath, args, { windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+  child.stdin.on('error', () => undefined);
+  let stopped = false;
+  let resolveClosed: () => void = () => undefined;
+  const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
+  child.once('close', () => { stopped = true; resolveClosed(); });
+  const assertHeld = () => {
+    if (stopped || child.exitCode !== null || child.signalCode !== null || child.stdin.destroyed) {
+      throw new Error('The protected runtime cache lease has closed');
+    }
+  };
+  const release = async () => {
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill(), 2000);
+    try { await closed; } finally { clearTimeout(timer); }
+  };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+      let reported = false;
+      const timer = setTimeout(() => reject(new Error('Protected cache verification timed out')), 30000);
+      const fail = (error: Error) => { clearTimeout(timer); reject(error); };
+      child.once('error', fail);
+      child.once('close', () => fail(new Error(`Protected cache verification exited: ${stdout.trim() || stderr.trim()}`)));
+      child.stderr.setEncoding('utf8').on('data', (data: string) => { stderr = (stderr + data).slice(-4096); });
+      child.stdout.setEncoding('utf8').on('data', (data: string) => {
+        if (reported) return;
+        stdout += data;
+        if (stdout.length > 8192) { fail(new Error('Protected cache verification exceeded its output bound')); return; }
+        if (!stdout.includes('\n')) return;
+        reported = true;
+        try {
+          const record = JSON.parse(stdout);
+          if (!record || Object.keys(record).sort().join(',') !== 'creationTime100ns,directory,kind,ownerPid,runsDirectory,schemaVersion' ||
+              record.schemaVersion !== 1 || record.kind !== 'electron-game-overlay-private-elevated-cache' ||
+              record.ownerPid !== process.pid || record.creationTime100ns !== context.creationTime100ns ||
+              typeof record.directory !== 'string' || normalize(record.directory) !== normalize(directory) ||
+              typeof record.runsDirectory !== 'string' || normalize(record.runsDirectory) !== normalize(runsDirectory)) {
+            throw new Error(`Protected cache verification was refused: ${stdout.trim()}`);
+          }
+          assertHeld();
+          clearTimeout(timer);
+          resolve();
+        } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); }
+      });
+    });
+    return { directory, runsDirectory, assertHeld, release };
+  } catch (error) {
+    await release();
+    throw error;
+  }
 }
 
 /** Reads this calling process's real elevation/integrity and a same-user/session desktop relaunch capability. Never changes a token or starts an app. */
